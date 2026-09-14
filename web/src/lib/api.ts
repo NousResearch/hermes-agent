@@ -1,7 +1,7 @@
 import {
   buildHermesWebSocketUrl,
   type ModelOptionProvider,
-  type ModelOptionsResponse,
+  type ModelOptionsResult,
 } from "@hermes/shared";
 
 // The dashboard can be served either at the root of its host (e.g.
@@ -547,7 +547,7 @@ export const api = {
     // desktop chat pickers (#56974), so opt in explicitly here.
     qs.set("include_unconfigured", "1");
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return fetchJSON<ModelOptionsResponse>(`/api/model/options${suffix}`);
+    return fetchJSON<ModelOptionsResult>(`/api/model/options${suffix}`);
   },
   getAuxiliaryModels: (profile = getManagementProfile()) =>
     fetchJSON<AuxiliaryModelsResponse>(
@@ -2441,7 +2441,7 @@ export interface ModelInfoResponse {
 
 // ── Model options / assignment types ──────────────────────────────────
 
-export type { ModelOptionProvider, ModelOptionsResponse };
+export type { ModelOptionProvider, ModelOptionsResult };
 
 export interface AuxiliaryTaskAssignment {
   task: string;

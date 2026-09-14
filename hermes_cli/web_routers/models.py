@@ -255,9 +255,13 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                 raise HTTPException(status_code=422, detail="Invalid MoA config: " + "; ".join(problems))
             normalized = normalize_moa_config(raw)
             # Merge, don't overwrite: hand-edited keys not in MoaConfigPayload (save_traces, trace_dir) survive.
-            # See issue #58819.
-            cfg.setdefault("moa", {}).update(normalized)
-            save_config(cfg)
+            # See issue #58819. Write ONLY the moa section (merge_existing deep-merges it over the
+            # on-disk raw file): saving the whole default-expanded ``cfg`` snapshot re-persisted
+            # every other section too, so a Desktop MoA autosave could wipe a chain another
+            # surface wrote meanwhile (#89184, ``fallback_providers: []``).
+            moa_section = dict(cfg.get("moa") or {})
+            moa_section.update(normalized)
+            save_config({"moa": moa_section}, merge_existing=True)
             return {"ok": True, **normalized}
 
 

@@ -177,6 +177,17 @@ def list_gateway_approvals(session_key: str) -> list[dict]:
         return [dict(entry.data) for entry in _gateway_queues.get(session_key, [])]
 
 
+def register_gateway_settle(session_key: str, request_id: str, settle) -> bool:
+    """Attach ``settle(reason)`` to one pending approval; it runs once when that wait ends by any path.
+    False when the request is no longer pending (the surface should withdraw its prompt itself)."""
+    with _lock:
+        for entry in _gateway_queues.get(session_key, []):
+            if entry.data.get("request_id") == request_id:
+                entry.settle = settle
+                return True
+    return False
+
+
 def ack_gateway_approval(session_key: str, request_id: str) -> bool:
     """Record that a client received a particular pending approval request."""
     with _lock:

@@ -13,7 +13,7 @@ import { api } from "@/lib/api";
 import type {
   CronJob,
   CronDeliveryTarget,
-  ModelOptionsResponse,
+  ModelOptionsResult,
   ProfileInfo,
   SkillInfo,
   ToolsetInfo,
@@ -129,7 +129,7 @@ interface CronJobEditorState extends CronJobFormState {
 interface CronJobFormResources {
   availableSkills: SkillInfo[];
   availableToolsets: ToolsetInfo[];
-  modelOptions: ModelOptionsResponse | null;
+  modelOptions: ModelOptionsResult | null;
   deliveryTargets: CronDeliveryTarget[];
 }
 
@@ -197,7 +197,7 @@ function CronAdvancedFields({
   idPrefix: string;
   form: CronJobEditorState;
   onChange: (form: CronJobEditorState) => void;
-  modelOptions: ModelOptionsResponse | null;
+  modelOptions: ModelOptionsResult | null;
   availableToolsets: ToolsetInfo[];
 }) {
   const update = <K extends keyof CronJobEditorState,>(
@@ -604,7 +604,7 @@ export default function CronPage() {
   // a job's current skills are always shown even if not in it.
   const [availableSkills, setAvailableSkills] = useState<SkillInfo[]>([]);
   const [availableToolsets, setAvailableToolsets] = useState<ToolsetInfo[]>([]);
-  const [modelOptions, setModelOptions] = useState<ModelOptionsResponse | null>(null);
+  const [modelOptions, setModelOptions] = useState<ModelOptionsResult | null>(null);
 
   const resourceProfile = editJob ? getJobProfile(editJob) : createProfile;
 

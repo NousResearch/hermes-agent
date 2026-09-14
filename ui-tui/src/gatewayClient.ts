@@ -9,6 +9,7 @@ import {
   DEFAULT_HEARTBEAT_DEADLINE_MS,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   JsonRpcRequestChannel,
+  type ServerRequest,
   wireFrameText
 } from '@hermes/shared/json-rpc-channel'
 import { reconnectBackoffDelayMs } from '@hermes/shared/reconnect-backoff'
@@ -134,10 +135,15 @@ export class GatewayClient extends EventEmitter {
   private readonly channel = new JsonRpcRequestChannel({
     onEvent: ev => this.publish(ev as AnyGatewayEvent),
     onHeartbeatFailure: () => this.onHeartbeatFailure(),
+    onUnhandledRequest: req => this.pushLog(`[protocol] unhandled server request: ${req.method}`),
     requestTimeoutMs: REQUEST_TIMEOUT_MS,
     unrefTimers: true
   })
   private bufferedEvents = new CircularBuffer<AnyGatewayEvent>(MAX_BUFFERED_EVENTS)
+  // Server→client requests (clarify, approval, sudo, …) follow the same
+  // mount-order contract as events: an attached session mid-turn can send one
+  // the instant the socket opens, before the Ink handler is registered.
+  private bufferedRequests: ServerRequest[] = []
   private pendingExit: number | null | undefined
   private ready = false
   private readyTimer: ReturnType<typeof setTimeout> | null = null
@@ -155,6 +161,13 @@ export class GatewayClient extends EventEmitter {
     // useInput / createGatewayEventHandler can legitimately attach many
     // listeners. Default 10-cap triggers spurious warnings.
     this.setMaxListeners(0)
+    this.channel.onRequest(request => {
+      if (this.subscribed) {
+        this.emit('request', request)
+      } else {
+        this.bufferedRequests.push(request)
+      }
+    })
   }
 
   private publish(ev: AnyGatewayEvent) {
@@ -280,6 +293,7 @@ export class GatewayClient extends EventEmitter {
     // its queued microtask becomes a no-op (it captured the old generation).
     this.drainGeneration += 1
     this.bufferedEvents.clear()
+    this.bufferedRequests = []
     this.pendingExit = undefined
     this.stdoutRl?.close()
     this.stderrRl?.close()
@@ -671,6 +685,10 @@ export class GatewayClient extends EventEmitter {
       // the gap before this microtask ran — all in chronological order.
       for (const ev of this.bufferedEvents.drain()) {
         this.emit('event', ev)
+      }
+
+      for (const request of this.bufferedRequests.splice(0)) {
+        this.emit('request', request)
       }
 
       if (this.pendingExit !== undefined) {

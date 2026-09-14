@@ -404,13 +404,29 @@ def delivery_turn_author(from_profile: Any, from_handle: Any, from_connection: A
             "is_bot": True}
 
 
+def _delivery_child_session_env_names() -> "tuple[str, ...]":
+    """Session-bound env names to strip from a delivery child, from ``gateway.session_context``.
+
+    Synced with the session binding surface as vars are added; deliberately NOT a
+    ``HERMES_SESSION_*`` prefix match, which would also strip non-identity knobs
+    (e.g. ``HERMES_SESSION_STALL_TIMEOUT``)."""
+    from gateway.session_context import _VAR_MAP
+
+    return tuple(_VAR_MAP)
+
+
 def delivery_env(author: Optional[dict]) -> dict[str, str]:
     """Environment for one delivery turn's ``hermes`` child. The dispatcher's own HERMES_TURN_AUTHOR is
-    dropped first so a delivery without an author never inherits the author of the turn that sent it."""
+    dropped first so a delivery without an author never inherits the author of the turn that sent it.
+    Dispatcher session identity (the canonical ``gateway.session_context`` session env names) is
+    dropped too: a nested recipient that ``message_agent``s onward must not stamp that grandchild
+    notify with the grandparent's key, or the live recipient never resumes."""
     from agent.turn_author import TURN_AUTHOR_ENV, turn_author_env
 
     env = dict(os.environ)
     env.pop(TURN_AUTHOR_ENV, None)
+    for name in _delivery_child_session_env_names():
+        env.pop(name, None)
     if author:
         env.update(turn_author_env(author))
     return env

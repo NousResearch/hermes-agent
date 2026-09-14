@@ -85,6 +85,7 @@ export interface GatewayOptions {
   /** Per profile: carry `pending_approval` on its first `until` resumes. */
   approvalUntil?: Record<string, { payload: Record<string, unknown>; until: number }>
   /** Per profile: carry `pending_clarify` on its first `until` resumes. */
+  /** `payload` is an open-request frame `{ id, method: 'clarify', params }`. */
   clarifyUntil?: Record<string, { payload: Record<string, unknown>; until: number }>
   /** Land a competing writer's `ui_meta` under `key` during the FIRST
    *  `profiles.configure`, then reject it as a CAS conflict — the race the
@@ -275,7 +276,7 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
         running: false,
         session_id: session.runtime,
         session_key: session.stored,
-        ...(clarify && seen <= clarify.until ? { pending_clarify: clarify.payload } : {}),
+        ...(clarify && seen <= clarify.until ? { open_requests: [clarify.payload] } : {}),
         ...(approval && seen <= approval.until ? { pending_approval: approval.payload } : {})
       }
     }

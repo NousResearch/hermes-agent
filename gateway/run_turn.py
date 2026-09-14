@@ -69,26 +69,15 @@ def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> 
 def _effective_tool_progress_mode(user_config: dict, platform_key: str) -> str:
     """Tool-progress mode a turn actually runs with (quiet = ``off`` / ``log``).
 
-    Precedence: per-platform override → legacy ``tool_progress_overrides`` →
-    ``display.tool_progress`` → platform/global defaults, with the
-    ``HERMES_TOOL_PROGRESS_MODE`` env bridge winning only while the config never set the
-    key. Shared by the display path and the single-message streaming gate so the two can
-    never disagree about whether progress bubbles are quiet.
+    Thin wrapper over :func:`gateway.display_config.resolve_tool_progress` — its
+    (mode, explicit) pair flattened to the mode. Shared by the display path and the
+    single-message streaming gate so the two can never disagree about whether progress
+    bubbles are quiet.
     """
-    from gateway.display_config import resolve_display_setting
+    from gateway.display_config import resolve_tool_progress
 
-    display_cfg = user_config.get("display") or {}
-    if not isinstance(display_cfg, dict):
-        display_cfg = {}
-    resolved = resolve_display_setting(user_config, platform_key, "tool_progress")
-    env_mode = os.getenv("HERMES_TOOL_PROGRESS_MODE")
-    platform_cfg = (display_cfg.get("platforms") or {}).get(platform_key) or {}
-    legacy_overrides = display_cfg.get("tool_progress_overrides") or {}
-    configured = "tool_progress" in display_cfg or any(
-        isinstance(cfg, dict) and key in cfg
-        for cfg, key in ((platform_cfg, "tool_progress"), (legacy_overrides, platform_key))
-    )
-    return env_mode if env_mode and not configured else (resolved or env_mode or "all")
+    return resolve_tool_progress(
+        user_config, platform_key, os.getenv("HERMES_TOOL_PROGRESS_MODE"))[0]
 
 
 class GatewayTurnMixin:
@@ -2773,7 +2762,7 @@ class GatewayTurnMixin:
             _gateway_platform_value, _has_platform_display_override, _load_gateway_config,
             _platform_config_key,
         )
-        from gateway.display_config import resolve_display_setting
+        from gateway.display_config import resolve_display_setting, resolve_tool_progress
         from gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
@@ -2790,8 +2779,11 @@ class GatewayTurnMixin:
                 _val = resolve_display_setting(user_config, platform_key, _setting, _default)
                 getattr(_agent_display, _setter)(_cast(_val))
 
-        # Tool progress mode (env bridge wins only when the config never set the key).
-        progress_mode = _effective_tool_progress_mode(user_config, platform_key)
+        # Tool progress mode: resolve the mode and its provenance together (null inherits;
+        # explicit config beats the env bridge; tier off is not intent).
+        progress_mode, _tool_progress_explicit = resolve_tool_progress(
+            user_config, platform_key, os.getenv("HERMES_TOOL_PROGRESS_MODE"),
+        )
         # "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
         _generic_status_recent: List[str] = []
@@ -2849,8 +2841,16 @@ class GatewayTurnMixin:
         # native plan/task cards via chat.startStream — the progress queue is needed even though Slack keeps
         # ordinary text tool_progress off by default (requiring both flags would silently leave the native
         # feature inactive).
+        # Cards are still tool progress. Slack's TIER default (``off``) only quiets the text lane so
+        # cards stay on for unconfigured installs, but an operator who WRITES ``tool_progress: off``
+        # (global, platform override, or legacy overrides) has asked for no tool progress at all and
+        # gets no cards either. Every other explicit mode keeps the card lane.
         _native_slack_task_cards = False
-        if source.platform == Platform.SLACK and hasattr(adapter, "native_task_cards_enabled"):
+        if (
+            source.platform == Platform.SLACK
+            and hasattr(adapter, "native_task_cards_enabled")
+            and not (_tool_progress_explicit and progress_mode == "off")
+        ):
             try:
                 _native_slack_task_cards = bool(adapter.native_task_cards_enabled())
             except Exception:

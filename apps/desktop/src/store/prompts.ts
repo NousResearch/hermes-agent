@@ -2,14 +2,16 @@ import { atom, computed, type ReadableAtom } from 'nanostores'
 
 import { $clarifyRequest, $clarifyRequests } from './clarify'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
+import { respondToServerRequest } from './server-requests'
 import { $activeSessionId } from './session'
 import { ambientRequestFor } from './session-gone-latch'
 import { requestForOwnedSession } from './session-states'
 
-// Blocking interactive prompts the gateway raises mid-turn. Each maps to a
-// `*.request` event the Python side emits while it blocks the agent thread
-// waiting for a `*.respond` RPC. Without a renderer for these, the agent
-// silently stalls until its timeout (default 5 min) and the tool is BLOCKED.
+// Blocking interactive prompts the gateway raises mid-turn. Each is a
+// server→client JSON-RPC request (`tui_gateway/server_requests.py`) the Python
+// side blocks on; `requestId` is that request's id and the card answers through
+// `store/server-requests.ts::respondToServerRequest`. Without a renderer for
+// these the channel answers -32601 and the tool fails fast.
 //
 // Like clarify, every prompt is parked under the runtime session id that raised
 // it (not one shared slot), so a *background* session running concurrently can
@@ -70,9 +72,12 @@ function keyedPromptStore<T extends KeyedPrompt>(): PromptStore<T> {
   }
 }
 
-// Approval is session-keyed on the backend and correlated by `request_id` when
-// available (legacy ID-free responses remain FIFO-compatible). Resolved via
-// approval.respond {choice, request_id, session_id}.
+// Approval is queue-backed on the backend (`tools/approval.py`): `requestId` is
+// the QUEUE entry's id (what `approval.pending` / `approval.received` /
+// `approval.respond` key on), stable across delivery paths. The live prompt
+// arrives as an `approval` server request whose id is `serverRequestId`; the
+// card answers that request when it is still open and falls back to the
+// `approval.respond` RPC when the prompt was restored from `approval.pending`.
 export interface ApprovalRequest extends KeyedPrompt {
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   allowPermanent?: boolean
@@ -80,6 +85,7 @@ export interface ApprovalRequest extends KeyedPrompt {
   command: string
   description: string
   requestId?: string
+  serverRequestId?: string
   smartDenied?: boolean
 }
 
@@ -106,8 +112,8 @@ export interface SecretRequest extends KeyedPrompt {
   requestId: string
 }
 
-// External password-manager unlock (agent/vault_backends). Resolved via
-// vault.unlock.respond {request_id, password}; "" keeps the manager locked.
+// External password-manager unlock (agent/vault_backends): `vault.unlock_prompt`
+// server request, answered `{value: password}`; "" keeps the manager locked.
 export interface VaultUnlockRequest extends KeyedPrompt {
   backend: string
   displayName: string
@@ -119,8 +125,8 @@ const sudo = keyedPromptStore<SudoRequest>()
 const secret = keyedPromptStore<SecretRequest>()
 const vaultUnlock = keyedPromptStore<VaultUnlockRequest>()
 
-// "Save this login" for the page the agent is on (tools/browser_vault_tool). Resolved via
-// vault.save_login.respond {request_id, login: JSON {identifier, password}}; "" declines.
+// "Save this login" for the page the agent is on (tools/browser_vault_tool): `vault.save_login`
+// server request, answered `{value: JSON {identifier, password}}`; "" declines.
 export interface VaultSaveLoginRequest extends KeyedPrompt {
   origin: string
   site: string
@@ -129,8 +135,8 @@ export interface VaultSaveLoginRequest extends KeyedPrompt {
 
 const vaultSave = keyedPromptStore<VaultSaveLoginRequest>()
 
-// Second-factor code for the page the agent is on. Resolved via vault.code.respond
-// {request_id, code}; "" skips.
+// Second-factor code for the page the agent is on: `vault.code` server request,
+// answered `{value: code}`; "" skips.
 export interface VaultCodeRequest extends KeyedPrompt {
   site: string
   hint: string
@@ -144,10 +150,19 @@ const vaultCode = keyedPromptStore<VaultCodeRequest>()
 const $approvalInlineAnchors = atom<Record<string, number>>({})
 
 export const $approvalRequest = approval.$active
+export const $approvalRequests = approval.$all
 export const setApprovalRequest = approval.set
 export const clearApprovalRequest = approval.clear
 
 export async function receiveApprovalRequest(gateway: ApprovalGateway | null, request: ApprovalRequest): Promise<void> {
+  // A prompt restored from `approval.pending` must not clobber the live server
+  // request that already carries the same queue entry (it knows how to answer).
+  const current = approval.$all.get()[keyFor(request.sessionId)]
+
+  if (current?.requestId && current.requestId === request.requestId && current.serverRequestId && !request.serverRequestId) {
+    return
+  }
+
   setApprovalRequest(request)
 
   if (gateway && request.requestId && request.sessionId) {
@@ -210,6 +225,10 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
     return
   }
 
+  if (previous?.requestId === pending.request_id) {
+    return
+  }
+
   await receiveApprovalRequest(gateway, {
     allowPermanent: pending.allow_permanent !== false,
     choices: Array.isArray(pending.choices) ? pending.choices.filter(choice => typeof choice === 'string') : undefined,
@@ -218,6 +237,35 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
     requestId: pending.request_id,
     sessionId,
     smartDenied: pending.smart_denied === true
+  })
+}
+
+/**
+ * Resolve an approval: answer the live server request when it is still open
+ * (the response frame goes back over the socket it arrived on — the owner by
+ * construction), else the queue-level `approval.respond` RPC for a prompt that
+ * was restored from `approval.pending` or is being answered from another
+ * surface. Returns after the backend has the decision.
+ */
+export async function answerApproval(
+  gateway: ApprovalGateway | null,
+  request: Pick<ApprovalRequest, 'requestId' | 'serverRequestId' | 'sessionId'>,
+  choice: string,
+  all = false
+): Promise<void> {
+  if (respondToServerRequest(request.serverRequestId, { choice, ...(all ? { all: true } : {}) })) {
+    return
+  }
+
+  if (!gateway) {
+    throw new Error('Hermes gateway is not connected')
+  }
+
+  await requestForOwnedSession(request.sessionId, ambientRequestFor(gateway), 'approval.respond', {
+    ...(all ? { all: true } : {}),
+    choice,
+    ...(request.requestId ? { request_id: request.requestId } : {}),
+    session_id: request.sessionId ?? undefined
   })
 }
 
@@ -250,10 +298,12 @@ export const sessionApprovalInlineVisible = (sessionId: string | null) =>
   computed($approvalInlineAnchors, anchors => (anchors[keyFor(sessionId)] ?? 0) > 0)
 
 export const $sudoRequest = sudo.$active
+export const $sudoRequests = sudo.$all
 export const setSudoRequest = sudo.set
 export const clearSudoRequest = sudo.clear
 
 export const $secretRequest = secret.$active
+export const $secretRequests = secret.$all
 export const setSecretRequest = secret.set
 export const clearSecretRequest = secret.clear
 

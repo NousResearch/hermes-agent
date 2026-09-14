@@ -1920,28 +1920,38 @@ def _current_run_id(conn: sqlite3.Connection, task_id: str) -> Optional[int]:
 def _end_or_synthesize_run(
     conn: sqlite3.Connection, task_id: str, *, outcome: str, status: str,
     summary: Optional[str] = None, metadata: Optional[dict] = None, synthesize: bool,
+    profile: Optional[str] = None,
 ) -> Optional[int]:
     """:func:`_end_run`; when no run was active and ``synthesize`` holds, record a
-    zero-duration run instead so the handoff fields survive in attempt history."""
+    zero-duration run instead so the handoff fields survive in attempt history.
+    ``profile`` overrides the profile read off the task row for the synthesized
+    run — transitions that reassign the task (e.g. review handoff) pass the
+    acting profile captured before the rewrite."""
     run_id = _end_run(conn, task_id, outcome=outcome, status=status, summary=summary, metadata=metadata)
     if run_id is None and synthesize:
-        run_id = _synthesize_ended_run(conn, task_id, outcome=outcome, summary=summary, metadata=metadata)
+        run_id = _synthesize_ended_run(conn, task_id, outcome=outcome, summary=summary, metadata=metadata, profile=profile)
     return run_id
 
 
 def _synthesize_ended_run(
     conn: sqlite3.Connection, task_id: str, *, outcome: str, summary: Optional[str] = None,
     error: Optional[str] = None, metadata: Optional[dict] = None,
+    profile: Optional[str] = None,
 ) -> int:
     """Zero-duration closed run for a terminal transition on a never-claimed
     task, so the handoff fields aren't silently dropped (``_end_run`` is a
     no-op then). ``started_at == ended_at`` keeps elapsed stats honest. Does
-    NOT touch the tasks row."""
+    NOT touch the tasks row.
+
+    ``profile`` overrides the profile read off the task row: transitions that
+    reassign the task (e.g. review handoff) pass the acting profile captured
+    before the rewrite, so the run names the actor, not the new assignee."""
     now = int(time.time())
     trow = conn.execute(
         "SELECT assignee, current_step_key FROM tasks WHERE id = ?", (task_id,),
     ).fetchone()
-    profile = trow["assignee"] if trow else None
+    if profile is None:
+        profile = trow["assignee"] if trow else None
     step_key = trow["current_step_key"] if trow else None
     cur = conn.execute(
         """
@@ -3120,6 +3130,7 @@ def request_review(
             run_id = _end_or_synthesize_run(
                 conn, task_id, outcome="review_requested", status="review",
                 summary=summary, metadata=metadata, synthesize=bool(summary or metadata),
+                profile=implementer,
             )
             payload: dict = {
                 "summary": _first_line(summary, 400) or None,

@@ -18,6 +18,7 @@ def test_gate_stop_passes_through_finalizer_and_persists(monkeypatch):
     agent.context_compressor.last_prompt_tokens = 0
     agent.request_overrides = {}
     agent._tool_guardrail_halt_decision = None
+    agent._pre_persist_gate = None  # no gateway strict pre-delivery gate wired for this test
     agent._response_was_previewed = False
     agent._skill_nudge_interval = 0
     agent._iters_since_skill = 0

@@ -591,3 +591,103 @@ def test_delivery_only_reasoning_excerpt_does_not_fill_blank_assistant(monkeypat
         for m in result["messages"]
     )
 
+
+def test_pre_persist_gate_blocks_unvalidated_answer_from_reaching_session_db(monkeypatch):
+    """Strict-mode regression: gateway/run_turn.py's _run_agent_apply_pre_delivery_gate runs
+    strictly AFTER persistence and (by design) never mutates delivery for shadow mode. A
+    "strict" gate must instead prevent the raw, unvalidated answer from ever reaching
+    SessionDB via agent._pre_persist_gate (agent/pre_persist_gate.py), wired here at the
+    single chokepoint every turn-loop exit path converges on before its durable write."""
+    from agent.pre_persist_gate import PRE_PERSIST_WITHHELD_TEXT
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    agent._pre_persist_gate = lambda final_text: {"decision": "blocked"}
+    messages = [{"role": "user", "content": "do something unsafe"}]
+
+    result = finalize_turn(
+        agent,
+        final_response="here is the unsafe raw answer",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="do something unsafe",
+        original_user_message="do something unsafe",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(final)",
+    )
+
+    assert result["final_response"] == PRE_PERSIST_WITHHELD_TEXT
+    assert result["blocked"] is True
+    assert result["persistence_confirmed"] is True
+    assert "unsafe raw answer" not in result["final_response"]
+    # The durable SessionDB write itself must carry the safe placeholder, never the raw text.
+    assert agent.persisted_messages is not None
+    assert not any(
+        "unsafe raw answer" in (m.get("content") or "") for m in agent.persisted_messages
+    )
+    assert any(
+        m.get("role") == "assistant" and m.get("content") == PRE_PERSIST_WITHHELD_TEXT
+        for m in agent.persisted_messages
+    )
+
+
+def test_pre_persist_gate_allows_passed_answer_through_unchanged():
+    agent = FakeAgent()
+    agent._pre_persist_gate = lambda final_text: {"decision": "passed"}
+    messages = [{"role": "user", "content": "hello"}]
+
+    result = finalize_turn(
+        agent,
+        final_response="a perfectly safe answer",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="hello",
+        original_user_message="hello",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(final)",
+    )
+
+    assert result["final_response"] == "a perfectly safe answer"
+    assert result["blocked"] is False
+    assert any(
+        m.get("role") == "assistant" and m.get("content") == "a perfectly safe answer"
+        for m in agent.persisted_messages
+    )
+
+
+def test_pre_persist_gate_absent_is_legacy_noop():
+    """No agent._pre_persist_gate attribute at all (every non-gateway caller, or gateway in
+    shadow mode) must behave exactly as before this fix."""
+    agent = FakeAgent()
+    assert not hasattr(agent, "_pre_persist_gate")
+    messages = [{"role": "user", "content": "hello"}]
+
+    result = finalize_turn(
+        agent,
+        final_response="a perfectly safe answer",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="hello",
+        original_user_message="hello",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(final)",
+    )
+
+    assert result["final_response"] == "a perfectly safe answer"
+    assert result["blocked"] is False
+

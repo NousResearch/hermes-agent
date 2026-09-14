@@ -16,6 +16,7 @@ from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import _sanitize_surrogates
+from agent.pre_persist_gate import apply_pre_persist_gate
 
 # Verification-continuation nudges (verify-on-stop / pre_verify) must be stripped from
 # returned/live history to avoid role-alternation breaks; the assistant response is
@@ -495,7 +496,7 @@ def finalize_turn(
             agent._last_persistence_error_cause = "unknown"
 
     def _persist_step():
-        nonlocal final_response, failed, _turn_exit_reason, persistence_confirmed, completed
+        nonlocal final_response, failed, _turn_exit_reason, persistence_confirmed, completed, blocked
         nonlocal _response_transformed, _pre_transform_response
         try:
             _drop_transcript_scaffolding(agent, messages)
@@ -513,6 +514,15 @@ def finalize_turn(
             _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream)
             if not interrupted and not failed:
                 _micro_compact_after_turn(agent, messages, final_response, logger)
+                # Opt-in "strict" pre-delivery gate (gateway.evaluator_shadow.mode == "strict";
+                # see agent/pre_persist_gate.py): an unvalidated answer must not become durable.
+                # No-op unless the gateway wired agent._pre_persist_gate.
+                _tail = messages[-1] if messages else None
+                _gated_response = apply_pre_persist_gate(agent, final_response, target_msg=_tail)
+                if _gated_response != final_response:
+                    final_response = _gated_response
+                    blocked = True
+                    _turn_exit_reason = "pre_delivery_gate_blocked"
             _persisted = agent._persist_session(messages, conversation_history)
         except Exception:
             _mark_persistence_failed()

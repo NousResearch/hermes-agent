@@ -797,6 +797,14 @@ class TurnRunner:
             scfg.enabled and scfg.transport != "off" if plat_streaming is None else bool(plat_streaming)
         )
         want_interim_messages = ctx.interim_assistant_messages_enabled
+        # Strict pre-delivery mode: nothing may be revealed (live-edited text OR spoken TTS)
+        # before the agent turn loop's pre-persist gate has cleared the final answer (see
+        # agent/pre_persist_gate.py). buffer_only defers every interim edit to the single
+        # finalize edit, which by then reads the already-gated gateway.run_turn.py result.
+        _strict_pre_delivery = (
+            getattr(self._runner, "pre_delivery_gate", None) is not None
+            and getattr(self._runner, "pre_delivery_gate_mode", "shadow") == "strict"
+        )
         if want_stream_deltas or want_interim_messages:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer
@@ -805,6 +813,8 @@ class TurnRunner:
                     consumer_cfg, pause_typing_before_finalize = self._runner._build_stream_consumer_config(
                         ctx.source, scfg, adapter, on_missing_cursor="raise",
                     )
+                    if _strict_pre_delivery:
+                        consumer_cfg.buffer_only = True
                     stream_consumer = GatewayStreamConsumer(
                         adapter=adapter, chat_id=ctx.source.chat_id, config=consumer_cfg,
                         metadata=ctx._status_thread_metadata,
@@ -818,7 +828,12 @@ class TurnRunner:
             except Exception as err:
                 logger.debug("Could not set up stream consumer: %s", err)
         # Deltas tee to the stream consumer (when text streaming is on) and to streaming TTS.
-        delta_sinks = [sc for sc in ((stream_consumer if want_stream_deltas else None), stts) if sc is not None]
+        # Strict mode drops the TTS tee entirely: TTS speaks deltas live with no finalize-time
+        # gate of its own, so there is no safe way to un-speak a withheld answer after the fact.
+        delta_sinks = [sc for sc in (
+            (stream_consumer if want_stream_deltas else None),
+            (None if _strict_pre_delivery else stts),
+        ) if sc is not None]
         stream_delta_cb = None
         if delta_sinks:
             def stream_delta_cb(text: str) -> None:
@@ -1129,6 +1144,18 @@ class TurnRunner:
         # Thinking between tool calls is independent of tool_progress mode (Mattermost opts in
         # per platform so global scratch-text doesn't leak into threads).
         agent.thinking_progress = ctx._thinking_enabled
+        # Pre-persist gate (see agent/pre_persist_gate.py, agent/turn_finalizer.py): only wired
+        # in "strict" mode, where a blocked/inconclusive verdict must withhold the answer from
+        # BOTH persistence and delivery. Shadow mode (the default) never sets this — it only
+        # ever records an observation (gateway/run_turn.py's
+        # _run_agent_apply_pre_delivery_gate), matching its documented "never mutate delivery"
+        # contract. None (no gate configured, or shadow mode) keeps every non-gateway caller
+        # and shadow-mode gateway runs completely unaffected.
+        _pdg = getattr(runner, "pre_delivery_gate", None)
+        if _pdg is not None and getattr(runner, "pre_delivery_gate_mode", "shadow") == "strict":
+            agent._pre_persist_gate = lambda final_text: _pdg.evaluate_final_text_sync(final_text, ctx)
+        else:
+            agent._pre_persist_gate = None
         ctx.agent_holder[0] = agent  # interrupt support
         # The titler fires from the turn prologue, so attach the rename lane before the run.
         self._attach_session_title_callback(agent, ctx)

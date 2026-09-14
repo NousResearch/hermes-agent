@@ -7,14 +7,16 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 
 from __future__ import annotations
 
+import contextlib
+import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
 from pathlib import Path
 from typing import Optional
 from typing import TYPE_CHECKING
-import contextlib
 
 if TYPE_CHECKING:
     from hermes_cli.kanban_db import Task
@@ -110,6 +112,44 @@ def _is_managed_scratch_path(p: Path) -> bool:
     return _managed_scratch_path_info(p)[0]
 
 
+def _cleanup_review_workspaces(conn: sqlite3.Connection, task_id: str) -> None:
+    """Remove detached reviewer checkouts recorded for a completed task."""
+    rows = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'review_workspace'",
+        (task_id,),
+    ).fetchall()
+    targets: set[Path] = set()
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"] or "{}")
+            target = Path(payload.get("path") or "").expanduser().resolve(strict=False)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        managed, _board = _managed_scratch_path_info(target)
+        if (
+            not managed
+            or target.parent.name != "reviews"
+            or not target.name.startswith(f"{task_id}-")
+        ):
+            continue
+        targets.add(target)
+
+    for target in targets:
+        if not target.is_dir() or not _is_linked_worktree_checkout(target):
+            continue
+        common = _git(target, "rev-parse", "--path-format=absolute", "--git-common-dir", timeout=10)
+        if common.returncode != 0 or not common.stdout.strip():
+            continue
+        common_dir = Path(common.stdout.strip()).resolve(strict=False)
+        repo_root = common_dir.parent if common_dir.name == ".git" else common_dir
+        removed = _git(repo_root, "worktree", "remove", "--force", str(target), timeout=30)
+        if removed.returncode != 0:
+            _kb._log.warning(
+                "Could not remove review worktree for task %s at %s: %s",
+                task_id, target, removed.stderr.strip(),
+            )
+
+
 def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
     """Remove a task's scratch workspace dir and kill its stale tmux session.
     Called from :func:`complete_task` after the transaction commits; best-effort
@@ -120,6 +160,7 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         row = conn.execute(_WORKSPACE_ROW_SQL, (task_id,)).fetchone()
         if not row:
             return
+        _cleanup_review_workspaces(conn, task_id)
         kind: Optional[str] = row["workspace_kind"]
         path: Optional[str] = row["workspace_path"]
         if kind not in _REMOVABLE_KINDS or not path:
@@ -488,6 +529,63 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
         )
     _ensure_git_worktree(repo_root, requested, branch_name)
     return requested, branch_name
+
+
+def resolve_review_workspace(task: Task, *, board: Optional[str] = None) -> Path:
+    """Return an isolated detached checkout for a Git-backed review run.
+
+    Same-card review retains the implementation workspace on the durable task so
+    a request-changes round returns to the builder's checkout. The reviewer gets
+    a profile-labelled sibling under Kanban-managed storage, reset to the exact
+    committed candidate HEAD. Non-Git artifacts keep their original workspace.
+    """
+    source = resolve_workspace(task, board=board)
+    repo_root = _git_toplevel(source)
+    if repo_root is None:
+        return source
+
+    head = _git(repo_root, "rev-parse", "--verify", "HEAD", timeout=10)
+    if head.returncode != 0 or not head.stdout.strip():
+        raise ValueError(
+            f"task {task.id} review workspace has no resolvable Git HEAD: "
+            f"{head.stderr.strip() or source}"
+        )
+    revision = head.stdout.strip()
+    reviewer = re.sub(r"[^A-Za-z0-9._-]+", "-", task.assignee or "reviewer").strip("-")
+    reviewer = reviewer or "reviewer"
+    target = _kb.workspaces_root(board=board) / "reviews" / f"{task.id}-{reviewer}"
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    if target.exists():
+        if not _is_linked_worktree_checkout(target):
+            raise ValueError(
+                f"refusing to replace non-worktree review workspace for task {task.id}: {target}"
+            )
+        common = _git(
+            target, "rev-parse", "--path-format=absolute", "--git-common-dir", timeout=10
+        )
+        if common.returncode != 0 or not common.stdout.strip():
+            raise ValueError(
+                f"could not resolve existing review worktree for task {task.id}: {target}"
+            )
+        common_dir = Path(common.stdout.strip()).resolve(strict=False)
+        existing_repo = common_dir.parent if common_dir.name == ".git" else common_dir
+        removed = _git(
+            existing_repo, "worktree", "remove", "--force", str(target), timeout=30
+        )
+        if removed.returncode != 0:
+            raise ValueError(
+                f"could not replace review worktree for task {task.id}: "
+                f"{removed.stderr.strip() or target}"
+            )
+
+    added = _git(repo_root, "worktree", "add", "--detach", str(target), revision, timeout=60)
+    if added.returncode != 0:
+        raise ValueError(
+            f"could not create review worktree for task {task.id}: "
+            f"{added.stderr.strip() or target}"
+        )
+    return target.resolve(strict=False)
 
 
 def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:

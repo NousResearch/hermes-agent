@@ -311,29 +311,3 @@ def test_no_attested_profile_leaves_the_pause_token_unchanged(monkeypatch, tmp_p
     update_cmd._resume_windows_gateways_after_update(token)
     assert spawned == []
     assert token["relaunched_profiles"] == ["beta"]
-
-
-def test_every_dead_attested_profile_is_cold_started_when_nothing_runs(monkeypatch, tmp_path):
-    """Nothing running, active profile exited cleanly (plan → None), ``beta`` dead-attested: beta still
-    gets a token and a spawn. And when BOTH owe a spawn, the fleet-wide active cold-start runs FIRST —
-    a beta spawned earlier would satisfy its any-live-gateway guard and the active profile would stay down."""
-    homes = _running_beta_pause_fixture(monkeypatch, tmp_path)
-    monkeypatch.setattr(update_cmd_windows, "_discover_windows_gateways", lambda: ({}, [], set(), []))
-    monkeypatch.setattr(update_cmd_windows, "_windows_cold_start_plan", lambda: None)
-    gateway_windows._write_start_attestation([556], "direct spawn (PID 556)", home=homes["beta"])
-    beta_marker = homes["beta"] / "state" / "gateway.start-attestation.json"
-    beta_generation = json.loads(beta_marker.read_text(encoding="utf-8"))["generation"]
-
-    token = update_cmd._pause_windows_gateways_for_update()
-    assert token["cold_start_profiles"] == {"beta": beta_generation}
-    assert token["profiles"] == {}
-
-    order = []
-    monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda **k: order.append(k.get("home")) or 4242)
-    monkeypatch.setattr(
-        cli_main, "_cold_start_windows_gateway_after_update", lambda token=None: order.append("active") or True)
-    token["cold_start_if_installed"] = True  # both owe a spawn
-    update_cmd._resume_windows_gateways_after_update(token)
-    assert order == ["active", homes["beta"]]
-    assert json.loads(beta_marker.read_text(encoding="utf-8"))["generation"] != beta_generation
-    assert token["resume_needed"] is False

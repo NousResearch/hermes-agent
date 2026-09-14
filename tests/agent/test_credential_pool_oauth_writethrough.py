@@ -170,42 +170,47 @@ def test_global_write_through_preserves_concurrent_root_update(
     assert root["credential_pool"]["openrouter"] == [{"id": "openrouter-existing"}]
 
 
-def test_codex_pool_refresh_holds_root_lock_for_borrowed_grant(profile_and_root, monkeypatch):
-    """Profiles borrowing one root grant serialize its full token rotation on the root lock."""
-    profile_path, root_path = profile_and_root
-    _write_store(profile_path, {"version": 1})
+def test_codex_pool_refresh_serializes_borrowed_grant_across_profiles(tmp_path, monkeypatch):
+    """Two profiles borrowing one root grant spend its refresh token once."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    root_home = tmp_path / "hermes"
+    root_path = root_home / "auth.json"
+    profile_homes = [root_home / "profiles" / name for name in ("first", "waiter")]
+    for profile_home in profile_homes:
+        _write_store(profile_home / "auth.json", {"version": 1})
     row = {
         "id": "codex-root", "label": "root", "auth_type": "oauth", "priority": 0,
-        "source": "device_code", "access_token": "stale-access", "refresh_token": "stale-refresh",
+        "source": "manual:device_code", "access_token": "stale-access", "refresh_token": "stale-refresh",
     }
     _write_store(root_path, {
         "version": 1,
-        "providers": {"openai-codex": {"tokens": {
-            "access_token": "stale-access", "refresh_token": "stale-refresh",
-        }}},
         "credential_pool": {"openai-codex": [row]},
     })
-    monkeypatch.setattr(CP, "_global_auth_file_path", lambda: root_path)
-    real_lock = A._auth_store_lock
-    held_targets = []
+    monkeypatch.setenv("HERMES_HOME", str(root_home))
+    monkeypatch.setenv("HOME", str(tmp_path / "not-the-root"))
+    import hermes_constants
+    hermes_constants._default_hermes_root_memo = None  # type: ignore[attr-defined]
 
-    import contextlib
-
-    @contextlib.contextmanager
-    def tracking_lock(*args, **kwargs):
-        target = kwargs.get("target_path")
-        held_targets.append(target)
+    def load_for(profile_home):
+        token = set_hermes_home_override(profile_home)
         try:
-            with real_lock(*args, **kwargs):
-                yield
+            return load_pool("openai-codex")
         finally:
-            held_targets.pop()
+            reset_hermes_home_override(token)
 
-    monkeypatch.setattr(A, "_auth_store_lock", tracking_lock)
-    monkeypatch.setattr(CP, "_auth_store_lock", tracking_lock)
+    pools = [load_for(profile_home) for profile_home in profile_homes]
+    assert all(pool._borrowed_root_ids == {"codex-root"} for pool in pools)
+
+    post_started = threading.Event()
+    release_post = threading.Event()
+    waiter_started = threading.Event()
+    refresh_calls = []
 
     def refresh(access_token, refresh_token, **kwargs):
-        assert root_path in held_targets
+        refresh_calls.append((access_token, refresh_token))
+        post_started.set()
+        assert release_post.wait(timeout=5)
         return {
             "access_token": "fresh-access",
             "refresh_token": "fresh-refresh",
@@ -214,13 +219,32 @@ def test_codex_pool_refresh_holds_root_lock_for_borrowed_grant(profile_and_root,
 
     monkeypatch.setattr(A, "refresh_codex_oauth_pure", refresh)
     monkeypatch.setattr(auth_codex, "refresh_codex_oauth_pure", refresh)
-    pool = load_pool("openai-codex")
+    results = [None, None]
 
-    refreshed = pool.refresh_matching_api_key("stale-access")
+    def run_refresh(index):
+        token = set_hermes_home_override(profile_homes[index])
+        try:
+            if index == 1:
+                waiter_started.set()
+            results[index] = pools[index].refresh_matching_api_key("stale-access")
+        finally:
+            reset_hermes_home_override(token)
 
-    assert refreshed is not None and refreshed.runtime_api_key == "fresh-access"
+    first = threading.Thread(target=run_refresh, args=(0,))
+    waiter = threading.Thread(target=run_refresh, args=(1,))
+    first.start()
+    assert post_started.wait(timeout=5)
+    waiter.start()
+    assert waiter_started.wait(timeout=5)
+    time.sleep(0.05)
+    release_post.set()
+    first.join(timeout=5)
+    waiter.join(timeout=5)
+
+    assert not first.is_alive() and not waiter.is_alive()
+    assert refresh_calls == [("stale-access", "stale-refresh")]
+    assert all(result is not None and result.runtime_api_key == "fresh-access" for result in results)
     root = _read_store(root_path)
-    assert root["providers"]["openai-codex"]["tokens"]["refresh_token"] == "fresh-refresh"
     assert root["credential_pool"]["openai-codex"][0]["refresh_token"] == "fresh-refresh"
 
 

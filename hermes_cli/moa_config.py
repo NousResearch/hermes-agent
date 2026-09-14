@@ -55,6 +55,28 @@ def _coerce_reference_timeout(value: Any) -> float | None:
     return _coerce_number(value, float, DEFAULT_MOA_REFERENCE_TIMEOUT, positive=True)
 
 
+_DEFAULT_MOA_SAMPLING: dict[str, Any] = {"mode": "all"}
+
+
+def _coerce_sampling(value: Any) -> dict[str, Any]:
+    """Normalize ``sampling`` to ``{"mode": "all"}`` (default, every enabled reference runs) or
+    ``{"mode": "random", "k": N}`` (N >= 1, drawn fresh per fan-out — see ``_select_reference_models``).
+
+    Accepts the mapping form from config.yaml (``{mode: random, k: 2}``); a bare string
+    (``"random"``) defaults k to 1; anything unparseable/invalid falls back to ``all`` so a
+    hand-edited config degrades to today's behavior instead of silently running zero advisors.
+    """
+    if isinstance(value, str):
+        value = {"mode": value}
+    if not isinstance(value, dict):
+        return dict(_DEFAULT_MOA_SAMPLING)
+    mode = str(value.get("mode") or "").strip().lower()
+    if mode != "random":
+        return dict(_DEFAULT_MOA_SAMPLING)
+    k = _coerce_number(value.get("k"), int, 1, positive=True)
+    return {"mode": "random", "k": k}
+
+
 def _coerce_fanout(value: Any) -> str:
     """Normalize the fan-out cadence to ``per_iteration`` | ``user_turn`` | ``every_n:<N>`` (N >= 2);
     the mapping form ``{mode: every_n, n: N}`` becomes the string, ``every_n:1`` collapses to
@@ -229,13 +251,19 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
 
         # "user_turn" (default, cheapest): advisors run ONCE per user turn; "per_iteration": every
         # tool iteration; "every_n:<N>": first iteration of each turn and every Nth after.
-        "fanout": _coerce_fanout(raw.get("fanout"))}
+        "fanout": _coerce_fanout(raw.get("fanout")),
+        # "all" (default): every enabled reference model runs, every fan-out — today's behavior.
+        # "random": draw k enabled references at random per fan-out (re-drawn on each cache MISS,
+        # i.e. once per the configured fanout cadence, not once per tool iteration under
+        # every_n/user_turn caching). Lets a preset hold a large reference pool while keeping
+        # per-turn advisor spend bounded to k calls.
+        "sampling": _coerce_sampling(raw.get("sampling"))}
 
 
 _FLAT_PRESET_KEYS = (
     "reference_models", "aggregator", "reference_temperature", "aggregator_temperature",
     "reference_timeout", "degraded_reference_policy",
-    "fanout", "enabled")
+    "fanout", "sampling", "enabled")
 
 
 # When the reference fan-out runs. "user_turn" (default) runs the advisors ONCE per user turn (the original

@@ -179,3 +179,40 @@ def test_validate_moa_payload_agrees_with_clean_slot():
 
 
 
+
+
+# --- sampling normalization (random reference selection) ---
+
+
+def test_coerce_sampling_defaults_to_all():
+    from hermes_cli.moa_config import _coerce_sampling
+
+    assert _coerce_sampling(None) == {"mode": "all"}
+    assert _coerce_sampling({}) == {"mode": "all"}
+    assert _coerce_sampling("bogus") == {"mode": "all"}
+    assert _coerce_sampling({"mode": "bogus"}) == {"mode": "all"}
+
+
+def test_coerce_sampling_random_mode():
+    from hermes_cli.moa_config import _coerce_sampling
+
+    assert _coerce_sampling({"mode": "random", "k": 2}) == {"mode": "random", "k": 2}
+    # Bare string defaults k to 1.
+    assert _coerce_sampling("random") == {"mode": "random", "k": 1}
+    # Non-positive/invalid k falls back to 1, not "all" (mode: random is still honored).
+    assert _coerce_sampling({"mode": "random", "k": 0}) == {"mode": "random", "k": 1}
+    assert _coerce_sampling({"mode": "random", "k": "not-a-number"}) == {"mode": "random", "k": 1}
+
+
+def test_normalize_preset_includes_sampling_default():
+    cfg = normalize_moa_config({"reference_models": DEFAULT_MOA_REFERENCE_MODELS})
+    assert cfg["presets"][DEFAULT_MOA_PRESET_NAME]["sampling"] == {"mode": "all"}
+
+
+def test_normalize_preset_preserves_random_sampling():
+    payload = {
+        "reference_models": DEFAULT_MOA_REFERENCE_MODELS,
+        "sampling": {"mode": "random", "k": 1},
+    }
+    cfg = normalize_moa_config(payload)
+    assert cfg["presets"][DEFAULT_MOA_PRESET_NAME]["sampling"] == {"mode": "random", "k": 1}

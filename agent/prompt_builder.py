@@ -1089,8 +1089,10 @@ def clear_skills_system_prompt_cache(*, clear_snapshot: bool = False) -> None:
 
 
 def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
-    """mtime/size manifest of every SKILL.md and DESCRIPTION.md; only the ACTIVE org mirror participates, and
+    """File-signature manifest of every SKILL.md and DESCRIPTION.md; only the ACTIVE org mirror participates, and
     the ``.active_org`` marker is included so switching/leaving an org invalidates the snapshot by itself."""
+    from hermes_cli.managed_scope import file_signature
+
     manifest: dict[str, list[int]] = {}
     skills_dir_str = str(skills_dir)
     prefix_len = len(os.path.join(skills_dir_str, ""))
@@ -1098,7 +1100,7 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
     org_root = os.path.join(skills_dir_str, ORG_MIRROR_DIR_NAME)
     try:
         st = os.stat(os.path.join(org_root, ORG_ACTIVE_MARKER))
-        manifest[ORG_MIRROR_DIR_NAME + "/" + ORG_ACTIVE_MARKER] = [int(st.st_mtime), int(st.st_size)]
+        manifest[ORG_MIRROR_DIR_NAME + "/" + ORG_ACTIVE_MARKER] = list(file_signature(st))
     except OSError:
         pass
     for root, dirs, files in os.walk(skills_dir_str, followlinks=True):
@@ -1113,7 +1115,7 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
             try:
                 if filename in files:
                     st = os.stat(path)
-                    manifest[path[prefix_len:]] = [st.st_mtime_ns, st.st_size]
+                    manifest[path[prefix_len:]] = list(file_signature(st))
             except OSError:
                 pass
     return manifest

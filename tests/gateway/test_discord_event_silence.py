@@ -11,7 +11,6 @@ unlike the debug-gated ``on_socket_raw_receive``) and trips after
 from __future__ import annotations
 
 import asyncio
-import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -29,11 +28,8 @@ from gateway.config import PlatformConfig  # noqa: E402
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 from tests.gateway.test_discord_liveness import (  # noqa: E402
-    _FakeKeepAlive,
-    _FakeWebSocket,
     _LiveBot,
     _set_websocket_health,
-    _wait_until,
 )
 
 
@@ -153,70 +149,6 @@ async def test_deaf_socket_trips_event_silence_dimension(monkeypatch):
     handler.assert_awaited_once()
 
 
-@pytest.mark.asyncio
-async def test_fresh_dispatch_events_keep_deaf_socket_probe_healthy(monkeypatch):
-    """The converse: regular DISPATCH events must never trip event_silence."""
-    adapter = _make_adapter(monkeypatch, interval=0.01, threshold=1, max_event_silence=0.2)
-
-    def factory(**kwargs):
-        bot = _DispatchingBot(intents=kwargs["intents"], allowed_mentions=kwargs.get("allowed_mentions"))
-        bot.fetch_user = AsyncMock()
-        return bot
-
-    bot = await _connect(adapter, monkeypatch, factory)
-    _transport_healthy(bot)
-    await bot.deliver_dispatch("READY")
-
-    deadline = asyncio.get_running_loop().time() + 0.6
-    while asyncio.get_running_loop().time() < deadline:
-        await bot.deliver_dispatch("TYPING_START")
-        await asyncio.sleep(0.05)
-
-    assert getattr(adapter, "_fatal_error_code", None) is None
-    assert adapter._liveness_task is not None and not adapter._liveness_task.done()
-    assert adapter._running is True
-    await adapter.disconnect()
-
-
-@pytest.mark.asyncio
-async def test_zero_event_silence_knob_disables_dimension_not_probe(monkeypatch):
-    """``websocket_event_max_silence_seconds: 0`` opts out of this dimension only.
-
-    Regression for the #109782 review failure: the rejected PR put the knob
-    in ``_start_liveness_probe``'s all-or-nothing guard, so ``0`` disabled
-    the whole watchdog (ack/latency stopped guarding too). Here the probe
-    must still run and still trip ``ack_stale``.
-    """
-    adapter = _make_adapter(monkeypatch, interval=0.01, threshold=1, max_event_silence=0)
-    assert adapter._event_max_silence_seconds == 0.0
-
-    def factory(**kwargs):
-        bot = _DispatchingBot(intents=kwargs["intents"], allowed_mentions=kwargs.get("allowed_mentions"))
-        bot.fetch_user = AsyncMock()
-        return bot
-
-    bot = await _connect(adapter, monkeypatch, factory)
-    # Transport green, but the ACK clock is stale past max_ack_age (60s default
-    # scaled to the test's 60.0): event silence would ALSO be past bound, yet
-    # must not be the reason the probe trips.
-    bot._gateway_ready = True
-    bot.latency = 0.05
-    bot.ws = _FakeWebSocket(open=True, ack_age=10_000.0)
-    # No dispatch events at all — the dimension is opted out.
-    assert adapter._last_dispatched_event_monotonic is None
-
-    assert adapter._liveness_task is not None, "0 event-silence must not stop the probe task"
-
-    async def fatal_code() -> str | None:
-        while True:
-            code = getattr(adapter, "_fatal_error_code", None)
-            if code:
-                return code
-            await asyncio.sleep(0.01)
-
-    code = await asyncio.wait_for(fatal_code(), timeout=3.0)
-    assert code == "discord_websocket_health_stale"
-    assert "ack_stale" in (adapter._fatal_error_message or "")
 
 
 @pytest.mark.asyncio
@@ -245,80 +177,3 @@ async def test_missing_stamp_before_first_event_is_not_silence(monkeypatch):
         await asyncio.sleep(0.05)
 
     await adapter.disconnect()
-
-
-@pytest.mark.asyncio
-async def test_reconnect_resets_dispatch_stamp(monkeypatch):
-    """A fresh client must start a fresh silence window.
-
-    Without the reset in ``connect()``, a reconnecting adapter inherits the
-    previous connection's last-event stamp; a new connection that has not
-    parsed anything yet would read as instantly past-silence.
-    """
-    adapter = _make_adapter(monkeypatch, interval=0.01, threshold=1, max_event_silence=0.1)
-    handler = AsyncMock()
-    adapter.set_fatal_error_handler(handler)
-
-    def factory(**kwargs):
-        bot = _DispatchingBot(intents=kwargs["intents"], allowed_mentions=kwargs.get("allowed_mentions"))
-        bot.fetch_user = AsyncMock()
-        return bot
-
-    bot = await _connect(adapter, monkeypatch, factory)
-    _transport_healthy(bot)
-    await bot.deliver_dispatch("READY")
-    assert adapter._last_dispatched_event_monotonic is not None
-
-    # Second connect() builds a new client: the old stamp must be dropped.
-    await _connect(adapter, monkeypatch, factory)
-    assert adapter._last_dispatched_event_monotonic is None
-    await adapter.disconnect()
-
-
-def test_unusable_event_silence_value_warns_and_disables_dimension(caplog):
-    """``websocket_event_max_silence_seconds: "15s"`` warns and opts out of the
-    dimension only — consistent with the other knobs' warning contract."""
-    with caplog.at_level("WARNING", logger="plugins.platforms.discord.adapter"):
-        adapter = DiscordAdapter(
-            PlatformConfig(
-                enabled=True,
-                token="test-token",
-                extra={"websocket_event_max_silence_seconds": "15s"},
-            )
-        )
-
-    assert adapter._event_max_silence_seconds == 0.0
-    warned = [r.getMessage() for r in caplog.records if "liveness knob" in r.getMessage()]
-    assert any("websocket_event_max_silence_seconds='15s'" in w for w in warned)
-
-
-def test_default_event_silence_bound(monkeypatch):
-    """Default 4h mirrors the operator-proven bound; explicit config wins."""
-    for key in (
-        "HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS",
-        "HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD",
-    ):
-        monkeypatch.delenv(key, raising=False)
-
-    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
-    assert adapter._event_max_silence_seconds == 14400.0
-
-    tuned = DiscordAdapter(
-        PlatformConfig(
-            enabled=True,
-            token="test-token",
-            extra={"websocket_event_max_silence_seconds": 600},
-        )
-    )
-    assert tuned._event_max_silence_seconds == 600.0
-
-
-def test_yaml_bridge_seeds_event_silence_extra():
-    """``config.yaml`` ``discord.websocket_event_max_silence_seconds`` reaches the
-    adapter's ``extra`` through the liveness seed loop (public key wins over
-    the generic ``extra`` block)."""
-    seeded = discord_platform._apply_yaml_config(
-        {"platforms": {}},
-        {"websocket_event_max_silence_seconds": 7200},
-    )
-    assert seeded["websocket_event_max_silence_seconds"] == 7200

@@ -135,14 +135,16 @@ def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_dependency_block_routes_to_todo(kanban_home: Path) -> None:
-    """Dependency waits never enter the human 'blocked' bucket."""
+def test_dependency_block_without_pending_parent_fails_closed(kanban_home: Path) -> None:
+    """An unbound dependency cannot immediately re-run on identical state."""
     with kb.connect_closing() as conn:
         tid = _running_task(conn)
         assert kb.block_task(conn, tid, reason="need X first", kind="dependency")
         t = kb.get_task(conn, tid)
-        assert t.status == "todo"
+        assert t.status == "blocked"
         assert t.block_kind == "dependency"
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, tid).status == "blocked"
 
 
 def test_dependency_then_parent_done_promotes(kanban_home: Path) -> None:

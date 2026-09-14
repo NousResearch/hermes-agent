@@ -248,6 +248,105 @@ def test_new_comment_gets_new_successor(kanban_home: Path) -> None:
         assert second.recovered[0][1] != first.recovered[0][1]
 
 
+def test_same_finding_text_with_new_comment_is_idempotent(kanban_home: Path) -> None:
+    """Finding identity is content-based, not tied to a new comment row id."""
+    with kb.connect_closing() as conn:
+        tid = _blocked_task(
+            conn, title="same finding", comment="review-required: Missing guard",
+        )
+        first = kb.recover_blocked_tasks(conn)
+        assert len(first.recovered) == 1
+
+        kb.add_comment(
+            conn, tid, author="reviewer",
+            body="  REVIEW-REQUIRED:   missing   guard  ",
+        )
+        second = kb.recover_blocked_tasks(conn)
+
+        assert second.recovered == []
+        assert second.skipped_idempotent == [tid]
+        successors = conn.execute(
+            "SELECT id FROM tasks WHERE created_by = 'recovery-queue'"
+        ).fetchall()
+        assert len(successors) == 1
+
+
+def test_dependency_review_remediation_cycle(kanban_home: Path) -> None:
+    """Reviewer waits for one fixer task, then wakes exactly once after it completes."""
+    with kb.connect_closing() as conn:
+        review_id = kb.create_task(
+            conn,
+            title="Review change",
+            assignee="reviewer",
+            classification="review",
+        )
+        assert kb.claim_task(conn, review_id, claimer="reviewer") is not None
+        assert kb.block_task(
+            conn,
+            review_id,
+            reason="finding: missing null guard",
+            kind="dependency",
+        )
+        assert kb.get_task(conn, review_id).status == "blocked"
+
+        first = kb.recover_blocked_tasks(conn, fixer_assignee="implementer")
+        assert len(first.recovered) == 1
+        source_id, remediation_id = first.recovered[0]
+        assert source_id == review_id
+        remediation = kb.get_task(conn, remediation_id)
+        assert remediation is not None
+        assert remediation.assignee == "implementer"
+        assert remediation.classification == "remediation"
+        assert remediation.status == "ready"
+        assert kb.get_task(conn, review_id).status == "todo"
+        assert conn.execute(
+            "SELECT 1 FROM task_links WHERE parent_id = ? AND child_id = ?",
+            (remediation_id, review_id),
+        ).fetchone() is not None
+
+        # Further dispatcher/recovery passes cannot wake the review or fan out
+        # another remediation while the fixer has not completed.
+        assert kb.recompute_ready(conn) == 0
+        second = kb.recover_blocked_tasks(conn, fixer_assignee="implementer")
+        assert second.recovered == []
+        assert kb.get_task(conn, review_id).status == "todo"
+
+        assert kb.claim_task(conn, remediation_id, claimer="implementer") is not None
+        assert kb.complete_task(conn, remediation_id, result="fixed")
+        assert kb.get_task(conn, review_id).status == "ready"
+
+        # Promotion is edge-triggered: another recompute has nothing to do.
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, review_id).status == "ready"
+
+
+def test_dispatch_routes_dependency_when_generic_recovery_is_disabled(
+    kanban_home: Path,
+) -> None:
+    """Dependency remediation is autonomous, not gated by generic recovery."""
+    with kb.connect_closing() as conn:
+        review_id = kb.create_task(
+            conn, title="Review", assignee="reviewer", classification="review",
+        )
+        assert kb.claim_task(conn, review_id, claimer="reviewer") is not None
+        assert kb.block_task(
+            conn, review_id, reason="finding: stale output", kind="dependency",
+        )
+
+        result = kb.dispatch_once(
+            conn,
+            max_spawn=0,
+            recovery_queue_enabled=False,
+            recovery_fixer_assignee="configured-fixer",
+        )
+
+        assert result.recovery is not None
+        assert len(result.recovery.recovered) == 1
+        _, remediation_id = result.recovery.recovered[0]
+        assert kb.get_task(conn, remediation_id).assignee == "configured-fixer"
+        assert kb.get_task(conn, review_id).status == "todo"
+
+
 # ---------------------------------------------------------------------------
 # Per-tick cap
 # ---------------------------------------------------------------------------

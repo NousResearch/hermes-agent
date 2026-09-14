@@ -2643,6 +2643,10 @@ DEFAULT_CONFIG = {
         # assignee to any installed profile. When unset, falls back to the
         # default profile. A task never ends up with assignee=None.
         "default_assignee": "",
+        # Profile that fixes findings raised by review tasks blocked on an
+        # unbound dependency. Empty falls back to default_assignee, then the
+        # sticky active profile; it never inherits the reviewer's assignee.
+        "recovery_fixer_assignee": "",
         # Per-profile concurrency cap (#21582). When set to a positive int,
         # no single profile can have more than N workers running at once,
         # even if the global max_in_progress / max_spawn caps would allow

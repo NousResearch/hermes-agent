@@ -920,6 +920,25 @@ class GatewayKanbanWatchersMixin:
                 default_assignee,
             )
 
+        # Dependency findings are routed to a fixer profile, never implicitly
+        # back to the reviewer that raised them. Operators can pin a specialist;
+        # otherwise reuse the dispatcher fallback, then the sticky active
+        # profile. This guarantees a route while remaining configurable.
+        recovery_fixer_assignee = (
+            (kanban_cfg.get("recovery_fixer_assignee") or "").strip()
+            or default_assignee
+        )
+        if not recovery_fixer_assignee:
+            try:
+                from hermes_cli.profiles import get_active_profile
+                recovery_fixer_assignee = get_active_profile()
+            except Exception:
+                recovery_fixer_assignee = "default"
+        logger.info(
+            "kanban dispatcher: dependency remediation fixer=%r",
+            recovery_fixer_assignee,
+        )
+
         # Read kanban.max_in_progress_per_profile — per-profile concurrency
         # cap (#21582). When set, no single profile gets more than N
         # workers running at once, even if the global max_in_progress
@@ -1044,6 +1063,7 @@ class GatewayKanbanWatchersMixin:
                     max_in_progress_per_profile=max_in_progress_per_profile,
                     recovery_queue_enabled=recovery_queue_enabled,
                     recovery_queue_per_tick=recovery_queue_per_tick,
+                    recovery_fixer_assignee=recovery_fixer_assignee,
                 )
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):

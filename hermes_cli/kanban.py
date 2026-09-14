@@ -2132,6 +2132,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         _cfg = load_config()
         _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
         default_assignee = (_kanban_cfg.get("default_assignee") or "").strip() or None
+        recovery_fixer_assignee = (
+            (_kanban_cfg.get("recovery_fixer_assignee") or "").strip()
+            or default_assignee
+        )
 
         def _coerce_positive_int(value):
             if value is None:
@@ -2154,6 +2158,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         )
     except Exception:
         default_assignee = None
+        recovery_fixer_assignee = None
         max_in_progress_per_profile = None
         max_in_progress = None
         max_spawn = getattr(args, "max", None)
@@ -2166,6 +2171,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            recovery_fixer_assignee=recovery_fixer_assignee,
         )
     if getattr(args, "json", False):
         print(json.dumps({

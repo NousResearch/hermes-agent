@@ -3399,12 +3399,18 @@ def recompute_ready(
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
+            "SELECT id, status, consecutive_failures, max_retries, block_kind "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
+            if cur_status == "blocked" and row["block_kind"] == "dependency":
+                # A dependency block with no pending parent is deliberately
+                # parked fail-closed until the recovery queue attaches a
+                # remediation successor as its new parent. Promoting it here
+                # would re-run the same reviewer against unchanged state.
+                continue
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Worker / operator asked for human review — do not
                 # silently auto-recover.  ``unblock_task`` is the only
@@ -4679,15 +4685,26 @@ def block_task(
             else 0
         )
 
-        # Dependency blocks never enter the human ``blocked`` bucket — they
-        # wait in ``todo`` and let ``recompute_ready`` gate on parents. Routing
-        # here (rather than ``blocked``) is what keeps a cron from ever seeing
-        # a dependency-wait as something to "unblock".
+        # A real dependency (at least one unfinished parent) waits in ``todo``
+        # and lets ``recompute_ready`` wake it when that parent completes. An
+        # unbound dependency (no unfinished parent) must fail closed in
+        # ``blocked``: putting it in ``todo`` would promote it on the very next
+        # recompute and re-run a reviewer against identical state forever. The
+        # recovery queue will create one idempotent remediation successor,
+        # attach it as a parent, then move this task to ``todo``.
         if kind == "dependency":
+            pending_parent = conn.execute(
+                "SELECT 1 FROM task_links l "
+                "JOIN tasks p ON p.id = l.parent_id "
+                "WHERE l.child_id = ? "
+                "AND p.status NOT IN ('done', 'archived') LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            dependency_status = "todo" if pending_parent else "blocked"
             cur = conn.execute(
                 """
                 UPDATE tasks
-                   SET status        = 'todo',
+                   SET status        = ?,
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL,
@@ -4695,8 +4712,8 @@ def block_task(
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
-                (kind, task_id) if expected_run_id is None
-                else (kind, task_id, int(expected_run_id)),
+                (dependency_status, kind, task_id) if expected_run_id is None
+                else (dependency_status, kind, task_id, int(expected_run_id)),
             )
             if cur.rowcount != 1:
                 return False
@@ -4711,9 +4728,15 @@ def block_task(
                 )
             _append_event(
                 conn, task_id, "dependency_wait",
-                {"reason": reason, "kind": kind}, run_id=run_id,
+                {
+                    "reason": reason,
+                    "kind": kind,
+                    "route": dependency_status,
+                    "pending_parent": bool(pending_parent),
+                },
+                run_id=run_id,
             )
-            routed_to = "todo"
+            routed_to = dependency_status
             _blocked_task = get_task(conn, task_id)
             _fire_kanban_lifecycle_hook(
                 "kanban_task_blocked",
@@ -7067,6 +7090,7 @@ def dispatch_once(
     max_in_progress_per_profile: Optional[int] = None,
     recovery_queue_enabled: bool = False,
     recovery_queue_per_tick: int = 3,
+    recovery_fixer_assignee: Optional[str] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -7103,6 +7127,7 @@ def dispatch_once(
             max_in_progress_per_profile=max_in_progress_per_profile,
             recovery_queue_enabled=recovery_queue_enabled,
             recovery_queue_per_tick=recovery_queue_per_tick,
+            recovery_fixer_assignee=recovery_fixer_assignee,
         )
     with _dispatch_tick_lock(db_path) as held:
         if not held:
@@ -7121,6 +7146,7 @@ def dispatch_once(
             max_in_progress_per_profile=max_in_progress_per_profile,
             recovery_queue_enabled=recovery_queue_enabled,
             recovery_queue_per_tick=recovery_queue_per_tick,
+            recovery_fixer_assignee=recovery_fixer_assignee,
         )
 
 
@@ -7139,6 +7165,7 @@ def _dispatch_once_locked(
     max_in_progress_per_profile: Optional[int] = None,
     recovery_queue_enabled: bool = False,
     recovery_queue_per_tick: int = 3,
+    recovery_fixer_assignee: Optional[str] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -7197,10 +7224,26 @@ def _dispatch_once_locked(
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
-    # Recovery queue: create ready successors for eligible blocked tasks.
-    if recovery_queue_enabled and not dry_run:
+    resolved_fixer = (
+        (recovery_fixer_assignee or "").strip()
+        or (default_assignee or "").strip()
+        or None
+    )
+    if not resolved_fixer:
+        try:
+            from hermes_cli.profiles import get_active_profile
+            resolved_fixer = get_active_profile()
+        except Exception:
+            resolved_fixer = "default"
+
+    # Unbound dependency waits always need an explicit remediation edge; the
+    # historical generic recovery lane remains opt-in.
+    if not dry_run:
         result.recovery = recover_blocked_tasks(
-            conn, max_per_tick=recovery_queue_per_tick,
+            conn,
+            max_per_tick=recovery_queue_per_tick,
+            fixer_assignee=resolved_fixer,
+            include_generic=recovery_queue_enabled,
         )
 
     # Count tasks already running so max_spawn enforces concurrency rather
@@ -8948,12 +8991,22 @@ class RecoveryResult:
     """Source task ids skipped because of a safety marker."""
     skipped_idempotent: list[str] = field(default_factory=list)
     """Source task ids skipped because the idempotency key already exists."""
+    skipped_unroutable: list[str] = field(default_factory=list)
+    """Dependency task ids skipped because no fixer profile was resolved."""
+
+
+def _recovery_finding_fingerprint(finding: str) -> str:
+    """Return a stable fingerprint for semantically identical finding text."""
+    normalized = " ".join((finding or "").casefold().split())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
 
 
 def recover_blocked_tasks(
     conn: sqlite3.Connection,
     *,
     max_per_tick: int = 3,
+    fixer_assignee: Optional[str] = None,
+    include_generic: bool = True,
 ) -> RecoveryResult:
     """Recover eligible blocked tasks by creating ready successor tasks.
 
@@ -8967,8 +9020,10 @@ def recover_blocked_tasks(
 
     1. Task is in ``status='blocked'``.
     2. Either:
-       a. ``block_kind='transient'``, OR
-       b. The latest comment body contains one of the review-fix markers
+       a. ``block_kind='dependency'`` with no pending parent (parked by
+          :func:`block_task` for remediation), OR
+       b. ``block_kind='transient'``, OR
+       c. The latest comment body contains one of the review-fix markers
           (``review-required``, ``needs_fix``, ``verdict=needs_fix``).
        All review-marker matching is **case-insensitive**.
     3. **No** recent comment body contains any safety-skip marker
@@ -8979,10 +9034,12 @@ def recover_blocked_tasks(
 
     For each eligible task, create an unparented ready successor task
     via :func:`create_task`:
-    - Title: ``"Recovery: <original title>"``
+    - Title: ``"Recovery: <original title>"`` (or ``"Remediation: ..."``
+      for an unbound dependency)
     - Body: source task id + latest comment/reason
-    - Assignee: same as original
-    - Idempotency key: ``"recovery:<source_id>:<comment_id>"``
+    - Assignee: same as original for generic recovery; resolved fixer profile
+      for dependency remediation
+    - Idempotency key: ``"recovery:<source_id>:<finding_fingerprint>"``
     - Audit events on both source and successor (skipped when
       ``create_task`` returns an existing idempotency-key match)
 
@@ -9006,6 +9063,7 @@ def recover_blocked_tasks(
 
         source_id = row["id"]
         block_kind = (row["block_kind"] or "").lower()
+        is_dependency = block_kind == "dependency"
 
         # Safety: skip forbidden block_kinds
         if block_kind in _RECOVERY_SAFETY_SKIP_BLOCK_KINDS:
@@ -9030,37 +9088,76 @@ def recover_blocked_tasks(
             result.skipped_safety.append(source_id)
             continue
 
-        # Use latest comment for review-marker eligibility + idempotency key
+        # Use latest comment for review-marker eligibility.
         latest_comment = all_comments[0] if all_comments else None
-        comment_id: int = 0
         comment_body: str = ""
         if latest_comment:
-            comment_id = latest_comment["id"]
             comment_body = latest_comment["body"] or ""
 
-        # Eligibility: transient block_kind OR review-fix marker in
-        # latest comment (case-insensitive)
+        # Unbound dependency waits always need remediation. Generic
+        # review/transient recovery remains separately gateable so the
+        # dispatcher preserves its historical opt-in behavior for those lanes.
         comment_body_lower = comment_body.lower()
         has_review_marker = any(
             marker in comment_body_lower for marker in _RECOVERY_REVIEW_MARKERS
         )
         is_transient = block_kind == "transient"
 
-        if not is_transient and not has_review_marker:
+        if not is_dependency and (
+            not include_generic or (not is_transient and not has_review_marker)
+        ):
             continue  # not eligible
 
-        # Idempotency key: derived from source id + latest comment id
-        idemp_key = f"recovery:{source_id}:{comment_id}"
+        blocking_event = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? "
+            "AND kind IN ('dependency_wait', 'blocked', 'block_loop_detected') "
+            "ORDER BY id DESC LIMIT 1",
+            (source_id,),
+        ).fetchone()
+        blocking_reason = ""
+        if blocking_event:
+            try:
+                blocking_reason = str(
+                    json.loads(blocking_event["payload"] or "{}").get("reason") or ""
+                )
+            except (TypeError, ValueError):
+                blocking_reason = ""
+
+        # Dependency findings come from kanban_block(reason=...), while the
+        # legacy review queue uses its latest marker comment. Content identity,
+        # rather than the comment row id, prevents duplicate remediation fanout.
+        finding = (
+            (blocking_reason or comment_body or "dependency")
+            if is_dependency
+            else (comment_body or blocking_reason or block_kind or "blocked")
+        )
+        fingerprint = _recovery_finding_fingerprint(finding)
+        idemp_key = f"recovery:{source_id}:{fingerprint}"
 
         # Build successor task fields
         original_title = row["title"] or "untitled"
-        successor_title = f"Recovery: {original_title}"
-        reason = comment_body if comment_body else (block_kind or "blocked")
-        successor_body = (
-            f"Auto-recovered from blocked task {source_id}.\n"
-            f"Reason: {reason}"
+        successor_title = (
+            f"Remediation: {original_title}"
+            if is_dependency
+            else f"Recovery: {original_title}"
         )
-        assignee = row["assignee"]
+        reason = finding
+        successor_body = (
+            f"Auto-remediation required by blocked task {source_id}.\n"
+            f"Finding: {reason}"
+            if is_dependency
+            else (
+                f"Auto-recovered from blocked task {source_id}.\n"
+                f"Reason: {reason}"
+            )
+        )
+        # Dependency remediation must not silently assume that the reviewer
+        # should fix its own finding. The dispatcher passes a configured fixer
+        # (with a profile fallback); absent that route, leave the source blocked.
+        assignee = fixer_assignee if is_dependency else row["assignee"]
+        if not assignee:
+            result.skipped_unroutable.append(source_id)
+            continue
 
         # Create the successor task via the public API — respects all
         # schema fields, validation, normalisation, and the "created"
@@ -9075,6 +9172,7 @@ def recover_blocked_tasks(
             created_by="recovery-queue",
             idempotency_key=idemp_key,
             initial_status="ready",
+            classification="remediation" if is_dependency else "task",
         )
 
         # Atomically check-then-emit audit events inside a single
@@ -9110,12 +9208,37 @@ def recover_blocked_tasks(
                 result.skipped_idempotent.append(source_id)
                 continue
 
+            if is_dependency:
+                # The remediation is a real prerequisite, not advisory text.
+                # Link it before releasing the review so recompute_ready can
+                # never observe a runnable review against unchanged state.
+                conn.execute(
+                    "INSERT OR IGNORE INTO task_links (parent_id, child_id) "
+                    "VALUES (?, ?)",
+                    (successor_id, source_id),
+                )
+                released = conn.execute(
+                    "UPDATE tasks SET status = 'todo' "
+                    "WHERE id = ? AND status = 'blocked' "
+                    "AND block_kind = 'dependency'",
+                    (source_id,),
+                )
+                if released.rowcount != 1:
+                    # State changed under us. Remove the edge and fail closed;
+                    # do not claim a recovery dispatch for stale source state.
+                    conn.execute(
+                        "DELETE FROM task_links WHERE parent_id = ? AND child_id = ?",
+                        (successor_id, source_id),
+                    )
+                    continue
+
             _append_event(
                 conn, source_id, "recovery_dispatched",
                 {
                     "successor_id": successor_id,
                     "reason": reason[:500],
                     "idempotency_key": idemp_key,
+                    "finding_fingerprint": fingerprint,
                 },
             )
             _append_event(
@@ -9123,6 +9246,7 @@ def recover_blocked_tasks(
                 {
                     "source_id": source_id,
                     "reason": reason[:500],
+                    "finding_fingerprint": fingerprint,
                 },
             )
 

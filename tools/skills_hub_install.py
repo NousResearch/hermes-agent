@@ -272,6 +272,19 @@ def check_for_skill_updates(
     for entry in installed:
         identifier, source_name = entry.get("identifier", ""), entry.get("source", "")
         row = {"name": entry.get("name", ""), "identifier": identifier, "source": source_name}
+        try:
+            install_dir = _resolve_lock_install_path(
+                entry.get("install_path", ""), entry.get("name", "skill"))
+            orphaned = not install_dir.is_dir()
+        except (ValueError, OSError, RuntimeError):
+            results.append({**row, "status": "invalid_install"})
+            continue
+        if orphaned:
+            # The lock-file entry points at a directory that is gone: the fetched
+            # bundle could never be applied, so skip the network cost entirely
+            # instead of re-paying it on every update run (#104291).
+            results.append({**row, "status": "orphaned"})
+            continue
         bundle = None
         for src in filter(lambda s: _source_matches(s, source_name), sources):
             try:

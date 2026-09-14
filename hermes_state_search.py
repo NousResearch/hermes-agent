@@ -12,16 +12,24 @@ import time
 from typing import Any, Callable, Collection, Dict, List, Optional, Tuple
 
 from agent.skill_commands import describe_skill_invocation
-from utils import env_float
 from hermes_state_common import (
     FTS_CJK_STALE_KEY, FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS,
     FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, FTS_TRIGRAM_EXCLUDED_SOURCES, FTS_TRIGRAM_SQL,
     MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION, _FTS_CJK_TRIGGERS,
-    escape_like as _escape_like, fts_rebuild_admission, fts_trigram_session_sql,
+    escape_like as _escape_like, fts_rebuild_admission, fts_trigram_session_sql, routed_sessions_setting,
 )
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")
+
+
+def _search_slow_ms() -> float:
+    """``sessions.search_slow_ms`` for the served profile (default 1000; 0 logs every call)."""
+    value = routed_sessions_setting("search_slow_ms", "HERMES_SEARCH_SLOW_MS")
+    try:
+        return 1000.0 if value is None or str(value).strip() == "" else float(value)
+    except (TypeError, ValueError):
+        return 1000.0
 
 # Characters FTS5's query grammar rejects outside a quoted phrase (anything missing
 # reaches MATCH raw and raises -> zero results). ``%`` is deliberately excluded: the
@@ -47,37 +55,21 @@ _LIKE_COALESCED_COLUMN_SQL = (
 )
 # ``sort`` -> ORDER BY for the FTS routes; unknown values are rank-only (user input passes through).
 _FTS_ORDER_BY = {"newest": "ORDER BY m.timestamp DESC, rank", "oldest": "ORDER BY m.timestamp ASC, rank"}
-# One row before + the hit + one row after, in (timestamp, id) order.
+# Indexed neighbor seeks avoid scanning whole sessions for a sparse set of hits.
 _CONTEXT_WINDOW_SQL = """WITH target AS (
-                               SELECT session_id, timestamp, id
-                               FROM messages
-                               WHERE id = ?
-                           )
-                           SELECT role, content
-                           FROM (
-                               SELECT m.id, m.timestamp, m.role, m.content
-                               FROM messages m
-                               JOIN target t ON t.session_id = m.session_id
-                               WHERE (m.timestamp < t.timestamp)
-                                  OR (m.timestamp = t.timestamp AND m.id < t.id)
-                               ORDER BY m.timestamp DESC, m.id DESC
-                               LIMIT 1
-                           )
-                           UNION ALL
-                           SELECT role, content
-                           FROM messages
-                           WHERE id = ?
-                           UNION ALL
-                           SELECT role, content
-                           FROM (
-                               SELECT m.id, m.timestamp, m.role, m.content
-                               FROM messages m
-                               JOIN target t ON t.session_id = m.session_id
-                               WHERE (m.timestamp > t.timestamp)
-                                  OR (m.timestamp = t.timestamp AND m.id > t.id)
-                               ORDER BY m.timestamp ASC, m.id ASC
-                               LIMIT 1
-                           )"""
+    SELECT session_id, timestamp, id FROM messages WHERE id IN ({ids})
+)
+SELECT t.id AS match_id, m.role, m.content
+FROM target t JOIN messages m ON m.id IN (
+    t.id,
+    (SELECT p.id FROM messages p
+     WHERE p.session_id = t.session_id AND (p.timestamp, p.id) < (t.timestamp, t.id)
+     ORDER BY p.timestamp DESC, p.id DESC LIMIT 1),
+    (SELECT n.id FROM messages n
+     WHERE n.session_id = t.session_id AND (n.timestamp, n.id) > (t.timestamp, t.id)
+     ORDER BY n.timestamp, n.id LIMIT 1)
+)
+ORDER BY t.id, m.timestamp, m.id"""
 # Unified Ideographs, Extension A, Extension B, CJK Symbols, Hiragana, Katakana, Hangul Syllables.
 _CJK_RANGES = (
     (0x4E00, 0x9FFF), (0x3400, 0x4DBF), (0x20000, 0x2A6DF), (0x3000, 0x303F), (0x3040, 0x309F),
@@ -151,6 +143,8 @@ def _search_filter_clauses(
     rewind/undo rows (active=0, compacted=0) are hidden."""
     if not include_inactive:
         where.append("(m.active = 1 OR m.compacted = 1)")
+    # display_kind="hidden" rows are model-facing scaffolding the person never saw; a hit would confuse.
+    where.append("COALESCE(m.display_kind, '') <> 'hidden'")
     if source_filter is not None:
         where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
         params.extend(source_filter)
@@ -544,7 +538,13 @@ class SessionSearchMixin:
                 for row in conn.execute(
                     "SELECT name FROM sqlite_master WHERE type = 'table' "
                     "AND (name LIKE 'messages_fts_%' ESCAPE '\\' "
-                    "OR name LIKE 'messages_fts_trigram_%' ESCAPE '\\')"
+                    "OR name LIKE 'messages_fts_trigram_%' ESCAPE '\\') "
+                    # messages_fts_cjk* is an independent v23+ index, not part of the
+                    # demoted legacy layout: fts5's xRename renames the entire shadow
+                    # family in one step, so sweeping the cjk vtable here aborts the
+                    # loop on the next cjk shadow entry and drags _config — needed by
+                    # the vtable constructor — into the trash family (#103647).
+                    "AND name NOT LIKE 'messages\\_fts\\_cjk%' ESCAPE '\\'"
                 ).fetchall():
                     conn.execute(f"ALTER TABLE {row[0]} RENAME TO fts_v22_trash_{row[0]}")
             # Claim the backfill BEFORE the empty v23 tables exist so a crash before
@@ -746,7 +746,9 @@ class SessionSearchMixin:
         decode loop; otherwise ``/undo N`` pairs an in-memory count that excludes handoffs
         with a DB pick that includes them."""
         active_clause = "" if include_inactive else " AND active = 1"
-        display_clause = " AND (display_kind IS NULL OR display_kind = '')"
+        # A /steer row is typed for the renderer but is human input: keep it so the DB pick agrees
+        # with the in-memory user_originated_turn_view count.
+        display_clause = " AND (display_kind IS NULL OR display_kind = '' OR display_kind = 'steer')"
         with self._read_ctx() as conn:
             rows = conn.execute(
                 "SELECT id, timestamp, content FROM messages WHERE session_id = ? AND role = 'user'"
@@ -976,18 +978,26 @@ class SessionSearchMixin:
 
     def _finalize_search_matches(
         self, matches: List[Dict[str, Any]], result_fields: Optional[Collection[str]] = None) -> List[Dict[str, Any]]:
-        """Attach neighboring messages (1 before + after, only when the projection consumes
-        ``context``) and trim full content. Each context query takes its own read txn."""
+        """Attach neighboring messages in bounded batches, only when context is requested."""
         if result_fields is None or "context" in result_fields:
-            for match in matches:
+            for start in range(0, len(matches), 500):
+                batch = matches[start:start + 500]
+                contexts = {match["id"]: [] for match in batch}
                 try:
+                    sql = _CONTEXT_WINDOW_SQL.format(ids=",".join("?" for _ in contexts))
                     with self._read_ctx() as conn:
-                        rows = conn.execute(_CONTEXT_WINDOW_SQL, (match["id"], match["id"])).fetchall()
-                        match["context"] = [
-                            {"role": r["role"], "content": _flatten_text(self._decode_content(r["content"]))[:200]}
-                            for r in rows]
+                        rows = conn.execute(sql, list(contexts)).fetchall()
+                    for row in rows:
+                        contexts[row["match_id"]].append(row)
                 except Exception:
-                    match["context"] = []
+                    contexts = {}
+                for match in batch:
+                    try:
+                        match["context"] = [
+                            {"role": row["role"], "content": _flatten_text(self._decode_content(row["content"]))[:200]}
+                            for row in contexts.get(match["id"], [])]
+                    except Exception:
+                        match["context"] = []
         # No route selects full content; the pop guards any future one that does.
         for match in matches:
             match.pop("content", None)
@@ -1013,7 +1023,7 @@ class SessionSearchMixin:
             return rows
         finally:
             elapsed_ms = (time.time() - started) * 1000.0
-            if elapsed_ms >= env_float("HERMES_SEARCH_SLOW_MS", 1000.0):
+            if elapsed_ms >= _search_slow_ms():
                 logger.info("slow session search: path=%s elapsed=%.0fms rows=%s query=%r",
                             self._describe_search_path(query), elapsed_ms, len(rows) if rows is not None else "err",
                             query[: 200])
@@ -1190,7 +1200,11 @@ class SessionSearchMixin:
     def optimize_fts(self) -> int:
         """Merge fragmented FTS5 segments into one per index (``'optimize'``). Pure
         maintenance: changes neither results nor ``snippet()`` output, only layout and
-        speed; VACUUM then returns the freed pages. Returns the number optimized."""
+        speed; VACUUM then returns the freed pages. Returns the number optimized. A quarantined
+        handle never issues ``'optimize'``: it rewrites index segments in place and would compound
+        structural damage (or a split WAL generation) instead of leaving it diagnosable."""
+        self._raise_if_db_corrupt()
+        self._raise_if_db_replaced()
         optimized = 0
         with self._lock:
             for tbl in self._present_fts_tables():
@@ -1210,7 +1224,8 @@ class SessionSearchMixin:
 
         Uses the FTS5 ``'rebuild'`` command, which rewrites the internal b-tree segments from the content
         rows. Unlike ``optimize_fts`` (which merges existing segments), ``rebuild`` discards and recreates
-        the index data entirely. See #50502.
+        the index data entirely — the more destructive of the two, so it is quarantined the same way. See
+        #50502.
         A full structural rebuild must never run concurrently in two processes sharing one state.db — that
         interleaving has structurally corrupted the database in production (PR #93200) — so this admits
         through the cross-process ``fts_rebuild_admission`` authority and FAILS CLOSED: if another process
@@ -1219,6 +1234,8 @@ class SessionSearchMixin:
         path, which retries in-process from the gateway housekeeping tick (``retry_deferred_fts_recovery``)
         and at next startup.
         """
+        self._raise_if_db_corrupt()
+        self._raise_if_db_replaced()
         rebuilt = 0
         with fts_rebuild_admission(self.db_path) as admitted:
             if not admitted:

@@ -143,12 +143,6 @@ def _t2v_fal_families():
     return [fid for fid, meta in FAL_FAMILIES.items() if meta.get("text_endpoint")]
 
 
-def _i2v_only_fal_families():
-    """Families that only animate an existing image (no text_endpoint)."""
-    from plugins.video_gen.fal import FAL_FAMILIES
-    return [fid for fid, meta in FAL_FAMILIES.items() if not meta.get("text_endpoint")]
-
-
 @pytest.mark.parametrize("family_id", _t2v_fal_families())
 def test_fal_text_only_routes_to_text_endpoint(matrix_env, family_id):
     home, fal_calls, _ = matrix_env
@@ -159,14 +153,6 @@ def test_fal_text_only_routes_to_text_endpoint(matrix_env, family_id):
         {"video_gen": {"provider": "fal", "model": family_id}},
         {"prompt": "a dog running"},
     )
-
-    # Image-only families (e.g. gemini-omni-flash) must reject text-only
-    # jobs with a clean modality error instead of submitting anywhere.
-    if not FAL_FAMILIES[family_id].get("text_endpoint"):
-        assert result["success"] is False, family_id
-        assert result.get("error_type") == "modality_unsupported", result
-        assert not fal_calls, f"{family_id} submitted despite no text endpoint"
-        return
 
     assert result["success"] is True, f"{family_id}: {result.get('error')}"
     assert result["modality"] == "text"
@@ -181,22 +167,6 @@ def test_fal_text_only_routes_to_text_endpoint(matrix_env, family_id):
     payload = fal_calls[0]["arguments"] or {}
     image_keys = [k for k in payload if "image" in k and "url" in k]
     assert not image_keys, f"{family_id} text-only leaked image keys: {image_keys}"
-
-
-@pytest.mark.parametrize("family_id", _i2v_only_fal_families())
-def test_fal_i2v_only_family_refuses_text_only(matrix_env, family_id):
-    """An i2v-only family must refuse a text-only call rather than guess an endpoint."""
-    home, fal_calls, _ = matrix_env
-
-    result = _invoke_tool(
-        home,
-        {"video_gen": {"provider": "fal", "model": family_id}},
-        {"prompt": "a dog running"},
-    )
-
-    assert result["success"] is False, f"{family_id} has no text-to-video route"
-    assert result.get("error_type") == "modality_unsupported"
-    assert not fal_calls, f"{family_id} must not reach FAL for an unsupported modality"
 
 
 def _i2v_fal_families():

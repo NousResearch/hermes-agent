@@ -167,6 +167,8 @@ def _last_run_display(job: Dict[str, Any]) -> str:
     last_status = job["last_status"]
     if last_status == "ok":
         return color("ok", Colors.GREEN)
+    if last_status == "delivery_queued":
+        return color("delivery_queued: completion unverified; do not resend", Colors.YELLOW)
     if last_status == "delivery_failed":
         # Agent succeeded but the result never reached the user — not green; last_error is None.
         return color(f"delivery_failed: {job.get('last_delivery_error') or '?'}", Colors.YELLOW)
@@ -216,6 +218,8 @@ def _job_rows(job: Dict[str, Any]) -> List[tuple[str, str]]:
 def _job_warnings(job: Dict[str, Any]) -> List[str]:
     """Delivery / fire warning lines for one job in ``cron list``."""
     lines = []
+    if queued := job.get("last_delivery_queued"):
+        lines.append(f"Delivery queued (completion unverified; do not resend): {queued}")
     if job.get("last_delivery_error"):
         lines.append(f"{color('⚠ Delivery failed:', Colors.YELLOW)} {job['last_delivery_error']}")
     # A live adapter acked the last send but returned no message_id / raw_response
@@ -380,7 +384,7 @@ def _print_ticker_health(pids: list) -> None:
 def cron_status():
     """Show cron execution status."""
     from cron.jobs import list_jobs
-    from hermes_cli.gateway import find_gateway_pids
+    from hermes_cli.gateway import find_gateway_pids, named_profile_served_by_running_multiplexer
     print()
 
     provider = _active_cron_provider_name()
@@ -391,6 +395,12 @@ def cron_status():
                     "not the in-process ticker.", Colors.GREEN))
         print(color("  (No ticker heartbeat is expected for an external provider; "
                     "due jobs are delivered by an authenticated webhook.)", Colors.DIM))
+    elif not find_gateway_pids() and named_profile_served_by_running_multiplexer():
+        # Satellite profile: the default multiplexer's ticker fires this store (same answer as
+        # `_builtin_gateway_liveness`, which `cron list` uses -- the two must not disagree).
+        print(color("✓ Gateway is running via the default-profile multiplexer — it ticks this profile's jobs.",
+                    Colors.GREEN))
+        print(color("  Ticker health is reported by `hermes cron status` on the default profile.", Colors.DIM))
     else:
         pids = find_gateway_pids()
         gateway_alive_via_lock = False
@@ -491,7 +501,7 @@ def _cron_doctor_issues_for_job(job: Dict[str, Any]) -> List[str]:
     issues: List[str] = []
     last_status = str(job.get("last_status") or "").strip().lower()
     # "delivery_failed" = the agent run succeeded; the delivery issue below reports it.
-    if last_status and last_status not in {"ok", "delivery_failed"}:
+    if last_status and last_status not in {"ok", "delivery_failed", "delivery_queued"}:
         issues.append(f"last run failed: {str(job.get('last_error') or 'unknown error').strip()}")
     if delivery_err := str(job.get("last_delivery_error") or "").strip():
         issues.append(f"last delivery failed: {delivery_err}")
@@ -571,7 +581,10 @@ def cron_create(args):
         action="create", schedule=args.schedule, prompt=args.prompt,
         skill=getattr(args, "skill", None),
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
-        no_agent=getattr(args, "no_agent", False) or None, **_job_api_kwargs(args))
+        no_agent=getattr(args, "no_agent", False) or None,
+        **({"paused": args.paused, "paused_reason": getattr(args, "paused_reason", None)}
+           if getattr(args, "paused", False) or getattr(args, "paused_reason", None) is not None else {}),
+        **_job_api_kwargs(args))
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
         return 1
@@ -580,7 +593,10 @@ def cron_create(args):
     if result.get("skills"):
         print(f"  Skills: {', '.join(result['skills'])}")
     _print_job_details(result.get("job", {}))
-    print(f"  Next run: {result['next_run_at']}")
+    if not result.get("job", {}).get("enabled", True):
+        print("  Created PAUSED — resume to schedule, or explicitly run now.")
+    else:
+        print(f"  Next run: {result['next_run_at']}")
     _warn_if_gateway_not_running()
     return 0
 
@@ -755,7 +771,8 @@ _CRON_SUBCOMMANDS = {
     "pause": lambda a: _job_action("pause", a.job_id, "Paused"),
     "resume": lambda a: cron_resume(a),
     "run": lambda a: _job_action("run", a.job_id, "Triggered"),
-    "remove": lambda a: _job_action("remove", a.job_id, "Removed")}
+    "remove": lambda a: _job_action("remove", a.job_id, "Removed"),
+    "resnap": lambda a: _cron_resnap(a)}
 _CRON_SUBCOMMANDS["history"] = _CRON_SUBCOMMANDS["runs"]
 _CRON_SUBCOMMANDS["add"] = _CRON_SUBCOMMANDS["create"]
 _CRON_SUBCOMMANDS["rm"] = _CRON_SUBCOMMANDS["delete"] = _CRON_SUBCOMMANDS["remove"]
@@ -768,5 +785,35 @@ def cron_command(args):
     if handler is not None:
         return handler(args)
     print(f"Unknown cron command: {subcmd}\n"
-          "Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|runs|doctor|tick]")
+          "Usage: hermes cron [list|create|edit|pause|resume|run|remove|resnap|status|runs|doctor|tick]")
     sys.exit(1)
+
+
+def _cron_resnap(args) -> int:
+    """Handle `hermes cron resnap [job_id] [--all]`."""
+    if bool(getattr(args, "all", False)):
+        result = _cron_api(action="resnap", all=True)
+        if not result.get("success"):
+            print(color(f"Failed to resnap: {result.get('error', 'unknown error')}", Colors.RED))
+            return 1
+        updated = result.get("updated_jobs", [])
+        print(color(f"Resnapped {len(updated)} unpinned job(s) to the current global resolution.", Colors.GREEN))
+        for job in updated:
+            print(f"  • {job.get('name', job.get('job_id'))} ({job.get('job_id')})")
+        if not updated:
+            print("  (no unpinned agent jobs found — nothing to refresh)")
+        return 0
+
+    job_id = getattr(args, "job_id", None)
+    if not job_id:
+        print(color("resnap requires either a <job_id> or --all.", Colors.RED))
+        print("Usage: hermes cron resnap <job_id> | hermes cron resnap --all")
+        return 1
+    result = _cron_api(action="resnap", job_id=job_id)
+    if not result.get("success"):
+        print(color(f"Failed to resnap job: {result.get('error', 'unknown error')}", Colors.RED))
+        return 1
+    job = result.get("job", {})
+    print(color(f"Resnapped job: {job.get('name', job_id)} ({job.get('job_id', job_id)})", Colors.GREEN))
+    print("  Adopted the current global inference resolution; the job remains unpinned and will track future global changes.")
+    return 0

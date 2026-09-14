@@ -20,7 +20,7 @@ from agent.context_compressor import (
 from hermes_state import SessionDB
 from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from gateway.session import SessionEntry, SessionSource, SessionStore, build_session_key
 
 
 def _make_source(*, thread_id: str | None = None) -> SessionSource:
@@ -111,7 +111,7 @@ def _make_runner(session_db=None):
     # Default switch_session impl: returns a SessionEntry carrying the target
     # session_id. Mirrors SessionStore.switch_session semantics for tests that
     # exercise Telegram topic binding rebinds without a real store.
-    def _switch_session(session_key, target_session_id):
+    def _switch_session(session_key, target_session_id, **_kwargs):
         return SessionEntry(
             session_key=session_key,
             session_id=target_session_id,
@@ -303,6 +303,9 @@ async def test_managed_topic_binding_reuses_restored_session_over_static_lane_se
         managed_mode="restored",
     )
     runner = _make_runner(session_db=session_db)
+    store = SessionStore(tmp_path / "sessions", runner.config)
+    store._db = session_db
+    runner.session_store = store
     captured = {}
 
     async def fake_run_agent(*args, **kwargs):
@@ -489,23 +492,10 @@ async def test_topic_binding_follows_compression_tip_on_read(tmp_path, monkeypat
     )
 
     runner = _make_runner(session_db=session_db)
-    # switch_session() returns a SessionEntry pointing at whatever id was
-    # requested; capture the requested id for assertion.
-    switched_to: dict = {}
-
-    def fake_switch(_key, new_session_id):
-        switched_to["id"] = new_session_id
-        return SessionEntry(
-            session_key=topic_key,
-            session_id=new_session_id,
-            created_at=datetime.now(),
-            updated_at=datetime.now(),
-            platform=Platform.TELEGRAM,
-            chat_type="dm",
-            origin=topic_source,
-        )
-
-    runner.session_store.switch_session = MagicMock(side_effect=fake_switch)
+    # Exercise missing-route recovery through the real store, including tip following.
+    store = SessionStore(tmp_path / "sessions", runner.config)
+    store._db = session_db
+    runner.session_store = store
     runner._run_agent = AsyncMock(
         return_value={
             "success": True,
@@ -522,7 +512,7 @@ async def test_topic_binding_follows_compression_tip_on_read(tmp_path, monkeypat
     await runner._handle_message(_make_event("follow up after compression", thread_id="17585"))
 
     # The route was advanced to the compression tip, not the stale parent.
-    assert switched_to.get("id") == "child-session"
+    assert store.lookup_by_session_key(topic_key).session_id == "child-session"
     # The binding row was rewritten to point at the descendant so future
     # inbound messages skip the tip walk and resolve directly.
     refreshed = session_db.get_telegram_topic_binding(
@@ -830,3 +820,250 @@ def test_get_telegram_topic_binding_by_session_returns_binding(tmp_path):
 # Test for session-split thread_id recovery (issue #27166)
 # ---------------------------------------------------------------------------
 
+
+
+@pytest.fixture
+def routed_topic(tmp_path):
+    from gateway.session import SessionStore
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    runner = _make_runner(db)
+    for name in ("_release_running_agent_state", "_invalidate_session_run_generation",
+                 "_begin_session_run_generation", "_is_session_run_current"):
+        delattr(runner, name)
+    runner._persist_active_agents = MagicMock()
+    store = SessionStore(tmp_path / "sessions", runner.config)
+    store._db = db
+    runner.session_store = store
+    runner._hmwa_prepare_turn = AsyncMock(return_value=("prepared", None))
+    source = _make_source(thread_id="17585")
+    yield SimpleNamespace(db=db, store=store, runner=runner, source=source, tmp=tmp_path)
+    runner._shutdown_executor()
+    store.close_all_db_handles()
+    db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("paused", [False, True])
+async def test_explicit_topic_restore_commits_route_before_success(routed_topic, paused):
+    from gateway.session import SessionStore
+    e = routed_topic
+    old = e.store.get_or_create_session(e.source)
+    if paused:
+        e.store.set_session_metadata(old.session_key, "compression_exhausted", True, require_primary=True)
+    e.runner._record_telegram_topic_binding(e.source, old)
+    e.db.create_session("restorable-target", source="telegram", user_id=e.source.user_id)
+    e.db.append_message("restorable-target", "assistant", "restored history")
+    reply = await e.runner._handle_topic_command(
+        _make_event("/topic restorable-target", thread_id=e.source.thread_id), "restorable-target")
+    assert "Session restored" in reply
+    assert e.store.lookup_by_session_key(old.session_key).session_id == "restorable-target"
+    fresh = SessionStore(e.store.sessions_dir, e.store.config)
+    fresh._db = e.db
+    try:
+        assert fresh.lookup_by_session_key(old.session_key).session_id == "restorable-target"
+        e.runner.session_store = fresh
+        assert await e.runner._handle_message(_make_event("continue restored", thread_id=e.source.thread_id)) == "prepared"
+        entry = e.runner._hmwa_prepare_turn.await_args.args[2]
+        assert entry.session_id == "restorable-target" and not entry.compression_paused
+        assert fresh.load_transcript(entry.session_id)[-1]["content"] == "restored history"
+    finally:
+        e.runner.session_store = e.store
+        fresh.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_topic_restore_primary_failure_keeps_pause(routed_topic, monkeypatch):
+    e = routed_topic
+    old = e.store.get_or_create_session(e.source)
+    e.store.set_session_metadata(old.session_key, "compression_exhausted", True, require_primary=True)
+    e.runner._record_telegram_topic_binding(e.source, old)
+    e.db.create_session("restorable-target", source="telegram", user_id=e.source.user_id)
+    def fail(*args, **kwargs):
+        raise OSError("primary unavailable")
+    monkeypatch.setattr(e.db, "replace_gateway_routing_entries", fail)
+    reply = await e.runner._handle_topic_command(
+        _make_event("/topic restorable-target", thread_id=e.source.thread_id), "restorable-target")
+    assert "could not be persisted" in reply
+    assert e.store.lookup_by_session_key(old.session_key) is old and old.compression_paused
+    assert "paused" in await e.runner._handle_message(_make_event("continue", thread_id=e.source.thread_id))
+    e.runner._hmwa_prepare_turn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("denial", ["source", "user", "linked", "profile_link"])
+async def test_topic_restore_preserves_native_ownership_checks(routed_topic, denial):
+    e = routed_topic
+    old = e.store.get_or_create_session(e.source)
+    e.db.create_session("denied-target", source="slack" if denial == "source" else "telegram",
+                        user_id="foreign-user" if denial == "user" else e.source.user_id)
+    if denial in {"linked", "profile_link"}:
+        e.db.bind_telegram_topic(chat_id=e.source.chat_id,
+                                thread_id="different" if denial == "linked" else e.source.thread_id,
+                                user_id=e.source.user_id, session_key="foreign-key", session_id="denied-target",
+                                profile_name="other" if denial == "profile_link" else "default")
+    reply = await e.runner._handle_topic_command(
+        _make_event("/topic denied-target", thread_id=e.source.thread_id), "denied-target")
+    assert "Session restored" not in reply
+    assert e.store.lookup_by_session_key(old.session_key).session_id == old.session_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing", [False, True])
+async def test_route_created_during_topic_fallback_lookup_wins(routed_topic, monkeypatch, missing):
+    import asyncio
+    import threading
+    e = routed_topic
+    if not missing:
+        e.store.get_or_create_session(e.source)
+    e.db.create_session("stale-binding", source="telegram", user_id=e.source.user_id)
+    e.db.end_session("stale-binding", end_reason="session_reset")
+    e.db.bind_telegram_topic(chat_id=e.source.chat_id, thread_id=e.source.thread_id,
+                            user_id=e.source.user_id, session_key=build_session_key(e.source), session_id="stale-binding")
+    entered, release = threading.Event(), threading.Event()
+    original = e.db.get_telegram_topic_binding
+    def blocked(*args, **kwargs):
+        value = original(*args, **kwargs)
+        entered.set()
+        assert release.wait(5)
+        return value
+    monkeypatch.setattr(e.db, "get_telegram_topic_binding", blocked)
+    event = _make_event("ordinary message", thread_id=e.source.thread_id)
+    task = asyncio.create_task(e.runner._hmwa_resolve_session(event, e.source))
+    try:
+        assert await asyncio.to_thread(entered.wait, 3)
+        winner = await asyncio.to_thread(e.store.get_or_create_session, e.source, force_new=True)
+    finally:
+        release.set()
+    resolved = await task
+    assert resolved[1].session_id == winner.session_id
+    assert e.store.lookup_by_session_key(winner.session_key).session_id == winner.session_id
+    assert e.db.get_session("stale-binding")["ended_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_missing_route_topic_restore_requires_primary_commit(routed_topic, monkeypatch):
+    import json
+    e = routed_topic
+    e.store._write_sessions_json = False
+    key = build_session_key(e.source)
+    scope = e.store._routing_scope()
+    e.db.create_session("restorable-target", source="telegram", user_id=e.source.user_id,
+                        chat_id=e.source.chat_id, chat_type="dm", thread_id=e.source.thread_id,
+                        session_key=key)
+    e.db.append_message("restorable-target", "assistant", "recoverable history")
+    persist = e.db.replace_gateway_routing_entries
+    def fail(*args, **kwargs):
+        raise OSError("primary unavailable")
+    monkeypatch.setattr(e.db, "replace_gateway_routing_entries", fail)
+    reply = await e.runner._handle_topic_command(
+        _make_event("/topic restorable-target", thread_id=e.source.thread_id), "restorable-target")
+    # Read primary directly: a new SessionStore can import the bootstrap JSON.
+    durable = e.db.load_gateway_routing_entries(scope=scope)
+    assert key not in durable
+    assert "could not be persisted" in reply and "Session restored" not in reply
+    recovered = e.store.lookup_by_session_key(key)
+    assert recovered.session_id == "restorable-target"
+    e.runner._evict_cached_agent.assert_not_called()
+
+    monkeypatch.setattr(e.db, "replace_gateway_routing_entries", persist)
+    reply = await e.runner._handle_topic_command(
+        _make_event("/topic restorable-target", thread_id=e.source.thread_id), "restorable-target")
+    durable = e.db.load_gateway_routing_entries(scope=scope)
+    assert json.loads(durable[key])["session_id"] == "restorable-target"
+    assert "Session restored" in reply and "recoverable history" in reply
+    assert e.store.lookup_by_session_key(key) is recovered
+    e.runner._evict_cached_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_strict_same_id_switch_commits_primary_without_resetting_entry(routed_topic, monkeypatch):
+    import copy
+    import json
+    e = routed_topic
+    old = e.store.get_or_create_session(e.source)
+    key, target = old.session_key, old.session_id
+    old.last_prompt_tokens = 900
+    old.cache_read_tokens, old.cache_write_tokens = 300, 40
+    e.store.set_session_metadata(key, "compression_exhausted", True, require_primary=True)
+    old._compression_pause_pending = True
+    before = copy.deepcopy(old.to_dict())
+    metadata, origin = old.metadata, old.origin
+    scope = e.store._routing_scope()
+    persist = e.db.replace_gateway_routing_entries
+    persist({}, scope=scope)
+    failure = MagicMock(side_effect=OSError("primary unavailable"))
+    monkeypatch.setattr(e.db, "replace_gateway_routing_entries", failure)
+    clear_scope = MagicMock(wraps=e.runner._clear_conversation_scope)
+    monkeypatch.setattr(e.runner, "_clear_conversation_scope", clear_scope)
+
+    # Ordinary same-ID callers retain their no-write fast return.
+    assert e.store.switch_session(key, target) is old
+    failure.assert_not_called()
+    with pytest.raises(OSError, match="primary unavailable"):
+        e.store.switch_session(key, target, require_primary=True, expected_session_id=target)
+    assert e.db.load_gateway_routing_entries(scope=scope) == {}
+    assert e.store.lookup_by_session_key(key) is old
+    assert old.to_dict() == before and old._compression_pause_pending
+
+    monkeypatch.setattr(e.db, "replace_gateway_routing_entries", persist)
+    assert e.store.switch_session(key, target, require_primary=True, expected_session_id=target) is old
+    assert json.loads(e.db.load_gateway_routing_entries(scope=scope)[key]) == before
+    assert old.to_dict() == before and old._compression_pause_pending
+    assert old.metadata is metadata and old.origin is origin
+    # The explicit topic caller must also retain a paused same-ID route and caches.
+    # Its get_or_create_session call separately advances the user-activity clock.
+    reply = await e.runner._handle_topic_command(
+        _make_event(f"/topic {target}", thread_id=e.source.thread_id), target)
+    assert "Session restored" in reply
+    assert e.store.lookup_by_session_key(key) is old
+    assert old.compression_paused and old._compression_pause_pending
+    assert old.metadata is metadata and old.origin is origin
+    clear_scope.assert_not_called()
+    e.runner._evict_cached_agent.assert_not_called()
+
+
+@pytest.mark.parametrize("same_id", [False, True])
+def test_strict_same_id_switch_refuses_reconciled_stale_identity(routed_topic, monkeypatch, same_id):
+    import json
+    e = routed_topic
+    old = e.store.get_or_create_session(e.source)
+    key, target = old.session_key, old.session_id
+    e.store.set_session_metadata(key, "compression_exhausted", True, require_primary=True)
+    scope = e.store._routing_scope()
+    loader = e.db.load_gateway_routing_entries
+    fallback = SessionStore(e.store.sessions_dir, e.store.config)
+    fallback._db = e.db
+    try:
+        with monkeypatch.context() as outage:
+            outage.setattr(e.db, "load_gateway_routing_entries", MagicMock(side_effect=OSError("read unavailable")))
+            stale = fallback.lookup_by_session_key(key)
+        assert stale is not None and stale.session_id == target and stale.compression_paused
+        durable = json.loads(loader(scope=scope)[key])
+        durable["metadata"]["primary_marker"] = "authoritative"
+        if not same_id:
+            durable["session_id"] = "primary-winner"
+            e.db.create_session("primary-winner", source="telegram", user_id=e.source.user_id)
+        e.db.replace_gateway_routing_entries({key: json.dumps(durable)}, scope=scope)
+        before = loader(scope=scope)
+        calls = 0
+        def recovering_load(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                # Entry lookup still sees fallback; the snapshot sees recovered primary.
+                raise OSError("read still unavailable")
+            return loader(*args, **kwargs)
+        monkeypatch.setattr(e.db, "load_gateway_routing_entries", recovering_load)
+        persist = MagicMock(wraps=e.db.replace_gateway_routing_entries)
+        monkeypatch.setattr(e.db, "replace_gateway_routing_entries", persist)
+        with pytest.raises(RuntimeError, match="Session route changed"):
+            fallback.switch_session(key, target, require_primary=True, expected_session_id=target)
+        assert calls == 2
+        authoritative = fallback.lookup_by_session_key(key)
+        assert authoritative is not None and authoritative is not stale
+        assert authoritative.to_dict() == durable
+        assert loader(scope=scope) == before
+        persist.assert_not_called()
+    finally:
+        fallback.close_all_db_handles()

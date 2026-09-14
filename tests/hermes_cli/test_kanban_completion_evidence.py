@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 
 import pytest
@@ -78,6 +79,18 @@ def test_path_proof_rejects_oversized_file(kanban_home: Path, tmp_path: Path) ->
         with pytest.raises(CompletionEvidenceError, match="evidence limit"):
             kb.complete_task(conn, tid, proof=[f"path:{artifact}"])
         assert kb.get_task(conn, tid).status != "done"
+
+
+def test_digest_rejects_nonregular_opened_descriptor(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from hermes_cli import kanban_completion_evidence as evidence
+
+    read_fd, write_fd = os.pipe()
+    monkeypatch.setattr(evidence.os, "open", lambda _path, _flags: read_fd)
+    try:
+        with pytest.raises(CompletionEvidenceError, match="regular file"):
+            evidence._digest_stable_file(tmp_path / "raced", 1024)
+    finally:
+        os.close(write_fd)
 
 
 def test_url_proof_rejects_reusable_credentials_before_persistence(kanban_home: Path) -> None:

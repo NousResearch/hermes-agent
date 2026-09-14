@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import urlparse
@@ -142,8 +143,12 @@ def _validate_one(conn, task, kind: str, value: str, max_path_bytes: int) -> dic
 def _digest_stable_file(path: Path, max_bytes: int) -> tuple[str, int]:
     """Hash one stable file identity so the durable receipt binds observed bytes."""
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = os.open(path, flags)
+    with os.fdopen(fd, "rb") as handle:
         before = os.fstat(handle.fileno())
+        if not stat.S_ISREG(before.st_mode):
+            raise CompletionEvidenceError(f"proof path must identify a regular file: {path}")
         if before.st_size > max_bytes:
             raise CompletionEvidenceError(
                 f"proof path exceeds the {max_bytes}-byte evidence limit: {path}"

@@ -1,6 +1,6 @@
 import { type ThreadMessage } from '@assistant-ui/react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $displayTimestamps } from '@/store/display-timestamps'
 import { clearAllPrompts, setApprovalRequest } from '@/store/prompts'
@@ -637,13 +637,18 @@ describe('tool error explanations', () => {
       ['Permission denied reading /repo/session-view.ts', true]
     ] as const) {
       const message = completedOnlyMessage()
+
+      assert(message.role === 'assistant')
+
       const part = message.content[0]!
+
+      assert(part.type === 'tool-call')
 
       const { container, unmount } = render(
         <GroupHarness
           message={{
             ...message,
-            content: [{ ...part, result: { error }, args: { path: '/repo/session-view.ts' } } as typeof part]
+            content: [{ ...part, result: { error }, args: { path: '/repo/session-view.ts' } }]
           }}
         />
       )

@@ -225,9 +225,11 @@ def test_focus_mode_coding_posture_gets_the_tool(monkeypatch):
     assert "manage_connections" in _session_tool_names(selection, connectors=True)
 
 
-def test_signed_out_session_keeps_the_tool_but_the_managed_leg_refuses(tmp_path, monkeypatch):
-    """The portal gate moved from check_fn into the managed leg: local MCP approvals need no
-    sign-in, so the schema stays; a managed action in a signed-out session is a plain error."""
+def test_session_the_portal_has_not_enabled_never_receives_the_tool(tmp_path, monkeypatch):
+    """The portal gate is the tool's check_fn: a session whose account the portal has not enabled
+    for connectors does not get ``manage_connections`` in its schema on any surface, so the
+    model cannot call it and read the gateway's 404 back to the user. The handler keeps the same
+    gate for the direct RPC path."""
     from hermes_cli.tools_config import _get_platform_tools
     from tools.registry import registry
     from tui_gateway.server import _load_enabled_toolsets
@@ -237,10 +239,11 @@ def test_signed_out_session_keeps_the_tool_but_the_managed_leg_refuses(tmp_path,
     selections = [
         sorted(_get_platform_tools({}, "cli", include_default_mcp_servers=True)),
         _load_enabled_toolsets("tui"),
+        _load_enabled_toolsets("desktop"),
         ["coding"],
     ]
     for selection in selections:
-        assert "manage_connections" in _session_tool_names(selection, connectors=False), selection
+        assert "manage_connections" not in _session_tool_names(selection, connectors=False), selection
 
     with patch("tools.connectors.gateway.config.connectors_available", return_value=False):
         out = json.loads(registry.dispatch("manage_connections", {"action": "status"}))

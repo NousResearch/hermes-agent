@@ -67,8 +67,9 @@ One tool for both kinds of external app. A target is a managed connector (`"gmai
 | `manage_connections` | Managed actions: `status`, `connect`, `reconnect` (repairs only what is not connected; `force: true` restarts a working one). MCP actions, for `mcp: true` targets only: `install` a catalog entry, `enable` a disabled configured server, `authorize` (OAuth). On the desktop every action shows a card and blocks until each target is connected, skipped, or the deadline passes; the result lists targets as `connected`, `skipped` or `not_connected` and carries no link. On surfaces with no card (CLI, TUI, messaging) managed targets return a `connect_url` per app for the user to open, and MCP targets return `unavailable` with the `hermes mcp install <name>` / `hermes mcp login <name>` commands. Cannot disconnect or revoke an account. | — |
 
 The deadline for one call is five minutes, fixed by the backend when the call starts;
-reopening the chat or restarting the desktop never extends it. Managed actions additionally
-need the portal sign-in the managed tools use; MCP approvals do not.
+reopening the chat or restarting the desktop never extends it. The tool is present only when the
+Nous Portal has enabled connectors for the signed-in account (the `managed_tools` claim on its
+token). Other sessions do not see it.
 
 ## `code_execution` toolset
 

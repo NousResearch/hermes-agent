@@ -112,10 +112,14 @@ registry.register(
     name="manage_connections",
     toolset="connections",
     schema=MANAGE_CONNECTIONS_SCHEMA,
-    # Keep the portal gate in the handler so signed-out sessions retain MCP approvals.
-    # Read the module attribute so tests patch ``gateway.config.connectors_available`` at one seam.
+    # The portal gate decides schema presence: an account the portal has not enabled for
+    # connectors never sees the tool, so the model cannot call it and read the gateway's
+    # 404 back to them. The handler runs the same gate so the RPC path (methods_connectors) and
+    # a cached schema agree. Read as a module attribute so tests patch
+    # ``gateway.config.connectors_available`` at one seam.
     handler=lambda args, **kw: manage_connections(
         args, session_id=kw.get("session_id"), connectors_available=gateway_config.connectors_available,
     ),
+    check_fn=lambda: gateway_config.connectors_available(),
     emoji="🔗",
 )

@@ -8012,6 +8012,182 @@ _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 _PR_STATE_CACHE: dict = {}
 _PR_STATE_CACHE_TTL = 120  # seconds
 
+# Parses owner/repo/number back out of a matched PR URL.
+_PR_URL_PARTS_RE = re.compile(
+    r"https?://github\.com/(?P<owner>[^/\s]+)/(?P<repo>[^/\s]+)/pull/(?P<number>\d+)",
+    re.IGNORECASE,
+)
+
+# Per-process cache of guard verdicts: pr_url -> ((applies, reason), cached_at).
+# The dispatcher re-checks the same handful of PR URLs every tick; an uncached
+# ``gh`` call per task per tick makes dispatch unusably slow.
+_PR_GUARD_CACHE: dict = {}
+_PR_GUARD_CACHE_TTL = 120  # seconds
+
+# ``conclusion`` values (CheckRun shape) that mean the check failed.
+_PR_CHECK_FAILURE_CONCLUSIONS = {
+    "FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE",
+}
+# ``state`` values (StatusContext shape) that mean the check failed.
+_PR_CHECK_FAILURE_STATES = {"FAILURE", "ERROR"}
+
+# GraphQL: per-context ``isRequired`` is the ONLY source of truth for "does this
+# check gate the merge". Deliberately NOT a list of check names — a hand-kept
+# list silently misses new checks, and round 1 of this fix was rejected for
+# treating the advisory ``review-gate`` signal check as merge-blocking, which
+# un-guarded 24 of 40 live PRs.
+_PR_STATUS_GQL = """
+query($owner:String!, $repo:String!, $number:Int!) {
+  repository(owner:$owner, name:$repo) {
+    pullRequest(number:$number) {
+      state
+      reviewDecision
+      commits(last:1) { nodes { commit { statusCheckRollup { contexts(first:100) { nodes {
+        __typename
+        ... on CheckRun { name conclusion status isRequired(pullRequestNumber:$number) }
+        ... on StatusContext { context state isRequired(pullRequestNumber:$number) }
+      } } } } } }
+    }
+  }
+}
+"""
+
+
+def _fetch_pr_status(owner: str, repo: str, number: str) -> Optional[dict]:
+    """Return ``{'state','reviewDecision','statusCheckRollup'}`` for a PR, or None.
+
+    None means indeterminate (no ``gh``, network failure, non-zero exit, bad
+    JSON); callers must fail CLOSED. Each rollup entry carries its own
+    ``isRequired`` so the caller can tell a merge-gating failure from an
+    advisory/signal check with no hand-maintained name list.
+
+    Module-level so tests can monkeypatch it without network or a GitHub account.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "gh", "api", "graphql",
+                "-f", f"query={_PR_STATUS_GQL}",
+                "-F", f"owner={owner}", "-F", f"repo={repo}", "-F", f"number={number}",
+            ],
+            capture_output=True, text=True, timeout=20,
+            env={**os.environ, "PAGER": "cat", "GH_PAGER": "cat"},
+        )
+        if proc.returncode != 0:
+            _log.debug(
+                "gh pr status fetch failed (%s/%s#%s): %s",
+                owner, repo, number, (proc.stderr or "").strip()[:200],
+            )
+            return None
+        pr = (json.loads(proc.stdout) or {})["data"]["repository"]["pullRequest"]
+    except Exception as exc:  # noqa: BLE001 - any failure is "indeterminate"
+        _log.debug(
+            "gh pr status fetch errored (%s/%s#%s): %s", owner, repo, number, exc
+        )
+        return None
+    if not isinstance(pr, dict):
+        return None
+    rollup: list = []
+    try:
+        nodes = pr["commits"]["nodes"]
+        if nodes:
+            sc = nodes[0]["commit"]["statusCheckRollup"]
+            if sc:
+                rollup = sc["contexts"]["nodes"] or []
+    except Exception:  # noqa: BLE001 - absent rollup is simply empty
+        rollup = []
+    return {
+        "state": pr.get("state"),
+        "reviewDecision": pr.get("reviewDecision"),
+        "statusCheckRollup": rollup,
+    }
+
+
+def _entry_failed(entry: dict) -> bool:
+    """True when this rollup entry is in a failed terminal state.
+
+    Derived from the entry's own fields: a CheckRun carries ``conclusion``, a
+    StatusContext carries ``state``. A missing value on a still-running check is
+    NOT a failure.
+    """
+    if (entry.get("conclusion") or "").upper() in _PR_CHECK_FAILURE_CONCLUSIONS:
+        return True
+    return (entry.get("state") or "").upper() in _PR_CHECK_FAILURE_STATES
+
+
+def _rollup_has_gating_failure(rollup: Any) -> bool:
+    """True when a check that actually GATES THE MERGE has failed.
+
+    Only ``isRequired`` entries count. On a repo with no branch protection
+    nothing is required, so no check can block a merge — and a check that cannot
+    block a merge cannot justify un-guarding the card. That case returns False
+    (keep guarding) rather than exempting on advisory noise.
+    """
+    if not isinstance(rollup, list):
+        return False
+    for entry in rollup:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("isRequired") is not True:
+            continue
+        if _entry_failed(entry):
+            return True
+    return False
+
+
+def _active_pr_guard_applies(pr_url: str) -> tuple:
+    """``(guard_applies, exemption_reason)`` for one PR URL, cached per-process.
+
+    See :func:`_compute_active_pr_guard`.
+    """
+    now = time.time()
+    cached = _PR_GUARD_CACHE.get(pr_url)
+    if cached is not None and (now - cached[1]) < _PR_GUARD_CACHE_TTL:
+        return cached[0]
+    verdict = _compute_active_pr_guard(pr_url)
+    _PR_GUARD_CACHE[pr_url] = (verdict, now)
+    return verdict
+
+
+def _compute_active_pr_guard(pr_url: str) -> tuple:
+    """Uncached verdict for :func:`_active_pr_guard_applies`.
+
+    The ``active_pr`` guard exists to stop a duplicate-PR storm while a PR is
+    green and awaiting review/merge. It must NOT fire when the PR is in a state
+    only the IMPLEMENTER can clear, or the card deadlocks by construction:
+    t_108177c6 emitted ``respawn_guarded {"reason":"active_pr"}`` every 60-90s
+    for 4+ hours while its PR sat OPEN on CHANGES_REQUESTED — clearing that
+    verdict needs a new commit, and the guard was precisely what kept the
+    implementer from being respawned to push one.
+
+    Guard applies -> (True, None)
+    Exempt        -> (False, reason), when:
+      * PR is not OPEN (MERGED/CLOSED: the work is finished; guarding freezes it)
+      * ``reviewDecision == CHANGES_REQUESTED``  (author action required)
+      * a REQUIRED status check has failed       (author action required)
+    Indeterminate (unparsable URL, or fetch returned None) -> (True, None):
+    fail CLOSED, preserving the conservative behaviour so a network blip cannot
+    stampede duplicate workers onto a task whose PR is genuinely in flight. This
+    is an exemption, NOT "always respawn".
+    """
+    m = _PR_URL_PARTS_RE.match(pr_url)
+    if m is None:
+        return (True, None)
+    status = _fetch_pr_status(m.group("owner"), m.group("repo"), m.group("number"))
+    if status is None:
+        _log.debug(
+            "active_pr guard: indeterminate PR status for %s; failing closed", pr_url
+        )
+        return (True, None)
+
+    if (status.get("state") or "").upper() != "OPEN":
+        return (False, "pr_not_open")
+    if (status.get("reviewDecision") or "").upper() == "CHANGES_REQUESTED":
+        return (False, "pr_needs_author_action")
+    if _rollup_has_gating_failure(status.get("statusCheckRollup")):
+        return (False, "pr_needs_author_action")
+    return (True, None)
+
 # Pattern matching a GitHub PR URL in task comments.
 _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
@@ -9823,6 +9999,7 @@ _clear_spawn_failures = _clear_failure_counter
 
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
+    exempt_out: Optional[list] = None,
 ) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
@@ -9998,8 +10175,11 @@ def check_respawn_guard(
         match = _RESPAWN_GUARD_PR_URL_RE.search(c["body"])
         if not match:
             continue
-        if _pr_url_is_open(match.group(0)):
+        applies, reason = _active_pr_guard_applies(match.group(0))
+        if applies:
             return "active_pr"
+        if exempt_out is not None and reason:
+            exempt_out.append({"reason": reason, "pr_url": match.group(0)})
 
     return None
 
@@ -10715,7 +10895,10 @@ def _dispatch_once_locked(
         # still trips the auto-block circuit breaker after failure_limit
         # consecutive failures, so a persistent auth error eventually
         # blocks via the normal path rather than on first occurrence.
-        guard_reason = check_respawn_guard(conn, row["id"])
+        guard_exemptions: list = []
+        guard_reason = check_respawn_guard(
+            conn, row["id"], exempt_out=guard_exemptions
+        )
         if guard_reason is not None:
             result.respawn_guarded.append((row["id"], guard_reason))
             # Emit an event so operators can see why the task was
@@ -10728,6 +10911,13 @@ def _dispatch_once_locked(
                         {"reason": guard_reason},
                     )
             continue
+        # Observability for the exemption path: without this, a card that
+        # respawns despite an open PR is indistinguishable in task_events
+        # from one that never had a PR at all.
+        if guard_exemptions and not dry_run:
+            with write_txn(conn):
+                for _ex in guard_exemptions:
+                    _append_event(conn, row["id"], "respawn_allowed", _ex)
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))
             spawned += 1

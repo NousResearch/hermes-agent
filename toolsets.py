@@ -180,6 +180,19 @@ TOOLSETS = {
         "includes": []
     },
 
+    "vault": {
+        "description": "Local-first Markdown knowledge base tools for personal knowledge management (Obsidian-compatible)",
+        "tools": [
+            "vault_search",
+            "vault_read",
+            "vault_write",
+            "vault_append",
+            "vault_backlinks",
+            "vault_graph",
+        ],
+        "includes": []
+    },
+
     "computer_use": {
         "description": (
             "Background desktop control via cua-driver (macOS/Windows/Linux) — "

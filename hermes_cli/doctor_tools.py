@@ -58,11 +58,59 @@ def _doctor_tool_availability_detail(toolset: str) -> str:
     return ""
 
 
+def _doctor_anthropic_web_row(capability: str) -> tuple[str, str] | None:
+    """``(status, detail)`` for a web capability routed to Anthropic, else ``None``.
+
+    *capability* is ``"search"`` or ``"extract"``. ``None`` means the selection is not
+    Anthropic and the registry rows decide readiness as usual.
+
+    The registry cannot answer for this backend at all -- ``anthropic`` is not a registered
+    provider, so ``get_active_*_provider()`` walks past it and returns whoever the availability
+    walk or the keyless ring lands on. Letting that name reach the row reports a provider the
+    request will never touch: with a working Anthropic selection doctor printed
+    ``web search (tavily)``. So this answers the whole row, healthy case included, instead of
+    only vetoing the unhealthy ones.
+
+    Anthropic's native ``web_search``/``web_fetch`` are not a client-side provider and never
+    register one: they execute inside the Anthropic Messages API request itself, so they are
+    runnable only while the configured model is served by Anthropic. The registry cannot see
+    that — ``anthropic`` is not a registered backend, so ``get_active_*_provider()`` falls
+    through to the availability walk and the keyless tier and hands the rows a healthy provider
+    this install never reaches. Doctor would then tick green a capability that is switched off
+    (the ``web`` toolset is gated on ``tools.web_tools.check_web_api_key``, which reports False
+    here) — the false green #78412 asked these rows to prevent.
+
+    The runnability tests come from ``tools.web_tools`` so the tool gate, the ``hermes tools``
+    picker and doctor all answer from one predicate.
+    """
+    try:
+        from tools.web_tools import (
+            _anthropic_native_endpoint_selected, _get_extract_backend, _get_search_backend, _is_backend_available)
+        backend = _get_search_backend() if capability == "search" else _get_extract_backend()
+        if backend != "anthropic":
+            return None
+        # Two ways this selection cannot run, with different remedies, so two details rather than one
+        # vague line. Runnability is the question, not the endpoint alone: an Anthropic-served model with
+        # no Anthropic credential also leaves the toolset off, and a green row there is the same false tick.
+        if not _anthropic_native_endpoint_selected():
+            return ("warn", "(anthropic selected; its web tools run only inside Anthropic-served model requests -- "
+                            "switch the model to Anthropic or pick another backend with `hermes tools`)")
+        if not _is_backend_available("anthropic"):
+            return ("warn", "(anthropic selected, but no Anthropic credential was found -- set ANTHROPIC_API_KEY or "
+                            "CLAUDE_CODE_OAUTH_TOKEN, or pick another backend with `hermes tools`)")
+        return ("ok", "(anthropic; runs inside the Anthropic Messages API request)")
+    except Exception:
+        # Diagnostics must never be the thing that breaks doctor.
+        return None
+
+
 def _doctor_web_capability_rows() -> list[tuple[str, str, str]]:
     """Return ``(status, label, detail)`` rows (status ``ok``/``warn``) for web search/extract readiness.
 
     Uses the same active-provider resolvers as the tools but reports ``is_available()``
     readiness, so an explicitly selected but unconfigured backend does not look healthy.
+    An Anthropic selection is answered before the resolvers run — the registry cannot see it
+    at all; see :func:`_doctor_anthropic_web_row`.
 
     See #78412.
     """
@@ -74,7 +122,13 @@ def _doctor_web_capability_rows() -> list[tuple[str, str, str]]:
         _ensure_web_plugins_loaded()
     except Exception:
         return rows
-    for capability, getter in (("web search", get_active_search_provider), ("web extract", get_active_extract_provider)):
+    for capability, selector, getter in (("web search", "search", get_active_search_provider),
+                                         ("web extract", "extract", get_active_extract_provider)):
+        anthropic_row = _doctor_anthropic_web_row(selector)
+        if anthropic_row is not None:
+            status, detail = anthropic_row
+            rows.append((status, capability, detail))
+            continue
         try:
             provider = getter()
         except Exception:

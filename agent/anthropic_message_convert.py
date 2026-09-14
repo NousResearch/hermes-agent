@@ -143,14 +143,66 @@ def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
     return normalized
 
 
-def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
+# Server-only tools already reported as withheld from a compatible third-party endpoint, as
+# ``(tool_name, base_url)``. Tool conversion runs on every request, so the diagnosis is emitted
+# once per process rather than once per turn. A duplicate line from a benign race is harmless.
+_reported_third_party_server_tool_drops: set = set()
+
+
+def _report_third_party_server_tool_drop(name: str, base_url: str | None) -> None:
+    """Log, once per process, a server-only tool withheld from a proxy endpoint."""
+    key = (name, str(base_url or ""))
+    if key in _reported_third_party_server_tool_drops:
+        return
+    _reported_third_party_server_tool_drops.add(key)
+    logger.warning(
+        "Tool %r only runs inside Anthropic's own Messages API; %s is a compatible third-party endpoint, "
+        "so the tool is omitted from these requests and the model cannot call it. Select a backend this "
+        "endpoint supports (`hermes tools`) to restore this capability.",
+        name, base_url or "the configured endpoint",
+    )
+
+
+def convert_tools_to_anthropic(tools: List[Dict], base_url: str | None = None) -> List[Dict]:
     """Convert OpenAI tool definitions to Anthropic format. Duplicate names are dropped with a
-    warning (Anthropic hard-400s on them); ``cache_control`` on the OpenAI tool dict is forwarded."""
+    warning (Anthropic hard-400s on them); ``cache_control`` on the OpenAI tool dict is forwarded.
+    A function schema may carry a generic ``_hermes_server_tool`` binding: on Anthropic's native
+    endpoint a matching binding replaces the client-side function definition with a copy of its
+    provider-native spec. Compatible third-party endpoints omit server-only tools because neither
+    the endpoint nor Hermes's local dispatcher can execute them."""
     result = []
     seen_names: set = set()
     for t in tools or []:
         fn = t.get("function", {})
         name = fn.get("name", "")
+        if (server_binding := fn.get("_hermes_server_tool")) is not None:
+            server_spec = (
+                server_binding.get("definition")
+                if isinstance(server_binding, dict) and server_binding.get("api_mode") == "anthropic_messages"
+                else None
+            )
+            if isinstance(server_spec, dict) and server_spec.get("type"):
+                if _is_third_party_anthropic_endpoint(base_url):
+                    # The endpoint speaks the Messages API but is not assumed to host Anthropic's
+                    # server-side tools, so the tool is withheld. Say so: the operator enabled this
+                    # capability and would otherwise watch it vanish from the request with no
+                    # diagnosis anywhere.
+                    _report_third_party_server_tool_drop(name, base_url)
+                else:
+                    server_name = server_spec.get("name", "")
+                    if server_name and server_name in seen_names:
+                        logger.warning(
+                            "convert_tools_to_anthropic: duplicate tool name '%s' — dropping second occurrence",
+                            server_name,
+                        )
+                    else:
+                        result.append(copy.deepcopy(server_spec))
+                        if server_name:
+                            seen_names.add(server_name)
+            # Server-only bindings never degrade to local function tools: a third-party
+            # Anthropic-compatible endpoint cannot execute the native definition, while the selected
+            # local backend is also intentionally non-executable.
+            continue
         # Defensive dedup: Anthropic rejects requests with duplicate tool names. Upstream injection paths
         # already dedup, but this guard converts a hard API failure into a warning. See: #18478
         if name and name in seen_names:
@@ -301,9 +353,23 @@ def _replay_image(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return {"type": "image", "source": src} if isinstance(src, dict) else None
 
 
+def _replay_server_tool_use(b: Dict[str, Any]) -> Dict[str, Any]:
+    out = {
+        "type": "server_tool_use", "id": b.get("id", ""), "name": b.get("name", ""),
+        "input": copy.deepcopy(b.get("input", {})),
+    }
+    return _carry_cache_control(out, b, copy=True)
+
+
+def _replay_server_tool_result(b: Dict[str, Any]) -> Dict[str, Any]:
+    out = {"type": b["type"], "tool_use_id": b.get("tool_use_id", ""), "content": copy.deepcopy(b.get("content"))}
+    return _carry_cache_control(out, b, copy=True)
+
+
 _REPLAY_SANITIZERS = {
     "text": _replay_text, "thinking": _replay_thinking, "redacted_thinking": _replay_redacted_thinking,
-    "tool_use": _replay_tool_use, "image": _replay_image,
+    "tool_use": _replay_tool_use, "image": _replay_image, "server_tool_use": _replay_server_tool_use,
+    "web_search_tool_result": _replay_server_tool_result, "web_fetch_tool_result": _replay_server_tool_result,
 }
 
 

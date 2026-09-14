@@ -1306,6 +1306,8 @@ class _LoopState:
     interrupted: bool = False
     failed: bool = False
     codex_ack_continuations: int = 0
+    # Consecutive Anthropic ``pause_turn`` continuations; any other response resets it.
+    anthropic_pause_continuations: int = 0
     length_continue_retries: int = 0
     # Per-turn backstop for the refunding restarts (redirect / rebuilt-for-fallback).
     # Unlike ``retry_count`` (rebound to 0 each iteration) this accumulates for the whole

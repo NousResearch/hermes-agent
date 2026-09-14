@@ -78,28 +78,28 @@ export function getHermesConfigRecord(
   })
 }
 
-export function getHermesConfigDefaults(): Promise<HermesConfigRecord> {
+export function getHermesConfigDefaults(profile?: ProfileScope): Promise<HermesConfigRecord> {
   return hermesApi<HermesConfigRecord>({
-    ...profileScoped(),
+    ...capabilityScoped(profile),
     path: '/api/config/defaults',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }
 
-export function getHermesConfigSchema(profile?: null | string): Promise<ConfigSchemaResponse> {
+export function getHermesConfigSchema(profile?: ProfileScope): Promise<ConfigSchemaResponse> {
   return hermesApi<ConfigSchemaResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/config/schema'
   })
 }
 
 export function saveHermesConfig(
   config: HermesConfigRecord,
-  profile?: null | string,
+  profile?: ProfileScope,
   { preserveLanguage = false }: { preserveLanguage?: boolean } = {}
 ): Promise<{ ok: boolean }> {
   return hermesApi<{ ok: boolean }>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: preserveLanguage ? '/api/config?preserve_language=true' : '/api/config',
     method: 'PUT',
     body: { config }
@@ -155,10 +155,11 @@ export function revealEnvVar(key: string, profile?: ProfileScope): Promise<{ key
 export function validateProviderCredential(
   key: string,
   value: string,
-  apiKey?: string
+  apiKey?: string,
+  profile?: ProfileScope
 ): Promise<{ ok: boolean; reachable: boolean; message: string; models?: string[] }> {
-  return hermesApi<{ ok: boolean; reachable: boolean; message: string; models?: string[] }>({
-    ...profileScoped(),
+  return window.hermesDesktop.api<{ ok: boolean; reachable: boolean; message: string; models?: string[] }>({
+    ...capabilityScoped(profile),
     path: '/api/providers/validate',
     method: 'POST',
     body: { key, value, api_key: apiKey ?? '' }
@@ -205,9 +206,9 @@ export function deleteCustomEndpoint(id: string): Promise<CustomEndpointsRespons
   })
 }
 
-export function listOAuthProviders(profile?: null | string): Promise<OAuthProvidersResponse> {
-  return hermesApi<OAuthProvidersResponse>({
-    ...profileScoped(profile),
+export function listOAuthProviders(profile?: ProfileScope): Promise<OAuthProvidersResponse> {
+  return window.hermesDesktop.api<OAuthProvidersResponse>({
+    ...capabilityScoped(profile),
     path: '/api/providers/oauth'
   })
 }
@@ -236,10 +237,10 @@ export function submitOAuthCode(
   providerId: string,
   sessionId: string,
   code: string,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<OAuthSubmitResponse> {
-  return hermesApi<OAuthSubmitResponse>({
-    ...profileScoped(profile),
+  return window.hermesDesktop.api<OAuthSubmitResponse>({
+    ...capabilityScoped(profile),
     path: `/api/providers/oauth/${encodeURIComponent(providerId)}/submit`,
     method: 'POST',
     body: { session_id: sessionId, code }
@@ -257,9 +258,9 @@ export function pollOAuthSession(
   })
 }
 
-export function cancelOAuthSession(sessionId: string, profile?: null | string): Promise<{ ok: boolean }> {
-  return hermesApi<{ ok: boolean }>({
-    ...profileScoped(profile),
+export function cancelOAuthSession(sessionId: string, profile?: ProfileScope): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...capabilityScoped(profile),
     path: `/api/providers/oauth/sessions/${encodeURIComponent(sessionId)}`,
     method: 'DELETE'
   })

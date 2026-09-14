@@ -57,7 +57,7 @@ Full CLI reference: [references/cli.md](references/cli.md).
 ## Setup (one-time)
 
 ```bash
-bash "$(dirname "$(find ~/.hermes/skills -path '*/hyperframes/SKILL.md' 2>/dev/null | head -1)")/scripts/setup.sh"
+bash "$(dirname "$(find ${HERMES_HOME}/skills -path '*/hyperframes/SKILL.md' 2>/dev/null | head -1)")/scripts/setup.sh"
 ```
 
 The script:

@@ -37,7 +37,7 @@ fields come back null. Free key: https://www.alphavantage.co/support/#api-key
 Invoke through the `terminal` tool. Once installed:
 
 ```
-SCRIPT=~/.hermes/skills/finance/stocks/scripts/stocks_client.py
+SCRIPT=${HERMES_HOME}/skills/finance/stocks/scripts/stocks_client.py
 python $SCRIPT quote AAPL
 ```
 
@@ -89,7 +89,7 @@ Crypto prices. Pass `BTC` (the script appends `-USD` automatically).
 ## Verification
 
 ```
-python ~/.hermes/skills/finance/stocks/scripts/stocks_client.py quote AAPL
+python ${HERMES_HOME}/skills/finance/stocks/scripts/stocks_client.py quote AAPL
 ```
 
 Returns a JSON object with `symbol: "AAPL"` and a numeric `price` field.

@@ -17,17 +17,18 @@ metadata:
 
 Random fixes waste time and create new bugs. Quick patches mask underlying issues.
 
-**Core principle:** ALWAYS find root cause before attempting fixes. Symptom fixes are failure.
-
-**Violating the letter of this process is violating the spirit of debugging.**
+**Core principle:** Establish and address the cause, not merely the visible symptom. Match the
+depth of investigation and verification to the defect's scope and risk.
 
 ## The Iron Law
 
 ```
-NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST
+NO FIXES WITHOUT A TESTABLE CAUSE HYPOTHESIS
 ```
 
-If you haven't completed Phase 1, you cannot propose fixes.
+For a localized, reproducible defect, use the lightweight path: reproduce, form a cause
+hypothesis, make the minimum fix, and run relevant verification. Use the full investigation
+before broadening a fix when the evidence does not support the hypothesis.
 
 ## The Feedback Loop Rule
 
@@ -37,7 +38,7 @@ When a clean repro is hard, spend disproportionate effort building the loop. Gue
 
 ## When to Use
 
-Use for ANY technical issue:
+Use the lightweight path for localized, reproducible technical issues:
 - Test failures
 - Bugs in production
 - Unexpected behavior
@@ -45,21 +46,34 @@ Use for ANY technical issue:
 - Build failures
 - Integration issues
 
-**Use this ESPECIALLY when:**
+Escalate to the full four phases and broader verification when the issue is multi-component,
+intermittent, unknown-cause, security- or data-risky, or the fix has broad effects. Also escalate
+after failed hypotheses or when evidence contradicts the initial theory.
+
+**Use full investigation ESPECIALLY when:**
 - Under time pressure (emergencies make guessing tempting)
 - "Just one quick fix" seems obvious
 - You've already tried multiple fixes
 - Previous fix didn't work
 - You don't fully understand the issue
 
-**Don't skip when:**
-- Issue seems simple (simple bugs have root causes too)
-- You're in a hurry (rushing guarantees rework)
-- Someone wants it fixed NOW (systematic is faster than thrashing)
+For a simple, contained defect, do not perform unrelated phases or run a whole suite solely to
+follow process. Preserve root-cause discipline through the lightweight path.
+
+## Lightweight Path
+
+1. Reproduce the exact symptom with the narrowest available command.
+2. Form a cause hypothesis from the failure and local code/data flow.
+3. Make the minimum change that addresses that hypothesis.
+4. Run the focused regression check and any repository-required validation.
+
+If the symptom remains, the check is not trustworthy, or the fix touches broader boundaries,
+return to the four phases below.
 
 ## The Four Phases
 
-You MUST complete each phase before proceeding to the next.
+Use these phases for the escalation cases above. Complete the evidence relevant to the failure;
+do not manufacture ceremony for a defect already isolated by a reliable reproduction.
 
 ---
 
@@ -109,13 +123,13 @@ For non-deterministic bugs, the immediate goal is a higher reproduction rate, no
 
 ```bash
 # Run a specific failing test
-pytest tests/test_module.py::test_name -v
+scripts/run_tests.sh tests/test_module.py -k test_name -v
 
 # Or run a scripted repro
 python scripts/repro_bug.py
 
 # Or run a high-repetition flaky repro
-for i in {1..100}; do pytest tests/test_flake.py::test_name -q || break; done
+for i in {1..100}; do scripts/run_tests.sh tests/test_flake.py -k test_name -q || break; done
 ```
 
 ### 3. Check Recent Changes
@@ -272,7 +286,7 @@ If the user is present, show the ranked list before testing. They may have domai
 
 - Simplest possible reproduction
 - Automated test if possible
-- MUST have before fixing
+- Establish before fixing when practical; otherwise capture the narrowest reliable evidence.
 - Use the `test-driven-development` skill
 
 ### 2. Implement Single Fix
@@ -286,10 +300,10 @@ If the user is present, show the ranked list before testing. They may have domai
 
 ```bash
 # Run the specific regression test
-pytest tests/test_module.py::test_regression -v
+scripts/run_tests.sh tests/test_module.py -k test_regression -v
 
-# Run full suite — no regressions
-pytest tests/ -q
+# Run the repository-required regression scope; use the full suite for broad-change escalation
+scripts/run_tests.sh tests/ -q
 ```
 
 ### 4. If Fix Doesn't Work — The Rule of Three
@@ -357,7 +371,7 @@ If you catch yourself thinking:
 | **1. Root Cause** | Read errors, reproduce, check changes, gather evidence, trace data flow | Understand WHAT and WHY |
 | **2. Pattern** | Find working examples, compare, identify differences | Know what's different |
 | **3. Hypothesis** | Form theory, test minimally, one variable at a time | Confirmed or new hypothesis |
-| **4. Implementation** | Create regression test, fix root cause, verify | Bug resolved, all tests pass |
+| **4. Implementation** | Create regression test, fix root cause, verify | Bug resolved; relevant checks pass |
 
 ## Hermes Agent Integration
 
@@ -408,4 +422,5 @@ From debugging sessions:
 - First-time fix rate: 95% vs 40%
 - New bugs introduced: Near zero vs common
 
-**No shortcuts. No guessing. Systematic always wins.**
+Do not guess: use the lightweight path for contained defects and escalate when the evidence or
+risk calls for deeper investigation.

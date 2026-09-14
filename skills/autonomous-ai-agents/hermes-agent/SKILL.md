@@ -68,18 +68,18 @@ hermes proxy                   # OpenAI-compatible local proxy backed by your OA
 ## Key Paths
 
 ```
-~/.hermes/config.yaml       Main configuration (settings — never secrets)
-~/.hermes/.env              API keys and secrets ONLY (under $HERMES_HOME if set)
+${HERMES_HOME}/config.yaml       Main configuration (settings — never secrets)
+${HERMES_HOME}/.env              API keys and secrets ONLY (under $HERMES_HOME if set)
 $HERMES_HOME/skills/        Installed skills
-~/.hermes/skins/            Custom themes (see references/themes.md)
-~/.hermes/desktop-plugins/  Desktop app UI plugins (see references/desktop-plugins.md)
-~/.hermes/tui-widgets/      TUI widget apps (see references/tui-widgets.md)
-~/.hermes/pets/             Installed pet mascots (see references/petdex.md)
-~/.hermes/state.db          Canonical session store (SQLite + FTS5)
-~/.hermes/sessions/         Gateway routing index, request dumps, *.jsonl transcripts
-~/.hermes/logs/             Gateway and error logs
-~/.hermes/auth.json         OAuth tokens and credential pools
-~/.hermes/hermes-agent/     Source code (if git-installed)
+${HERMES_HOME}/skins/            Custom themes (see references/themes.md)
+${HERMES_HOME}/desktop-plugins/  Desktop app UI plugins (see references/desktop-plugins.md)
+${HERMES_HOME}/tui-widgets/      TUI widget apps (see references/tui-widgets.md)
+${HERMES_HOME}/pets/             Installed pet mascots (see references/petdex.md)
+${HERMES_HOME}/state.db          Canonical session store (SQLite + FTS5)
+${HERMES_HOME}/sessions/         Gateway routing index, request dumps, *.jsonl transcripts
+${HERMES_HOME}/logs/             Gateway and error logs
+${HERMES_HOME}/auth.json         OAuth tokens and credential pools
+${HERMES_HOME}/hermes-agent/     Source code (if git-installed)
 ```
 
 Profiles use `~/.hermes/profiles/<name>/` with the same layout. When a profile is active, resolve the real home from `$HERMES_HOME` — never hardcode `~/.hermes`.

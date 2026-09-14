@@ -49,11 +49,9 @@ An example comparable company analysis is provided in `examples/comps_example.xl
 - Copying layout without considering context
 - Applying the same visual style regardless of audience
 
-**ALWAYS ask yourself first:**
-1. **"Do you have a preferred format or should I adapt the template style?"**
-2. **"Who is the audience?"** (Investment committee, board presentation, quick reference, detailed memo)
-3. **"What's the key question?"** (Valuation, growth analysis, competitive positioning, efficiency)
-4. **"What's the context?"** (M&A evaluation, investment decision, sector benchmarking, performance review)
+Derive format, audience, key question, and context from the request and supplied materials. State
+the defaults used in the final assumptions summary; ask only if a material choice cannot be
+derived, an external action is irreversible, or a decision would materially change the analysis.
 
 **Adapt based on specifics:**
 - **Industry context**: Big tech mega-caps need different metrics than emerging SaaS startups
@@ -80,12 +78,9 @@ Start with headers that force strategic thinking about what matters, input clean
 - The only hardcoded values should be raw input data (revenue, EBITDA, share price, etc.) — and every one of those gets a cell comment with its source
 - Why: the model must update automatically when an input changes. A hardcoded margin is a silent bug waiting to happen.
 
-**Verify step-by-step with the user:**
-- After setting up the structure → show the user the header layout before filling data
-- After entering raw inputs → show the user the input block and confirm sources/periods before building formulas
-- After building operating metrics formulas → show the calculated margins and sanity-check with the user before moving to valuation
-- After building valuation multiples → show the multiples and confirm they look reasonable before adding statistics
-- Do NOT build the entire sheet end-to-end and then present it — catch errors early by confirming each section
+Validate section-by-section internally: confirm source dates and periods, formulas, margin and
+multiple reasonableness, and statistic ranges before continuing. Deliver a concise assumptions
+and validation summary with the completed analysis rather than requiring intermediate sign-off.
 
 ---
 
@@ -635,7 +630,7 @@ Before delivering a comp analysis, verify:
 
 ## Continuous Improvement
 
-After completing a comp analysis, ask:
+After completing a comp analysis, review:
 1. Did the statistics reveal unexpected insights?
 2. Were there any data gaps that limited analysis?
 3. Did stakeholders ask for metrics you didn't include?

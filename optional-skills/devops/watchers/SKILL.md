@@ -62,7 +62,7 @@ python $HERMES_HOME/skills/devops/watchers/scripts/watch_rss.py \
   --name hn --url https://news.ycombinator.com/rss --max 5
 ```
 
-Watch a GitHub repo (set `GITHUB_TOKEN` in `${HERMES_HOME:-~/.hermes}/.env` to avoid the 60 req/hr anonymous rate limit):
+Watch a GitHub repo (set `GITHUB_TOKEN` in `${HERMES_HOME}/.env` to avoid the 60 req/hr anonymous rate limit):
 
 ```bash
 python $HERMES_HOME/skills/devops/watchers/scripts/watch_github.py \
@@ -109,4 +109,3 @@ All three scripts use the same template: load watermark, fetch, diff, save, emit
 2. **Expecting the first run to emit items.** It won't — first run records a baseline. If you need an initial digest, delete the state file after the first run or add a `--prime-with-latest N` flag in your own script.
 3. **Unbounded watermark growth.** The shared helper caps at 500 IDs. Raise it for high-churn feeds; lower it on constrained filesystems.
 4. **Putting the state dir where the agent's sandbox can't write.** `$HERMES_HOME/watcher-state/` is always writable. Docker/Modal backends may not see arbitrary host paths.
-

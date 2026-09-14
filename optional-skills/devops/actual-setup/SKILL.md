@@ -49,7 +49,7 @@ a human in a browser.
 ### Relay / API mode
 
 1. Put the key in `.env` (secrets only — never config.yaml):
-   append `ACTUAL_API_KEY=ac_...` to `~/.hermes/.env`.
+   append `ACTUAL_API_KEY=ac_...` to `${HERMES_HOME}/.env`.
 2. Verify the key and discover models with `terminal`:
    ```bash
    curl -s https://api.actual.inc/v1/models -H "Authorization: Bearer $ACTUAL_API_KEY"
@@ -77,7 +77,7 @@ a human in a browser.
    ```
 3. Point Hermes at the daemon. `ACTUAL_BASE_URL` with a loopback host flips the
    built-in provider into local no-auth mode automatically — no key needed:
-   append `ACTUAL_BASE_URL=http://127.0.0.1:8080` to `~/.hermes/.env`, then:
+   append `ACTUAL_BASE_URL=http://127.0.0.1:8080` to `${HERMES_HOME}/.env`, then:
    ```bash
    hermes config set model.provider actual
    hermes config set model.default "INSTALLED_MODEL_NAME"

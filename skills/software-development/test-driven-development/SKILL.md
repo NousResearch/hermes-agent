@@ -17,40 +17,28 @@ metadata:
 
 Write the test first. Watch it fail. Write minimal code to pass.
 
-**Core principle:** If you didn't watch the test fail, you don't know if it tests the right thing.
-
-**Violating the letter of the rules is violating the spirit of the rules.**
+**Core principle:** For an observable production behavior change, a focused test that first fails
+is the strongest evidence that the implementation covers the intended behavior.
 
 ## When to Use
 
-**Always:**
-- New features
-- Bug fixes
-- Refactoring
-- Behavior changes
+Use by default for observable production behavior changes: new features, bug fixes, behavior
+changes, and refactors that can affect behavior.
 
-**Exceptions (ask the user first):**
-- Throwaway prototypes
-- Generated code
-- Configuration files
-
-Thinking "skip TDD just this once"? Stop. That's rationalization.
+Use proportional validation instead for throwaway prototypes, generated code, configuration or
+documentation changes, mechanical moves, and urgent contained repairs. Do not pause for a user
+question for those cases; ask only when an ambiguity, irreversible action, or high-risk decision
+prevents safe progress. Repository-local `AGENTS.md` test commands and validation requirements
+take precedence over this skill.
 
 ## The Iron Law
 
 ```
-NO PRODUCTION CODE WITHOUT A FAILING TEST FIRST
+FOR OBSERVABLE PRODUCTION BEHAVIOR, ESTABLISH A FOCUSED FAILURE BEFORE THE FIX WHEN PRACTICAL
 ```
 
-Write code before the test? Delete it. Start over.
-
-**No exceptions:**
-- Don't keep it as "reference"
-- Don't "adapt" it while writing tests
-- Don't look at it
-- Delete means delete
-
-Implement fresh from tests. Period.
+For work outside that scope, choose the smallest meaningful check: generation validation,
+configuration parsing, a targeted smoke check, or inspection of the mechanical result.
 
 ## Red-Green-Refactor Cycle
 
@@ -94,11 +82,11 @@ Vague name, tests mock not real code.
 
 ### Verify RED — Watch It Fail
 
-**MANDATORY. Never skip.**
+For work in this skill's default scope, verify the focused test fails before implementing.
 
 ```bash
 # Use terminal tool to run the specific test
-pytest tests/test_feature.py::test_specific_behavior -v
+scripts/run_tests.sh tests/test_feature.py -k test_specific_behavior -v
 ```
 
 Confirm:
@@ -140,14 +128,14 @@ We'll fix it in REFACTOR.
 
 ### Verify GREEN — Watch It Pass
 
-**MANDATORY.**
+For work in this skill's default scope, verify the focused test passes after implementing.
 
 ```bash
 # Run the specific test
-pytest tests/test_feature.py::test_specific_behavior -v
+scripts/run_tests.sh tests/test_feature.py -k test_specific_behavior -v
 
-# Then run ALL tests to check for regressions
-pytest tests/ -q
+# Then run the repository-required regression scope; use the full suite only when warranted
+scripts/run_tests.sh tests/test_feature.py -q
 ```
 
 Confirm:
@@ -307,13 +295,13 @@ Use the `terminal` tool to run tests at each step:
 
 ```python
 # RED — verify failure
-terminal("pytest tests/test_feature.py::test_name -v")
+terminal("scripts/run_tests.sh tests/test_feature.py -k test_name -v")
 
 # GREEN — verify pass
-terminal("pytest tests/test_feature.py::test_name -v")
+terminal("scripts/run_tests.sh tests/test_feature.py -k test_name -v")
 
-# Full suite — verify no regressions
-terminal("pytest tests/ -q")
+# Expand verification according to repository-local guidance and change risk
+terminal("scripts/run_tests.sh tests/test_feature.py -q")
 ```
 
 ### With delegate_task
@@ -332,7 +320,7 @@ delegate_task(
     5. Refactor if needed
     6. Commit
 
-    Project test command: pytest tests/ -q
+    Project test command: scripts/run_tests.sh tests/ -q
     Project structure: [describe relevant files]
     """,
     toolsets=['terminal', 'file']
@@ -341,22 +329,22 @@ delegate_task(
 
 ### With systematic-debugging
 
-Bug found? Write failing test reproducing it. Follow TDD cycle. The test proves the fix and prevents regression.
-
-Never fix bugs without a test.
+For an observable production bug, write a failing test reproducing it when practical and follow
+the TDD cycle. For urgent contained repairs or a repro that cannot be automated promptly, use the
+proportional validation path above and add durable coverage when the risk warrants it.
 
 ## Testing Anti-Patterns
 
 - **Testing mock behavior instead of real behavior** — mocks should verify interactions, not replace the system under test
 - **Testing implementation details** — test behavior/results, not internal method calls
-- **Happy path only** — always test edge cases, errors, and boundaries
+- **Happy path only** — cover relevant edge cases, errors, and boundaries
 - **Brittle tests** — tests should verify behavior, not structure; refactoring shouldn't break them
 
 ## Final Rule
 
 ```
-Production code → test exists and failed first
-Otherwise → not TDD
+Observable production behavior → focused test exists and failed first when practical
+Otherwise → use proportional validation
 ```
 
-No exceptions without the user's explicit permission.
+Repository-local guidance determines the required validation scope.

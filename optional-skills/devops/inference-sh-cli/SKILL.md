@@ -19,12 +19,10 @@ All commands use the **terminal tool** to run `infsh` commands.
 
 ## When to Use
 
-- User asks to generate images (FLUX, Reve, Seedream, Grok, Gemini image)
-- User asks to generate video (Veo, Wan, Seedance, OmniHuman)
-- User asks about inference.sh or infsh
-- User wants to run AI apps without managing individual provider APIs
-- User asks for AI-powered search (Tavily, Exa)
-- User needs avatar/lipsync generation
+Use this skill only when the user explicitly requests inference.sh or `infsh`, or when existing
+enabled tools cannot satisfy the task and the user has approved external-provider setup and any
+associated cost. Do not select it merely because the task involves images, video, search, avatars,
+or another AI app.
 
 ## Prerequisites
 

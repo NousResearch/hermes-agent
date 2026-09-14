@@ -36,7 +36,7 @@ Read-only — no API key, no signing, no order placement.
 
 Stdlib only — no external packages, no API key.
 
-The script reads `${HERMES_HOME:-~/.hermes}/.env` for two optional defaults:
+The script reads `${HERMES_HOME}/.env` for two optional defaults:
 
 - `HYPERLIQUID_API_URL` — defaults to `https://api.hyperliquid.xyz`. Set to
   `https://api.hyperliquid-testnet.xyz` for testnet.
@@ -46,7 +46,7 @@ The script reads `${HERMES_HOME:-~/.hermes}/.env` for two optional defaults:
 
 A project `.env` in the current working directory is honored as a dev fallback.
 
-Helper script: `~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py`
+Helper script: `${HERMES_HOME}/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py`
 
 ---
 
@@ -55,7 +55,7 @@ Helper script: `~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_clie
 Invoke through the `terminal` tool:
 
 ```bash
-python ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py <command> [args]
+python ${HERMES_HOME}/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py <command> [args]
 ```
 
 Add `--json` to any command for machine-readable output.
@@ -80,7 +80,7 @@ hyperliquid_client.py export <coin> [--interval 1h] [--hours N] [--output PATH]
 ```
 
 For `state`, `spot-balances`, `fills`, `orders`, and `review`, the address is
-optional when `HYPERLIQUID_USER_ADDRESS` is set in `${HERMES_HOME:-~/.hermes}/.env`.
+optional when `HYPERLIQUID_USER_ADDRESS` is set in `${HERMES_HOME}/.env`.
 
 ---
 
@@ -89,12 +89,12 @@ optional when `HYPERLIQUID_USER_ADDRESS` is set in `${HERMES_HOME:-~/.hermes}/.e
 ### 1. Discover DEXs and Markets
 
 ```bash
-python ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py dexs
+python ${HERMES_HOME}/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py dexs
 
-python ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python ${HERMES_HOME}/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   markets --limit 15 --sort volume
 
-python ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python ${HERMES_HOME}/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   spots --limit 15
 ```
 
@@ -105,10 +105,10 @@ python ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
 ### 2. Pull Historical Market Data
 
 ```bash
-python ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python ${HERMES_HOME}/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   candles BTC --interval 1h --hours 72 --limit 48
 
-python ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python ${HERMES_HOME}/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   funding BTC --hours 168 --limit 30
 ```
 
@@ -118,7 +118,7 @@ Time-range endpoints paginate. For larger windows, repeat with a later
 ### 3. Inspect Live Order Book
 
 ```bash
-python ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python ${HERMES_HOME}/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   l2 BTC --levels 10
 ```
 
@@ -128,10 +128,10 @@ impact of a large order.
 ### 4. Review an Account
 
 ```bash
-python ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python ${HERMES_HOME}/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   state 0xabc...
 
-python ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python ${HERMES_HOME}/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   spot-balances
 ```
 
@@ -142,20 +142,20 @@ withdrawable?".
 ### 5. Review Fills and Orders
 
 ```bash
-python ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python ${HERMES_HOME}/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   fills 0xabc... --hours 72 --limit 25
 
-python ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python ${HERMES_HOME}/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   orders --limit 25
 ```
 
 ### 6. Generate a Trade Review
 
 ```bash
-python ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python ${HERMES_HOME}/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   review 0xabc... --hours 72 --fills 50
 
-python ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python ${HERMES_HOME}/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   review --coin BTC --hours 168
 ```
 
@@ -171,10 +171,10 @@ from outcome quality.
 ### 7. Export a Reusable Dataset
 
 ```bash
-python ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python ${HERMES_HOME}/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   export BTC --interval 1h --hours 168 --output ./btc-1h-7d.json
 
-python ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python ${HERMES_HOME}/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   export BTC --interval 15m --hours 72 --end-time-ms 1760000000000
 ```
 
@@ -204,7 +204,7 @@ normalized candle rows, normalized funding rows, summary stats. Use
 ## Verification
 
 ```bash
-python ~/.hermes/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
+python ${HERMES_HOME}/skills/blockchain/hyperliquid/scripts/hyperliquid_client.py \
   markets --limit 5
 ```
 

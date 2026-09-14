@@ -42,12 +42,12 @@ For each company include, where available:
 5. reputable trade and financial press
 6. job postings as weak supporting evidence
 
-Use `rss-feeds` (optional) or `blogwatcher` (optional, stateful) for feeds, `reddit-reading` for community discussion, and `web_search`/`web_extract` for pages. Write the watch contract (watchlist, categories, materiality threshold, last cutoff) to a state file under `~/.hermes/competitor-watches/<watch-slug>.json`, then create the job:
+Use `rss-feeds` (optional) or `blogwatcher` (optional, stateful) for feeds, `reddit-reading` for community discussion, and `web_search`/`web_extract` for pages. Write the watch contract (watchlist, categories, materiality threshold, last cutoff) to `$HERMES_HOME/competitor-watches/<watch-slug>.json`, then create the job:
 
 ```
 cronjob(action="create",
         schedule="every monday 9am",
-        prompt="Load the competitor-news-monitor skill and run the tick for the watch contract at ~/.hermes/competitor-watches/<watch-slug>.json.",
+        prompt="Load the competitor-news-monitor skill and run the tick for the watch contract at $HERMES_HOME/competitor-watches/<watch-slug>.json.",
         deliver=<user's destination>)
 ```
 

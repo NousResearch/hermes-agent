@@ -14,9 +14,24 @@ metadata:
 
 # Guidance: Constrained LLM Generation
 
+## Selection and Fallback
+
+Choose one structured-output path by the constraint, not by preference:
+
+1. Use `instructor` first when the selected backend supports typed-schema generation and the
+   need is validated JSON/Pydantic extraction with provider-managed retries.
+2. Use this Guidance skill when Python control flow must interleave with generation, or when
+   regex, choice, or composable grammar constraints must prevent invalid tokens. This requires a
+   backend with local logit access.
+3. Use `outlines` for local-backend schema, regex, or `Literal` constrained generation when its
+   direct output-type API is the better fit and Python control-flow composition is not needed.
+4. If neither native typed schemas nor a compatible local constrained backend is available, use
+   ordinary generation followed by explicit parsing and validation; do not claim generation-time
+   guarantees.
+
 ## When to Use This Skill
 
-Use Guidance when you need to:
+Use Guidance only for the second selection case above, when you need to:
 - **Control LLM output syntax** with regex or grammars
 - **Guarantee valid JSON/XML/code** generation
 - **Reduce latency** vs traditional prompting approaches
@@ -576,5 +591,4 @@ lm += gen("name", regex=r"^(John|Jane)$", max_tokens=10)
 - `references/constraints.md` - Comprehensive regex and grammar patterns
 - `references/backends.md` - Backend-specific configuration
 - `references/examples.md` - Production-ready examples
-
 

@@ -80,7 +80,7 @@ Prefer a thin server with good names, docstrings, and schemas over a large serve
 Copy a template directly or use the scaffold helper:
 
 ```bash
-python ~/.hermes/skills/mcp/fastmcp/scripts/scaffold_fastmcp.py \
+python ${HERMES_HOME}/skills/mcp/fastmcp/scripts/scaffold_fastmcp.py \
   --template api_wrapper \
   --name "Acme API" \
   --output ./acme_server.py
@@ -89,7 +89,7 @@ python ~/.hermes/skills/mcp/fastmcp/scripts/scaffold_fastmcp.py \
 Available templates:
 
 ```bash
-python ~/.hermes/skills/mcp/fastmcp/scripts/scaffold_fastmcp.py --list
+python ${HERMES_HOME}/skills/mcp/fastmcp/scripts/scaffold_fastmcp.py --list
 ```
 
 If copying manually, replace `__SERVER_NAME__` with a real server name.
@@ -172,7 +172,7 @@ Use `fastmcp discover` to inspect named MCP servers already configured on the ma
 
 When the goal is Hermes integration, either:
 
-- configure the server in `~/.hermes/config.yaml` using the `native-mcp` skill, or
+- configure the server in `${HERMES_HOME}/config.yaml` using the `native-mcp` skill, or
 - keep using FastMCP CLI commands during development until the interface stabilizes
 
 ### 7. Deploy After the Local Contract Is Stable
@@ -293,7 +293,7 @@ This usually exposes naming mismatches, missing required arguments, or non-seria
 
 ### Hermes cannot see the deployed server
 
-The server-building part may be correct while the Hermes config is not. Load the `native-mcp` skill and configure the server in `~/.hermes/config.yaml`, then restart Hermes.
+The server-building part may be correct while the Hermes config is not. Load the `native-mcp` skill and configure the server in `${HERMES_HOME}/config.yaml`, then restart Hermes.
 
 ## References
 

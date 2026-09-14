@@ -30,7 +30,7 @@ Use the [SiYuan](https://github.com/siyuan-note/siyuan) kernel API via curl to s
 
 1. Install and run SiYuan (desktop or Docker)
 2. Get your API token: **Settings > About > API token**
-3. Store it in `${HERMES_HOME:-~/.hermes}/.env`:
+3. Store it in `${HERMES_HOME}/.env`:
    ```
    SIYUAN_TOKEN=your_token_here
    SIYUAN_URL=http://127.0.0.1:6806
@@ -287,7 +287,7 @@ Common `type` values in SQL queries:
 If you prefer a native integration instead of curl, install the SiYuan MCP server:
 
 ```yaml
-# In ~/.hermes/config.yaml under mcp_servers:
+# In ${HERMES_HOME}/config.yaml under mcp_servers:
 mcp_servers:
   siyuan:
     command: npx

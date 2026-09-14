@@ -57,7 +57,7 @@ python "$SKILL_DIR/scripts/generate_meme.py" --search "disaster"
 3. Write short captions for each field (8-12 words max per field, shorter is better).
 4. Find the skill's script directory:
    ```
-   SKILL_DIR=$(dirname "$(find ~/.hermes/skills -path '*/meme-generation/SKILL.md' 2>/dev/null | head -1)")
+   SKILL_DIR=$(dirname "$(find ${HERMES_HOME}/skills -path '*/meme-generation/SKILL.md' 2>/dev/null | head -1)")
    ```
 5. Run the generator:
    ```bash

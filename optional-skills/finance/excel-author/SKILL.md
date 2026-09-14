@@ -223,15 +223,11 @@ This prevents the cascading-formula-breakage pattern where inserting a header ro
 
 ## Verify step-by-step with the user
 
-For large models (DCFs, 3-statement, LBO), stop and show the user intermediate artifacts before continuing. Catching a wrong margin assumption before you've built downstream sensitivity tables saves an hour.
-
-Checkpoint pattern:
-- After Inputs block → show raw inputs, confirm before projecting
-- After Revenue projections → confirm top line + growth
-- After FCF build → confirm the full schedule
-- After WACC → confirm inputs
-- After valuation → confirm the equity bridge
-- THEN build sensitivity tables
+For large models (DCFs, 3-statement, LBO), validate each intermediate section internally before
+building downstream schedules: check inputs are sourced and labeled, formulas remain formulas,
+and the relevant balance/tie-out check passes. Continue automatically and finish with a concise
+assumptions and validation summary. Ask only when a material assumption is ambiguous, an external
+action is irreversible, or the required decision cannot be derived from the supplied materials.
 
 ## When NOT to use this skill
 

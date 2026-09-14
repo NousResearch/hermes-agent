@@ -25,7 +25,7 @@ Recalculate before delivery: `python /path/to/excel-author/scripts/recalc.py ./o
 
 Before starting any LBO model:
 1. **If a template file is attached/provided**: Use that template's structure exactly - copy it and populate with the user's data
-2. **If no template is attached**: Ask the user: *"Do you have a specific LBO template you'd like me to use? If not, I can use the standard template which includes Sources & Uses, Operating Model, Debt Schedule, and Returns Analysis."*
+2. **If no template is attached**: Use the standard template (Sources & Uses, Operating Model, Debt Schedule, and Returns Analysis) unless a material layout or methodology choice cannot be derived.
 3. **If using the standard template**: Copy `examples/LBO_Model.xlsx` as your starting point and populate it with the user's assumptions
 
 **IMPORTANT**: When a file like `LBO_Model.xlsx` is attached, you MUST use it as your template - do not build from scratch. Even if the template seems complex or has more features than needed, copy it and adapt it to the user's requirements. Never decide to "build from scratch" when a template is provided.
@@ -41,7 +41,7 @@ Use Python/openpyxl. Write formula strings (`ws["D20"] = "=B5*B6"`), then run th
 * **Use the template structure** - Follow the organization in `examples/LBO_Model.xlsx` or the user's provided template. Do not invent your own layout.
 * **Use proper cell references** - All formulas should reference the appropriate cells. Never type numbers that should come from other cells.
 * **Maintain sign convention consistency** - Follow whatever sign convention the template uses (some use negative for outflows, some use positive). Be consistent throughout.
-* **Work section by section, verify with user at each step** - Complete one section fully, show the user what was built, run the section's verification checks, and get confirmation BEFORE moving to the next section. Do NOT build the entire model end-to-end and then present it — later sections depend on earlier ones, so catching a mistake in Sources & Uses after the returns are already built means rework everywhere.
+* **Work and validate section by section** - Complete each section, run its verification checks, and continue automatically. Finish with a concise assumptions and validation summary; ask only for material ambiguity, an irreversible external action, or a decision that cannot be derived.
 
 ### Formula Color Conventions
 * **Blue (0000FF)**: Hardcoded inputs - typed numbers that don't reference other cells
@@ -74,8 +74,8 @@ Use Python/openpyxl. Write formula strings (`ws["D20"] = "=B5*B6"`), then run th
 Before filling any formulas:
 
 * **Examine the template structure** - Identify all sections, understand the timeline (which columns are which periods), note any existing formulas
-* **Ask the user if anything is unclear** - If the template structure, calculation methods, or requirements are ambiguous, ask before proceeding
-* **Confirm key assumptions** - Any key inputs, calculation preferences, or specific requirements
+* **Ask only for material ambiguity** - If the template structure, calculation methods, or requirements cannot be derived, ask before proceeding.
+* **Derive and document key assumptions** - Use supplied materials and standard practice where they resolve the choice.
 * **ONLY AFTER understanding the template**, proceed to fill in formulas
 
 ---
@@ -255,19 +255,16 @@ Must return success with zero errors.
 
 ---
 
-## WORKING WITH THE USER — SECTION-BY-SECTION CHECKPOINTS
+## SECTION-BY-SECTION VALIDATION
 
-* **If the template structure is unclear**, ask before proceeding
-* **If the user's requirements conflict with the template**, confirm their preference
-* **After completing each major section**, STOP and verify with the user before continuing:
-  - **After Sources & Uses** → show the balanced table, confirm the plug is correct, get sign-off before building the operating model
-  - **After Operating Model / Projections** → show the projected P&L, confirm growth rates and margins look right, get sign-off before the debt schedule
-  - **After Debt Schedule** → show beginning/ending balances and interest, confirm the waterfall logic, get sign-off before returns
-  - **After Returns (IRR/MOIC)** → show the cash flow series and outputs, confirm signs and ranges, get sign-off before sensitivity tables
-  - **After Sensitivity Tables** → show that each cell varies, confirm the base case lands where expected
-* **If errors are found during verification**, fix them before moving to the next section
-* **Show your work** - explain key formulas or assumptions when helpful
-* **Never present a completed model without having checked in at each section** — it's faster to catch a wrong cell reference at the source than to trace it backwards from a broken IRR
+* **If the template structure is unclear**, ask before proceeding. If user requirements conflict with the template, ask only when the preferred outcome cannot be derived.
+* Validate internally after each major section:
+  - **Sources & Uses** — table balances and the plug is traceable.
+  - **Operating Model / Projections** — growth and margins are sourced or stated assumptions.
+  - **Debt Schedule** — beginning/ending balances, mandatory amortization, and interest waterfall tie.
+  - **Returns (IRR/MOIC)** — cash-flow signs and output ranges are sensible.
+  - **Sensitivity Tables** — cells vary and the base case matches the model.
+* Fix validation errors before proceeding, explain material formulas when helpful, and end with a concise assumptions and validation summary.
 
 ---
 

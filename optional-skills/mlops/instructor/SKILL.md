@@ -14,9 +14,19 @@ metadata:
 
 # Instructor: Structured LLM Outputs
 
+## Selection and Fallback
+
+Use `instructor` first when the chosen backend supports typed-schema generation and the task is
+Pydantic-validated extraction or generation with provider-managed retries. Use `guidance` instead
+when Python control flow must compose generation steps or a regex/grammar must constrain tokens
+on a local-logit backend. Use `outlines` for local schema/regex/`Literal` constraints when its
+direct output-type API fits. If no supported typed-schema or constrained backend is available,
+fall back to normal generation plus explicit parsing and validation; never represent that fallback
+as generation-time schema enforcement.
+
 ## When to Use This Skill
 
-Use Instructor when you need to:
+Use Instructor only when the selected backend supports the typed-schema path above and you need to:
 - **Extract structured data** from LLM responses reliably
 - **Validate outputs** against Pydantic schemas automatically
 - **Retry failed extractions** with automatic error handling
@@ -740,5 +750,4 @@ class PartialData(BaseModel):
 - `references/validation.md` - Advanced validation patterns
 - `references/providers.md` - Provider-specific configuration
 - `references/examples.md` - Real-world use cases
-
 

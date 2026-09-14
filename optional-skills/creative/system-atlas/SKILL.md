@@ -17,12 +17,17 @@ metadata:
 
 An atlas is one data file (`data.mjs`) that renders two views: an **interactive isometric map** (a single self-contained `atlas.html` — hover to read, click to pin, go inside for steps, moving data packets you can inspect, chapters that reveal the system a few structures at a time), and a **generated text twin** (`SYSTEM.md`) with the decisions table, every structure, the flows, and the open questions by ID. The data file is the only thing anyone edits; both views rebuild from it. It sits beside a hand-written glossary (`CONTEXT.md`) and ADRs.
 
-**Does:** interactive architecture maps with progressive disclosure, question tracking across feedback rounds, a generated text twin, and a repeatable update loop.
-**Doesn't:** static one-off diagrams (use the architecture-diagram or excalidraw skill), finished systems that only need a README, or a single diagram for a PR.
+**Does:** maintained, interactive architecture atlases with progressive disclosure, question
+tracking across feedback rounds, a generated text twin, and a repeatable update loop.
+**Doesn't:** static one-off diagrams, PR diagrams, simple walkthroughs, finished systems that only
+need a README, or a single diagram for a PR. Use `architecture-diagram` or `excalidraw` for those.
 
 ## When to Use
 
-Use whenever someone wants to discuss, design, review, or explain an architecture visually — "make an atlas", "map the system", "make the architecture explorable", "visualize the codebase/agent/pipeline so we can talk about it", "a diagram I can click around", "walk me through how it fits together" — or when an architecture discussion is producing a pile of open questions that need tracking across feedback rounds. Also use it to update an existing atlas after decisions change. Best when the system is new enough that vocabulary, decisions, and questions are still moving and there will be more than one feedback round.
+Use only when the user requests an atlas or needs a maintained interactive architecture artifact:
+multiple feedback rounds, tracked questions/decisions, progressive exploration, and expected
+rebuilds after future changes. Use it to update an existing atlas with that maintenance contract.
+Do not use it for static one-off diagrams, PR diagrams, or a simple explanatory walkthrough.
 
 ## Prerequisites
 
@@ -54,17 +59,18 @@ Every field of the data file is documented in `assets/data.example.mjs`.
 
 ## Procedure
 
-Follow the order — each step was earned by a correction the first time round.
+Use the following process when the scope warrants it; do not create maintenance machinery for a
+one-off request.
 
-1. **Read the inputs before drawing.** The vision doc, the repo's existing surfaces, and whatever prior art the user allows (ask — they may forbid a branch or a source). If you will build on a framework, read its docs first; hand long docs to a subagent via `delegate_task` with your specific design questions and have it return a primer with gotchas and a "what it does not give us" list. Drawing before this produces boxes that don't map to anything real.
-2. **Discuss before drawing.** Propose the structure in chat, mapped to the runtime's real primitives, and ask only the questions you cannot derive from the repo. Take defaults for the rest and say which.
-3. **First atlas — the whole system.** Copy `assets/` into the atlas home (rename `data.example.mjs` to `data.mjs`), fill the data, build with `node`, publish. **Where the atlas home is depends on the repo's docs policy** — ask before committing anything. Docs-friendly repos: `docs/<system>/atlas/` in-tree. Repos that commit only ADRs and `CONTEXT.md`: put the atlas, `SYSTEM.md`, and `research/` in a git-ignored scratch dir and attach `SYSTEM.md` + research to the spec issue when published. (Committing the whole set once produced a 3,900-line docs PR and four review rounds reconciling three restatements of one design.) Load the design-md or architecture-diagram skill via skill_view for HTML-artifact guidance if useful; read `references/design-language.md` for the visual rules either way.
+1. **Read inputs when needed.** Inspect the vision doc, relevant repository surfaces, and allowed prior art when they are necessary to model the atlas. Read framework documentation or delegate a focused research brief only when the scope requires it; otherwise work from the available evidence.
+2. **Derive before asking.** Map the proposed structure to real runtime primitives and ask only questions that cannot be derived from the repository or request. State any material defaults used.
+3. **Build and publish conditionally.** Copy `assets/` into the atlas home (rename `data.example.mjs` to `data.mjs`) and build with `node` only for an accepted atlas scope. Publish only when the user requests publication or the task explicitly includes a shareable artifact. Follow the repository docs policy for location; ask only if it cannot be derived.
 4. **Progressive disclosure.** A whole system at once reads as noise. Ten-ish chapters; each adds at most three structures and runs one small flow that only touches revealed structures; the last chapter shows everything with a flow picker. Unrevealed structures stay in the index, dimmed, with their chapter number. Panels are summary-first: one sentence, then *Read more* and *Steps* folded.
 5. **Shapes and labels.** Letters on boxes are not enough. Give each role a shape and put a readable name label on the canvas under every structure — see design-language.
 6. **Text twin.** `CONTEXT.md` is a glossary and nothing else (the nouns, one line each); ADRs only for decisions that are hard to reverse, surprising without context, and the result of a real trade-off — these two are the in-tree pieces. `SYSTEM.md` is generated and `research/` holds evidence; both live with the atlas (scratch dir or `docs/`, per step 3). Don't open issues unless asked.
-7. **Feedback by question ID.** Every question is `Q-<code><n>` with a state: open (a string), resolved `{q, r}` (answer + date), or routed `{q, to}` (handed to a named next step). Record the user's words. If they call something "not a question", drop it; if they say "I don't get this", explain with a concrete example *before* resolving. After each round: rebuild, republish, update memory.
-8. **Deep dives feed back.** Research with subagents (`delegate_task`) against one shared brief (the interface we own, the requirements that separate candidates, a usage model for cost, a fixed deliverable shape). Write a synthesis with a normalized cost/fit grid. Fold resolutions into the data as `{q, r: '… (from the deep dive, date)'}`. If the user rejects a proposal, sweep *every* file and rewrite — a banner on top of a stale section is not enough.
-9. **Keep it current.** One source, rebuild and republish after every change, never hand-edit generated files, and leave a `README.md` in the docs folder explaining the set (table in `references/process-and-lessons.md`).
+7. **Feedback by question ID.** For a multi-round atlas, give every question a stable `Q-<code><n>` state and record resolutions. Rebuild, republish, or update memory only when the user asks or the atlas's agreed maintenance scope requires it.
+8. **Deep dives feed back.** Use `delegate_task` research only where complexity, uncertainty, or explicit user request justifies it. If used, give one shared brief and fold the resulting evidence into the data.
+9. **Keep it current when maintained.** For an atlas with an agreed update loop, use one source, rebuild generated views rather than hand-editing them, and republish only when its audience needs the updated artifact.
 
 ## Publishing
 

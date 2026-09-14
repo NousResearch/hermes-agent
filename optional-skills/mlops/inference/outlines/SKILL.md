@@ -14,9 +14,19 @@ metadata:
 
 # Outlines: Structured Text Generation
 
+## Selection and Fallback
+
+Use `instructor` first when the chosen backend supports typed-schema generation and the need is
+Pydantic-validated extraction or generation. Use `guidance` instead when Python control flow must
+interleave with generation or a composable grammar/regex/choice constraint is required on a
+local-logit backend. Use Outlines for local schema, regex, numeric, or `Literal` constrained
+generation when its direct output-type API fits and that Python control-flow composition is not
+needed. If no compatible typed-schema or constrained backend exists, use ordinary generation and
+explicit parsing/validation; it is not a generation-time guarantee.
+
 ## When to Use This Skill
 
-Use Outlines when you need to:
+Use Outlines only for the local constrained-generation case above, when you need to:
 - **Guarantee valid JSON/XML/code** structure during generation
 - **Use Pydantic models** for type-safe outputs
 - **Support local models** (Transformers, llama.cpp, vLLM)

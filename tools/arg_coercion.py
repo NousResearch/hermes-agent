@@ -133,17 +133,22 @@ def _schema_accepts_kind(
     schema: Any,
     kind: str,
     root_schema: Any = None,
+    seen_schema_ids: frozenset[int] = frozenset(),
 ) -> bool:
     """True when *schema* permits JSON type *kind* via ``type`` or any anyOf/oneOf/allOf branch."""
     if not isinstance(schema, dict):
         return False
+    if id(schema) in seen_schema_ids:
+        return False
+    # Track this branch only: a recursive union must not hide its other alternatives.
+    seen_schema_ids = seen_schema_ids | {id(schema)}
     if root_schema is None:
         root_schema = schema
     schema = _resolve_local_schema_ref(schema, root_schema)
     t = schema.get("type")
     if t == kind or (isinstance(t, list) and kind in t):
         return True
-    return any(isinstance(branches := schema.get(union_key), list) and any(_schema_accepts_kind(b, kind, root_schema) for b in branches)
+    return any(isinstance(branches := schema.get(union_key), list) and any(_schema_accepts_kind(b, kind, root_schema, seen_schema_ids) for b in branches)
                for union_key in ("anyOf", "oneOf", "allOf"))
 
 

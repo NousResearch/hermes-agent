@@ -653,7 +653,7 @@ def _get_bot_chat_delivery_timeout() -> int:
         return 600
 
 
-def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: bool = False) -> Optional[str]:
+def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Optional[dict] = None) -> Optional[str]:
     """Hand output to the live Bot Chat owner, or use the legacy unowned CLI lane.
 
     None means completed; a queued/claimed receipt returns an explicit unverified status
@@ -679,7 +679,11 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: boo
     )
     try:
         source_home = get_hermes_home().resolve()
-        home = (get_profile_dir(profile) if profile else source_home).resolve()
+        from pathlib import Path
+        home = (Path(deferred["home"]) if deferred is not None else
+                get_profile_dir(profile) if profile else source_home).resolve()
+        if deferred is not None and not (home / "state.db").is_file():
+            return f"bot-chat delivery target no longer exists: {home}; do not resend"
         # run_one_job/claim_fire attach the durable execution id before delivery. The
         # transient fallback supports direct helper callers, never deduping recurring
         # runs by their (potentially identical) output or previous last_run timestamp.
@@ -690,6 +694,8 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: boo
             [str(source_home), job_id, str(run_id), str(home)],
             ensure_ascii=False, separators=(",", ":"),
         ).encode("utf-8")).hexdigest()
+        if deferred is not None:
+            key = deferred["id"]
         # Read BEFORE discovery: the previous owner may have exited after accepting.
         # No receipt state, including ambiguous/failed, authorizes a CLI replay.
         receipt = read_delivery_result(home, key)
@@ -750,7 +756,12 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: boo
     from agent.delegation_context import delegated_child_subprocess_env
     from tools.environments.local import strip_launch_profile_env
     env = strip_launch_profile_env(delegated_child_subprocess_env(os.environ))
-    if profile:
+    if deferred is not None:
+        # Admission owns the destination, not the current profile-name resolver.
+        env["HERMES_HOME"] = str(home)
+        if home.parent.name != "profiles":
+            argv += ["-p", "default"]  # Ignore a subsequently changed active_profile.
+    elif profile:
         argv += ["-p", profile]
         # -p owns profile resolution; this scheduler's HERMES_HOME must not shadow it.
         env.pop("HERMES_HOME", None)

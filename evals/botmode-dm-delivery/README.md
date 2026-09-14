@@ -16,7 +16,7 @@ rm apps/desktop/e2e/probe-dm-delivery.spec.ts
 ```
 
 Use the current seat's actual Xauthority path and an existing runtime venv.
-Artifacts are retained in `/tmp/botmode-dm-recovery`; sandbox path is printed. The
+Artifacts default to `/tmp/botmode-dm-review/native` (override with `BOT_DM_EVIDENCE`); sandbox path is printed. The
 fixture's generated hermes shim pins every child to this checkout, not an installed launcher.
 
 ## Verified results
@@ -40,3 +40,21 @@ is profile-DB-based, not workspace selection; the named live-owner route is posi
 
 The queue is deliberately at-most-once after claim. A crash before spawning but
 after claiming remains inspectable as claimed; it is not retried automatically.
+
+## Independent review follow-up
+
+The probe now admits the named Beta destination from the default scheduler, then
+changes the ticker's `HOME` to a different existing directory before drain.
+Published head `c91dfcbfe810c` fails with `Profile 'beta' does not exist`, leaving
+zero sentinel inputs in Beta. The follow-up pins the admitted home and ID; Beta
+renders one input and reply. Set `BOT_DM_CORRUPT=1` to add one malformed JSON
+record alongside the valid admission: before the follow-up the real tick raises
+`JSONDecodeError`; afterward the damaged record stays on disk while Beta delivers.
+
+Fresh built native run with both root change and corruption: **2 passed (1.4m)**,
+including the existing nested `message_agent` control. Receipts/screenshots:
+`/tmp/botmode-dm-review/{native-red2,corrupt-red,final-native}` and matching `.log`
+files. The first follow-up run also exposed a fixture mistake (the changed HOME
+was not created, so `--in ~` correctly refused); that failed receipt is retained
+in `native-green.log`, and both source legs were rerun with an existing HOME.
+Prior `/tmp/botmode-dm-recovery*` evidence remains untouched.

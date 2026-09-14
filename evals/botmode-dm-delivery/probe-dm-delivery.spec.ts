@@ -9,7 +9,7 @@ const repo = path.resolve(import.meta.dirname, '../../..')
 const python = path.join(process.env.VIRTUAL_ENV || path.join(repo, '.venv'), 'bin', 'python')
 let fixture: MockBackendFixture
 let env: Record<string, string>
-const evidence = '/tmp/botmode-dm-recovery'
+const evidence = process.env.BOT_DM_EVIDENCE || '/tmp/botmode-dm-review/native'
 
 test.beforeAll(async () => {
   fs.mkdirSync(evidence, { recursive: true })
@@ -45,16 +45,18 @@ test('cron output waits for a CLI-only owner and arrives after owner release', a
   test.setTimeout(240_000)
   const output = fs.openSync(path.join(evidence, 'cli-owner.log'), 'w')
   const child = spawn(python, ['-m', 'hermes_cli.main', '-p', 'beta', 'chat', '--in', '~', '-c', 'Bot Chat', '--create-if-missing', '-Q', '-q', 'CLI_OWNER_HOLD'], { cwd: repo, env, stdio: ['ignore', output, output] })
-  const cronEnv = { ...env, HERMES_HOME: path.join(fixture.sandbox.hermesHome, 'profiles', 'beta') }
+  const cronEnv = { ...env, HERMES_HOME: fixture.sandbox.hermesHome }
   try {
     await fixture.mock.waitForHeldCompletion()
-    const script = 'import json; from cron.scheduler_delivery import _deliver_to_bot_chat; j={"id":"cli-residual","name":"CLI residual","execution_id":"fixed-execution"}; result=_deliver_to_bot_chat(j,"CLI_OWNER_CRON_SENTINEL",""); print(json.dumps({"result":result,"job":j}))'
+    const script = 'import json; from cron.scheduler_delivery import _deliver_to_bot_chat; j={"id":"cli-residual","name":"CLI residual","execution_id":"fixed-execution"}; result=_deliver_to_bot_chat(j,"CLI_OWNER_CRON_SENTINEL","beta"); print(json.dumps({"result":result,"job":j}))'
     const result = JSON.parse(execFileSync(python, ['-c', script], { env: cronEnv, cwd: repo, encoding: 'utf8', timeout: 30_000 }))
     console.log('CLI_OWNER_CRON_ADMISSION', JSON.stringify(result))
     fs.writeFileSync(path.join(evidence, 'cli-owner-admission.json'), JSON.stringify(result, null, 2))
+    if (process.env.BOT_DM_CORRUPT) fs.writeFileSync(path.join(fixture.sandbox.hermesHome, 'cron', 'bot_chat_pending', 'broken.json'), '{')
     fixture.mock.releaseHeldStream()
     await expect.poll(() => child.exitCode, { timeout: 60_000 }).toBe(0)
-    const ticker = spawn(python, ['-c', 'import time; from cron.scheduler import tick; from cron.bot_chat_delivery import _running; tick(verbose=False);\nwhile _running: time.sleep(0.1)'], { env: cronEnv, cwd: repo, stdio: ['ignore', output, output] })
+    fs.mkdirSync(path.join(fixture.sandbox.root, 'changed-launch-home'), { recursive: true })
+    const ticker = spawn(python, ['-c', 'import time; from cron.scheduler import tick; from cron.bot_chat_delivery import _running; tick(verbose=False);\nwhile _running: time.sleep(0.1)'], { env: { ...cronEnv, HOME: path.join(fixture.sandbox.root, 'changed-launch-home') }, cwd: repo, stdio: ['ignore', output, output] })
     await expect.poll(() => ticker.exitCode, { timeout: 90_000 }).toBe(0)
     await openBot('beta')
     expect(dbMessages('beta').filter(([role, text]) => role === 'user' && text.includes('CLI_OWNER_CRON_SENTINEL'))).toHaveLength(1)

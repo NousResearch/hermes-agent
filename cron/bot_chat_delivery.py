@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextvars
 import json
+import logging
 import threading
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from hermes_cli.active_sessions import _FileLock
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
+logger = logging.getLogger(__name__)
 _running: set[Path] = set()
 _running_lock = threading.Lock()
 
@@ -29,6 +31,19 @@ def read_pending(key: str) -> dict | None:
         return None
 
 
+def _records(root: Path) -> list[tuple[Path, dict]]:
+    records = []
+    for path in root.glob("*.json"):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            # Keep damaged receipts as evidence; never replay them or block peers.
+            logger.error("Unreadable deferred Bot Chat receipt %s: %s", path, exc)
+            continue
+        records.append((path, record))
+    return records
+
+
 def defer(key: str, job: dict, content: str, profile: str, home: Path) -> dict:
     root = _root()
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -38,17 +53,16 @@ def defer(key: str, job: dict, content: str, profile: str, home: Path) -> dict:
             if record["content"] != content or record["home"] != str(home):
                 raise ValueError("delivery id already belongs to a different payload")
             return record
-        sequence = max((json.loads(p.read_text(encoding="utf-8"))["sequence"]
-                        for p in root.glob("*.json")), default=0) + 1
+        sequence = max((record["sequence"] for _, record in _records(root)), default=0) + 1
         record = dict(id=key, status="queued", job=job, content=content,
                       profile=profile, home=str(home), sequence=sequence)
         atomic_json_write(root / f"{key}.json", record, fsync_dir=True, mode=0o600)
         return record
 
 
-def drain() -> None:
+def drain(root: Path | None = None) -> None:
     """Serialize drains across processes without holding the producer lock."""
-    root = _root()
+    root = root if root is not None else _root()
     if root.is_dir():
         with _FileLock(root / ".drain.lock"):
             _drain(root)
@@ -59,9 +73,9 @@ def _drain(root: Path) -> None:
     from cron.scheduler_delivery import _deliver_to_bot_chat
     from tools.bot_live_delivery import find_canonical_live_owner, find_canonical_owner
 
-    paths = sorted(root.glob("*.json"),
-                   key=lambda p: json.loads(p.read_text(encoding="utf-8"))["sequence"])
-    for path in paths:
+    with _FileLock(root / ".lock"):
+        records = sorted(_records(root), key=lambda item: item[1]["sequence"])
+    for path, _ in records:
         with _FileLock(root / ".lock"):
             record = json.loads(path.read_text(encoding="utf-8"))
             if record["status"] != "queued":
@@ -76,8 +90,13 @@ def _drain(root: Path) -> None:
                 continue
             record["status"] = "claimed"
             atomic_json_write(path, record, fsync_dir=True, mode=0o600)
-        error = _deliver_to_bot_chat(record["job"], record["content"], record["profile"], deferred=True)
-        record.update(status="ambiguous" if error else "settled", error=error)
+        job = record["job"]
+        job.pop("_bot_chat_delivery_receipts", None)
+        error = _deliver_to_bot_chat(job, record["content"], record["profile"], deferred=record)
+        receipt = job.get("_bot_chat_delivery_receipts", {}).get(
+            f"bot-chat:{record['profile'] or '(own)'}")
+        status = "transferred" if receipt else "ambiguous" if error else "settled"
+        record.update(status=status, error=error)
         # A transferred live-owner receipt remains authoritative, including queued.
         atomic_json_write(path, record, fsync_dir=True, mode=0o600)
 
@@ -85,7 +104,8 @@ def _drain(root: Path) -> None:
 def drain_in_background() -> None:
     """Do not hold up unrelated cron ticks while the eventual Bot Chat turn runs."""
     home = get_hermes_home().resolve()
-    if not _root().is_dir():
+    root = home / "cron" / "bot_chat_pending"
+    if not root.is_dir():
         return
     with _running_lock:
         if home in _running:
@@ -94,7 +114,7 @@ def drain_in_background() -> None:
 
     def run():
         try:
-            drain()
+            drain(root)
         finally:
             with _running_lock:
                 _running.discard(home)

@@ -1387,21 +1387,38 @@ class _CodexCompletionsAdapter:
             service_tier = extra_body.get("service_tier")
             if isinstance(service_tier, str) and service_tier.strip() and not is_xai:
                 resp_kwargs["service_tier"] = service_tier.strip()
-            reasoning_cfg = extra_body.get("reasoning")
-            # ``enabled: False`` leaves reasoning/include unset (Codex still thinks by default).
-            if isinstance(reasoning_cfg, dict) and reasoning_cfg.get("enabled") is not False:
-                # Truthy-only: Codex 400s on e.g. {"effort": null}, so falsy → default. Shared
-                # per-model clamp with the main transport ("max" is gpt-5.6-only; "minimal"/"ultra" rejected).
-                from agent.codex_responses_adapter import classify_responses_route
-                from agent.reasoning_effort import clamp_effort
-                from agent.transports.codex import _codex_efforts_for_route
-                is_codex_backend = classify_responses_route(SimpleNamespace(base_url=host)).is_codex_backend
-                effort = clamp_effort(
-                    reasoning_cfg.get("effort") or "medium",
-                    _codex_efforts_for_route(model, host, is_codex_backend=is_codex_backend),
-                )
-                resp_kwargs["reasoning"] = {"effort": effort, "summary": "auto"}
-                resp_kwargs["include"] = ["reasoning.encrypted_content"]
+        reasoning_cfg = extra_body.get("reasoning") if isinstance(extra_body, dict) else None
+        if not isinstance(reasoning_cfg, dict):
+            # Fall back to a top-level reasoning_effort string — the wire shape the
+            # custom-provider profile emits — and then to the private normalized config
+            # dict, so MoA per-slot reasoning survives the codex_responses translation
+            # exactly like it does on the chat-completions path (custom profile →
+            # top-level reasoning_effort, which the Codex adapter previously dropped).
+            _top_effort = kwargs.get("reasoning_effort")
+            if _top_effort:
+                _eff = str(_top_effort).strip().lower()
+                if _eff in ("none", "false", "disabled"):
+                    reasoning_cfg = {"enabled": False}
+                else:
+                    reasoning_cfg = {"enabled": True, "effort": _eff}
+            else:
+                _rc = kwargs.get("_reasoning_config")
+                if isinstance(_rc, dict):
+                    reasoning_cfg = _rc
+        # ``enabled: False`` leaves reasoning/include unset (Codex still thinks by default).
+        if isinstance(reasoning_cfg, dict) and reasoning_cfg.get("enabled") is not False:
+            # Truthy-only: Codex 400s on e.g. {"effort": null}, so falsy → default. Shared
+            # per-model clamp with the main transport ("max" is gpt-5.6-only; "minimal"/"ultra" rejected).
+            from agent.codex_responses_adapter import classify_responses_route
+            from agent.reasoning_effort import clamp_effort
+            from agent.transports.codex import _codex_efforts_for_route
+            is_codex_backend = classify_responses_route(SimpleNamespace(base_url=host)).is_codex_backend
+            effort = clamp_effort(
+                reasoning_cfg.get("effort") or "medium",
+                _codex_efforts_for_route(model, host, is_codex_backend=is_codex_backend),
+            )
+            resp_kwargs["reasoning"] = {"effort": effort, "summary": "auto"}
+            resp_kwargs["include"] = ["reasoning.encrypted_content"]
         tools = kwargs.get("tools")
         if tools:
             # xAI Responses rejects ``pattern``/``format`` JSON Schema keywords (400); strip for
@@ -1633,6 +1650,20 @@ class _AnthropicCompletionsAdapter:
             _rc = _eb.get("reasoning") if isinstance(_eb, dict) else None
             if isinstance(_rc, dict):
                 reasoning_cfg = _rc
+        if reasoning_cfg is None:
+            # Fall back to the top-level reasoning_effort string the custom-provider
+            # profile emits. A custom provider with api_mode=anthropic_messages but a
+            # base_url without an /anthropic marker (e.g. a relay's plain /v1) misses the
+            # _reasoning_config injection in _build_call_kwargs, and the profile's
+            # top-level reasoning_effort would otherwise be dropped here. Mirrors the
+            # _CodexCompletionsAdapter fallback.
+            _top_effort = kwargs.get("reasoning_effort")
+            if _top_effort:
+                _eff = str(_top_effort).strip().lower()
+                if _eff in ("none", "false", "disabled"):
+                    reasoning_cfg = {"enabled": False}
+                else:
+                    reasoning_cfg = {"enabled": True, "effort": _eff}
         # OpenAI tool_choice (str or dict) → Anthropic-style name/mode string.
         tool_choice = kwargs.get("tool_choice")
         if isinstance(tool_choice, dict):

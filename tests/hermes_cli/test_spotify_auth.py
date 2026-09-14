@@ -279,7 +279,7 @@ def test_manual_paste_full_url_matching_state_reaches_token_exchange(
     not just the bare-code fallback.
     """
     monkeypatch.setattr(
-        auth_mod.uuid, "uuid4", lambda: SimpleNamespace(hex="fixed-state-nonce")
+        auth_spotify.uuid, "uuid4", lambda: SimpleNamespace(hex="fixed-state-nonce")
     )
     exchanged = _manual_paste_login(
         monkeypatch,

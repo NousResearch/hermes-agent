@@ -1,5 +1,5 @@
 export type ToolTone = 'agent' | 'browser' | 'default' | 'file' | 'image' | 'terminal' | 'web'
-export type ToolStatus = 'error' | 'running' | 'success' | 'warning'
+export type ToolStatus = 'error' | 'notice' | 'running' | 'success' | 'warning'
 
 export interface ToolPart {
   args?: unknown

@@ -6,62 +6,18 @@ from pathlib import PureWindowsPath
 from unittest.mock import MagicMock, patch
 
 from hermes_cli.telegram_managed_bot import (
-    DEFAULT_MANAGER_BOT,
     TELEGRAM_ONBOARDING_URL_ENV,
-    TelegramBotSetupResult,
     TelegramPairing,
     create_pairing,
-    generate_bot_username,
-    generate_deep_link,
-    generate_pairing_nonce,
     poll_for_setup_result,
-    poll_for_token,
     print_qr_code,
     render_qr_terminal,
 )
+from hermes_cli import setup_platforms
 
 
 VALID_TOKEN = "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef"
 SECOND_VALID_TOKEN = "987654321:abcdefghijklmnopqrstuvwxyzABCDEF"
-
-
-class TestGenerateBotUsername:
-    def test_secure_default_format(self):
-        name = generate_bot_username()
-        assert name.startswith("hermes_")
-        assert name.endswith("_bot")
-        assert len(name) == len("hermes_") + 16 + len("_bot")
-        assert len(name) <= 32
-
-
-    def test_uniqueness(self):
-        names = {generate_bot_username() for _ in range(20)}
-        assert len(names) == 20
-
-
-class TestGenerateDeepLink:
-    def test_basic_format(self):
-        link = generate_deep_link(
-            manager_bot="TestBot",
-            suggested_username="my_bot",
-        )
-        assert link == "https://t.me/newbot/TestBot/my_bot"
-
-
-    def test_name_url_encoded(self):
-        link = generate_deep_link(
-            manager_bot="Bot",
-            suggested_username="test_bot",
-            suggested_name="Hermes & Friends",
-        )
-        assert "Hermes+%26+Friends" in link
-
-
-class TestPairingNonce:
-
-    def test_hex_chars(self):
-        nonce = generate_pairing_nonce()
-        assert all(c in "0123456789abcdef" for c in nonce)
 
 
 class TestQRCode:
@@ -157,11 +113,11 @@ class TestPollForToken:
             "hermes_cli.telegram_managed_bot.httpx.get", return_value=mock_resp
         ) as get:
             with patch("hermes_cli.telegram_managed_bot.time.sleep"):
-                token = poll_for_token(
+                result = poll_for_setup_result(
                     "https://api.example.com", self.pairing(), timeout=5
                 )
 
-        assert token == VALID_TOKEN
+        assert result is not None and result.token == VALID_TOKEN
         assert (
             get.call_args.args[0]
             == "https://api.example.com/v1/telegram/pairings/abcdefghijklmnop"
@@ -193,18 +149,13 @@ class TestPollForToken:
 
         with patch("hermes_cli.telegram_managed_bot.httpx.get", side_effect=fake_get):
             with patch("hermes_cli.telegram_managed_bot.time.sleep"):
-                token = poll_for_token(
+                result = poll_for_setup_result(
                     "https://api.example.com", self.pairing(), timeout=30
                 )
-                assert token == SECOND_VALID_TOKEN
+                assert result is not None and result.token == SECOND_VALID_TOKEN
 
 
 class TestSetupTelegramAuto:
-    def test_setup_helper_exists(self):
-        from hermes_cli.setup import _setup_telegram_auto
-
-        assert callable(_setup_telegram_auto)
-
     def test_setup_result_passes_profile_name_for_profile_home(self, monkeypatch, tmp_path):
         from hermes_cli import setup
 
@@ -223,11 +174,11 @@ class TestSetupTelegramAuto:
             fake_auto_setup_telegram_bot_result,
         )
 
-        assert setup._setup_telegram_auto_result() is None
+        assert setup_platforms._setup_telegram_auto_result() is None
         assert seen["profile_name"] == "oracle"
 
     def test_profile_name_from_home_path_handles_windows_separators(self):
-        from hermes_cli.setup import _profile_name_from_hermes_home
+        from hermes_cli.setup_platforms import _profile_name_from_hermes_home
 
         assert (
             _profile_name_from_hermes_home(

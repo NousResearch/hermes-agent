@@ -70,3 +70,11 @@ jobs:
           uv run --no-sync python -m pytest \
             tests/gateway/test_telegram_closewait_windows_live.py \
             -o addopts= -v -p no:cacheprovider
+
+      - name: Run background-executor spawn parity live E2E (#70716)
+        shell: bash
+        run: |
+          set -uo pipefail
+          uv run --no-sync python -m pytest \
+            tests/tools/test_process_registry_windows_live.py \
+            -o addopts= -v -p no:cacheprovider

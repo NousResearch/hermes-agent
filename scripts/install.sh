@@ -57,6 +57,7 @@ else
     INSTALL_DIR_EXPLICIT=false
 fi
 PYTHON_VERSION="3.11"
+PYTHON_SUPPORTED_RANGE=">=3.11,<3.14"  # pyproject requires-python; keep in sync
 NODE_VERSION="26"
 
 # FHS-style root install layout (set by resolve_install_layout when applicable):
@@ -218,7 +219,7 @@ print_banner() {
     echo ""
     echo -e "${MAGENTA}${BOLD}"
     echo "┌─────────────────────────────────────────────────────────┐"
-    echo "│             ⚕ Hermes Agent Installer                    │"
+    echo "│             ☤ Hermes Agent Installer                    │"
     echo "├─────────────────────────────────────────────────────────┤"
     echo "│  An open source AI agent by Nous Research.              │"
     echo "└─────────────────────────────────────────────────────────┘"
@@ -618,21 +619,64 @@ install_uv() {
 check_python() {
     if [ "$DISTRO" = "termux" ]; then
         log_info "Checking Termux Python..."
-        if command -v python >/dev/null 2>&1; then
-            PYTHON_PATH="$(command -v python)"
-            if "$PYTHON_PATH" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
-                PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
-                log_success "Python found: $PYTHON_FOUND_VERSION"
-                return 0
+        # Hermes currently declares requires-python >=3.11,<3.14.  Termux can
+        # expose a newer default `python` before dependencies have compatible
+        # wheels, so do not accept the default interpreter until the upper bound
+        # is verified. Prefer the project's pinned minor when present, then
+        # other explicit compatible interpreters.
+        for python_cmd in python3.11 python3.12 python3.13 python; do
+            if command -v "$python_cmd" >/dev/null 2>&1; then
+                local candidate_path
+                candidate_path="$(command -v "$python_cmd")"
+                if "$candidate_path" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then
+                    PYTHON_PATH="$candidate_path"
+                    PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
+                    log_success "Python found: $PYTHON_FOUND_VERSION"
+                    return 0
+                fi
             fi
-        fi
+        done
 
         log_info "Installing Python via pkg..."
         pkg install -y python >/dev/null
         PYTHON_PATH="$(command -v python)"
-        PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
-        log_success "Python installed: $PYTHON_FOUND_VERSION"
-        return 0
+        if "$PYTHON_PATH" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then
+            PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
+            log_success "Python installed: $PYTHON_FOUND_VERSION"
+            return 0
+        fi
+
+        # Termux's default `python` package is outside the supported range
+        # (e.g. 3.14.x before Rust transitives ship cp314 wheels). The Termux
+        # User Repository (TUR) publishes versioned CPython packages
+        # (python3.13, python3.11), so try to provision a supported
+        # interpreter from there before giving up.
+        PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null || true)"
+        log_warn "Termux Python $PYTHON_FOUND_VERSION is outside the supported range (>=3.11,<3.14)"
+        log_info "Trying the Termux User Repository (TUR) for a supported Python..."
+        pkg install -y tur-repo >/dev/null 2>&1 || true
+        local tur_pkg
+        for tur_pkg in python3.13 python3.12 python3.11; do
+            if ! pkg install -y "$tur_pkg" >/dev/null 2>&1; then
+                continue
+            fi
+            if ! command -v "$tur_pkg" >/dev/null 2>&1; then
+                continue
+            fi
+            local tur_path
+            tur_path="$(command -v "$tur_pkg")"
+            if "$tur_path" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then
+                PYTHON_PATH="$tur_path"
+                PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
+                log_success "Python installed from TUR: $PYTHON_FOUND_VERSION"
+                return 0
+            fi
+        done
+
+        log_error "Termux Python $PYTHON_FOUND_VERSION is not supported; Hermes requires Python >=3.11,<3.14"
+        log_info "Install a supported interpreter and re-run this script:"
+        log_info "  pkg install tur-repo && pkg install python3.13"
+        exit 1
     fi
 
     log_info "Checking Python $PYTHON_VERSION..."
@@ -642,6 +686,18 @@ check_python() {
     if PYTHON_PATH="$("$UV_CMD" python find "$PYTHON_VERSION" 2>/dev/null)"; then
         PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
         log_success "Python found: $PYTHON_FOUND_VERSION"
+        return 0
+    fi
+
+    # No 3.11, but any interpreter inside requires-python (>=3.11,<3.14) works: reuse it rather
+    # than downloading 3.11 — the download is a hard failure on hosts that cannot reach GitHub
+    # releases, and the user already has a supported Python (#10778).
+    # --system: with the install's own venv activated (a re-run), `uv python find` would return
+    # venv/bin/python3, which setup_venv is about to delete out from under itself.
+    if PYTHON_PATH="$("$UV_CMD" python find --system "$PYTHON_SUPPORTED_RANGE" 2>/dev/null)"; then
+        PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
+        PYTHON_VERSION="$PYTHON_PATH"  # uv venv --python / UV_PYTHON pin onto this interpreter
+        log_success "Python found: $PYTHON_FOUND_VERSION (supported; reusing instead of downloading 3.11)"
         return 0
     fi
 
@@ -999,12 +1055,18 @@ install_node_line() {
 
     # Resolve the latest v${node_line}.x.x tarball name from the index page
     local index_url="https://nodejs.org/dist/latest-v${node_line}.x/"
-    local tarball_name
-    tarball_name=$(curl -fsSL "$index_url" \
-        | grep -oE "node-v${node_line}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.xz" \
-        | head -1)
+    local tarball_name=""
+    # `tar xf` shells out to xz for .tar.xz; minimal Debian/DietPi/WSL images ship tar without it
+    # and the extract dies mid-way ("xz: Cannot exec"). Only pick .tar.xz when xz is present (#11197).
+    if command -v xz >/dev/null 2>&1; then
+        tarball_name=$(curl -fsSL "$index_url" \
+            | grep -oE "node-v${node_line}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.xz" \
+            | head -1)
+    else
+        log_info "xz not found — using the .tar.gz Node.js archive"
+    fi
 
-    # Fallback to .tar.gz if .tar.xz not available
+    # Fallback to .tar.gz if .tar.xz not available (or xz is missing)
     if [ -z "$tarball_name" ]; then
         tarball_name=$(curl -fsSL "$index_url" \
             | grep -oE "node-v${node_line}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.gz" \
@@ -1692,8 +1754,12 @@ setup_venv() {
         rm -rf venv
     fi
 
-    # uv creates the venv and pins the Python version in one step
-    $UV_CMD venv venv --python "$PYTHON_VERSION"
+    # uv creates the venv and pins the Python version in one step. Fail loudly: `set -e` does not
+    # reach this line's callers on every path, and a missing venv used to be reported as ready.
+    if ! $UV_CMD venv venv --python "$PYTHON_VERSION" || [ ! -x "venv/bin/python" ]; then
+        log_error "Failed to create the virtual environment with Python $PYTHON_VERSION"
+        exit 1
+    fi
 
     # Neutralize any inherited UV_PYTHON (e.g. UV_PYTHON=3.14 left in the
     # user's shell env). uv honours UV_PYTHON over an existing venv for the
@@ -1706,7 +1772,7 @@ setup_venv() {
         export UV_PYTHON="$INSTALL_DIR/venv/bin/python"
     fi
 
-    log_success "Virtual environment ready (Python $PYTHON_VERSION)"
+    log_success "Virtual environment ready ($(./venv/bin/python --version 2>/dev/null || echo "Python $PYTHON_VERSION"))"
 }
 
 run_locked_uv_sync() {

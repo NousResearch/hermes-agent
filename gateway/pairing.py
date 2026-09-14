@@ -334,6 +334,7 @@ class PairingStore:
         _migrate_split_pairing_dirs(home=profile_home, active=self._dir)
         self._lock = threading.RLock()  # adapters run concurrently in threads sharing one store
         self._profile = profile  # for diagnostics / log lines
+        self._approved_cache: dict = {}
 
     @property
     def profile(self) -> Optional[str]:
@@ -369,9 +370,30 @@ class PairingStore:
 
     # ----- Approved users -----
 
+    def _load_approved(self, platform: str) -> dict:
+        path = self._approved_path(platform)
+        try:
+            # Opening first preserves fail-closed authorization if permissions change.
+            # fstat identifies the actual opened file even during atomic replacement.
+            with path.open("rb") as stream:
+                st = os.fstat(stream.fileno())
+                key = (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
+                cached = self._approved_cache.get(platform)
+                if cached is not None and cached[0] == key:
+                    return cached[1]
+                data = json.load(stream)
+                data = data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            self._approved_cache.pop(platform, None)
+            # Keep the existing diagnostics for unreadable pairing files.
+            return self._load_json(path)
+        self._approved_cache[platform] = (key, data)
+        return data
+
     def is_approved(self, platform: str, user_id: str) -> bool:
         """Check if a user is approved (paired) on a platform."""
-        return bool(_matching_ids(platform, self._load_json(self._approved_path(platform)), user_id))
+        with self._lock:
+            return bool(_matching_ids(platform, self._load_approved(platform), user_id))
 
     def list_approved(self, platform: str = None) -> list:
         """List approved users, optionally filtered by platform."""

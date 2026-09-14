@@ -66,6 +66,48 @@ def test_codex_forced_refresh_keeps_manual_grant_isolated(tmp_path, monkeypatch)
     assert stored["credential_pool"]["openai-codex"][0]["access_token"] == fresh
 
 
+def test_codex_terminal_manual_refresh_failure_quarantines_only_pool_row(tmp_path, monkeypatch):
+    """A dead manual grant stays dead without clearing another account's singleton."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr("hermes_cli.auth._import_codex_cli_tokens", lambda: None)
+    stale = _jwt_with_claims({"sub": "account-a"})
+    singleton = _jwt_with_claims({"sub": "account-b"})
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "providers": {"openai-codex": {"tokens": {
+            "access_token": singleton, "refresh_token": "refresh-b",
+        }}},
+        "credential_pool": {"openai-codex": [{
+            "id": "account-a", "label": "account-a", "auth_type": "oauth",
+            "priority": 0, "source": "manual:device_code",
+            "access_token": stale, "refresh_token": "refresh-a",
+        }]},
+    })
+
+    from agent import credential_pool
+    from hermes_cli.auth import AuthError
+    refresh_calls = []
+
+    def rejected(access_token, refresh_token):
+        refresh_calls.append((access_token, refresh_token))
+        raise AuthError(
+            "refresh token revoked",
+            provider="openai-codex",
+            code="invalid_grant",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr(credential_pool.auth_mod, "refresh_codex_oauth_pure", rejected)
+    pool = credential_pool.load_pool("openai-codex")
+
+    assert pool.refresh_matching_api_key(stale) is None
+    assert credential_pool.load_pool("openai-codex").select() is None
+    assert refresh_calls == [(stale, "refresh-a")]
+    stored = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert stored["providers"]["openai-codex"]["tokens"]["access_token"] == singleton
+    assert stored["credential_pool"]["openai-codex"][0]["last_status"] == "dead"
+
+
 
 
 

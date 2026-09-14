@@ -181,17 +181,17 @@ class GatewaySessionCommandsMixin:
         _old_sid = old_entry.session_id if old_entry else None
         await self._fire_session_reset_hooks(source, session_key, _old_sid,
                                              new_entry.session_id if new_entry else None)
-        # Scoped to the profile serving this source so a multiplexed /new banner reports the
-        # profile's model, not the base config's.
-        try:
-            session_info = await asyncio.to_thread(self._reset_notice_session_info, source)
-        except Exception:
-            session_info = ""
         if new_entry:
             default_header = t("gateway.reset.header_default")
         else:  # no existing session: create one
             new_entry = await self.async_session_store.get_or_create_session(source, force_new=True)
             default_header = t("gateway.reset.header_new")
+        # Create first: metadata must belong to the new conversation.
+        try:
+            session_info = await asyncio.to_thread(
+                self._reset_notice_session_info, source, new_entry.session_id)
+        except Exception:
+            session_info = ""
         header = await asyncio.to_thread(self._telegram_topic_new_header, source) or default_header
         _title_arg = event.get_command_args().strip()
         if _title_arg and self._session_db and new_entry:

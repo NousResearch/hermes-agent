@@ -1519,6 +1519,22 @@ class TestADCFallback:
 
 class TestSupervisorReconnect:
     @pytest.mark.asyncio
+    async def test_unauthenticated_status_does_not_guess_credential_cause(
+        self, adapter
+    ):
+        """An auth rejection may have causes other than a revoked SA key."""
+        adapter._subscriber.subscribe.side_effect = (
+            _gc_mod.gax_exceptions.Unauthenticated("request rejected")
+        )
+
+        await adapter._run_supervisor()
+
+        assert adapter.fatal_error_code == "pubsub_auth"
+        assert adapter.fatal_error_message == (
+            "Pub/Sub authentication failed; check service-account credentials and gateway logs"
+        )
+
+    @pytest.mark.asyncio
     async def test_fatal_after_max_retries(self, adapter, monkeypatch):
         """Simulate 10+ failing subscribe() calls and assert fatal error set."""
         # Stub out sleep so the test doesn't actually wait minutes.

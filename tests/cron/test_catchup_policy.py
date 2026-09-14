@@ -60,7 +60,7 @@ def test_per_job_policy_overrides_global_and_audits_decision(tmp_path, monkeypat
         event = jobs.load_jobs()[0]["last_misfire"]
         assert event["action"] == ("ran" if catch_up else "skipped")
         assert event["policy_source"] == "job"
-        audit = (tmp_path / "cron" / "misfires.jsonl").read_text(encoding="utf-8")
+        audit = (jobs._current_cron_store().cron_dir / "misfires.jsonl").read_text(encoding="utf-8")
         assert f'"job_id": "{job["id"]}"' in audit
 
 

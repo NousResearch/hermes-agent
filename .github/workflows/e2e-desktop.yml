@@ -68,7 +68,7 @@ jobs:
           # fetching a manifest from raw.githubusercontent.com on EVERY job —
           # a transient fetch failure fails the whole job (2026-07-28 slice-5
           # incident). Pinned, the binary downloads directly; no manifest hop.
-          version: '0.9.28'
+          version: '0.12.13'
           enable-cache: true
           cache-dependency-glob: |
             pyproject.toml

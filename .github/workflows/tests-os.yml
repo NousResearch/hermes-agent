@@ -73,7 +73,7 @@ jobs:
           # Pinned for the same reason as the Linux lane: unpinned, setup-uv
           # resolves "latest" by fetching a manifest on every job and a
           # transient fetch failure fails the whole job.
-          version: "0.9.28"
+          version: "0.12.13"
           enable-cache: true
           cache-dependency-glob: |
             pyproject.toml

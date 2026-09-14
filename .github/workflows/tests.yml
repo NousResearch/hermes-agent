@@ -49,7 +49,17 @@ jobs:
           # fetching a manifest from raw.githubusercontent.com on EVERY job —
           # a transient fetch failure fails the whole job (2026-07-28 slice-5
           # incident). Pinned, the binary downloads directly; no manifest hop.
-          version: "0.9.28"
+          #
+          # >= 0.12.13, not just "a recent uv": `uv python install 3.11` on an
+          # older uv's embedded python-build-standalone catalog resolves to a
+          # build whose bundled SQLite (3.50.4) carries the WAL-reset bug —
+          # hermes_state.py refuses every writable DB open on it, failing
+          # most of the suite. python-build-standalone re-cut the SAME
+          # "3.11.15" tag with a fixed SQLite (3.53.1); only a uv new enough
+          # to know about that re-cut resolves to it. See
+          # hermes_cli/managed_uv.py's _refresh_managed_uv_catalog for the
+          # same class of fix in the production installer/updater.
+          version: "0.12.13"
           # Persist uv's download/wheel cache (~/.cache/uv) across runs.
           # Keyed on the dependency manifests, so the cache is reused until
           # pyproject.toml or uv.lock changes. `uv sync` still runs every
@@ -154,7 +164,17 @@ jobs:
           # fetching a manifest from raw.githubusercontent.com on EVERY job —
           # a transient fetch failure fails the whole job (2026-07-28 slice-5
           # incident). Pinned, the binary downloads directly; no manifest hop.
-          version: "0.9.28"
+          #
+          # >= 0.12.13, not just "a recent uv": `uv python install 3.11` on an
+          # older uv's embedded python-build-standalone catalog resolves to a
+          # build whose bundled SQLite (3.50.4) carries the WAL-reset bug —
+          # hermes_state.py refuses every writable DB open on it, failing
+          # most of the suite. python-build-standalone re-cut the SAME
+          # "3.11.15" tag with a fixed SQLite (3.53.1); only a uv new enough
+          # to know about that re-cut resolves to it. See
+          # hermes_cli/managed_uv.py's _refresh_managed_uv_catalog for the
+          # same class of fix in the production installer/updater.
+          version: "0.12.13"
           # Persist uv's download/wheel cache (~/.cache/uv) across runs.
           # Keyed on the dependency manifests, so the cache is reused until
           # pyproject.toml or uv.lock changes. `uv sync` still runs every

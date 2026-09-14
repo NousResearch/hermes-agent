@@ -291,6 +291,34 @@ class PluginContext:
         """This plugin's profile-scoped durable JSON state facade."""
         return PluginState(self.plugin_id, self.manifest.skill_namespace)
 
+    def register_goal_completion_gate(self, name: str, callback: Callable) -> PluginRegistration:
+        """Register one deterministic completion gate for explicitly opted-in Goals.
+
+        A gate is consulted only after the Goal judge returns ``done``. It may return
+        ``{"action": "allow"}``, ``{"action": "continue", "reason": ...}``, or
+        ``{"action": "blocked", "reason": ...}``; it can never promote a non-DONE candidate.
+        """
+        clean = str(name or "").strip().lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", clean):
+            raise ValueError("goal completion gate name must match [a-z0-9][a-z0-9._-]{0,127}")
+        if not callable(callback):
+            raise TypeError("goal completion gate callback must be callable")
+        existing = self._manager._goal_completion_gates.get(clean)
+        if existing is not None:
+            raise ValueError(
+                f"goal completion gate {clean!r} is already registered by {existing.plugin_id!r}"
+            )
+        entry = RegisteredGoalCompletionGate(name=clean, callback=callback, plugin_id=self.plugin_id)
+        return self._register_entry(
+            "goal_completion_gate", clean, self._manager._goal_completion_gates, entry,
+            "Plugin %s registered goal completion gate: %s", clean, previous=None,
+        )
+
+    def get_session_project_affinity(self, session_id: str):
+        """Return immutable, read-only Core-owned Project identity for one profile session."""
+        from hermes_cli.session_project_affinity import read_session_project_affinity
+
+        return read_session_project_affinity(self._manager.home_path, session_id)
     @cached_property
     def platform_actions(self):
         """Capability-gated platform action facade (``add_reaction``, ``set_thread_title``). Every call

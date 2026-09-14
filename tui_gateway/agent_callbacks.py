@@ -142,7 +142,7 @@ def _apply_project_workspace(task_id: str, project_id: str, path: str, _name: st
         return None
     runtime_affinity = None
     try:
-        from agent.project_affinity import load_project_affinity_candidate, render_project_affinity_context
+        from agent.project_affinity import load_project_affinity_candidate
 
         candidate = load_project_affinity_candidate(project_id=project_id, project_root=resolved)
         if candidate is not None:
@@ -157,11 +157,11 @@ def _apply_project_workspace(task_id: str, project_id: str, path: str, _name: st
             if generations is not None:
                 git_generation, generation = generations
                 runtime_affinity = {
+                    "status": "bound",
                     "project_id": candidate.project_id,
                     "project_root": candidate.project_root,
                     "generation": generation,
                     "context_hash": candidate.context_hash,
-                    "context": render_project_affinity_context(candidate, generation),
                 }
     except Exception:
         logger.debug("failed to persist project affinity before workspace move", exc_info=True)
@@ -174,6 +174,10 @@ def _apply_project_workspace(task_id: str, project_id: str, path: str, _name: st
     _persist_session_git_meta(session, resolved, git_generation)
     try:
         agent = session.get("agent")
+        if agent is not None:
+            from agent.system_prompt import invalidate_system_prompt
+
+            invalidate_system_prompt(agent)
         info = _session_info(agent, session) if agent is not None else {
             "cwd": resolved, "branch": git_probe.branch(resolved),
             "project": _project_info_for_cwd(resolved), "lazy": True}

@@ -1,65 +1,52 @@
+"""Core-owned Session Project identity binding at system-prompt generation boundaries."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
 import hashlib
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, Optional
 
 
 @dataclass(frozen=True)
 class ProjectAffinityCandidate:
     project_id: str
     project_root: str
-    context: str
     context_hash: str
 
 
-def render_project_affinity_context(candidate: ProjectAffinityCandidate, generation: int) -> str:
-    """Turn-scoped context block; the hash marker makes replay/dedup deterministic."""
-    body = candidate.context or "(No project context files are currently present at this Project root.)"
-    return (
-        f"<!-- hermes-project-affinity:{candidate.context_hash} -->\n"
-        "# Runtime-confirmed Project Context\n\n"
-        "This block supersedes any older Project Context in the cached system prompt or transcript.\n\n"
-        f"Project ID: `{candidate.project_id}`\n"
-        f"Project root: `{candidate.project_root}`\n"
-        f"Affinity generation: `{generation}`\n\n"
-        + body
-    )
+def _project_context_hash(project_root: str, context_length: Optional[int] = None) -> str:
+    """Hash the exact context-file bytes Core would build for this Project root."""
+    from agent.prompt_builder import build_context_files_prompt
 
-
-def _context_is_already_active(
-    candidate: ProjectAffinityCandidate, active_system_prompt: str, messages: Sequence[dict],
-) -> bool:
-    if candidate.context and candidate.context in str(active_system_prompt or ""):
-        return True
-    return any(
-        candidate.context_hash in str(message.get(key) or "")
-        for message in messages if isinstance(message, dict)
-        for key in ("api_content", "content")
+    context = build_context_files_prompt(
+        cwd=project_root,
+        skip_soul=True,
+        context_length=context_length,
     )
+    return "sha256:" + hashlib.sha256(context.encode("utf-8")).hexdigest()
 
 
 def load_project_affinity_candidate(
     *, project_id: str, project_root: str, context_length: Optional[int] = None,
 ) -> Optional[ProjectAffinityCandidate]:
-    """Load a complete Runtime-owned affinity candidate from an explicit project."""
+    """Load a complete Core-owned identity candidate from an explicit Project."""
     pid = (project_id or "").strip()
     root = str(Path(project_root).expanduser().resolve()) if str(project_root or "").strip() else ""
     if not pid or not root:
         return None
-    from agent.prompt_builder import build_context_files_prompt
-
-    context = build_context_files_prompt(cwd=root, skip_soul=True, context_length=context_length)
-    context_hash = "sha256:" + hashlib.sha256(context.encode("utf-8")).hexdigest()
-    return ProjectAffinityCandidate(pid, root, context, context_hash)
+    return ProjectAffinityCandidate(
+        project_id=pid,
+        project_root=root,
+        context_hash=_project_context_hash(root, context_length),
+    )
 
 
 def resolve_project_affinity_for_cwd(
     cwd: str, *, projects_conn, context_length: Optional[int] = None,
 ) -> Optional[ProjectAffinityCandidate]:
-    """Resolve the innermost named Project owning cwd, then load its context bytes."""
+    """Resolve the innermost named Project owning cwd."""
     from hermes_cli import projects_db
 
     project = projects_db.project_for_path(projects_conn, cwd)
@@ -72,55 +59,78 @@ def resolve_project_affinity_for_cwd(
     )
 
 
-def collect_turn_project_affinity(
-    agent: Any, *, messages: Sequence[dict], active_system_prompt: str,
-) -> str:
-    """Refresh/bind session affinity and return context missing from the active transcript.
+def _profile_home_for_agent(agent: Any) -> Optional[Path]:
+    """Resolve the agent's profile authority without guessing from an arbitrary state path."""
+    explicit = getattr(agent, "_profile_home", None) or getattr(agent, "profile_home", None)
+    if explicit:
+        return Path(explicit)
+    try:
+        from hermes_constants import get_hermes_home
 
-    Auto-bind is limited to a brand-new, message-free session. Once a session has
-    ownership, cwd drift never changes it; only an explicit project switch may do so.
+        return Path(get_hermes_home())
+    except Exception:
+        return None
+
+
+def ensure_agent_project_affinity(agent: Any) -> dict[str, Any]:
+    """Bind/refresh identity only at a system-prompt generation boundary.
+
+    Existing complete identity is authoritative even when cwd drifts. A brand-new
+    root session may auto-bind from cwd; parent-linked or non-empty sessions never
+    infer a new owner. Context-file changes advance the generation only when the
+    system prompt is already being rebuilt, preserving prompt-cache stability.
     """
+    from hermes_cli.session_project_affinity import validate_project_affinity_row
+
     session_db = getattr(agent, "_session_db", None)
     session_id = str(getattr(agent, "session_id", "") or "")
-    if (
-        session_db is None or not session_id
-        or getattr(agent, "_persist_disabled", False)
-        or getattr(agent, "skip_context_files", False)
-    ):
-        return ""
+    if session_db is None or not session_id or getattr(agent, "_persist_disabled", False):
+        return {
+            "status": "unavailable", "session_id": session_id,
+            "project_id": "", "project_root": "", "project_generation": 0,
+            "project_context_hash": "",
+        }
     row = session_db.get_session(session_id)
     if not isinstance(row, Mapping):
-        return ""
-    context_length = int(getattr(getattr(agent, "context_compressor", None), "context_length", 0) or 0) or None
-    affinity = (row.get("project_id"), row.get("project_root"), row.get("project_context_hash"))
+        return validate_project_affinity_row(None, session_id=session_id, projects_db_path=None)
+
+    context_length = int(
+        getattr(getattr(agent, "context_compressor", None), "context_length", 0) or 0
+    ) or None
+    identity = tuple(str(row.get(key) or "").strip() for key in (
+        "project_id", "project_root", "project_context_hash",
+    ))
     candidate: Optional[ProjectAffinityCandidate] = None
-    if all(affinity):
+    if all(identity):
         candidate = load_project_affinity_candidate(
-            project_id=str(affinity[0]), project_root=str(affinity[1]), context_length=context_length,
+            project_id=identity[0], project_root=identity[1], context_length=context_length,
         )
-    elif any(affinity):
-        return ""  # fail closed on a legacy/corrupt partial tuple
-    elif (
+    elif not any(identity) and (
         int(row.get("message_count") or 0) == 0
         and not row.get("parent_session_id")
         and row.get("cwd")
     ):
-        db_path = getattr(session_db, "db_path", None)
-        projects_path = Path(db_path).parent / "projects.db" if db_path else None
+        profile_home = _profile_home_for_agent(agent)
+        projects_path = profile_home / "projects.db" if profile_home is not None else None
         if projects_path is not None and projects_path.exists():
             from hermes_cli import projects_db
             with projects_db.connect_closing(db_path=projects_path) as projects_conn:
                 candidate = resolve_project_affinity_for_cwd(
                     str(row["cwd"]), projects_conn=projects_conn, context_length=context_length,
                 )
-    if candidate is None:
-        return ""
-    generation = session_db.update_session_project_affinity(
-        session_id,
-        project_id=candidate.project_id,
-        project_root=candidate.project_root,
-        project_context_hash=candidate.context_hash,
+    if candidate is not None:
+        session_db.update_session_project_affinity(
+            session_id,
+            project_id=candidate.project_id,
+            project_root=candidate.project_root,
+            project_context_hash=candidate.context_hash,
+        )
+        row = session_db.get_session(session_id) or row
+
+    profile_home = _profile_home_for_agent(agent)
+    projects_path = profile_home / "projects.db" if profile_home is not None else None
+    return validate_project_affinity_row(
+        row,
+        session_id=session_id,
+        projects_db_path=projects_path,
     )
-    if generation is None or _context_is_already_active(candidate, active_system_prompt, messages):
-        return ""
-    return render_project_affinity_context(candidate, generation)

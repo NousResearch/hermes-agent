@@ -982,17 +982,6 @@ def build_turn_context(
         original_user_message=original_user_message, messages=messages,
         conversation_history=conversation_history,
     )
-    try:
-        from agent.project_affinity import collect_turn_project_affinity
-
-        project_context = collect_turn_project_affinity(
-            agent, messages=messages, active_system_prompt=active_system_prompt,
-        )
-    except Exception as exc:
-        logger.warning("project affinity refresh failed: %s", exc)
-        project_context = ""
-    if project_context:
-        plugin_user_context = "\n\n".join(part for part in (plugin_user_context, project_context) if part)
     plugin_user_context = _merge_gateway_notes(
         agent, messages, current_turn_user_idx, plugin_user_context
     )

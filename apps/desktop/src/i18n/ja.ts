@@ -1147,6 +1147,7 @@ export const ja = defineLocale({
       setToMain: 'メインに設定',
       change: '変更',
       autoUseMain: '自動 · メインモデルを使用',
+      inheritMainEffort: '継承 · メインモデルの推論強度',
       providerDefault: '(プロバイダーのデフォルト)',
       tasks: {
         vision: { label: 'ビジョン', hint: '画像分析' },
@@ -1156,6 +1157,9 @@ export const ja = defineLocale({
         mcp: { label: 'MCP', hint: 'MCP ツールルーティング' },
         title_generation: { label: 'タイトル生成', hint: 'セッションタイトル' },
         review: { label: 'レビュー', hint: '/review レビューサブエージェント' },
+        triage_specifier: { label: 'トリアージ指定', hint: 'カンバン仕様の具体化' },
+        kanban_decomposer: { label: 'カンバン分解', hint: 'タスク分解' },
+        profile_describer: { label: 'プロファイル記述', hint: 'プロファイル概要の自動生成' },
         curator: { label: 'キュレーター', hint: 'スキル使用レビュー' }
       }
     },
@@ -3355,6 +3359,19 @@ export const ja = defineLocale({
       copyQuery: 'クエリをコピー',
       copyFile: 'ファイルをコピー',
       copyPath: 'パスをコピー',
+      failedCalls: (count: number) => `失敗したツール呼び出し: ${count}`,
+      skillActivity: {
+        loading: 'スキルを読み込み中',
+        loaded: 'スキルを読み込みました',
+        loadFailed: 'スキルの読み込みに失敗しました',
+        readingResource: 'スキルのリソースを読み込み中',
+        readResource: 'スキルのリソースを読み込みました',
+        resourceFailed: 'スキルのリソースの読み込みに失敗しました',
+        listing: 'スキル一覧を取得中',
+        listed: 'スキル一覧を取得しました',
+        listFailed: 'スキル一覧の取得に失敗しました',
+        unavailable: 'スキルの結果を取得できません'
+      },
       outputAlt: 'ツール出力',
       rawResponse: '生の応答',
       copyActivity: 'アクティビティをコピー',
@@ -3366,6 +3383,7 @@ export const ja = defineLocale({
       statusError: 'エラー',
       statusRecovered: '回復しました',
       statusDone: '完了',
+      resultUnavailable: '結果を取得できません',
       memoryWriteNoted: 'メモリへの書き込みを記録',
       actions: {
         read: '読み取り完了',

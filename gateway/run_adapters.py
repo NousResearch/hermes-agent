@@ -827,7 +827,14 @@ class GatewayAdapterLifecycleMixin:
         Each profile connects under its own HERMES_HOME + secret scope; credential/listener collisions
         are refused here — the only point seeing every profile's credentials together."""
         from gateway.run import MultiplexConfigError, _multiplex_profile_homes
+        from gateway.run_profile_reconcile import profile_serve_signature
         if not self._multiplex_on():
+            # ``write_runtime_status`` re-stamps the previous writer's record in place, so a multiplexer's
+            # ``served_profiles`` would outlive it into this single-profile run and `hermes -p X ...`
+            # would keep refusing (exit 78) / reporting "served" for profiles nobody serves.
+            with _log_suppressed(logging.DEBUG, "could not clear served_profiles", exc_info=True):
+                from gateway.status import write_runtime_status
+                write_runtime_status(served_profiles=[])
             return 0
         try:
             from hermes_cli.profiles import get_active_profile_name
@@ -837,9 +844,12 @@ class GatewayAdapterLifecycleMixin:
         connected = 0
         claimed = self._primary_resource_claims(active)
         profile_homes = _multiplex_profile_homes(self.config)
+        self._served_profile_signatures = {}
         for profile_name, profile_home in profile_homes:
             if profile_name == active:
                 continue  # handled by the primary startup loop
+            # Preserve changes made while the initial connection is awaiting I/O.
+            self._served_profile_signatures[profile_name] = profile_serve_signature(profile_home)
             try:
                 connected += await self._start_one_profile_adapters(profile_name, profile_home, claimed)
             except MultiplexConfigError:

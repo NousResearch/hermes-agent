@@ -57,6 +57,55 @@ class TestLaunchServicesHttpsHandler:
         assert bc._launchservices_https_handler(dump) == "com.microsoft.edgemac"
 
 
+class TestDetectDefaultWindows:
+    @pytest.mark.parametrize(
+        "prog_id,expected",
+        [
+            ("ChromeHTML", "chrome"),
+            ("ChromeHTML.123", "chrome"),
+            ("MSEdgeHTM", "edge"),
+            ("BraveHTML", "brave"),
+            ("BraveOHTML", "brave-origin"),
+            ("ChromiumHTM", "chromium"),
+            ("ChromeBHTML", bc.UNSUPPORTED_CHANNEL),
+            ("FirefoxURL", None),
+        ],
+    )
+    def test_shell_progid_maps_to_browser(self, prog_id, expected):
+        with patch.object(bc, "_windows_shell_progid", return_value=prog_id):
+            assert bc._detect_default_windows() == expected
+
+    def test_shell_progid_takes_precedence_over_legacy_registry(self):
+        with patch.object(bc, "_windows_shell_progid", return_value="ChromeHTML"):
+            assert bc._detect_default_windows() == "chrome"
+
+    def test_shell_miss_falls_back_to_legacy_userchoice(self):
+        class FakeKey:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+        class FakeWinreg:
+            HKEY_CURRENT_USER = object()
+
+            @staticmethod
+            def OpenKey(*args, **kwargs):
+                return FakeKey()
+
+            @staticmethod
+            def QueryValueEx(key, name):
+                assert name == "ProgId"
+                return "MSEdgeHTM", 1
+
+        with (
+            patch.object(bc, "_windows_shell_progid", return_value=None),
+            patch.dict("sys.modules", {"winreg": FakeWinreg()}),
+        ):
+            assert bc._detect_default_windows() == "edge"
+
+
 class TestDetectDefaultDarwin:
     def _run_with(self, dump: str):
         class _Proc:

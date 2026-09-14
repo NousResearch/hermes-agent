@@ -1,3 +1,4 @@
+export { isDegenerateAssistantText } from './degenerate-text'
 export { toChatMessages } from './hydration'
 export {
   appendAssistantTextPart,

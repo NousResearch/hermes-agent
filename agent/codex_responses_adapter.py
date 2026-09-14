@@ -36,6 +36,16 @@ _CROSS_ISSUER_WARN_EMITTED = False
 # Codex/Harmony tool-call serialization leaked into assistant text (no structured function_call).
 _TOOL_CALL_LEAK_PATTERN = re.compile(r"(?:^|[\s>|])to=functions\.[A-Za-z_][\w.]*", re.IGNORECASE)
 
+# Entire-message garbage observed as persisted assistant content on tool-carrying
+# turns (Codex / Muse Spark / gpt-5.6-terra, 2026-09-14). These fragments then
+# replayed into later turns and the desktop rendered them as the bubble.
+_UUID_ONLY_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+_VIM_EX_RE = re.compile(r"^(?:\?wq|:wq!?|:q!?)$")
+_ZWSP = "\u200b"
+
 # The Codex backend rejects literal Harmony wire tokens (``invalid_prompt: Request
 # blocked.``). Fullwidth bars survive format-character stripping and stay legible.
 _HARMONY_CONTROL_TOKEN_RE = re.compile(r"<\|(start|end|channel|message|constrain|return|call)\|>")
@@ -80,6 +90,52 @@ def _nonempty_str(value: Any) -> TypeGuard[str]:
 
 def _str_or_empty(value: Any) -> str:
     return "" if value is None else str(value)
+
+
+def _non_latin_script_buckets(text: str) -> set[str]:
+    """Coarse script buckets for mixed-script soup detection. Latin/Hebrew omitted
+    so ordinary English and Hebrew short replies stay visible."""
+    buckets: set[str] = set()
+    for char in text:
+        code = ord(char)
+        if 0x0400 <= code <= 0x04FF:
+            buckets.add("cyrillic")
+        elif 0x0370 <= code <= 0x03FF:
+            buckets.add("greek")
+        elif 0x0600 <= code <= 0x06FF or 0x0750 <= code <= 0x077F:
+            buckets.add("arabic")
+        elif 0x0900 <= code <= 0x097F:
+            buckets.add("devanagari")
+        elif 0x1100 <= code <= 0x11FF or 0xAC00 <= code <= 0xD7AF:
+            buckets.add("hangul")
+        elif 0x1780 <= code <= 0x17FF:
+            buckets.add("khmer")
+        elif 0x3040 <= code <= 0x30FF or 0x31F0 <= code <= 0x31FF:
+            buckets.add("japanese")
+        elif 0x4E00 <= code <= 0x9FFF:
+            buckets.add("han")
+    return buckets
+
+
+def _is_degenerate_visible_text(text: str) -> bool:
+    """True when ``text`` is not a real assistant reply.
+
+    Observed whole-message values: a bare UUID, vim ``?wq``, mixed-script
+    fragments such as Devanagari+Hangul, and ZWSP-spliced tokens. Empty text
+    and ordinary short replies (including Hebrew) return False.
+    """
+    if not isinstance(text, str):
+        return False
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if _UUID_ONLY_RE.fullmatch(stripped):
+        return True
+    if _VIM_EX_RE.fullmatch(stripped):
+        return True
+    if _ZWSP in stripped and len(stripped) <= 40:
+        return True
+    return len(stripped) <= 24 and len(_non_latin_script_buckets(stripped)) >= 2
 
 
 def _lower_or_none(value: Any) -> Optional[str]:
@@ -371,6 +427,7 @@ def _replay_message_items(msg: Dict[str, Any], *, is_github_responses: bool) -> 
             for part in _as_list(raw_item.get("content"))
             if isinstance(part, dict) and str(part.get("type") or "").strip() in _OUTPUT_TEXT_TYPES
         ]
+        content = [part for part in content if not _is_degenerate_visible_text(part["text"])]
         if content:
             replayed.append(_assistant_message_item(raw_item, content, is_github_responses=is_github_responses))
     return replayed
@@ -482,6 +539,12 @@ def _chat_messages_to_responses_input(
             "".join(p["text"] for p in content_parts if p["type"] == text_type)
             if isinstance(content, list) else _str_or_empty(content)
         )
+        if role == "assistant" and _is_degenerate_visible_text(content_text):
+            content_text = ""
+            content_parts = [
+                part for part in content_parts
+                if part.get("type") != text_type or not _is_degenerate_visible_text(part.get("text", ""))
+            ]
         if role == "user":
             emit([{"role": role, "content": content_parts or content_text}], msg)
             continue
@@ -972,6 +1035,12 @@ class _OutputScan:
         message_text = _extract_responses_message_text(item)
         if not message_text:
             return
+        if _is_degenerate_visible_text(message_text):
+            logger.warning(
+                "Dropping degenerate Responses message text (%d chars): %r",
+                len(message_text), message_text[:80],
+            )
+            return
         # commentary/analysis text is mid-turn narration, never the final answer: route it
         # to the reasoning channel; the exact item is still preserved for replay/cache.
         (self.reasoning_parts if is_commentary_phase else self.content_parts).append(message_text)
@@ -1014,6 +1083,13 @@ def _normalize_codex_response(response: Any, *, issuer_kind: Optional[str] = Non
     if not final_text and (scan.saw_final_answer_phase or not scan.saw_commentary_phase):
         out_text = getattr(response, "output_text", "")
         final_text = out_text.strip() if isinstance(out_text, str) else final_text
+    degenerate_visible_text = _is_degenerate_visible_text(final_text)
+    if degenerate_visible_text:
+        logger.warning(
+            "Codex response visible text is degenerate (%d chars): %r. Clearing it so it cannot persist or replay.",
+            len(final_text), final_text[:80],
+        )
+        final_text = ""
     # Tool-call leak recovery: gpt-5.x sometimes emits the intended ``function_call`` as plain Harmony text
     # (``to=functions.foo {json}``). Treat as incomplete so the continuation re-elicits a real call; clear the garbage.
     leaked_tool_call_text = bool(final_text and not tool_calls and _TOOL_CALL_LEAK_PATTERN.search(final_text))
@@ -1056,6 +1132,7 @@ def _normalize_codex_response(response: Any, *, issuer_kind: Optional[str] = Non
         finish_reason = "content_filter"
     elif (
         leaked_tool_call_text
+        or degenerate_visible_text
         or scan.saw_streaming_or_item_incomplete
         or ((scan.has_incomplete_items or scan.saw_commentary_phase) and not scan.saw_final_answer_phase)
         or (reasoning_only and not trusted_final)

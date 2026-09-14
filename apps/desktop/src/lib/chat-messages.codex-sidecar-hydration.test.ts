@@ -90,4 +90,55 @@ describe('#68321 assistant rows whose reply persisted only in codex_message_item
     const [assistant] = toChatMessages([row])
     expect(chatMessageText(assistant)).toBe('Canonical persisted reply')
   })
+
+  it('does not paint a UUID-only assistant row as the bubble (#garbled-tool-turns)', () => {
+    const messages = toChatMessages([
+      { id: 1, role: 'user', content: 'post this', timestamp: 1 },
+      {
+        id: 2,
+        role: 'assistant',
+        content: '8368e4f9-9f48-4ba6-a5b5-ffb40b2ce509',
+        timestamp: 2
+      }
+    ])
+
+    expect(messages.map(m => m.role)).toEqual(['user'])
+  })
+
+  it('does not restore degenerate sidecar text when content is empty', () => {
+    const messages = toChatMessages([
+      { id: 1, role: 'user', content: 'go', timestamp: 1 },
+      {
+        id: 2,
+        role: 'assistant',
+        content: '',
+        codex_message_items: [
+          {
+            type: 'message',
+            role: 'assistant',
+            phase: 'final_answer',
+            content: [{ type: 'output_text', text: 'भू긴' }]
+          }
+        ],
+        timestamp: 2
+      }
+    ])
+
+    expect(messages.filter(m => m.role === 'assistant')).toEqual([])
+  })
+
+  it('keeps a real reply next to tool calls', () => {
+    const messages = toChatMessages([
+      { id: 1, role: 'user', content: 'run it', timestamp: 1 },
+      {
+        id: 2,
+        role: 'assistant',
+        content: 'Posted everywhere.',
+        tool_calls: [{ id: 'call_1', function: { name: 'terminal', arguments: '{}' } }],
+        timestamp: 2
+      }
+    ])
+
+    expect(chatMessageText(messages[1])).toContain('Posted everywhere.')
+  })
 })

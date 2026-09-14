@@ -7,6 +7,7 @@ from agent.codex_responses_adapter import (
     _chat_messages_to_responses_input,
     _sanitize_replayed_fn_name,
     _format_responses_error,
+    _is_degenerate_visible_text,
     _normalize_codex_response,
     _neutralize_harmony_tokens,
     _preflight_codex_api_kwargs,
@@ -635,3 +636,122 @@ def _xai_reasoning_only_response(reasoning_text):
             )
         ],
     )
+
+
+def _assistant_message_item(text, *, phase=None, item_id="msg_1"):
+    return SimpleNamespace(
+        type="message",
+        role="assistant",
+        status="completed",
+        id=item_id,
+        phase=phase,
+        content=[SimpleNamespace(type="output_text", text=text)],
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "8368e4f9-9f48-4ba6-a5b5-ffb40b2ce509",
+        "?wq",
+        ":wq",
+        "भू긴",
+        "666\u200bចercher",
+    ],
+)
+def test_degenerate_visible_text_detector_catches_observed_garbage(text):
+    assert _is_degenerate_visible_text(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "OK",
+        "Done.",
+        "שלום",
+        "All four links are in, post verified everywhere.",
+        "",
+    ],
+)
+def test_degenerate_visible_text_detector_keeps_real_replies(text):
+    assert _is_degenerate_visible_text(text) is False
+
+
+def test_normalize_drops_uuid_only_assistant_content_and_retries():
+    """Observed 2026-09-14: Codex/Muse Spark completed with a bare UUID as output_text
+    while tools still executed on neighbouring turns. That UUID was persisted and
+    replayed, poisoning later turns. Drop it and treat the turn as incomplete.
+    """
+    uuid = "8368e4f9-9f48-4ba6-a5b5-ffb40b2ce509"
+    response = SimpleNamespace(
+        status="completed",
+        output_text=uuid,
+        output=[_assistant_message_item(uuid)],
+    )
+    assistant_message, finish_reason = _normalize_codex_response(
+        response, issuer_kind="codex_backend"
+    )
+    assert assistant_message.content == ""
+    assert finish_reason == "incomplete"
+    assert not assistant_message.codex_message_items
+
+
+def test_normalize_keeps_tool_calls_when_visible_text_is_garbage():
+    garbage = "भू긴"
+    response = SimpleNamespace(
+        status="completed",
+        output_text=garbage,
+        output=[
+            _assistant_message_item(garbage),
+            SimpleNamespace(
+                type="function_call",
+                status="completed",
+                id="fc_1",
+                call_id="call_1",
+                name="terminal",
+                arguments='{"command": "echo alive"}',
+            ),
+        ],
+    )
+    assistant_message, finish_reason = _normalize_codex_response(response)
+    assert finish_reason == "tool_calls"
+    assert assistant_message.content == ""
+    assert len(assistant_message.tool_calls) == 1
+    assert assistant_message.tool_calls[0].function.name == "terminal"
+
+
+def test_normalize_does_not_fallback_output_text_to_restore_garbage():
+    uuid = "8385c9fb-9b8a-40a8-902b-b081fa04bd7d"
+    response = SimpleNamespace(
+        status="completed",
+        output_text=uuid,
+        output=[],
+    )
+    assistant_message, finish_reason = _normalize_codex_response(
+        response, issuer_kind="codex_backend"
+    )
+    assert assistant_message.content == ""
+    assert finish_reason == "incomplete"
+
+
+def test_replay_skips_degenerate_sidecar_and_content():
+    uuid = "8368e4f9-9f48-4ba6-a5b5-ffb40b2ce509"
+    items = _chat_messages_to_responses_input(
+        [
+            {"role": "user", "content": "post this"},
+            {
+                "role": "assistant",
+                "content": uuid,
+                "codex_message_items": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": uuid}],
+                    }
+                ],
+            },
+        ]
+    )
+    serialized = str(items)
+    assert uuid not in serialized
+    assert any(item.get("role") == "user" for item in items)

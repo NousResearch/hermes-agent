@@ -4,6 +4,7 @@ import { extractImageRefs } from '@/lib/embedded-images'
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import type { MessageReaction, SessionMessage } from '@/types/hermes'
 
+import { isDegenerateAssistantText } from './degenerate-text'
 import { assistantTextPart, chatMessageText, dedupeRepeatedTextInParts, reasoningPart, textPart } from './parts'
 import {
   applyStoredToolResult,
@@ -78,7 +79,7 @@ function codexMessageItemText(message: SessionMessage): string {
 
       const text = partRecord.text
 
-      if (typeof text === 'string' && text.length > 0) {
+      if (typeof text === 'string' && text.length > 0 && !isDegenerateAssistantText(text)) {
         texts.push(text)
       }
     }
@@ -89,6 +90,10 @@ function codexMessageItemText(message: SessionMessage): string {
 
 function displayContentForMessage(role: SessionMessage['role'], content: unknown): string {
   const textContent = textFromUnknown(content)
+
+  if (role === 'assistant') {
+    return isDegenerateAssistantText(textContent) ? '' : textContent
+  }
 
   if (role !== 'user') {
     return textContent

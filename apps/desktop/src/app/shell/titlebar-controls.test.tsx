@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
 import { I18nProvider } from '@/i18n'
@@ -10,6 +10,23 @@ import { setTitlebarAppActionsSide } from '@/store/titlebar-app-actions'
 import { ROUTES_AREA } from '../routes'
 
 import { TitlebarControls, type TitlebarTool } from './titlebar-controls'
+
+const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+const initialHermesDesktop = desktopWindow.hermesDesktop
+let openExternal: ReturnType<typeof vi.fn>
+
+function installBridge() {
+  openExternal = vi.fn().mockResolvedValue(undefined)
+  desktopWindow.hermesDesktop = { openExternal } as unknown as Window['hermesDesktop']
+}
+
+function restoreBridge() {
+  if (initialHermesDesktop) {
+    desktopWindow.hermesDesktop = initialHermesDesktop
+  } else {
+    delete desktopWindow.hermesDesktop
+  }
+}
 
 const PLUGIN_TOOL: TitlebarTool = { icon: <span />, id: 'plugin-tool', label: 'plugin tool' }
 
@@ -131,6 +148,29 @@ describe('TitlebarControls fixed clusters', () => {
 
       expect(pluginChrome()).toBeNull()
     })
+  })
+})
+
+describe('titlebar external tool href', () => {
+  beforeEach(() => {
+    installBridge()
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.clearAllMocks()
+    restoreBridge()
+  })
+
+  it('opens a tool href in the OS browser', () => {
+    const href = 'https://hermes-agent.nousresearch.com/docs/user-guide/desktop'
+    renderControls('/', {
+      tools: [{ href, icon: <span />, id: 'docs-tool', label: 'Docs' }]
+    })
+
+    fireEvent.click(screen.getByRole('link', { name: 'Docs' }))
+
+    expect(openExternal).toHaveBeenCalledWith(href)
   })
 })
 

@@ -10,12 +10,15 @@ const updateMessagingPlatform = vi.fn()
 const getPairing = vi.fn()
 const approvePairing = vi.fn()
 const revokePairing = vi.fn()
-const openExternalLink = vi.fn()
 const runGatewayRestart = vi.fn()
 const watchGatewayRestartOutcome = vi.fn()
 const startTelegramOnboarding = vi.fn()
 const getTelegramOnboardingStatus = vi.fn()
 const applyTelegramOnboarding = vi.fn()
+
+const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+const initialHermesDesktop = desktopWindow.hermesDesktop
+let openExternal: ReturnType<typeof vi.fn>
 
 vi.mock('@/hermes', () => ({
   approvePairing: (platformId: string, requestId: string, profile?: null | string) =>
@@ -48,10 +51,6 @@ vi.mock('@/store/gateway', () => ({
 }))
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
-
-vi.mock('@/lib/external-link', () => ({
-  openExternalLink: (href: string) => openExternalLink(href)
-}))
 
 vi.mock('@/store/notifications', () => ({
   notify: vi.fn(),
@@ -88,11 +87,19 @@ beforeEach(() => {
   getPairing.mockResolvedValue({ approved: [], pending: [] })
   runGatewayRestart.mockResolvedValue(true)
   watchGatewayRestartOutcome.mockResolvedValue(true)
+  openExternal = vi.fn().mockResolvedValue(undefined)
+  desktopWindow.hermesDesktop = { openExternal } as unknown as Window['hermesDesktop']
 })
 
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+
+  if (initialHermesDesktop) {
+    desktopWindow.hermesDesktop = initialHermesDesktop
+  } else {
+    delete desktopWindow.hermesDesktop
+  }
 })
 
 // Import at module scope (after the hoisted vi.mock calls) so the heavy
@@ -143,7 +150,7 @@ describe('MessagingView setup-guide link', () => {
     expect(screen.queryByText('Open setup guide')).toBeNull()
   })
 
-  it('opens a real docs URL through the validated external opener', async () => {
+  it('opens a real docs URL in the OS browser', async () => {
     const docsUrl = 'https://hermes-agent.nousresearch.com/docs/user-guide/messaging/teams'
     getMessagingPlatforms.mockResolvedValue({ platforms: [platform({ docs_url: docsUrl })] })
 
@@ -154,7 +161,40 @@ describe('MessagingView setup-guide link', () => {
       fireEvent.click(link)
     })
 
-    await waitFor(() => expect(openExternalLink).toHaveBeenCalledWith(docsUrl))
+    await waitFor(() => expect(openExternal).toHaveBeenCalledWith(docsUrl))
+  })
+
+  it('opens a credential field docs URL in the OS browser', async () => {
+    const fieldUrl = 'https://vendor.example/docs/credentials'
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({
+          env_vars: [
+            {
+              advanced: false,
+              description: '',
+              is_password: true,
+              is_set: false,
+              key: 'TEAMS_TOKEN',
+              prompt: '',
+              redacted_value: null,
+              required: true,
+              url: fieldUrl
+            }
+          ]
+        })
+      ]
+    })
+
+    const { container } = await renderMessaging()
+
+    const link = container.querySelector(`a[href="${fieldUrl}"]`)
+    expect(link).not.toBeNull()
+    await act(async () => {
+      fireEvent.click(link!)
+    })
+
+    await waitFor(() => expect(openExternal).toHaveBeenCalledWith(fieldUrl))
   })
 })
 

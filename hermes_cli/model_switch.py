@@ -1408,10 +1408,18 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
     # listing lacks is soft-accepted) whether the slug arrived as ``custom:<key>`` or the bare key
     # the picker rows carry — otherwise the bare spelling fell into the built-in live-listing
     # branch and hard-rejected the very model the user selected.
+    # Only a block that declares its OWN endpoint (``base_url``/``url``/``api``) is a custom
+    # endpoint. A ``providers.<built-in>`` block that carries only tuning
+    # (``request_timeout_seconds``, ``stale_timeout_seconds``, ``models: {}``) overlays the
+    # built-in provider — the credential path already routes it through the built-in resolver
+    # (``_creds_for_switched_provider``), so validation must follow the same rule. Probing
+    # ``openai-codex`` as a custom endpoint hit ``chatgpt.com/backend-api/codex/models`` under
+    # the generic Bearer probe, which is not a ``/models`` listing, and hard-rejected every model
+    # for a subscription that works.
     validate_as = st.target_provider
     if not validate_as.lower().startswith("custom"):
         pdef = resolve_provider_full(validate_as, st.user_providers, st.custom_providers)
-        if pdef is not None and pdef.source == "user-config":
+        if pdef is not None and pdef.source == "user-config" and pdef.base_url:
             validate_as = f"custom:{validate_as}"
     try:
         validation = validate_requested_model(

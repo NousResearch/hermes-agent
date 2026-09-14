@@ -160,12 +160,14 @@ def _match_legacy_custom_provider(requested_norm: str, custom_providers) -> Opti
     return None
 
 
-def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, Any]]:
+def _get_named_custom_provider(requested_provider: str, *,
+                               config: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     requested_norm = _normalize_custom_provider_name(requested_provider or "")
     if not requested_norm or requested_norm == "auto" or _shadowed_by_builtin(requested_norm):
         return None
     rp = _rp()
-    config = rp.load_config()
+    if config is None:
+        config = rp.load_config()
     providers = config.get("providers")
     found = _match_new_style_provider(requested_norm, providers) if isinstance(providers, dict) else None
     if found:
@@ -380,7 +382,8 @@ def _apply_custom_provider_extras(custom_provider: Dict[str, Any], target_model:
         result["request_overrides"] = {**(result.get("request_overrides") or {}), **request_overrides}
 
 
-def _resolve_llamacpp_runtime(requested_provider: str, explicit_api_key: Optional[str]) -> Dict[str, Any]:
+def _resolve_llamacpp_runtime(requested_provider: str, explicit_api_key: Optional[str], *,
+                              config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Managed llama.cpp runtime: the supervised (or detected external) server, or a typed error.
     No server => say so and stop; falling through to the generic custom path would surface "local
     server is off" as OpenRouter's baffling "401 Invalid API key". The switch's state picks the
@@ -396,7 +399,8 @@ def _resolve_llamacpp_runtime(requested_provider: str, explicit_api_key: Optiona
                            (explicit_api_key or "").strip() or endpoint["api_key"] or "no-key-required", source="local-runtime",
                            requested_provider=requested_provider)
     try:
-        enabled = bool((rp.load_config().get("local_runtime") or {}).get("enabled"))
+        full_cfg = rp.load_config() if config is None else config
+        enabled = bool((full_cfg.get("local_runtime") or {}).get("enabled"))
     except Exception:  # noqa: BLE001
         enabled = False
     if enabled:
@@ -452,7 +456,8 @@ def _opencode_family_for_custom(requested_provider: str, base_url: str) -> Optio
 
 def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: Optional[str] = None,
                                   explicit_base_url: Optional[str] = None,
-                                  target_model: Optional[str] = None) -> Optional[Dict[str, Any]]:
+                                  target_model: Optional[str] = None,
+                                  config: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     """Runtime for a llamacpp alias, a bare-custom direct alias, or a configured custom entry.
     Aliases resolving to "custom" (ollama, vllm, llamacpp, …) are treated like bare ``custom``. A
     llamacpp alias with no explicit base_url resolves to the managed server first; an explicit
@@ -464,13 +469,14 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     # treated identically here, so a YAML `provider: ollama` with a LAN/WireGuard `base_url` doesn't
     # silently fall through to OpenRouter.
     requested_norm = (requested_provider or "").strip().lower()
+    config_kwargs = {} if config is None else {"config": config}
     if requested_norm in _LLAMACPP_ALIASES and not explicit_base_url:
-        return _resolve_llamacpp_runtime(requested_provider, explicit_api_key)
+        return _resolve_llamacpp_runtime(requested_provider, explicit_api_key, **config_kwargs)
     if requested_norm and requested_norm != "custom" and rp._resolves_to_custom(requested_norm):
         requested_norm = "custom"
     if requested_norm == "custom" and explicit_base_url:
         return _resolve_direct_alias_runtime(requested_provider, explicit_api_key, explicit_base_url)
-    custom_provider = rp._get_named_custom_provider(requested_provider)
+    custom_provider = rp._get_named_custom_provider(requested_provider, **config_kwargs)
     if not custom_provider:
         return None
     base_url = ((explicit_base_url or "").strip() or custom_provider.get("base_url", "")).rstrip("/")
@@ -511,7 +517,8 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     family = _opencode_family_for_custom(requested_provider, base_url)
     if family is not None and not custom_provider.get("api_mode"):
         from hermes_cli.models import normalize_opencode_base_url, opencode_model_api_mode
-        effective_model = str(target_model or custom_provider.get("model") or rp._get_model_config().get("default") or "").strip()
+        effective_model = str(target_model or custom_provider.get("model")
+                              or rp._get_model_config(**config_kwargs).get("default") or "").strip()
         if effective_model:
             result["api_mode"] = opencode_model_api_mode(family, effective_model)
         result["base_url"] = normalize_opencode_base_url(family, result["api_mode"], result["base_url"])

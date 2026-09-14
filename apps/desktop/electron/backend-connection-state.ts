@@ -12,6 +12,7 @@ export function createBackendConnectionState<TProcess, TConnection>() {
   let generation = 0
   let process: TProcess | null = null
   let promise: Promise<TConnection> | null = null
+  let pendingPromise: Promise<TConnection> | null = null
 
   return {
     startAttempt(): BackendConnectionAttempt<TConnection> {
@@ -25,8 +26,26 @@ export function createBackendConnectionState<TProcess, TConnection>() {
 
       attempt.promise = nextPromise
       promise = nextPromise
+      pendingPromise = nextPromise
+
+      void nextPromise.then(
+        () => {
+          if (attempt.generation === generation && promise === nextPromise) {
+            pendingPromise = null
+          }
+        },
+        () => {
+          if (attempt.generation === generation && promise === nextPromise) {
+            pendingPromise = null
+          }
+        }
+      )
 
       return true
+    },
+
+    isCurrentAttempt(attempt: BackendConnectionAttempt<TConnection>): boolean {
+      return attempt.generation === generation
     },
 
     attachProcess(
@@ -49,6 +68,7 @@ export function createBackendConnectionState<TProcess, TConnection>() {
 
       process = null
       promise = null
+      pendingPromise = null
 
       return true
     },
@@ -59,6 +79,7 @@ export function createBackendConnectionState<TProcess, TConnection>() {
       }
 
       promise = null
+      pendingPromise = null
 
       return true
     },
@@ -71,12 +92,17 @@ export function createBackendConnectionState<TProcess, TConnection>() {
       return promise
     },
 
+    getPendingPromise(): Promise<TConnection> | null {
+      return pendingPromise
+    },
+
     invalidate(): TProcess | null {
       const currentProcess = process
 
       generation += 1
       process = null
       promise = null
+      pendingPromise = null
 
       return currentProcess
     }

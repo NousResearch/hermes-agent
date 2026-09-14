@@ -10,7 +10,6 @@
   makeWrapper,
   callPackage,
   python312,
-  nodejs_22,
   electron,
   ripgrep,
   git,
@@ -39,7 +38,6 @@
   extraDependencyGroups ? [ ],
 }:
 let
-  nodejs = nodejs_22;
   mkHermesVenv =
     extraDependencyGroups:
     callPackage ./python.nix {
@@ -51,7 +49,7 @@ let
   hermesVenv = (mkHermesVenv extraDependencyGroups).venv;
 
   hermesNpmLib = callPackage ./lib.nix {
-    inherit npm-lockfile-fix nodejs;
+    inherit npm-lockfile-fix;
   };
 
   hermesTui = callPackage ./tui.nix {
@@ -86,20 +84,18 @@ let
   # i18n locale catalogs (locales/*.yaml). Shipped into the store and pointed
   # at by HERMES_BUNDLED_LOCALES so the wrapped binary always resolves human
   # strings instead of raw i18n keys (#23943 / #27632 / #35374).
-  #
-  # Defense-in-depth, not load-bearing: the wheel already declares locales/ as
-  # setuptools data-files, so uv2nix materializes them into the venv's data
-  # scheme and agent/i18n.py resolves them with no env var. The wrapper override
-  # pins the store path so a future uv2nix change that drops data-files can't
-  # silently ship raw keys via `nix build` (checks don't run on a plain build).
-  # The bundled-locales flake check verifies BOTH paths independently.
-  #
-  # Plain cleanSource (no __pycache__ filter): locales/ is bare *.yaml, never
-  # compiled, so it never carries a __pycache__ dir to exclude.
   bundledLocales = lib.cleanSource ../locales;
 
+  # Shipped MCP catalog (optional-mcps/<name>/manifest.yaml). Same bare-data-dir
+  # case as locales: not a Python package, so it's symlinked into the store and
+  # exposed via HERMES_OPTIONAL_MCPS.
+  bundledOptionalMcps = lib.cleanSourceWith {
+    src = ../optional-mcps;
+    filter = path: _type: !(lib.hasInfix "/__pycache__/" path);
+  };
+
   runtimeDeps = [
-    nodejs
+    hermesNpmLib.nodejs
     ripgrep
     git
     openssh
@@ -181,6 +177,7 @@ stdenv.mkDerivation (finalAttrs: {
     ln -s ${bundledOptionalSkills} $out/share/hermes-agent/optional-skills
     ln -s ${bundledPlugins} $out/share/hermes-agent/plugins
     ln -s ${bundledLocales} $out/share/hermes-agent/locales
+    ln -s ${bundledOptionalMcps} $out/share/hermes-agent/optional-mcps
     ln -s ${hermesWeb} $out/share/hermes-agent/web_dist
     ln -s ${hermesTui}/lib/hermes-tui $out/ui-tui
 
@@ -192,10 +189,12 @@ stdenv.mkDerivation (finalAttrs: {
           --set HERMES_OPTIONAL_SKILLS $out/share/hermes-agent/optional-skills \
           --set HERMES_BUNDLED_PLUGINS $out/share/hermes-agent/plugins \
           --set HERMES_BUNDLED_LOCALES $out/share/hermes-agent/locales \
+          --set HERMES_OPTIONAL_MCPS $out/share/hermes-agent/optional-mcps \
           --set HERMES_WEB_DIST $out/share/hermes-agent/web_dist \
           --set HERMES_TUI_DIR $out/ui-tui \
+          --set-default HERMES_BIN $out/bin/hermes \
           --set HERMES_PYTHON ${hermesVenv}/bin/python3 \
-          --set HERMES_NODE ${lib.getExe nodejs}${
+          --set HERMES_NODE ${lib.getExe hermesNpmLib.nodejs}${
             # Fold the line continuation INTO the optionalString: a bare
             # `\` on the line above an empty expansion would dangle onto a
             # blank line, ending the makeWrapper command early and running

@@ -13,19 +13,11 @@ import {
   setNewChatWorkspaceTarget
 } from '@/store/session'
 
+import { deferred } from '../../../test/deferred'
+
 import { useCwdActions } from './use-cwd-actions'
 
 type CwdActionsHandle = ReturnType<typeof useCwdActions>
-
-function deferred<T>() {
-  let resolve!: (value: T) => void
-
-  const promise = new Promise<T>(done => {
-    resolve = done
-  })
-
-  return { promise, resolve }
-}
 
 function Harness({
   activeSessionIdRef,
@@ -37,7 +29,6 @@ function Harness({
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }) {
   const actions = useCwdActions({
-    activeSessionId: activeSessionIdRef.current,
     activeSessionIdRef,
     requestGateway
   })

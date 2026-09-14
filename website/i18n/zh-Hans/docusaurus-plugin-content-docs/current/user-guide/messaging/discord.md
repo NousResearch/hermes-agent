@@ -624,7 +624,7 @@ Hermes 自动将已安装的技能注册为**原生 Discord 应用命令**。这
 - 每个技能成为一个 Discord 斜杠命令（例如 `/code-review`、`/ascii-art`）
 - 技能接受一个可选的 `args` 字符串参数
 - Discord 每个机器人有 100 个应用命令的限制——如果你的技能数量超过可用槽位，多余的技能会被跳过并在日志中显示警告
-- 技能在机器人启动时与内置命令（如 `/model`、`/reset` 和 `/background`）一起注册
+- 技能在机器人启动时与内置命令（如 `/model`、`/reset` 和 `/bg`）一起注册
 
 无需额外配置——通过 `hermes skills install` 安装的任何技能都会在下次网关重启时自动注册为 Discord 斜杠命令。
 

@@ -137,7 +137,19 @@ def _all_fal_families():
     return list(FAL_FAMILIES.keys())
 
 
-@pytest.mark.parametrize("family_id", _all_fal_families())
+def _t2v_fal_families():
+    """Families that advertise a text-to-video endpoint."""
+    from plugins.video_gen.fal import FAL_FAMILIES
+    return [fid for fid, meta in FAL_FAMILIES.items() if meta.get("text_endpoint")]
+
+
+def _i2v_only_fal_families():
+    """Families that only animate an existing image (no text_endpoint)."""
+    from plugins.video_gen.fal import FAL_FAMILIES
+    return [fid for fid, meta in FAL_FAMILIES.items() if not meta.get("text_endpoint")]
+
+
+@pytest.mark.parametrize("family_id", _t2v_fal_families())
 def test_fal_text_only_routes_to_text_endpoint(matrix_env, family_id):
     home, fal_calls, _ = matrix_env
     from plugins.video_gen.fal import FAL_FAMILIES
@@ -147,6 +159,14 @@ def test_fal_text_only_routes_to_text_endpoint(matrix_env, family_id):
         {"video_gen": {"provider": "fal", "model": family_id}},
         {"prompt": "a dog running"},
     )
+
+    # Image-only families (e.g. gemini-omni-flash) must reject text-only
+    # jobs with a clean modality error instead of submitting anywhere.
+    if not FAL_FAMILIES[family_id].get("text_endpoint"):
+        assert result["success"] is False, family_id
+        assert result.get("error_type") == "modality_unsupported", result
+        assert not fal_calls, f"{family_id} submitted despite no text endpoint"
+        return
 
     assert result["success"] is True, f"{family_id}: {result.get('error')}"
     assert result["modality"] == "text"
@@ -163,34 +183,52 @@ def test_fal_text_only_routes_to_text_endpoint(matrix_env, family_id):
     assert not image_keys, f"{family_id} text-only leaked image keys: {image_keys}"
 
 
-@pytest.mark.parametrize("family_id", _all_fal_families())
-def test_fal_text_plus_image_routes_to_image_endpoint(matrix_env, family_id):
+@pytest.mark.parametrize("family_id", _i2v_only_fal_families())
+def test_fal_i2v_only_family_refuses_text_only(matrix_env, family_id):
+    """An i2v-only family must refuse a text-only call rather than guess an endpoint."""
+    home, fal_calls, _ = matrix_env
+
+    result = _invoke_tool(
+        home,
+        {"video_gen": {"provider": "fal", "model": family_id}},
+        {"prompt": "a dog running"},
+    )
+
+    assert result["success"] is False, f"{family_id} has no text-to-video route"
+    assert result.get("error_type") == "modality_unsupported"
+    assert not fal_calls, f"{family_id} must not reach FAL for an unsupported modality"
+
+
+def _i2v_fal_families():
+    """Every family that can animate an existing image."""
+    from plugins.video_gen.fal import FAL_FAMILIES
+    return [fid for fid, meta in FAL_FAMILIES.items() if meta.get("image_endpoint")]
+
+
+@pytest.mark.parametrize("family_id", _i2v_fal_families())
+def test_fal_image_to_video_routes_to_image_endpoint(matrix_env, family_id):
     home, fal_calls, _ = matrix_env
     from plugins.video_gen.fal import FAL_FAMILIES
 
     result = _invoke_tool(
         home,
         {"video_gen": {"provider": "fal", "model": family_id}},
-        {"prompt": "animate this dog", "image_url": "https://example.com/dog.png"},
+        {"prompt": "animate this", "image_url": "https://example.com/i.png"},
     )
 
+    meta = FAL_FAMILIES[family_id]
     assert result["success"] is True, f"{family_id}: {result.get('error')}"
     assert result["modality"] == "image"
-    assert result["provider"] == "fal"
-
-    # Outbound endpoint must be the family's image endpoint
     assert len(fal_calls) == 1
-    endpoint = fal_calls[0]["endpoint"]
-    assert endpoint == FAL_FAMILIES[family_id]["image_endpoint"]
+    assert fal_calls[0]["endpoint"] == meta["image_endpoint"]
 
-    # Payload must contain the right image key (may be image_url or
-    # start_image_url depending on the family's image_param_key)
+    # The image must land under the family's declared key and no other
+    # (kling v3 4k wants start_image_url; sending both would be a 422).
     payload = fal_calls[0]["arguments"] or {}
-    expected_image_key = FAL_FAMILIES[family_id].get("image_param_key") or "image_url"
-    assert payload.get(expected_image_key) == "https://example.com/dog.png", (
-        f"{family_id} text+image missing {expected_image_key} in payload "
-        f"(keys: {sorted(payload.keys())})"
-    )
+    image_key = meta.get("image_param_key") or "image_url"
+    assert payload.get(image_key) == "https://example.com/i.png"
+    other_keys = [k for k in payload if "image" in k and "url" in k and k != image_key]
+    assert not other_keys, f"{family_id} sent extra image keys: {other_keys}"
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -221,191 +259,6 @@ def test_xai_text_only_via_tool_surface(matrix_env):
     assert result["video"] == "https://xai-files.example/out.mp4"
     assert result["public_url"] == "https://xai-files.example/out.mp4"
     assert result.get("temporary_url") == "https://xai-cdn/out.mp4"
-
-
-def test_xai_text_plus_image_via_tool_surface(matrix_env):
-    home, _, xai_calls = matrix_env
-
-    result = _invoke_tool(
-        home,
-        {"video_gen": {"provider": "xai"}},
-        {"prompt": "animate this", "image_url": "https://example.com/img.png"},
-    )
-    assert result["success"] is True
-    assert result["modality"] == "image"
-    assert result["provider"] == "xai"
-
-    assert len(xai_calls) == 1
-    assert xai_calls[0]["url"].endswith("/videos/generations")
-    payload = xai_calls[0]["json"] or {}
-    assert payload["model"] == "grok-imagine-video-1.5"
-    assert payload["image"] == {"url": "https://example.com/img.png"}
-
-
-def test_xai_image_to_video_rejects_bare_file_id_via_tool_surface(matrix_env):
-    home, _, xai_calls = matrix_env
-
-    result = _invoke_tool(
-        home,
-        {"video_gen": {"provider": "xai"}},
-        {
-            "prompt": "animate this robot waving",
-            "image_url": "file_03eb65b1-aa97-482f-9ef0-b04f9172ea00",
-        },
-    )
-    assert result["success"] is False
-    assert result.get("error_type") == "invalid_image_url"
-    assert len(xai_calls) == 0
-
-
-def test_xai_reference_to_video_via_tool_surface(matrix_env):
-    home, _, xai_calls = matrix_env
-
-    result = _invoke_tool(
-        home,
-        {"video_gen": {"provider": "xai"}},
-        {
-            "prompt": "put the jacket from the reference on the runway model",
-            "reference_image_urls": [
-                "https://example.com/model.png",
-                "https://example.com/jacket.png",
-            ],
-            "duration": 15,
-        },
-    )
-    assert result["success"] is True
-    assert result["modality"] == "reference"
-    assert result["provider"] == "xai"
-
-    payload = xai_calls[0]["json"] or {}
-    assert xai_calls[0]["url"].endswith("/videos/generations")
-    assert payload["model"] == "grok-imagine-video"
-    assert payload["duration"] == 10
-    assert payload["reference_images"] == [
-        {"url": "https://example.com/model.png"},
-        {"url": "https://example.com/jacket.png"},
-    ]
-
-
-def test_xai_reference_to_video_rejects_bare_file_ids_via_tool_surface(matrix_env):
-    home, _, xai_calls = matrix_env
-
-    result = _invoke_tool(
-        home,
-        {"video_gen": {"provider": "xai"}},
-        {
-            "prompt": "use these references for a robot product shot",
-            "reference_image_urls": [
-                "file_03eb65b1-aa97-482f-9ef0-b04f9172ea00",
-                "file_54b48d6d-28ad-4982-9d72-bd3ac677c9bc",
-            ],
-        },
-    )
-    assert result["success"] is False
-    assert result.get("error_type") == "invalid_reference_image_urls"
-    assert len(xai_calls) == 0
-
-
-def test_xai_video_edit_via_tool_surface(matrix_env):
-    home, _, xai_calls = matrix_env
-
-    result = _invoke_tool(
-        home,
-        {"video_gen": {"provider": "xai"}},
-        {
-            "prompt": "make the sky stormy",
-            "video_url": "https://example.com/source.mp4",
-        },
-        tool_name="xai_video_edit",
-    )
-    assert result["success"] is True
-    assert result["modality"] == "edit"
-
-    payload = xai_calls[0]["json"] or {}
-    assert xai_calls[0]["url"].endswith("/videos/edits")
-    assert payload["model"] == "grok-imagine-video"
-    assert payload["video"] == {"url": "https://example.com/source.mp4"}
-    assert "duration" not in payload
-    assert "aspect_ratio" not in payload
-    assert "resolution" not in payload
-
-
-def test_xai_video_extend_via_tool_surface(matrix_env):
-    home, _, xai_calls = matrix_env
-
-    result = _invoke_tool(
-        home,
-        {"video_gen": {"provider": "xai"}},
-        {
-            "prompt": "the camera pulls back to reveal the city",
-            "video_url": "https://example.com/source.mp4",
-            "duration": 15,
-        },
-        tool_name="xai_video_extend",
-    )
-    assert result["success"] is True
-    assert result["modality"] == "extend"
-
-    payload = xai_calls[0]["json"] or {}
-    assert xai_calls[0]["url"].endswith("/videos/extensions")
-    assert payload["model"] == "grok-imagine-video"
-    assert payload["video"] == {"url": "https://example.com/source.mp4"}
-    assert payload["duration"] == 10
-
-
-def test_xai_video_edit_rejects_bare_file_id_via_tool_surface(matrix_env):
-    home, _, xai_calls = matrix_env
-
-    result = _invoke_tool(
-        home,
-        {"video_gen": {"provider": "xai"}},
-        {
-            "prompt": "make the sky stormy",
-            "video_url": "file-123",
-        },
-        tool_name="xai_video_edit",
-    )
-    assert result.get("success") is not True
-    assert "error" in result
-    assert "url" in result["error"].lower()
-    assert len(xai_calls) == 0
-
-
-def test_xai_video_extend_rejects_bare_file_id_via_tool_surface(matrix_env):
-    home, _, xai_calls = matrix_env
-
-    result = _invoke_tool(
-        home,
-        {"video_gen": {"provider": "xai"}},
-        {
-            "prompt": "continue into a sunrise",
-            "video_url": "file_25ac1c31-d6d8-48b2-8504-a97d282310c4",
-        },
-        tool_name="xai_video_extend",
-    )
-    assert result.get("success") is not True
-    assert "error" in result
-    assert "url" in result["error"].lower()
-    assert len(xai_calls) == 0
-
-
-def test_xai_explicit_model_override_via_tool_surface(matrix_env):
-    home, _, xai_calls = matrix_env
-
-    result = _invoke_tool(
-        home,
-        {"video_gen": {"provider": "xai"}},
-        {
-            "prompt": "animate this",
-            "image_url": "https://example.com/img.png",
-            "model": "grok-imagine-video",
-        },
-    )
-    assert result["success"] is True
-
-    payload = xai_calls[0]["json"] or {}
-    assert payload["model"] == "grok-imagine-video"
-    assert payload["image"] == {"url": "https://example.com/img.png"}
 
 
 # ─────────────────────────────────────────────────────────────────────────

@@ -70,6 +70,8 @@ hermes memory setup        # select "honcho" — runs the Honcho-specific post-s
 
 The legacy `hermes honcho setup` command still works (it now redirects to `hermes memory setup`), but is only registered after Honcho is selected as the active memory provider.
 
+**Headless / remote machines:** for cloud auth on a box without a browser (SSH, remote VM), pick **device** at the wizard's auth-method prompt. The CLI prints a short code and a verification link; open the link in a browser on any other machine, approve, and setup completes — no API key copy-paste. The wizard defaults to this option automatically when it detects no usable local browser.
+
 **Config:** `$HERMES_HOME/honcho.json` (profile-local) or `~/.honcho/config.json` (global). Resolution order: `$HERMES_HOME/honcho.json` > `~/.hermes/honcho.json` > `~/.honcho/config.json`. See the [config reference](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/honcho/README.md) and the [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/hermes).
 
 <details>
@@ -284,26 +286,41 @@ Context database by Volcengine (ByteDance) with filesystem-style knowledge hiera
 | | |
 |---|---|
 | **Best for** | Self-hosted knowledge management with structured browsing |
-| **Requires** | `pip install openviking` + running server |
+| **Requires** | OpenViking initialized, validated, and running |
 | **Data storage** | Self-hosted (local or cloud) |
 | **Cost** | Free (open-source, AGPL-3.0) |
 
-**Tools:** `viking_search` (semantic search), `viking_read` (tiered: abstract/overview/full), `viking_browse` (filesystem navigation), `viking_remember` (store facts), `viking_add_resource` (ingest URLs/docs)
+**Tools (6):** `viking_search` (semantic search), `viking_read` (tiered: abstract/overview/full), `viking_browse` (filesystem navigation), `viking_remember` (store facts), `viking_forget` (delete a memory file by exact `viking://` URI), `viking_add_resource` (ingest URLs/docs)
 
 **Setup:**
 ```bash
-# Start the OpenViking server first
-pip install openviking
+# Prepare OpenViking first
+openviking-server init
+openviking-server doctor
 openviking-server
 
 # Then configure Hermes
 hermes memory setup    # select "openviking"
 # Or manually:
 hermes config set memory.provider openviking
-echo "OPENVIKING_ENDPOINT=http://localhost:1933" >> ~/.hermes/.env
-# Authenticated servers should use a user/admin API key:
-echo "OPENVIKING_API_KEY=..." >> ~/.hermes/.env
 ```
+
+`hermes memory setup` can reuse or copy connection values from
+`~/.openviking/ovcli.conf`. Manual setup uses the active profile's `.env` file;
+for the default profile that is `~/.hermes/.env`, and for named profiles use
+`~/.hermes/profiles/<profile>/.env`.
+
+```text
+OPENVIKING_ENDPOINT=http://127.0.0.1:1933
+# OPENVIKING_API_KEY=...
+# OPENVIKING_ACCOUNT=default
+# OPENVIKING_USER=default
+```
+
+OpenViking server settings live in `ov.conf` (`--config`,
+`OPENVIKING_CONFIG_FILE`, or `~/.openviking/ov.conf`). Client connection values
+live in `ovcli.conf` (`OPENVIKING_CLI_CONFIG_FILE` or
+`~/.openviking/ovcli.conf`).
 
 **Key features:**
 - Tiered context loading: L0 (~100 tokens) → L1 (~2k) → L2 (full)
@@ -311,7 +328,24 @@ echo "OPENVIKING_API_KEY=..." >> ~/.hermes/.env
 - `viking://` URI scheme for hierarchical knowledge browsing
 
 `OPENVIKING_ACCOUNT` and `OPENVIKING_USER` are used for local/trusted mode.
-`OPENVIKING_AGENT` is Hermes' peer ID in OpenViking for peer-scoped memories.
+Peer identity is optional. By default, Hermes sends no peer ID and writes
+explicit memories to `viking://user/<user>/memories/...`. Setup does not ask
+for a peer ID. For separate assistant context, set
+`memory.openviking.agent: work-assistant` in `config.yaml`.
+
+Existing non-empty peer settings keep their peer-scoped writes and recall.
+This includes `OPENVIKING_AGENT` and `actor_peer_id` or legacy `agent_id` in a
+linked OpenViking config. Existing memories are not moved or deleted.
+With no peer ID, default search covers user memory and existing peer memories
+under the same OpenViking user. Old peer memories remain searchable at their
+existing paths. Ranking and result limits determine which memories are returned.
+Set `memory.openviking.agent: hermes` to restore the old peer-scoped writes.
+Memories written at user scope before this change stay there and remain
+searchable. The setting changes future writes, not existing memory locations.
+
+Hermes sends `User-Agent: openviking-memory-hermes/<version>` on OpenViking
+requests. This standard harness identifier contains no per-user identifier and
+does not add a separate request.
 
 ---
 
@@ -380,6 +414,7 @@ The plugin authenticates with `X-API-Key` and uses the server's `/search` / `/me
 | `user_id` | `hermes-user` | User identifier |
 | `agent_id` | `hermes` | Agent identifier |
 | `rerank` | `false` | Rerank search results for relevance (platform mode only) |
+| `sync_max_chars` | `450` | Per-message character cap applied before each turn is sent for fact extraction, cut at the last sentence boundary. The default fits 512-token embedders (Ollama `bge-small-zh-v1.5`, `all-minilm`); raise it (e.g. `6000`) for 8k-token embedders such as `text-embedding-3-small`, `jina-embeddings-v3` or `bge-m3` |
 
 **OSS supported providers:**
 
@@ -487,7 +522,7 @@ Cloud memory API with hybrid search (Vector + BM25 + Reranking), 7 memory types,
 | **Data storage** | RetainDB Cloud |
 | **Cost** | $20/month |
 
-**Tools:** `retaindb_profile` (user profile), `retaindb_search` (semantic search), `retaindb_context` (task-relevant context), `retaindb_remember` (store with type + importance), `retaindb_forget` (delete memories)
+**Tools (10):** `retaindb_profile` (user profile), `retaindb_search` (semantic search), `retaindb_context` (task-relevant context), `retaindb_remember` (store with type + importance), `retaindb_forget` (delete memories), plus file tools: `retaindb_upload_file`, `retaindb_list_files`, `retaindb_read_file`, `retaindb_ingest_file`, `retaindb_delete_file`
 
 **Setup:**
 ```bash
@@ -641,11 +676,11 @@ hermes memory setup
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
 |----------|---------|------|-------|-------------|----------------|
 | **Honcho** | Cloud | Paid | 5 | `honcho-ai` | Dialectic user modeling + session-scoped context |
-| **OpenViking** | Self-hosted | Free | 5 | `openviking` + server | Filesystem hierarchy + tiered loading |
+| **OpenViking** | Self-hosted | Free | 6 | `openviking` + server | Filesystem hierarchy + tiered loading |
 | **Mem0** | Cloud/Self-hosted | Free/Paid | 4 | `mem0ai` | Server-side LLM extraction + self-hosted/OSS modes |
 | **Hindsight** | Cloud/Local | Free/Paid | 3 | `hindsight-client` | Knowledge graph + reflect synthesis |
 | **Holographic** | Local | Free | 2 | None | HRR algebra + trust scoring |
-| **RetainDB** | Cloud | $20/mo | 5 | `requests` | Delta compression |
+| **RetainDB** | Cloud | $20/mo | 10 | `requests` | Delta compression |
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** | Cloud/Self-hosted | Free/Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
 | **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |

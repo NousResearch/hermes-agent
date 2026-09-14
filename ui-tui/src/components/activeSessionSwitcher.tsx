@@ -1,4 +1,5 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
+import type { SessionListItem, SessionListResponse } from '@hermes/shared/gateway-events'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { sessionScopedModelArg } from '../domain/slash.js'
@@ -7,15 +8,14 @@ import type {
   SessionActiveItem,
   SessionActiveListResponse,
   SessionCloseResponse,
-  SessionDeleteResponse,
-  SessionListItem,
-  SessionListResponse
+  SessionDeleteResponse
 } from '../gatewayTypes.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
 import { ModelPicker } from './modelPicker.js'
 import { windowOffset } from './overlayControls.js'
+import { clampOverlayWidth, listRowStyle } from './overlayPrimitives.js'
 import { TextInput } from './textInput.js'
 
 const VISIBLE = 12
@@ -153,9 +153,12 @@ export const orchestratorHintSegmentColor = (t: Theme, role: OrchestratorHintRol
   return t.color.muted
 }
 
+// Delegates to the shared list-row primitive so the session switcher and the
+// completions popover cannot disagree about what "selected" looks like.
+// (`selectionBg` remains the TEXT-selection highlight — a different semantic.)
 export const selectedSessionRowStyle = (t: Theme) => ({
-  backgroundColor: t.color.selectionBg,
-  color: t.color.text
+  backgroundColor: listRowStyle(t, true).backgroundColor,
+  color: listRowStyle(t, true).color
 })
 
 export const newSessionMarkerColor = (t: Theme, selected: boolean) =>
@@ -215,7 +218,7 @@ export const draftModelNameFromArg = (value: string) => {
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i]!
 
-    if (part === '--provider') {
+    if (part === '--provider' || part === '--reasoning') {
       i++
 
       continue
@@ -283,6 +286,7 @@ function OrchestratorHintText({ segments, t }: OrchestratorHintTextProps) {
 export function ActiveSessionSwitcher({
   currentSessionId,
   gw,
+  maxWidth,
   onCancel,
   onClose,
   onNew,
@@ -318,7 +322,9 @@ export function ActiveSessionSwitcher({
   const itemsRef = useRef<SessionActiveItem[]>([])
   const historyDisplayRef = useRef<SessionListItem[]>([])
   const { stdout } = useStdout()
-  const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  // Optional maxWidth lets grid layouts hand the switcher its cell budget.
+  const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  const width = clampOverlayWidth(preferredWidth, maxWidth)
   const promptColumns = Math.max(20, width - 11)
 
   // Rows are [new][live…][history…]: the "+ new" row is pinned first (index 0,
@@ -859,7 +865,13 @@ export function ActiveSessionSwitcher({
         <>
           <Box marginTop={1}>
             <Text color={t.color.label}>prompt › </Text>
-            <TextInput columns={promptColumns} onChange={setDraft} onSubmit={submitDraft} value={draft} />
+            <TextInput
+              color={t.color.text}
+              columns={promptColumns}
+              onChange={setDraft}
+              onSubmit={submitDraft}
+              value={draft}
+            />
           </Box>
           <OrchestratorHintText segments={orchestratorContextHintSegments(true)} t={t} />
           <Text color={t.color.muted} wrap="truncate-end">
@@ -893,6 +905,7 @@ interface OrchestratorHintTextProps {
 interface ActiveSessionSwitcherProps {
   currentSessionId: null | string
   gw: GatewayClient
+  maxWidth?: number
   onCancel: () => void
   onClose: (id: string) => Promise<null | SessionCloseResponse>
   onNew: () => void

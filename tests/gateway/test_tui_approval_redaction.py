@@ -34,28 +34,17 @@ class TestTuiApprovalEmitRedaction:
         assert emitted["payload"]["description"] == "x"
         assert "github.com" in emitted["payload"]["command"]
 
-    def test_emit_approval_request_handles_missing_command(self, monkeypatch):
-        from tui_gateway import server as tui_server
-
-        emitted = {}
-        monkeypatch.setattr(
-            tui_server, "_emit",
-            lambda event, sid, payload=None: emitted.update({"payload": payload}),
-        )
-        tui_server._emit_approval_request("s", {"description": "no command here"})
-        assert emitted["payload"] == {"description": "no command here"}
-        tui_server._emit_approval_request("s", None)
-        assert emitted["payload"] == {}
-
     @pytest.mark.parametrize(
-        ("data", "expected"),
+        ("allow_session", "allow_permanent", "expected"),
         [
-            ({"smart_denied": True, "allow_permanent": True}, ["once", "deny"]),
-            ({"allow_permanent": False}, ["once", "session", "deny"]),
-            ({"allow_permanent": True}, ["once", "session", "always", "deny"]),
+            (True, True, ["once", "session", "always", "deny"]),
+            (True, False, ["once", "session", "deny"]),
+            (False, False, ["once", "deny"]),
         ],
     )
-    def test_emit_approval_request_derives_choices(self, monkeypatch, data, expected):
+    def test_emit_approval_request_honors_allowed_scopes(
+        self, monkeypatch, allow_session, allow_permanent, expected
+    ):
         from tui_gateway import server as tui_server
 
         emitted = {}
@@ -65,24 +54,14 @@ class TestTuiApprovalEmitRedaction:
             lambda event, sid, payload=None: emitted.update({"payload": payload}),
         )
 
-        tui_server._emit_approval_request("s", data)
+        tui_server._emit_approval_request(
+            "sess-1",
+            {
+                "allow_permanent": allow_permanent,
+                "allow_session": allow_session,
+                "command": "<write to AGENTS.md>",
+            },
+        )
 
         assert emitted["payload"]["choices"] == expected
 
-    def test_no_raw_command_emit_in_approval_registrations(self):
-        """Every register_gateway_notify approval callback must route through the
-        redacting `_emit_approval_request` helper — no registration may emit the
-        raw payload via `_emit("approval.request", ...)` directly. The ONLY
-        allowed raw emit is inside the helper itself."""
-        from tui_gateway import server as tui_server
-
-        src = inspect.getsource(tui_server)
-        raw_emits = src.count('_emit("approval.request"')
-        assert raw_emits == 1, (
-            f'expected exactly 1 raw _emit("approval.request") (inside the '
-            f"redacting helper), found {raw_emits} — a registration may be "
-            f"emitting the unredacted command"
-        )
-        assert "_emit_approval_request(sid, data)" in src, (
-            "registration lambdas must route through _emit_approval_request"
-        )

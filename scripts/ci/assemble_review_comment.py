@@ -26,7 +26,7 @@ result objects::
 
 Each result object has:
 
-    kind:        "error" | "action_required" | "warning" | "info"
+    kind:        "error" | "action_required" | "warning" | "info" | "debug"
     title:       section heading
     summary:     one-line description
     detail:      markdown detail (optional)
@@ -56,7 +56,7 @@ from pathlib import Path
 MARKER = "<!-- hermes-ci-review-bot -->"
 
 # Severity ordering for display.
-_SEVERITY_ORDER = ["error", "action_required", "warning", "info"]
+_SEVERITY_ORDER = ["error", "action_required", "warning", "info", "debug"]
 
 # Severities that trigger the "blocking issues" layout (vs. the
 # "looks good!" banner).
@@ -74,7 +74,7 @@ _SEVERITY_GROUP_HEADER = {
 class ReviewItem:
     """A single piece of review information with a severity tag."""
 
-    severity: str  # "error" | "action_required" | "warning" | "info"
+    severity: str  # "error" | "action_required" | "warning" | "info" | "debug"
     title: str  # short section title, e.g. "package-lock.json"
     summary: str  # one-line summary
     detail: str = ""  # optional markdown detail (tables, bullet lists, etc.)
@@ -241,15 +241,15 @@ def _render_group(header: str, items: list[ReviewItem]) -> str:
     return f"{header}\n\n" + "\n\n---\n\n".join(blocks)
 
 
-def _render_info_details(items: list[ReviewItem]) -> str:
-    """Render each info item as its own collapsible ``<details>`` block."""
+def _render_debug_details(items: list[ReviewItem]) -> str:
+    """Render each debug item as its own collapsible ``<details>`` block."""
     blocks = []
     for item in items:
         inner = _render_item(item)
         blocks.append(
             f"<details>\n<summary>{item.title}</summary>\n\n{inner}\n\n</details>"
         )
-    return "\n\n".join(blocks)
+    return "### debug info\n\n" + "\n\n".join(blocks)
 
 
 def _render_pending_items(pending_jobs: list[str]) -> str:
@@ -258,18 +258,29 @@ def _render_pending_items(pending_jobs: list[str]) -> str:
     return f"\n\n---\n\n<sub>Still running {len(pending_jobs)} job{'s' if len(pending_jobs) != 1 else ''}: {job_list}</sub>\n"
 
 
-def render_comment(items: list[ReviewItem], pending_jobs: list[str] | None = None, commit_info: str = "") -> str:
+def render_comment(
+    items: list[ReviewItem],
+    pending_jobs: list[str] | None = None,
+    commit_info: str = "",
+    waiting: bool = False,
+) -> str:
     """Render the full comment body from a list of review items.
 
     Items are grouped by severity under ``##`` group headers, separated
     by ``---``. Errors and action_required items are always visible.
-    Warnings are shown only when present. Info items are in a collapsible
-    ``<details>`` block. If ``pending_jobs`` is non-empty, a dimmed
+    Warnings are shown only when present. Info items are visible; debug items
+    are in a collapsible ``<details>`` block. If ``pending_jobs`` is non-empty, a dimmed
     ``<sub>`` footer is appended listing jobs still running.
 
-    When there are no errors, action_required, or warnings (only info
-    items, or nothing at all), a "looks good!" banner is shown at the top,
-    and info items (if any) follow in a collapsible ``<details>`` block.
+    When there are no errors, action_required, or warnings, an "all good!"
+    banner is shown at the top. Info items remain visible and debug items
+    follow in collapsible ``<details>`` blocks.
+
+    ``waiting`` means a workflow run is still queued or in progress even
+    though no individual job is visibly pending — GitHub has not spawned
+    the jobs yet. The comment must not look final in that state, so the
+    "all good!" banner is replaced by a waiting note and a dimmed footer
+    marks the comment as still live.
     """
     pending = pending_jobs or []
 
@@ -279,6 +290,7 @@ def render_comment(items: list[ReviewItem], pending_jobs: list[str] | None = Non
         by_severity.setdefault(item.severity, []).append(item)
 
     info = by_severity.get("info", [])
+    debug = by_severity.get("debug", [])
     has_blocking = any(by_severity.get(s) for s in _BLOCKING_SEVERITIES)
 
     body = f"{MARKER}\n# ૮ >ﻌ< ა ci review\n\n"
@@ -287,7 +299,9 @@ def render_comment(items: list[ReviewItem], pending_jobs: list[str] | None = Non
         body += f"{commit_info}\n\n"
 
     if not items and not pending:
-        return f"{body}looks good to me!"
+        if waiting:
+            return f"{body}<sub>waiting for jobs to start…</sub>"
+        return f"{body}all good!"
 
     sections: list[str] = []
 
@@ -296,12 +310,17 @@ def render_comment(items: list[ReviewItem], pending_jobs: list[str] | None = Non
         if group:
             sections.append(_render_group(_SEVERITY_GROUP_HEADER[sev], group))
 
-    # Info: collapsible <details>
     if info:
-        sections.append(_render_info_details(info))
+        sections.append(_render_group("## ℹ️ Info", info))
+
+    # Debug: collapsible <details>
+    if debug:
+        sections.append(_render_debug_details(debug))
 
     if pending:
         body += _render_pending_items(pending)
+    elif waiting:
+        body += "\n\n---\n\n<sub>waiting for more jobs to start…</sub>\n"
 
     if sections:
         body += "\n\n---\n\n".join(sections)
@@ -354,6 +373,7 @@ def assemble(
     review_statuses_json: str = "",
     pending_jobs: list[str] | None = None,
     commit_info: str = "",
+    waiting: bool = False,
 ) -> str:
     """Assemble the full comment body from all available inputs."""
     items: list[ReviewItem] = []
@@ -368,7 +388,7 @@ def assemble(
     # 3. Attach per-job log links to all items (not just synthesized errors)
     _attach_job_urls(items, job_urls or {}, run_url)
 
-    return render_comment(items, pending_jobs, commit_info)
+    return render_comment(items, pending_jobs, commit_info, waiting=waiting)
 
 
 # ---------------------------------------------------------------------------
@@ -415,7 +435,7 @@ def main() -> int:
         pending_jobs=pending,
     )
 
-    args.output.write_text(body)
+    args.output.write_text(body, encoding="utf-8")
     print(f"Wrote {len(body)} chars to {args.output}")
     return 0
 

@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest'
 
 import type { HermesConfigRecord } from '@/types/hermes'
 
+import { FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
 import {
+  clearsEnabledToolsets,
+  diffConfig,
   enumOptionsFor,
   getNested,
   isExternalMemoryProvider,
@@ -15,18 +18,26 @@ import {
 } from './helpers'
 
 describe('settings helpers', () => {
-  it('lists the desktop memory provider options in their declared order', () => {
-    const options = enumOptionsFor('memory.provider', '', {})
+  it('surfaces repository discovery config in Workspace with user-facing copy', () => {
+    const workspace = SECTIONS.find(section => section.id === 'workspace')
 
-    // Built-in memory is not a provider plugin; the empty sentinel is the
-    // only built-in-shaped entry (#49513).
-    expect(options).toEqual(['', 'honcho', 'hindsight'])
+    expect(workspace?.keys).toEqual(
+      expect.arrayContaining([
+        'desktop.repo_scan_enabled',
+        'desktop.repo_scan_roots',
+        'desktop.repo_scan_exclude_paths'
+      ])
+    )
+    expect(fieldCopyForSchemaKey(FIELD_LABELS, 'desktop.repo_scan_enabled')).toBeTruthy()
+    expect(fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, 'desktop.repo_scan_exclude_paths')).toBeTruthy()
   })
 
-  it('keeps a legacy literal builtin value visible as the current selection', () => {
-    const options = enumOptionsFor('memory.provider', 'builtin', {})
-
-    expect(options).toEqual(['', 'honcho', 'hindsight', 'builtin'])
+  it('does not shadow the backend schema options for memory.provider', () => {
+    // memory.provider options are discovery-driven and served by the backend
+    // config schema (merged per-request); enumOptionsFor must return undefined
+    // so config-field consumes schema.options instead of a stale static list.
+    expect(enumOptionsFor('memory.provider', '', {})).toBeUndefined()
+    expect(enumOptionsFor('memory.provider', 'honcho', {})).toBeUndefined()
   })
 
   describe('isExternalMemoryProvider', () => {
@@ -200,6 +211,26 @@ describe('settings helpers', () => {
       expect(opts).toEqual(['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'])
     })
 
+    it('narrows OpenAI TTS voice suggestions to what the selected model supports', () => {
+      // gpt-4o-mini-tts (and unset/unknown models): full 13-voice set.
+      const full = enumOptionsFor('tts.openai.voice', 'alloy', { tts: { openai: { model: 'gpt-4o-mini-tts' } } })
+      expect(full).toContain('marin')
+      expect(full).toContain('cedar')
+      expect(full).toContain('ballad')
+      expect(full).toContain('verse')
+      expect(full).toHaveLength(13)
+
+      // tts-1 / tts-1-hd: the 9-voice set — no ballad/verse/marin/cedar.
+      for (const model of ['tts-1', 'tts-1-hd']) {
+        const narrowed = enumOptionsFor('tts.openai.voice', 'alloy', { tts: { openai: { model } } })
+        expect(narrowed).toEqual(['alloy', 'ash', 'coral', 'echo', 'fable', 'nova', 'onyx', 'sage', 'shimmer'])
+      }
+
+      // A hand-typed custom voice still stays selectable on tts-1.
+      const custom = enumOptionsFor('tts.openai.voice', 'my-cloned-voice', { tts: { openai: { model: 'tts-1' } } })
+      expect(custom).toContain('my-cloned-voice')
+    })
+
     it('appends a hand-typed value not in the known list so it stays selected', () => {
       const opts = enumOptionsFor('tts.provider', 'my-custom-command-tts', config)
       expect(opts).toContain('my-custom-command-tts')
@@ -332,6 +363,86 @@ describe('settings helpers', () => {
 
     it('hides declared keys absent from both schema and config', () => {
       expect(sectionFieldEntries({}, {}).get('memory') ?? []).toHaveLength(0)
+    })
+  })
+
+  describe('clearsEnabledToolsets', () => {
+    it('flags a non-empty → empty transition', () => {
+      const prev: HermesConfigRecord = { toolsets: ['memory', 'terminal', 'web_search'] }
+      const next: HermesConfigRecord = { toolsets: [] }
+
+      expect(clearsEnabledToolsets(prev, next)).toBe(true)
+    })
+
+    it('does not flag a non-empty → missing transition (deep-merge preserves the key)', () => {
+      // PUT /api/config deep-merges the override onto the stored config, so an
+      // import that omits `toolsets` keeps the existing list — no wipe happens,
+      // so there is nothing to confirm.
+      const prev: HermesConfigRecord = { toolsets: ['memory'] }
+      const next: HermesConfigRecord = {}
+
+      expect(clearsEnabledToolsets(prev, next)).toBe(false)
+    })
+
+    it('does not flag when at least one toolset remains', () => {
+      const prev: HermesConfigRecord = { toolsets: ['memory', 'terminal'] }
+      const next: HermesConfigRecord = { toolsets: ['memory'] }
+
+      expect(clearsEnabledToolsets(prev, next)).toBe(false)
+    })
+
+    it('does not flag when the list was already empty', () => {
+      const prev: HermesConfigRecord = { toolsets: [] }
+      const next: HermesConfigRecord = { toolsets: [] }
+
+      expect(clearsEnabledToolsets(prev, next)).toBe(false)
+    })
+
+    it('does not flag an unrelated edit that never touched toolsets', () => {
+      const prev: HermesConfigRecord = { model: 'a', toolsets: ['memory'] }
+      const next: HermesConfigRecord = { model: 'b', toolsets: ['memory'] }
+
+      expect(clearsEnabledToolsets(prev, next)).toBe(false)
+    })
+  })
+
+  describe('diffConfig', () => {
+    it('omits a top-level key the draft never touched', () => {
+      // The autosave baseline is a snapshot taken when Settings opened. A key
+      // an agent set via `hermes config set` while the page sat open must not
+      // come back in the patch just because it's still present in the draft.
+      const baseline: HermesConfigRecord = { fallback_providers: ['nara1'], timezone: 'UTC' }
+      const draft: HermesConfigRecord = { fallback_providers: ['nara1'], timezone: 'America/New_York' }
+
+      expect(diffConfig(baseline, draft)).toEqual({ timezone: 'America/New_York' })
+    })
+
+    it('includes a nested key only when it actually changed, leaving siblings out', () => {
+      const baseline: HermesConfigRecord = { display: { personality: 'default', show_reasoning: true } }
+      const draft: HermesConfigRecord = { display: { personality: 'default', show_reasoning: false } }
+
+      expect(diffConfig(baseline, draft)).toEqual({ display: { show_reasoning: false } })
+    })
+
+    it('sends a new key that was absent from the baseline', () => {
+      const baseline: HermesConfigRecord = {}
+      const draft: HermesConfigRecord = { timezone: 'UTC' }
+
+      expect(diffConfig(baseline, draft)).toEqual({ timezone: 'UTC' })
+    })
+
+    it('returns an empty object when the draft matches the baseline exactly', () => {
+      const baseline: HermesConfigRecord = { toolsets: ['memory'], display: { personality: 'default' } }
+      const draft: HermesConfigRecord = { toolsets: ['memory'], display: { personality: 'default' } }
+
+      expect(diffConfig(baseline, draft)).toEqual({})
+    })
+
+    it('treats an array as a whole value, not diffed element by element', () => {
+      const baseline: HermesConfigRecord = { toolsets: ['memory', 'terminal'] }
+      const draft: HermesConfigRecord = { toolsets: ['memory'] }
+
+      expect(diffConfig(baseline, draft)).toEqual({ toolsets: ['memory'] })
     })
   })
 })

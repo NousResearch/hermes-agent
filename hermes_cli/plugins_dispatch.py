@@ -285,7 +285,11 @@ class PluginDispatchMixin:
                 # See #6622.
                 self._hook_timeout_suppressed_until[suppression_key] = (
                     time.monotonic() + self._hook_timeout_suppression_seconds)
-                self._hook_abandoned.setdefault(suppression_key, set()).add(gate_key)
+                # The worker may have finished (and released its token) between the wait
+                # expiring and this lock; recording it as abandoned then would block the
+                # callback for that call id until reload with no thread behind it.
+                if self._hook_running_callbacks.get(gate_key) is token:
+                    self._hook_abandoned.setdefault(suppression_key, set()).add(gate_key)
             logger.warning(
                 "Hook '%s' callback %s timed out after %gs — skipping", hook_name, callback_name, timeout)
             return _HOOK_SKIPPED

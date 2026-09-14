@@ -1279,6 +1279,43 @@ class TestForceReloadSymmetry:
         assert len(starts) == 1
         hold.set()
 
+    def test_worker_finishing_at_timeout_does_not_leave_phantom_abandoned_entry(self, monkeypatch):
+        """If the worker completes between the wait expiring and the timeout branch taking the
+        lock, it has already released its token; recording it as abandoned anyway would block
+        every later call id for that callback until reload. A fresh call must still run."""
+        import hermes_cli.plugins_dispatch as dispatch
+
+        class _RacingEvent(threading.Event):
+            def wait(self, timeout=None):
+                super().wait(timeout=10.0)  # the worker really finishes first...
+                return False  # ...but the caller observes a timeout
+
+        class _Threading:
+            Event = _RacingEvent
+
+            def __getattr__(self, name):
+                return getattr(threading, name)
+
+        monkeypatch.setattr(dispatch, "threading", _Threading())
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
+        )
+        starts = []
+
+        def quick(**_kwargs):
+            starts.append(1)
+            return "done"
+
+        mgr = PluginManager()
+        mgr._hook_timeout_suppression_seconds = 0.0  # isolate the gate from suppression
+        mgr._hooks["post_tool_call"] = [quick]
+
+        assert mgr.invoke_hook("post_tool_call", tool_name="read_file", tool_call_id="call-a") == []
+        assert mgr._hook_abandoned == {}
+        mgr.invoke_hook("post_tool_call", tool_name="read_file", tool_call_id="call-b")
+
+        assert len(starts) == 2
+
     def test_pre_tool_call_timeout_fail_closed(self, monkeypatch):
         """Timed-out pre_tool_call must return a block directive, not allow."""
         import time

@@ -2012,15 +2012,11 @@ def _managed_summary_call(agent, api_request_id: str, request, callback, *, retr
     )
 
 
-def _summary_text_with_scrub(agent, response, **normalize_kwargs) -> str:
-    """Keep summary text while discarding any tool calls emitted alongside it.
-
-    Summary callers never execute the normalized ``tool_calls``.  A response
-    containing only tool calls therefore becomes empty and follows the existing
-    single-retry path in ``handle_max_iterations``.
-    """
+def _summary_text(agent, response, **normalize_kwargs) -> str:
     normalized = agent._get_transport().normalize_response(response, **normalize_kwargs)
-    if getattr(normalized, "tool_calls", None):
+    if normalized.tool_calls:
+        # The summary request carries tools (cache lineage), but this path never executes a
+        # call; log so a tool-only response that lands in the empty-summary retry is diagnosable.
         logger.warning("Iteration summary emitted tool calls; discarding them")
     return (normalized.content or "").strip()
 
@@ -2033,7 +2029,7 @@ def _codex_summary_attempt(agent, api_messages: list, api_request_id: str):
         codex_kwargs.pop("tools", None)
         codex_kwargs.pop("tool_choice", None)
         codex_kwargs.pop("parallel_tool_calls", None)
-        return _summary_text_with_scrub(agent, agent._run_codex_stream(codex_kwargs))
+        return _summary_text(agent, agent._run_codex_stream(codex_kwargs))
     return _attempt
 
 
@@ -2045,16 +2041,14 @@ def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
             preserve_dots=agent._anthropic_preserve_dots(), base_url=getattr(agent, "_anthropic_base_url", None))
         ant_kw = _merge_nous_portal_messages_extra_body(agent, ant_kw)
         response = _managed_summary_call(agent, api_request_id, ant_kw, agent._anthropic_messages_create, retry_count=retry_count)
-        return _summary_text_with_scrub(agent, response, strip_tool_prefix=agent._is_anthropic_oauth)
+        return _summary_text(agent, response, strip_tool_prefix=agent._is_anthropic_oauth)
     return _attempt
 
 
 def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
-    # Use the ordinary request builder so the summary inherits the exact tool
-    # transformation and cache-routing path (including xAI aliases, Moonshot
-    # schema sanitization, and prompt_cache_key).  In particular, do not force
-    # tool_choice="none": SGLang removes tools from its rendered prompt in that
-    # mode, which would invalidate the cached prefix this path is preserving.
+    # Same builder as the main loop so the summary keeps the cached prefix (tools, prompt_cache_key,
+    # xAI alias, Moonshot sanitization). Do not omit tools or force tool_choice="none" here:
+    # SGLang renders the prompt with tools=None in that mode and the KV prefix diverges.
     summary_kwargs = agent._build_api_kwargs(api_messages)
     # Same outbound chokepoint as turn_api_request: the summary now carries ``tools``, and on
     # cache-planned routes the main loop scrubbed a deep copy, so ``agent.tools`` may still hold
@@ -2067,7 +2061,7 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
         summary_client = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry" if retry_count else "iteration_limit_summary")
         response = _managed_summary_call(
             agent, api_request_id, summary_kwargs, lambda request: summary_client.chat.completions.create(**request), retry_count=retry_count)
-        return _summary_text_with_scrub(agent, response)
+        return _summary_text(agent, response)
     return _attempt
 
 

@@ -2825,20 +2825,22 @@ class TestHandleMaxIterations:
         assert "\ud83d" not in description
         description.encode("utf-8")  # a provider serializes this; lone surrogates raise here
 
-    def test_summary_tool_call_only_response_retries_once(self, agent):
-        """A tool-only summary is scrubbed to empty and receives one retry."""
+    def test_summary_tool_call_only_response_retries_once(self, agent, caplog):
+        """A tool-only summary is never executed: it is logged, reads as empty, and gets one retry."""
         agent.client.chat.completions.create.side_effect = [
             _mock_response(content="", tool_calls=[_mock_tool_call()]),
             _mock_response(content="Summary"),
         ]
         agent._cached_system_prompt = "You are helpful."
 
-        result = agent._handle_max_iterations(
-            [{"role": "user", "content": "do stuff"}], 60,
-        )
+        with caplog.at_level(logging.WARNING, logger="agent.chat_completion_helpers"):
+            result = agent._handle_max_iterations(
+                [{"role": "user", "content": "do stuff"}], 60,
+            )
 
         assert result == "Summary"
         assert agent.client.chat.completions.create.call_count == 2
+        assert "emitted tool calls" in caplog.text
 
     def test_summary_request_removes_orphan_tool_result(self, agent):
         """Regression: max-iterations summary request must NOT contain

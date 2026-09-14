@@ -178,17 +178,69 @@ export function isAuthRejectionError(error: unknown): boolean {
 }
 
 /**
- * True for an auth rejection carrying the dashboard gate's "no session at all"
- * shape. On a backend that predates `/api/health`, the gate runs ahead of the
- * SPA catch-all, so an unknown `/api/*` path is rejected as unauthenticated
- * instead of 404 — this is the signal that an ANONYMOUS probe cannot reach the
- * route, and the reason a credential-free 401 must fall back to `/api/status`
- * rather than be reported as a boot failure.
+ * Parse the JSON body embedded in a `waitForHermesReady` error message
+ * (`"<status>: <body>"`). Returns null if the message carries no JSON body
+ * (plain-text failures, network errors, etc.) so callers can fall back to
+ * substring checks for those.
+ */
+function parseErrorBody(error: unknown): Record<string, unknown> | null {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  const jsonStart = message.indexOf('{')
+
+  if (jsonStart === -1) {
+    return null
+  }
+
+  try {
+    const parsed = JSON.parse(message.slice(jsonStart))
+
+    return parsed && typeof parsed === 'object' ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * True for an auth rejection carrying the dashboard gate's "you're not
+ * logged in, but the route exists" shape, as opposed to a genuinely missing
+ * route. On a backend that predates `/api/health`, the gate runs ahead of
+ * the SPA catch-all, so an unknown `/api/*` path is rejected as
+ * unauthenticated instead of 404 — this is the signal that an ANONYMOUS
+ * probe cannot reach the route, and the reason a credential-free 401 must
+ * fall back to `/api/status` rather than be reported as a boot failure.
+ *
+ * Two known 401 JSON shapes carry this gate meaning: the OAuth gate's full
+ * envelope (`reason: "no_cookie"` or `"invalid_or_expired_session"`) and the
+ * token-auth seam's shorter envelope (`error: "unauthenticated"`). Matched
+ * structurally on the parsed JSON body rather than a substring of the
+ * serialized text, so a body that adds or renames unrelated fields still
+ * classifies correctly instead of silently falling through to the
+ * boot-failure path.
+ *
+ * A bare `{"detail": "..."}` envelope with neither `reason` nor `error` is
+ * deliberately NOT treated as a gate signal, even though the legacy
+ * `_require_token` seam can also emit that shape: the same bare shape can
+ * also mean an ordinary, still-live backend whose `/api/health` route is
+ * simply misconfigured to require a token. Conflating the two would make a
+ * credential-free probe give up on `/api/health` and skip straight to the
+ * `/api/status` fallback instead of continuing to poll the working route.
  */
 export function isGatedMissingHealthError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error ?? '')
+  if (!isAuthRejectionError(error)) {
+    return false
+  }
 
-  return isAuthRejectionError(error) && message.includes('no_cookie')
+  const body = parseErrorBody(error)
+
+  if (!body) {
+    return false
+  }
+
+  if (body.reason === 'no_cookie' || body.reason === 'invalid_or_expired_session') {
+    return true
+  }
+
+  return body.error === 'unauthenticated'
 }
 
 /** Tag a terminal reauth failure the main process latches and the overlay keys on. */

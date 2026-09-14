@@ -160,9 +160,12 @@ def test_dispatch_tool_can_use_explicit_profile_scope(
         profile_home=target,
     )
 
+    from hermes_constants import hermes_home_key
+
     assert result == {"success": True}
     assert observed["home"] == target
-    assert observed["kwargs"]["scope"] == str(target)
+    # hermes_home_key() is the registry's canonical scope key (normcase-folded on Windows).
+    assert observed["kwargs"]["scope"] == hermes_home_key(target)
 
 
 def test_no_source_and_surface_mismatch_are_inert(tmp_path):

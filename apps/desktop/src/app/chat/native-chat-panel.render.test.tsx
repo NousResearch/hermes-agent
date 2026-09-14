@@ -58,7 +58,7 @@ vi.mock('./session-tile', async () => {
 
 import { $sessionStates } from '@/store/session-states'
 
-import { NativeChatPanel } from './native-chat-panel'
+import { createNativeChatSession, NativeChatPanel } from './native-chat-panel'
 
 const route = {
   connectionId: 'scope-internal',
@@ -67,10 +67,10 @@ const route = {
   targetProfile: 'internal-workspace'
 }
 
-function bindingFor(storedSessionId: string): NativeChatBinding {
+function bindingFor(storedSessionId: string, bindingRoute = route): NativeChatBinding {
   // A fresh object with the SAME route fields: what a plugin's inline
   // render produces on every render.
-  return { route: { ...route }, storedSessionId }
+  return { route: { ...bindingRoute }, storedSessionId }
 }
 
 function deferred<T>() {
@@ -188,5 +188,63 @@ describe('NativeChatPanel resume ownership', () => {
     })
 
     expect(updateSession).not.toHaveBeenCalled()
+  })
+
+  it('starts a fresh resume when a StrictMode remount cancels the first attempt', async () => {
+    resumeTile.mockResolvedValue('runtime-strict')
+
+    render(jsx(NativeChatPanel, { binding: bindingFor('stored-strict') }), { reactStrictMode: true })
+
+    const surface = await screen.findByTestId('native-surface')
+
+    expect(surface.getAttribute('data-runtime-id')).toBe('runtime-strict')
+    expect(resumeTile).toHaveBeenCalledTimes(2)
+  })
+
+  it('resets the runtime when the route primitives change for the same stored session', async () => {
+    resumeTile.mockResolvedValueOnce('runtime-first-route').mockResolvedValueOnce('runtime-second-route')
+
+    const view = render(jsx(NativeChatPanel, { binding: bindingFor('stored-reroute') }))
+
+    await screen.findByTestId('native-surface')
+    expect(screen.getByTestId('native-surface').getAttribute('data-runtime-id')).toBe('runtime-first-route')
+
+    view.rerender(
+      jsx(NativeChatPanel, { binding: bindingFor('stored-reroute', { ...route, connectionId: 'scope-other' }) })
+    )
+
+    await waitFor(() => expect(resumeTile).toHaveBeenCalledTimes(2))
+
+    expect(screen.getByTestId('native-surface').getAttribute('data-runtime-id')).toBe('runtime-second-route')
+  })
+
+  it('reuses the runtime it created before the first durable message across a close and reopen', async () => {
+    requestGatewayForAgent.mockResolvedValue({
+      info: { model: 'internal-model' },
+      session_id: 'runtime-created',
+      stored_session_id: 'stored-created'
+    })
+    retainGatewayForAgent.mockResolvedValue(vi.fn())
+    bindCreatedSession.mockReturnValue('runtime-created')
+
+    const binding = await createNativeChatSession({ route })
+
+    expect(binding).toEqual({ route, runtimeSessionId: 'runtime-created', storedSessionId: 'stored-created' })
+
+    const view = render(jsx(NativeChatPanel, { binding }))
+    const surface = await screen.findByTestId('native-surface')
+
+    expect(surface.getAttribute('data-runtime-id')).toBe('runtime-created')
+
+    // Closing the panel before the first message: the in-memory session is not
+    // durable yet, so the panel must reuse its creation lease instead of
+    // issuing session.resume for it.
+    view.unmount()
+    render(jsx(NativeChatPanel, { binding }))
+
+    const reopened = await screen.findByTestId('native-surface')
+
+    expect(reopened.getAttribute('data-runtime-id')).toBe('runtime-created')
+    expect(resumeTile).not.toHaveBeenCalled()
   })
 })

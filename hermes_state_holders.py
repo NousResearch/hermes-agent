@@ -320,15 +320,14 @@ def live_writer_holds_db(
     *,
     connect_repair_durable: Callable[..., sqlite3.Connection],
 ) -> bool:
-    """Return whether repair lacks proven exclusive ownership of ``db_path``."""
-    foreign_holders = foreign_state_db_holders(db_path)
-    if any(
-        pid < 0
-        or path.startswith("uninspectable holder:")
-        or path.startswith("uninspectable descriptor:")
-        or path.endswith(" (deleted)")
-        for pid, path in foreign_holders
-    ):
+    """Return whether repair lacks proven exclusive ownership of ``db_path``.
+
+    ANY foreign process holding the DB or a sidecar is a live holder (#103339): the lock probe below
+    cannot see a DELETE-mode reader (SHARED only) and cannot run at all on a malformed file, and those
+    are exactly the states repair/VACUUM/checkpoint get invoked in. The holder scan is the authority and
+    fails closed on its own failures (unknown/uninspectable sentinels); the probe only adds a positive
+    lock signal on top."""
+    if foreign_state_db_holders(db_path):
         return True
 
     probe = None
@@ -342,8 +341,7 @@ def live_writer_holds_db(
         lowered = str(exc).lower()
         return "locked" in lowered or "busy" in lowered
     except sqlite3.DatabaseError:
-        return False
-    except Exception:
+        # Malformed/unreadable with no holder on the scan: nobody else has it open, so repair may run.
         return False
     finally:
         if probe is not None:

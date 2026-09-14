@@ -97,8 +97,12 @@ class TestResolveShellInitFiles:
 
 
 class TestPrependShellInit:
-    def test_empty_list_returns_command_unchanged(self):
-        assert _prepend_shell_init("echo hi", []) == "echo hi"
+    def test_empty_list_without_bin_dir_returns_unchanged(self):
+        with patch(
+            "tools.environments.local._resolve_hermes_bin_dir",
+            return_value=None,
+        ):
+            assert _prepend_shell_init("echo hi", []) == "echo hi"
 
     def test_prepends_guarded_source_lines(self):
         wrapped = _prepend_shell_init("echo hi", ["/tmp/a.sh", "/tmp/b.sh"])
@@ -115,7 +119,6 @@ class TestPrependShellInit:
         # The path must survive as the shell receives it; embedded single
         # quote is escaped as '\'' rather than breaking the outer quoting.
         assert "o'\\''malley" in wrapped
-
 
 @pytest.mark.skipif(
     os.environ.get("CI") == "true" and not os.path.isfile("/bin/bash"),
@@ -224,3 +227,40 @@ class TestSnapshotEndToEnd:
         assert str(fake_n_bin) in output
         # bashrc short-circuited on the interactive guard — its export never ran
         assert "FROM_BASHRC=bashrc-should-not-appear" not in output
+
+    @pytest.mark.parametrize(
+        ("auto_source", "rc_name"),
+        [(True, ".bashrc"), (False, ".bash_profile")],
+        ids=["auto-sourced-rc", "native-strict-login-rc"],
+    )
+    def test_login_rc_path_prepend_cannot_shadow_running_hermes(
+        self, tmp_path, monkeypatch, auto_source, rc_name
+    ):
+        """Both explicit sourcing and native strict-login rc run before the re-pin."""
+        ours = tmp_path / "ours" / "bin"
+        theirs = tmp_path / "theirs" / "bin"
+        for bin_dir, tag in ((ours, "OURS"), (theirs, "THEIRS")):
+            bin_dir.mkdir(parents=True)
+            shim = bin_dir / "hermes"
+            shim.write_text(f"#!/bin/sh\necho {tag}\n")
+            shim.chmod(0o755)
+
+        (tmp_path / rc_name).write_text(f'export PATH="{theirs}:$PATH"\n')
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        with patch(
+            "tools.environments.local._read_terminal_shell_init_config",
+            return_value=([], auto_source),
+        ), patch(
+            "tools.environments.local._resolve_hermes_bin_dir",
+            return_value=str(ours),
+        ):
+            env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
+            try:
+                result = env.execute('command -v hermes; hermes')
+            finally:
+                env.cleanup()
+
+        output = result.get("output", "")
+        assert "OURS" in output
+        assert "THEIRS" not in output

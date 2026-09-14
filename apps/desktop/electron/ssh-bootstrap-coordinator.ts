@@ -104,7 +104,8 @@ function createBootstrapCoordinator() {
     // start() must wait for every active teardown, and the map entry is
     // cleared only once the composed barrier settles.
     const prior = drains.get(scope)
-    const barrier: Promise<void> = prior ? Promise.allSettled([prior, own]).then(() => undefined) : own
+    // Drain barriers never reject, so chaining is equivalent to allSettled.
+    const barrier = prior ? prior.then(() => own) : own
 
     drains.set(scope, barrier)
     void barrier.finally(() => {
@@ -133,6 +134,10 @@ function createBootstrapCoordinator() {
     } finally {
       release()
     }
+
+    // "Cancel and wait" means the scope is drained: callers tear down SSH right
+    // after this returns, so wait for the composed barrier, not just our own.
+    await barrier
   }
 
   function cancelAll() {

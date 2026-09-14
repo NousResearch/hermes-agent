@@ -288,18 +288,21 @@ test('a second cancelAndWait on the same scope composes with the teardown still 
   })
 
   await teardownStarted.promise
-  await coordinator.cancelAndWait('scope')
+  const apply = coordinator.cancelAndWait('scope').then(() => events.push('apply-drained'))
   const next = coordinator.start('scope', 'new', async () => {
     events.push('new-start')
 
     return 'new'
   })
 
-  await Promise.resolve()
-  await Promise.resolve()
+  // A macrotask, not a microtask tick: nothing may run before the first teardown finishes.
+  await new Promise(resolve => setTimeout(resolve, 0))
   assert.deepEqual(events, ['teardown-start'])
   teardownGate.resolve()
-  await poolStop
+  await Promise.all([poolStop, apply])
   assert.equal(await next, 'new')
-  assert.deepEqual(events, ['teardown-start', 'teardown-done', 'new-start'])
+  // Both the apply and the new bootstrap wake on the same drained barrier; only
+  // their position after teardown-done is the contract.
+  assert.deepEqual(events.slice(0, 2), ['teardown-start', 'teardown-done'])
+  assert.deepEqual(events.slice(2).sort(), ['apply-drained', 'new-start'])
 })

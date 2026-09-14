@@ -59,6 +59,7 @@ def continue_quiet_notify_completions(
     budget handshake below).
     """
     from tools.process_registry import process_registry
+    from tools.async_delegation import claim_event_delivery, complete_event_delivery
 
     last: Any = None
     key = session_id or ""
@@ -67,7 +68,17 @@ def continue_quiet_notify_completions(
     deadline = time.monotonic() + max(float(linger_budget), 0.0)
     for _ in range(max_rounds):
         wait = process_registry.wait_for_pending_completions(None, timeout=max(deadline - time.monotonic(), 0.0))
-        drained = process_registry.drain_notifications(session_key=key, owns_event=owns_event)
+        drained = []
+        for event, text in process_registry.drain_notifications(session_key=key, owns_event=owns_event):
+            # Durable async_delegation events carry a delivery ledger: without the
+            # claim/complete handshake the row stays delivery_state='pending' and
+            # restore_undelivered_completions re-queues it on the next process start,
+            # injecting the same result twice. Same contract as every other drain consumer.
+            claim = claim_event_delivery(event, "cli-quiet")
+            if claim is None:
+                continue
+            complete_event_delivery(event, claim)
+            drained.append((event, text))
         # Every drained event type carries formatted text (completions, watch matches,
         # async_delegation results): drain_notifications POPS owned events off the queue,
         # so filtering by type here would consume-and-silently-drop owned

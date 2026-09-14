@@ -618,6 +618,20 @@ export const ar = defineLocale({
       installed: name => `تم تثبيت ${name}`,
       removeTheme: 'إزالة الثيم',
       importedBadge: 'مستورد',
+      orb: {
+        title: 'كرة التفكير',
+        intro:
+          'استبدل مؤشر التفكير القياسي بحركة كرة زجاجية سائلة (WebGPU). صمّم كرتك الخاصة في أداة التكوين والصق الرابط أدناه لإضافتها إلى التطبيق.',
+        openConfigurator: 'افتح أداة تكوين الكرة',
+        enableTitle: 'استخدام حركة الكرة',
+        enableDesc: 'إظهار الكرة بدلاً من المؤشر القياسي أثناء تفكير Hermes.',
+        urlTitle: 'رابط كرة مخصص',
+        urlDesc: 'الصق رابط أداة التكوين — كل منزلق في المحرر مشفّر في الرابط، لذا ستُعرض الكرة كما صممتها تمامًا.',
+        urlPlaceholder: 'https://lersent001.github.io/orb/#effect=orb-glass-liquid&…',
+        urlErrorNoParams: 'هذا الرابط لا يحمل أي معلمات للكرة — انسخ الرابط مباشرة من أداة التكوين.',
+        urlErrorNotOrb: 'هذا لا يبدو رابط أداة تكوين الكرة.',
+        reset: 'استخدام الكرة الافتراضية'
+      },
       pet: {
         title: 'حيوان أليف',
         intro:

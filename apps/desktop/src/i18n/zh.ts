@@ -764,6 +764,20 @@ export const zh = defineLocale({
       installed: name => `已安装「${name}」。`,
       removeTheme: '移除主题',
       importedBadge: '已导入',
+      orb: {
+        title: '思考光球',
+        intro:
+          '将标准思考旋转指示器替换为液态玻璃光球动画（WebGPU）。在光球配置器中设计你自己的光球，将 URL 粘贴到下方即可引入应用。',
+        openConfigurator: '打开光球配置器',
+        enableTitle: '使用光球动画',
+        enableDesc: 'Hermes 思考时显示光球，而非标准旋转指示器。',
+        urlTitle: '自定义光球 URL',
+        urlDesc: '粘贴配置器 URL —— 编辑器中的每个滑块都编码在链接中，因此光球将按设计精确渲染。',
+        urlPlaceholder: 'https://lersent001.github.io/orb/#effect=orb-glass-liquid&…',
+        urlErrorNoParams: '该链接不包含任何光球参数——请直接从配置器复制 URL。',
+        urlErrorNotOrb: '这看起来不像光球配置器链接。',
+        reset: '使用默认光球'
+      },
       pet: {
         title: '宠物',
         intro:

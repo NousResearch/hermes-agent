@@ -65,6 +65,7 @@ import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config
 
 import { MODE_OPTIONS } from './constants'
 import { setNested } from './helpers'
+import { OrbSettings } from './orb-settings'
 import { PetSettings } from './pet-settings'
 import { ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitives'
 import { APPEARANCE_SETTING_IDS } from './settings-search'
@@ -993,6 +994,10 @@ export function AppearanceSettings() {
 
       <div className="mt-6">
         <PetSettings />
+      </div>
+
+      <div className="mt-6">
+        <OrbSettings />
       </div>
     </SettingsContent>
   )

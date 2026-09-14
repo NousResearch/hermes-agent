@@ -581,6 +581,22 @@ export const ja = defineLocale({
       installed: name => `「${name}」をインストールしました。`,
       removeTheme: 'テーマを削除',
       importedBadge: 'インポート済み',
+      orb: {
+        title: 'シンキングオーブ',
+        intro:
+          '標準のシンキングスピナーを、リキッドガラス風のオーブアニメーション（WebGPU）に置き換えます。オーブ設定ツールで自分だけのオーブをデザインし、URLを下に貼り付けてアプリに取り込みましょう。',
+        openConfigurator: 'オーブ設定ツールを開く',
+        enableTitle: 'オーブアニメーションを使う',
+        enableDesc: 'Hermes が考えている間、標準スピナーの代わりにオーブを表示します。',
+        urlTitle: 'カスタムオーブのURL',
+        urlDesc:
+          '設定ツールのURLを貼り付けます。エディターのすべてのスライダーがリンクにエンコードされているので、デザインどおりのオーブが描画されます。',
+        urlPlaceholder: 'https://lersent001.github.io/orb/#effect=orb-glass-liquid&…',
+        urlErrorNoParams:
+          'そのリンクにはオーブのパラメーターが含まれていません。設定ツールからURLをそのままコピーしてください。',
+        urlErrorNotOrb: 'オーブ設定ツールのリンクではないようです。',
+        reset: 'デフォルトのオーブを使う'
+      },
       pet: {
         title: 'ペット',
         intro:

@@ -795,6 +795,20 @@ export const en: Translations = {
       installed: name => `Installed “${name}”.`,
       removeTheme: 'Remove theme',
       importedBadge: 'Imported',
+      orb: {
+        title: 'Thinking Orb',
+        intro:
+          'Replace the standard thinking spinner with a liquid-glass orb animation (WebGPU). Design your own in the orb configurator and paste the URL below to bring it into the app.',
+        openConfigurator: 'Open the orb configurator',
+        enableTitle: 'Use orb animation',
+        enableDesc: 'Show the orb instead of the standard spinner while Hermes is thinking.',
+        urlTitle: 'Custom orb URL',
+        urlDesc: 'Paste a configurator URL — every slider in the editor is encoded in the link, so the orb renders exactly as designed.',
+        urlPlaceholder: 'https://lersent001.github.io/orb/#effect=orb-glass-liquid&…',
+        urlErrorNoParams: "That link doesn't carry any orb parameters — copy the URL straight from the configurator.",
+        urlErrorNotOrb: "That doesn't look like an orb configurator link.",
+        reset: 'Use default orb'
+      },
       pet: {
         title: 'Pet',
         intro:

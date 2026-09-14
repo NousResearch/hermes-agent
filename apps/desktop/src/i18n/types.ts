@@ -670,6 +670,19 @@ export interface Translations {
       installed: (name: string) => string
       removeTheme: string
       importedBadge: string
+      orb: {
+        title: string
+        intro: string
+        openConfigurator: string
+        enableTitle: string
+        enableDesc: string
+        urlTitle: string
+        urlDesc: string
+        urlPlaceholder: string
+        urlErrorNoParams: string
+        urlErrorNotOrb: string
+        reset: string
+      }
       pet: {
         title: string
         intro: string

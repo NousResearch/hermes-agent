@@ -497,7 +497,8 @@ class TestHandleSessionsCommand:
             db.set_session_title(entry.session_id, title)
             reset_row = db.get_session(entry.session_id)
             assert reset_row is not None
-            assert json.loads(reset_row["model_config"])["_reset_from"] == previous_id
+            creation_config = json.loads(reset_row["model_config"])
+            assert creation_config["_reset_from"] == previous_id
 
         # The gateway creates the identity row before the agent exists. Its
         # first-turn create_session upsert must enrich the marker-only config,
@@ -508,10 +509,7 @@ class TestHandleSessionsCommand:
             model_config={"max_iterations": 60},
         )
         enriched = json.loads(db.get_session(entry.session_id)["model_config"])
-        assert enriched == {
-            "max_iterations": 60,
-            "_reset_from": previous_id,
-        }
+        assert enriched == {**creation_config, "max_iterations": 60}
         db.create_session(
             entry.session_id,
             "telegram",

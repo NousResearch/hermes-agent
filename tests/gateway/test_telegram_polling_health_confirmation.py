@@ -10,6 +10,7 @@ reconnect is a reliable hung-poll signature.
 
 import asyncio
 import logging
+from unittest.mock import patch
 from gateway.config import Platform  # noqa: E402
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
@@ -28,6 +29,7 @@ def _bare_adapter():
     a._polling_conflict_count = 3
     a._polling_conflict_recovery_generation = None
     a._send_path_degraded = True
+    a._polling_last_liveness_log_monotonic = None
     return a
 
 
@@ -37,7 +39,7 @@ class TestPollingHealthConfirmation:
         with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
             a._record_polling_progress(1)
         rendered = " | ".join(rec.getMessage() for rec in caplog.records)
-        assert "confirmed healthy" in rendered
+        assert "polling recovered" in rendered
         assert "generation 1" in rendered
         assert a._polling_progress_event.is_set()
 
@@ -67,8 +69,20 @@ class TestPollingHealthConfirmation:
         with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
             a._record_polling_progress(2)
         rendered = " | ".join(rec.getMessage() for rec in caplog.records)
-        assert "confirmed healthy" in rendered
+        assert "polling recovered" in rendered
         assert "generation 2" in rendered
+
+    def test_established_generation_emits_low_frequency_inbound_liveness(self, caplog):
+        a = _bare_adapter()
+        with patch("plugins.platforms.telegram.adapter.time.monotonic", return_value=10.0):
+            a._record_polling_progress(1)
+        caplog.clear()
+
+        with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
+            with patch("plugins.platforms.telegram.adapter.time.monotonic", return_value=910.0):
+                a._record_polling_progress(1)
+
+        assert "Telegram inbound liveness: getUpdates progressing" in caplog.text
 
     def test_stale_generation_progress_stays_silent(self, caplog):
         """Progress from an abandoned generation must neither log nor set the

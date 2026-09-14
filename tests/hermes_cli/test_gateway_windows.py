@@ -17,6 +17,69 @@ _BREAKAWAY_MARKER = "_HERMES_GATEWAY_BREAKAWAY"
 
 
 
+def test_collect_gateway_stop_pids_captures_start_time_at_discovery(monkeypatch):
+    """``_collect_gateway_stop_pids`` must fingerprint each PID when it is found, not leave
+    that to whoever kills it later — the drain wait between discovery and kill is exactly the
+    window a recycled PID needs to slip through (see #99558)."""
+
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [222])
+    monkeypatch.setattr("gateway.status.get_process_start_time", lambda pid: {111: 100, 222: 200}[pid])
+
+    result = gateway_windows._collect_gateway_stop_pids(primary_pid=111)
+
+    assert result == [(111, 100), (222, 200)]
+
+
+def test_collect_gateway_stop_pids_dedupes_primary_against_scan(monkeypatch):
+    """The primary PID must not be captured twice even if the scan also finds it."""
+
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [111, 333])
+    monkeypatch.setattr("gateway.status.get_process_start_time", lambda pid: {111: 100, 333: 300}[pid])
+
+    result = gateway_windows._collect_gateway_stop_pids(primary_pid=111)
+
+    assert result == [(111, 100), (333, 300)]
+
+
+def test_force_terminate_known_gateway_pids_uses_discovery_time_not_kill_time(monkeypatch):
+    """The whole point of the start-time guard is to catch a PID that changed hands between
+    discovery and kill. We prove this by making a live re-read return a different value (999)
+    than the discovery-time value baked into the input tuple (100): if the code ever re-fetches
+    at kill time instead of trusting what it was handed, the sentinel leaks into the call and
+    this assertion catches it — independent of whether ``get_process_start_time`` even happens
+    to be imported at kill time (see #99558)."""
+
+    calls = []
+
+    def fake_terminate_pid(pid, *, force, expected_start_time):
+        calls.append((pid, force, expected_start_time))
+
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+    monkeypatch.setattr("gateway.status.terminate_pid", fake_terminate_pid)
+    monkeypatch.setattr("gateway.status.get_process_start_time", lambda pid: 999)
+
+    killed = gateway_windows._force_terminate_known_gateway_pids([(111, 100)])
+
+    assert killed == 1
+    assert calls == [(111, True, 100)]  # 100 = discovery-time value, never the 999 sentinel
+
+
+def test_force_terminate_known_gateway_pids_dedupes_by_pid(monkeypatch):
+    """Same PID appearing twice (e.g. primary + rescan overlap) must only be killed once."""
+
+    calls = []
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+    monkeypatch.setattr(
+        "gateway.status.terminate_pid",
+        lambda pid, *, force, expected_start_time: calls.append(pid),
+    )
+
+    killed = gateway_windows._force_terminate_known_gateway_pids([(111, 100), (111, 100)])
+
+    assert killed == 1
+    assert calls == [111]
+
+
 def test_schtasks_encoding_falls_back_to_utf8(monkeypatch):
     """A broken/empty locale must not leave us without a decoder (issue #38172)."""
 

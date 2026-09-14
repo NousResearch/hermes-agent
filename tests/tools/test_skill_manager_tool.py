@@ -418,6 +418,34 @@ class TestSkillManageDispatcher:
         assert "write_file" in err, "must name the escape hatch it is forbidding"
         assert "exact" in err.lower()
 
+    @pytest.mark.parametrize("action", ["create", "edit"])
+    def test_create_edit_missing_content_names_the_wrong_field(self, tmp_path, action):
+        """The bare "content is required" error invites blind retries.
+
+        The model regularly submits the SKILL.md body under file_content (the
+        write_file payload field) on create/edit. Per standing policy the tool
+        must NOT coerce the wrong key into the right one (#35736) — but the
+        error must tell the model exactly which field held its text, or it
+        re-emits the same call verbatim and stalls (repeated observed loops).
+        """
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            raw = skill_manage(action=action, name="my-skill", file_content="---\nname: x\n")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        err = result["error"]
+        assert "content" in err and "file_content" in err, \
+            f"must name both the missing field and where the body landed: {err!r}"
+        assert "'content'" in err, "must quote the canonical field to resend into"
+
+    def test_create_with_correct_field_still_unaffected(self, tmp_path):
+        """The guidance branch must not change behavior for compliant calls."""
+        with _skill_dir(tmp_path):
+            raw = skill_manage(action="create", name="ok-skill", content=VALID_SKILL_CONTENT)
+        result = json.loads(raw)
+        assert result["success"] is True, f"compliant create regressed: {result}"
+
     def test_full_create_via_dispatcher(self, tmp_path):
         """Foreground create does NOT mark the skill as agent-created.
 

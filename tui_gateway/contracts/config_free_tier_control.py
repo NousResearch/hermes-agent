@@ -11,16 +11,18 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, StrictInt
 
 from .base import JsonValue, Params, Result, WireEnum
+
 from .connectors_operation import ConnectionOperationStatus
+from .tools_commands import DispatchType
 from .registry import method
 
 # ── config.get ────────────────────────────────────────────────────────────────────────────────
 
 
-class ConfigGetParams(ProfileParams):
+class ConfigGetParams(Params):
     """``key`` selects one getter from ``_CONFIG_GETTERS``; ``cwd`` feeds the ``project`` getter,
     ``session_id`` lets ``reasoning`` / ``fast`` answer with the session's live pin."""
 
@@ -72,7 +74,7 @@ class ConfigSetScope(WireEnum):
     once = "once"
 
 
-class ConfigSetParams(ProfileParams):
+class ConfigSetParams(Params):
     """``key`` picks the setter (``_CONFIG_SETTERS``, ``details_mode.<section>``, display toggles);
     ``value`` is the raw word/string the setter normalises (falsy non-strings are reported back in
     the error). ``scope`` applies to ``yolo`` / ``reasoning``; ``confirm_expensive_model`` to ``model``."""
@@ -129,11 +131,11 @@ class SetupStatusResult(Result):
     error: str | None = None
 
 
-method("setup.status", params=ProfileParams, result=SetupStatusResult,
+method("setup.status", params=Params, result=SetupStatusResult,
        doc="Loose provider check: is ANY provider auth state discoverable for the (launch or named) profile.")
 
 
-class SetupRuntimeCheckParams(ProfileParams):
+class SetupRuntimeCheckParams(Params):
     provider: str | None = None
 
 
@@ -200,7 +202,7 @@ class FreeTierStatusResult(Result):
     label: FreeTierLabel
 
 
-method("free_tier.status", params=ProfileParams, result=FreeTierStatusResult,
+method("free_tier.status", params=Params, result=FreeTierStatusResult,
        doc="Pure read of the focused profile's free-tier identity state (no network, no side effects).")
 
 
@@ -210,7 +212,7 @@ class FreeTierProvisionResult(Result):
     error: str | None = None
 
 
-method("free_tier.provision", params=ProfileParams, result=FreeTierProvisionResult,
+method("free_tier.provision", params=Params, result=FreeTierProvisionResult,
        doc="Explicit retry of the free-tier identity mint when the boot bootstrap could not create it.")
 
 
@@ -218,14 +220,14 @@ class FreeTierAckNoticeResult(Result):
     acked: bool
 
 
-method("free_tier.ack_notice", params=ProfileParams, result=FreeTierAckNoticeResult,
+method("free_tier.ack_notice", params=Params, result=FreeTierAckNoticeResult,
        doc="Mark the one-time availability notice as shown on the free-tier identity.")
 
 
 # ── model.options ─────────────────────────────────────────────────────────────────────────────
 
 
-class ModelOptionsParams(ProfileParams):
+class ModelOptionsParams(Params):
     session_id: str | None = None
     explicit_only: bool = False
     include_unconfigured: bool = False
@@ -297,7 +299,7 @@ method("model.options", params=ModelOptionsParams, result=ModelOptionsResult,
 # ── connectors ────────────────────────────────────────────────────────────────────────────────
 
 
-class ConnectorsListParams(ProfileParams):
+class ConnectorsListParams(Params):
     session_id: str
 
 
@@ -346,7 +348,7 @@ method("connectors.list", params=ConnectorsListParams, result=ConnectorsListResu
        doc="Connector catalog + connection state for one owned session (``available=False`` when the toolset is off).")
 
 
-class ConnectorsConnectParams(ProfileParams):
+class ConnectorsConnectParams(Params):
     session_id: str
     connectors: list[str]
     reconnect: bool = False
@@ -483,7 +485,7 @@ class SessionControlSnapshot(Result):
     updated_at: float
 
 
-class SessionControlReadParams(ProfileParams):
+class SessionControlReadParams(Params):
     session_id: str
 
 
@@ -512,13 +514,14 @@ class SessionControlAction(WireEnum):
 
 
 class SessionControlArgs(Params):
-    """``subgoal.add`` reads ``text``; ``subgoal.remove`` reads the 1-based ``index``."""
+    """``subgoal.add`` reads ``text``; ``subgoal.remove`` reads the 1-based ``index``. Strict: a
+    string or float index is a client bug, not a value to coerce."""
 
     text: str | None = None
-    index: int | None = None
+    index: StrictInt | None = None
 
 
-class SessionControlParams(ProfileParams):
+class SessionControlParams(Params):
     """``action`` is validated by the handler (unknown / gate actions answer ``4004``), so it stays a
     string on the wire; ``SessionControlAction`` lists the accepted set."""
 
@@ -549,7 +552,7 @@ method("session.control", params=SessionControlParams, result=SessionControlResu
 # ── verification.status ───────────────────────────────────────────────────────────────────────
 
 
-class VerificationStatusParams(ProfileParams):
+class VerificationStatusParams(Params):
     session_id: str | None = None
     session_key: str | None = None
     cwd: str | None = None

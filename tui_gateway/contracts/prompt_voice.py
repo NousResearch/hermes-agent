@@ -266,7 +266,6 @@ class RequestAnswerParams(Params):
     # JsonValue: methods_prompt.py:1133 relays arbitrary server-request results; desktop's
     # group-turns.ts:638 supplies the concrete clarify {answer} shape.
     result: dict[str, JsonValue]
-    profile: str | None = None
 
 
 class RequestAnswerResult(Result):
@@ -333,7 +332,6 @@ class VoiceToggleAction(WireEnum):
 
 class VoiceToggleParams(Params):
     action: VoiceToggleAction = VoiceToggleAction.status
-    profile: str | None = None
 
 
 class VoiceToggleResult(Result):
@@ -362,7 +360,6 @@ class VoiceRecordAction(WireEnum):
 class VoiceRecordParams(Params):
     action: VoiceRecordAction = VoiceRecordAction.start
     session_id: str | None = None  # methods_voice.py:720 retains the prior event target when omitted
-    profile: str | None = None
 
 
 class VoiceRecordStatus(WireEnum):
@@ -382,7 +379,6 @@ method("voice.record", params=VoiceRecordParams, result=VoiceRecordResult,
 
 class VoiceTtsParams(Params):
     text: str = ""  # methods_voice.py:767 defaults a missing text before rejecting it
-    profile: str | None = None
 
 
 class VoiceTtsResult(Result):
@@ -404,7 +400,6 @@ class WakeStartParams(Params):
     persist: bool | None = None
     client_capture: bool | None = None
     session_id: str | None = None  # session the wake.detected event is addressed to
-    profile: str | None = None
 
 
 class WakeStartResult(Result):
@@ -429,7 +424,6 @@ method("wake.start", params=WakeStartParams, result=WakeStartResult,
 
 class WakeStopParams(Params):
     persist: bool | None = None
-    profile: str | None = None
 
 
 class WakeOwnerResult(Result):
@@ -449,7 +443,7 @@ method("wake.stop", params=WakeStopParams, result=WakeStopResult,
 
 
 class WakeControlParams(Params):
-    profile: str | None = None
+    pass
 
 
 class WakePauseResult(WakeOwnerResult):
@@ -471,7 +465,6 @@ method("wake.resume", params=WakeControlParams, result=WakeResumeResult,
 class WakeStatusParams(Params):
     surface: str | None = None
     client_capture: bool | None = None
-    profile: str | None = None
 
 
 class WakeInputDevice(Result):
@@ -518,7 +511,6 @@ class WakeFeedParams(Params):
     pcm: str | None = None
     pcm_b64: str | None = None  # legacy alias, selected by methods_voice.py:589
     sample_rate: int | None = None  # None: methods_voice.py:601 accepts an omitted rate
-    profile: str | None = None
 
 
 class WakeFeedResult(WakeOwnerResult):

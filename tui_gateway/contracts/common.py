@@ -195,13 +195,6 @@ class SessionParams(Params):
     """A method addressed at one live session."""
 
     session_id: str
-    profile: str | None = None
-
-
-class ProfileParams(Params):
-    """A method the desktop may route to a named profile (``requestGatewayForProfile`` adds ``profile``)."""
-
-    profile: str | None = None
 
 
 class OkResult(Result):
@@ -222,6 +215,6 @@ class EmptyPayload(Payload):
 
 __all__ = [
     "TERMINAL_SUBAGENT_STATUSES", "EmptyPayload", "EmptyResult", "McpServerStatus", "MessageReaction", "OkResult", "PendingApproval",
-    "ProfileParams", "ProjectRef", "SessionLiveInfo", "SessionParams", "StatusResult", "StoredSessionRow",
+    "ProjectRef", "SessionLiveInfo", "SessionParams", "StatusResult", "StoredSessionRow",
     "SubagentStatus", "TranscriptMessage", "Usage",
 ]

@@ -11,7 +11,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
-from .common import ProfileParams, SessionLiveInfo
+from .common import SessionLiveInfo
 from .registry import method
 
 
@@ -78,7 +78,6 @@ class ToolsConfigureParams(Params):
     action: ToolsAction
     names: list[str]
     session_id: str | None = None
-    profile: str | None = None
 
 
 class ToolsConfigureResult(Result):
@@ -149,7 +148,7 @@ class SkillsAction(WireEnum):
     inspect = "inspect"
 
 
-class SkillsManageParams(ProfileParams):
+class SkillsManageParams(Params):
     """``query`` is the search text / hub identifier / browse page (digits); ``page`` / ``page_size``
     apply to ``browse``."""
 
@@ -362,7 +361,7 @@ class McpCatalogResult(Result):
     servers: list[McpCatalogEntry]
 
 
-method("mcp.catalog", params=ProfileParams, result=McpCatalogResult,
+method("mcp.catalog", params=Params, result=McpCatalogResult,
        doc="Curated MCP presets with per-profile installed/enabled state and the env keys each needs.")
 
 
@@ -483,7 +482,7 @@ class McpServersListResult(Result):
     servers: list[McpServerSummary]
 
 
-method("mcp.servers.list", params=ProfileParams, result=McpServersListResult,
+method("mcp.servers.list", params=Params, result=McpServersListResult,
        doc="Configured MCP servers for the (scoped) profile, secrets redacted to env-key names.")
 
 
@@ -512,11 +511,11 @@ class McpServersStatusResult(Result):
     checked_at: int
 
 
-method("mcp.servers.status", params=ProfileParams, result=McpServersStatusResult,
+method("mcp.servers.status", params=Params, result=McpServersStatusResult,
        doc="Cached runtime state per configured server; never connects, probes, or starts auth.")
 
 
-class McpServerNameParams(ProfileParams):
+class McpServerNameParams(Params):
     name: str
 
 
@@ -683,7 +682,7 @@ class PluginsAction(WireEnum):
     update = "update"
 
 
-class PluginsManageParams(ProfileParams):
+class PluginsManageParams(Params):
     """``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``
     (+ ``force``, ``enable``, ``ref``); ``update``: ``name``."""
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Literal
 
 from .base import JsonValue, Params, Result
-from .common import OkResult, ProfileParams
+from .common import OkResult
 from .registry import method
 from .server_requests import ApprovalChoice
 
@@ -56,7 +56,6 @@ class RoomActorInput(Params):
     kind: Literal["user", "member", "gateway", "system"]
     id: str
     display_name: str | None = None
-    profile: str | None = None
     connection_id: str | None = None
 
 
@@ -141,7 +140,7 @@ class RoomMemberInput(Params):
         return self.model_dump(mode="json")
 
 
-class RoomParams(ProfileParams):
+class RoomParams(Params):
     """Any method addressed at one hosted room."""
 
     room_id: str
@@ -227,7 +226,7 @@ RoomLinkStatus = RoomLinkEnabled | RoomLinkDisabled
 # ── groups.capabilities ───────────────────────────────────────────────────────────────────────
 
 
-class GroupsCapabilitiesParams(ProfileParams):
+class GroupsCapabilitiesParams(Params):
     pass
 
 
@@ -249,7 +248,7 @@ method("groups.capabilities", params=GroupsCapabilitiesParams, result=GroupsCapa
 # ── groups.list / create / state ──────────────────────────────────────────────────────────────
 
 
-class GroupsListParams(ProfileParams):
+class GroupsListParams(Params):
     include_disbanded: bool | None = None
     limit: int | None = None
     offset: int | None = None
@@ -264,7 +263,7 @@ method("groups.list", params=GroupsListParams, result=GroupsListResult,
        doc="List rooms hosted by this gateway, most recently changed first.")
 
 
-class GroupsCreateParams(ProfileParams):
+class GroupsCreateParams(Params):
     room_id: str
     name: str
     members: list[RoomMemberInput]
@@ -558,7 +557,7 @@ method("groups.demote", params=GroupsDemoteParams, result=GroupsDemoteResult,
 # ── peer routes (RoomLink) ────────────────────────────────────────────────────────────────────
 
 
-class GroupsPeerInviteParams(ProfileParams):
+class GroupsPeerInviteParams(Params):
     room_id: str | None = None
     home_install_id: str | None = None
     authority_gateway_id: str | None = None
@@ -579,7 +578,7 @@ method("groups.peer.invite", params=GroupsPeerInviteParams, result=GroupsPeerInv
        doc="Mint one target-issued room/profile grant for a prospective room home.")
 
 
-class GroupsPeerRevokeParams(ProfileParams):
+class GroupsPeerRevokeParams(Params):
     grant: str
 
 
@@ -619,7 +618,6 @@ method("groups.peer.register", params=GroupsPeerRegisterParams, result=GroupsPee
 class RelayAgentRow(Params):
     """One Desktop roster row normalized by ``tools/bot_relay.py::_normalize_roster_row``."""
 
-    profile: str | None = None
     handle: str | None = None
     connection_id: str | None = None
     connection_label: str | None = None
@@ -628,7 +626,7 @@ class RelayAgentRow(Params):
     online: bool | None = None
 
 
-class BotRelayRosterSyncParams(ProfileParams):
+class BotRelayRosterSyncParams(Params):
     agents: list[RelayAgentRow] | None = None
 
 
@@ -640,7 +638,7 @@ method("bot_relay.roster.sync", params=BotRelayRosterSyncParams, result=BotRelay
        doc="Replace this gateway's view of agents on other connections; answers the accepted row count.")
 
 
-class BotRelayOutboxDrainParams(ProfileParams):
+class BotRelayOutboxDrainParams(Params):
     pass
 
 
@@ -683,7 +681,7 @@ method("bot_relay.deliver", params=BotRelayDeliverParams, result=BotRelayDeliver
        doc="Deliver a relayed DM into a Bot Chat on this gateway and return the one-turn reply (blocking).")
 
 
-class BotRelayReplyParams(ProfileParams):
+class BotRelayReplyParams(Params):
     id: str
     reply: str | None = None
     error: str | None = None

@@ -13,7 +13,7 @@ from __future__ import annotations
 from pydantic import Field, JsonValue
 
 from .base import Params, Result, WireEnum
-from .common import ProfileParams, SessionParams
+from .common import SessionParams
 from .registry import method
 
 
@@ -90,7 +90,7 @@ class CompletionItemsResult(Result):
     items: list[CompletionItem]
 
 
-class CompletePathParams(ProfileParams):
+class CompletePathParams(Params):
     """``word`` is the token under the cursor (``@`` prefix = context reference); ``cwd`` /
     ``session_id`` pick the directory the listing resolves against."""
 
@@ -216,7 +216,7 @@ class ProfileRow(Result):
     has_avatar: bool
 
 
-class ProfilesListParams(ProfileParams):
+class ProfilesListParams(Params):
     include_sessions: bool | str = True
 
 
@@ -231,7 +231,7 @@ method("profiles.list", params=ProfilesListParams, result=ProfilesListResult,
        doc="Roster of profiles with previews so a client paints without N follow-up calls.")
 
 
-class ProfilesCreateParams(ProfileParams):
+class ProfilesCreateParams(Params):
     """``clone_from`` omitted = fresh profile + bundled skills; ``mirror_credentials`` defaults on
     so a headless bot has a provider."""
 
@@ -271,7 +271,7 @@ method("profiles.create", params=ProfilesCreateParams, result=ProfilesCreateResu
        doc="Create a profile (ws twin of POST /api/profiles), mirroring launch credentials by default.")
 
 
-class ProfileNameParams(ProfileParams):
+class ProfileNameParams(Params):
     name: str
 
 
@@ -312,7 +312,7 @@ method("profiles.describe", params=ProfileNameParams, result=ProfilesDescribeRes
        doc="Everything the profile editor shows: soul, model pin, skills, toolsets, MCP servers.")
 
 
-class ProfilesConfigureParams(ProfileParams):
+class ProfilesConfigureParams(Params):
     """Sections are independent; ``ui_meta_expected_revisions`` is a per-key compare-and-swap."""
 
     name: str | None = None
@@ -362,7 +362,7 @@ method("profiles.configure", params=ProfilesConfigureParams, result=ProfilesConf
        doc="Editor Save: apply any subset of a profile's sections and report each one.")
 
 
-class ProfilesSetAssetParams(ProfileParams):
+class ProfilesSetAssetParams(Params):
     """``data`` is a data URL or bare base64 (PNG/JPEG/WebP, sniffed); ``clear`` deletes instead."""
 
     name: str
@@ -371,7 +371,7 @@ class ProfilesSetAssetParams(ProfileParams):
     clear: bool | str = False
 
 
-class ProfilesGetAssetParams(ProfileParams):
+class ProfilesGetAssetParams(Params):
     name: str
     asset: str = "avatar"
 
@@ -412,7 +412,7 @@ class OnboardingAnswers(Params):
     connectors: list[str] = Field(default_factory=list)
 
 
-class ProfilesRememberOnboardingParams(ProfileParams):
+class ProfilesRememberOnboardingParams(Params):
     answers: OnboardingAnswers
 
 
@@ -454,7 +454,7 @@ class VaultListResult(Result):
     items: list[VaultItem]
 
 
-method("vault.list", params=ProfileParams, result=VaultListResult,
+method("vault.list", params=Params, result=VaultListResult,
        doc="Metadata-only listing across the local vault and every unlocked password manager.")
 
 
@@ -471,11 +471,11 @@ class VaultSourcesResult(Result):
     sources: list[VaultSource]
 
 
-method("vault.sources", params=ProfileParams, result=VaultSourcesResult,
+method("vault.sources", params=Params, result=VaultSourcesResult,
        doc="Status of every login source (local vault + detected password managers).")
 
 
-class VaultSourceSetParams(ProfileParams):
+class VaultSourceSetParams(Params):
     name: str
     enabled: bool
 
@@ -489,7 +489,7 @@ method("vault.source.set", params=VaultSourceSetParams, result=VaultSourceSetRes
        doc="Enable or disable an external password manager (disabling also locks it).")
 
 
-class VaultUnlockParams(ProfileParams):
+class VaultUnlockParams(Params):
     """The master password is consumed by the manager CLI and never stored or logged."""
 
     name: str
@@ -505,7 +505,7 @@ method("vault.unlock", params=VaultUnlockParams, result=VaultUnlockResult,
        doc="Unlock a password manager for this session with its master password.")
 
 
-class VaultLockParams(ProfileParams):
+class VaultLockParams(Params):
     name: str | None = None
 
 
@@ -517,7 +517,7 @@ method("vault.lock", params=VaultLockParams, result=VaultLockResult,
        doc="Forget a manager's session token (every manager when no name is given).")
 
 
-class VaultAddParams(ProfileParams):
+class VaultAddParams(Params):
     """``secret`` goes straight into the encrypted store; the result carries only the new id."""
 
     kind: VaultKind
@@ -534,7 +534,7 @@ method("vault.add", params=VaultAddParams, result=VaultAddResult,
        doc="Add a login / payment / address item to the local vault.")
 
 
-class VaultRemoveParams(ProfileParams):
+class VaultRemoveParams(Params):
     id: str
 
 
@@ -568,7 +568,7 @@ class ForeignSessionRow(Result):
     excerpt: str
 
 
-class SessionForeignListParams(ProfileParams):
+class SessionForeignListParams(Params):
     source: ForeignSource | None = None
     offset: int = 0
     limit: int = 25
@@ -592,7 +592,7 @@ class ForeignTurn(Result):
     content: str
 
 
-class SessionForeignIdParams(ProfileParams):
+class SessionForeignIdParams(Params):
     id: str
 
 

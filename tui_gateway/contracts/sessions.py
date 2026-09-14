@@ -8,7 +8,8 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
-from .common import (PendingApproval, ProfileParams, SessionLiveInfo, SessionParams, TranscriptMessage, Usage)
+
+from .common import (PendingApproval, SessionLiveInfo, SessionParams, TranscriptMessage, Usage)
 from .connectors_operation import ConnectionRequestPayload
 from .registry import method
 
@@ -142,7 +143,7 @@ class SeedMessage(Params):
     row_id: int | None = Field(default=None, alias="_row_id")  # in-process branch seeds retain their durable row address.
 
 
-class SessionCreateParams(ProfileParams):
+class SessionCreateParams(Params):
     cols: int | None = None
     source: str | None = None
     cwd: str | None = None
@@ -210,7 +211,7 @@ method("session.activate", params=SessionActivateParams, result=SessionActivateR
 # ── listing ───────────────────────────────────────────────────────────────────────────────────
 
 
-class SessionListParams(ProfileParams):
+class SessionListParams(Params):
     title: str | None = None  # exact-title lookup (title as identity); windowless
     limit: int | None = None
     include_hidden: bool = False
@@ -237,7 +238,7 @@ method("session.list", params=SessionListParams, result=SessionListResult,
        doc="Human-facing stored sessions, most recent first (sub-agent / kanban sources denied).")
 
 
-class SessionMostRecentParams(ProfileParams):
+class SessionMostRecentParams(Params):
     pass
 
 
@@ -252,7 +253,7 @@ method("session.most_recent", params=SessionMostRecentParams, result=SessionMost
        doc="Most recent human-facing session; errors fold into a null session_id.")
 
 
-class SessionActiveListParams(ProfileParams):
+class SessionActiveListParams(Params):
     current_session_id: str | None = None
 
 
@@ -313,7 +314,6 @@ class SessionSetHiddenParams(Params):
 
     session_id: str
     hidden: bool = True
-    profile: str | None = None
 
 
 class SessionSetHiddenResult(Result):
@@ -325,7 +325,7 @@ method("session.set_hidden", params=SessionSetHiddenParams, result=SessionSetHid
        doc="Set/clear hidden (out of the default list, still resumable by its owner) on a session + lineage.")
 
 
-class SessionWorkspaceMoveParams(ProfileParams):
+class SessionWorkspaceMoveParams(Params):
     session_key: str
     cwd: str
 
@@ -584,7 +584,7 @@ method("session.redirect", params=SessionCorrectionParams, result=SessionCorrect
 # ── spawn trees ───────────────────────────────────────────────────────────────────────────────
 
 
-class SpawnTreeSaveParams(ProfileParams):
+class SpawnTreeSaveParams(Params):
     # TUI persists its live progress snapshot (`createGatewayEventHandler.ts:503`) verbatim.
     subagents: list[JsonValue]
     session_id: str | None = None  # stored key; "default" when absent
@@ -602,7 +602,7 @@ method("spawn_tree.save", params=SpawnTreeSaveParams, result=SpawnTreeSaveResult
        doc="Persist a finished delegation tree snapshot under the session's spawn-trees dir.")
 
 
-class SpawnTreeListParams(ProfileParams):
+class SpawnTreeListParams(Params):
     session_id: str | None = None
     cross_session: bool = False
     limit: int | None = None
@@ -628,7 +628,7 @@ method("spawn_tree.list", params=SpawnTreeListParams, result=SpawnTreeListResult
        doc="Saved spawn-tree snapshots, newest first.")
 
 
-class SpawnTreeLoadParams(ProfileParams):
+class SpawnTreeLoadParams(Params):
     path: str
 
 
@@ -690,7 +690,7 @@ method("session.events.since", params=SessionEventsSinceParams, result=SessionEv
        doc="Replay events after a seq watermark on WS reconnect; truncated means refetch state.")
 
 
-class SessionEventsStatsParams(ProfileParams):
+class SessionEventsStatsParams(Params):
     pass
 
 
@@ -712,7 +712,7 @@ method("session.events.stats", params=SessionEventsStatsParams, result=SessionEv
 # ── one-shot LLM ──────────────────────────────────────────────────────────────────────────────
 
 
-class LlmOneshotParams(ProfileParams):
+class LlmOneshotParams(Params):
     """Needs a ``template`` or ``instructions`` / ``input``; a live ``session_id`` lends its model."""
 
     template: str | None = None

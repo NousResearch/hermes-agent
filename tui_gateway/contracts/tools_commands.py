@@ -23,7 +23,7 @@ class BatteryCategory(WireEnum):
 
 
 class SystemBatteryParams(Params):
-    profile: str | None = None
+    pass
 
 
 class SystemBatteryResult(Result):
@@ -42,7 +42,6 @@ method("system.battery", params=SystemBatteryParams, result=SystemBatteryResult,
 
 class ProcessStopParams(Params):
     session_id: str | None = None
-    profile: str | None = None
 
 
 class ProcessStopResult(Result):
@@ -54,7 +53,7 @@ method("process.stop", params=ProcessStopParams, result=ProcessStopResult,
 
 
 class AgentsListParams(Params):
-    profile: str | None = None
+    pass
 
 
 class AgentProcessRow(Result):
@@ -74,7 +73,6 @@ method("agents.list", params=AgentsListParams, result=AgentsListResult,
 
 class ProcessListParams(Params):
     session_id: str
-    profile: str | None = None
 
 
 class ProcessEntry(Result):
@@ -109,7 +107,6 @@ method("process.list", params=ProcessListParams, result=ProcessListResult,
 class ProcessKillParams(Params):
     session_id: str
     process_id: str
-    profile: str | None = None
 
 
 class ProcessKillStatus(WireEnum):
@@ -141,7 +138,6 @@ method("process.kill", params=ProcessKillParams, result=ProcessKillResult,
 
 class ShellExecParams(Params):
     command: str = ""
-    profile: str | None = None
 
 
 class ShellExecResult(Result):
@@ -157,7 +153,6 @@ method("shell.exec", params=ShellExecParams, result=ShellExecResult,
 class CliExecParams(Params):
     argv: list[str] = Field(default_factory=list)
     timeout: int = 240
-    profile: str | None = None
 
 
 class CliExecResult(Result):
@@ -176,7 +171,6 @@ method("cli.exec", params=CliExecParams, result=CliExecResult,
 
 class CommandsCatalogParams(Params):
     session_id: str | None = None
-    profile: str | None = None
 
 
 class ArgumentMode(WireEnum):
@@ -217,7 +211,6 @@ method("commands.catalog", params=CommandsCatalogParams, result=CommandsCatalogR
 
 class CommandResolveParams(Params):
     name: str | None = None
-    profile: str | None = None
 
 
 class CommandResolveResult(Result):
@@ -245,7 +238,6 @@ class CommandDispatchParams(Params):
     name: str
     arg: str | None = None
     session_id: str | None = None
-    profile: str | None = None
 
 
 class CommandDispatchResult(Result):
@@ -269,7 +261,6 @@ method("command.dispatch", params=CommandDispatchParams, result=CommandDispatchR
 class SlashExecParams(Params):
     session_id: str
     command: str
-    profile: str | None = None
 
 
 class SlashExecResult(Result):
@@ -296,7 +287,6 @@ method("slash.exec", params=SlashExecParams, result=SlashExecResult,
 
 class InsightsGetParams(Params):
     days: int | None = None
-    profile: str | None = None
 
 
 class InsightsGetResult(Result):
@@ -310,7 +300,7 @@ method("insights.get", params=InsightsGetParams, result=InsightsGetResult,
 
 
 class ConfigShowParams(Params):
-    profile: str | None = None
+    pass
 
 
 class ConfigSection(Result):
@@ -331,7 +321,6 @@ method("config.show", params=ConfigShowParams, result=ConfigShowResult,
 
 class RollbackListParams(Params):
     session_id: str
-    profile: str | None = None
 
 
 class RollbackCheckpoint(Result):
@@ -353,7 +342,6 @@ class RollbackRestoreParams(Params):
     session_id: str
     hash: str
     file_path: str | None = None
-    profile: str | None = None
 
 
 class RollbackRestoreResult(Result):
@@ -380,7 +368,6 @@ method("rollback.restore", params=RollbackRestoreParams, result=RollbackRestoreR
 class RollbackDiffParams(Params):
     session_id: str
     hash: str
-    profile: str | None = None
 
 
 class RollbackDiffResult(Result):
@@ -413,7 +400,6 @@ class CronManageParams(Params):
     repeat: int | str | None = None
     continuity: bool | str | None = None
     deliver: str | None = None
-    profile: str | None = None
 
 
 class CronMonitorState(Result):
@@ -508,7 +494,6 @@ class BrowserManageParams(Params):
     action: BrowserAction = BrowserAction.status
     url: str | None = None
     session_id: str | None = None
-    profile: str | None = None
 
 
 class BrowserManageResult(Result):

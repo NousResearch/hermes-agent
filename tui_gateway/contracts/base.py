@@ -33,6 +33,10 @@ class Params(BaseModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
+    # The desktop routes any method to a named profile by injecting ``profile`` (``requestGatewayForProfile``,
+    # ``session-request-router.routeParams``) and ``server._profile_scoped`` reads it via getattr: transport, not surface.
+    profile: str | None = None
+
 
 class Result(BaseModel):
     """Outbound method / inbound server-request result; ``None`` serializes as wire ``null``."""

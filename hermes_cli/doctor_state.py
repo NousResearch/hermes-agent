@@ -357,7 +357,15 @@ def _memory_provider_honcho(issues: list) -> None:
 def _memory_provider_mem0(issues: list) -> None:
     from plugins.memory.mem0 import _load_config as _load_mem0_config
     mem0_cfg = _load_mem0_config()
-    if mem0_cfg.get("api_key", ""):
+    # OSS mode builds its backend from the local ``oss`` config (ollama + a
+    # vector store) and resolves no platform credential — the plugin's own
+    # _load_config sets api_key="" for that mode on purpose. Reporting a
+    # missing key as a failure made every keyless self-hosted install look
+    # broken.
+    if mem0_cfg.get("mode", "platform") == "oss":
+        check_ok("Mem0 OSS mode (self-hosted)")
+        check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
+    elif mem0_cfg.get("api_key", ""):
         check_ok("Mem0 API key configured")
         check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
     else:

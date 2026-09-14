@@ -311,3 +311,216 @@ class TestToolProgressDrainLoop:
             assert "Searching" not in final_text
             assert "terminal" not in final_text
             assert "---" not in final_text
+
+
+# === SINGLE-MESSAGE ACTIVITY OVERLAY (edit transport, opt-in; #110564 extras) ===
+
+
+class _EditAdapter:
+    """Plain edit-transport adapter (non-native) capturing sends/edits."""
+
+    MAX_MESSAGE_LENGTH = 4096
+    SUPPORTS_MESSAGE_EDITING = True
+    STREAM_IS_MESSAGE = False
+    draft_stream_is_message = False
+
+    def __init__(self):
+        self.sends: list = []
+        self.edits: list = []
+        self._n = 0
+
+    async def send(self, chat_id, content, **kw):
+        self._n += 1
+        self.sends.append(content)
+        return SimpleNamespace(success=True, message_id=f"m{self._n}")
+
+    async def edit_message(self, chat_id, message_id, content, **kw):
+        self.edits.append(content)
+        return SimpleNamespace(success=True)
+
+    async def delete_message(self, chat_id, message_id, **kw):
+        return SimpleNamespace(success=True)
+
+
+def _make_single_consumer(**over):
+    cfg = StreamConsumerConfig(
+        chat_type="dm", cursor="▌", edit_interval=0.05, buffer_threshold=5,
+        single_message_per_turn=True, single_message_activity=True,
+    )
+    for key, value in over.items():
+        setattr(cfg, key, value)
+    adapter = _EditAdapter()
+    return GatewayStreamConsumer(adapter, "chat-1", cfg), adapter
+
+
+class TestSingleMessageOverlayGates:
+    """Acceptance gates for the single-message overlay switches."""
+
+    def test_accepts_tool_progress(self):
+        consumer, _ = _make_single_consumer()
+        assert consumer.accepts_tool_progress is True
+        consumer, _ = _make_single_consumer(single_message_activity=False)
+        assert consumer.accepts_tool_progress is False
+        consumer, _ = _make_single_consumer(single_message_per_turn=False)
+        assert consumer.accepts_tool_progress is False
+
+    def test_accepts_thinking_progress(self):
+        consumer, _ = _make_single_consumer(single_message_thinking=True)
+        assert consumer.accepts_thinking_progress is True
+        consumer, _ = _make_single_consumer()
+        assert consumer.accepts_thinking_progress is False
+        consumer, _ = _make_single_consumer(single_message_per_turn=False,
+                                            single_message_thinking=True)
+        assert consumer.accepts_thinking_progress is False
+
+    def test_single_message_mode_property(self):
+        consumer, _ = _make_single_consumer()
+        assert consumer.single_message_mode is True
+        consumer, _ = _make_single_consumer(single_message_per_turn=False)
+        assert consumer.single_message_mode is False
+
+
+class TestSingleMessageOverlayDrain:
+    """Run-loop behavior of the transient overlay (edit transport)."""
+
+    @pytest.mark.asyncio
+    async def test_overlay_only_opens_preview_and_final_is_clean(self):
+        consumer, adapter = _make_single_consumer()
+        consumer.on_tool_progress("🔧 terminal: ls")
+
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.25)
+        consumer.on_delta("Final answer")
+        consumer.finish("Final answer")
+        await asyncio.sleep(0.25)
+        await task
+
+        # The overlay alone opened the preview message.
+        assert any("🔧" in (s or "") for s in adapter.sends), adapter.sends
+        # Final edit carries exactly the answer: overlay + rule dropped.
+        assert adapter.edits, "expected at least one edit"
+        assert adapter.edits[-1].strip() == "Final answer"
+        assert "🔧" not in adapter.edits[-1] and "---" not in adapter.edits[-1]
+
+    @pytest.mark.asyncio
+    async def test_text_overlay_strategy_b_then_text_clears_it(self):
+        consumer, adapter = _make_single_consumer()
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.on_delta("Part one. ")
+        await asyncio.sleep(0.25)
+        consumer.on_tool_progress("🔧 web_search: query")
+        await asyncio.sleep(0.25)
+        consumer.on_delta("Part two.")
+        consumer.finish("Part one. Part two.")
+        await asyncio.sleep(0.25)
+        await task
+
+        # Strategy B frame: text + rule + tool line while the tool runs.
+        assert any(
+            "Part one." in c and "---" in c and "🔧" in c for c in adapter.edits
+        ), adapter.edits
+        final = adapter.edits[-1]
+        assert "Part one." in final and "Part two." in final
+        assert "🔧" not in final and "---" not in final
+
+    @pytest.mark.asyncio
+    async def test_thinking_snippet_replaces_previous(self):
+        consumer, adapter = _make_single_consumer(single_message_thinking=True)
+        consumer.on_tool_progress("💭 first thought")
+
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.25)
+        consumer.on_tool_progress("💭 second thought")
+        await asyncio.sleep(0.25)
+        consumer.on_delta("Answer")
+        consumer.finish("Answer")
+        await asyncio.sleep(0.25)
+        await task
+
+        history = [c for c in adapter.sends + adapter.edits if c]
+        assert any("💭 second thought" in c for c in history), history
+        # Never both snippets in one frame — a new snippet replaces the old one.
+        assert not any(
+            "first thought" in c and "second thought" in c for c in history
+        ), history
+        assert "💭" not in adapter.edits[-1]
+
+    @pytest.mark.asyncio
+    async def test_overlay_requires_single_mode(self):
+        consumer, adapter = _make_single_consumer(single_message_per_turn=False)
+        consumer.on_tool_progress("🔧 nope")
+
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.2)
+        consumer.on_delta("x")
+        consumer.finish("x")
+        await asyncio.sleep(0.2)
+        await task
+
+        history = [c for c in adapter.sends + adapter.edits if c]
+        assert not any("🔧" in c for c in history), history
+
+
+class TestSingleMessageDraftLane:
+    """Draft transport (sendMessageDraft) + single-message overlay (#110564 extras)."""
+
+    @pytest.mark.asyncio
+    async def test_overlay_rides_draft_preview_and_final_is_one_message(self):
+        from gateway.platforms.base import BasePlatformAdapter
+
+        DraftAdapter = type(
+            "DraftAdapter",
+            (BasePlatformAdapter,),
+            {
+                "MAX_MESSAGE_LENGTH": 4096,
+                "SUPPORTS_MESSAGE_EDITING": True,
+                "STREAM_IS_MESSAGE": False,
+                "draft_stream_is_message": False,
+                "name": "draft-fake",
+            },
+        )
+        DraftAdapter.__abstractmethods__ = frozenset()
+        adapter = DraftAdapter.__new__(DraftAdapter)
+        adapter._typing_paused = set()
+        adapter._fatal_error_message = None
+        adapter.drafts = []
+        adapter.sends = []
+
+        def _supports_draft(chat_type=None, metadata=None, chat_id=None, **kw):
+            return True
+        adapter.supports_draft_streaming = _supports_draft
+
+        async def _send_draft(chat_id=None, draft_id=None, content=None, metadata=None, **kw):
+            adapter.drafts.append(content)
+            return SimpleNamespace(success=True, message_id=None)
+        adapter.send_draft = _send_draft
+
+        async def _send(chat_id=None, content=None, **kw):
+            adapter.sends.append(content)
+            return SimpleNamespace(success=True, message_id="d1")
+        adapter.send = _send
+
+        async def _edit(chat_id=None, message_id=None, content=None, **kw):
+            return SimpleNamespace(success=True)
+        adapter.edit_message = _edit
+
+        cfg = StreamConsumerConfig(
+            chat_type="dm", cursor="▌", edit_interval=0.05, buffer_threshold=5,
+            transport="auto", single_message_per_turn=True, single_message_activity=True,
+        )
+        consumer = GatewayStreamConsumer(adapter, "chat-1", cfg)
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.on_tool_progress("🔧 terminal: ls")
+        await asyncio.sleep(0.25)
+        consumer.on_delta("Full answer")
+        consumer.finish("Full answer")
+        await asyncio.sleep(0.25)
+        await task
+
+        # Overlay rode the ephemeral draft preview…
+        assert any("🔧" in (d or "") for d in adapter.drafts), adapter.drafts
+        # …and exactly one persistent message carries the clean final.
+        assert len(adapter.sends) == 1, adapter.sends
+        assert adapter.sends[-1].strip() == "Full answer"

@@ -1,5 +1,5 @@
 """``hermes kanban …`` — dispatch (``kanban_command``), task-verb handlers, ``run_slash`` for ``/kanban``.
-DB work lives in ``kanban_db``; siblings: ``kanban_parser`` (argparse, re-exported ``build_parser``),
+DB work lives in ``kanban_db``; siblings: ``kanban_parser`` (argparse tree, wrapped by ``build_parser`` here),
 ``kanban_output`` (text/--json), ``kanban_boards`` (``boards …``), ``kanban_ops`` (dispatch/daemon/
 tail/watch/gc/repair).
 """
@@ -21,6 +21,8 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli import kanban_db_notify as kbn
+from hermes_cli import kanban_read_model as krm
+from hermes_cli import kanban_read_model_publish as krmp
 from hermes_cli import kanban_swarm as ks
 from hermes_cli.kanban_output import (
     _ATTACHMENT_FIELDS, _RUNS_RUN_FIELDS, _SHOW_RUN_FIELDS, _bulk_apply, _err,
@@ -31,7 +33,7 @@ from hermes_cli.kanban_boards import _dispatch_boards
 from hermes_cli.kanban_ops import (
     _cmd_daemon, _kanban_config, _cmd_dispatch, _cmd_gc, _cmd_repair, _cmd_tail, _cmd_watch,
 )
-from hermes_cli.kanban_parser import build_parser  # noqa: F401  (re-exported: hermes_cli.main, run_slash)
+from hermes_cli.kanban_parser import build_parser as _build_kanban_parser  # wrapped below
 
 
 # --- Flag parsing helpers ---
@@ -133,11 +135,116 @@ def _check_dispatcher_presence(hermes_home: Optional[Path] = None) -> tuple[bool
             "the gateway comes up.")
 
 
+# --- Argparse builder ---
+
+def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
+    """Attach the ``kanban`` subcommand tree; returns the ``kanban`` parser.
+
+    The tree itself is declared as data in ``kanban_parser``. The two H0
+    read-model surfaces are added here instead, next to their handlers: every
+    one of their inputs is explicit and required, with no ambient default to
+    fall back on, which is the opposite of what the shared spec table encodes.
+    """
+    kanban_parser = _build_kanban_parser(parent_subparsers)
+    kanban_parser.add_argument(
+        "--kanban-root",
+        default=None,
+        dest="kanban_root",
+        metavar="<path>",
+        help=(
+            "Explicit Kanban root path for `read-model` (no ambient "
+            "HERMES_* or current-board fallback)."
+        ),
+    )
+    sub = next(a for a in kanban_parser._actions
+               if isinstance(a, argparse._SubParsersAction))
+
+    # --- read-model (H0.2b3a: reader-only, owner-published JSON artifact) ---
+    p_read_model = sub.add_parser(
+        "read-model",
+        help=(
+            "Non-mutating Kanban read model, served from an owner-published "
+            "JSON artifact (never from the live database)"
+        ),
+    )
+    p_read_model.add_argument(
+        "--artifact",
+        default=None,
+        metavar="<path>",
+        help=(
+            "Explicit absolute path to the owner-published read-model JSON "
+            "artifact. Must live outside the Kanban root."
+        ),
+    )
+    p_read_model.add_argument(
+        "--max-age-seconds",
+        type=int,
+        default=krm.DEFAULT_MAX_AGE_SECONDS,
+        dest="max_age_seconds",
+        metavar="<n>",
+        help=(
+            "Reject an artifact older than this many seconds "
+            f"(default: {krm.DEFAULT_MAX_AGE_SECONDS})."
+        ),
+    )
+    p_read_model.add_argument("--limit", type=int, default=50)
+    p_read_model.add_argument("--json", action="store_true")
+
+    # --- publish-read-model (H0.2b3b: explicit owner-side publisher) ---
+    p_publish_read_model = sub.add_parser(
+        "publish-read-model",
+        help=(
+            "Publish the sanitized read-model JSON artifact that `read-model` "
+            "consumes (explicit owner action only; opens the live database)"
+        ),
+    )
+    p_publish_read_model.add_argument(
+        "--out",
+        default=None,
+        metavar="<path>",
+        help=(
+            "Explicit absolute path of the artifact to publish. Must live "
+            "outside every Kanban-controlled root."
+        ),
+    )
+    p_publish_read_model.add_argument(
+        "--db",
+        default=None,
+        metavar="<path>",
+        help=(
+            "Explicit absolute path of the live board database to read. Must "
+            "be exactly the database --kanban-root and --board derive (no "
+            "ambient HERMES_* or current-board fallback)."
+        ),
+    )
+    p_publish_read_model.add_argument("--limit", type=int, default=50)
+
+    return kanban_parser
+
+
 # --- Command dispatch ---
 
 def kanban_command(args: argparse.Namespace) -> int:
     """Entry point from ``hermes kanban …``; returns a shell-style exit code."""
     action = getattr(args, "kanban_action", None)
+
+    # H0.2a: `read-model` dispatches before every generic initialization/
+    # board-resolution path below (delegated-mutation check, --board
+    # override resolution, kb.init_db()) — it is a strictly read-only,
+    # explicitly-scoped surface and must not ride on any of those. The
+    # artifact it reads is produced by `publish-read-model` below, which is
+    # the only surface that touches the live database.
+    if action == "read-model":
+        return _cmd_read_model(args)
+
+    # H0.2b3b: `publish-read-model` dispatches early for the opposite reason
+    # `read-model` does. It is mutation-capable owner authority, so it must
+    # settle that authority itself — before the generic delegated-mutation
+    # check, before board resolution, and above all before the auto
+    # `kb.init_db()`, which would open the live database on the way in.
+    if action == "publish-read-model":
+        return _cmd_publish_read_model(args)
+
     if not action:
         parser = getattr(args, "_kanban_parser", None)
         if parser is not None:
@@ -1250,6 +1357,179 @@ _HANDLERS = {
     "context": _cmd_context, "specify": _cmd_specify, "decompose": _cmd_decompose,
     "gc": _cmd_gc,
 }
+
+
+# The only fields `read-model` will ever print. Checked again here rather than
+# trusted from the reader: two independent allowlists means a single mistake on
+# either side cannot put a task body, workspace path, or session id on screen.
+_READ_MODEL_OUTPUT_FIELDS = (
+    "schema_version",
+    "generated_at",
+    "board",
+    "truncated",
+    "tasks",
+)
+
+# Hard cap on the COMPLETE serialized UTF-8 stdout payload, newline included.
+#
+# The reader's own row and field bounds already keep a well-formed payload two
+# orders of magnitude below this, so in practice it only fires when something
+# upstream is wrong. That is the point: the consumer reads this command's
+# stdout into a bounded buffer, and an overrun there cuts the document in the
+# middle, where a truncated JSON object is not detectably truncated. Checking
+# the encoded length here means the alternative is an empty stdout and a
+# generic failure, never a half-written answer.
+MAX_READ_MODEL_OUTPUT_BYTES = 256 * 1024
+
+
+def _rendered_read_model(payload: dict, as_json: bool) -> str:
+    """Render the read-model payload, or raise if it is not exactly the
+    allowlisted shape. Rendering happens before anything is printed, so a
+    rejected payload leaves stdout completely empty."""
+    if set(payload) != set(_READ_MODEL_OUTPUT_FIELDS):
+        raise ValueError("read-model payload is not the allowlisted shape")
+    tasks = payload["tasks"]
+    if not isinstance(tasks, list):
+        raise ValueError("read-model payload tasks is not a list")
+    for task in tasks:
+        if not isinstance(task, dict) or set(task) != set(krm.TASK_FIELDS):
+            raise ValueError("read-model task is not the allowlisted shape")
+
+    if as_json:
+        return json.dumps(
+            {
+                "schema_version": payload["schema_version"],
+                "generated_at": payload["generated_at"],
+                "board": payload["board"],
+                "truncated": payload["truncated"],
+                "tasks": [{field: task[field] for field in krm.TASK_FIELDS} for task in tasks],
+            },
+            ensure_ascii=True,
+        )
+
+    header = (
+        f"board {payload['board']}  generated_at {payload['generated_at']}  "
+        f"tasks {len(tasks)}"
+        + ("  (truncated)" if payload["truncated"] else "")
+    )
+    lines = [header]
+    for task in tasks:
+        assignee = task["assignee"] or "(unassigned)"
+        lines.append(
+            f"{task['id']}  {task['status']}  p{task['priority']}  "
+            f"{assignee}  {task['title']}"
+        )
+    return "\n".join(lines)
+
+
+def _cmd_read_model(args: argparse.Namespace) -> int:
+    """H0.2b3a: the entire `read-model` surface.
+
+    Dispatched from :func:`kanban_command` before the delegated-mutation
+    check, `--board` override resolution, and the auto `kb.init_db()` — it
+    must stay reachable even when those paths would fail, because it is a
+    strictly read-only surface that shares nothing with them.
+
+    It reads ONE owner-published JSON artifact through
+    :func:`hermes_cli.kanban_read_model.read_read_model`. It never touches the
+    live database: `kanban.db`, its WAL, and its SHM are not derived, stat-ed,
+    opened, or imported anywhere on this path. Root, board, and artifact are
+    all explicit and required — there is no HERMES_*/current-board fallback.
+
+    Exit codes: 2 for a usage error (a missing explicit input), 1 with the
+    single fixed string `kanban read-model: unavailable` for every other
+    failure, 0 on success.
+    """
+    kanban_root = getattr(args, "kanban_root", None)
+    board = getattr(args, "board", None)
+    artifact = getattr(args, "artifact", None)
+    if not kanban_root or not board or not artifact:
+        print(
+            "kanban read-model: explicit --kanban-root, --board and --artifact "
+            "are required",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        payload = krm.read_read_model(
+            kanban_root=kanban_root,
+            board=board,
+            artifact=artifact,
+            max_age_seconds=getattr(args, "max_age_seconds", krm.DEFAULT_MAX_AGE_SECONDS),
+            limit=getattr(args, "limit", 50),
+        )
+        rendered = _rendered_read_model(payload, bool(getattr(args, "json", False)))
+        encoded = (rendered + "\n").encode("utf-8")
+        if len(encoded) > MAX_READ_MODEL_OUTPUT_BYTES:
+            raise ValueError("read-model output exceeds the serialized byte cap")
+    except Exception:  # noqa: BLE001 - see below
+        # Deliberately broad. Every post-usage failure collapses into one
+        # fixed string: an attacker who can vary the artifact path must not be
+        # able to tell "wrong mode" from "not found" from "stale", or
+        # read-model becomes a filesystem oracle. The exception text can embed
+        # the path and the reason, so none of it is printed.
+        print("kanban read-model: unavailable", file=sys.stderr)
+        return 1
+    # One write, not `print`'s two: the consumer reads this stream into a
+    # bounded buffer, so a body-then-newline pair can be observed — and cut —
+    # between the two writes. Validated payload, newline included, in one call.
+    sys.stdout.write(rendered + "\n")
+    return 0
+
+
+def _cmd_publish_read_model(args: argparse.Namespace) -> int:
+    """H0.2b3b: the `publish-read-model` surface.
+
+    Owner authority is decided inside
+    :mod:`hermes_cli.kanban_read_model_publish`, before it opens the database
+    and before it writes anything, so a refusal leaves the filesystem and the
+    board byte-identical. It is settled here FIRST — ahead of even the usage
+    check — so a delegated child is told it has no authority rather than being
+    told which arguments would have let it try.
+
+    Root, board, DB, and output are all explicit and required; there is no
+    HERMES_*/current-board fallback on this path either.
+
+    Exit codes: 2 for a usage error (a missing explicit input), 1 for a denied
+    or unavailable publication, 0 on success.
+    """
+    try:
+        krmp.assert_owner_publish_authority()
+    except krmp.PublishDenied as exc:
+        print(f"kanban publish-read-model: {exc}", file=sys.stderr)
+        return 1
+
+    kanban_root = getattr(args, "kanban_root", None)
+    board = getattr(args, "board", None)
+    db = getattr(args, "db", None)
+    out = getattr(args, "out", None)
+    if not kanban_root or not board or not db or not out:
+        print(
+            "kanban publish-read-model: explicit --kanban-root, --board, --db "
+            "and --out are required",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        krmp.publish_read_model(
+            kanban_root=kanban_root,
+            board=board,
+            db=db,
+            out=out,
+            limit=getattr(args, "limit", 50),
+        )
+    except krmp.PublishDenied as exc:
+        print(f"kanban publish-read-model: {exc}", file=sys.stderr)
+        return 1
+    except Exception:  # noqa: BLE001
+        # Same reasoning as `read-model`: the caller controls the paths, so a
+        # distinguishable failure reason turns this command into a filesystem
+        # oracle. The exception text can embed the path, so none of it prints.
+        print("kanban publish-read-model: unavailable", file=sys.stderr)
+        return 1
+    return 0
 
 
 # --- Slash-command entry point (used by /kanban from CLI and gateway) ---

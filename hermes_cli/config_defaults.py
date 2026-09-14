@@ -547,7 +547,9 @@ DEFAULT_CONFIG = {
         # case-insensitive substring of the model id (longest match wins; a
         # "<provider>:<substr>" key scopes the cap to one route, same as model_thresholds).
         # Unlike the ratio overrides, an absolute per-model cap survives the sub-512K
-        # floor. Empty = threshold_tokens applies to every model.
+        # floor. Empty = threshold_tokens applies to every model. A value may instead be
+        # {cap: <tokens>, mode: "warn"}: warn entries post a notice when the session
+        # crosses the line but never lower the trigger.
         "threshold_tokens_by_model": {},
         # "progress_notices": False,    # opt-in (#52995): when True, routine compression
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail

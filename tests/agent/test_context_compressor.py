@@ -2541,22 +2541,23 @@ class TestParseModelThresholdTokens:
 
     def test_valid_mapping_passthrough(self):
         from agent.context_compressor import parse_model_threshold_tokens
-        assert parse_model_threshold_tokens({"grok": 180_000, "kimi": "190000"}) == {
-            "grok": 180_000, "kimi": 190_000,
-        }
+        rules = parse_model_threshold_tokens({"grok": 180_000, "kimi": "190000"})
+        assert rules.caps == {"grok": 180_000, "kimi": 190_000}
+        assert rules.warns == {}
 
     def test_non_dict_dropped_with_warning(self, caplog):
         from agent.context_compressor import parse_model_threshold_tokens
         with caplog.at_level("WARNING"):
-            assert parse_model_threshold_tokens(["grok", 180_000]) == {}
+            rules = parse_model_threshold_tokens(["grok", 180_000])
+        assert rules.caps == {} and rules.warns == {}
         assert "must be a mapping" in caplog.text
 
     def test_malformed_entries_dropped_with_warning(self, caplog):
         from agent.context_compressor import parse_model_threshold_tokens
         raw = {"grok": 180_000, "": 5, "bad": "nan", "zero": 0, "neg": -1}
         with caplog.at_level("WARNING"):
-            out = parse_model_threshold_tokens(raw)
-        assert out == {"grok": 180_000}
+            rules = parse_model_threshold_tokens(raw)
+        assert rules.caps == {"grok": 180_000}
         assert caplog.text.count("dropped") == 4
 
     def test_non_string_keys_are_dropped_not_stringified(self, caplog):
@@ -2568,21 +2569,158 @@ class TestParseModelThresholdTokens:
         """
         from agent.context_compressor import parse_model_threshold_tokens
         with caplog.at_level("WARNING"):
-            out = parse_model_threshold_tokens({"grok": 180_000, 4.6: 100, 5: 200})
-        assert out == {"grok": 180_000}
+            rules = parse_model_threshold_tokens({"grok": 180_000, 4.6: 100, 5: 200})
+        assert rules.caps == {"grok": 180_000}
         assert caplog.text.count("key must be a string") == 2
 
     def test_quoted_numeric_key_still_works(self):
         """The explicit form stays available for a deliberate numeric match."""
         from agent.context_compressor import parse_model_threshold_tokens
-        assert parse_model_threshold_tokens({"4.6": 100}) == {"4.6": 100}
+        assert parse_model_threshold_tokens({"4.6": 100}).caps == {"4.6": 100}
 
     def test_none_and_empty_are_clean_noops(self, caplog):
         from agent.context_compressor import parse_model_threshold_tokens
         with caplog.at_level("WARNING"):
-            assert parse_model_threshold_tokens(None) == {}
-            assert parse_model_threshold_tokens({}) == {}
+            assert parse_model_threshold_tokens(None).caps == {}
+            assert parse_model_threshold_tokens({}).caps == {}
         assert caplog.text == ""
+
+    def test_warn_mode_splits_off_from_caps(self):
+        """``{cap, mode: warn}`` entries land in ``warns``; ints and explicit
+        ``mode: compress`` stay caps."""
+        from agent.context_compressor import parse_model_threshold_tokens
+        rules = parse_model_threshold_tokens({
+            "grok": 180_000,
+            "gpt": {"cap": 260_000, "mode": "warn"},
+            "kimi": {"cap": 190_000, "mode": "compress"},
+            "openrouter:grok": {"cap": 175_000, "mode": "WARN"},
+        })
+        assert rules.caps == {"grok": 180_000, "kimi": 190_000}
+        assert rules.warns == {"gpt": 260_000, "openrouter:grok": 175_000}
+
+    def test_warn_mode_malformed_entries_dropped(self, caplog):
+        from agent.context_compressor import parse_model_threshold_tokens
+        raw = {
+            "ok": {"cap": 100, "mode": "warn"},
+            "bad-mode": {"cap": 100, "mode": "shout"},
+            "no-cap": {"mode": "warn"},
+            "bool-cap": {"cap": True, "mode": "warn"},
+            "neg": {"cap": -5, "mode": "warn"},
+        }
+        with caplog.at_level("WARNING"):
+            rules = parse_model_threshold_tokens(raw)
+        assert rules.warns == {"ok": 100}
+        assert rules.caps == {}
+        assert caplog.text.count("dropped") == 4
+
+
+class TestModelWarnLine:
+    """mode:"warn" entries: crossing surfaces a notice, never clamps."""
+
+    def _comp(self, warns, callback=None, **kwargs):
+        kwargs.setdefault("quiet_mode", True)
+        with patch("agent.context_compressor.get_model_context_length", return_value=500_000):
+            return ContextCompressor(
+                "x-ai/grok-4.6", threshold_percent=0.50,
+                model_threshold_warn_tokens=warns, warning_callback=callback, **kwargs,
+            )
+
+    def test_warn_entry_does_not_clamp_threshold(self):
+        comp = self._comp({"grok": 180_000})
+        # 500K window → sub-512K floor raises 0.50 to 0.75; the warn line must not clamp to 180K.
+        assert comp.threshold_tokens == int(500_000 * 0.75)
+
+    def test_crossing_fires_once_per_latch(self):
+        seen = []
+        comp = self._comp({"grok": 180_000}, callback=seen.append)
+        comp.update_from_response({"prompt_tokens": 190_000, "completion_tokens": 0})
+        comp.update_from_response({"prompt_tokens": 195_000, "completion_tokens": 0})
+        assert len(seen) == 1
+        assert "180,000" in seen[0] and "grok-4.6" in seen[0] and "/compress" in seen[0]
+
+    def test_dropping_back_under_rearms(self):
+        seen = []
+        comp = self._comp({"grok": 180_000}, callback=seen.append)
+        comp.update_from_response({"prompt_tokens": 190_000})
+        comp.update_from_response({"prompt_tokens": 100_000})
+        comp.update_from_response({"prompt_tokens": 200_000})
+        assert len(seen) == 2
+
+    def test_model_switch_rearms(self):
+        seen = []
+        comp = self._comp({"grok": 180_000}, callback=seen.append)
+        comp.update_from_response({"prompt_tokens": 190_000})
+        comp.update_model("grok-4.5", context_length=500_000, provider="openrouter")
+        comp.update_from_response({"prompt_tokens": 185_000})
+        assert len(seen) == 2
+
+    def test_provider_scoped_key_only_fires_on_that_route(self):
+        seen = []
+        comp = self._comp({"openrouter:grok": 180_000}, callback=seen.append, provider="xai")
+        comp.update_from_response({"prompt_tokens": 190_000})
+        assert seen == []
+        comp.update_model("x-ai/grok-4.6", context_length=500_000, provider="openrouter")
+        comp.update_from_response({"prompt_tokens": 190_000})
+        assert len(seen) == 1
+
+    def test_no_callback_falls_back_to_log(self, caplog):
+        comp = self._comp({"grok": 180_000}, quiet_mode=False)
+        with caplog.at_level("WARNING"):
+            comp.update_from_response({"prompt_tokens": 190_000})
+        assert "180,000" in caplog.text
+
+    def test_callback_exception_does_not_break_the_turn(self):
+        calls = []
+        def _bad(msg):
+            calls.append(msg)
+            raise RuntimeError("renderer died")
+        comp = self._comp({"grok": 180_000}, callback=_bad)
+        comp.update_from_response({"prompt_tokens": 190_000})
+        assert len(calls) == 1
+        comp.update_from_response({"prompt_tokens": 100_000})
+        comp.update_from_response({"prompt_tokens": 200_000})
+        assert len(calls) == 2
+
+    def test_empty_usage_never_fires(self):
+        seen = []
+        comp = self._comp({"grok": 180_000}, callback=seen.append)
+        comp.update_from_response({})
+        comp.update_from_response({"prompt_tokens": 0})
+        assert seen == []
+
+    def test_session_reset_rearms(self):
+        seen = []
+        comp = self._comp({"grok": 180_000}, callback=seen.append)
+        comp.update_from_response({"prompt_tokens": 190_000})
+        comp._reset_session_compaction_state()
+        comp.update_from_response({"prompt_tokens": 200_000})
+        assert len(seen) == 2
+
+    def test_exact_boundary_fires(self):
+        seen = []
+        comp = self._comp({"grok": 180_000}, callback=seen.append)
+        comp.update_from_response({"prompt_tokens": 179_999})
+        assert seen == []
+        comp.update_from_response({"prompt_tokens": 180_000})
+        assert len(seen) == 1
+
+    def test_warn_and_cap_coexist_on_same_model(self):
+        """A warn line and a hard cap via different keys resolve independently:
+        the cap still clamps the trigger while the warn line still notices."""
+        seen = []
+        comp = self._comp({"grok": 170_000}, callback=seen.append)
+        comp.model_threshold_tokens = {"x-ai/grok-4.6": 190_000}
+        comp._apply_threshold_tokens_cap()
+        assert comp.threshold_tokens == 190_000
+        comp.update_from_response({"prompt_tokens": 175_000})
+        assert len(seen) == 1
+
+    def test_malformed_direct_set_line_never_raises(self):
+        seen = []
+        comp = self._comp({"grok": 180_000}, callback=seen.append)
+        comp.model_threshold_warn_tokens = {"grok": "oops"}
+        comp.update_from_response({"prompt_tokens": 190_000})
+        assert seen == []
 
 
 class TestTruncateToolCallArgsJson:

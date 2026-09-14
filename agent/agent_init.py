@@ -1455,7 +1455,10 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
     # route under a provider price band (grok doubles every rate past 200K)
     # without shrinking big-window models. Parsed/validated once here —
     # the compressor itself never reads config on the apply path.
-    threshold_tokens_by_model = parse_model_threshold_tokens(cfg.get("threshold_tokens_by_model"))
+    # mode:"warn" values split off as advisory lines that only notify.
+    _token_rules = parse_model_threshold_tokens(cfg.get("threshold_tokens_by_model"))
+    threshold_tokens_by_model = _token_rules.caps
+    threshold_tokens_warn_by_model = _token_rules.warns
     # Non-system head messages to protect (system prompt is always protected); 0 is a
     # legitimate "system prompt + summary + tail".
     protect_first = max(0, int(cfg.get("protect_first_n", 3)))
@@ -1497,6 +1500,7 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         },
         threshold_tokens=threshold_tokens,
         threshold_tokens_by_model=threshold_tokens_by_model,
+        threshold_tokens_warn_by_model=threshold_tokens_warn_by_model,
         checkpoint_required=checkpoint_required,
         # In-place compaction: no session-id rotation. default=True MUST match DEFAULT_CONFIG
         # (a False default flipped agents into rotation mode when the key was omitted).
@@ -1858,6 +1862,11 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             agent.context_compressor.model_thresholds = cs.model_thresholds
         if cs.threshold_tokens_by_model:
             agent.context_compressor.model_threshold_tokens = cs.threshold_tokens_by_model
+        if cs.threshold_tokens_warn_by_model:
+            agent.context_compressor.model_threshold_warn_tokens = cs.threshold_tokens_warn_by_model
+        # Plugin compressors that inherit ContextCompressor need the channel too
+        # (built-in path gets it via the constructor).
+        agent.context_compressor._warning_callback = agent._emit_warning
         agent.context_compressor.update_model(
             model=agent.model, context_length=_plugin_ctx_len, base_url=agent.base_url,
             api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
@@ -1874,6 +1883,8 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             abort_on_summary_failure=cs.abort_on_summary_failure,
             max_tokens=_compressor_max_tokens(agent), model_thresholds=cs.model_thresholds,
             model_threshold_tokens=cs.threshold_tokens_by_model,
+            model_threshold_warn_tokens=cs.threshold_tokens_warn_by_model,
+            warning_callback=agent._emit_warning,
             threshold_tokens_cap=cs.threshold_tokens,
             proactive_prune_tokens=cs.proactive_prune_tokens,
             proactive_prune_min_result_chars=cs.proactive_prune_min_chars,

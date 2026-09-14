@@ -101,7 +101,13 @@ class _InputMixin:
         button_norm = (button or "left").lower()
         if button_norm not in {"left", "right", "middle"}:
             return _refuse("click", f"unknown button {button!r} — expected left, right, middle.")
-        if click_count == 2 and self._session.supports_input_property("click", "count"):
+        # `count` is pixel-path-only in the driver schema ("Click count (pixel path only)."):
+        # an element-addressed click takes the AX action path, which performs a single action and
+        # ignores `count`, silently degrading a double-click to one activation. Element addressing
+        # therefore keeps using `double_click`, whose AX path does AXOpen when the element
+        # advertises it and otherwise falls back to a pixel double-click at the element's center.
+        pixel_addressed = element is None and x is not None and y is not None
+        if click_count == 2 and pixel_addressed and self._session.supports_input_property("click", "count"):
             tool, args["count"] = "click", 2
             if self._session.supports_input_property("click", "button"):
                 args["button"] = button_norm

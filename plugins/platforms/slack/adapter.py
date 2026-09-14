@@ -904,6 +904,11 @@ class SlackAdapter(BasePlatformAdapter):
     mention-gated channels, threads, attachments, slash commands, status text."""
 
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
+    # chat.update is NOT chat.postMessage: Slack documents a hard 4,000-char cap on the
+    # ``text`` field for an UPDATE and rejects the whole call with ``msg_too_long`` above it
+    # (https://docs.slack.dev/reference/methods/chat.update). An edit cannot be split, so
+    # anything longer must be delivered by the chunked send path instead.
+    MAX_EDIT_LENGTH = 3900  # margin under Slack's documented 4,000
     supports_code_blocks = True  # Slack mrkdwn renders fenced code blocks
     # Typing indicator is a text status line (assistant.threads.setStatus): fed live phrases.
     supports_status_text = True
@@ -2230,9 +2235,23 @@ class SlackAdapter(BasePlatformAdapter):
             return blocked
         try:
             formatted = self.format_message(content)
-            # chat.update has postMessage's ~40k limit but cannot split, so truncate to fit
-            # (an oversized payload fails the whole edit with ``msg_too_long``).
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            # Above Slack's chat.update cap, decline the edit WITHOUT calling Slack: an edit
+            # cannot be split, and truncating here would silently drop the tail of the answer.
+            # Callers treat a plain failure as "editing unavailable" and re-deliver the full
+            # text through the chunked send path (chat.postMessage takes ~40k), so the reply
+            # arrives complete instead of failing with ``msg_too_long`` and stranding the turn.
+            if len(formatted) > self.MAX_EDIT_LENGTH:
+                if finalize:
+                    await self._clear_thread_status_quietly(chat_id, metadata)
+                logger.info(
+                    "[Slack] Skipping chat.update for message %s in channel %s: %d chars exceeds "
+                    "the %d-char edit cap; falling back to a chunked send.",
+                    message_id, chat_id, len(formatted), self.MAX_EDIT_LENGTH)
+                return SendResult(
+                    success=False,
+                    error=f"content exceeds Slack's chat.update limit "
+                          f"({len(formatted)} > {self.MAX_EDIT_LENGTH} chars); send instead")
+            chunks = self.truncate_message(formatted, self.MAX_EDIT_LENGTH)
             formatted = chunks[0] if chunks else formatted
             update_kwargs: Dict[str, Any] = {
                 "channel": chat_id, "ts": message_id, "text": formatted}

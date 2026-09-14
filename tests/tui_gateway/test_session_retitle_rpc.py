@@ -25,8 +25,6 @@ def server(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "_hermes_home", home)
     yield mod
     mod._sessions.clear()
-    mod._pending.clear()
-    mod._answers.clear()
 
 
 def _session(server):

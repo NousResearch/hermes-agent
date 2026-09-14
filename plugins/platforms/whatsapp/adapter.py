@@ -275,7 +275,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._dm_policy = str(_extra_or_secret(extra, "dm_policy", "WHATSAPP_DM_POLICY", "pairing")).strip().lower()
         self._allow_from = self._coerce_allow_list(self._select_dm_allowlist(extra, ("WHATSAPP_ALLOWED_USERS",), _wenv))
         self._group_policy = str(_extra_or_secret(extra, "group_policy", "WHATSAPP_GROUP_POLICY", "pairing")).strip().lower()
-        self._group_allow_from = self._coerce_allow_list(extra.get("group_allow_from") or extra.get("groupAllowFrom"))
+        # Group allowlist: config keys win, then the profile-scoped env CSV — mirroring the DM
+        # path (_select_dm_allowlist) so a group_allow_from set only via WHATSAPP_GROUP_ALLOWED_USERS
+        # reaches the adapter (#72529: the env carrier was bridged to the Node bridge but never read here,
+        # so env-only installs silently ran group gating with an empty allowlist).
+        self._group_allow_from = self._coerce_allow_list(
+            extra.get("group_allow_from") if "group_allow_from" in extra
+            else (extra.get("groupAllowFrom") if "groupAllowFrom" in extra
+                  else (_wenv("WHATSAPP_GROUP_ALLOW_FROM") or _wenv("WHATSAPP_GROUP_ALLOWED_USERS") or None))
+        )
         rr = extra.get("send_read_receipts", False)
         self._send_read_receipts = rr if isinstance(rr, bool) else str(rr or "").strip().lower() in {"1", "true", "yes", "on"}
         self._mention_patterns = self._compile_mention_patterns()

@@ -707,6 +707,45 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
               ''
           );
 
+        # ── Linger for the service user: cron needs a user manager ────────
+        # The restart-safe cron worker requires `systemd-run --user --scope`,
+        # i.e. a running user manager for the gateway uid. A uid that only
+        # exists for a system service never logs in, so the module must give
+        # it one declaratively via users.users.<name>.linger — the equivalent
+        # of the `sudo loginctl enable-linger <user>` remedy the scheduler's
+        # fail-closed error message prescribes (#110628). Container mode gets
+        # no host linger (cron runs inside the container), and createUser =
+        # false must keep leaving the user definition to the deployer.
+        nixos-module-cron-linger =
+          let
+            native = (evalNixosModule { enable = true; }).config;
+            container = (evalNixosModule {
+              enable = true;
+              container.enable = true;
+            }).config;
+            externalUser = (evalNixosModule {
+              enable = true;
+              createUser = false;
+            }).config;
+            failures =
+              lib.optional (native.users.users.hermes.linger != true)
+                "native mode must enable linger for the service user, got: ${toString native.users.users.hermes.linger}"
+              ++ lib.optional (container.users.users.hermes.linger != false)
+                "container mode must not linger the host service user, got: ${toString container.users.users.hermes.linger}"
+              ++ lib.optional (externalUser.users.users ? hermes)
+                "createUser = false must leave the service user to the deployer";
+          in
+          pkgs.runCommand "hermes-nixos-module-cron-linger" { } (
+            if failures != [ ] then
+              throw "NixOS cron linger check failed:\n${lib.concatMapStringsSep "\n" (f: "  - ${f}") failures}"
+            else
+              ''
+                echo "PASS: native mode lingers the service user so restart-safe cron workers get a user manager"
+                mkdir -p $out
+                echo "ok" > $out/result
+              ''
+          );
+
         # ── How the backend waits for its bind target ────────────────────
         # The backend binds to `host` immediately by default. A unit that
         # starts at boot can lose the race against the daemon that supplies

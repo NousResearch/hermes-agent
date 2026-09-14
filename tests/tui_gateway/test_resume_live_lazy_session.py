@@ -1,23 +1,10 @@
-"""Tests: session.resume finds LIVE lazy (never-persisted) sessions.
-
-session.create intentionally writes no state.db row until the first prompt.
-Bot Mode creates every fresh non-default bot's canonical Bot Chat exactly
-that way (profile-scoped, lazy, hidden), then the open/send path resumes it
-by stored key or pending title — which hard-404'd "session not found" for
-every bot that had never spoken (community + Teknium repro, Aug 2026).
-
-Contract:
-- resume by stored session_key reattaches to the live in-memory record;
-- resume by pending title reattaches likewise;
-- the match is scoped to the SAME profile home — an unscoped resume of a
-  profile-scoped live session still fails closed (no cross-profile leaks);
-- a genuinely unknown id still returns 4007.
-"""
+"""Draft session persistence and legacy live-resume compatibility."""
 
 from __future__ import annotations
 
 import pytest
 
+from hermes_state import SessionDB
 import tui_gateway.server as srv
 
 
@@ -50,6 +37,39 @@ def live_lazy_session(home):
 
 def _resume(params):
     return srv._methods["session.resume"](1, params)
+
+
+@pytest.mark.parametrize("source", ("desktop", "tui"))
+def test_created_draft_resumes_after_backend_restart(home, monkeypatch, source):
+    """A durable id returned by session.create remains resumable with zero messages."""
+    db = SessionDB(home / "state.db")
+    created_sid = resumed_sid = ""
+    try:
+        monkeypatch.setattr(srv, "_enable_gateway_prompts", lambda: None)
+        monkeypatch.setattr(srv, "_resolve_model", lambda: "test/model")
+        monkeypatch.setattr(srv, "_schedule_agent_build", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(srv, "_schedule_session_cap_enforcement", lambda: None)
+        monkeypatch.setattr(srv, "_get_db", lambda: db)
+
+        created = srv._methods["session.create"](1, {"source": source})
+        created_sid = created["result"]["session_id"]
+        stored_sid = created["result"]["stored_session_id"]
+        row = db.get_session(stored_sid)
+        assert row and row["message_count"] == 0
+
+        # Backend restart drops runtime state and reopens state.db from disk.
+        srv._sessions.pop(created_sid, None)
+        db.close()
+        db = SessionDB(home / "state.db")
+
+        resumed = _resume({"session_id": stored_sid, "source": source, "omit_messages": True})
+        resumed_sid = resumed["result"]["session_id"]
+        assert resumed["result"]["resumed"] == stored_sid
+        assert resumed["result"]["message_count"] == 0
+    finally:
+        srv._sessions.pop(created_sid, None)
+        srv._sessions.pop(resumed_sid, None)
+        db.close()
 
 
 def test_resume_by_stored_key_reattaches(live_lazy_session):

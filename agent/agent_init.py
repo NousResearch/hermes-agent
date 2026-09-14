@@ -1142,6 +1142,9 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
     )
 
     agent._session_db = session_db  # optional SQLite store (CLI/gateway-provided)
+    # Immutable profile authority for Session Project resolution; never infer it
+    # from an arbitrary state.db path or whichever profile happens to be ambient later.
+    agent._profile_home = Path(get_hermes_home())
     agent._parent_session_id = parent_session_id
     agent._session_init_model_config = {
         "max_iterations": agent.max_iterations,

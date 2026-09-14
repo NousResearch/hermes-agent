@@ -55,6 +55,7 @@ import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
 import { $anyToolDisclosureOpen, $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
 
 import { APPROVAL_TOOLS, PendingToolApproval } from './approval'
+import { ApprovalResolutionCard, approvalResolutionFromResult } from './approval-resolution'
 import {
   buildToolView,
   clampForDisplay,
@@ -375,6 +376,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   // re-render every mounted tool row (the factory caches a per-id atom).
   const sideDiff = useStore($toolInlineDiff(toolCallId ?? ''))
   const inlineDiff = stripInlineDiffChrome(sideDiff) || inlineDiffFromResult(result)
+  const approvalResolution = useMemo(() => approvalResolutionFromResult(result), [result])
   const isFileEdit = isFileEditTool(toolName)
   const defaultOpen = Boolean(inlineDiff)
   const open = useDisclosureOpen(disclosureId, defaultOpen)
@@ -539,7 +541,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   // persists its diff in the tool result, so creates rehydrate diff-less and
   // read like dead duplicates of the real diff row. Hide them — but keep
   // in-flight writes (activity) and failures (errors) visible.
-  if (isFileEdit && !isPending && view.status !== 'error' && !view.inlineDiff) {
+  if (isFileEdit && !isPending && view.status !== 'error' && !view.inlineDiff && !approvalResolution) {
     return null
   }
 
@@ -601,6 +603,7 @@ function ToolEntry({ part }: ToolEntryProps) {
         </DisclosureRow>
       </div>
       {isPending && <PendingToolApproval part={part} />}
+      {!isPending && approvalResolution && <ApprovalResolutionCard resolution={approvalResolution} />}
       {open && (
         <div className="relative grid w-full min-w-0 max-w-full gap-1.5 overflow-hidden p-1.5">
           {copyAction.text && (

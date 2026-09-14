@@ -820,7 +820,7 @@ def _state_db_write_guard(request, monkeypatch):
 # ``_methods`` dict at import time and keeps per-session state in module
 # globals (sessions, child-run registry, config cache, DB handle). The
 # canonical per-file process isolation above hides any leakage, but a direct
-# multi-file invocation (``pytest tests/tui_gateway/ tests/test_tui_gateway_server.py``,
+# multi-file invocation (``pytest tests/tui_gateway/ tests/tui_gateway/test_tui_gateway_server.py``,
 # or plain ``pytest tests/``) shares one interpreter: a test that stubs
 # ``_methods["slash.exec"]`` or leaves an active-session lease behind breaks
 # unrelated tests in later files. This fixture snapshots the cheap-to-copy
@@ -1064,7 +1064,7 @@ def _wal_is_usable() -> bool:
 # Same class of incident as the live-system guard above, different primitive:
 # a test run spoke the string "partial answer complete" out of the developer's
 # speakers. That string is a test fixture
-# (``tests/test_tui_gateway_server.py``'s fake ``final_response``), and the
+# (``tests/tui_gateway/test_tui_gateway_server.py``'s fake ``final_response``), and the
 # route it took is fully in-process — no leaked shell variable required:
 #
 #   1. ``test_voice_toggle_tts_branch_also_carries_record_key`` drives the

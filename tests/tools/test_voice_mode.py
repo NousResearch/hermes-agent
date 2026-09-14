@@ -695,9 +695,9 @@ class TestCleanupTempRecordings:
 # ============================================================================
 
 class TestPlayBeep:
-    def test_beep_calls_sounddevice_play(self, mock_sd, monkeypatch):
+    @pytest.mark.linux_only
+    def test_beep_calls_sounddevice_play(self, mock_sd):
         np = pytest.importorskip("numpy")
-        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Linux")
 
         from tools.voice_mode import play_beep
 
@@ -714,6 +714,31 @@ class TestPlayBeep:
         audio_arg = mock_sd.play.call_args[0][0]
         assert audio_arg.dtype == np.int16
         assert len(audio_arg) > 0
+
+    @pytest.mark.macos_only
+    def test_beep_uses_temp_wav_without_sounddevice(self, monkeypatch, tmp_path):
+        pytest.importorskip("numpy")
+        from tools import voice_mode as vm
+
+        monkeypatch.setattr(vm.tempfile, "tempdir", str(tmp_path))
+        captured = []
+
+        def capture_playback(path):
+            with wave.open(path, "rb") as wav:
+                assert wav.getframerate() == vm.SAMPLE_RATE
+                assert wav.getsampwidth() == 2
+                assert wav.getnchannels() == 1
+                assert wav.getnframes() > 0
+            captured.append(Path(path))
+            return True
+
+        with patch.object(vm, "_import_audio") as import_audio, \
+             patch.object(vm, "play_audio_file", side_effect=capture_playback):
+            vm.play_beep(frequency=880, duration=0.1, count=1)
+
+        import_audio.assert_not_called()
+        assert len(captured) == 1
+        assert not captured[0].exists()
 
 # ============================================================================
 # Silence detection
@@ -1069,6 +1094,38 @@ class TestStreamLeakOnStartFailure:
         mock_stream.close.assert_called_once()
 
 
+class TestStreamStartTimeoutRetry:
+    """PortAudio paTimedOut (-9987) on a cold bridge: retry the open once (#109303)."""
+
+    def test_timed_out_start_retries_once_and_succeeds(self, mock_sd):
+        cold = MagicMock()
+        cold.start.side_effect = OSError("Error starting stream: Wait timed out [PaErrorCode -9987]")
+        warm = MagicMock()
+        mock_sd.InputStream.side_effect = [cold, warm]
+
+        from tools.voice_mode import AudioRecorder
+        recorder = AudioRecorder()
+        recorder._ensure_stream()
+
+        assert recorder._stream is warm
+        cold.close.assert_called_once()
+        warm.close.assert_not_called()
+
+    def test_persistent_timeout_raises_after_second_attempt(self, mock_sd):
+        mock_stream = MagicMock()
+        mock_stream.start.side_effect = OSError("Wait timed out [PaErrorCode -9987]")
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+        recorder = AudioRecorder()
+        with pytest.raises(RuntimeError, match="Wait timed out"):
+            recorder._ensure_stream()
+
+        assert mock_sd.InputStream.call_count == 2
+        assert mock_stream.close.call_count == 2
+        assert recorder._stream is None
+
+
 # ============================================================================
 # listen_for_speech — VAD barge-in monitor
 # ============================================================================
@@ -1392,6 +1449,7 @@ class TestWSL2PowerShellFallback:
             return next(it)
         return _side_effect
 
+    @pytest.mark.linux_only
     def test_powershell_pipeline_preserves_real_exit_status(self, sample_wav):
         """Regression (review of #63768): the shell pipeline must preserve
         the (ffmpeg && powershell) exit status past the unconditional
@@ -1414,8 +1472,7 @@ class TestWSL2PowerShellFallback:
             m.wait = MagicMock(return_value=m.returncode)
             return m
 
-        with patch("tools.voice_mode.platform.system", return_value="Linux"), \
-             patch("tools.voice_mode._is_wsl2_env", return_value=True), \
+        with patch("tools.voice_mode._is_wsl2_env", return_value=True), \
              patch("tools.voice_mode._import_audio", side_effect=ImportError), \
              patch("tools.voice_mode.shutil.which",
                    side_effect=lambda x: f"/bin/{x}" if x in ("powershell.exe", "ffmpeg", "ffplay", "sh") else (x if x.startswith("/") else None)), \
@@ -1442,6 +1499,7 @@ class TestWSL2PowerShellFallback:
             "Shell pipeline must preserve the real exit status past cleanup: " + sh_script
         )
 
+    @pytest.mark.linux_only
     def test_wsl2_unique_temp_filename(self, monkeypatch, tmp_path, sample_wav):
         """Two concurrent calls must use different temp WAV filenames."""
         from unittest.mock import patch, MagicMock
@@ -1467,8 +1525,7 @@ class TestWSL2PowerShellFallback:
                 return io.StringIO("Linux Microsoft WSL2")
             return open(path, *args, **kwargs)
 
-        with patch("tools.voice_mode.platform.system", return_value="Linux"), \
-             patch("builtins.open", side_effect=_fake_open), \
+        with patch("builtins.open", side_effect=_fake_open), \
              patch("shutil.which", side_effect=lambda x: f"/bin/{x}" if x in ("powershell.exe", "ffmpeg", "ffplay") else None), \
              patch("subprocess.check_output", side_effect=_capture_check_output), \
              patch("subprocess.Popen", return_value=MagicMock(returncode=0, wait=lambda **k: 0)), \

@@ -93,6 +93,9 @@ _ACP_CREDS = {"api_key": "copilot-acp", "base_url": "acp://copilot", "command": 
 @pytest.fixture()
 def _fresh_acp_memo(monkeypatch):
     monkeypatch.setattr(models, "_copilot_acp_session_memo", None)
+    yield
+    # Don't leak a memoized (possibly failed) probe into other tests in this process.
+    monkeypatch.setattr(models, "_copilot_acp_session_memo", None)
 
 
 @pytest.mark.parametrize(
@@ -131,7 +134,7 @@ def test_copilot_acp_session_probe_is_memoized_across_model_switch_validation(_f
             assert verdict["accepted"] and verdict["recognized"]
     assert list_models.call_count == 1
 
-    models._copilot_acp_session_memo = None
+    models._copilot_acp_session_memo = None  # (teardown in _fresh_acp_memo restores it)
     with patch("hermes_cli.auth.resolve_external_process_provider_credentials", return_value=_ACP_CREDS), \
          patch("agent.copilot_acp_client.CopilotACPClient.list_models", side_effect=RuntimeError("not signed in")) as list_models, \
          patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value=""), \

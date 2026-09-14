@@ -534,7 +534,7 @@ class SessionPortabilityMixin:
         / ``last_activity_description`` / ``last_activity_provenance``) because they are part of the durable
         row, but import deliberately RESETS them to NULL. This asymmetry is intentional and covered by
         regression
-        (tests/gateway/test_watchdog_review_76354.py::test_s4_export_includes_activity_import_resets_it).
+        (tests/gateway/test_watchdog_review.py::test_s4_export_includes_activity_import_resets_it).
         """
         if not isinstance(sessions, list):
             raise ValueError("sessions must be a list")

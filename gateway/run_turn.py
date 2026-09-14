@@ -2338,6 +2338,7 @@ class GatewayTurnMixin:
             from tools.mcp_tool_discovery import discover_mcp_tools
             from tools.mcp_tool import _servers, _lock, _server_visible_in_scope
             from tools.mcp_tool_agent import reprobe_tool_availability
+            from tools.mcp_tool_scope import _key_name
             from tools.registry import registry
 
             reload_scope = registry.current_scope_key() if multiplex else None
@@ -2345,8 +2346,8 @@ class GatewayTurnMixin:
             def _scoped_server_names() -> set:
                 with _lock:
                     return {
-                        name for name in _servers
-                        if _server_visible_in_scope(name, reload_scope)
+                        _key_name(key) for key in _servers
+                        if _server_visible_in_scope(key, reload_scope)
                     }
 
             old_servers = _scoped_server_names()

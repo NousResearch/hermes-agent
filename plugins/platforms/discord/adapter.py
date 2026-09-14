@@ -271,8 +271,8 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from tools.url_safety import is_safe_url
 from gateway.platforms._shared import (
-    env_is_connected as _env_is_connected, platform_gate_env as _scoped_gate_env, send_error,
-    yaml_env_setter as _yaml_env_setter
+    env_is_connected as _env_is_connected, extra_or_secret as _extra_or_secret,
+    platform_gate_env as _scoped_gate_env, send_error, yaml_env_setter as _yaml_env_setter
 )
 
 
@@ -613,9 +613,12 @@ def _build_allowed_mentions(extra: Optional[dict] = None):
     configured = configured if isinstance(configured, dict) else {}
 
     def _b(name: str, key: str, default: bool) -> bool:
-        if (raw := configured.get(key)) is not None:
-            return str(raw).strip().lower() in {"true", "1", "yes", "on"}
-        return _env_bool(name, default)
+        # Explicit (scoped) env → this profile's YAML → safe default; a scoped miss never reads
+        # another profile's bridged env, and an explicit ``=false`` beats ``everyone: true``.
+        raw = _extra_or_secret(configured, key, name, None)
+        if raw is None:
+            return default
+        return raw if isinstance(raw, bool) else str(raw).strip().lower() in {"true", "1", "yes", "on"}
 
     return discord.AllowedMentions(
         everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", "everyone", False),
@@ -1102,25 +1105,43 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             value = _scoped_gate_env(env_key) or None
         return default if value is None or value == "" else value
 
+    def _warn_liveness_config_disabled(self, key: str, raw: Any) -> None:
+        """Warn when a liveness knob value is unusable (#109521).
+
+        Unparsable config (`"15s"`, `nan`, `true`) silently mapped to 0 and turned the whole
+        watchdog off with no log line — indistinguishable from "the watchdog missed it".
+        An explicit ``0`` is an intentional opt-out and stays silent.
+        """
+        logger.warning(
+            "[%s] Discord liveness knob %s=%r is not a usable positive number; "
+            "the websocket liveness probe is disabled by this value",
+            self.name, key, raw,
+        )
+
+    def _liveness_knob(self, key: str, default: Any, cast: type, *, env_key: Optional[str] = None):
+        """Resolve a liveness knob: usable iff finite, >= 0 and exact for ``cast``; else warn and return 0.
+
+        ``0`` is the documented opt-out and stays silent. Bools, unparsable strings, nan/inf,
+        negatives and (for int knobs) fractional values all disable the probe WITH a warning.
+        """
+        raw = self._config_value(key, default, env_key=env_key)
+        try:
+            value = None if isinstance(raw, bool) else float(raw)
+        except (TypeError, ValueError):
+            value = None
+        if value is not None and math.isfinite(value) and value >= 0 and cast(value) == value:
+            return cast(value)
+        if value != 0:
+            self._warn_liveness_config_disabled(key, raw)
+        return cast(0)
+
     def _finite_positive_config_float(
         self, key: str, default: float, *, env_key: Optional[str] = None
     ) -> float:
-        """Resolve a finite positive liveness duration; invalid values disable it."""
-        try:
-            value = float(self._config_value(key, default, env_key=env_key))
-        except (TypeError, ValueError):
-            return 0.0
-        return value if math.isfinite(value) and value > 0 else 0.0
+        return self._liveness_knob(key, default, float, env_key=env_key)
 
     def _config_int(self, key: str, default: int, *, env_key: Optional[str] = None) -> int:
-        """Resolve a positive liveness count; invalid values disable it."""
-        value = self._config_value(key, default, env_key=env_key)
-        if isinstance(value, bool):
-            return 0
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return 0
+        return self._liveness_knob(key, default, int, env_key=env_key)
 
     def _handle_bot_task_done(self, task: asyncio.Task) -> None:
         """Surface post-startup discord.py task exits as a retryable fatal so GatewayRunner
@@ -4545,17 +4566,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         return resolve_channel_prompt(self.config.extra, channel_id, parent_id)
 
     def _extra_or_env_flag(self, key: str, env_key: str, env_default: str, *, truthy: bool) -> bool:
-        """Boolean from ``config.extra[key]`` (str parsed permissively) else ``env_key``.
-        ``truthy=True`` env values must be in {true,1,yes,on}; ``truthy=False`` env values are on
-        unless in {false,0,no,off} — matching each flag's historical default shape."""
+        """Boolean: explicit scoped ``env_key`` → ``config.extra[key]`` (str parsed permissively) →
+        ``env_default``. ``truthy=True`` values must be in {true,1,yes,on}; ``truthy=False`` values are
+        on unless in {false,0,no,off} — matching each flag's historical default shape."""
         extra = getattr(self.config, "extra", None)
-        configured = extra.get(key) if isinstance(extra, dict) else None
-        if configured is not None:
-            if isinstance(configured, str):
-                return configured.lower() not in {"false", "0", "no", "off"}
-            return bool(configured)
-        env = _scoped_gate_env(env_key, env_default).lower()
-        return env in {"true", "1", "yes", "on"} if truthy else env not in {"false", "0", "no", "off"}
+        configured = _extra_or_secret(extra if isinstance(extra, dict) else None, key, env_key, None)
+        if configured is None:
+            configured = env_default
+        if isinstance(configured, bool):
+            return configured
+        text = str(configured).strip().lower()
+        return text in {"true", "1", "yes", "on"} if truthy else text not in {"false", "0", "no", "off"}
 
     def _discord_require_mention(self) -> bool:
         """Return whether Discord channel messages require a bot mention."""

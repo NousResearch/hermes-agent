@@ -371,13 +371,16 @@ class CopilotACPClient:
         threading.Thread(target=_pump, args=(proc.stdout, lambda line: inbox.put(_decode(line))), daemon=True).start()
         threading.Thread(target=_pump, args=(proc.stderr, lambda line: stderr_tail.append(line.rstrip("\n"))), daemon=True).start()
         request_ids = iter(range(1, 1 << 62))
+        # One budget for the WHOLE session (initialize + session/new + any prompt), not per
+        # request: a hung CLI must not get 2x the caller's timeout on the foreground /model path.
+        session_deadline = time.monotonic() + timeout_seconds
 
         def _request(method: str, params: dict[str, Any], *, text_parts: list[str] | None = None,
                      reasoning_parts: list[str] | None = None) -> Any:
             request_id = next(request_ids)
             proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}) + "\n")
             proc.stdin.flush()
-            deadline = time.monotonic() + timeout_seconds
+            deadline = session_deadline
             while time.monotonic() < deadline and proc.poll() is None:
                 try:
                     msg = inbox.get(timeout=0.1)

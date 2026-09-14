@@ -1235,20 +1235,23 @@ def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
     return get_codex_model_ids(access_token=access_token)
 
 
-_COPILOT_ACP_SESSION_MEMO_TTL = 300.0  # 5 min, same as the GitHub catalog memo; SWR disk cache handles the rest
-_copilot_acp_session_memo: Optional[tuple[float, Optional[list[str]]]] = None
+_COPILOT_ACP_SESSION_MEMO_TTL = 300.0  # 5 min; SWR disk cache handles the rest
+_COPILOT_ACP_SESSION_FAIL_TTL = 30.0  # failed probes re-probe quickly so a fresh CLI login is picked up
+_copilot_acp_session_memo: Optional[tuple[float, float, Optional[list[str]]]] = None  # (at, ttl, models)
 
 
 def _copilot_acp_session_models(force_refresh: bool) -> Optional[list[str]]:
     """Enabled models from a signed-in ``copilot --acp`` session, memoized for a few minutes —
     successes AND failures. Model-switch validation (``models_validate._static_catalog``) reads
     this uncached on every ``/model`` switch, and each miss is a CLI spawn + handshake (up to the
-    probe timeout), so without the memo every switch paid a subprocess."""
+    probe timeout), so without the memo every switch paid a subprocess. A failed probe is
+    memoized much more briefly so a user who signs in to the CLI right after a miss is picked up
+    on the next switch (or immediately via ``/model --refresh``, which clears this memo)."""
     global _copilot_acp_session_memo
     now = time.monotonic()
     memo = _copilot_acp_session_memo
-    if not force_refresh and memo is not None and now - memo[0] < _COPILOT_ACP_SESSION_MEMO_TTL:
-        return memo[1]
+    if not force_refresh and memo is not None and now - memo[0] < memo[1]:
+        return memo[2]
     from providers import get_provider_profile
 
     try:
@@ -1256,7 +1259,7 @@ def _copilot_acp_session_models(force_refresh: bool) -> Optional[list[str]]:
     except Exception:
         logger.debug("copilot-acp session model discovery failed", exc_info=True)
         live = None
-    _copilot_acp_session_memo = (now, live)
+    _copilot_acp_session_memo = (now, _COPILOT_ACP_SESSION_MEMO_TTL if live else _COPILOT_ACP_SESSION_FAIL_TTL, live)
     return live
 
 
@@ -1738,6 +1741,11 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
         _OLLAMA_LOCAL_MODELS_CACHE.clear()
         _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.clear()
         _OLLAMA_LOCAL_PROBE_REACHABLE.clear()
+        # A fresh copilot-acp CLI login must be visible to the next /model switch (this helper is
+        # what ``--refresh`` runs): don't let the 5-min session memo (or its failure memo) serve
+        # a stale signed-out probe past an explicit refresh.
+        global _copilot_acp_session_memo
+        _copilot_acp_session_memo = None
         if provider is None:
             path = _provider_models_cache_path()
             if path.exists():

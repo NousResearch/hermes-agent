@@ -342,7 +342,7 @@ data_dir = Path("~/.hermes/my-provider").expanduser()
 
 ## Testing
 
-See `tests/agent/test_memory_provider.py` and adjacent memory tests (`tests/agent/test_memory_session_switch.py`, `tests/agent/test_memory_user_id.py`, `tests/run_agent/test_memory_provider_init.py`) for end-to-end patterns.
+See `tests/agent/test_memory_provider.py` and adjacent memory tests (`tests/agent/test_memory_session_switch.py`, `tests/agent/test_memory_user_id.py`, `tests/agent/test_memory_provider_init.py`) for end-to-end patterns.
 
 ```python
 from agent.memory_manager import MemoryManager

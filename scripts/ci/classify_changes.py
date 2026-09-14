@@ -131,7 +131,7 @@ _INSTALLER_FILES = {"scripts/install.ps1", "scripts/install.cmd"}
 # Windows desktop-update hand-off (scripts/desktop-update/windows.ps1 + the
 # Electron side that launches it) and the pytest files that spawn it.
 _DESKTOP_UPDATER_PATHS = ("scripts/desktop-update/",)
-_DESKTOP_UPDATER_TEST_PREFIX = "tests/test_desktop_update_"
+_DESKTOP_UPDATER_TEST_PREFIX = "tests/scripts/desktop_update/"
 _DESKTOP_UPDATER_FILES = {
     "apps/desktop/electron/updater-process.ts",
     "apps/desktop/electron/managed-ssh-update.ts",

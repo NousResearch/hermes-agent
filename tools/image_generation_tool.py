@@ -540,11 +540,8 @@ def check_image_generation_requirements() -> bool:
     if configured is None:
         return False
     # Probe only the selected plugin: a cloud key alone must not opt a user into a paid backend.
-    try:
-        provider = _get_plugin_provider(configured)
-        return bool(provider and provider.is_available())
-    except Exception:
-        return False
+    provider = _get_plugin_provider(configured)
+    return bool(provider and provider.is_available())
 
 
 # --- Registry ---

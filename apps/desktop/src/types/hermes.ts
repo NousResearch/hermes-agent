@@ -549,7 +549,9 @@ export type TimelineDisplayMetadata =
       completed_count?: number
       failed_count?: number
       duration_seconds?: number
+      display_text?: string
     }
+  | { display_text: string }
   | { reactions: MessageReaction[] }
 
 /** One emoji reaction on a message. One per author, iOS-Tapback style. */
@@ -580,7 +582,14 @@ export interface SessionMessage {
   reasoning_content?: null | string
   reasoning_details?: unknown
   display_kind?:
-    'async_delegation_complete' | 'auto_continue' | 'hidden' | 'model_switch' | 'personality_switch' | 'steer' | string
+    | 'async_delegation_complete'
+    | 'auto_continue'
+    | 'hidden'
+    | 'model_switch'
+    | 'personality_switch'
+    | 'process_complete'
+    | 'steer'
+    | string
   /**
    * A backend older than this app can still serve this as unparsed JSON text,
    * so readers must narrow before indexing into it.

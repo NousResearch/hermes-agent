@@ -18,7 +18,11 @@ from hermes_cli import setup_platforms
 logger = logging.getLogger(__name__)
 
 from agent.deadline import run_bounded_async
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, platform_gate_env as _scoped_gate_env
+from gateway.platforms._shared import (
+    decode_json_list_literal as _decode_json_list_literal,
+    extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
+    platform_gate_env as _scoped_gate_env,
+)
 
 
 def _redact_telegram_error_text(error: object) -> str:
@@ -2793,7 +2797,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 fallback_ips = list(SEED_FALLBACK_IPS)
             else:
                 logger.info("[%s] Auto-discovered Telegram fallback IPs: %s", self.name, ", ".join(fallback_ips))
-        proxy_url = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org", *fallback_ips])
+        proxy_url = resolve_proxy_url(
+            "TELEGRAM_PROXY", target_hosts=["api.telegram.org", *fallback_ips],
+            configured=self.config.extra.get("proxy_url"))
 
         def _pair(general_httpx: dict, updates_httpx: dict, **extra) -> tuple:
             return (HTTPXRequest(**request_kwargs, **extra, httpx_kwargs=general_httpx),
@@ -5042,22 +5048,21 @@ class TelegramAdapter(BasePlatformAdapter):
     # ── Group mention gating ──────────────────────────────────────────────
 
     def _extra_bool(self, key: str, env_name: str, default: str, *fallback_keys: str) -> bool:
-        """Boolean gate from ``config.extra[key]`` (then ``fallback_keys``), else env var."""
-        configured = self.config.extra.get(key)
+        """Boolean gate: scoped ``env_name`` → ``config.extra[key]`` (then ``fallback_keys``) → ``default``."""
+        configured = _extra_or_secret(self.config.extra, key, env_name, None)
         for alt in fallback_keys:
             if configured is None:
                 configured = self.config.extra.get(alt)
-        if configured is not None:
-            if isinstance(configured, str):
-                return configured.lower() in {"true", "1", "yes", "on"}
-            return bool(configured)
-        return _scoped_gate_env(env_name, default).lower() in {"true", "1", "yes", "on"}
+        if configured is None:
+            configured = default
+        if isinstance(configured, bool):
+            return configured
+        return str(configured).strip().lower() in {"true", "1", "yes", "on"}
 
     def _extra_str_set(self, key: str, env_name: str) -> set[str]:
-        """Comma/list allowlist from ``config.extra[key]``, else the profile-scoped env var."""
-        raw = self.config.extra.get(key)
-        if raw is None:
-            raw = _scoped_gate_env(env_name)
+        """Comma/list allowlist: scoped ``env_name`` → ``config.extra[key]`` → empty."""
+        raw = _extra_or_secret(self.config.extra, key, env_name, "", blank_is_unset=False)
+        raw = _decode_json_list_literal(raw)
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
@@ -5128,9 +5133,9 @@ class TelegramAdapter(BasePlatformAdapter):
         return self._extra_str_set("allowed_topics", "TELEGRAM_ALLOWED_TOPICS")
 
     def _telegram_ignored_threads(self) -> set[int]:
-        raw = self.config.extra.get("ignored_threads")
-        if raw is None:
-            raw = _scoped_gate_env("TELEGRAM_IGNORED_THREADS")
+        """Thread ids to skip: scoped ``TELEGRAM_IGNORED_THREADS`` → ``config.extra`` → none."""
+        raw = _extra_or_secret(self.config.extra, "ignored_threads", "TELEGRAM_IGNORED_THREADS", "", blank_is_unset=False)
+        raw = _decode_json_list_literal(raw)
         ignored: set[int] = set()
         for value in (raw if isinstance(raw, list) else str(raw).split(",")):
             text = str(value).strip()
@@ -5144,17 +5149,18 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _compile_mention_patterns(self) -> List[re.Pattern]:
         """Compile optional regex wake-word patterns for group triggers."""
-        patterns = self.config.extra.get("mention_patterns")
-        if patterns is None:
-            raw = _scoped_gate_env("TELEGRAM_MENTION_PATTERNS", "").strip()
-            if raw:
-                try:
-                    loaded = json.loads(raw)
-                except Exception:
-                    loaded = [part.strip() for part in raw.splitlines() if part.strip()]
-                    if not loaded:
-                        loaded = [part.strip() for part in raw.split(",") if part.strip()]
-                patterns = loaded
+        # Scoped env → the profile's YAML → none. Only the env rung is a serialized string (JSON list,
+        # newline- or comma-separated); a YAML string is one literal pattern and is left intact.
+        env_raw = _scoped_gate_env("TELEGRAM_MENTION_PATTERNS", "").strip()
+        if env_raw:
+            try:
+                patterns = json.loads(env_raw)
+            except Exception:
+                patterns = [part.strip() for part in env_raw.splitlines() if part.strip()]
+                if not patterns:
+                    patterns = [part.strip() for part in env_raw.split(",") if part.strip()]
+        else:
+            patterns = self.config.extra.get("mention_patterns")
         if patterns is None:
             return []  # before touching ``self.name``: tests build bare adapters via object.__new__
         return compile_mention_patterns(patterns, log_prefix=self.name, platform_label="telegram", display_label="Telegram", logger_=logger)
@@ -6386,10 +6392,15 @@ class TelegramAdapter(BasePlatformAdapter):
     # -- Message reactions (processing lifecycle) --
 
     def _reactions_enabled(self) -> bool:
-        """Reactions enabled via ``extra.reactions`` (YAML, per profile) or TELEGRAM_REACTIONS."""
-        configured = self.config.extra.get("reactions")
+        """Reactions: scoped ``TELEGRAM_REACTIONS`` → ``extra.reactions`` (YAML, per profile) → off.
+
+        An explicit env var wins over YAML, so the stock ``reactions: false`` every install
+        materializes cannot silently kill a documented ``TELEGRAM_REACTIONS=true`` (#109032). Under
+        multiplex a scoped miss falls to the profile's own YAML, never another profile's env (#72348).
+        """
+        configured = _extra_or_secret(self.config.extra, "reactions", "TELEGRAM_REACTIONS", None)
         if configured is None:
-            configured = _scoped_gate_env("TELEGRAM_REACTIONS", "false")
+            return False
         return str(configured).lower() not in {"false", "0", "no"}
 
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: Optional[str]) -> bool:
@@ -6554,6 +6565,8 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         _bridge_gate(key, env, telegram_cfg.get(key), seed_extra=seed)
     _bridge_lower("reactions", "TELEGRAM_REACTIONS")
     if "proxy_url" in telegram_cfg:
+        # Seeded into extra so ``_build_ptb_requests`` keeps a secondary's route without the env bridge.
+        extras.setdefault("proxy_url", str(telegram_cfg["proxy_url"]).strip())
         _set_env("TELEGRAM_PROXY", str(telegram_cfg["proxy_url"]).strip())
     _telegram_extra = telegram_cfg.get("extra") if isinstance(telegram_cfg.get("extra"), dict) else {}
     _telegram_rtm = telegram_cfg["reply_to_mode"] if "reply_to_mode" in telegram_cfg else _telegram_extra.get("reply_to_mode")

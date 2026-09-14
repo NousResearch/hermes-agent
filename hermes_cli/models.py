@@ -1907,15 +1907,11 @@ def cached_provider_model_ids(
     entry = cache.get(normalized)
     now = time.time()
 
-    if not force_refresh and _cache_entry_valid(entry, fp, allow_empty=is_ollama):
-        age = now - entry["at"]
-        if age < (_PROVIDER_MODELS_FALLBACK_TTL if entry.get("fallback") else ttl_seconds):
-            return list(entry["models"])
-        # Empty native catalogs are authoritative only for the short native TTL — never served
-        # through the stale window. Non-empty stale rows are served immediately (SWR) so picker
-        # opens never block on serial /v1/models round-trips.
-        if entry["models"] and not entry.get("fallback") and age < _PROVIDER_MODELS_STALE_SERVE_MAX:
-            _spawn_swr_refresh(normalized)
+    if not force_refresh:
+        tier = _disk_serve_tier(entry, fp, now, is_ollama=is_ollama, ttl_seconds=ttl_seconds)
+        if tier is not None:
+            if tier == "stale":
+                _spawn_swr_refresh(normalized)
             return list(entry["models"])
 
     if non_blocking and not force_refresh:
@@ -2691,6 +2687,27 @@ def _cache_entry_valid(
         and (allow_empty or bool(entry["models"]))
         and isinstance(entry.get("at"), (int, float))
         and not isinstance(entry.get("at"), bool))
+
+
+def _disk_serve_tier(entry: Any, fp: str, now: float, *, is_ollama: bool,
+                     ttl_seconds: int = _PROVIDER_MODELS_CACHE_TTL) -> Optional[str]:
+    """How :func:`cached_provider_model_ids` serves *entry* without the network.
+
+    ``"fresh"`` inside the row's TTL (a curated fallback row only for
+    ``_PROVIDER_MODELS_FALLBACK_TTL``), ``"stale"`` for a non-empty, non-fallback row inside
+    ``_PROVIDER_MODELS_STALE_SERVE_MAX`` (served while an SWR thread revalidates), else ``None``:
+    the call would block on a live fetch. Empty native catalogs are authoritative only inside the
+    short native TTL, never through the stale window."""
+    if is_ollama:
+        ttl_seconds = min(ttl_seconds, _OLLAMA_LOCAL_MODELS_CACHE_TTL)
+    if not _cache_entry_valid(entry, fp, allow_empty=is_ollama):
+        return None
+    age = now - entry["at"]
+    if age < (_PROVIDER_MODELS_FALLBACK_TTL if entry.get("fallback") else ttl_seconds):
+        return "fresh"
+    if entry["models"] and not entry.get("fallback") and age < _PROVIDER_MODELS_STALE_SERVE_MAX:
+        return "stale"
+    return None
 
 
 def cached_fetch_api_models(

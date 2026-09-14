@@ -200,18 +200,24 @@ def _read_bound_port(server: "uvicorn.Server", fallback: int) -> int:
     return fallback
 
 
-def _write_dashboard_ready_file(actual_port: int) -> None:
-    """Publish the port through an atomic ready file when ``HERMES_DESKTOP_READY_FILE`` is set.
-
-    Windows Desktop launches via ``pythonw.exe`` (no console flash) cannot use
-    stdout for the port announcement, so Electron waits for this JSON instead.
-    """
+def _write_dashboard_ready_file(actual_port: int, session_token: str) -> None:
+    """Publish Desktop's private port-and-token handshake when requested."""
     target = os.environ.get("HERMES_DESKTOP_READY_FILE")
     if not target:
         return
 
     try:
-        atomic_json_write(Path(target), {"port": int(actual_port)}, indent=None, separators=(",", ":"))
+        path = Path(target)
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name != "nt":
+            path.parent.chmod(0o700)
+        atomic_json_write(
+            path,
+            {"port": int(actual_port), "session_token": session_token},
+            indent=None,
+            separators=(",", ":"),
+            mode=0o600,
+        )
     except Exception as exc:
         _log.warning("Failed to write dashboard ready file %r: %s", target, exc)
 

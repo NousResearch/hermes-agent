@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import (
     MessageEvent,
     MessageType,
@@ -245,6 +245,88 @@ def test_business_kwargs_fail_closed_without_exact_opt_in():
             "business_connection_id": "bc-123",
         }
     ) == {"business_connection_id": "bc-123"}
+
+
+def _business_notice_runner():
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")
+        }
+    )
+    adapter = SimpleNamespace(
+        config=PlatformConfig(enabled=True, token="fake", extra={}),
+        send=AsyncMock(return_value=SendResult(success=True, message_id="notice")),
+        send_private_notice=AsyncMock(
+            return_value=SendResult(success=True, message_id="private-notice")
+        ),
+    )
+    runner._adapter_for_source = lambda source: adapter
+    return runner, adapter
+
+
+def _business_notice_source():
+    return SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="456",
+        chat_type="dm",
+        user_id="customer",
+        scope_id="telegram-business:bc-123",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "event_metadata",
+    [
+        None,
+        {"business_connection_id": "bc-123"},
+        {
+            "allow_business_send_as_account": True,
+            "business_connection_id": "different",
+        },
+    ],
+)
+async def test_business_platform_notice_without_matching_authority_is_suppressed(
+    event_metadata,
+):
+    runner, adapter = _business_notice_runner()
+
+    await runner._deliver_platform_notice(
+        _business_notice_source(),
+        "notice",
+        event_metadata=event_metadata,
+    )
+
+    adapter.send.assert_not_awaited()
+    adapter.send_private_notice.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_business_platform_notice_preserves_event_bound_authority():
+    runner, adapter = _business_notice_runner()
+
+    await runner._deliver_platform_notice(
+        _business_notice_source(),
+        "notice",
+        event_metadata={
+            "allow_business_send_as_account": True,
+            "business_connection_id": "bc-123",
+        },
+    )
+
+    adapter.send.assert_awaited_once_with(
+        "456",
+        "notice",
+        metadata={
+            "scope_id": "telegram-business:bc-123",
+            "allow_business_send_as_account": True,
+            "business_connection_id": "bc-123",
+        },
+    )
+    adapter.send_private_notice.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -833,7 +915,7 @@ async def test_business_busy_ack_preserves_event_bound_send_authority():
     assert metadata["business_connection_id"] == "bc-123"
 
 
-def test_business_authorization_proof_is_not_serialized():
+def test_business_authorization_flag_is_not_serialized():
     source = SessionSource(
         platform=Platform.TELEGRAM,
         chat_id="42",

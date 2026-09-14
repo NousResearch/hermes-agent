@@ -94,14 +94,19 @@ def _make_runner_and_captured(monkeypatch, run_still_current=True):
     """TurnRunner with a stub gateway runner; captures scheduled notices."""
     from gateway import run as run_mod
 
-    captured: list[str] = []
+    class _Captured(list):
+        event_metadata: list
+
+    captured = _Captured()
+    captured.event_metadata = []
 
     class _StubGatewayRunner:
         def _delivery_adapter_for(self, source):
             return None
 
-        async def _deliver_platform_notice(self, source, content):
+        async def _deliver_platform_notice(self, source, content, *, event_metadata=None):
             captured.append(content)
+            captured.event_metadata.append(event_metadata)
 
     def _fake_schedule(coro, loop, logger=None, log_message=None):
         asyncio.run(coro)
@@ -166,6 +171,19 @@ class TestGatewayFailureNotice:
             "subagent.complete", preview="err", status="error", goal="g"
         )
         assert len(captured) == 1
+
+    def test_notice_preserves_event_bound_routing_authority(self, monkeypatch):
+        runner, captured = _make_runner_and_captured(monkeypatch)
+        runner._ctx.event_metadata = {
+            "allow_business_send_as_account": True,
+            "business_connection_id": "bc-123",
+        }
+
+        runner.progress_callback(
+            "subagent.complete", preview="err", status="error", goal="g"
+        )
+
+        assert captured.event_metadata == [runner._ctx.event_metadata]
 
     def test_summary_preferred_over_preview(self, monkeypatch):
         runner, captured = _make_runner_and_captured(monkeypatch)

@@ -117,7 +117,13 @@ class GatewayNotificationsMixin:
         proceed: bool = True
         early_result: Optional[bool] = None
 
-    async def _deliver_platform_notice(self, source, content: str) -> None:
+    async def _deliver_platform_notice(
+        self,
+        source,
+        content: str,
+        *,
+        event_metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
         from gateway.run import _is_slack_ignored_channel
         adapter = self._delivery_adapter_for(source)
@@ -140,7 +146,25 @@ class GatewayNotificationsMixin:
                 config.get_notice_delivery(source.platform) if config and hasattr(config, "get_notice_delivery")
                 else "public"
             )
-        metadata = self._thread_metadata_for_source(source)
+        metadata = self._thread_metadata_for_source(
+            source,
+            event_metadata=event_metadata,
+        )
+        business_scope = str(getattr(source, "scope_id", "") or "")
+        if (
+            getattr(source, "platform", None) == Platform.TELEGRAM
+            and business_scope.startswith("telegram-business:")
+        ):
+            connection_id = business_scope.removeprefix("telegram-business:")
+            if (
+                not isinstance(metadata, dict)
+                or metadata.get("allow_business_send_as_account") is not True
+                or metadata.get("business_connection_id") != connection_id
+            ):
+                logger.info(
+                    "Skipping Telegram Business platform notice without event-bound send authority"
+                )
+                return
         if notice_delivery == "private" and getattr(source, "user_id", None):
             with _log_suppressed(
                 logging.DEBUG, "[%s] send_private_notice failed, falling back to public",

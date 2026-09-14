@@ -35,8 +35,8 @@
 
 import { execFileSync } from 'node:child_process'
 
-/** Default probe budget. 5s false-negativeed healthy Windows cold starts (#61764). */
-const DEFAULT_PROBE_TIMEOUT_MS = 15_000
+/** Default probe budget. 3s avoids Windows AppHangB1 on slow cold starts (#103786). */
+const DEFAULT_PROBE_TIMEOUT_MS = 3_000
 
 /**
  * Resolve the backend probe timeout (ms).
@@ -100,16 +100,7 @@ function execProbeSync(
     windowsHide?: boolean
   }
 ): void {
-  try {
-    execFileSync(command, args, options)
-  } catch (err) {
-    if (!isTimeoutError(err)) {
-      throw err
-    }
-
-    // One cold-cache / AV miss should not force hermes-setup --update (#61764).
-    execFileSync(command, args, options)
-  }
+  execFileSync(command, args, options)
 }
 
 /**

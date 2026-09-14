@@ -1,0 +1,205 @@
+{
+  "name": "All Time High in the City",
+  "slug": "all-time-high-in-the-city-2021",
+  "year": 2021,
+  "collection": "1939-flagship",
+  "source": "All Time High in the City",
+  "source_type": "album_art",
+  "roles": {
+    "Background": {
+      "hex": "#140A0A",
+      "tints": [
+        "#5D4F4E",
+        "#473A39",
+        "#322525",
+        "#231717",
+        "#140A0A",
+        "#0C0404",
+        "#030000",
+        "#020000",
+        "#020000",
+        "#020000"
+      ],
+      "curve": "dark",
+      "legend_text": "#f0ede8",
+      "semantic": "Page background, card surfaces, dark containers, slide backgrounds"
+    },
+    "Canvas": {
+      "hex": "#C9C2BA",
+      "tints": [
+        "#FFF6EE",
+        "#F4ECE4",
+        "#E4DCD4",
+        "#D6CEC7",
+        "#C9C2BA",
+        "#E4DCD4",
+        "#B0A8A1",
+        "#9D968E",
+        "#8B847D",
+        "#79726B"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Light surfaces, content areas, card backgrounds in light mode, readable surface"
+    },
+    "Text": {
+      "hex": "#7B2324",
+      "tints": [
+        "#F18C86",
+        "#CE6E69",
+        "#AD4F4C",
+        "#8C3231",
+        "#7B2324",
+        "#7C2324",
+        "#520002",
+        "#390000",
+        "#200000",
+        "#0B0000"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Body text, descriptions, metadata, paragraph text"
+    },
+    "Highlight": {
+      "hex": "#FF5343",
+      "tints": [
+        "#FFB59D",
+        "#FFAA93",
+        "#FF8773",
+        "#FF6553",
+        "#FF5343",
+        "#D40507",
+        "#DB1813",
+        "#BE0000",
+        "#A10000",
+        "#840000"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Headings, CTAs, hero text, primary accent, emphasis"
+    },
+    "Support": {
+      "hex": "#CF3D40",
+      "tints": [
+        "#FFB1AA",
+        "#FF908B",
+        "#FF6F6C",
+        "#E14E4F",
+        "#CF3D40",
+        "#AC1424",
+        "#A1001A",
+        "#850000",
+        "#6A0000",
+        "#4E0000"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Secondary accent, links, subtle emphasis, hover states"
+    },
+    "Chart1": {
+      "hex": "#FF7373",
+      "tints": [
+        "#FFB4AF",
+        "#FFB4AF",
+        "#FFA6A2",
+        "#FF8482",
+        "#FF7373",
+        "#FC444C",
+        "#FB444C",
+        "#DE1F33",
+        "#C1001A",
+        "#A40000"
+      ],
+      "curve": "standard",
+      "legend_text": "#1a1a1a",
+      "semantic": "Primary data series, first category color, bar/line accent"
+    },
+    "Chart2": {
+      "hex": "#96552A",
+      "tints": [
+        "#FFC194",
+        "#E8A175",
+        "#C68256",
+        "#A66439",
+        "#96552A",
+        "#905024",
+        "#6D3000",
+        "#551A00",
+        "#3E0200",
+        "#260000"
+      ],
+      "curve": "standard",
+      "legend_text": "#f0ede8",
+      "semantic": "Secondary data series, comparison color, secondary chart accent"
+    },
+    "Muted": {
+      "hex": "#826B65",
+      "tints": [
+        "#BAA19A",
+        "#AA918B",
+        "#9B827C",
+        "#8F7670",
+        "#826B65",
+        "#8C746E",
+        "#6B544F",
+        "#654F49",
+        "#654F49",
+        "#654F49"
+      ],
+      "curve": "surface",
+      "legend_text": "#1a1a1a",
+      "semantic": "Borders, disabled states, tertiary text, subtle dividers, placeholders"
+    }
+  },
+  "contrast": {
+    "text_on_background": 1.96,
+    "highlight_on_background": 6.1,
+    "highlight_on_canvas": 1.81,
+    "support_on_background": 4.08,
+    "chart1_on_background": 7.38,
+    "chart2_on_background": 3.37,
+    "canvas_on_background": 11.05
+  },
+  "recommended_uses": {
+    "dark_mode": {
+      "background": "Background",
+      "surface": "Background tint 800 (swatch index 6)",
+      "text_primary": "Text",
+      "text_secondary": "Muted",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 700 (swatch index 7)"
+    },
+    "light_mode": {
+      "background": "Canvas",
+      "surface": "Canvas tint 100 (swatch index 2)",
+      "text_primary": "Background tint 900 (swatch index 8)",
+      "text_secondary": "Muted tint 600 (swatch index 5)",
+      "accent": "Highlight",
+      "accent_secondary": "Support",
+      "chart_primary": "Chart1",
+      "chart_secondary": "Chart2",
+      "border": "Muted tint 300 (swatch index 2)"
+    }
+  },
+  "pptx_mapping": {
+    "title_text": "Highlight",
+    "body_text": "Text",
+    "slide_background": "Background",
+    "accent_bar": "Support",
+    "chart_series_1": "Chart1",
+    "chart_series_2": "Chart2"
+  },
+  "docx_mapping": {
+    "heading_1": "Highlight",
+    "heading_2": "Support",
+    "body_text": "Text",
+    "page_background": "Background",
+    "table_header_bg": "Background tint 700 (swatch index 7)",
+    "table_header_text": "Highlight tint 100 (swatch index 1)",
+    "link_color": "Support"
+  },
+  "perceptual_volume": 0.00233
+}

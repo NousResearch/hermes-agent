@@ -27,24 +27,46 @@ afterEach(() => {
 })
 
 describe('buildToolView image handling', () => {
-  // vision_analyze reports the input image as a local path; an <img> pointed at
-  // a bare path resolves against the renderer origin and 404s, so we render the
-  // tool codicon instead of a broken image.
-  it('drops bare filesystem paths', () => {
-    expect(buildToolView(part({ args: { path: '/Users/me/shot.png' } }), '').imageUrl).toBe('')
-    expect(buildToolView(part({ result: { image_path: '/tmp/out.jpg' } }), '').imageUrl).toBe('')
+  it('preserves local references for scoped resolution and prefers actual viewed pixels', () => {
+    expect(
+      buildToolView(part({ args: { image_url: './renders/shot.png' }, result: undefined }), '').imageSources
+    ).toEqual(['./renders/shot.png'])
+    expect(
+      buildToolView(part({ result: { result: 'Viewport captured\nMEDIA:/tmp/blender-render.png' } }), '').imageSources
+    ).toEqual(['/tmp/blender-render.png'])
+    expect(buildToolView(part({ result: { screenshot_path: '/tmp/out.jpg' } }), '').imageSources).toEqual([
+      '/tmp/out.jpg'
+    ])
+    const image = 'data:image/png;base64,AAAA'
+    const native = { _multimodal: true, content: [{ type: 'image_url', image_url: { url: image } }] }
+    expect(buildToolView(part({ args: { image_url: '/original.png' }, result: native }), '').imageSources).toEqual([
+      image
+    ])
+    expect(buildToolView(part({ result: { image_url: 'https://example.com/image?id=2' } }), '').imageSources).toEqual([
+      'https://example.com/image?id=2'
+    ])
+    expect(buildToolView(part({ result: { url: 'https://example.com/pic.webp' } }), '').imageSources).toEqual([
+      'https://example.com/pic.webp'
+    ])
+    expect(
+      buildToolView(
+        part({ result: { output: 'Screenshot path: /tmp/first render.png\nScreenshot path: /tmp/second.png' } }),
+        ''
+      ).imageSources
+    ).toEqual(['/tmp/first render.png', '/tmp/second.png'])
   })
 
-  it('keeps fetchable data URLs', () => {
-    const dataUrl = 'data:image/png;base64,AAAA'
+  it('ignores non-images, unsafe schemes and incidental page assets', () => {
+    for (const image_url of ['javascript:alert(1).png', 'data:text/html;base64,AAAA', '/tmp/settings.yaml']) {
+      expect(buildToolView(part({ args: { image_url } }), '').imageSources).toEqual([])
+    }
 
-    expect(buildToolView(part({ result: { image_url: dataUrl } }), '').imageUrl).toBe(dataUrl)
-  })
-
-  it('keeps remote http(s) image URLs', () => {
-    const url = 'https://example.com/pic.webp'
-
-    expect(buildToolView(part({ result: { url } }), '').imageUrl).toBe(url)
+    expect(
+      buildToolView(
+        part({ result: { url: 'https://example.com/page', output: 'page img https://example.com/a.png' } }),
+        ''
+      ).imageSources
+    ).toEqual([])
   })
 })
 

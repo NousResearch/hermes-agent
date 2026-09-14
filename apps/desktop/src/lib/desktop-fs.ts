@@ -107,7 +107,23 @@ export async function writeDesktopFileText(path: string, content: string): Promi
   return { path: result.path || path }
 }
 
-export async function readDesktopFileDataUrl(path: string): Promise<string> {
+export interface DesktopFileOrigin {
+  sessionId: string
+  connectionId?: string
+  profile: string
+}
+
+export async function readDesktopFileDataUrl(path: string, origin?: DesktopFileOrigin): Promise<string> {
+  if (origin) {
+    const result = await hermesApi<string | { dataUrl?: string }>({
+      connectionId: origin.connectionId,
+      profile: origin.profile,
+      path: `${fsPath('read-data-url', path)}&session_id=${encodeURIComponent(origin.sessionId)}`
+    })
+
+    return typeof result === 'string' ? result : result.dataUrl || ''
+  }
+
   if (!isDesktopFsRemoteMode()) {
     return bridge().readFileDataUrl(path)
   }

@@ -83,6 +83,47 @@ describe('messagePaintWeight', () => {
     expect(messagePaintWeight(card(10_000_000))).toBe(messagePaintWeight(card(80)))
   })
 
+  it('prices a gallery by one main image plus a bounded thumbnail page, not total sources', () => {
+    const card = (count: number) => ({
+      type: 'tool-call',
+      toolName: 'mcp_render',
+      args: {},
+      result: { images: Array.from({ length: count }, (_, i) => `/tmp/${i}.png`) }
+    })
+
+    const single = messagePaintWeight([card(1)])
+    expect(messagePaintWeight([card(2)])).toBe(single * 3)
+    expect(messagePaintWeight([card(5)])).toBe(single * 6)
+    expect(messagePaintWeight([card(137)])).toBe(single * 6)
+    expect(messagePaintWeight([card(137), card(137)])).toBe(single * 12)
+    const serialized = { ...card(5), result: JSON.stringify(card(5).result) }
+    expect(messagePaintWeight([serialized])).toBe(messagePaintWeight([card(5)]))
+    expect(messageStoreWeight([card(137)])).toBeGreaterThan(messageStoreWeight([card(5)]))
+  })
+
+  it('counts distinct displayed sources, preserves native precedence and leaves non-image and diff prices intact', () => {
+    const image = { type: 'tool-call', toolName: 'vision_analyze', args: {}, result: { image: '/one.png' } }
+    const single = messagePaintWeight([image])
+    expect(messagePaintWeight([{ ...image, result: { images: ['/one.png', '/one.png'] } }])).toBe(single)
+    expect(
+      messagePaintWeight([
+        {
+          ...image,
+          result: {
+            images: ['/one.png', '/two.png'],
+            content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,YQ==' } }]
+          }
+        }
+      ])
+    ).toBe(single)
+    expect(messagePaintWeight([{ ...image, toolName: 'clarify', result: {} }])).toBe(single)
+    expect(messagePaintWeight([{ ...image, result: { images: ['/settings.yaml'] } }])).toBe(1)
+    const diff = { ...image, toolName: 'patch', result: { inline_diff: '+line\n'.repeat(800) } }
+    const withImages = { ...diff, result: { ...diff.result, images: ['/one.png', '/two.png'] } }
+    expect(messagePaintWeight([withImages])).toBe(messageStoreWeight([withImages]))
+    expect(messagePaintWeight([diff])).toBe(messageStoreWeight([diff]))
+  })
+
   it('charges nothing for a row that renders nothing', () => {
     const hoisted = [
       {

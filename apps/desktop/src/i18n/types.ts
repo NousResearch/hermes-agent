@@ -1589,6 +1589,7 @@ export interface Translations {
   }
   agents: {
     extendedTranscript: string
+    imagePreviewsTruncated: string
     transcriptTruncated: string
     transcriptUnavailable: string
     close: string
@@ -3637,6 +3638,11 @@ export interface Translations {
     restartToSaveImages: string
     imageDownloadFailed: string
     openImage: string
+    imageGallery: string
+    previousImage: string
+    nextImage: string
+    imagePosition: (current: number, total: number) => string
+    thumbnailRange: (start: number, end: number, total: number) => string
     downloadImage: string
     savingImage: string
     imagePreviewFailed: string

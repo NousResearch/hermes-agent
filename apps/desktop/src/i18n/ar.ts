@@ -1161,6 +1161,7 @@ export const ar = defineLocale({
   },
   agents: {
     extendedTranscript: 'سجل موسّع',
+    imagePreviewsTruncated: 'تم حذف بعض معاينات الصور.',
     transcriptTruncated: 'عرض أحدث 16 KiB',
     transcriptUnavailable: 'السجل المباشر غير متاح',
 
@@ -3167,6 +3168,11 @@ export const ar = defineLocale({
     restartToSaveImages: 'أعد التشغيل لحفظ الصور',
     imageDownloadFailed: 'فشل تنزيل الصورة',
     openImage: 'فتح الصورة',
+    imageGallery: 'معرض الصور',
+    previousImage: 'الصورة السابقة',
+    nextImage: 'الصورة التالية',
+    imagePosition: (current, total) => `الصورة ${current} من ${total}`,
+    thumbnailRange: (start, end, total) => `المعاينات ${start}–${end} من ${total}`,
     downloadImage: 'تنزيل الصورة',
     savingImage: 'جار حفظ الصورة',
     imagePreviewFailed: 'فشلت معاينة الصورة',

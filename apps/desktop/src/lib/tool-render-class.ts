@@ -9,6 +9,7 @@
  */
 
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
+import { toolImageSources } from '@/lib/tool-images'
 
 const FILE_EDIT_TOOL_NAMES = new Set(['edit_file', 'patch', 'write_file'])
 
@@ -33,9 +34,10 @@ export function isFileEditTool(toolName: string): boolean {
 // what a run summarizes and what the live ticker cycles through.
 const CARD_TOOL_NAMES = new Set(['clarify', 'delegate_task', 'image_generate', 'setup_mcp'])
 
-export function isCardTool(toolName: string): boolean {
+export function isCardTool(toolName: string, args?: unknown, result?: unknown): boolean {
   return (
     CARD_TOOL_NAMES.has(toolName) ||
+    toolImageSources(args, result).length > 0 ||
     isFileEditTool(toolName) ||
     (toolName === 'manage_connections' && isOnboardingEnabled())
   )

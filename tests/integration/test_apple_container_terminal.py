@@ -455,15 +455,25 @@ def test_native_explicit_option_values_preserve_lifetime(
     (source / "marker").write_text("fixture", encoding="utf-8")
     spec = f"{source}:/workspace/extra:ro"
     volume = [volume_flag + spec] if volume_flag.endswith("=") else [volume_flag, spec]
+    extra_args = ["--network=none", "-c=1", *volume]
     env = apple.AppleContainerEnvironment(
-        cpu=1, memory=1024,
-        extra_args=["--network=none", "-c=1", *volume],
+        cpu=1, memory=1024, extra_args=extra_args,
     )
     name = env._container_name
     try:
         result = env.execute("cat /workspace/extra/marker")
         assert result.get("returncode") == 0, result
         assert "fixture" in result.get("output", "")
+        from tools.approval import _should_skip_container_guards
+        from tools.terminal_tool import _docker_has_host_access
+
+        access = _docker_has_host_access({
+            "env_type": "apple_container",
+            "apple_container_volumes": [],
+            "apple_container_extra_args": extra_args,
+        })
+        assert access is True
+        assert _should_skip_container_guards("apple_container", has_host_access=access) is False
         client = env._run_process
         assert client is not None and client.stdin is not None
         client.stdin.close()

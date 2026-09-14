@@ -37,6 +37,7 @@ function createStore(
 function deferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (error: unknown) => void
+
   const promise = new Promise<T>((yes, no) => {
     resolve = yes
     reject = no
@@ -79,12 +80,7 @@ describe('gateway WebSocket cookie forwarding', () => {
 
     await store.register(WS_URL, GATEWAY)
 
-    for (const url of [
-      `${GATEWAY}/api/status`,
-      `${GATEWAY}/api/ws`,
-      `${GATEWAY}/`,
-      `${GATEWAY}/api/agents?x=1`
-    ]) {
+    for (const url of [`${GATEWAY}/api/status`, `${GATEWAY}/api/ws`, `${GATEWAY}/`, `${GATEWAY}/api/agents?x=1`]) {
       expect(cookieOn(store, url, 'xhr')).toBeUndefined()
       expect(cookieOn(store, url, 'webSocket')).toBeUndefined()
     }
@@ -194,6 +190,7 @@ describe('gateway WebSocket cookie forwarding', () => {
   // reach the entry it authorized.
   it('drops authority even when the url has since moved partition', async () => {
     const partitions: Record<string, string> = { [GATEWAY]: 'persist:hermes-oauth-one' }
+
     const store = createGatewayWsCookieStore({
       readCookies: async () => proxyJar,
       resolvePartition: baseUrl => partitions[baseUrl] ?? LEGACY
@@ -211,6 +208,7 @@ describe('gateway WebSocket cookie forwarding', () => {
   it('fences a pending read against a sign-out that resolved another partition', async () => {
     const partitions: Record<string, string> = { [GATEWAY]: 'persist:hermes-oauth-one' }
     const jar = deferred<GatewayCookie[]>()
+
     const store = createGatewayWsCookieStore({
       readCookies: () => jar.promise,
       resolvePartition: baseUrl => partitions[baseUrl] ?? LEGACY
@@ -274,7 +272,7 @@ describe('gateway WebSocket cookie forwarding', () => {
     expect(cookieOn(store, descriptorWs)).toBe(EXPECTED)
   })
 
-  it('retires only the re-minting consumer\'s own previous url', async () => {
+  it("retires only the re-minting consumer's own previous url", async () => {
     const { store } = createStore()
     const pooledWs = 'wss://gateway.example/api/ws?ticket=pooled&profile=work'
     const stale = 'wss://gateway.example/api/ws?ticket=stale'
@@ -349,6 +347,7 @@ describe('gateway WebSocket cookie forwarding', () => {
   // that superseded or revoked it. Neither may publish or delete.
   it('does not republish a cookie read that resolves after sign-out', async () => {
     const jar = deferred<GatewayCookie[]>()
+
     const store = createGatewayWsCookieStore({
       readCookies: () => jar.promise,
       resolvePartition: () => LEGACY
@@ -381,6 +380,7 @@ describe('gateway WebSocket cookie forwarding', () => {
 
   it('refuses a mid-sign-out read that only resolves after the jar is cleared', async () => {
     const jar = deferred<GatewayCookie[]>()
+
     const store = createGatewayWsCookieStore({
       readCookies: () => jar.promise,
       resolvePartition: () => LEGACY
@@ -427,6 +427,7 @@ describe('gateway WebSocket cookie forwarding', () => {
     const stale = 'wss://gateway.example/api/ws?ticket=stale'
     const slow = deferred<GatewayCookie[]>()
     let reads = 0
+
     const store = createGatewayWsCookieStore({
       readCookies: () => (++reads === 1 ? slow.promise : Promise.resolve(proxyJar)),
       resolvePartition: () => LEGACY
@@ -446,6 +447,7 @@ describe('gateway WebSocket cookie forwarding', () => {
     const onError = vi.fn()
     const slow = deferred<GatewayCookie[]>()
     let reads = 0
+
     const store = createGatewayWsCookieStore({
       readCookies: () => (++reads === 1 ? slow.promise : Promise.resolve(proxyJar)),
       resolvePartition: () => LEGACY,
@@ -468,6 +470,7 @@ describe('gateway WebSocket cookie forwarding', () => {
   it('stands down when its owner has aged out of the generation ledger', async () => {
     const jar = deferred<GatewayCookie[]>()
     let reads = 0
+
     const store = createGatewayWsCookieStore({
       readCookies: () => (++reads === 1 ? jar.promise : Promise.resolve(proxyJar)),
       resolvePartition: () => LEGACY

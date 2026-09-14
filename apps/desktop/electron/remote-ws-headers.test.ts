@@ -161,6 +161,7 @@ describe('registry gateway WebSocket headers', () => {
     }
 
     const consumers: Array<string | undefined> = []
+
     const handler = createRegistryGatewayWsUrlHandler({
       ensureBackend: vi.fn(async () => connection),
       mintTicket: vi.fn(async () => 'fresh-ticket'),
@@ -198,6 +199,7 @@ describe('registry gateway WebSocket headers', () => {
     }
 
     const consumers: Array<string | undefined> = []
+
     const handler = createRegistryGatewayWsUrlHandler({
       ensureBackend: vi.fn(async () => connection),
       mintTicket: vi.fn(async () => 'fresh-ticket'),

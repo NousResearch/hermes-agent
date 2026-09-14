@@ -99,6 +99,7 @@ export function createRegistryGatewayWsUrlHandler(dependencies: RegistryGatewayW
   return async (payload: unknown): Promise<string> => {
     const { connectionId, profile } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
     const connection = await dependencies.ensureBackend(connectionId, profile)
+
     // Stable across this pair's reconnects, distinct from every other pair and
     // from the non-registry mint paths. Normalized exactly as the backend
     // resolution normalizes them -- an omitted connectionId means the primary
@@ -108,6 +109,7 @@ export function createRegistryGatewayWsUrlHandler(dependencies: RegistryGatewayW
       dependencies.resolveConnectionId?.(connectionId) ||
       String(connection.connectionId ?? connectionId ?? '').trim() ||
       'primary'
+
     const consumer = `registry:${resolvedId}:${String(profile ?? '').trim() || 'default'}`
     let wsUrl = connection.wsUrl
 

@@ -17,6 +17,7 @@ import json
 import logging
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
@@ -68,6 +69,28 @@ def _err(exc: BaseException) -> Dict[str, Any]:
     return _fail(f"{type(exc).__name__}: {exc}")
 
 
+NETWORK_RESPONSE_HISTORY_MAX = 100
+
+
+@dataclass(frozen=True)
+class NetworkResponseRecord:
+    """Browser-reported network response metadata from CDP Network events."""
+
+    ts: float
+    url: str
+    remote_ip: str
+    status: int = 0
+    resource_type: str = ""
+
+
+def _network_response_security_priority(record: NetworkResponseRecord) -> int:
+    from tools.url_safety import ip_address_block_reason
+
+    if ip_address_block_reason(record.remote_ip, allow_private=True):
+        return 2
+    return 1 if ip_address_block_reason(record.remote_ip) else 0
+
+
 @dataclass(frozen=True)
 class SupervisorSnapshot:
     """Read-only snapshot of supervisor state for tool handlers."""
@@ -78,6 +101,7 @@ class SupervisorSnapshot:
     active: bool  # False if supervisor is detached/stopped
     cdp_url: str
     task_id: str
+    network_responses: Tuple[NetworkResponseRecord, ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for inclusion in ``browser_snapshot`` output."""
@@ -107,6 +131,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         self._pending_dialogs: Dict[str, PendingDialog] = {}
         self._recent_dialogs: List[DialogRecord] = []
         self._frames: Dict[str, FrameInfo] = {}
+        self._network_responses: deque[NetworkResponseRecord] = deque(maxlen=NETWORK_RESPONSE_HISTORY_MAX)
+        self._security_network_responses: Dict[int, NetworkResponseRecord] = {}
         self._active = False
         # Supervisor loop machinery — populated in start().
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -168,7 +194,136 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 recent_dialogs=tuple(self._recent_dialogs[-RECENT_DIALOGS_MAX:]),
                 frame_tree=self._build_frame_tree_locked(),
                 active=self._active, cdp_url=self.cdp_url, task_id=self.task_id,
+                network_responses=self._network_response_snapshot_locked(),
             )
+
+    def clear_network_responses(self) -> None:
+        """Drop recorded network responses before starting a new navigation."""
+        with self._state_lock:
+            self._network_responses.clear()
+            self._security_network_responses.clear()
+
+    def flush_network_events(self, timeout: float = 3.0) -> bool:
+        """Process queued target events before a caller reads peer history.
+
+        Browser commands use a separate CDP connection.  A round trip over the
+        supervisor's WebSocket makes its read loop consume messages queued
+        before the response, including network events already queued on this connection. It is not
+        a browser-wide barrier for future or other-target responses.
+        """
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return False
+
+        with self._state_lock:
+            if not self._active:
+                return False
+            session_id = self._page_session_id
+        if not session_id:
+            return False
+
+        async def _flush() -> None:
+            await self._cdp(
+                "Runtime.evaluate",
+                {"expression": "void 0", "returnByValue": True},
+                session_id=session_id,
+                timeout=timeout,
+            )
+
+        try:
+            _schedule(_flush(), loop, timeout=timeout + 1)
+            return True
+        except Exception as exc:
+            logger.debug("CDP supervisor network-event flush failed: %s", exc)
+            return False
+
+    def retain_network_violation(self, remote_ip: str, url: str) -> None:
+        """Latch an unsafe peer when navigation away from it did not succeed."""
+        record = NetworkResponseRecord(
+            ts=time.time(),
+            url=url,
+            remote_ip=remote_ip,
+            status=0,
+            resource_type="SecurityViolation",
+        )
+        security_priority = _network_response_security_priority(record)
+        if not security_priority:
+            return
+        with self._state_lock:
+            self._network_responses.append(record)
+            self._security_network_responses.setdefault(security_priority, record)
+
+    def start_network_response_window(self) -> Tuple[NetworkResponseRecord, ...]:
+        """Atomically return prior responses and begin a fresh action window.
+
+        Returning and clearing under the same lock prevents a response from
+        arriving between a caller's pre-action check and history reset.  Any
+        event before this lock acquisition is returned for policy validation;
+        any event after it remains visible in the new window.
+        """
+        with self._state_lock:
+            prior_responses = self._network_response_snapshot_locked()
+            self._network_responses.clear()
+            self._security_network_responses.clear()
+        return prior_responses
+
+    def _network_response_snapshot_locked(self) -> Tuple[NetworkResponseRecord, ...]:
+        """Build bounded response history while ``_state_lock`` is held."""
+        network_records = list(self._network_responses)
+        missing_security_records = [
+            record
+            for _, record in sorted(self._security_network_responses.items())
+            if record not in network_records
+        ]
+        if missing_security_records:
+            recent_limit = NETWORK_RESPONSE_HISTORY_MAX - len(missing_security_records)
+            network_records = [
+                *missing_security_records,
+                *network_records[-recent_limit:],
+            ]
+        return tuple(network_records)
+
+    async def _enable_network_tracking(self, session_id: str) -> None:
+        """Enable CDP Network events on a session when the backend supports it."""
+        try:
+            await self._cdp("Network.enable", session_id=session_id, timeout=3.0)
+        except Exception as e:
+            logger.debug(
+                "network tracking: Network.enable failed on sid=%s: %s",
+                (session_id or "")[:16], e,
+            )
+
+    def _on_network_response_received(self, params: Dict[str, Any], session_id: Optional[str] = None) -> None:
+        """Record browser-observed response peer IPs for SSRF validation."""
+        response = params.get("response") or {}
+        if not isinstance(response, dict):
+            return
+
+        remote_ip = str(response.get("remoteIPAddress") or "").strip()
+        url = str(response.get("url") or "").strip()
+        if not remote_ip or not url:
+            return
+
+        try:
+            status = int(response.get("status") or 0)
+        except (TypeError, ValueError):
+            status = 0
+
+        record = NetworkResponseRecord(
+            ts=time.time(),
+            url=url,
+            remote_ip=remote_ip,
+            status=status,
+            resource_type=str(params.get("type") or ""),
+        )
+        security_priority = _network_response_security_priority(record)
+        with self._state_lock:
+            self._network_responses.append(record)
+            if security_priority:
+                self._security_network_responses.setdefault(
+                    security_priority,
+                    record,
+                )
 
     def respond_to_dialog(self, action: str, *, prompt_text: Optional[str] = None,
                           dialog_id: Optional[str] = None, timeout: float = 10.0) -> Dict[str, Any]:
@@ -408,6 +563,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             page_target = (await self._cdp("Target.createTarget", {"url": "about:blank"}))["result"]
         attach = await self._cdp("Target.attachToTarget", {"targetId": page_target["targetId"], "flatten": True})
         self._page_session_id = sid = attach["result"]["sessionId"]
+        await self._enable_network_tracking(sid)
         await self._enable_page_domains(sid, timeout=10.0)
         await self._install_dialog_bridge(sid)
 
@@ -457,6 +613,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
     # CDP event → handler(self, params, session_id). Async handlers return an
     # awaitable that ``_read_loop`` awaits; sync handlers return None.
     _EVENT_HANDLERS: Dict[str, Callable[..., Any]] = {
+        "Network.responseReceived": _on_network_response_received,
         **DialogSupervisionMixin.EVENT_HANDLERS, **FrameTrackingMixin.EVENT_HANDLERS
     }
 

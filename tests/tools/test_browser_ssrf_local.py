@@ -9,6 +9,26 @@ Cloud backends (Browserbase, BrowserUse) enforce SSRF by default.  Users
 can opt out for cloud mode via ``browser.allow_private_urls: true``.
 """
 
+from types import SimpleNamespace
+from tools import browser_supervisor
+from tools import browser_tool_cloud as bt_cloud, browser_tool_session as bt_session
+
+
+def _peer_supervisor(**kwargs):
+    """Model the current atomic-window supervisor API without starting Chrome."""
+    supervisor = SimpleNamespace(**kwargs)
+    if not hasattr(supervisor, 'flush_network_events'):
+        supervisor.flush_network_events = lambda: True
+    if not hasattr(supervisor, 'start_network_response_window'):
+        def rotate():
+            records = supervisor.snapshot().network_responses
+            if hasattr(supervisor, 'clear_network_responses'):
+                supervisor.clear_network_responses()
+            return records
+        supervisor.start_network_response_window = rotate
+    return supervisor
+
+
 import json
 
 import pytest
@@ -295,6 +315,557 @@ class TestPostRedirectSsrf:
 
         assert result["success"] is False
         assert "cloud metadata endpoint" in result["error"]
+
+
+    def test_cloud_blocks_browser_observed_private_peer(
+        self, monkeypatch, _common_patches
+    ):
+        """CDP-reported peer IP blocks DNS rebinding with unchanged final URL."""
+        calls = []
+        cleared = []
+
+        def fake_run(task_id, command, args, **kwargs):
+            calls.append((task_id, command, list(args)))
+            return _make_browser_result(url=self.PUBLIC_URL)
+
+        record = SimpleNamespace(
+            ts=101.0,
+            url=self.PUBLIC_URL,
+            remote_ip="192.168.1.10",
+        )
+        fake_supervisor = _peer_supervisor(
+            snapshot=lambda: SimpleNamespace(network_responses=(record,)),
+            clear_network_responses=lambda: cleared.append(True),
+        )
+
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(browser_tool, "_navigation_session_key", lambda task_id, url: task_id)
+        monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: False)
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: True)
+        monkeypatch.setattr(browser_tool, "_is_always_blocked_url", lambda url: False)
+        monkeypatch.setattr(bt_session, "_run_browser_command", fake_run)
+        monkeypatch.setattr(browser_tool.time, "time", lambda: 100.0)
+        monkeypatch.setattr(browser_supervisor.SUPERVISOR_REGISTRY, "get", lambda task_id: fake_supervisor)
+
+        result = json.loads(browser_tool.browser_navigate(self.PUBLIC_URL, task_id="rebind"))
+
+        assert result["success"] is False
+        assert "browser connected to a private/internal address" in result["error"]
+        assert cleared == [True]
+        assert ("rebind", "open", ["about:blank"]) in calls
+
+
+    def test_cloud_allows_browser_observed_public_peer(
+        self, monkeypatch, _common_patches
+    ):
+        """CDP-reported public peer IP preserves normal navigation success."""
+        cleared = []
+        record = SimpleNamespace(
+            ts=101.0,
+            url=self.PUBLIC_URL,
+            remote_ip="93.184.216.34",
+        )
+        fake_supervisor = _peer_supervisor(
+            snapshot=lambda: SimpleNamespace(network_responses=(record,)),
+            clear_network_responses=lambda: cleared.append(True),
+        )
+
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(browser_tool, "_navigation_session_key", lambda task_id, url: task_id)
+        monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: False)
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: True)
+        monkeypatch.setattr(browser_tool, "_is_always_blocked_url", lambda url: False)
+        monkeypatch.setattr(bt_session, "_run_browser_command", lambda *a, **kw: _make_browser_result(url=self.PUBLIC_URL))
+        monkeypatch.setattr(browser_tool.time, "time", lambda: 100.0)
+        monkeypatch.setattr(browser_supervisor.SUPERVISOR_REGISTRY, "get", lambda task_id: fake_supervisor)
+
+        result = json.loads(browser_tool.browser_navigate(self.PUBLIC_URL, task_id="public"))
+
+        assert result["success"] is True
+        assert result["url"] == self.PUBLIC_URL
+        assert cleared == [True]
+
+
+    def test_cloud_blocks_peer_observed_during_auto_snapshot(
+        self, monkeypatch, _common_patches
+    ):
+        """The post-snapshot guard blocks peers observed after navigation."""
+        calls = []
+        cleared = []
+        records = []
+
+        unsafe_record = SimpleNamespace(
+            ts=101.0,
+            url="https://rebind.example/snapshot?token=secret",
+            remote_ip="192.168.1.10",
+        )
+
+        def fake_run(task_id, command, args, **kwargs):
+            calls.append((task_id, command, list(args)))
+            if command == "snapshot":
+                records.append(unsafe_record)
+                return {
+                    "success": True,
+                    "data": {
+                        "snapshot": "unsafe private content",
+                        "refs": {"e1": "link"},
+                    },
+                }
+            return _make_browser_result(url=self.PUBLIC_URL)
+
+        fake_supervisor = _peer_supervisor(
+            snapshot=lambda: SimpleNamespace(network_responses=tuple(records)),
+            clear_network_responses=lambda: cleared.append(True),
+        )
+
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(browser_tool, "_navigation_session_key", lambda task_id, url: task_id)
+        monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: False)
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: True)
+        monkeypatch.setattr(browser_tool, "_is_always_blocked_url", lambda url: False)
+        monkeypatch.setattr(bt_session, "_run_browser_command", fake_run)
+        monkeypatch.setattr(browser_tool.time, "time", lambda: 100.0)
+        monkeypatch.setattr(browser_supervisor.SUPERVISOR_REGISTRY, "get", lambda task_id: fake_supervisor)
+
+        result = json.loads(browser_tool.browser_navigate(self.PUBLIC_URL, task_id="snapshot-rebind"))
+
+        assert result["success"] is False
+        assert "browser connected to a private/internal address" in result["error"]
+        assert "snapshot" not in result
+        assert cleared == [True]
+        assert calls == [
+            ("snapshot-rebind", "open", [self.PUBLIC_URL]),
+            ("snapshot-rebind", "snapshot", ["-c"]),
+            ("snapshot-rebind", "open", ["about:blank"]),
+        ]
+
+
+    def test_cloud_blocks_browser_observed_metadata_peer_even_with_private_allowed(
+        self, monkeypatch, _common_patches
+    ):
+        """The always-blocked floor still applies to observed peer IPs."""
+        calls = []
+        cleared = []
+
+        def fake_run(task_id, command, args, **kwargs):
+            calls.append((task_id, command, list(args)))
+            return _make_browser_result(url=self.PUBLIC_URL)
+
+        record = SimpleNamespace(
+            ts=101.0,
+            url=self.PUBLIC_URL,
+            remote_ip="169.254.169.254",
+        )
+        fake_supervisor = _peer_supervisor(
+            snapshot=lambda: SimpleNamespace(network_responses=(record,)),
+            clear_network_responses=lambda: cleared.append(True),
+        )
+
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: True)
+        monkeypatch.setattr(browser_tool, "_navigation_session_key", lambda task_id, url: task_id)
+        monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: False)
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: True)
+        monkeypatch.setattr(browser_tool, "_is_always_blocked_url", lambda url: False)
+        monkeypatch.setattr(bt_session, "_run_browser_command", fake_run)
+        monkeypatch.setattr(browser_tool.time, "time", lambda: 100.0)
+        monkeypatch.setattr(browser_supervisor.SUPERVISOR_REGISTRY, "get", lambda task_id: fake_supervisor)
+
+        result = json.loads(browser_tool.browser_navigate(self.PUBLIC_URL, task_id="imds"))
+
+        assert result["success"] is False
+        assert "browser connected to a cloud metadata address" in result["error"]
+        assert cleared == [True]
+        assert ("imds", "open", ["about:blank"]) in calls
+
+
+    def test_cloud_blocks_malformed_observed_peer_even_with_private_allowed(
+        self, monkeypatch, _common_patches
+    ):
+        """Malformed CDP peer IPs fail closed even when private URLs are allowed."""
+        calls = []
+        cleared = []
+
+        def fake_run(task_id, command, args, **kwargs):
+            calls.append((task_id, command, list(args)))
+            return _make_browser_result(url=self.PUBLIC_URL)
+
+        record = SimpleNamespace(
+            ts=101.0,
+            url=self.PUBLIC_URL,
+            remote_ip="not an ip",
+        )
+        fake_supervisor = _peer_supervisor(
+            snapshot=lambda: SimpleNamespace(network_responses=(record,)),
+            clear_network_responses=lambda: cleared.append(True),
+        )
+
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: True)
+        monkeypatch.setattr(browser_tool, "_navigation_session_key", lambda task_id, url: task_id)
+        monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: False)
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: True)
+        monkeypatch.setattr(browser_tool, "_is_always_blocked_url", lambda url: False)
+        monkeypatch.setattr(bt_session, "_run_browser_command", fake_run)
+        monkeypatch.setattr(browser_tool.time, "time", lambda: 100.0)
+        monkeypatch.setattr(browser_supervisor.SUPERVISOR_REGISTRY, "get", lambda task_id: fake_supervisor)
+
+        result = json.loads(browser_tool.browser_navigate(self.PUBLIC_URL, task_id="bad-ip"))
+
+        assert result["success"] is False
+        assert "browser connected to a malformed remote IP address" in result["error"]
+        assert cleared == [True]
+        assert ("bad-ip", "open", ["about:blank"]) in calls
+
+
+    def test_failed_navigation_cannot_discard_prior_peer_violation(
+        self, monkeypatch, _common_patches
+    ):
+        """A failed recovery open must keep the old unsafe page unreadable."""
+        calls = []
+        prior_record = SimpleNamespace(
+            ts=101.0,
+            url="https://rebind.example/internal",
+            remote_ip="192.168.1.10",
+        )
+        records = [prior_record]
+
+        def start_window():
+            prior_records = tuple(records)
+            records.clear()
+            return prior_records
+
+        fake_supervisor = _peer_supervisor(
+            snapshot=lambda: SimpleNamespace(network_responses=tuple(records)),
+            start_network_response_window=start_window,
+        )
+
+        def fake_run(task_id, command, args, **kwargs):
+            calls.append((task_id, command, list(args)))
+            if command == "open" and args != ["about:blank"]:
+                return {"success": False, "error": "Navigation failed"}
+            return {"success": True}
+
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(
+            browser_tool,
+            "_navigation_session_key",
+            lambda task_id, url: task_id,
+        )
+        monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: False)
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: True)
+        monkeypatch.setattr(browser_tool, "_is_always_blocked_url", lambda url: False)
+        monkeypatch.setattr(bt_session, "_run_browser_command", fake_run)
+        monkeypatch.setattr(
+            browser_supervisor.SUPERVISOR_REGISTRY,
+            "get",
+            lambda task_id: fake_supervisor,
+        )
+
+        result = json.loads(
+            browser_tool.browser_navigate(self.PUBLIC_URL, task_id="rebind")
+        )
+
+        assert result["success"] is False
+        assert "browser connected to a private/internal address" in result["error"]
+        assert ("rebind", "open", ["about:blank"]) in calls
+
+
+    @pytest.mark.parametrize("action", ["click", "back", "press"])
+    def test_cloud_blocks_peer_observed_during_navigation_action(
+        self, monkeypatch, _common_patches, action
+    ):
+        """Navigation-capable actions cannot succeed after reaching a private peer."""
+        calls = []
+        cleared = []
+        records = []
+        unsafe_record = SimpleNamespace(
+            ts=101.0,
+            url="https://rebind.example/internal",
+            remote_ip="192.168.1.10",
+        )
+
+        def fake_run(task_id, command, args, **kwargs):
+            calls.append((task_id, command, list(args)))
+            if command == action:
+                records.append(unsafe_record)
+                return {"success": True, "data": {"url": self.PUBLIC_URL}}
+            if command == "eval":
+                return {"success": True, "data": {"result": self.PUBLIC_URL}}
+            return _make_browser_result(url=self.PUBLIC_URL)
+
+        def clear_responses():
+            cleared.append(True)
+            records.clear()
+
+        fake_supervisor = _peer_supervisor(
+            snapshot=lambda: SimpleNamespace(network_responses=tuple(records)),
+            clear_network_responses=clear_responses,
+        )
+
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(browser_tool, "_last_session_key", lambda task_id: task_id)
+        monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: False)
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: True)
+        monkeypatch.setattr(bt_session, "_run_browser_command", fake_run)
+        monkeypatch.setattr(browser_tool.time, "time", lambda: 100.0)
+        monkeypatch.setattr(
+            browser_supervisor.SUPERVISOR_REGISTRY,
+            "get",
+            lambda task_id: fake_supervisor,
+        )
+
+        if action == "click":
+            result = json.loads(browser_tool.browser_click("@e1", task_id="rebind"))
+        elif action == "back":
+            result = json.loads(browser_tool.browser_back(task_id="rebind"))
+        else:
+            result = json.loads(browser_tool.browser_press("Enter", task_id="rebind"))
+
+        assert result["success"] is False
+        assert "browser connected to a private/internal address" in result["error"]
+        assert cleared == [True]
+        assert ("rebind", "open", ["about:blank"]) in calls
+
+
+    @pytest.mark.parametrize("action", ["click", "back", "press"])
+    def test_cloud_blocks_peer_observed_before_followup_snapshot_returns_content(
+        self, monkeypatch, _common_patches, action
+    ):
+        """A late action response cannot leak through a later snapshot."""
+        calls = []
+        cleared = []
+        records = []
+        unsafe_record = SimpleNamespace(
+            ts=101.0,
+            url="https://rebind.example/internal",
+            remote_ip="192.168.1.10",
+        )
+
+        def fake_run(task_id, command, args, **kwargs):
+            calls.append((task_id, command, list(args)))
+            if command == "snapshot":
+                records.append(unsafe_record)
+                return {
+                    "success": True,
+                    "data": {
+                        "snapshot": "unsafe private content",
+                        "refs": {},
+                    },
+                }
+            if command == "eval":
+                return {"success": True, "data": {"result": self.PUBLIC_URL}}
+            return {"success": True, "data": {"url": self.PUBLIC_URL}}
+
+        def clear_responses():
+            cleared.append(True)
+            records.clear()
+
+        fake_supervisor = _peer_supervisor(
+            snapshot=lambda: SimpleNamespace(network_responses=tuple(records)),
+            clear_network_responses=clear_responses,
+        )
+
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(browser_tool, "_last_session_key", lambda task_id: task_id)
+        monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: False)
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: True)
+        monkeypatch.setattr(bt_session, "_run_browser_command", fake_run)
+        monkeypatch.setattr(browser_tool.time, "time", lambda: 100.0)
+        monkeypatch.setattr(
+            browser_supervisor.SUPERVISOR_REGISTRY,
+            "get",
+            lambda task_id: fake_supervisor,
+        )
+
+        if action == "click":
+            action_result = json.loads(
+                browser_tool.browser_click("@e1", task_id="late-rebind")
+            )
+        elif action == "back":
+            action_result = json.loads(browser_tool.browser_back(task_id="late-rebind"))
+        else:
+            action_result = json.loads(
+                browser_tool.browser_press("Enter", task_id="late-rebind")
+            )
+        snapshot_result = json.loads(browser_tool.browser_snapshot(task_id="late-rebind"))
+
+        assert action_result["success"] is True
+        assert snapshot_result["success"] is False
+        assert "browser connected to a private/internal address" in snapshot_result["error"]
+        assert "unsafe private content" not in json.dumps(snapshot_result)
+        assert cleared == [True, True]  # action and snapshot each validate a window
+        assert ("late-rebind", "open", ["about:blank"]) in calls
+
+
+    @pytest.mark.parametrize("content_tool", ["snapshot", "images"])
+    def test_cloud_blocks_peer_before_content_tool_failure_is_returned(
+        self, monkeypatch, _common_patches, content_tool
+    ):
+        """Browser-controlled failure text is content and must also be gated."""
+        calls = []
+        records = []
+        unsafe_record = SimpleNamespace(
+            ts=101.0,
+            url="https://rebind.example/internal",
+            remote_ip="192.168.1.10",
+        )
+
+        def fake_run(task_id, command, args, **kwargs):
+            calls.append((task_id, command, list(args)))
+            if command in {"snapshot", "eval"}:
+                records.append(unsafe_record)
+                return {"success": False, "error": "PRIVATE_RESPONSE_BODY"}
+            return {"success": True}
+
+        fake_supervisor = _peer_supervisor(
+            snapshot=lambda: SimpleNamespace(network_responses=tuple(records)),
+        )
+
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(browser_tool, "_last_session_key", lambda task_id: task_id)
+        monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: False)
+        monkeypatch.setattr(bt_session, "_run_browser_command", fake_run)
+        monkeypatch.setattr(
+            browser_supervisor.SUPERVISOR_REGISTRY,
+            "get",
+            lambda task_id: fake_supervisor,
+        )
+
+        if content_tool == "snapshot":
+            result = json.loads(browser_tool.browser_snapshot(task_id="rebind"))
+        else:
+            result = json.loads(browser_tool.browser_get_images(task_id="rebind"))
+
+        assert result["success"] is False
+        assert "browser connected to a private/internal address" in result["error"]
+        assert "PRIVATE_RESPONSE_BODY" not in json.dumps(result)
+        assert ("rebind", "open", ["about:blank"]) in calls
+
+
+    def test_content_sink_flushes_delayed_peer_event_before_return(
+        self, monkeypatch, _common_patches
+    ):
+        """The supervisor barrier publishes queued peer events before policy reads."""
+        calls = []
+        records = []
+        peer_event_pending = False
+        unsafe_record = SimpleNamespace(
+            ts=101.0,
+            url="https://rebind.example/internal",
+            remote_ip="192.168.1.10",
+        )
+
+        def flush_network_events():
+            nonlocal peer_event_pending
+            if peer_event_pending:
+                records.append(unsafe_record)
+                peer_event_pending = False
+            return True
+
+        fake_supervisor = _peer_supervisor(
+            flush_network_events=flush_network_events,
+            snapshot=lambda: SimpleNamespace(network_responses=tuple(records)),
+        )
+
+        def fake_run(task_id, command, args, **kwargs):
+            nonlocal peer_event_pending
+            calls.append((task_id, command, list(args)))
+            if command == "snapshot":
+                peer_event_pending = True
+                return {
+                    "success": True,
+                    "data": {"snapshot": "PRIVATE_RESPONSE_BODY", "refs": {}},
+                }
+            return {"success": True}
+
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(browser_tool, "_last_session_key", lambda task_id: task_id)
+        monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: False)
+        monkeypatch.setattr(bt_session, "_run_browser_command", fake_run)
+        monkeypatch.setattr(
+            browser_supervisor.SUPERVISOR_REGISTRY,
+            "get",
+            lambda task_id: fake_supervisor,
+        )
+
+        result = json.loads(browser_tool.browser_snapshot(task_id="rebind"))
+
+        assert result["success"] is False
+        assert "browser connected to a private/internal address" in result["error"]
+        assert "PRIVATE_RESPONSE_BODY" not in json.dumps(result)
+        assert ("rebind", "open", ["about:blank"]) in calls
+
+
+    def test_failed_blank_navigation_retains_peer_violation(
+        self, monkeypatch, _common_patches
+    ):
+        """A failed about:blank open cannot make the unsafe page readable."""
+        calls = []
+        records = []
+        unsafe_record = SimpleNamespace(
+            ts=101.0,
+            url="https://rebind.example/internal",
+            remote_ip="192.168.1.10",
+        )
+
+        def start_window():
+            prior_records = tuple(records)
+            records.clear()
+            return prior_records
+
+        def retain_violation(remote_ip, url):
+            records.append(SimpleNamespace(ts=102.0, url=url, remote_ip=remote_ip))
+
+        fake_supervisor = _peer_supervisor(
+            snapshot=lambda: SimpleNamespace(network_responses=tuple(records)),
+            start_network_response_window=start_window,
+            retain_network_violation=retain_violation,
+        )
+
+        def fake_run(task_id, command, args, **kwargs):
+            calls.append((task_id, command, list(args)))
+            if command == "click":
+                records.append(unsafe_record)
+                return {"success": True}
+            if command == "open":
+                return {"success": False, "error": "blank failed"}
+            if command == "snapshot":
+                return {
+                    "success": True,
+                    "data": {"snapshot": "PRIVATE_RESPONSE_BODY", "refs": {}},
+                }
+            return {"success": True}
+
+        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(browser_tool, "_last_session_key", lambda task_id: task_id)
+        monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: False)
+        monkeypatch.setattr(bt_session, "_run_browser_command", fake_run)
+        monkeypatch.setattr(
+            browser_supervisor.SUPERVISOR_REGISTRY,
+            "get",
+            lambda task_id: fake_supervisor,
+        )
+
+        click_result = json.loads(browser_tool.browser_click("@e1", task_id="rebind"))
+        snapshot_result = json.loads(browser_tool.browser_snapshot(task_id="rebind"))
+
+        assert click_result["success"] is False
+        assert "browser connected to a private/internal address" in click_result["error"]
+        assert snapshot_result["success"] is False
+        assert "browser connected to a private/internal address" in snapshot_result["error"]
+        assert "PRIVATE_RESPONSE_BODY" not in json.dumps(snapshot_result)
+        assert calls.count(("rebind", "open", ["about:blank"])) == 2
+
 
 
 class TestAllowPrivateUrlsConfig:

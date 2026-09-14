@@ -72,6 +72,7 @@ export {
   type TranslationOverride
 } from './i18n'
 export {
+  type AnyServerRequest,
   DEFAULT_HEARTBEAT_DEADLINE_MS,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   type GatewayRequestId,
@@ -84,9 +85,8 @@ export {
   JsonRpcRequestChannel,
   type JsonRpcRequestChannelOptions,
   type JsonRpcTransport,
+  type JsonValue,
   type ServerRequest,
-  type ServerRequestHandler,
-  type ServerRequestParams,
   wireFrameText
 } from './json-rpc-channel'
 export {

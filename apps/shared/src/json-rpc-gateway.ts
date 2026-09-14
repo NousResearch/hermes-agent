@@ -1,12 +1,15 @@
+import type { RpcMethods, ServerRequestMap } from './gateway-contract.generated.js'
 import type { GatewayEvent, GatewayEventName } from './gateway-events.js'
 import {
+  type AnyServerRequest,
   DEFAULT_HEARTBEAT_DEADLINE_MS,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   type GatewayRequestId,
   JsonRpcRequestChannel,
   type JsonRpcRequestChannelOptions,
   type JsonRpcTransport,
-  type ServerRequestHandler,
+  type JsonValue,
+  type ServerRequest,
   wireFrameText
 } from './json-rpc-channel.js'
 
@@ -40,6 +43,7 @@ const ANY = '*'
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000
 
 const isGatewayReady = (event: GatewayEvent): event is GatewayEvent<'gateway.ready'> => event.type === 'gateway.ready'
+
 // Replay fetch after reconnect: bounded so a wedged backend can't hold the
 // guard open; generous enough for a 512-frame ring to drain.
 const REPLAY_REQUEST_TIMEOUT_MS = 10_000
@@ -355,13 +359,17 @@ export class JsonRpcGatewayClient {
     return this.onAny(handler)
   }
 
-  /**
-   * Server→client requests (clarify, approval, sudo, …). Live frames and
-   * `open_requests` re-delivered after a reconnect both arrive here; the
-   * latter carry `replayed: true`.
-   */
-  onRequest(handler: ServerRequestHandler): () => void {
-    return this.channel.onRequest(handler)
+  /** Register a handler for one server→client request method. */
+  onServerRequest<M extends keyof ServerRequestMap>(
+    method: M,
+    handler: (request: ServerRequest<M>) => void
+  ): () => void {
+    return this.channel.onServerRequest(method, handler)
+  }
+
+  /** Catch every generated server→client request without widening its payload type. */
+  onAnyServerRequest(handler: (request: AnyServerRequest) => void): () => void {
+    return this.channel.onAnyServerRequest(handler)
   }
 
   onState(handler: (state: ConnectionState) => void): () => void {
@@ -371,17 +379,31 @@ export class JsonRpcGatewayClient {
     return () => this.stateHandlers.delete(handler)
   }
 
-  request<T>(
-    method: string,
-    params: Record<string, unknown> = {},
+  request<M extends keyof RpcMethods>(
+    method: M,
+    params: RpcMethods[M]['params'],
     timeoutMs = this.options.requestTimeoutMs,
     signal?: AbortSignal
-  ): Promise<T> {
+  ): Promise<RpcMethods[M]['result']> {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error(this.options.notConnectedErrorMessage))
     }
 
-    return this.channel.request<T>(method, params, timeoutMs, signal, () => new Error(this.options.notConnectedErrorMessage))
+    return this.channel.request(method, params, timeoutMs, signal, () => new Error(this.options.notConnectedErrorMessage))
+  }
+
+  // SAFETY: plugins are third-party code; the method name is not known at compile time.
+  requestUntyped(
+    method: string,
+    params: Record<string, JsonValue>,
+    timeoutMs = this.options.requestTimeoutMs,
+    signal?: AbortSignal
+  ): Promise<JsonValue> {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error(this.options.notConnectedErrorMessage))
+    }
+
+    return this.channel.requestUntyped(method, params, timeoutMs, signal, () => new Error(this.options.notConnectedErrorMessage))
   }
 
   private handleEvent(event: GatewayEvent): void {
@@ -467,11 +489,7 @@ export class JsonRpcGatewayClient {
       const results = await Promise.allSettled(
         entries.map(([sid, lastSeen]) =>
           // `open_requests` on the answer are re-delivered by the channel itself.
-          this.request<{ events?: Array<{ type: string; session_id?: string; seq?: number; payload?: unknown }> }>(
-            'session.events.since',
-            { session_id: sid, last_seen: lastSeen },
-            REPLAY_REQUEST_TIMEOUT_MS
-          )
+          this.request('session.events.since', { session_id: sid, last_seen: lastSeen }, REPLAY_REQUEST_TIMEOUT_MS)
         )
       )
 
@@ -480,7 +498,7 @@ export class JsonRpcGatewayClient {
           continue
         }
 
-        const epoch = (result.value as { epoch?: unknown }).epoch
+        const epoch = result.value.epoch
 
         if (typeof epoch === 'string' && epoch && this.replayEpoch && epoch !== this.replayEpoch) {
           // Backend restarted: its seq numbering reset, so our watermarks —
@@ -495,13 +513,6 @@ export class JsonRpcGatewayClient {
           this.replayEpoch = epoch
         }
 
-        for (const event of result.value.events) {
-          if (!event?.type) {
-            continue
-          }
-
-          this.dispatchIfNewer(event as GatewayEvent)
-        }
       }
     } catch {
       // Replay is an optimization over lossy-reconnect; never surface errors.

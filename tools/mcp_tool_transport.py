@@ -481,17 +481,16 @@ class MCPServerTransportMixin:
         self._register_discovered_tools_if_needed()
 
     def _register_discovered_tools_if_needed(self) -> None:
-        """Publish freshly discovered tools when none are registered (initial registration normally happens in
+        """Reconcile freshly discovered tools (initial registration normally happens in
         ``_discover_and_register_server``). Outage handling may clear ``_ready`` and deregister stale tools;
         ownership via ``_servers`` authorizes publishing before readiness is restored so a revival (or a server
         retained after a recoverable initial failure) never comes back with zero tools."""
-        if self._registered_tool_names:
-            return
         with _core._lock:
             owned = [key for key, live in _core._servers.items() if live is self]
         if not owned and not self._ready.is_set():
             return
-        self._registered_tool_names = _registration._register_server_tools(self.name, self, self._config)
+        _registration._reconcile_server_tools(
+            self.name, self, self._tools, self._config)
         with _core._lock:  # a retained initial-failure server that just published tools has recovered
             for key in owned:
                 if _core._servers.get(key) is self:

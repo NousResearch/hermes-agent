@@ -407,6 +407,28 @@ def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> 
     return registered
 
 
+def _reconcile_server_tools(name: str, server: "MCPServerTask", tools: Iterable[Any], config: dict) -> List[str]:
+    """Reconcile one already-fetched MCP tool list with the live registry.
+
+    Discovery and notification refresh both use this canonical path.  The
+    caller owns the single ``tools/list`` request; this function only mutates
+    the registry, so a reconnect cannot discard a fresh list and fetch again.
+    """
+    old_names = set(getattr(server, "_registered_tool_names", ()) or ())
+    server._tools = list(tools)
+    registered_names = _register_server_tools(name, server, config)
+    # Register first so unchanged tools are replaced in place and changed
+    # schemas/descriptions take effect without a transient missing handler.
+    # Then remove only names no longer owned by this server, including tools
+    # removed by the server and tools excluded by configuration.
+    from tools.registry import registry
+    for tool_name in old_names - set(registered_names):
+        if registry.get_toolset_for_tool(tool_name) == f"mcp-{name}":
+            _deregister_mcp_tool_all_scopes(server, tool_name)
+    server._registered_tool_names = registered_names
+    return registered_names
+
+
 def _server_enabled(config: dict) -> bool:
     return _parse_boolish(config.get("enabled", True), default=True)
 

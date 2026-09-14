@@ -104,6 +104,31 @@ class TestRefreshTools:
             assert "mcp__live_srv__new_tool" in resolve_toolset("live_srv")
             assert server._registered_tool_names == ["mcp__live_srv__new_tool"]
 
+    @pytest.mark.asyncio
+    async def test_refresh_updates_existing_schema_and_description_without_duplicate(self, mock_registry):
+        """A fresh list replaces the existing same-name contract in one pass."""
+        server = MCPServerTask("live_srv")
+        server._refresh_lock = asyncio.Lock()
+        server._config = {}
+        first = _make_mcp_tool("same_tool", "old description")
+        first.inputSchema = {"type": "object", "properties": {"old": {"type": "string"}}}
+        second = _make_mcp_tool("same_tool", "new description")
+        second.inputSchema = {"type": "object", "properties": {"new": {"type": "integer"}}}
+        server._tools = [first]
+        server._registered_tool_names = []
+        server.session = SimpleNamespace(list_tools=AsyncMock(return_value=SimpleNamespace(tools=[second])))
+
+        with patch("tools.registry.registry", mock_registry):
+            _register_server_tools("live_srv", server, {})
+            server._registered_tool_names = ["mcp__live_srv__same_tool"]
+            await server._refresh_tools()
+            entry = mock_registry._tools["mcp__live_srv__same_tool"]
+
+        assert server.session.list_tools.await_count == 1
+        assert entry.schema["parameters"] == second.inputSchema
+        assert entry.schema["description"] == "new description"
+        assert server._registered_tool_names == ["mcp__live_srv__same_tool"]
+
 
 class TestMessageHandler:
     """Tests for MCPServerTask._make_message_handler dispatch."""

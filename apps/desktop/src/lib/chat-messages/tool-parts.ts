@@ -193,7 +193,14 @@ function findToolPartIndex(
     ) {
       // Interactive request IDs differ from provider call IDs and correlate by identifying arguments.
       const requestBacked = name === 'clarify' || name === 'setup_mcp'
-      if (!requestBacked && stableId && phase === 'running' && part.toolCallId && !part.toolCallId.startsWith('live-tool:')) {
+
+      if (
+        !requestBacked &&
+        stableId &&
+        phase === 'running' &&
+        part.toolCallId &&
+        !part.toolCallId.startsWith('live-tool:')
+      ) {
         continue
       }
 

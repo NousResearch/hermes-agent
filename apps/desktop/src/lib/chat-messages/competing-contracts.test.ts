@@ -15,11 +15,20 @@ describe('D1 competing implementation contracts', () => {
     expect(parts).toHaveLength(2)
   })
   it('honors explicit successful skill results over stale envelope errors', () => {
-    const part = { type: 'tool-call' as const, toolName: 'skill_view', args: { name: 'loaded-skill' }, result: { success: true }, isError: true }
+    const part = {
+      type: 'tool-call' as const,
+      toolName: 'skill_view',
+      args: { name: 'loaded-skill' },
+      result: { success: true },
+      isError: true
+    }
     expect(summarizeToolRun([part], false)).toContain('Loaded skill')
   })
   it('does not report a failed skill as loaded in the settled summary', () => {
-    const summary = summarizeToolRun([{ toolName: 'skill_view', args: { name: 'missing-skill' }, result: { error: 'missing' }, isError: true }], false)
+    const summary = summarizeToolRun(
+      [{ toolName: 'skill_view', args: { name: 'missing-skill' }, result: { error: 'missing' }, isError: true }],
+      false
+    )
     expect(summary.toLowerCase()).toContain('failed')
     expect(summary).not.toContain('Loaded')
   })

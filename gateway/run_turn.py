@@ -2298,7 +2298,9 @@ class GatewayTurnMixin:
             preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
             header = f'✅ Background task complete\nPrompt: "{preview}"\n\n'
             images, media_files, text_content = [], [], ""
+            media_captions: dict = {}
             if response:
+                media_captions = BasePlatformAdapter.extract_media_captions(response)
                 media_files, response = adapter.extract_media(response)
                 media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
                 images, text_content = adapter.extract_images(response)
@@ -2319,11 +2321,13 @@ class GatewayTurnMixin:
             from gateway.run_notifications import _IMAGE_EXTS, _VIDEO_EXTS
             for media_path, _is_voice in (media_files or []):
                 _ext = os.path.splitext(media_path)[1].lower()
+                _caption = media_captions.get(media_path) or None
+                _cap_kw = {"caption": _caption} if _caption else {}
                 with suppress(Exception):
                     if _should_send_media_as_audio(source.platform, _ext, _is_voice):
                         await adapter.send_voice(
                             chat_id=source.chat_id, audio_path=media_path, metadata=_thread_metadata,
-                            is_voice=_is_voice,
+                            is_voice=_is_voice, **_cap_kw,
                         )
                     else:
                         sender, key = (
@@ -2331,7 +2335,8 @@ class GatewayTurnMixin:
                             else (adapter.send_image_file, "image_path") if _ext in _IMAGE_EXTS
                             else (adapter.send_document, "file_path")
                         )
-                        await sender(chat_id=source.chat_id, metadata=_thread_metadata, **{key: media_path})
+                        await sender(chat_id=source.chat_id, metadata=_thread_metadata,
+                                     **_cap_kw, **{key: media_path})
 
         except Exception as e:
             logger.exception("Background task %s failed", task_id)

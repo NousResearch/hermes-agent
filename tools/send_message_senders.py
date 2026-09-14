@@ -236,8 +236,12 @@ def _telegram_format(message):
         return message, ParseMode.MARKDOWN_V2, False  # formatting unavailable: send as-is
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
-    """One-shot Telegram Bot API send; parse failures fall back to plain text."""
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False,
+                         media_captions=None):
+    """One-shot Telegram Bot API send; parse failures fall back to plain text.
+
+    ``media_captions`` maps a delivered media path to its ``MEDIA:<path> | <caption>`` caption;
+    such a caption wins over the text-derived one for that file."""
     try:
         formatted, send_parse_mode, _has_html = _telegram_format(message)
         bot = _telegram_bot(token)
@@ -247,6 +251,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         # See #13206.
         int_chat_id = normalize_telegram_chat_id(chat_id)
         media_files = media_files or []
+        media_captions = media_captions or {}
         thread_kwargs = _telegram_thread_kwargs(thread_id)
         # disable_web_page_preview is only valid for send_message, not media sends.
         text_kwargs = {**thread_kwargs, **({"disable_web_page_preview": True} if disable_link_previews else {})}
@@ -254,28 +259,41 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         # MEDIA caption rides on the bubble as its *formatted* caption; formatting can inflate a
         # raw <1024 string past Telegram's cap, so re-check in UTF-16 units.
         _cap, _ = _media_caption_split(message, media_files, max_caption_len=_TELEGRAM_CAPTION_LIMIT)
-        if _cap is not None and utf16_len(formatted) <= _TELEGRAM_CAPTION_LIMIT:
+        # The text-derived caption needs the (single) captionable file's bubble. A tag caption owns
+        # that bubble, so the body must stay a separate message — otherwise it would be suppressed
+        # here and then never consumed by the loop (silent text loss).
+        _tag_owns_bubble = bool(_cap is not None and media_files and media_captions.get(media_files[0][0]))
+        if _cap is not None and not _tag_owns_bubble and utf16_len(formatted) <= _TELEGRAM_CAPTION_LIMIT:
             _tg_caption, formatted = formatted, ""  # suppress the separate text send below
         # Chunk *after* formatting, in UTF-16 units: escaping can push a raw-<4096 message over.
         for chunk in BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len) if formatted.strip() else ():
             last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)
         for media_path, is_voice in media_files:
+            # An explicit tag caption wins and is consumed by its own file; the text-derived caption
+            # (if any) falls back to the first file left without a tag caption.
+            _tag_caption = media_captions.get(media_path)
+            if _tag_caption:
+                caption = _tag_caption
+            elif _tg_caption is not None:
+                caption = _tg_caption
+                _tg_caption = None
+            else:
+                caption = None
             if not os.path.exists(media_path):
                 warnings.append(f"Media file not found, skipping: {media_path}")
                 logger.warning(warnings[-1])
                 # Caption mode suppressed the text send; the file is gone, so deliver the words alone.
-                if _tg_caption is not None and last_msg is None:
+                if caption is not None and last_msg is None:
                     try:
                         last_msg = await _send_telegram_message_with_retry(
-                            bot, chat_id=int_chat_id, text=_tg_caption, parse_mode=send_parse_mode, **text_kwargs)
-                        _tg_caption = None  # delivered — don't re-caption a later file
+                            bot, chat_id=int_chat_id, text=caption, parse_mode=send_parse_mode, **text_kwargs)
                     except Exception as _cap_err:
                         logger.warning("Telegram caption-fallback send failed for missing media: %s",
                                        _sanitize_error_text(_cap_err))
                 continue
             try:
                 last_msg = await _telegram_send_one_media(
-                    bot, int_chat_id, media_path, is_voice, caption=_tg_caption, parse_mode=send_parse_mode,
+                    bot, int_chat_id, media_path, is_voice, caption=caption, parse_mode=send_parse_mode,
                     has_html=_has_html, thread_kwargs=thread_kwargs, force_document=force_document)
             except Exception as e:
                 warnings.append(_sanitize_error_text(f"Failed to send media {media_path}: {e}"))

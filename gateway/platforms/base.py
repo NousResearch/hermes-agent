@@ -1314,6 +1314,43 @@ def _path_lacks_deliverable_extension(path: str) -> bool:
     return Path(path).suffix.lower() not in MEDIA_DELIVERY_EXTS
 
 
+# Optional per-tag caption: ``MEDIA:<path> | <caption>``. The caption runs to the end of the line and
+# rides on the attachment bubble (Telegram photo/document caption) so an image and the question it
+# belongs to are delivered together. Without a ``|`` the tag behaves exactly as before (empty
+# caption), so existing ``MEDIA:<path>`` output is unchanged.
+_MEDIA_CAPTION_SUFFIX_RE = re.compile(r'[ \t]*\|[ \t]*(?P<caption>[^\n]*)')
+
+
+def _media_caption_suffix(text: str, tag_end: int) -> Optional[Tuple[str, int]]:
+    """``(caption, end_offset)`` for a ``| <caption>`` suffix starting at ``tag_end``, else None.
+
+    ``end_offset`` covers the whole suffix so the caption text is deleted from the delivered
+    body — it is delivered as the attachment caption, never as a separate chat message.
+    """
+    match = _MEDIA_CAPTION_SUFFIX_RE.match(text, tag_end)
+    if match is None:
+        return None
+    return match.group("caption").strip(), match.end()
+
+
+def _media_caption_key(path: str) -> Optional[str]:
+    """Normalize a MEDIA-tag path to the same form ``filter_media_delivery_paths`` yields.
+
+    Captions are keyed by the *delivered* path so a dispatch site can look one up after the
+    safety filter (which resolves symlinks / rewrites docker paths) without re-parsing the tag.
+    """
+    try:
+        safe = validate_media_delivery_path(path)
+    except Exception:
+        safe = None
+    if safe:
+        return safe
+    try:
+        return os.path.expanduser(path)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
 def _has_media_directives(text: str) -> bool:
     return "MEDIA:" in text or "[[audio_as_voice]]" in text or "[[as_document]]" in text
 
@@ -1370,10 +1407,49 @@ def _extensionless_media_matches(masked: str):
 
 def _real_media_tag_spans(masked: str) -> list:
     """(start, end) spans of deliverable MEDIA tags on a masked copy: known-extension tags
-    unconditionally, extension-less / unknown ones only if validate_media_delivery_path accepts."""
-    spans: list = [m.span() for m in MEDIA_TAG_CLEANUP_RE.finditer(masked)]
-    spans.extend((match.start(), end) for match, _, end in _extensionless_media_matches(masked))
+    unconditionally, extension-less / unknown ones only if validate_media_delivery_path accepts.
+
+    A ``| caption`` suffix is part of the span when present: the caption is delivered on the
+    attachment bubble, so it must not survive in the body text."""
+    spans: list = []
+    for m in MEDIA_TAG_CLEANUP_RE.finditer(masked):
+        caption = _media_caption_suffix(masked, m.end())
+        spans.append((m.start(), caption[1] if caption else m.end()))
+    for match, _, end in _extensionless_media_matches(masked):
+        caption = _media_caption_suffix(masked, end)
+        spans.append((match.start(), caption[1] if caption else end))
     return spans
+
+
+def extract_media_captions(content: str) -> Dict[str, str]:
+    """``{delivered_path: caption}`` for ``MEDIA:<path> | <caption>`` tags (absent when no pipe).
+
+    Sibling of ``BasePlatformAdapter.extract_media`` (which keeps its ``(path, is_voice)`` tuple
+    contract): a caption rides on the attachment bubble, so dispatch sites that batch images or
+    attach files look it up by path. Keys are normalized the same way
+    ``filter_media_delivery_paths`` normalizes delivered paths, so a caption survives the safety
+    filter (symlink resolution / docker path rewrite included).
+    """
+    if "MEDIA:" not in content or "|" not in content:
+        return {}
+    masked = _mask_media_scan_text(content)
+    captions: Dict[str, str] = {}
+
+    def _record(path: str, tag_end: int) -> None:
+        suffix = _media_caption_suffix(masked, tag_end)
+        if suffix is None or not suffix[0]:
+            return
+        key = _media_caption_key(path)
+        if key:
+            captions.setdefault(key, suffix[0])
+
+    for match in MEDIA_TAG_CLEANUP_RE.finditer(masked):
+        path = _normalize_media_tag_path(match.group("path"))
+        if path:
+            _record(path, match.end())
+    for _match, safe_path, end in _extensionless_media_matches(masked):
+        _record(safe_path, end)
+    return captions
 
 
 _FENCED_CODE_RE = re.compile(r'```[^\n]*\n.*?```', re.DOTALL)
@@ -1550,6 +1626,7 @@ class _ExtractedResponse:
     local_files: list
     force_document_attachments: bool
     pre_extract: str
+    media_captions: dict = field(default_factory=dict)  # {delivered_path: caption} from ``MEDIA:<path> | <caption>`` tags
 
 
 _PLAINTEXT_GATEWAY_RESTART_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -3050,6 +3127,16 @@ class BasePlatformAdapter(ABC):
         return media, cleaned
 
     @staticmethod
+    def extract_media_captions(content: str) -> Dict[str, str]:
+        """``{delivered_path: caption}`` for ``MEDIA:<path> | <caption>`` tags.
+
+        Additive sibling of ``extract_media`` (whose ``(path, is_voice)`` tuple contract is
+        unchanged): dispatch sites look a caption up by the delivered path and pass it as the
+        attachment caption. See module-level ``extract_media_captions``.
+        """
+        return extract_media_captions(content)
+
+    @staticmethod
     def strip_media_directives_for_display(text: str) -> str:
         """Strip MEDIA: directives from streamed/display text. Known-extension tags are
         removed unconditionally (as ``MEDIA_TAG_CLEANUP_RE``); extension-less tags only when
@@ -3928,12 +4015,17 @@ class BasePlatformAdapter(ABC):
     async def _deliver_media_attachments(
         self, event: MessageEvent, media_files: list, local_files: list, *,
         force_document_attachments: bool, human_delay: float, metadata: Dict[str, Any],
-        record_delivery: Callable) -> None:
+        record_delivery: Callable,
+        media_captions: Optional[Dict[str, str]] = None) -> None:
         """Deliver MEDIA-tag files and detected local files by type: images batched via
         ``send_multiple_images`` unless ``[[as_document]]``; otherwise audio → send_voice (MEDIA
         tags only, never bare local files), video → send_video, else send_document. Every failure is
-        reported. Each send feeds ``record_delivery`` so media-only turns report SUCCESS."""
+        reported. Each send feeds ``record_delivery`` so media-only turns report SUCCESS.
+
+        ``media_captions`` maps a delivered path to the caption carried by its MEDIA tag
+        (``MEDIA:<path> | <caption>``); absent tags get no caption."""
         from urllib.parse import quote as _quote
+        _captions = media_captions or {}
 
         def _as_image(path: str) -> bool:
             return Path(path).suffix.lower() in _IMAGE_EXTS and not force_document_attachments
@@ -3941,22 +4033,29 @@ class BasePlatformAdapter(ABC):
         _image_paths += [p for p in local_files if _as_image(p)]
         if _image_paths:
             await self._send_image_batch(
-                event, [(f"file://{_quote(p)}", "") for p in _image_paths], metadata, human_delay,
-                record_delivery)
+                event, [(f"file://{_quote(p)}", _captions.get(p, "")) for p in _image_paths],
+                metadata, human_delay, record_delivery)
         chat_id = event.source.chat_id
 
         async def _send_one(path: str, *, is_voice: bool, media_tag: bool) -> SendResult:
             """MEDIA-tag files (``media_tag``) may route to send_voice; bare local files never
-            do."""
+            do. A MEDIA-tag caption rides on the attachment bubble."""
             ext = Path(path).suffix.lower()
+            caption = _captions.get(path) or None if media_tag else None
+            # Only pass ``caption`` when a tag carried one: an absent caption keeps the call shape
+            # byte-identical to the pre-caption behaviour (adapters predating captions included).
+            _cap_kw = {"caption": caption} if caption else {}
             if media_tag and should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
-                result = await self.send_voice(chat_id=chat_id, audio_path=path, metadata=metadata, is_voice=is_voice)
+                result = await self.send_voice(
+                    chat_id=chat_id, audio_path=path, metadata=metadata, is_voice=is_voice, **_cap_kw)
             elif ext in _VIDEO_EXTS:
                 if media_tag:
                     logger.info("[%s] Sending video attachment (%s) to %s", self.name, ext, chat_id)
-                result = await self.send_video(chat_id=chat_id, video_path=path, metadata=metadata)
+                result = await self.send_video(
+                    chat_id=chat_id, video_path=path, metadata=metadata, **_cap_kw)
             else:
-                result = await self.send_document(chat_id=chat_id, file_path=path, metadata=metadata)
+                result = await self.send_document(
+                    chat_id=chat_id, file_path=path, metadata=metadata, **_cap_kw)
             if not result.success:
                 logger.warning("[%s] Failed to send %s (%s): %s", self.name,
                                "media" if media_tag else "local file", ext, result.error)
@@ -4056,7 +4155,8 @@ class BasePlatformAdapter(ABC):
         await self._deliver_media_attachments(
             event, media_files, local_files,
             force_document_attachments=extracted.force_document_attachments,
-            human_delay=human_delay, metadata=metadata, record_delivery=record_delivery)
+            human_delay=human_delay, metadata=metadata, record_delivery=record_delivery,
+            media_captions=getattr(extracted, "media_captions", None))
         if not (anything_sent or images or local_files or media_files) and extracted.pre_extract.strip():
             logger.error("[%s] response_delivery_dropped: non-empty response "
                          "(%d chars) produced no delivered message or attachment "
@@ -4086,6 +4186,10 @@ class BasePlatformAdapter(ABC):
         # The handler's routed profile scope is gone by now; Docker MEDIA translation and the
         # bare-path validator infer the sandbox from the ACTIVE profile (#109024).
         with self._media_delivery_scope(event.source):
+            # Per-tag captions (`MEDIA:<path> | <caption>`) are read from the ORIGINAL response: the
+            # caption text is deleted from the body by extract_media below, so it must be captured
+            # first (and inside the same delivery scope, so caption keys match the delivered paths).
+            media_captions = extract_media_captions(response)
             media_files, response = self.extract_media(response)
             media_files = self.filter_media_delivery_paths(media_files, session_key=session_key)
             images, text_content = self.extract_images(response)
@@ -4122,7 +4226,8 @@ class BasePlatformAdapter(ABC):
                 text_content = _recovered
         return _ExtractedResponse(
             text_content=text_content, images=images, media_files=media_files,
-            local_files=local_files, force_document_attachments=force_document, pre_extract=pre_extract)
+            local_files=local_files, force_document_attachments=force_document, pre_extract=pre_extract,
+            media_captions=media_captions)
 
     async def _fire_post_delivery_callback(self, session_key: str, interrupt_event: asyncio.Event) -> None:
         """Run the one-shot post-delivery callback (bounded, errors swallowed). The generation is

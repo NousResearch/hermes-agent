@@ -222,6 +222,9 @@ def _handle_send(args):
     force_document_attachments = "[[as_document]]" in message
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    # Per-tag captions (`MEDIA:<path> | <caption>`) ride on the attachment bubble; read from the
+    # ORIGINAL message because extract_media deletes the caption text from the body.
+    media_captions = BasePlatformAdapter.extract_media_captions(message)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
     used_home_channel = not chat_id
     if used_home_channel:
@@ -256,9 +259,13 @@ def _handle_send(args):
         from model_tools import _run_async
         # Only custom plugin handlers receive the complete typed request.
         handler_args = {"args": args} if entry is not None and entry.send_message_handler is not None else {}
+        # Only pass ``media_captions`` when a tag actually carried one: with no caption the call
+        # shape stays byte-identical to the pre-caption behaviour (and to the existing contract
+        # assertions in tests/tools/test_send_message_tool.py).
+        caption_args = {"media_captions": media_captions} if media_captions else {}
         result = _run_async(_send_to_platform(platform, pconfig, chat_id, cleaned_message, thread_id=thread_id,
                                               media_files=media_files, force_document=force_document_attachments,
-                                              **handler_args))
+                                              **handler_args, **caption_args))
         if isinstance(result, dict) and result.get("success"):
             if used_home_channel:
                 result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
@@ -587,10 +594,14 @@ _TEXT_SENDERS = {
 _MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack"
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None,
+                            media_captions=None):
     """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
     Weixin first (its native helper must not be blocked by unrelated optional imports such as
-    lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
+    lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text.
+
+    ``media_captions`` maps a delivered media path to the caption carried by its
+    ``MEDIA:<path> | <caption>`` tag (paths absent from the map get the text-derived caption)."""
     from gateway.config import Platform
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
     media_files = media_files or []
@@ -600,6 +611,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if platform == Platform.TELEGRAM:
         return await _send_telegram(
             pconfig.token, chat_id, message, media_files=media_files, thread_id=thread_id, force_document=force_document,
+            media_captions=media_captions,
             disable_link_previews=bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews")))
     from gateway.platforms.base import BasePlatformAdapter
     max_len = _platform_max_length(platform)
@@ -676,7 +688,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "message": {
                 "type": "string",
-                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment."
+                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment. Add an optional caption with a pipe: MEDIA:<local_path> | <caption> (e.g. 'MEDIA:/tmp/q1.webp | Вопрос 1: кто уступает?'), which rides on the attachment itself."
             },
             "emoji": {
                 "type": "string",

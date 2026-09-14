@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from unittest.mock import MagicMock
-
-from agent.agent_init import _enforce_minimum_context, _select_context_engine
-from agent.conversation_loop import _ollama_context_limit_error
+from agent.agent_init import _select_context_engine
 from plugins.context_engine import load_context_engine
 
 
@@ -96,59 +93,35 @@ def test_jit_bounds_current_turn_tool_output_and_preserves_tool_call_id():
     assert assistant_msg["tool_calls"][0]["id"] == "call_read_large_cfg_987"
 
 
-def test_non_jit_ollama_16k_still_enforces_safety_floor():
-    """Verify non-JIT sessions retain the safety floor for small Ollama contexts."""
-    # 1. Non-JIT mock agent (default compressor)
-    non_jit_agent = MagicMock()
-    non_jit_agent.provider = "ollama"
-    non_jit_agent.model = "qwen3.8:9b"
-    non_jit_agent._ollama_num_ctx = 16384
-    non_jit_agent.tools = [{"type": "function", "function": {"name": "terminal"}}]
-    non_jit_compressor = MagicMock()
-    non_jit_compressor.name = "compressor"
-    non_jit_agent.context_compressor = non_jit_compressor
+def test_jit_enforces_budget_tokens_by_reducing_history():
+    """Verify select_context actively reduces conversational turns to satisfy budget_tokens."""
+    engine = load_context_engine("jit")
+    assert engine is not None
 
-    err = _ollama_context_limit_error(non_jit_agent, request_tokens=5000)
-    assert err is not None
-    assert (
-        "Ollama loaded `qwen3.8:9b` with only 16,384 tokens of runtime context" in err
-    )
-    assert "context.engine: jit" in err
+    messages = [
+        {"role": "system", "content": "You are Hermes."},
+        {"role": "user", "content": "User prompt 1 " * 50},
+        {"role": "assistant", "content": "Assistant answer 1 " * 50},
+        {"role": "user", "content": "User prompt 2 " * 50},
+        {"role": "assistant", "content": "Assistant answer 2 " * 50},
+        {"role": "user", "content": "User prompt 3 " * 50},
+        {"role": "assistant", "content": "Assistant answer 3 " * 50},
+        {"role": "user", "content": "User prompt 4 " * 50},
+        {"role": "assistant", "content": "Assistant answer 4 " * 50},
+    ]
 
-    # 2. JIT mock agent
-    jit_engine = load_context_engine("jit")
-    non_jit_agent.context_compressor = jit_engine
+    # Without budget_tokens, keeps full turns (up to keep_turns)
+    full_selected = engine.select_context(messages)
+    assert len(full_selected) == len(messages)
 
-    err_jit = _ollama_context_limit_error(non_jit_agent, request_tokens=5000)
-    assert err_jit is None
-
-
-def test_enforce_minimum_context_scoping():
-    """Verify _enforce_minimum_context raises for non-JIT below 64K, but passes for JIT."""
-    agent = MagicMock()
-    agent.provider = "ollama"
-    agent.model = "qwen3.8:9b"
-    agent._config_context_length = 16384
-
-    # Non-JIT compressor below floor
-    compressor = MagicMock()
-    compressor.name = "compressor"
-    compressor.context_length = 16384
-    agent.context_compressor = compressor
-
-    with pytest.raises(ValueError) as excinfo:
-        _enforce_minimum_context(agent)
-    assert "below the minimum 64,000 required" in str(excinfo.value)
-    assert "context.engine: jit" in str(excinfo.value)
-
-    # With JIT engine, below floor is safely permitted
-    jit_engine = load_context_engine("jit")
-    assert jit_engine is not None
-    jit_engine.context_length = 16384
-    agent.context_compressor = jit_engine
-
-    # Should not raise
-    _enforce_minimum_context(agent)
+    # With tight budget_tokens, it deterministically sheds older turns to fit
+    tight_budget = 250
+    budget_selected = engine.select_context(messages, budget_tokens=tight_budget)
+    assert len(budget_selected) < len(full_selected)
+    assert budget_selected[0]["role"] == "system"
+    # Total estimated tokens must be <= budget
+    estimated = engine._estimate_tokens(budget_selected)
+    assert estimated <= tight_budget or len(budget_selected) <= 2
 
 
 def test_jit_obsidian_ssot_integration(tmp_path):

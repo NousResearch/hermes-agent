@@ -30,21 +30,13 @@ from agent.prompt_caching import (
 )
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.surface_switch import (
-    identity_line_value,
-    note_inert_pinned_tools,
-    split_runtime_boundary,
-    stage_surface_switch_note,
+    identity_line_value, note_inert_pinned_tools, split_runtime_boundary, stage_surface_switch_note,
 )
 from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
 from agent.turn_retry_state import TurnRetryState
-
 # Phase helpers of the turn loop, bound at import so a source-tree swap cannot load a
 # skewed phase mid-turn.
-from agent.turn_api_call import (
-    handle_api_interrupt,
-    nous_rate_limit_guard,
-    perform_api_call,
-)
+from agent.turn_api_call import handle_api_interrupt, nous_rate_limit_guard, perform_api_call
 from agent.turn_api_error import handle_api_error
 from agent.turn_api_request import build_api_request
 from agent.turn_final_response import finish_text_response
@@ -84,10 +76,7 @@ RUN_BUDGET_WRAPUP_NOTICE = (
 
 
 def _midturn_request_pressure_tokens(
-    agent: Any,
-    api_messages: List[Dict[str, Any]],
-    effective_system: str,
-    approx_tokens: int,
+    agent: Any, api_messages: List[Dict[str, Any]], effective_system: str, approx_tokens: int
 ) -> int:
     """Token figure the mid-turn pre-API compression guard compares: the pruned
     native-Responses estimate when native compaction eligibility is proven (the generic
@@ -100,14 +89,9 @@ def _midturn_request_pressure_tokens(
     needed (#96995).
     """
     try:
-        from agent.codex_responses_adapter import (
-            estimate_native_responses_preflight_tokens,
-        )
-
+        from agent.codex_responses_adapter import estimate_native_responses_preflight_tokens
         native = estimate_native_responses_preflight_tokens(
-            agent,
-            api_messages,
-            system_prompt=effective_system or "",
+            agent, api_messages, system_prompt=effective_system or "",
             tools=getattr(agent, "tools", None) or None,
         )
         if isinstance(native, int) and not isinstance(native, bool) and native >= 0:
@@ -117,9 +101,7 @@ def _midturn_request_pressure_tokens(
             "native Responses mid-turn estimate unavailable; using generic transcript estimate",
             exc_info=True,
         )
-    return approx_tokens + (
-        _estimate_tools_tokens_rough(agent.tools) if agent.tools else 0
-    )
+    return approx_tokens + (_estimate_tools_tokens_rough(agent.tools) if agent.tools else 0)
 
 
 def _review_input_budget_exhausted(agent: Any) -> bool:
@@ -141,15 +123,11 @@ def _maybe_inject_run_budget_wrapup(agent: Any, messages: List[Dict[str, Any]]) 
     ``_run_budget_wrapup_injected`` only on a successful append."""
     budget = getattr(agent, "run_budget_seconds", None)
     started = getattr(agent, "_run_budget_started_at", None)
-    if (
-        not budget
-        or not started
-        or getattr(agent, "_run_budget_wrapup_injected", False)
-        or ((time.time() - started) < 0.8 * float(budget))
+    if not budget or not started or getattr(agent, "_run_budget_wrapup_injected", False) or (
+        (time.time() - started) < 0.8 * float(budget)
     ):
         return False
     from agent.context_compressor import _DB_PERSISTED_MARKER
-
     for msg in reversed(messages):
         if isinstance(msg, dict) and msg.get("role") == "tool":
             # Only the current tool-result tail is mutable; an older turn may already be
@@ -161,17 +139,13 @@ def _maybe_inject_run_budget_wrapup(agent: Any, messages: List[Dict[str, Any]]) 
                 msg["content"] = existing + f"\n\n{RUN_BUDGET_WRAPUP_NOTICE}"
             else:  # multimodal content blocks — append a text block
                 try:
-                    msg["content"] = [
-                        *(existing or []),
-                        {"type": "text", "text": RUN_BUDGET_WRAPUP_NOTICE},
-                    ]
+                    msg["content"] = [*(existing or []), {"type": "text", "text": RUN_BUDGET_WRAPUP_NOTICE}]
                 except Exception:
                     return False
             agent._run_budget_wrapup_injected = True
             logger.info(
                 "Run budget wrap-up notice injected (budget=%.0fs, elapsed=%.0fs)",
-                float(budget),
-                time.time() - started,
+                float(budget), time.time() - started,
             )
             return True
     return False
@@ -189,11 +163,7 @@ def _restore_user_after_reference_handoff(
     if not restorable:
         return False
     last = messages[-1] if messages else None
-    if (
-        isinstance(last, dict)
-        and last.get("role") == "user"
-        and last.get("content") == user_message
-    ):
+    if isinstance(last, dict) and last.get("role") == "user" and last.get("content") == user_message:
         return False
     append_message(messages, {"role": "user", "content": user_message})
     return True
@@ -204,7 +174,6 @@ def _should_skip_model_call_for_reference_handoff(
 ) -> bool:
     """Guard post-compaction continues against sole-handoff active turns (#80622)."""
     from agent.context_compressor import reference_handoff_would_drive_next_model_call
-
     # A restored ask is an actionable non-synthetic user row appended after the
     # handoff — by construction the handoff no longer drives.
     return reference_handoff_would_drive_next_model_call(messages) and not (
@@ -218,7 +187,9 @@ def _should_skip_model_call_for_reference_handoff(
 # (#43849) appends final_response as a fresh assistant row, so recovering the previous turn's prose here
 # would duplicate it in the durable transcript AND re-deliver it to the user as if it were this turn's
 # answer. A short status is honest and idempotent.
-_HANDOFF_SKIP_FINAL_RESPONSE = "Context was compacted. The previous response is complete — awaiting your next message."
+_HANDOFF_SKIP_FINAL_RESPONSE = (
+    "Context was compacted. The previous response is complete — awaiting your next message."
+)
 
 # Terminal final_response when compression timed out while the request was still oversized (#98722).
 # Terminal final_response for a turn ended because context compression hit its host progress-aware timeout
@@ -231,25 +202,17 @@ _COMPRESSION_TIMEOUT_FINAL_RESPONSE = (
 
 
 # Stable prefix ACP/TUI match on to treat the text as cancellation metadata, not assistant prose.
-INTERRUPT_WAITING_FOR_MODEL_PREFIX = (
-    "Operation interrupted: waiting for model response ("
-)
+INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
 
 
 def _should_rearm_compression_budget(
-    compression_attempts: int,
-    *,
-    completed_compaction_pending: bool,
-    prompt_tokens: int,
-    threshold_tokens: int,
+    compression_attempts: int, *, completed_compaction_pending: bool, prompt_tokens: int, threshold_tokens: int
 ) -> bool:
     """True once a provider proves a completed compaction worked: rough estimates cannot
     rearm the anti-thrash budget, only the completed-compaction latch plus a positive
     normalized prompt count below the threshold."""
     return bool(
-        compression_attempts
-        and completed_compaction_pending
-        and 0 < prompt_tokens < threshold_tokens
+        compression_attempts and completed_compaction_pending and 0 < prompt_tokens < threshold_tokens
     )
 
 
@@ -280,7 +243,6 @@ def _is_interpreter_shutdown_error(exc: Exception) -> bool:
         # the turn with a single log line: no print, no traceback, no debug dump, no retry. Same class as
         # cron delivery (#55924/#58720) and concurrent tool submission — shared predicate.
         from tools.interpreter_shutdown import interpreter_shutting_down
-
         return interpreter_shutting_down(exc)
     return False
 
@@ -316,25 +278,19 @@ def _moa_reference_metrics_for_hook(agent: Any) -> Any:
         return None
 
 
-def _apply_active_turn_redirect(
-    agent: Any, messages: List[Dict[str, Any]], text: str
-) -> None:
+def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text: str) -> None:
     """Append a provider-safe checkpoint and correction to the live turn so role alternation
     holds and cached messages stay byte-identical. INVARIANTS: raw chain-of-thought never enters
     replayable content (inlined CoT reads as a prefill jailbreak and bricks the session with
     empty-response storms); the interruption scaffold is replay text carried only in the user
     correction's ``api_content``; an on-screen-empty placeholder is ``display_kind=hidden``."""
-    visible = agent._strip_think_blocks(
-        getattr(agent, "_current_streamed_assistant_text", "") or ""
-    ).strip()
+    visible = agent._strip_think_blocks(getattr(agent, "_current_streamed_assistant_text", "") or "").strip()
 
     checkpoint_parts = [_INTERRUPT_SCAFFOLD_MARKER]
     if visible:
         checkpoint_parts += ["Visible response before the interruption:", visible]
     checkpoint = "\n\n".join(checkpoint_parts)
-    correction = (
-        f"[Context from the interrupted assistant response]\n{checkpoint}\n\n{text}"
-    )
+    correction = f"[Context from the interrupted assistant response]\n{checkpoint}\n\n{text}"
 
     # The live tail is normally user or tool, so an assistant placeholder + correction
     # keeps strict alternation; if the tail is already assistant, the checkpoint is folded
@@ -349,13 +305,10 @@ def _apply_active_turn_redirect(
             # does not re-heal it every call (#88955). Never _INTERRUPT_SCAFFOLD_MARKER:
             # as assistant text the model echoes it (#81841).
             from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
-
             placeholder["api_content"] = _INTERRUPTED_PLACEHOLDER
         append_message(messages, placeholder)
     # Transcript shows the user's own words; the provider replays the scaffolded form.
-    append_message(
-        messages, {"role": "user", "content": text, "api_content": correction}
-    )
+    append_message(messages, {"role": "user", "content": text, "api_content": correction})
 
     # Stateful scrubber for <memory-context> spans split across stream deltas (#5719).  sanitize_context()
     # alone can't survive chunk boundaries because the block regex needs both tags in one string.
@@ -380,24 +333,19 @@ def _is_copilot_provider(agent: Any) -> bool:
         }
 
 
-def _is_stale_copilot_credential_error(
-    status_code: Optional[int], error_message: str
-) -> bool:
+def _is_stale_copilot_credential_error(status_code: Optional[int], error_message: str) -> bool:
     """Detect a Copilot 400 that is really a STALE / DEGRADED credential (status 400 AND an
     integrator/model-not-supported marker, so a wrong model name never triggers the
     single-shot re-exchange). Caller enforces scoping/guard."""
     lowered = (error_message or "").lower()
     if status_code != 400 and "error code: 400" not in lowered:
         return False
-    return any(
-        marker in lowered
-        for marker in (
-            "model_not_available_for_integrator",
-            "not available for integrator",
-            "model_not_supported",
-            "the requested model is not supported",
-        )
-    )
+    return any(marker in lowered for marker in (
+        "model_not_available_for_integrator",
+        "not available for integrator",
+        "model_not_supported",
+        "the requested model is not supported",
+    ))
 
 
 def _pressure_with_real_floor(compressor: Any, rough_tokens: int) -> int:
@@ -432,15 +380,6 @@ def _pressure_with_real_floor(compressor: Any, rough_tokens: int) -> int:
 
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
-    # When JIT Context Engine is active, wire context is predictably bounded and small windows are safe.
-    _comp = getattr(agent, "context_compressor", None)
-    if _comp is not None:
-        _cname = getattr(_comp, "name", None)
-        if callable(_cname):
-            _cname = _cname()
-        if str(_cname or "").strip().lower() == "jit":
-            return None
-
     runtime_ctx = getattr(agent, "_ollama_num_ctx", None)
     if (
         not getattr(agent, "tools", None)
@@ -453,30 +392,24 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
     logger.warning(
         "Ollama runtime context too small for Hermes tool use: model=%s provider=%s base_url=%s "
         "runtime_context=%d minimum_context=%d estimated_request_tokens=%d tool_count=%d session=%s",
-        model,
-        getattr(agent, "provider", "") or "unknown",
-        getattr(agent, "base_url", "") or "unknown base URL",
-        runtime_ctx,
-        MINIMUM_CONTEXT_LENGTH,
-        request_tokens,
-        len(getattr(agent, "tools", None) or []),
+        model, getattr(agent, "provider", "") or "unknown",
+        getattr(agent, "base_url", "") or "unknown base URL", runtime_ctx, MINIMUM_CONTEXT_LENGTH,
+        request_tokens, len(getattr(agent, "tools", None) or []),
         getattr(agent, "session_id", None) or "none",
     )
     return (
         f"Ollama loaded `{model}` with only {runtime_ctx:,} tokens of runtime context, but Hermes "
         f"needs at least {MINIMUM_CONTEXT_LENGTH:,} tokens for reliable tool use.\n\n"
         "Increase the Ollama context for this model and restart/reload the model before trying "
-        "again. A known-good starting point is 65,536 tokens. Alternatively, enable the JIT context "
-        "engine with `context.engine: jit`. In Hermes config, set "
+        "again. A known-good starting point is 65,536 tokens. In Hermes config, set "
         "`model.ollama_num_ctx: 65536` (and `model.context_length: 65536` if you also override the "
         "displayed model context). If you manage the model through an Ollama Modelfile, set "
         "`PARAMETER num_ctx 65536` there instead."
     )
 
 
-def _maybe_grow_local_window(
-    agent: Any, compressor: Any, request_tokens: int
-) -> Optional[int]:
+def _maybe_grow_local_window(agent: Any, compressor: Any,
+                             request_tokens: int) -> Optional[int]:
     """Grow a managed local model's context window before compressing; returns the new
     window when the ladder granted one, else None."""
     provider = (getattr(agent, "provider", "") or "").strip().lower()
@@ -487,15 +420,12 @@ def _maybe_grow_local_window(
         return None
     try:
         from hermes_cli.local_runtime.growth import maybe_grow_window
-
         current_window = int(getattr(compressor, "context_length", 0) or 0)
         if current_window <= 0:
             return None
         return maybe_grow_window(
-            getattr(agent, "model", "") or "",
-            base_url=base_url,
-            session_tokens=int(request_tokens),
-            current_window=current_window,
+            getattr(agent, "model", "") or "", base_url=base_url,
+            session_tokens=int(request_tokens), current_window=current_window,
         )
     except Exception as exc:  # noqa: BLE001 — growth must never break a turn
         logger.debug("local window growth check failed: %s", exc)
@@ -505,7 +435,6 @@ def _maybe_grow_local_window(
 def _ra():
     """Lazy ``run_agent`` reference so patches on ``run_agent.*`` reach this code path."""
     import run_agent
-
     return run_agent
 
 
@@ -515,14 +444,10 @@ def _nous_entitlement_message(capability: str) -> str:
             format_nous_portal_entitlement_message,
             get_nous_portal_account_info,
         )
-
         account_info = get_nous_portal_account_info(force_fresh=True)
-        return (
-            format_nous_portal_entitlement_message(
-                account_info, capability=capability, in_chat=True
-            )
-            or ""
-        )
+        return format_nous_portal_entitlement_message(
+            account_info, capability=capability, in_chat=True
+        ) or ""
     except Exception:
         return ""
 
@@ -546,11 +471,7 @@ def _system_prompt_for_hooks(api_kwargs: Any, request_messages: Any) -> Any:
     system_prompt = api_kwargs.get("system")
     if system_prompt is None:
         system_prompt = api_kwargs.get("instructions")
-    if (
-        system_prompt is None
-        and isinstance(request_messages, list)
-        and request_messages
-    ):
+    if system_prompt is None and isinstance(request_messages, list) and request_messages:
         first = request_messages[0]
         if isinstance(first, dict) and first.get("role") == "system":
             system_prompt = first.get("content")
@@ -564,12 +485,7 @@ def _is_nous_inference_route(provider: str, base_url: str) -> bool:
 
 
 def _billing_or_entitlement_message(
-    *,
-    capability: str,
-    provider: str,
-    base_url: str,
-    model: str,
-    unverified: bool = False,
+    *, capability: str, provider: str, base_url: str, model: str, unverified: bool = False
 ) -> str:
     if _is_nous_inference_route(provider, base_url):
         return _nous_entitlement_message(capability)
@@ -611,7 +527,6 @@ def _billing_or_entitlement_message(
     # Provider-agnostic billing URL so every text surface shows the same actionable link.
     try:
         from agent.billing_links import build_billing_block
-
         _link = build_billing_block(provider=provider, base_url=base_url, model=model)
         provider_label = _link.provider_label or provider_label
         billing_url = _link.billing_url
@@ -625,22 +540,17 @@ def _billing_or_entitlement_message(
     ])
 
 
-def _billing_block_dict(
-    provider, base_url, model, message="", *, unverified: bool = False
-) -> Optional[dict]:
+def _billing_block_dict(provider, base_url, model, message="", *, unverified: bool = False) -> Optional[dict]:
     """Best-effort structured billing descriptor (None if billing_links is unavailable)."""
     try:
         from agent.billing_links import build_billing_block
-
         block = build_billing_block(
             provider=provider, base_url=str(base_url), model=model, message=message
         ).to_dict()
     except Exception:
         return None
     if block is not None and unverified:
-        block["unverified"] = (
-            True  # every surface rendering the block can hedge too (#82154)
-        )
+        block["unverified"] = True  # every surface rendering the block can hedge too (#82154)
     return block
 
 
@@ -656,14 +566,7 @@ def _billing_terminal_label(summary: str, unverified: bool) -> str:
 
 
 def _billing_failure_result(
-    *,
-    classified,
-    summary: str,
-    messages,
-    api_call_count: int,
-    provider: str,
-    base_url,
-    model: str,
+    *, classified, summary: str, messages, api_call_count: int, provider: str, base_url, model: str,
     guidance: Optional[str] = None,
 ) -> dict:
     """Structured terminal result for a billing-classified failure — the single construction
@@ -671,51 +574,28 @@ def _billing_failure_result(
     unverified = bool(getattr(classified, "billing_unverified", False))
     if guidance is None:
         guidance = _billing_or_entitlement_message(
-            capability="model access",
-            provider=provider,
-            base_url=str(base_url),
-            model=model,
+            capability="model access", provider=provider, base_url=str(base_url), model=model,
             unverified=unverified,
         )
-    final = _billing_terminal_label(summary, unverified) + (
-        f"\n\n{guidance}" if guidance else ""
-    )
+    final = _billing_terminal_label(summary, unverified) + (f"\n\n{guidance}" if guidance else "")
     return {
-        "final_response": final,
-        "messages": messages,
-        "api_calls": api_call_count,
-        "completed": False,
-        "failed": True,
-        "error": summary,
+        "final_response": final, "messages": messages, "api_calls": api_call_count,
+        "completed": False, "failed": True, "error": summary,
         "failure_reason": classified.reason.value,
         # Classifier's own retry verdict so the UI shows Retry only when a re-run can differ.
         "failure_retryable": bool(classified.retryable),
         "billing_unverified": unverified,
-        "billing_block": _billing_block_dict(
-            provider, base_url, model, guidance, unverified=unverified
-        ),
+        "billing_block": _billing_block_dict(provider, base_url, model, guidance, unverified=unverified),
     }
 
 
 def _print_billing_or_entitlement_guidance(
-    agent,
-    *,
-    capability: str,
-    provider: str,
-    base_url: str,
-    model: str,
-    unverified: bool = False,
+    agent, *, capability: str, provider: str, base_url: str, model: str, unverified: bool = False
 ) -> bool:
-    return _print_guidance(
-        agent,
-        _billing_or_entitlement_message(
-            capability=capability,
-            provider=provider,
-            base_url=base_url,
-            model=model,
-            unverified=unverified,
-        ),
-    )
+    return _print_guidance(agent, _billing_or_entitlement_message(
+        capability=capability, provider=provider, base_url=base_url, model=model,
+        unverified=unverified,
+    ))
 
 
 def _bot_chat_prompt_stale(agent, stored_prompt: str) -> bool:
@@ -732,11 +612,9 @@ def _bot_chat_prompt_stale(agent, stored_prompt: str) -> bool:
             stored_bot_chat_prompt_needs_upgrade,
             stored_prompt_capability_stale,
         )
-
         home = None
         try:
             from agent.system_prompt import _agent_home
-
             home = _agent_home(agent)
         except Exception:
             pass
@@ -747,33 +625,24 @@ def _bot_chat_prompt_stale(agent, stored_prompt: str) -> bool:
         title = str(getattr(agent, "_session_title_hint", "") or "").strip()
         if not title and agent._session_db and agent.session_id:
             try:
-                title = str(
-                    agent._session_db.get_session_title(agent.session_id) or ""
-                ).strip()
+                title = str(agent._session_db.get_session_title(agent.session_id) or "").strip()
             except Exception:
                 title = ""
-        return title == BOT_CHAT_TITLE and bool(
-            stored_bot_chat_prompt_needs_upgrade(stored_prompt, home)
-        )
+        return title == BOT_CHAT_TITLE and bool(stored_bot_chat_prompt_needs_upgrade(stored_prompt, home))
     except Exception:
         return False
 
 
-def _persist_system_prompt(
-    agent, failure_message: str, *, persist_tools: bool = False
-) -> None:
+def _persist_system_prompt(agent, failure_message: str, *, persist_tools: bool = False) -> None:
     """Persist ``agent._cached_system_prompt`` to the session row; failures log at WARNING
     (with ``failure_message``) because the gateway path (fresh AIAgent per turn) reads
     this row every turn, so a silent failure breaks prefix-cache reuse."""
     if not agent._session_db:
         return
     try:
-        agent._session_db.update_system_prompt(
-            agent.session_id, agent._cached_system_prompt
-        )
+        agent._session_db.update_system_prompt(agent.session_id, agent._cached_system_prompt)
         if persist_tools:
             from tools.mcp_tool_agent import persist_agent_tool_names
-
             persist_agent_tool_names(agent)
     except Exception as exc:
         logger.warning(failure_message, agent.session_id, exc)
@@ -793,18 +662,13 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             session_row = agent._session_db.get_session(agent.session_id)
             if session_row is not None:
                 raw_prompt = session_row.get("system_prompt")
-                stored_state = (
-                    "null"
-                    if raw_prompt is None
-                    else ("empty" if raw_prompt == "" else "present")
-                )
+                stored_state = "null" if raw_prompt is None else ("empty" if raw_prompt == "" else "present")
                 stored_prompt = raw_prompt or None
         except Exception as exc:
             logger.warning(
                 "Session DB get_session failed for system-prompt restore (session=%s): %s. "
                 "Falling back to fresh build — prefix cache will miss for this turn.",
-                agent.session_id,
-                exc,
+                agent.session_id, exc,
             )
 
     if stored_prompt and _stored_prompt_matches_runtime(agent, stored_prompt):
@@ -819,14 +683,11 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             # dir; a capability refresh must rebuild THROUGH it or new skills are lost.
             try:
                 from agent.prompt_builder import clear_skills_system_prompt_cache
-
                 clear_skills_system_prompt_cache(clear_snapshot=True)
             except Exception:
                 pass
             agent._cached_system_prompt = agent._build_system_prompt(system_message)
-            stage_surface_switch_note(
-                agent, agent._cached_system_prompt, conversation_history
-            )
+            stage_surface_switch_note(agent, agent._cached_system_prompt, conversation_history)
             # Persist so the NEXT turn restores the new bytes verbatim (cache break is
             # once per capability change). on_session_start not re-fired: continuation.
             _persist_system_prompt(
@@ -840,9 +701,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         agent._cached_system_prompt = stored_prompt
         # The reused bytes may describe the surface this conversation STARTED on; correct that
         # at the tail of the request instead of rebuilding the prompt in front of it (#104414).
-        announced_switch = stage_surface_switch_note(
-            agent, stored_prompt, conversation_history
-        )
+        announced_switch = stage_surface_switch_note(agent, stored_prompt, conversation_history)
         # Same contract for tools[]: pin the array to the order this session already
         # sent (tools freeze) instead of re-probing every check_fn on a fresh AIAgent.
         # The pin holds ON the announcing turn too.  tools[] is serialized AHEAD of the system
@@ -855,15 +714,9 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         try:
             saved_tools = session_row.get("tool_names") if session_row else None
             if saved_tools:
-                from tools.mcp_tool_agent import (
-                    agent_tool_names,
-                    restore_agent_tool_prefix,
-                )
-
+                from tools.mcp_tool_agent import agent_tool_names, restore_agent_tool_prefix
                 # Captured BEFORE the pin merges the previous surface's tools back in.
-                built_for_this_surface = (
-                    agent_tool_names(agent) if announced_switch else []
-                )
+                built_for_this_surface = agent_tool_names(agent) if announced_switch else []
                 restore_agent_tool_prefix(agent, json.loads(saved_tools))
                 if announced_switch:
                     note_inert_pinned_tools(agent, built_for_this_surface)
@@ -874,11 +727,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         # prefix is not persisted either; rebuild it for the early cache breakpoint or
         # fresh-per-turn gateway agents fall back to the single-breakpoint layout
         # (reconstruct_static_prefix gates on _use_prompt_caching, fails open to legacy).
-        from agent.system_prompt import (
-            reconstruct_static_prefix,
-            restore_plugin_prompt_sections,
-        )
-
+        from agent.system_prompt import reconstruct_static_prefix, restore_plugin_prompt_sections
         restore_plugin_prompt_sections(agent, stored_prompt)
         reconstruct_static_prefix(agent, system_message=system_message)
         return
@@ -887,9 +736,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         logger.info(
             "Stored system prompt for session %s has stale runtime identity; "
             "rebuilding for model=%s provider=%s.",
-            agent.session_id,
-            getattr(agent, "model", "") or "",
-            getattr(agent, "provider", "") or "",
+            agent.session_id, getattr(agent, "model", "") or "", getattr(agent, "provider", "") or "",
         )
 
     if conversation_history and stored_state in ("null", "empty"):
@@ -899,8 +746,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             "Stored system prompt for session %s is %s; rebuilding from scratch this turn. Prefix "
             "cache will miss until the rebuild persists. Investigate the previous turn's "
             "update_system_prompt write path.",
-            agent.session_id,
-            stored_state,
+            agent.session_id, stored_state,
         )
 
     # First turn of a new session (or recovering from a broken stored prompt).
@@ -916,11 +762,8 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     if not getattr(agent, "_persist_disabled", False):
         try:
             from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-
             _invoke_hook(
-                "on_session_start",
-                session_id=agent.session_id,
-                model=agent.model,
+                "on_session_start", session_id=agent.session_id, model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
             )
         except Exception as exc:
@@ -930,7 +773,6 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # session open, so this is idempotent (skips when _credits_state exists). Fail-open.
     try:
         from agent.credits_tracker import seed_credits_at_session_start
-
         seed_credits_at_session_start(agent)
     except Exception:
         logger.debug("cold-start credits seed failed (fail-open)", exc_info=True)
@@ -951,14 +793,12 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     def host_info_value(label: str) -> str:
         """New prompts delimit runtime hints; legacy prompts put them before context."""
         prefix = f"{label}:"
-        host_lines = (
-            runtime.split("\n\n", 1)[0] if runtime_marker else prompt
-        ).splitlines()
+        host_lines = (runtime.split("\n\n", 1)[0] if runtime_marker else prompt).splitlines()
         for idx, line in enumerate(host_lines):
             if line.startswith("User home directory:"):
-                for candidate in host_lines[idx + 1 : idx + 4]:
+                for candidate in host_lines[idx + 1: idx + 4]:
                     if candidate.startswith(prefix):
-                        return candidate[len(prefix) :].strip()
+                        return candidate[len(prefix):].strip()
         return ""
 
     # Model/provider identity, then cwd drift.  A cwd change is a real content change (context
@@ -994,9 +834,7 @@ _LENGTH_CONTINUATION_OUTPUT_LIMIT = (
 _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX = "[System: Your previous tool call "
 
 
-def _get_continuation_prompt(
-    is_partial_stub: bool, dropped_tools: Optional[List[str]] = None
-) -> str:
+def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List[str]] = None) -> str:
     if is_partial_stub and dropped_tools:
         tool_list = ", ".join(dropped_tools[:3])
         return (
@@ -1006,11 +844,7 @@ def _get_continuation_prompt(
             "calls (e.g. use multiple patch calls or write smaller files). Each tool call's "
             "arguments must be under ~8K tokens to avoid stream timeouts.]"
         )
-    return (
-        _LENGTH_CONTINUATION_NETWORK_STUB
-        if is_partial_stub
-        else _LENGTH_CONTINUATION_OUTPUT_LIMIT
-    )
+    return _LENGTH_CONTINUATION_NETWORK_STUB if is_partial_stub else _LENGTH_CONTINUATION_OUTPUT_LIMIT
 
 
 # Codex/Responses turns that returned only internal reasoning: a bare retry would be
@@ -1070,14 +904,11 @@ def _canonicalize_tool_call_arguments(arg_str: str) -> str:
     _CANON_ARGS_CACHE[arg_str] = canonical
     _canon_args_cache_bytes += len(arg_str) + len(canonical)
     while len(_CANON_ARGS_CACHE) > _CANON_ARGS_CACHE_MAX or (
-        _canon_args_cache_bytes > _CANON_ARGS_CACHE_MAX_BYTES
-        and len(_CANON_ARGS_CACHE) > 1
+        _canon_args_cache_bytes > _CANON_ARGS_CACHE_MAX_BYTES and len(_CANON_ARGS_CACHE) > 1
     ):
         try:
             evicted_key = next(iter(_CANON_ARGS_CACHE))
-            _canon_args_cache_bytes -= len(evicted_key) + len(
-                _CANON_ARGS_CACHE.pop(evicted_key)
-            )
+            _canon_args_cache_bytes -= len(evicted_key) + len(_CANON_ARGS_CACHE.pop(evicted_key))
         except (StopIteration, KeyError, RuntimeError):
             break
     return canonical
@@ -1088,15 +919,9 @@ def _clone_message_for_send(msg):
     message for the per-call API copy, so send-path rewrites never reach the persisted
     transcript (#80498). Cheaper than deepcopy: messages are JSON-shaped and acyclic."""
     if isinstance(msg, dict):
-        return {
-            k: _clone_message_for_send(v) if isinstance(v, (dict, list)) else v
-            for k, v in msg.items()
-        }
+        return {k: _clone_message_for_send(v) if isinstance(v, (dict, list)) else v for k, v in msg.items()}
     if isinstance(msg, list):
-        return [
-            _clone_message_for_send(v) if isinstance(v, (dict, list)) else v
-            for v in msg
-        ]
+        return [_clone_message_for_send(v) if isinstance(v, (dict, list)) else v for v in msg]
     return msg
 
 
@@ -1114,9 +939,7 @@ def _canonicalize_api_tool_calls(api_messages) -> None:
                 try:
                     args = _canonicalize_tool_call_arguments(fn["arguments"])
                 except Exception:
-                    args = _repair_tool_call_arguments(
-                        fn["arguments"], fn.get("name", "?")
-                    )
+                    args = _repair_tool_call_arguments(fn["arguments"], fn.get("name", "?"))
                 # Copy-on-write as defense in depth: callers may pass shallow copies, and
                 # writing into a shared tc["function"] rewrote the stored turn with "{}"
                 # on the unrepairable path (#80498).
@@ -1145,12 +968,8 @@ def _content_policy_blocked_result(
     """Terminal turn result for a content-policy block (deterministic for the unchanged
     prompt, so no retry); shared by the HTTP-200 and exception paths."""
     return {
-        "final_response": final_response,
-        "messages": messages,
-        "api_calls": api_call_count,
-        "completed": False,
-        "failed": True,
-        "error": f"content_policy_blocked: {error_detail}",
+        "final_response": final_response, "messages": messages, "api_calls": api_call_count,
+        "completed": False, "failed": True, "error": f"content_policy_blocked: {error_detail}",
     }
 
 
@@ -1160,19 +979,12 @@ def _partial_turn_result(
     """Incomplete-turn result whose ``error`` mirrors ``final_response``; ``flags`` add the
     recovery-contract keys (``failed``, ``compression_deferred``, ...)."""
     return {
-        "final_response": final_response,
-        "messages": messages,
-        "completed": False,
-        "api_calls": api_call_count,
-        "error": final_response,
-        "partial": True,
-        **flags,
+        "final_response": final_response, "messages": messages, "completed": False,
+        "api_calls": api_call_count, "error": final_response, "partial": True, **flags,
     }
 
 
-def _compression_deferred_result(
-    agent, messages: List[Dict], api_call_count: int, reason: str = "lock"
-) -> Dict[str, Any]:
+def _compression_deferred_result(agent, messages: List[Dict], api_call_count: int, reason: str = "lock") -> Dict[str, Any]:
     """Soft turn result for a transiently-deferred compression. Both reasons must end as
     ``compression_deferred``, never ``compression_exhausted`` — the gateway wipes the
     session on exhaustion (#9893/#35809). ``failed`` stays False; the turn persists."""
@@ -1181,9 +993,7 @@ def _compression_deferred_result(
         block = getattr(agent, "_compression_blocked_transient", None)
         logger.info(
             "turn deferred: compression transiently blocked (%s) (session=%s) — not counting as "
-            "compression exhaustion",
-            block if isinstance(block, str) else "unknown guard",
-            session,
+            "compression exhaustion", block if isinstance(block, str) else "unknown guard", session,
         )
         _final = (
             "Context compression is temporarily paused after a recent failed attempt. Please retry "
@@ -1193,9 +1003,7 @@ def _compression_deferred_result(
         holder = getattr(agent, "_compression_skipped_due_to_lock", None)
         logger.info(
             "turn deferred: compression lock held by another path (session=%s holder=%s) — not "
-            "counting as compression exhaustion",
-            session,
-            holder if isinstance(holder, str) else "unconfirmed",
+            "counting as compression exhaustion", session, holder if isinstance(holder, str) else "unconfirmed",
         )
         _final = (
             "Context compression is already running for this session. Please retry in a moment — "
@@ -1206,31 +1014,21 @@ def _compression_deferred_result(
     except Exception:
         pass
     return _partial_turn_result(
-        _final,
-        messages,
-        api_call_count,
-        failed=False,
-        compression_deferred=True,
-        session_id=agent.session_id,
+        _final, messages, api_call_count,
+        failed=False, compression_deferred=True, session_id=agent.session_id,
     )
 
 
 def _provider_overflow_exhausted_result(
-    agent,
-    messages: List[Dict],
-    conversation_history,
-    api_call_count: int,
-    request_pressure_tokens: int,
-    max_compression_attempts: int,
+    agent, messages: List[Dict], conversation_history, api_call_count: int,
+    request_pressure_tokens: int, max_compression_attempts: int,
 ) -> Dict[str, Any]:
     """Fail closed when a rebuilt request is still too large after recovery."""
     agent._flush_status_buffer()
     logger.error(
         "%sContext compression failed after %d attempts; rebuilt request "
         "remains over threshold at ~%s tokens.",
-        agent.log_prefix,
-        max_compression_attempts,
-        f"{request_pressure_tokens:,}",
+        agent.log_prefix, max_compression_attempts, f"{request_pressure_tokens:,}",
     )
     # Host progress-aware timeout (#98722, salvaged from #98741): the provider proved the request does not
     # fit, but this recovery pass spent the full wait budget without a committed summary. Re-sending the
@@ -1243,10 +1041,7 @@ def _provider_overflow_exhausted_result(
     agent._persist_session(messages, conversation_history)
     return _partial_turn_result(
         "Context length exceeded: compression could not reduce the rebuilt request below the safe threshold.",
-        messages,
-        api_call_count,
-        failed=True,
-        compression_exhausted=True,
+        messages, api_call_count, failed=True, compression_exhausted=True,
         turn_exit_reason="context_compression_exhausted",
     )
 
@@ -1256,12 +1051,8 @@ def _rewrite_system_content_blocks(system_message: dict, effective: str) -> bool
     over the ``[static prefix, volatile tail]`` list would drop both cache_control
     breakpoints). Returns False when the shape cannot be safely patched."""
     content = system_message.get("content")
-    if (
-        not isinstance(content, list)
-        or not content
-        or not all(
-            isinstance(part, dict) and part.get("type") == "text" for part in content
-        )
+    if not isinstance(content, list) or not content or not all(
+        isinstance(part, dict) and part.get("type") == "text" for part in content
     ):
         return False
     if len(content) == 1:
@@ -1269,8 +1060,8 @@ def _rewrite_system_content_blocks(system_message: dict, effective: str) -> bool
         return True
     if len(content) == 2:
         head = content[0].get("text") or ""
-        if head and effective.startswith(head) and effective[len(head) :]:
-            content[1]["text"] = effective[len(head) :]
+        if head and effective.startswith(head) and effective[len(head):]:
+            content[1]["text"] = effective[len(head):]
             return True
     return False
 
@@ -1282,11 +1073,7 @@ def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     if not isinstance(sp, str) or not sp:
         return active_system_prompt
     if api_messages and api_messages[0].get("role") == "system":
-        effective = (
-            (sp + "\n\n" + agent.ephemeral_system_prompt).strip()
-            if agent.ephemeral_system_prompt
-            else sp
-        )
+        effective = (sp + "\n\n" + agent.ephemeral_system_prompt).strip() if agent.ephemeral_system_prompt else sp
         if not _rewrite_system_content_blocks(api_messages[0], effective):
             api_messages[0]["content"] = effective
     return sp
@@ -1297,8 +1084,7 @@ def _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry):
     ``restart_with_rebuilt_messages``. Callers also zero ``retry_count`` /
     ``compression_attempts`` and ``break`` the retry loop."""
     active_system_prompt = _sync_failover_system_message(
-        agent, api_messages, active_system_prompt
-    )
+        agent, api_messages, active_system_prompt)
     _retry.primary_recovery_attempted = False
     _retry.restart_with_rebuilt_messages = True
     return active_system_prompt
@@ -1309,37 +1095,22 @@ def _ensure_cached_system_prompt_static(agent, system_message=None) -> None:
     restored under a cache-off primary would otherwise fall back to the legacy layout after
     failover to a cache-on provider."""
     from agent.system_prompt import reconstruct_static_prefix
-
-    reconstruct_static_prefix(
-        agent, system_message=system_message, log_label="failover redecoration"
-    )
+    reconstruct_static_prefix(agent, system_message=system_message, log_label="failover redecoration")
 
 
-def _peel_moa_guidance(
-    messages: List[Dict[str, Any]], guidance: Any
-) -> List[Dict[str, Any]]:
+def _peel_moa_guidance(messages: List[Dict[str, Any]], guidance: Any) -> List[Dict[str, Any]]:
     """Remove MoA reference guidance attached by ``_attach_reference_guidance``."""
     from agent.moa_loop import peel_reference_guidance
-
     return peel_reference_guidance(messages, guidance)
 
 
 def _redecorate_prompt_cache_for_provider(
-    agent,
-    api_messages: List[Dict[str, Any]],
-    *,
-    system_message=None,
-    moa_prepared: Optional[Dict[str, Any]] = None,
-    tools_for_api: Optional[List[Dict[str, Any]]] = None,
-) -> (
-    tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]
-    | tuple[List[Dict[str, Any]], Optional[Dict[str, Any]], List[Dict[str, Any]]]
-):
+    agent, api_messages: List[Dict[str, Any]], *, system_message=None,
+    moa_prepared: Optional[Dict[str, Any]] = None, tools_for_api: Optional[List[Dict[str, Any]]] = None,
+) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]] | tuple[List[Dict[str, Any]], Optional[Dict[str, Any]], List[Dict[str, Any]]]:
     """Strip and re-apply cache_control for the *current* provider policy — failover
     ``continue`` paths reuse ``api_messages`` (#72626). MoA guidance is peeled and rebased."""
-    messages: List[Dict[str, Any]] = [
-        dict(m) if isinstance(m, dict) else m for m in (api_messages or [])
-    ]
+    messages: List[Dict[str, Any]] = [dict(m) if isinstance(m, dict) else m for m in (api_messages or [])]
     prepared = moa_prepared
     guidance = prepared.get("guidance") if isinstance(prepared, dict) else None
     if guidance:
@@ -1363,15 +1134,12 @@ def _redecorate_prompt_cache_for_provider(
         _ensure_cached_system_prompt_static(agent, system_message=system_message)
         static = getattr(agent, "_cached_system_prompt_static", None)
         from agent.prompt_caching import envelope_tool_part_cache_markers_supported
-
         plan = build_prompt_cache_plan(
             messages,
             planned_tools,
             # Clamp per-destination: a configured 1h regresses to 5m on
             # Qwen/Alibaba routes, whose context cache is 5m-only (#84733).
-            cache_ttl=effective_cache_ttl(
-                agent._cache_ttl, provider=agent.provider, model=agent.model
-            ),
+            cache_ttl=effective_cache_ttl(agent._cache_ttl, provider=agent.provider, model=agent.model),
             native_anthropic=agent._use_native_cache_layout,
             static_system_prefix=static if isinstance(static, str) else None,
             direct_native_tool_cache=getattr(
@@ -1400,19 +1168,14 @@ def _engine_overrides_hook(engine: Any, name: str) -> bool:
         return False
     try:
         from agent.context_engine import ContextEngine as _CE
-
         return getattr(hook, "__func__", None) is not getattr(_CE, name)
     except Exception:
         return True
 
 
 def _apply_context_engine_selection(
-    agent: Any,
-    api_messages: List[Dict[str, Any]],
-    conversation_messages: List[Dict[str, Any]],
-    incoming_message: Optional[Dict[str, Any]],
-    *,
-    logger: Any,
+    agent: Any, api_messages: List[Dict[str, Any]], conversation_messages: List[Dict[str, Any]],
+    incoming_message: Optional[Dict[str, Any]], *, logger: Any,
 ) -> List[Dict[str, Any]]:
     """Run the optional per-turn ``ContextEngine.select_context()`` hook, fail-open: any
     exception or invalid return yields ``api_messages`` unchanged; history is never mutated."""
@@ -1428,21 +1191,18 @@ def _apply_context_engine_selection(
             api_messages,
             conversation_messages=(
                 [_clone_message_for_send(m) for m in conversation_messages]
-                if conversation_messages is not None
-                else None
+                if conversation_messages is not None else None
             ),
             incoming_message=(
                 _clone_message_for_send(incoming_message)
-                if isinstance(incoming_message, dict)
-                else incoming_message
+                if isinstance(incoming_message, dict) else incoming_message
             ),
             budget_tokens=getattr(engine, "context_length", 0) or 0,
         )
     except Exception:
         logger.warning(
             "Context engine select_context hook failed; using unmodified request messages (session=%s)",
-            session_label,
-            exc_info=True,
+            session_label, exc_info=True,
         )
         return api_messages
 
@@ -1450,27 +1210,17 @@ def _apply_context_engine_selection(
         return api_messages
     # Require a NON-EMPTY list of dicts: ``all([])`` is ``True``, so a ``[]`` from a
     # buggy engine would otherwise replace the request instead of failing open.
-    if (
-        isinstance(selected, list)
-        and selected
-        and all(isinstance(m, dict) for m in selected)
-    ):
+    if isinstance(selected, list) and selected and all(isinstance(m, dict) for m in selected):
         return selected
     logger.warning(
         "Context engine select_context returned an invalid value "
-        "(not a non-empty list of dicts); ignoring (session=%s)",
-        session_label,
+        "(not a non-empty list of dicts); ignoring (session=%s)", session_label,
     )
     return api_messages
 
 
 def _notify_context_engine_turn_complete(
-    agent: Any,
-    messages: List[Dict[str, Any]],
-    *,
-    usage: Optional[Dict[str, Any]] = None,
-    logger: Any,
-    **meta: Any,
+    agent: Any, messages: List[Dict[str, Any]], *, usage: Optional[Dict[str, Any]] = None, logger: Any, **meta: Any
 ) -> None:
     """Notify the active context engine that a user turn has finished (fail-open; the engine
     gets a copy so it cannot mutate the persisted transcript)."""
@@ -1480,14 +1230,11 @@ def _notify_context_engine_turn_complete(
     try:
         # Structural clones: dict(m) would let a hook write into nested containers of the
         # persisted transcript (#80498).
-        engine.on_turn_complete(
-            [_clone_message_for_send(m) for m in messages], usage=usage, **meta
-        )
+        engine.on_turn_complete([_clone_message_for_send(m) for m in messages], usage=usage, **meta)
     except Exception:
         logger.warning(
             "Context engine on_turn_complete hook failed (session=%s)",
-            getattr(agent, "session_id", None) or "-",
-            exc_info=True,
+            getattr(agent, "session_id", None) or "-", exc_info=True,
         )
 
 
@@ -1496,7 +1243,6 @@ def _decode_inline_moa_turn(user_message, persist_user_message):
     moa_config, persist_user_message)``, unchanged with ``moa_config=None`` otherwise."""
     try:
         from hermes_cli.moa_config import decode_moa_turn
-
         _decoded_message, _decoded_moa_config = decode_moa_turn(user_message)
         if _decoded_moa_config is not None:
             if persist_user_message is None:
@@ -1511,23 +1257,17 @@ def _preflight_timeout_result(agent, exc, conversation_history) -> Dict[str, Any
     """Typed recovery result when turn-start preflight compression timed out (#98424): no
     provider call was sent, and surfaces would otherwise hide the actionable guidance."""
     logger.warning(
-        "Turn-start preflight compression timed out — ending turn with typed recovery result: %s",
-        exc,
+        "Turn-start preflight compression timed out — ending turn with typed recovery result: %s", exc,
     )
     # Clear the tripwire slot note_turn_start registered (the early return skips the persist
     # funnel). The user row is deliberately NOT persisted (#7100).
     from agent.agent_runtime_helpers import note_turn_persisted
-
     note_turn_persisted(agent)
     # Not _COMPRESSION_TIMEOUT_FINAL_RESPONSE — that describes a different state
     # (compression ran, could not reduce); the exception text carries the guidance.
     return _partial_turn_result(
-        str(exc),
-        list(conversation_history or []),
-        0,
-        failed=True,
-        compression_exhausted=True,
-        turn_exit_reason="context_compression_timeout",
+        str(exc), list(conversation_history or []), 0,
+        failed=True, compression_exhausted=True, turn_exit_reason="context_compression_timeout",
     )
 
 
@@ -1572,9 +1312,7 @@ class _LoopState:
     # turn so a runaway interrupt/redirect that keeps re-arming a restart flag cannot
     # refund the iteration budget forever and hold the turn lease indefinitely.
     restart_count: int = 0
-    _outer_error_count: int = (
-        0  # outer-loop exceptions this turn (#92450), see _MAX_OUTER_LOOP_ERRORS
-    )
+    _outer_error_count: int = 0  # outer-loop exceptions this turn (#92450), see _MAX_OUTER_LOOP_ERRORS
     truncated_tool_call_retries: int = 0
     truncated_response_parts: List[str] = field(default_factory=list)
     compression_attempts: int = 0
@@ -1618,26 +1356,15 @@ class _LoopState:
 
 # _LoopState fields seeded from TurnContext (same name minus the leading underscore).
 _CTX_FIELDS = frozenset({
-    "user_message",
-    "original_user_message",
-    "conversation_history",
-    "effective_task_id",
-    "turn_id",
-    "_should_review_memory",
-    "_plugin_user_context",
-    "_ext_prefetch_cache",
-    "messages",
-    "active_system_prompt",
-    "current_turn_user_idx",
-    "_preflight_compression_blocked",
+    "user_message", "original_user_message", "conversation_history", "effective_task_id", "turn_id",
+    "_should_review_memory", "_plugin_user_context", "_ext_prefetch_cache", "messages",
+    "active_system_prompt", "current_turn_user_idx", "_preflight_compression_blocked",
 })
 # Keyword names each phase helper takes (minus ``agent``), cached per function object.
 _PHASE_PARAMS: Dict[Any, tuple] = {}
 # Verdict fields the loop latches (only ever sets True) instead of copying back:
 # ``handle_api_error`` reports overflow recovery per call and must not clear an earlier arm.
-_LATCHED_VERDICT_FIELDS = {
-    "handle_api_error": frozenset({"_provider_overflow_recovery_pending"})
-}
+_LATCHED_VERDICT_FIELDS = {"handle_api_error": frozenset({"_provider_overflow_recovery_pending"})}
 
 
 def _run_phase(fn, agent, state: _LoopState, **extra):
@@ -1647,12 +1374,8 @@ def _run_phase(fn, agent, state: _LoopState, **extra):
     the caller can act on ``.action`` / ``.result``."""
     params = _PHASE_PARAMS.get(fn)
     if params is None:
-        params = _PHASE_PARAMS[fn] = tuple(
-            p for p in inspect.signature(fn).parameters if p != "agent"
-        )
-    verdict = fn(
-        agent, **{n: extra[n] if n in extra else getattr(state, n) for n in params}
-    )
+        params = _PHASE_PARAMS[fn] = tuple(p for p in inspect.signature(fn).parameters if p != "agent")
+    verdict = fn(agent, **{n: extra[n] if n in extra else getattr(state, n) for n in params})
     latched = _LATCHED_VERDICT_FIELDS.get(getattr(fn, "__name__", ""), ())
     for f in fields(verdict):
         if f.name in ("action", "result"):
@@ -1739,14 +1462,8 @@ def _run_conversation_turn(
     # Per-turn setup: build_turn_context mutates ``agent`` and returns the locals the loop reads.
     try:
         _ctx = build_turn_context(
-            agent,
-            user_message,
-            system_message,
-            conversation_history,
-            task_id,
-            stream_callback,
-            persist_user_message,
-            persist_user_timestamp,
+            agent, user_message, system_message, conversation_history, task_id,
+            stream_callback, persist_user_message, persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
             persist_user_display_metadata=persist_user_display_metadata,
             persist_user_platform_id=persist_user_platform_id,
@@ -1763,9 +1480,7 @@ def _run_conversation_turn(
             moa_active=bool(moa_config),
         )
     except PreflightCompressionTimedOut as _preflight_timeout_exc:
-        return _preflight_timeout_result(
-            agent, _preflight_timeout_exc, conversation_history
-        )
+        return _preflight_timeout_result(agent, _preflight_timeout_exc, conversation_history)
 
     # Per-turn agent state (the gateway caches agents across turns, so none of this may
     # leak into the next message): interim-commentary dedup spans the whole turn but not
@@ -1783,29 +1498,20 @@ def _run_conversation_turn(
     agent._last_turn_usage = None
 
     s = _LoopState(
-        system_message=system_message,
-        moa_config=moa_config,
+        system_message=system_message, moa_config=moa_config,
         max_compression_attempts=getattr(agent, "max_compression_attempts", 3),
-        **{
-            f.name: getattr(_ctx, f.name.lstrip("_"))
-            for f in fields(_LoopState)
-            if f.name in _CTX_FIELDS
-        },
+        **{f.name: getattr(_ctx, f.name.lstrip("_")) for f in fields(_LoopState) if f.name in _CTX_FIELDS},
     )
     # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
     # app-server subprocess (see agent/transports/codex_app_server_session.py).
     if agent.api_mode == "codex_app_server":
         return agent._run_codex_app_server_turn(
-            user_message=s.user_message,
-            original_user_message=s.original_user_message,
-            messages=s.messages,
-            effective_task_id=s.effective_task_id,
+            user_message=s.user_message, original_user_message=s.original_user_message,
+            messages=s.messages, effective_task_id=s.effective_task_id,
             should_review_memory=s._should_review_memory,
         )
 
-    while (
-        s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0
-    ) or agent._budget_grace_call:
+    while (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         if _run_phase(begin_iteration, agent, s).action == "break":
             break
         _run_phase(prepare_iteration, agent, s)
@@ -1819,20 +1525,9 @@ def _run_conversation_turn(
             continue
         _run_phase(announce_api_call, agent, s)
 
-        s.api_start_time, s.retry_count, s.max_retries = (
-            time.time(),
-            0,
-            agent._api_max_retries,
-        )
-        s._retry, s.finish_reason, s.response, s.api_kwargs = (
-            TurnRetryState(),
-            "stop",
-            None,
-            None,
-        )
-        s.api_request_id = agent._current_api_request_id = (
-            f"{s.turn_id}:api:{s.api_call_count}"
-        )
+        s.api_start_time, s.retry_count, s.max_retries = time.time(), 0, agent._api_max_retries
+        s._retry, s.finish_reason, s.response, s.api_kwargs = TurnRetryState(), "stop", None, None
+        s.api_request_id = agent._current_api_request_id = f"{s.turn_id}:api:{s.api_call_count}"
 
         early_result = _run_api_retry_loop(agent, s)
         if early_result is not None:
@@ -1851,11 +1546,7 @@ def _run_conversation_turn(
             if _ri.action == "continue":
                 continue
             _v = _run_phase(
-                run_tool_round
-                if s.assistant_message.tool_calls
-                else finish_text_response,
-                agent,
-                s,
+                run_tool_round if s.assistant_message.tool_calls else finish_text_response, agent, s
             )
             if _v.action == "return":
                 return _v.result
@@ -1868,22 +1559,14 @@ def _run_conversation_turn(
                 break
 
     # Post-loop finalization lives in agent/turn_finalizer.finalize_turn.
-    result = finalize_turn(
-        agent,
-        **{
-            name: getattr(s, name)
-            for name in inspect.signature(finalize_turn).parameters
-            if name != "agent"
-        },
-    )
+    result = finalize_turn(agent, **{
+        name: getattr(s, name)
+        for name in inspect.signature(finalize_turn).parameters if name != "agent"
+    })
     if s._compression_timeout_exhausted:
         # Reuse the gateway's context-recovery contract: transcript stays intact while
         # future input can move to a clean session (#98722).
-        result.update(
-            error=_COMPRESSION_TIMEOUT_FINAL_RESPONSE,
-            partial=True,
-            compression_exhausted=True,
-        )
+        result.update(error=_COMPRESSION_TIMEOUT_FINAL_RESPONSE, partial=True, compression_exhausted=True)
     return result
 
 
@@ -1943,103 +1626,43 @@ import sys  # noqa: F401,E402
 
 
 _PLUGIN_COMPAT_LAZY = {
-    "COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE": (
-        "agent.conversation_compression",
-        "COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE",
-    ),
-    "COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE": (
-        "agent.conversation_compression",
-        "COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE",
-    ),
-    "COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE": (
-        "agent.conversation_compression",
-        "COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE",
-    ),
-    "COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE": (
-        "agent.conversation_compression",
-        "COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE",
-    ),
-    "FailoverReason": ("agent.error_classifier", "FailoverReason"),
-    "KawaiiSpinner": ("agent.display", "KawaiiSpinner"),
-    "PARTIAL_STREAM_STUB_ID": ("hermes_constants", "PARTIAL_STREAM_STUB_ID"),
-    "PRE_API_COMPRESSION_STATUS_TEMPLATE": (
-        "agent.conversation_compression",
-        "PRE_API_COMPRESSION_STATUS_TEMPLATE",
-    ),
-    "adaptive_rate_limit_backoff": ("agent.retry_utils", "adaptive_rate_limit_backoff"),
-    "anchored_context_tokens": ("agent.usage_anchor", "anchored_context_tokens"),
-    "automatic_compaction_status_message": (
-        "agent.context_engine",
-        "automatic_compaction_status_message",
-    ),
-    "capture_usage_anchor": ("agent.usage_anchor", "capture_usage_anchor"),
-    "classify_api_error": ("agent.error_classifier", "classify_api_error"),
-    "close_interrupted_tool_sequence": (
-        "agent.message_sanitization",
-        "close_interrupted_tool_sequence",
-    ),
-    "coalesce_tool_call_id": ("agent.message_sanitization", "coalesce_tool_call_id"),
-    "compose_user_api_content": ("agent.turn_context", "compose_user_api_content"),
-    "compression_blocked_transiently": (
-        "agent.conversation_compression",
-        "compression_blocked_transiently",
-    ),
-    "compression_skipped_due_to_lock": (
-        "agent.conversation_compression",
-        "compression_skipped_due_to_lock",
-    ),
-    "context_compression_timed_out": (
-        "agent.conversation_compression",
-        "context_compression_timed_out",
-    ),
-    "conversation_history_after_compression": (
-        "agent.conversation_compression",
-        "conversation_history_after_compression",
-    ),
-    "env_var_enabled": ("utils", "env_var_enabled"),
-    "estimate_messages_tokens_rough": (
-        "agent.model_metadata",
-        "estimate_messages_tokens_rough",
-    ),
-    "estimate_request_tokens_rough": (
-        "agent.model_metadata",
-        "estimate_request_tokens_rough",
-    ),
-    "estimate_usage_cost": ("agent.usage_pricing", "estimate_usage_cost"),
-    "get_context_length_from_provider_error": (
-        "agent.model_metadata",
-        "get_context_length_from_provider_error",
-    ),
-    "has_incomplete_scratchpad": ("agent.trajectory", "has_incomplete_scratchpad"),
-    "is_output_cap_error": ("agent.model_metadata", "is_output_cap_error"),
-    "is_repetition_dominated": ("agent.repetition_guard", "is_repetition_dominated"),
-    "is_zai_coding_overload_error": (
-        "agent.retry_utils",
-        "is_zai_coding_overload_error",
-    ),
-    "jittered_backoff": ("agent.retry_utils", "jittered_backoff"),
-    "normalize_usage": ("agent.usage_pricing", "normalize_usage"),
-    "parse_available_output_tokens_from_error": (
-        "agent.model_metadata",
-        "parse_available_output_tokens_from_error",
-    ),
-    "reanchor_current_turn_user_idx": (
-        "agent.turn_context",
-        "reanchor_current_turn_user_idx",
-    ),
-    "save_context_length": ("agent.model_metadata", "save_context_length"),
-    "serialized_messages_bytes": (
-        "agent.message_sanitization",
-        "serialized_messages_bytes",
-    ),
-    "splice_provider_projection": (
-        "agent.provider_projection",
-        "splice_provider_projection",
-    ),
-    "zai_coding_overload_retry_ceiling": (
-        "agent.retry_utils",
-        "zai_coding_overload_retry_ceiling",
-    ),
+    'COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE': ('agent.conversation_compression', 'COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE'),
+    'COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE': ('agent.conversation_compression', 'COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE'),
+    'COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE': ('agent.conversation_compression', 'COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE'),
+    'COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE': ('agent.conversation_compression', 'COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE'),
+    'FailoverReason': ('agent.error_classifier', 'FailoverReason'),
+    'KawaiiSpinner': ('agent.display', 'KawaiiSpinner'),
+    'PARTIAL_STREAM_STUB_ID': ('hermes_constants', 'PARTIAL_STREAM_STUB_ID'),
+    'PRE_API_COMPRESSION_STATUS_TEMPLATE': ('agent.conversation_compression', 'PRE_API_COMPRESSION_STATUS_TEMPLATE'),
+    'adaptive_rate_limit_backoff': ('agent.retry_utils', 'adaptive_rate_limit_backoff'),
+    'anchored_context_tokens': ('agent.usage_anchor', 'anchored_context_tokens'),
+    'automatic_compaction_status_message': ('agent.context_engine', 'automatic_compaction_status_message'),
+    'capture_usage_anchor': ('agent.usage_anchor', 'capture_usage_anchor'),
+    'classify_api_error': ('agent.error_classifier', 'classify_api_error'),
+    'close_interrupted_tool_sequence': ('agent.message_sanitization', 'close_interrupted_tool_sequence'),
+    'coalesce_tool_call_id': ('agent.message_sanitization', 'coalesce_tool_call_id'),
+    'compose_user_api_content': ('agent.turn_context', 'compose_user_api_content'),
+    'compression_blocked_transiently': ('agent.conversation_compression', 'compression_blocked_transiently'),
+    'compression_skipped_due_to_lock': ('agent.conversation_compression', 'compression_skipped_due_to_lock'),
+    'context_compression_timed_out': ('agent.conversation_compression', 'context_compression_timed_out'),
+    'conversation_history_after_compression': ('agent.conversation_compression', 'conversation_history_after_compression'),
+    'env_var_enabled': ('utils', 'env_var_enabled'),
+    'estimate_messages_tokens_rough': ('agent.model_metadata', 'estimate_messages_tokens_rough'),
+    'estimate_request_tokens_rough': ('agent.model_metadata', 'estimate_request_tokens_rough'),
+    'estimate_usage_cost': ('agent.usage_pricing', 'estimate_usage_cost'),
+    'get_context_length_from_provider_error': ('agent.model_metadata', 'get_context_length_from_provider_error'),
+    'has_incomplete_scratchpad': ('agent.trajectory', 'has_incomplete_scratchpad'),
+    'is_output_cap_error': ('agent.model_metadata', 'is_output_cap_error'),
+    'is_repetition_dominated': ('agent.repetition_guard', 'is_repetition_dominated'),
+    'is_zai_coding_overload_error': ('agent.retry_utils', 'is_zai_coding_overload_error'),
+    'jittered_backoff': ('agent.retry_utils', 'jittered_backoff'),
+    'normalize_usage': ('agent.usage_pricing', 'normalize_usage'),
+    'parse_available_output_tokens_from_error': ('agent.model_metadata', 'parse_available_output_tokens_from_error'),
+    'reanchor_current_turn_user_idx': ('agent.turn_context', 'reanchor_current_turn_user_idx'),
+    'save_context_length': ('agent.model_metadata', 'save_context_length'),
+    'serialized_messages_bytes': ('agent.message_sanitization', 'serialized_messages_bytes'),
+    'splice_provider_projection': ('agent.provider_projection', 'splice_provider_projection'),
+    'zai_coding_overload_retry_ceiling': ('agent.retry_utils', 'zai_coding_overload_retry_ceiling'),
 }
 
 
@@ -2049,9 +1672,6 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     import importlib
     from hermes_cli.plugin_compat import warn_once
-
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
-
-
 # ---- END PLUGIN-COMPAT ----

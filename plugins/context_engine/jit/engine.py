@@ -145,14 +145,27 @@ class JitContextEngine(ContextEngine):
     ) -> List[Dict[str, Any]]:
         return messages
 
+    def _estimate_tokens(self, messages: List[Dict[str, Any]]) -> int:
+        total = 0
+        for m in messages:
+            c = m.get("content") or ""
+            if isinstance(c, str):
+                total += len(c) // 4 + 4
+            elif isinstance(c, list):
+                total += len(str(c)) // 4 + 4
+            if "tool_calls" in m:
+                total += len(str(m["tool_calls"])) // 4 + 4
+        return max(total, 1)
+
     def select_context(
         self,
         request_messages: List[Dict[str, Any]],
         *,
         incoming_message: Optional[Dict[str, Any]] = None,
+        budget_tokens: Optional[int] = None,
         **kwargs: Any,
     ) -> List[Dict[str, Any]]:
-        """Active Context Projection (Deterministic History Selection)."""
+        """Active Context Projection (Deterministic History Selection with Budget Enforcement)."""
         if not request_messages:
             return []
 
@@ -182,12 +195,43 @@ class JitContextEngine(ContextEngine):
                 sys_content = f"{sys_content.rstrip()}\n\n{capsule.strip()}"
         sys_msg["content"] = sys_content
 
-        # 4. Slice to the last N user turns and prune tool outputs
+        # 4. Slice turns with budget enforcement
+        effective_turns = self.keep_turns
         selected_history = self._slice_turns(
             other_msgs,
-            keep_turns=self.keep_turns,
+            keep_turns=effective_turns,
             prune_tools=True,
         )
+
+        # If budget_tokens is specified, enforce it strictly by stepping down keep_turns
+        if budget_tokens is not None and budget_tokens > 0:
+          while (
+              self._estimate_tokens([sys_msg] + selected_history)
+              > budget_tokens
+              and effective_turns > 0
+          ):
+            effective_turns -= 1
+            selected_history = self._slice_turns(
+                other_msgs,
+                keep_turns=effective_turns,
+                prune_tools=True,
+            )
+
+          # If still over budget even with 0 turns, clamp older tool outputs aggressively
+          if (
+              self._estimate_tokens([sys_msg] + selected_history)
+              > budget_tokens
+              and selected_history
+          ):
+            for m in selected_history:
+              if m.get("role") == "tool" and isinstance(m.get("content"), str):
+                if len(m["content"]) > 400:
+                  orig_len = len(m["content"])
+                  m["content"] = (
+                      m["content"][:300]
+                      + f"\n... [budget clamped by JIT context engine (original:"
+                      f" {orig_len} chars)]"
+                  )
 
         return [sys_msg] + selected_history
 
@@ -271,7 +315,7 @@ class JitContextEngine(ContextEngine):
         prune_tools: bool = True,
     ) -> List[Dict[str, Any]]:
         """Slice history to keep the last `keep_turns` user turns intact."""
-        if not messages:
+        if not messages or keep_turns <= 0:
             return []
 
         user_indices = [i for i, m in enumerate(messages) if m.get("role") == "user"]

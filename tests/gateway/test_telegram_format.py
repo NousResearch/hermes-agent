@@ -353,6 +353,46 @@ class TestStripMdv2:
     def test_plain_text_unchanged(self):
         assert _strip_mdv2("plain text") == "plain text"
 
+    def test_fenced_code_block(self):
+        """Fenced code blocks: keep body, drop fences."""
+        result = _strip_mdv2("```python\nprint(1)\n```")
+        assert result == "print(1)"
+
+    def test_inline_code(self):
+        """Inline code: drop backticks."""
+        result = _strip_mdv2("`inline code`")
+        assert result == "inline code"
+
+    def test_atx_headers(self):
+        """ATX headers: drop # prefix."""
+        assert _strip_mdv2("# Header") == "Header"
+        assert _strip_mdv2("## Sub Header") == "Sub Header"
+
+    def test_blockquotes(self):
+        """Blockquotes: drop > prefix."""
+        result = _strip_mdv2("> quoted text")
+        assert result == "quoted text"
+
+    def test_links(self):
+        """Links: keep text, drop URL."""
+        result = _strip_mdv2("[click here](http://example.com)")
+        assert result == "click here"
+
+    def test_strikethrough(self):
+        """Strikethrough: drop ~ markers."""
+        result = _strip_mdv2("~struck~")
+        assert result == "struck"
+
+    def test_spoiler(self):
+        """Spoiler: drop || markers."""
+        result = _strip_mdv2("||hidden||")
+        assert result == "hidden"
+
+    def test_orphan_fence(self):
+        """Orphan opening fence (no closing): remove entirely."""
+        result = _strip_mdv2("```python\nprint(1)")
+        assert "```" not in result
+
 
 # =========================================================================
 # Markdown table auto-wrap

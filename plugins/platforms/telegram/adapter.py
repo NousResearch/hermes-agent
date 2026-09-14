@@ -462,20 +462,33 @@ def _strip_mdv2(text: str) -> str:
 
     Also removes MarkdownV2 formatting markers so the fallback
     doesn't show stray syntax characters from format_message conversion.
+    Handles both inline and block-level constructs.
     """
     # Remove escape backslashes before special characters
     cleaned = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!\\])', r'\1', text)
-    # Remove standard markdown bold (**text** → text) BEFORE MarkdownV2 bold
+    # Fenced code blocks: keep body, drop fences (must come before inline code)
+    cleaned = re.sub(r'(?m)^\s*```[^\n]*\n([\s\S]*?)\n?\s*```\s*$', r'\1', cleaned)
+    # Orphan opening fences (no closing fence)
+    cleaned = re.sub(r'(?m)^\s*```[^\n]*$', '', cleaned)
+    # Inline code: drop backticks
+    cleaned = re.sub(r'`([^`]+)`', r'\1', cleaned)
+    # Remove standard markdown bold (**text** -> text) BEFORE MarkdownV2 bold
     cleaned = re.sub(r'\*\*([^*]+)\*\*', r'\1', cleaned)
     # Remove MarkdownV2 bold markers that format_message converted from **bold**
     cleaned = re.sub(r'\*([^*]+)\*', r'\1', cleaned)
     # Remove MarkdownV2 italic markers that format_message converted from *italic*
-    # Use word boundary (\b) to avoid breaking snake_case like my_variable_name
+    # Use word boundary to avoid breaking snake_case like my_variable_name
     cleaned = re.sub(r'(?<!\w)_([^_]+)_(?!\w)', r'\1', cleaned)
-    # Remove MarkdownV2 strikethrough markers (~text~ → text)
+    # Remove MarkdownV2 strikethrough markers (~text~ -> text)
     cleaned = re.sub(r'~([^~]+)~', r'\1', cleaned)
-    # Remove MarkdownV2 spoiler markers (||text|| → text)
+    # Remove MarkdownV2 spoiler markers (||text|| -> text)
     cleaned = re.sub(r'\|\|([^|]+)\|\|', r'\1', cleaned)
+    # ATX headers: drop # prefix
+    cleaned = re.sub(r'(?m)^\s*#{1,6}\s+(.+)$', r'\1', cleaned)
+    # Blockquotes: drop > prefix
+    cleaned = re.sub(r'(?m)^\s*>\s?', '', cleaned)
+    # Links: keep text, drop URL
+    cleaned = re.sub(r'\[([^\]]+)\]\([^)]*\)', r'\1', cleaned)
     return cleaned
 
 

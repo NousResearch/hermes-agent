@@ -495,7 +495,9 @@ def translate_gemini_response(resp: Dict[str, Any], model: str) -> SimpleNamespa
         text, is_thought = _part_text(part)
         if text is not None:
             pieces[is_thought].append(text)
-        elif fc := _part_function_call(part):
+        # A part may carry BOTH text and a functionCall (the streaming translator already handles
+        # that) — an elif here silently dropped the tool call in the non-streaming path.
+        if fc := _part_function_call(part):
             tool_calls.append(_tool_call_ns(str(fc["name"]), _dump_call_args(fc), index, _new_call_id(fc), _tool_call_extra_from_part(part)))
     finish_reason = "tool_calls" if tool_calls else _FINISH_REASON_MAP.get(str((cand or {}).get("finishReason") or "").upper(), "stop")
     usage = _usage_from_metadata((resp.get("usageMetadata") or {}) if cand is not None else {})
@@ -583,6 +585,13 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
                 slot = tool_call_indices[call_key] = {"index": len(tool_call_indices), "id": _new_call_id(fc), "last_arguments": ""}
             # Gemini re-sends the full args each event; emit only the new suffix.
             last_arguments = str(slot.get("last_arguments") or "")
+            if last_arguments and not args_str.startswith(last_arguments):
+                # Revised (not extended) arguments: an OpenAI-style consumer CONCATENATES argument
+                # deltas, so re-emitting full args as one delta would append them to the stale prefix
+                # and yield unparseable JSON. Restart the slot with a fresh id/index instead — the
+                # accumulator treats a new id as a new call and replaces the arguments wholesale.
+                slot = tool_call_indices[call_key] = {"index": len(tool_call_indices), "id": _new_call_id(fc), "last_arguments": ""}
+                last_arguments = ""
             slot["last_arguments"] = args_str
             delta = {"index": slot["index"], "id": slot["id"], "name": name, "extra_content": _tool_call_extra_from_part(part),
                      "arguments": args_str[len(last_arguments):] if args_str.startswith(last_arguments) else args_str}

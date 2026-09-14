@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 import asyncio
+import codecs
 import dataclasses
 import inspect
 import json
@@ -2623,6 +2624,8 @@ class GatewayTurnMixin:
                         return self._proxy_error_result(f"⚠️ Proxy error ({resp.status}): {error_text[:300]}")
 
                     buffer = ""
+                    import codecs as _codecs
+                    _sse_decoder = _codecs.getincrementaldecoder("utf-8")(errors="replace")
                     async for chunk in resp.content.iter_any():
                         if saw_done:
                             # A buggy upstream that holds the connection open after [DONE]
@@ -2630,7 +2633,9 @@ class GatewayTurnMixin:
                             break
                         if not _run_still_current():
                             return _stale_result("stream")
-                        buffer += chunk.decode("utf-8", errors="replace")
+                        # Decode incrementally: a multi-byte UTF-8 char split across network chunks
+                        # would otherwise become U+FFFD mojibake in the delivered response text.
+                        buffer += _sse_decoder.decode(chunk)
                         while "\n" in buffer:
                             line, buffer = buffer.split("\n", 1)
                             if _consume_sse_line(line):

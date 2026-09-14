@@ -172,8 +172,51 @@ _BLOCKED_PREFIXES = ("169.254.", "127.", "10.", *(f"172.{i}." for i in range(16,
                      "0.0.0.0", "::1", "fe80:", "fc00:", "fd00:")
 
 
+def _ip_is_blocked(ip: "ipaddress.IPv4Address | ipaddress.IPv6Address", *, localhost_mode: bool) -> bool:
+    """True when the address is internal/private/loopback (loopback allowed only in localhost mode)."""
+    if ip.is_loopback or ip.is_link_local or ip.is_private or ip.is_reserved or ip.is_unspecified:
+        return not (localhost_mode and ip.is_loopback)
+    return False
+
+
+def _literal_ip(hostname: str) -> Optional["ipaddress.IPv4Address | ipaddress.IPv6Address"]:
+    """Parse an IP literal including non-dotted IPv4 forms (decimal ``2130706433``, hex ``0x7f000001``,
+    shortened ``127.1``) that ``ipaddress.ip_address`` rejects but sockets/URL resolvers accept."""
+    try:
+        return ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+    packed = None
+    try:
+        if hostname.isdigit():  # decimal integer form
+            packed = int(hostname).to_bytes(4, "big")
+        elif hostname.lower().startswith("0x") and len(hostname) <= 10:  # hex form
+            packed = int(hostname, 16).to_bytes(4, "big")
+        else:
+            parts = hostname.split(".")
+            if 2 <= len(parts) <= 4 and all(p.isdigit() for p in parts) and all(int(p) <= 255 for p in parts):
+                # inet_aton shortened forms: 127.1 == 127.0.0.1
+                value = 0
+                for i, part in enumerate(parts):
+                    value = (value << 8) | int(part) if i == len(parts) - 1 else (value | int(part)) << 8
+                packed = value.to_bytes(4, "big")
+    except (ValueError, OverflowError):
+        return None
+    if packed is None:
+        return None
+    try:
+        return ipaddress.ip_address(packed)
+    except ValueError:
+        return None
+
+
 def is_safe_callback_url(url: str, *, localhost_mode: Optional[bool] = None) -> bool:
-    """True when a push callback URL is http(s) and not internal/private/loopback."""
+    """True when a push callback URL is http(s) and not internal/private/loopback.
+
+    Hostnames are RESOLVED and every resolved address checked — a DNS name pointing into a
+    private range (``...nip.io`` rebinding, internal.corp) or a non-dotted IPv4 literal
+    (``2130706433``, ``0x7f000001``, ``127.1``) must not bypass the blocklist.
+    """
     if localhost_mode is None:
         localhost_mode = localhost_only()
     try:
@@ -183,18 +226,28 @@ def is_safe_callback_url(url: str, *, localhost_mode: Optional[bool] = None) -> 
     hostname = (parsed.hostname or "") if parsed and parsed.scheme in ("http", "https") else ""
     if not hostname:
         return False
-    hostname_lower = hostname.lower()
+    hostname_lower = hostname.lower().rstrip(".")
     if hostname_lower == "localhost":
         return localhost_mode
     for prefix in _BLOCKED_PREFIXES:
         if hostname_lower.startswith(prefix.lower()):
             return bool(localhost_mode and prefix in ("127.", "::1"))
+    literal = _literal_ip(hostname)
+    if literal is not None:
+        return not _ip_is_blocked(literal, localhost_mode=localhost_mode)
+    # A hostname: resolve it (all records) — DNS must never launder a private target.
+    import socket
     try:
-        ip = ipaddress.ip_address(hostname)
-        if ip.is_loopback or ip.is_link_local or ip.is_private or ip.is_reserved:
-            return bool(localhost_mode and ip.is_loopback)
-    except ValueError:
-        pass  # a hostname, not an IP
+        infos = socket.getaddrinfo(hostname_lower, None, proto=socket.IPPROTO_TCP)
+    except (socket.gaierror, OSError):
+        return False  # unresolvable callback can never be delivered anyway
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if _ip_is_blocked(ip, localhost_mode=localhost_mode):
+            return False
     return True
 
 

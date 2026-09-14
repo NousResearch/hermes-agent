@@ -118,6 +118,32 @@ function reconcileLocalAssistantTimeline(nextMessages: ChatMessage[], currentMes
   })
 }
 
+/**
+ * True when the assistant row already looks like a successfully settled reply
+ * (visible text and/or finished tool work). Used so a retained local error from
+ * a recovered provider attempt is not re-grafted onto a successful completion
+ * during session.info hydration (#87248).
+ */
+export function assistantLooksSuccessfullySettled(message: ChatMessage): boolean {
+  if (message.role !== 'assistant' || message.error || message.hidden || message.pending) {
+    return false
+  }
+
+  if (chatMessageText(message).trim()) {
+    return true
+  }
+
+  return message.parts.some(part => {
+    if (part.type !== 'tool-call') {
+      return false
+    }
+
+    const status = 'status' in part ? String(part.status ?? '') : ''
+
+    return status === 'complete' || status === 'done' || status === 'error' || status === 'failed'
+  })
+}
+
 export function preserveLocalAssistantErrors(
   nextMessages: ChatMessage[],
   currentMessages: ChatMessage[]
@@ -133,6 +159,13 @@ export function preserveLocalAssistantErrors(
     const local = localById.get(message.id)
 
     if (!local || local.role !== 'assistant' || !local.error || local.hidden) {
+      return message
+    }
+
+    // Successful failover / recovery: the hydrated row is already a real reply.
+    // Re-grafting the earlier billing/provider error makes a one-shot failure
+    // look permanent across every session.info flush (#87248).
+    if (assistantLooksSuccessfullySettled(message)) {
       return message
     }
 

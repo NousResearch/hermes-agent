@@ -212,27 +212,22 @@ def test_gemini_omni_flash_v11_is_dual_modality():
     assert meta["image_endpoint"] == "google/gemini-omni-flash/v1.1/image-to-video"
 
 
-def test_text_only_job_errors_cleanly_for_i2v_only_family():
-    """Catalog-shape guard: a family without a text endpoint must error
-    cleanly instead of submitting to a None endpoint (kept alive with a
-    synthetic family now that every cataloged family is dual-modality)."""
-    from plugins.video_gen.fal import _build_payload
+def test_text_only_job_errors_cleanly_for_i2v_only_family(monkeypatch):
+    """Catalog-shape guard: a family without a text endpoint must error cleanly
+    instead of submitting to a None endpoint. Every cataloged family is now
+    dual-modality, so the guard is exercised with a synthetic family."""
+    from plugins.video_gen import fal as fal_plugin
+    from plugins.video_gen.fal import FALVideoGenProvider, _family
 
-    synthetic = {
-        "text_endpoint": None,
-        "image_endpoint": "example/i2v-only/image-to-video",
-        "durations": (3, 10),
-        "duration_int": True,
-        "seed": False,
-    }
-    # Payload building for the i2v path must still work.
-    p = _build_payload(
-        synthetic, prompt="x", image_url="https://i.png", duration=None,
-        aspect_ratio="16:9", resolution="720p", negative_prompt=None,
-        audio=None, seed=None,
-    )
-    assert p["image_url"] == "https://i.png"
-    assert not synthetic.get("text_endpoint")
+    synthetic = _family("Synthetic i2v", "~1s", "cheap", "test", None, "example/i2v-only/image-to-video", durations=(3, 10), duration_int=True)
+    monkeypatch.setattr(fal_plugin, "_fal_video_available", lambda: True)
+    monkeypatch.setattr(fal_plugin, "_load_fal_client", lambda: object())
+    monkeypatch.setattr(fal_plugin, "_resolve_family", lambda explicit: ("synthetic", synthetic))
+    monkeypatch.setattr(fal_plugin, "_submit_fal_video_request", lambda *a, **k: pytest.fail("submitted to a None endpoint"))
+
+    result = FALVideoGenProvider().generate("a dog running")
+    assert result["success"] is False
+    assert result["error_type"] == "modality_unsupported"
 
 
 def test_every_family_has_required_metadata():

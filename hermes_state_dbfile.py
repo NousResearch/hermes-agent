@@ -515,7 +515,7 @@ def quarantine_cross_process_lock(path: Path, timeout: float = 5.0):
             handle.close()
 
 
-def quarantine_invalid_state_db(path: Path, *, already_locked: bool = False) -> Optional[Path]:
+def quarantine_invalid_state_db(path: Path, *, already_locked: bool = False, timeout: float = 5.0) -> Optional[Path]:
     """Move a non-SQLite state.db (zeroed or clobbered page 0) aside with its -wal/-shm sidecars,
     preserving bytes; return the quarantine path.  A cross-process lock stops two concurrent
     startups racing: the second re-checks under the lock and finds the file gone (or fresh)."""
@@ -552,13 +552,13 @@ def quarantine_invalid_state_db(path: Path, *, already_locked: bool = False) -> 
 
     if already_locked:
         return _do_quarantine()
-    with quarantine_cross_process_lock(path) as acquired:
+    with quarantine_cross_process_lock(path, timeout=timeout) as acquired:
         if not acquired:
-            logger.error("quarantine lock for %s not acquired within 5s — refusing to "
+            logger.error("quarantine lock for %s not acquired within %.1fs — refusing to "
                          "quarantine without the cross-process lock. The invalid file "
                          "is left in place. If sessions fail to load, restore from "
                          "state-snapshots via `hermes snapshot list` / `hermes snapshot restore <id>`.",
-                         path)
+                         path, timeout)
             return None
         return _do_quarantine()
 

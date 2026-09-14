@@ -88,6 +88,25 @@ def _configured_transcript_limit(key: str, fallback: int = _MAX_SAFE_MESSAGES) -
         return fallback
 
 
+def _configured_quarantine_lock_timeout(fallback: float = 5.0) -> float:
+    """``sessions.quarantine_lock_timeout`` from config.yaml (seconds), else *fallback*.
+
+    Budget for the cross-process quarantine fence taken while opening a zeroed/invalid
+    state.db (#110607): the parameter always existed on ``quarantine_cross_process_lock``
+    but the production call site never passed one, pinning the wait at 5s regardless of
+    how slow the quarantining peer is.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        value = (load_config_readonly().get("sessions") or {}).get("quarantine_lock_timeout")
+        if value is None:
+            return fallback
+        timeout = float(value)
+        return timeout if timeout > 0 else fallback
+    except Exception:
+        return fallback
+
+
 def resolved_max_resume_messages() -> int:
     return _configured_transcript_limit("max_resume_messages")
 
@@ -573,16 +592,18 @@ class SessionDB(
             # Serialize zero-byte check, quarantine, connect and schema commit so concurrent
             # openers don't race the absent-path -> schema-commit window.
             if not self.db_path.exists() or has_invalid_sqlite_header_preopen(self.db_path):
-                with quarantine_cross_process_lock(self.db_path) as lock_acquired:
+                lock_timeout = _configured_quarantine_lock_timeout()
+                with quarantine_cross_process_lock(self.db_path, timeout=lock_timeout) as lock_acquired:
                     if not lock_acquired:
                         logger.warning(
-                            "startup quarantine lock for %s not acquired within 5s; proceeding",
-                            self.db_path,
+                            "startup quarantine lock for %s not acquired within %.1fs; proceeding",
+                            self.db_path, lock_timeout,
                         )
-                    self._handle_quarantine_if_invalid(already_locked=lock_acquired)
+                    self._handle_quarantine_if_invalid(already_locked=lock_acquired, timeout=lock_timeout)
                     self._connect_and_init_with_lock_patience()
             else:
-                self._handle_quarantine_if_invalid(already_locked=False)
+                self._handle_quarantine_if_invalid(already_locked=False,
+                                                   timeout=_configured_quarantine_lock_timeout())
                 self._connect_and_init_with_lock_patience()
         except sqlite3.DatabaseError as exc:
             # A malformed schema fails on the very first statement (before _init_schema), so the
@@ -642,7 +663,7 @@ class SessionDB(
         conn.row_factory = sqlite3.Row
         return conn
 
-    def _handle_quarantine_if_invalid(self, already_locked: bool = False) -> None:
+    def _handle_quarantine_if_invalid(self, already_locked: bool = False, timeout: float = 5.0) -> None:
         """Quarantine a zero-byte/headerless state.db so a fresh one can open; if quarantine failed,
         raise the clear message instead of opening the zeroed file."""
         if not (self.db_path.exists() and has_invalid_sqlite_header_preopen(self.db_path)):
@@ -651,7 +672,7 @@ class SessionDB(
             zsize = self.db_path.stat().st_size
         except OSError:
             zsize = -1
-        qpath = quarantine_invalid_state_db(self.db_path, already_locked=already_locked)
+        qpath = quarantine_invalid_state_db(self.db_path, already_locked=already_locked, timeout=timeout)
         msg = (
             f"state.db has no SQLite header ({zsize} bytes). "
             f"Preserved at {qpath or '(quarantine failed — file left in place)'}. "

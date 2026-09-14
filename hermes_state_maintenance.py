@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from hermes_state_common import (
     AUTO_VACUUM_MIN_FREELIST_RATIO, _id_chunks, _placeholders, _sql_session_last_active, escape_like as _escape_like
 )
+from hermes_startup_watchdog import report_startup_progress
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
@@ -397,8 +398,14 @@ class SessionMaintenanceMixin:
                 result["skipped"] = True
                 return result
             # Prune first: orphans closed below get a full retention window.
+            # Startup-watchdog leases: each long step is I/O-bound (near-zero CPU), which the
+            # watchdog's CPU fallback misreads as a parked deadlock. Leases are clamped to
+            # _MAX_LEASE_S=900 per call, so a multi-minute step renews per step rather than
+            # once at entry. No-op when the watchdog is not armed; never raises.
+            report_startup_progress(900.0, phase="state_db_auto_prune")
             result["pruned"] = pruned = self.prune_sessions(
                 older_than_days=retention_days, sessions_dir=sessions_dir, exclude_active_write_guards=True)
+            report_startup_progress(900.0, phase="state_db_auto_sweep")
             closed = self.sweep_orphaned_sessions(
                 max_idle_seconds=float(retention_days) * 86400.0,
                 sources=self._AUTO_PRUNE_STALE_OPEN_SOURCES, exclude_pinned=True,
@@ -413,6 +420,9 @@ class SessionMaintenanceMixin:
                 result["freelist_ratio"] = ratio = self._freelist_ratio()
                 if ratio is None or ratio > min_vacuum_freelist_ratio:
                     try:
+                        # VACUUM rewrites every page with ~zero CPU: renew the lease here so
+                        # a multi-minute rewrite on a large state.db never outlives the clamp.
+                        report_startup_progress(900.0, phase="state_db_auto_vacuum")
                         self.vacuum()
                         result["vacuumed"] = True
                         self.set_meta("last_vacuum", str(now))

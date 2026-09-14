@@ -1,0 +1,33 @@
+1|#
+2|# docker-compose.macos.yml — macOS Docker Desktop compatible
+3|#
+4|# Docker Desktop for Mac runs containers inside a Linux VM.  Unlike native
+5|# Linux Docker, `network_mode: host` maps to the *VM's* network namespace,
+6|# not the Mac host.  Ports bound inside the VM are invisible to the Mac
+7|# browser, and `ports:` mappings are silently ignored when host networking
+8|# is active.
+9|#
+10|# This override removes `network_mode: host` and uses explicit port
+11|# mappings so the dashboard is reachable from the Mac at
+12|# http://localhost:9119.
+13|#
+14|# Usage:
+15|#   HERMES_UID=$(id -u) HERMES_GID=$(id -g) \
+16|#     docker compose -f docker-compose.yml -f docker-compose.macos.yml up -d
+17|#
+18|
+19|services:
+20|  gateway:
+21|    network_mode: bridge
+22|    # Uncomment to expose the OpenAI-compatible API server on the Mac host:
+23|    # ports:
+24|    #   - "127.0.0.1:9090:9090"
+25|
+26|  dashboard:
+27|    network_mode: bridge
+28|    environment:
+29|      - HERMES_DASHBOARD_HOST=0.0.0.0
+30|    ports:
+31|      - "127.0.0.1:9119:9119"
+32|    command: ["dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open"]
+33|

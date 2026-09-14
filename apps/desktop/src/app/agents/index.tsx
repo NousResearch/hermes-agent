@@ -1,4 +1,4 @@
-import { compactNumber } from '@hermes/shared'
+import { compactNumber, type SubagentStatus } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { type ReactNode, useEffect, useMemo, useState } from 'react'
 
@@ -14,41 +14,57 @@ import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import {
   $subagentsBySession,
+  activeSubagentCount,
   allSubagents,
   buildSubagentTree,
+  failedSubagentCount,
+  isSubagentActive,
   type SubagentNode,
-  type SubagentStatus,
   type SubagentStreamEntry
 } from '@/store/subagents'
 
 import { Panel, PanelEmpty, PanelHeader } from '../overlays/panel'
 
+// Every backend status, named: `error` and `timeout` are failures the child
+// reports under their own names, not statuses to fold into `running`.
+const STATUS_TONE = {
+  completed: 'done',
+  error: 'failed',
+  failed: 'failed',
+  interrupted: 'failed',
+  queued: 'active',
+  running: 'active',
+  timeout: 'failed'
+} satisfies Record<SubagentStatus, 'active' | 'done' | 'failed'>
+
 // Mirrors statusGlyph() in tool-fallback.tsx so subagent rows speak the
 // same visual vocabulary as the chat tool blocks.
 function statusGlyph(status: SubagentStatus, a: Translations['agents']): ReactNode {
-  if (status === 'running' || status === 'queued') {
+  const tone = STATUS_TONE[status]
+
+  if (tone === 'active') {
     return (
       <GlyphSpinner
-        ariaLabel={a.running}
+        ariaLabel={status === 'queued' ? a.queued : a.running}
         className="size-3.5 shrink-0 text-[0.95rem] text-muted-foreground/80"
         spinner="breathe"
       />
     )
   }
 
-  if (status === 'failed' || status === 'interrupted') {
+  if (tone === 'failed') {
     return <AlertCircle aria-label={a.failed} className="size-3.5 shrink-0 text-destructive" />
   }
 
   return <CheckCircle2 aria-label={a.done} className="size-3.5 shrink-0 text-emerald-600/85 dark:text-emerald-400/85" />
 }
 
-const STREAM_TONE: Record<SubagentStreamEntry['kind'], string> = {
+const STREAM_TONE = {
   progress: 'text-muted-foreground/75',
   summary: 'text-foreground/85',
   thinking: 'text-muted-foreground/80',
   tool: 'text-foreground/85'
-}
+} satisfies Record<SubagentStreamEntry['kind'], string>
 
 function streamGlyph(entry: SubagentStreamEntry): ReactNode {
   if (entry.isError) {
@@ -153,7 +169,7 @@ function groupDelegations(roots: readonly SubagentNode[]): RootGroup[] {
 
   for (const node of roots) {
     // Exact grouping when the backend tags workers with their batch id —
-    // concurrent or nested fan-outs of the same shape must not merge.
+    // concurrent or nested fan-outs of the same size must not merge.
     if (node.delegationId) {
       const byId = groups.find(g => g.id === `delegation:${node.delegationId}`)
 
@@ -174,17 +190,17 @@ function groupDelegations(roots: readonly SubagentNode[]): RootGroup[] {
       continue
     }
 
-    // Older backends (no delegation_id): heuristic grouping by shape + time.
+    // Older backends (no delegation_id): heuristic grouping by size + time.
     const prev = groups.at(-1)
     const prevTail = prev?.nodes.at(-1)
     const closeInTime = prevTail ? Math.abs(node.startedAt - prevTail.startedAt) <= 5_000 : false
 
-    const sameShape =
+    const sameFanOut =
       prev && !prev.id.startsWith('delegation:') && node.taskCount > 1 && prev.taskCount === node.taskCount
 
     const uniqueStep = prev ? !prev.nodes.some(item => item.taskIndex === node.taskIndex) : false
 
-    if (prev && sameShape && closeInTime && uniqueStep) {
+    if (prev && sameFanOut && closeInTime && uniqueStep) {
       prev.nodes.push(node)
 
       continue
@@ -209,12 +225,11 @@ function SubagentTree({ tree }: { tree: SubagentNode[] }) {
   const groups = useMemo(() => groupDelegations(tree), [tree])
   const [nowMs, setNowMs] = useState(() => Date.now())
 
-  const active = flat.filter(n => n.status === 'running' || n.status === 'queued').length
-  const failed = flat.filter(n => n.status === 'failed' || n.status === 'interrupted').length
+  const active = activeSubagentCount(flat)
+  const failed = failedSubagentCount(flat)
   const tools = flat.reduce((sum, n) => sum + (n.toolCount ?? 0), 0)
   const files = flat.reduce((sum, n) => sum + n.filesRead.length + n.filesWritten.length, 0)
   const tokens = flat.reduce((sum, n) => sum + (n.inputTokens ?? 0) + (n.outputTokens ?? 0), 0)
-  const cost = flat.reduce((sum, n) => sum + (n.costUsd ?? 0), 0)
 
   const visible = usePaneVisible()
 
@@ -244,8 +259,7 @@ function SubagentTree({ tree }: { tree: SubagentNode[] }) {
     failed > 0 ? t.agents.failedCount(failed) : '',
     tools > 0 ? t.agents.toolsCount(tools) : '',
     files > 0 ? t.agents.filesCount(files) : '',
-    tokens > 0 ? fmtTokens(tokens, t.agents) : '',
-    cost > 0 ? `$${cost.toFixed(2)}` : ''
+    tokens > 0 ? fmtTokens(tokens, t.agents) : ''
   ].filter(Boolean)
 
   return (
@@ -269,7 +283,7 @@ function DelegationGroup({ group, nowMs }: { group: RootGroup; nowMs: number }) 
     return <SubagentRow node={group.nodes[0]!} nowMs={nowMs} />
   }
 
-  const activeWorkers = group.nodes.filter(n => n.status === 'running' || n.status === 'queued').length
+  const activeWorkers = activeSubagentCount(group.nodes)
 
   return (
     <section className="grid min-w-0 gap-3">
@@ -322,7 +336,7 @@ function StreamLine({
 
 export function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: number; nowMs: number }) {
   const { t } = useI18n()
-  const running = node.status === 'running' || node.status === 'queued'
+  const running = isSubagentActive(node.status)
   const elapsed = useElapsedSeconds(running, `subagent:${node.id}`, node.startedAt)
 
   const durationSeconds =

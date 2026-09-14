@@ -6,6 +6,7 @@ import { $backgroundStatusBySession } from '@/store/composer-status'
 import { $goalsBySession } from '@/store/goals'
 import { $sessionControlBySession } from '@/store/session-control'
 import { $subagentsBySession, upsertSubagent } from '@/store/subagents'
+import { subagentEvent } from '@/store/subagents.test-util'
 import { $todosBySession } from '@/store/todos'
 
 import { QueuePanel } from '../queue-panel'
@@ -48,7 +49,7 @@ it('auto-expands only todos and keeps other groups closed as activity arrives', 
   $backgroundStatusBySession.set({
     owner: [{ id: 'process', type: 'background', state: 'running', title: 'Background process' }]
   })
-  upsertSubagent('owner', { subagent_id: 'worker', goal: 'Worker task' })
+  upsertSubagent('owner', subagentEvent({ subagent_id: 'worker', goal: 'Worker task' }))
   const view = render(stack())
 
   expect(screen.getByText('Visible todo')).toBeTruthy()
@@ -57,7 +58,14 @@ it('auto-expands only todos and keeps other groups closed as activity arrives', 
     expect(screen.queryByText(text)).toBeNull()
   }
 
-  act(() => upsertSubagent('owner', { subagent_id: 'worker', text: 'Progress arrived' }, false, 'subagent.progress'))
+  act(() =>
+    upsertSubagent(
+      'owner',
+      subagentEvent({ subagent_id: 'worker', text: 'Progress arrived' }),
+      false,
+      'subagent.progress'
+    )
+  )
   view.rerender(stack(true))
   expect(screen.queryByText('Worker task')).toBeNull()
   expect(screen.queryByText('Queued request')).toBeNull()

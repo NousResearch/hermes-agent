@@ -196,6 +196,7 @@ class HostedRoomService:
         target_url: str | None = None,
         catalog: GatewayRoomCatalog | None = None,
         expected_grant_sha256: str | None = None,
+        setup_guard=None,
     ) -> None:
         """Persist and publish one verified route with its scoped grant."""
         if target_url is None or catalog is None:
@@ -224,11 +225,15 @@ class HostedRoomService:
         )
         with self._policy_lock:
             key = (room_id, member_id)
+            if setup_guard is not None:
+                with hosted_rooms._transaction(self.db_path, immediate=True) as conn:
+                    previous = setup_guard(conn, None)
+            else:
+                previous = hosted_room_links.load_room_link(
+                    self.db_path, room_id=room_id, member_id=member_id
+                )
             if hosted_room_link_records.room_link_retirement_started(self.db_path, room_id=room_id):
                 raise hosted_rooms.HostedRoomError("Group Chat route registration is fenced")
-            previous = hosted_room_links.load_room_link(
-                self.db_path, room_id=room_id, member_id=member_id
-            )
             previous_hash = hashlib.sha256(previous.grant.encode()).hexdigest() if previous else ""
             incoming_hash = hashlib.sha256(route.grant.encode()).hexdigest()
             if expected_grant_sha256 is not None and previous_hash not in {
@@ -256,7 +261,8 @@ class HostedRoomService:
                     if not _grant_revoke_is_terminal(exc):
                         raise
             hosted_room_links.save_room_link(
-                self.db_path, stored, expected_grant_sha256=previous_hash
+                self.db_path, stored, expected_grant_sha256=previous_hash,
+                **({'setup_guard': setup_guard} if setup_guard is not None else {}),
             )
             if hosted_room_link_records.room_link_retirement_started(self.db_path, room_id=room_id):
                 raise hosted_rooms.HostedRoomError(

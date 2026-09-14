@@ -1403,9 +1403,3 @@ from typing import NoReturn  # noqa: F401,E402
 from contextlib import contextmanager  # noqa: F401,E402
 import time  # noqa: F401,E402
 # ---- END PLUGIN-COMPAT ----
-
-
-class RoomQuarantinedError(AuthorityConflictError):
-    """Raised when an unsafe legacy takeover must remain read-only."""
-
-    reason = "room_authority_quarantined"

@@ -133,12 +133,14 @@ def save_room_link(
     link: StoredRoomLink,
     *,
     expected_grant_sha256: str | None = None,
+    setup_guard=None,
 ) -> None:
     hosted_room_link_records.upsert_room_link_record(
         db_path,
         record=link.as_record(),
         max_links=MAX_LINKS,
         expected_grant_sha256=expected_grant_sha256,
+        **({'setup_guard': setup_guard} if setup_guard is not None else {}),
     )
     if os.name == "posix":
         try:

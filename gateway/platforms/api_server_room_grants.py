@@ -68,6 +68,24 @@ def _local_target(claims: dict[str, Any] | None, _api_request_profile) -> tuple[
     return profile, installation_id
 
 
+def _canonical_room_peer(self, profile: str) -> bool:
+    """A missing canonical owner must not fall back to legacy Serve."""
+    from gateway.session_authorities import active_authority
+    runner = self.gateway_runner
+    with self._profile_scope(profile):
+        return (active_authority(runner) is not None
+                or getattr(runner, 'session_authorities', None) is not None
+                or getattr(runner, 'session_authority', None) is not None)
+
+
+def _room_peer_unavailable(self, profile: str, *, _openai_error):
+    if _canonical_room_peer(self, profile):
+        return _json_error(
+            _openai_error, 'Canonical RoomLink execution and controls are not supported.',
+            code='canonical_room_peer_unsupported', status=409)
+    return None
+
+
 def _local_room_catalog(self, profile: str, installation_id: str) -> tuple[dict, dict]:
     """Return ``(execution_policy, catalog)`` for this gateway's *profile*."""
     from gateway.hosted_room_peer import PROTOCOL_VERSION, catalog_mapping
@@ -76,7 +94,8 @@ def _local_room_catalog(self, profile: str, installation_id: str) -> tuple[dict,
         execution_policy = execution_policy_mapping(target_profile=profile)
     catalog = catalog_mapping(
         installation_id=installation_id, protocol_versions=(PROTOCOL_VERSION,), link_modes=("direct",),
-        persistent_process=True, text=True, attachments=False, target_profile=profile,
+        persistent_process=True, text=not _canonical_room_peer(self, profile),
+        attachments=False, target_profile=profile,
         execution_policy=execution_policy)
     return execution_policy, catalog
 
@@ -188,6 +207,9 @@ async def _handle_room_member_invitation(
         from gateway.hosted_room_execution_policy import execution_policy_mapping
 
         profile = _effective_room_profile(_api_request_profile)
+        unavailable = _room_peer_unavailable(self, profile, _openai_error=_openai_error)
+        if unavailable is not None:
+            return unavailable
         target_install_id = hosted_rooms.local_authority_gateway_id()
         ttl = float(body.get("ttl_seconds", 3600))
         if not 60 <= ttl <= 24 * 60 * 60:

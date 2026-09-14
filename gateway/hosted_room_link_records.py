@@ -179,9 +179,12 @@ def upsert_room_link_record(
     record: Mapping[str, Any],
     max_links: int,
     expected_grant_sha256: str | None = None,
+    setup_guard=None,
 ) -> None:
     """Atomically insert or replace one private RoomLink record."""
     with _transaction(db_path, immediate=True) as conn:
+        if setup_guard is not None:
+            setup_guard(conn, record)
         fenced = conn.execute(
             "SELECT 1 FROM hosted_room_disband_fences WHERE room_id=?",
             (record["room_id"],),

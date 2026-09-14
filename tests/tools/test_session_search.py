@@ -449,6 +449,17 @@ class TestShapePrecedence:
 # =========================================================================
 
 class TestReadShape:
+    def test_current_unflushed_session_id_has_actionable_error(self, db):
+        for kwargs in ({}, {"around_message_id": 1}):
+            result = json.loads(session_search(
+                session_id="s_live_unflushed", current_session_id="s_live_unflushed",
+                db=db, **kwargs,
+            ))
+
+            assert result["success"] is False
+            assert "current live session" in result["error"].lower()
+            assert "not been flushed" in result["error"].lower()
+
     def test_read_returns_full_session(self, db):
         _seed_modpack_sessions(db)
         result = json.loads(session_search(session_id="s_oldest", db=db))
@@ -1158,4 +1169,3 @@ class TestNewResetLineageBrowse:
         result = json.loads(session_search(db=db, current_session_id="s_other"))
         sids = [r["session_id"] for r in result["results"]]
         assert "s_legacy_child" in sids
-

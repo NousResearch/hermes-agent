@@ -72,3 +72,35 @@ it('keeps every public member reply readable in room arrival order across interl
     expect(text).toContain(name)
   }
 })
+
+it('labels source-scoped members by Bot Mode title, not a cloned Hermes display_name', async () => {
+  Element.prototype.scrollIntoView = vi.fn()
+  const { $groupChats } = await import('./group-chat')
+  const { $botMeta } = await import('./data')
+  const { GroupChatWorkspace } = await import('./group-chat-view')
+
+  $botMeta.set({ 'local::atlas': { title: 'Atlas' }, 'local::steward': { title: 'Steward' } })
+  $groupChats.set({
+    Room: {
+      log: [
+        { at: 1, from: { kind: 'user' as const, name: 'You' }, id: 'u1', text: 'status?' },
+        { at: 2, from: { kind: 'member' as const, name: 'atlas' }, id: 'm1', text: 'clear' },
+        { at: 3, from: { kind: 'member' as const, name: 'steward' }, id: 'm2', text: 'holding' }
+      ],
+      sessions: {},
+      watermarks: {}
+    }
+  })
+
+  const members = [
+    { connectionId: 'local', display_name: 'Hermes', name: 'atlas', sourceScoped: true },
+    { connectionId: 'local', display_name: 'Hermes', name: 'steward', sourceScoped: true }
+  ]
+
+  const { container } = render(<GroupChatWorkspace group="Room" members={members} />)
+  const text = container.textContent || ''
+
+  expect(text).toContain('Atlas')
+  expect(text).toContain('Steward')
+  expect(text).not.toMatch(/\bHermes\b/)
+})

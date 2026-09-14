@@ -163,6 +163,26 @@ describe('speaker labels', () => {
 
     expect(chat.groupSpeakerLabel('default')).toBe('Hermes')
   })
+
+  it('reads Bot Mode titles stored under the connection-scoped meta key', async () => {
+    const { chat } = await loadRoom()
+    const data = await import('./data')
+
+    // Desktop annotates every live roster row sourceScoped (union merge).
+    // saveBotMeta / mergeServerMeta then file the title at connectionId::name,
+    // while a cloned profile can still carry display_name "Hermes" from default.
+    data.$lastRoster.set([
+      {
+        connectionId: 'local',
+        display_name: 'Hermes',
+        name: 'atlas',
+        sourceScoped: true
+      }
+    ])
+    data.$botMeta.set({ 'local::atlas': { title: 'Atlas' } })
+
+    expect(chat.groupSpeakerLabel('atlas')).toBe('Atlas')
+  })
 })
 
 // #93127: duplicate room delivery. Two raceable paths existed: a member turn

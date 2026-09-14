@@ -154,4 +154,6 @@ Available in `hybrid` and `tools` memory modes:
 
 ## Client Version
 
-Requires `hindsight-client >= 0.6.1`. The plugin auto-upgrades on session start if an older version is detected.
+Requires `hindsight-client >= 0.10.0`. The plugin auto-upgrades on session start if an older version is detected.
+
+Async retains carry a deterministic `operation_id` (derived from bank, document, update mode and content), so a retried or replayed retain is collapsed server-side instead of extracted twice. Servers older than 0.8.6 ignore the field.

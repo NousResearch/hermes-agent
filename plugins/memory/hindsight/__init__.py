@@ -20,6 +20,8 @@ import queue
 import sys
 import threading
 import time
+import uuid
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -47,6 +49,13 @@ from .settings import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Namespace for deterministic retain operation ids: the same (bank, document, mode, content)
+# always maps to the same id, so a resubmission collapses into the original server operation.
+_RETAIN_OP_NAMESPACE = uuid.UUID("6f1c3a52-9d4e-4b7a-8e2f-3c5d7a9b1e04")
+# Failed async append deltas kept for replay on the next turn.
+# ponytail: bounded in-memory buffer; oldest deltas drop past this (and on exit) if the server stays down.
+_MAX_FAILED_APPENDS = 16
 
 _LOCAL_MODES = {"local", "local_embedded"}
 _RETAIN_CONTEXT_DEFAULT = "conversation between Hermes Agent and the User"
@@ -378,6 +387,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._turn_counter = self._turn_index = 0
         self._session_turns: list[str] = []  # ALL turns for the session
         self._last_retained_turn_count = 0  # append-mode delta watermark
+        self._failed_append_jobs: deque[Callable[[], None]] = deque(maxlen=_MAX_FAILED_APPENDS)
         # Server-side async retain ops still in flight: aretain_batch returns on
         # *acceptance*, not durability, so the prefetch gates on these via
         # get_operation_status (a drained local queue is not a read-after-write signal).
@@ -1034,10 +1044,11 @@ class HindsightMemoryProvider(MemoryProvider):
         return item
 
     def _retain_batch(self, item: dict, *, bank_id: str, document_id: str | None = None,
-                      retain_async: bool | None = None):
-        """Dispatch one item via aretain_batch (bank_id/document_id/retain_async are
-        call-level args, never item keys)."""
-        kwargs: Dict[str, Any] = {"bank_id": bank_id, "items": [item], "document_id": document_id, "retain_async": retain_async}
+                      retain_async: bool | None = None, operation_id: str | None = None):
+        """Dispatch one item via aretain_batch (bank_id/document_id/retain_async/operation_id
+        are call-level args, never item keys)."""
+        kwargs: Dict[str, Any] = {"bank_id": bank_id, "items": [item], "document_id": document_id,
+                                  "retain_async": retain_async, "operation_id": operation_id}
         kwargs = {k: v for k, v in kwargs.items() if v is not None}
         return self._run_hindsight_operation(lambda client: client.aretain_batch(**kwargs))
 
@@ -1050,13 +1061,26 @@ class HindsightMemoryProvider(MemoryProvider):
         lineage = (("session", self._session_id), ("parent", self._parent_session_id))
         tags = [f"{kind}:{sid}" for kind, sid in lineage if sid] or None
         bank_id, retain_async, retain_context = self._bank_id, self._retain_async, self._retain_context
+        # Only async retains honour operation_id; the id is fixed now so every replay reuses it.
+        operation_id = str(uuid.uuid5(
+            _RETAIN_OP_NAMESPACE, f"{bank_id}\n{document_id}\n{update_mode or 'replace'}\n{content}",
+        )) if retain_async else None
 
         def _job() -> None:
             item = self._build_retain_kwargs(content, context=retain_context, metadata=metadata,
                                              tags=tags, update_mode=update_mode)
-            logger.debug("Hindsight %s: bank=%s, doc=%s, mode=%s, async=%s, content_len=%d, num_turns=%d",
-                         label, bank_id, document_id, update_mode, retain_async, len(content), len(turns))
-            resp = self._retain_batch(item, bank_id=bank_id, document_id=document_id, retain_async=retain_async)
+            logger.debug("Hindsight %s: bank=%s, doc=%s, mode=%s, async=%s, op=%s, content_len=%d, num_turns=%d",
+                         label, bank_id, document_id, update_mode, retain_async, operation_id, len(content), len(turns))
+            try:
+                resp = self._retain_batch(item, bank_id=bank_id, document_id=document_id,
+                                          retain_async=retain_async, operation_id=operation_id)
+            except Exception:
+                # The watermark already moved past this delta, so a lost append would be
+                # gone for good. Replay it (same bytes + op id -> idempotent) on the next turn.
+                # Replace retains need no buffer: the next one re-sends the whole session.
+                if update_mode == "append" and operation_id:
+                    self._failed_append_jobs.append(_job)
+                raise
             # Async retains are only *accepted* here; track the op id(s) so the
             # next-turn prefetch can wait for true server-side completion.
             if retain_async and track_ops:
@@ -1102,6 +1126,9 @@ class HindsightMemoryProvider(MemoryProvider):
                 self._status_callback(f"{_HINDSIGHT_GLYPH} Hindsight — saving to memory…")
             except Exception:
                 logger.debug("Retain indicator emit failed (non-fatal)", exc_info=True)
+        # Earlier failed deltas go first so the document still grows in turn order.
+        while self._failed_append_jobs:
+            self._enqueue_retain(self._failed_append_jobs.popleft())
         self._enqueue_retain(job)
         # Advance the watermark only after the delta is queued so a later retain
         # doesn't re-ship turns already handed to the writer.

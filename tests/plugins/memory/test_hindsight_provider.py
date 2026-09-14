@@ -12,6 +12,7 @@ import stat
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -714,6 +715,41 @@ class TestPrefetchServerRetainVisibility:
         provider.sync_turn("hello", "world")
         provider._retain_queue.join()
         assert "op-async-1" in provider._pending_retain_ops
+
+    def test_async_retain_sends_deterministic_operation_id(self, provider):
+        provider._client.aretain_batch = AsyncMock(return_value=SimpleNamespace(operation_id=None, operation_ids=None))
+        for _ in range(2):
+            provider._make_turn_retain_job(['{"t":1}'], document_id="d", update_mode="append", label="t")()
+        first, second = (c.kwargs["operation_id"] for c in provider._client.aretain_batch.call_args_list)
+        assert first == second and str(uuid.UUID(first)) == first
+        provider._make_turn_retain_job(['{"t":2}'], document_id="d", update_mode="append", label="t")()
+        assert provider._client.aretain_batch.call_args.kwargs["operation_id"] != first
+
+    def test_sync_retain_sends_no_operation_id(self, provider_with_config):
+        p = provider_with_config(retain_async=False)
+        p._make_turn_retain_job(['{"t":1}'], document_id="d", update_mode="append", label="t")()
+        assert "operation_id" not in p._client.aretain_batch.call_args.kwargs
+
+    def test_failed_append_is_replayed_first_with_same_operation_id(self, provider):
+        provider._client.aretain_batch = AsyncMock(side_effect=RuntimeError("server down"))
+        job = provider._make_turn_retain_job(['{"t":1}'], document_id="d", update_mode="append", label="t")
+        with pytest.raises(RuntimeError):
+            job()
+        failed_op = provider._client.aretain_batch.call_args.kwargs["operation_id"]
+        assert list(provider._failed_append_jobs) == [job]
+
+        provider._client.aretain_batch = AsyncMock(return_value=SimpleNamespace(operation_id=None, operation_ids=None))
+        provider.sync_turn("hello", "world")
+        provider._retain_queue.join()
+        calls = provider._client.aretain_batch.call_args_list
+        assert calls[0].kwargs["operation_id"] == failed_op  # replay first, same identity
+        assert len(calls) == 2 and not provider._failed_append_jobs
+
+    def test_failed_replace_is_not_buffered(self, provider):
+        provider._client.aretain_batch = AsyncMock(side_effect=RuntimeError("server down"))
+        with pytest.raises(RuntimeError):
+            provider._make_turn_retain_job(['{"t":1}'], document_id="d", update_mode=None, label="t")()
+        assert not provider._failed_append_jobs
 
     def test_tracks_multiple_operation_ids(self, provider):
         provider._client.aretain_batch = AsyncMock(

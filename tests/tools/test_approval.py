@@ -1058,6 +1058,21 @@ class TestLaunchctlGatewayLifecycle:
     must require the same approval. See issue #33071.
     """
 
+    def test_launchctl_pattern_is_linear_on_large_commands(self):
+        """The two whole-string lookaheads are position-independent; unanchored, search() re-ran them from
+        every offset (O(n^2): ~2.4s on a 17KB heredoc) for each of ~200 detection variants — minutes of
+        GIL-holding regex that stalled the gateway event loop until the health watchdog restarted it."""
+        import time
+
+        from tools.approval_detection import DANGEROUS_PATTERNS_COMPILED
+
+        pattern = next(p for p, d in DANGEROUS_PATTERNS_COMPILED if d.startswith("stop/restart hermes launchd"))
+        haystack = ("python3 - <<'PY'\n" + "data['k'] = {'label': 'region', 'value': 1}\n" * 1000 + "PY").lower()
+        assert len(haystack) > 40_000
+        started = time.monotonic()
+        assert pattern.search(haystack) is None
+        assert time.monotonic() - started < 0.5
+
     def test_launchctl_against_hermes_label_detected(self):
         for cmd in (
             "launchctl stop ai.hermes.gateway",

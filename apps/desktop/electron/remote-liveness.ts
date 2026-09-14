@@ -193,6 +193,16 @@ export interface PooledRemoteEntry<TConnection extends RemoteConnectionDescripto
   connectionPromise?: null | Promise<TConnection>
   process?: unknown
   remoteBaseUrl?: null | string
+  /** Producer-owned identity for descriptors that make the same authenticated request. */
+  sharedProbeKey?: null | string
+}
+
+/** One ownership key for background observations and post-resume resets. */
+function pooledRemoteFailureKey(profile: string, entry: PooledRemoteEntry): string {
+  const baseUrl = String(entry.remoteBaseUrl).replace(/\/+$/, '')
+  const sharedProbeKey = String(entry.sharedProbeKey ?? '').trim()
+
+  return sharedProbeKey ? `shared:${sharedProbeKey}:${baseUrl}` : `profile:${profile}:${baseUrl}`
 }
 
 export interface RevalidatePooledRemoteBackendsOptions<TConnection extends RemoteConnectionDescriptor> {
@@ -211,8 +221,9 @@ export interface RevalidatePooledRemoteBackendsOptions<TConnection extends Remot
  * keepalive touch keeps the idle reaper off it. Without this the pool serves a
  * descriptor for an unreachable host indefinitely.
  *
- * Entries share the primary's failure policy, keyed per base URL, so a profile
- * pointing at the same host as another does not burn the streak twice as fast.
+ * Descriptors explicitly marked as one shared remote connection share a probe
+ * and failure streak. Same-URL descriptors without that producer guarantee
+ * remain independent: they can represent different tunnels or credentials.
  */
 export async function revalidatePooledRemoteBackends<TConnection extends RemoteConnectionDescriptor>({
   entries,
@@ -222,22 +233,56 @@ export async function revalidatePooledRemoteBackends<TConnection extends RemoteC
   tracker
 }: RevalidatePooledRemoteBackendsOptions<TConnection>): Promise<{ dropped: string[] }> {
   const remotes = [...entries].filter(([, entry]) => !entry.process && entry.remoteBaseUrl)
+  const probeGroups = new Map<string, typeof remotes>()
   const dropped: string[] = []
 
-  await Promise.all(
-    remotes.map(async ([profile, entry]) => {
-      const baseUrl = String(entry.remoteBaseUrl).replace(/\/+$/, '')
+  for (const [profile, entry] of remotes) {
+    const failureKey = pooledRemoteFailureKey(profile, entry)
+    const group = probeGroups.get(failureKey) ?? []
 
-      try {
+    group.push([profile, entry])
+    probeGroups.set(failureKey, group)
+  }
+
+  await Promise.all(
+    [...probeGroups].map(async ([failureKey, members]) => {
+      const availableProfiles: string[] = []
+      let connection: TConnection | null = null
+
+      for (const [profile, entry] of members) {
         if (!entry.connectionPromise) {
-          throw new Error('Remote backend descriptor is unavailable.')
+          log(`Pooled remote backend for profile "${profile}" has no connection descriptor; dropping stale entry.`)
+          stopBackend(profile)
+          dropped.push(profile)
+
+          continue
         }
 
-        const connection = await entry.connectionPromise
+        try {
+          const resolved = await entry.connectionPromise
+
+          connection ??= resolved
+          availableProfiles.push(profile)
+        } catch {
+          log(
+            `Pooled remote backend for profile "${profile}" has an unavailable connection descriptor; dropping stale entry.`
+          )
+          stopBackend(profile)
+          dropped.push(profile)
+        }
+      }
+
+      if (!connection) {
+        return
+      }
+
+      const profile = availableProfiles[0]
+
+      try {
         await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
-        tracker.recordSuccess(baseUrl)
+        tracker.recordSuccess(failureKey)
       } catch {
-        const failure = tracker.recordFailure(baseUrl)
+        const failure = tracker.recordFailure(failureKey)
 
         if (!failure.shouldReset) {
           log(
@@ -248,8 +293,11 @@ export async function revalidatePooledRemoteBackends<TConnection extends RemoteC
         }
 
         log(`Pooled remote backend for profile "${profile}" failed liveness probe; dropping stale descriptor.`)
-        stopBackend(profile)
-        dropped.push(profile)
+
+        for (const siblingProfile of availableProfiles) {
+          stopBackend(siblingProfile)
+          dropped.push(siblingProfile)
+        }
       }
     })
   )
@@ -301,7 +349,7 @@ export async function revalidateSuspectPooledRemoteBackends<TConnection extends 
 
   await Promise.all(
     remotes.map(async ([poolKey, entry]) => {
-      const baseUrl = String(entry.remoteBaseUrl).replace(/\/+$/, '')
+      const failureKey = pooledRemoteFailureKey(poolKey, entry)
 
       try {
         if (!entry.connectionPromise) {
@@ -310,7 +358,7 @@ export async function revalidateSuspectPooledRemoteBackends<TConnection extends 
 
         const connection = await entry.connectionPromise
         await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
-        tracker.recordSuccess(baseUrl)
+        tracker.recordSuccess(failureKey)
 
         return
       } catch (probeError) {
@@ -335,7 +383,7 @@ export async function revalidateSuspectPooledRemoteBackends<TConnection extends 
       retired.push(poolKey)
       // The rebuilt tunnel must start from a clean failure state; stale
       // pre-sleep failures should not count against the fresh descriptor.
-      tracker.recordSuccess(baseUrl)
+      tracker.recordSuccess(failureKey)
 
       try {
         await rebuild(poolKey)

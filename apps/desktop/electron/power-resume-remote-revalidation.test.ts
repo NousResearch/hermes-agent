@@ -8,6 +8,7 @@ import {
   attachPowerResumeRemoteRevalidation,
   POWER_RESUME_REVALIDATION_HOLDOFF_MS,
   RemoteLivenessTracker,
+  revalidatePooledRemoteBackends,
   revalidateSuspectPooledRemoteBackends
 } from './remote-liveness'
 
@@ -154,24 +155,94 @@ describe('revalidateSuspectPooledRemoteBackends (#93910)', () => {
     expect(result).toEqual({ rebuilt: [], retired: [] })
   })
 
-  it('clears the shared failure streak for a retired base URL so the rebuilt tunnel starts clean', async () => {
-    const tracker = new RemoteLivenessTracker()
-    tracker.recordFailure('http://127.0.0.1:53101')
-    tracker.recordFailure('http://127.0.0.1:53101')
+  for (const shared of [false, true]) {
+    for (const transition of ['healthy', 'rebuilt', 'rebuild-failed', 'retire-failed']) {
+      it(`pooled failure-key: ${shared ? 'shared' : 'independent'} / ${transition}`, async () => {
+        const baseUrl = 'https://remote.example.com'
+        const tracker = new RemoteLivenessTracker(3, 60_000, () => 1_000)
 
-    await revalidateSuspectPooledRemoteBackends({
-      entries: [['conn:ssh-dead::default', remoteEntry('http://127.0.0.1:53101')]],
-      log: vi.fn(),
-      probe: vi.fn(async () => {
-        throw new Error('socket hang up')
-      }),
-      rebuild: vi.fn(async () => descriptor('http://127.0.0.1:53110')),
-      retire: vi.fn(async () => undefined),
-      tracker
-    })
+        const entry = (profile: string, sharedProbeKey?: string) => ({
+          connectionPromise: Promise.resolve({ baseUrl, mode: 'remote', profile }),
+          process: null,
+          remoteBaseUrl: `${baseUrl}/`,
+          sharedProbeKey
+        })
 
-    expect(tracker.recordFailure('http://127.0.0.1:53101')).toEqual({ failures: 1, shouldReset: false })
-  })
+        const recovering = entry('recovering', shared ? ' source-a ' : undefined)
+        const sibling = entry('sibling', 'source-a')
+        sibling.remoteBaseUrl = baseUrl
+        const unrelated = entry('unrelated', shared ? 'source-b' : undefined)
+        const recoveredEntries: Array<[string, typeof recovering]> = [['recovering', recovering]]
+
+        if (shared) {recoveredEntries.push(['sibling', sibling])}
+        const entries: Array<[string, typeof recovering]> = [...recoveredEntries, ['unrelated', unrelated]]
+
+        const offline = async () => {
+          throw new Error('offline')
+        }
+
+        const sweep = (selected = entries) =>
+          revalidatePooledRemoteBackends({
+            entries: selected,
+            log: () => undefined,
+            probe: offline,
+            stopBackend: () => undefined,
+            tracker
+          })
+
+        // Seed the actual background path, not a guessed tracker key.
+        await expect(sweep()).resolves.toEqual({ dropped: [] })
+        await expect(sweep()).resolves.toEqual({ dropped: [] })
+
+        const retire = vi.fn(async () => {
+          if (transition === 'retire-failed') {throw new Error('retire failed')}
+        })
+
+        const rebuild = vi.fn(async () => {
+          if (transition === 'rebuild-failed') {throw new Error('rebuild failed')}
+          recovering.connectionPromise = Promise.resolve({ baseUrl, mode: 'remote', profile: 'replacement' })
+        })
+
+        const result = await revalidateSuspectPooledRemoteBackends({
+          entries: [['recovering', recovering]],
+          log: () => undefined,
+          probe: transition === 'healthy' ? async () => undefined : offline,
+          rebuild,
+          retire,
+          tracker
+        })
+
+        if (transition === 'healthy') {
+          expect(result).toEqual({ rebuilt: [], retired: [] })
+          expect(retire).not.toHaveBeenCalled()
+          expect(rebuild).not.toHaveBeenCalled()
+        } else if (transition === 'retire-failed') {
+          expect(result).toEqual({ rebuilt: [], retired: [] })
+          expect(retire).toHaveBeenCalledOnce()
+          expect(rebuild).not.toHaveBeenCalled()
+        } else {
+          expect(result).toEqual({
+            rebuilt: transition === 'rebuilt' ? ['recovering'] : [],
+            retired: ['recovering']
+          })
+          expect(retire).toHaveBeenCalledOnce()
+          expect(rebuild).toHaveBeenCalledOnce()
+        }
+
+        const afterResume = await sweep()
+        const expectedDrops = transition === 'retire-failed' ? entries.map(([profile]) => profile) : ['unrelated']
+        expect(afterResume.dropped.slice().sort()).toEqual(expectedDrops.slice().sort())
+
+        if (transition !== 'retire-failed') {
+          // Reset is scoped to the exact shared group/profile. An
+          // unrelated same-URL profile keeps its pre-resume streak.
+          await expect(sweep(recoveredEntries)).resolves.toEqual({ dropped: [] })
+          const threshold = await sweep(recoveredEntries)
+          expect(threshold.dropped).toEqual(recoveredEntries.map(([profile]) => profile))
+        }
+      })
+    }
+  }
 })
 
 describe('attachPowerResumeRemoteRevalidation (#93910)', () => {

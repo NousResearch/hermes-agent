@@ -63,6 +63,37 @@ def fake_tool(monkeypatch):
 # Happy path
 # ---------------------------------------------------------------------------
 
+def test_template_cli_preserves_typed_request_without_reading_stdin(fake_tool, monkeypatch):
+    monkeypatch.setattr(send_cmd, "_load_hermes_env", lambda: None)
+    monkeypatch.setattr(send_cmd, "_read_message_body", lambda *_: pytest.fail("templates must not read a free-form body"))
+    components = [{"type": "body", "parameters": [{"type": "text", "text": "Juan"}]}]
+    args = _parse([
+        "--to", "whatsapp_cloud:15551234567", "--template-name", "quote_follow_up",
+        "--template-language", "es_MX", "--template-components", json.dumps(components), "--json"])
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(args)
+    assert exc.value.code == 0
+    assert fake_tool.calls == [{
+        "action": "send_template", "target": "whatsapp_cloud:15551234567",
+        "template_name": "quote_follow_up", "template_language": "es_MX", "template_components": components}]
+
+
+@pytest.mark.parametrize("options", [
+    ["--to", "telegram:123", "--template-name", "hello", "--template-language", "en"],
+    ["--to", "whatsapp_cloud:15551234567", "--template-name", "hello"],
+    ["--to", "whatsapp_cloud:15551234567", "--template-language", "en"],
+    ["--to", "whatsapp_cloud:15551234567", "--template-name", "hello", "--template-language", "en", "plain text"],
+    ["--to", "whatsapp_cloud:15551234567", "--template-name", "hello", "--template-language", "en", "--template-components", "{"],
+    ["--to", "whatsapp_cloud:15551234567", "--template-name", "hello", "--template-language", "en", "--template-components", "{}"],
+    ["--to", "whatsapp_cloud:15551234567", "--template-name", "hello", "--template-language", "en", "--template-components", "null"],
+])
+def test_invalid_template_cli_never_sends(options, fake_tool, monkeypatch):
+    monkeypatch.setattr(send_cmd, "_load_hermes_env", lambda: None)
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(_parse(options))
+    assert exc.value.code == 2
+    assert fake_tool.calls == []
+
 
 
 

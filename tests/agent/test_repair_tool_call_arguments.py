@@ -59,3 +59,21 @@ class TestRepairToolCallArguments:
     # -- Stage 4: control-char escape fallback --
 
 
+
+
+class TestInvalidEscapeRepair:
+    """Fine-grained tool streaming skips server-side JSON validation, so a completed
+    tool_use block can carry invalid escapes (``C:\\path``, a regex ``\\d``) beside raw
+    control chars. Both must repair to the literal text instead of ``{}``
+    (openclaw/openclaw#141323)."""
+
+    def test_invalid_escapes_and_control_chars_repair_to_literal_text(self):
+        raw = '{"path":"C:\\path\\dir","x":"a\tb","re":"\\d+ \\u12"}'
+        parsed = json.loads(_repair_tool_call_arguments(raw, "write_file"))
+        assert parsed == {"path": "C:\\path\\dir", "x": "a\tb", "re": "\\d+ \\u12"}
+
+    def test_valid_escapes_preserved_and_truncation_still_fails_closed(self):
+        valid = '{"a":"line\\nnext","b":"\\u00e9","c":"say \\"hi\\""}'
+        assert json.loads(_repair_tool_call_arguments(valid, "t")) == {"a": "line\nnext", "b": "é", "c": 'say "hi"'}
+        # A cut-off command with a bad escape must never shorten into an executable one.
+        assert _repair_tool_call_arguments('{"command":"rm -rf \\d ', "terminal") == "{}"

@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import re
+import string
 from functools import partial
 from typing import Any, Callable
 
@@ -95,15 +96,31 @@ _sanitize_messages_non_ascii = partial(_sanitize_messages, fix=_strip_non_ascii,
 _sanitize_tools_non_ascii = _sanitize_structure_non_ascii
 
 
+_VALID_JSON_ESCAPES = frozenset('"\\/bfnrtu')
+
+
 def _escape_invalid_chars_in_json_strings(raw: str) -> str:
-    """Escape literal control chars (0x00-0x1F) inside JSON string values as ``\\uXXXX``
-    (for llama.cpp-style output mixing control chars with other malformations)."""
+    """Escape literal control chars (0x00-0x1F) inside JSON string values as ``\\uXXXX`` and
+    double the backslash of invalid escapes (``\\d``, ``\\p``, ``\\u12``) so ``C:\\path`` or a
+    regex survives as the literal text the model meant. Fine-grained tool streaming skips
+    server-side JSON validation, so a completed tool_use block can carry either defect; the
+    previous behaviour rejected the whole call as unrepairable (openclaw/openclaw#141323).
+    Valid escapes are always preserved as written."""
     out: list[str] = []
     in_string = False
     i = 0
     while i < len(raw):
         ch = raw[i]
         if in_string and ch == "\\" and i + 1 < len(raw):
+            nxt = raw[i + 1]
+            hex4 = raw[i + 2:i + 6]
+            valid = nxt in _VALID_JSON_ESCAPES and (
+                nxt != "u" or (len(hex4) == 4 and all(c in string.hexdigits for c in hex4))
+            )
+            if not valid:
+                out.append("\\\\")
+                i += 1
+                continue
             out.append(raw[i:i + 2])
             i += 2
             continue

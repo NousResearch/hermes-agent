@@ -988,3 +988,28 @@ class TestDeferredCallSchemaProbe:
         }, calls)
 
         assert validate_deferred_call_args(name, {"payload": {"anything": True}}) is None
+
+
+class TestRegression_OpenClaw143729_FlatArgumentsBesideEmptyWrapper:
+    """Local models sometimes emit an empty ``arguments`` wrapper while flattening the real
+    parameters to the top level; those parameters must reach the tool instead of ``{}``."""
+
+    def test_flat_parameters_survive_empty_or_missing_wrapper(self):
+        from tools.tool_search_validation import normalize_tool_call_entries
+
+        for shape in (
+            {"name": "read_file", "arguments": {}, "path": "/tmp/x"},
+            {"name": "read_file", "path": "/tmp/x"},
+            {"calls": [{"name": "read_file", "arguments": "{}", "path": "/tmp/x"}]},
+        ):
+            entries, err = normalize_tool_call_entries(shape)
+            assert err is None
+            assert entries == [{"name": "read_file", "arguments": {"path": "/tmp/x"}}]
+
+    def test_nested_wrapper_keeps_precedence_and_empty_call_stays_empty(self):
+        from tools.tool_search_validation import normalize_tool_call_entries
+
+        entries, _ = normalize_tool_call_entries({"name": "read_file", "arguments": {"path": "/a"}, "path": "/b"})
+        assert entries[0]["arguments"] == {"path": "/a"}
+        entries, _ = normalize_tool_call_entries({"name": "list_dir"})
+        assert entries[0]["arguments"] == {}

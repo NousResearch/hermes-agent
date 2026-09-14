@@ -150,7 +150,7 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
         # Legacy single shape.
         if not str(args.get("name") or "").strip():
             return [], "tool_call requires 'calls' (an array of {name, arguments})"
-        raw_calls = [{"name": args.get("name"), "arguments": args.get("arguments")}]
+        raw_calls = [{k: v for k, v in args.items() if k != "calls"}]
     if isinstance(raw_calls, dict):
         raw_calls = [raw_calls]
     if not isinstance(raw_calls, list) or not raw_calls:
@@ -166,13 +166,16 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
         if name in BRIDGE_TOOL_NAMES:
             return [], f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
         raw_args = raw.get("arguments")
-        if raw_args is None:
-            raw_args = {}
         if isinstance(raw_args, str):
             try:
                 raw_args = json.loads(raw_args)
             except json.JSONDecodeError as e:
                 return [], f"tool_call calls[{position}].arguments is not valid JSON: {e}"
+        if raw_args is None or raw_args == {}:
+            # Some local models emit an empty (or missing) wrapper while flattening the real
+            # parameters to the top level beside ``name``; treat the empty wrapper as absent so
+            # those parameters reach the tool instead of ``{}`` (openclaw/openclaw#143729).
+            raw_args = {k: v for k, v in raw.items() if k not in ("name", "arguments")}
         if not isinstance(raw_args, dict):
             return [], f"tool_call calls[{position}].arguments must be an object"
         entries.append({"name": name, "arguments": raw_args})

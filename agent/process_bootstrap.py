@@ -409,6 +409,8 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
         timeout = httpx.Timeout(connect=15.0, read=None, write=15.0, pool=10.0)  # read=None for SSE streaming
         transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport
         client_cls = httpx.AsyncClient if async_mode else httpx.Client
+        from agent.response_envelope import envelope_response_hooks
+        event_hooks = {"response": envelope_response_hooks(base_url, async_mode=async_mode)}
         mounts = None
         if proxy is None:
             happy_eyeballs = not async_mode and _uses_codex_cloud_transport(base_url)
@@ -437,8 +439,8 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
                 }
                 # Default transport = the https view; otherwise httpx builds a third, never-used
                 # direct transport (pool + SSL context) per client.
-                return client_cls(limits=limits, timeout=timeout, transport=mounts["https://"], mounts=mounts)
-        return client_cls(limits=limits, timeout=timeout, proxy=proxy, mounts=mounts or None, verify=verify)
+                return client_cls(limits=limits, timeout=timeout, transport=mounts["https://"], mounts=mounts, event_hooks=event_hooks)
+        return client_cls(limits=limits, timeout=timeout, proxy=proxy, mounts=mounts or None, verify=verify, event_hooks=event_hooks)
     except Exception:
         return None
 

@@ -171,3 +171,27 @@ def test_openai_gpt55_pro_warns_for_nous_portal_pricing(monkeypatch):
     assert warning.input_cost_per_million == Decimal("25.000000")
     assert warning.output_cost_per_million == Decimal("125.000000")
     assert "did you mean to select openai/gpt-5.5?" in warning.message
+
+
+def test_warns_when_user_pricing_override_exceeds_threshold(monkeypatch):
+    monkeypatch.setattr("agent.models_dev.get_model_info", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {
+            "model_pricing": {
+                "custom-giant-model": {
+                    "input": "25.00",
+                    "output": "150.00",
+                    "source": "custom_contract",
+                }
+            }
+        },
+    )
+
+    warning = expensive_model_warning("custom-giant-model", provider="custom-provider")
+    assert warning is not None
+    assert warning.input_cost_per_million == Decimal("25.00")
+    assert warning.output_cost_per_million == Decimal("150.00")
+    assert warning.source == "custom_contract"
+    assert "$25.00/M" in warning.message
+

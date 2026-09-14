@@ -62,8 +62,10 @@ def _can_trust_model_info_pricing(
 def _can_trust_pricing_lookup(
     model_name: str, *, provider: Optional[str], base_url: Optional[str]) -> bool:
     try:
-        from agent.usage_pricing import resolve_billing_route
+        from agent.usage_pricing import get_user_pricing_entry, resolve_billing_route
 
+        if get_user_pricing_entry(model_name, provider=provider) is not None:
+            return True
         route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
     except Exception:
         return False

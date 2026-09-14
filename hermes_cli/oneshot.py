@@ -149,6 +149,8 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
         return
     try:
         report = {key: result.get(key) for key in _USAGE_KEYS}
+        if report.get("cost_status") == "unknown" and report.get("estimated_cost_usd") == 0.0:
+            report["estimated_cost_usd"] = None
         report["failed"] = bool(result.get("failed")) or failure is not None
         report["service_tier"] = result.get("service_tier")
         if failure is not None:

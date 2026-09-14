@@ -54,4 +54,13 @@ class TestWriteUsageFile:
         # Missing result fields serialize as null, not KeyError.
         assert report["estimated_cost_usd"] is None
 
+    def test_unpriced_model_writes_null_cost(self, tmp_path):
+        # Issue #108775: Unpriced models must not be silently recorded as $0.0
+        path = tmp_path / "usage.json"
+        _write_usage_file(str(path), _result(estimated_cost_usd=0.0, cost_status="unknown"))
+        report = json.loads(path.read_text())
+        assert report["estimated_cost_usd"] is None
+        assert report["cost_status"] == "unknown"
+
+
 

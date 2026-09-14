@@ -565,6 +565,8 @@ def finalize_turn(
         ).get("service_tier"),
         "session_id": agent.session_id,
     }
+    if result.get("cost_status") == "unknown" and result.get("estimated_cost_usd") == 0.0:
+        result["estimated_cost_usd"] = None
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
     # Persistence failures already set failed=True; also stamp `error` so the gateway

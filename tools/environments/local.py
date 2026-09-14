@@ -440,10 +440,18 @@ def _compute_git_bash_bin_dirs() -> list[str]:
 
 
 def _prepend_missing_path_entries(existing_path: str, dirs: list[str]) -> str:
-    """Prepend *dirs* missing from *existing_path* (``os.pathsep``); an already-listed
-    dir keeps its position; unchanged input when nothing is missing."""
+    r"""Prepend *dirs* missing from *existing_path* (``os.pathsep``); an already-listed
+    dir keeps its position; unchanged input when nothing is missing.
+
+    On Windows the membership check compares case-insensitively with separators
+    normalized (``C:\Git\bin`` ≡ ``c:/git/bin\``), so repeated startup PATH prepends
+    cannot stack duplicates that differ only in spelling."""
     entries = [e for e in existing_path.split(os.pathsep) if e]
-    missing = [d for d in dirs if d not in entries]
+    if _IS_WINDOWS:
+        existing_keys = {_windows_path_key(e) for e in entries}
+        missing = [d for d in dirs if _windows_path_key(d) not in existing_keys]
+    else:
+        missing = [d for d in dirs if d not in entries]
     return os.pathsep.join([*missing, *entries]) if missing else existing_path
 
 
@@ -473,6 +481,10 @@ def _find_shell() -> str:
 
 
 # --- PATH completion for the terminal subshell ---
+
+# Windows path equality key used for PATH membership checks; imported from
+# hermes_cli.stdio so the normalization rule lives in exactly one place.
+from hermes_cli.stdio import _windows_path_key  # noqa: E402
 
 # Standard PATH entries for environments with minimal PATH.
 _SANE_PATH = ("/opt/homebrew/bin:/opt/homebrew/sbin:"

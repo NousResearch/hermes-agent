@@ -36,6 +36,9 @@ import importlib
 import importlib.util
 import logging
 import sys
+import threading
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from providers.base import ProviderProfile
@@ -46,6 +49,23 @@ _REGISTRY: dict[str, ProviderProfile] = {}
 _ALIASES: dict[str, str] = {}
 _PROVIDER_LIST_CACHE: list[ProviderProfile] | None = None
 _discovered = False
+
+
+@dataclass
+class _ProviderRegistryState:
+    """One multiplex profile's provider-profile namespace."""
+
+    home_key: str
+    registry: dict[str, ProviderProfile] = field(default_factory=dict)
+    aliases: dict[str, str] = field(default_factory=dict)
+    list_cache: list[ProviderProfile] | None = None
+    discovered: bool = False
+
+
+_PROFILE_STATES: dict[str, _ProviderRegistryState] = {}
+_PROFILE_STATES_LOCK = threading.RLock()
+_REGISTRATION_TARGET: ContextVar[_ProviderRegistryState | None] = ContextVar(
+    "provider_registration_target", default=None)
 
 # Repo-root ``plugins/model-providers/`` — populated at discovery time.
 _BUNDLED_PLUGINS_DIR = (
@@ -61,10 +81,44 @@ def register_provider(profile: ProviderProfile) -> None:
     bundled profiles without editing repo code.
     """
     global _PROVIDER_LIST_CACHE
-    _REGISTRY[profile.name] = profile
-    for alias in profile.aliases:
-        _ALIASES[alias] = profile.name
-    _PROVIDER_LIST_CACHE = None
+    target = _REGISTRATION_TARGET.get()
+    if target is None:
+        target = _multiplex_state()
+    registry = target.registry if target is not None else _REGISTRY
+    aliases = target.aliases if target is not None else _ALIASES
+    lock = _PROFILE_STATES_LOCK if target is not None else None
+    if lock is None:
+        registry[profile.name] = profile
+        for alias in profile.aliases:
+            aliases[alias] = profile.name
+        _PROVIDER_LIST_CACHE = None
+    else:
+        with lock:
+            registry[profile.name] = profile
+            for alias in profile.aliases:
+                aliases[alias] = profile.name
+            target.list_cache = None
+
+
+def _multiplex_state() -> _ProviderRegistryState | None:
+    """Current profile's registry state, only inside a multiplex deployment."""
+    from agent.secret_scope import is_multiplex_active
+    if not is_multiplex_active():
+        return None
+    from hermes_constants import get_hermes_home, get_hermes_home_override, hermes_home_key
+    if not get_hermes_home_override():
+        raise RuntimeError(
+            "Provider registry access in multiplex mode requires a profile-scoped "
+            "HERMES_HOME override. Propagate ContextVars into worker threads."
+        )
+    key = hermes_home_key()
+    home = str(get_hermes_home())
+    with _PROFILE_STATES_LOCK:
+        state = _PROFILE_STATES.get(key)
+        if state is None:
+            state = _ProviderRegistryState(home_key=home)
+            _PROFILE_STATES[key] = state
+        return state
 
 
 def get_provider_profile(name: str) -> ProviderProfile | None:
@@ -72,14 +126,21 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
 
     Returns None if the provider has no profile (falls back to generic).
     """
-    if not _discovered:
-        _discover_providers()
-    canonical = _ALIASES.get(name, name)
-    profile = _REGISTRY.get(canonical)
+    state = _multiplex_state()
+    if state is not None:
+        _discover_profile_providers(state)
+        with _PROFILE_STATES_LOCK:
+            registry, aliases = dict(state.registry), dict(state.aliases)
+    else:
+        if not _discovered:
+            _discover_providers()
+        registry, aliases = _REGISTRY, _ALIASES
+    canonical = aliases.get(name, name)
+    profile = registry.get(canonical)
     # Named custom routes share the generic wire policy unless a plugin
     # explicitly registered that route. Other names retain exact lookup.
     if profile is None and isinstance(name, str) and name.lower().startswith("custom:"):
-        profile = _REGISTRY.get("custom")
+        profile = registry.get("custom")
     return profile
 
 
@@ -113,19 +174,32 @@ def routed_model_rejects_vision_tool_messages(provider: str, model: str) -> bool
 def list_providers() -> list[ProviderProfile]:
     """Return all registered provider profiles (one per canonical name)."""
     global _PROVIDER_LIST_CACHE
-    if not _discovered:
-        _discover_providers()
-    if _PROVIDER_LIST_CACHE is not None:
-        return list(_PROVIDER_LIST_CACHE)
+    state = _multiplex_state()
+    if state is not None:
+        _discover_profile_providers(state)
+        with _PROFILE_STATES_LOCK:
+            if state.list_cache is not None:
+                return list(state.list_cache)
+            registry = dict(state.registry)
+    else:
+        if not _discovered:
+            _discover_providers()
+        if _PROVIDER_LIST_CACHE is not None:
+            return list(_PROVIDER_LIST_CACHE)
+        registry = _REGISTRY
     # Deduplicate: _REGISTRY has canonical names; _ALIASES points to same objects
     seen: set[int] = set()
     result: list[ProviderProfile] = []
-    for profile in _REGISTRY.values():
+    for profile in registry.values():
         pid = id(profile)
         if pid not in seen:
             seen.add(pid)
             result.append(profile)
-    _PROVIDER_LIST_CACHE = result
+    if state is not None:
+        with _PROFILE_STATES_LOCK:
+            state.list_cache = result
+    else:
+        _PROVIDER_LIST_CACHE = result
     return list(result)
 
 
@@ -304,11 +378,10 @@ def _discover_entry_point_providers() -> None:
                 "Failed to load entry-point provider plugin %r: %s", ep.name, exc
             )
             continue
-        # ``module:func`` → callable we invoke; bare ``module`` → import side
-        # effect already happened during load(). Only call when it's callable
-        # AND zero-arg: general plugins in this shared group expose
-        # ``register(ctx)`` (requires an argument) and belong to the
-        # PluginManager, not the provider registry.
+        # ``module:func`` → callable we invoke. A bare-module target has already
+        # run its import side effect during load(); replay every ProviderProfile
+        # it exposed through the current registration target because Python's
+        # module cache prevents a second profile from observing that side effect.
         if callable(loaded):
             if _requires_arguments(loaded):
                 logger.debug(
@@ -325,6 +398,16 @@ def _discover_entry_point_providers() -> None:
                     ep.name,
                     exc,
                 )
+        else:
+            candidates = []
+            profile = getattr(loaded, "PROFILE", None)
+            if isinstance(profile, ProviderProfile):
+                candidates.append(profile)
+            declared = getattr(loaded, "PROFILES", ())
+            if isinstance(declared, (list, tuple)):
+                candidates.extend(item for item in declared if isinstance(item, ProviderProfile))
+            for profile in candidates:
+                register_provider(profile)
 
 
 def _requires_arguments(fn) -> bool:
@@ -444,6 +527,79 @@ def _discover_providers() -> None:
     # (Pip entry-point providers are discovered in step 0, before the
     # filesystem plugins, so first-party profiles always win on name
     # collision — see _discover_entry_point_providers.)
+
+
+def _discover_profile_providers(state: _ProviderRegistryState) -> None:
+    """Discover provider profiles into one profile-home namespace.
+
+    Module import side effects are redirected into ``state`` through a
+    context-local registration target.  A unique module suffix per home means
+    two profiles may provide the same provider slug without sharing code or
+    mutable profile objects.
+    """
+    if state.discovered:
+        return
+    with _PROFILE_STATES_LOCK:
+        if state.discovered:
+            return
+        state.discovered = True
+        token = _REGISTRATION_TARGET.set(state)
+        try:
+            # Entry points are process-global code but their registrations are
+            # profile-scoped and must obey each profile's enabled/disabled
+            # plugin config.
+            _discover_entry_point_providers()
+
+            # Bundled profiles are declarative process code, but their objects
+            # belong to this profile's registry just like user overrides.
+            if _BUNDLED_PLUGINS_DIR.is_dir():
+                for child in sorted(_BUNDLED_PLUGINS_DIR.iterdir()):
+                    if child.is_dir() and not child.name.startswith(("_", ".")):
+                        _import_plugin_dir_scoped(child, "bundled", state.home_key)
+
+            home = Path(state.home_key)
+            user_dir = home / "plugins" / "model-providers"
+            if user_dir.is_dir():
+                for child in sorted(user_dir.iterdir()):
+                    if child.is_dir() and not child.name.startswith(("_", ".")):
+                        _import_plugin_dir_scoped(child, "user", state.home_key)
+
+            installed_dir = home / "plugins"
+            if installed_dir.is_dir():
+                for child in sorted(installed_dir.iterdir()):
+                    if (child.is_dir() and child.name != "model-providers"
+                            and not child.name.startswith(("_", "."))
+                            and _declares_model_provider_kind(child)):
+                        _import_plugin_dir_scoped(child, "user", state.home_key)
+        except BaseException:
+            state.discovered = False
+            raise
+        finally:
+            _REGISTRATION_TARGET.reset(token)
+
+
+def _import_plugin_dir_scoped(plugin_dir: Path, source: str, home_key: str) -> None:
+    """Import one provider plugin under a home-specific module namespace."""
+    init_file = plugin_dir / "__init__.py"
+    if not init_file.exists():
+        return
+    safe_name = plugin_dir.name.replace("-", "_")
+    import hashlib
+    scope = hashlib.sha256(home_key.encode("utf-8")).hexdigest()[:12]
+    module_name = f"_hermes_scoped_provider_{scope}_{source}_{safe_name}"
+    if module_name in sys.modules:
+        return
+    try:
+        spec = importlib.util.spec_from_file_location(
+            module_name, init_file, submodule_search_locations=[str(plugin_dir)])
+        if spec is None or spec.loader is None:
+            return
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        logger.warning("Failed to load %s provider plugin %s: %s", source, plugin_dir.name, exc)
+        sys.modules.pop(module_name, None)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

@@ -30,6 +30,13 @@ mcp_servers:
     client_cert: "/path/to/cert.pem"  # mTLS client certificate (see below)
     # client_key: "/path/to/key.pem"  # optional, when key lives in a separate file
 
+    auth: "oauth"       # HTTP OAuth 2.1 with PKCE
+    oauth:
+      # Optional, exact issuer values documented by the provider. This does NOT
+      # disable issuer validation; it permits only a listed metadata issuer when
+      # the provider's discovery host differs from that value.
+      trusted_issuers: []
+
     enabled: true
     timeout: 120
     connect_timeout: 60
@@ -65,6 +72,7 @@ mcp_servers:
 | `max_lifetime_seconds` | number | stdio | Optional stdio server recycle after age (`0` disables). May also live under a `lifecycle:` mapping |
 | `tools` | mapping | both | Filtering and utility-tool policy |
 | `auth` | string | HTTP | Authentication method. Set to `oauth` to enable OAuth 2.1 with PKCE |
+| `oauth.trusted_issuers` | list of strings | HTTP OAuth | Optional exact, provider-documented issuer values to accept when an authorization-server discovery host advertises a different issuer. This is an allowlist, not a switch that disables issuer validation; unknown issuers and other validation checks remain strict |
 | `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |
 | `elicitation` | mapping | both | Server-initiated user-input requests. `enabled` (default `true`) and `timeout` in seconds (default `300`). Form-mode requests route through the approval surface; URL-mode is declined (see MCP guide) |
 | `trust` | string | both | Trust tier: `full` (default) or `untrusted`. On an `untrusted` server, every write-capable tool call (any tool without a `readOnlyHint: true` annotation) requires user approval through the standard approval surface before it runs. `readOnlyHint` is a server-supplied *hint* — a lying server can at most skip approval for tools it claims are read-only, never gain extra access — so mark any server you don't fully control as `untrusted`. Unrecognized values are treated as `untrusted` (fail-closed) |

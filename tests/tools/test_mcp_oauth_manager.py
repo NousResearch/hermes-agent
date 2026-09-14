@@ -539,3 +539,213 @@ async def test_refresh_response_with_new_refresh_token_rotates(tmp_path, monkeyp
 
     on_disk = json.loads((tmp_path / "mcp-tokens" / "srv.json").read_text(encoding="utf-8"))
     assert provider.context.current_tokens.refresh_token == "rt-new" == on_disk["refresh_token"]
+
+
+# ---------------------------------------------------------------------------
+# oauth.trusted_issuers — provider-documented issuer mismatches (NetSuite)
+# ---------------------------------------------------------------------------
+
+_NS_SERVER = "https://123456-sb1.suitetalk.api.netsuite.com/services/mcp/v1/suiteapp/all"
+_NS_AUTH_SERVER = "https://123456-sb1.suitetalk.api.netsuite.com/"
+_NS_ISSUER = "https://system.netsuite.com"
+
+
+def _provider_for_server(tmp_path, monkeypatch, server_url, oauth_config=None):
+    from tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
+    reset_manager_for_tests()
+    _set_interactive_stdin(monkeypatch)
+    mgr = MCPOAuthManager()
+    provider = mgr.get_or_build_provider("srv", server_url, oauth_config or {})
+    provider._initialized = True
+    return provider
+
+
+def _drive_issuer_discovery(provider, monkeypatch, *, auth_server_url, metadata_issuer,
+                            discovery_url=None, status=200):
+    """Run the provider bridge across the SDK's strict issuer validator."""
+    from mcp.client.auth.oauth2 import OAuthClientProvider
+    from mcp.client.auth.utils import validate_metadata_issuer
+    from mcp.shared.auth import OAuthMetadata
+
+    discovery_request = SimpleNamespace(
+        url=discovery_url
+        or f"{auth_server_url.rstrip('/')}/.well-known/oauth-authorization-server"
+    )
+    metadata = OAuthMetadata.model_validate({
+        "issuer": metadata_issuer,
+        "authorization_endpoint": f"{metadata_issuer}/auth",
+        "token_endpoint": f"{metadata_issuer}/token",
+        "response_types_supported": ["code"],
+    })
+
+    async def fake_base_flow(self, request):
+        self.context.auth_server_url = auth_server_url
+        response = yield discovery_request
+        validate_metadata_issuer(metadata, self.context.auth_server_url)
+
+    monkeypatch.setattr(OAuthClientProvider, "async_auth_flow", fake_base_flow)
+    provider.context.oauth_metadata = metadata
+
+    metadata_response = _fake_response(
+        status, str(discovery_request.url), metadata.model_dump_json().encode()
+    )
+
+    async def drive():
+        gen = provider.async_auth_flow(object())
+        assert await gen.__anext__() is discovery_request
+        try:
+            await gen.asend(metadata_response)
+        except StopAsyncIteration:
+            pass
+
+    asyncio.run(drive())
+
+
+def test_netsuite_documented_issuer_is_accepted(tmp_path, monkeypatch):
+    """NetSuite's fixed vendor issuer must not break account-host discovery (built-in quirk)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_for_server(tmp_path, monkeypatch, _NS_SERVER)
+
+    _drive_issuer_discovery(
+        provider, monkeypatch,
+        auth_server_url=_NS_AUTH_SERVER, metadata_issuer=_NS_ISSUER,
+    )
+
+    assert str(provider.context.auth_server_url).rstrip("/") == _NS_ISSUER
+
+
+@pytest.mark.parametrize(
+    ("case_name", "server_url", "discovery_issuer", "metadata_issuer"),
+    [
+        (
+            "google-workspace",
+            "https://drivemcp.googleapis.com/mcp/v1",
+            "https://accounts.google.com/",
+            "https://accounts.google.com",
+        ),
+        (
+            "indeed",
+            "https://mcp.indeed.com/mcp",
+            "https://secure.indeed.com/",
+            "https://secure.indeed.com",
+        ),
+    ],
+)
+def test_trusted_issuers_covers_reported_provider_mismatches(
+    case_name, server_url, discovery_issuer, metadata_issuer, tmp_path, monkeypatch
+):
+    """Reported Google and Indeed mismatches work only when explicitly trusted.
+
+    The provider names document the real regressions covered by this contract;
+    the production path does not silently trust either one by name.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_for_server(
+        tmp_path,
+        monkeypatch,
+        server_url,
+        {"trusted_issuers": [metadata_issuer]},
+    )
+
+    _drive_issuer_discovery(
+        provider,
+        monkeypatch,
+        auth_server_url=discovery_issuer,
+        metadata_issuer=metadata_issuer,
+    )
+
+    assert str(provider.context.auth_server_url).rstrip("/") == metadata_issuer
+
+
+def test_trusted_issuers_config_applies_to_any_server(tmp_path, monkeypatch):
+    """An explicit oauth.trusted_issuers entry works without a built-in quirk."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_for_server(
+        tmp_path, monkeypatch, "https://mcp.example.com/mcp",
+        {"trusted_issuers": ["https://sso.example.com"]},
+    )
+
+    _drive_issuer_discovery(
+        provider, monkeypatch,
+        auth_server_url="https://mcp.example.com/",
+        metadata_issuer="https://sso.example.com",
+    )
+
+    assert str(provider.context.auth_server_url).rstrip("/") == "https://sso.example.com"
+
+
+def test_unlisted_issuer_mismatch_stays_rejected(tmp_path, monkeypatch):
+    """Without a matching trusted_issuers entry the SDK's strict validator still raises."""
+    from mcp.client.auth import OAuthFlowError
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_for_server(tmp_path, monkeypatch, "https://mcp.example.com/mcp")
+
+    with pytest.raises(OAuthFlowError, match="issuer mismatch"):
+        _drive_issuer_discovery(
+            provider, monkeypatch,
+            auth_server_url="https://mcp.example.com/",
+            metadata_issuer="https://evil.example.net",
+        )
+
+
+def test_netsuite_quirk_rejects_attacker_issuer(tmp_path, monkeypatch):
+    """A NetSuite server trusting the documented issuer must not accept any OTHER issuer."""
+    from mcp.client.auth import OAuthFlowError
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_for_server(tmp_path, monkeypatch, _NS_SERVER)
+
+    with pytest.raises(OAuthFlowError, match="issuer mismatch"):
+        _drive_issuer_discovery(
+            provider, monkeypatch,
+            auth_server_url=_NS_AUTH_SERVER,
+            metadata_issuer="https://system.netsuite.com.evil.net",
+        )
+
+
+def test_trusted_issuer_ignored_when_discovery_host_differs(tmp_path, monkeypatch):
+    """The compat only fires for metadata fetched FROM the expected authorization server."""
+    from mcp.client.auth import OAuthFlowError
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_for_server(tmp_path, monkeypatch, _NS_SERVER)
+
+    with pytest.raises(OAuthFlowError, match="issuer mismatch"):
+        _drive_issuer_discovery(
+            provider, monkeypatch,
+            auth_server_url=_NS_AUTH_SERVER, metadata_issuer=_NS_ISSUER,
+            discovery_url="https://evil.example.net/.well-known/oauth-authorization-server",
+        )
+
+
+def test_trusted_issuer_ignored_on_non_200(tmp_path, monkeypatch):
+    """A failed metadata response must not normalize the authorization server."""
+    from mcp.client.auth import OAuthFlowError
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    provider = _provider_for_server(tmp_path, monkeypatch, _NS_SERVER)
+
+    with pytest.raises(OAuthFlowError, match="issuer mismatch"):
+        _drive_issuer_discovery(
+            provider, monkeypatch,
+            auth_server_url=_NS_AUTH_SERVER, metadata_issuer=_NS_ISSUER,
+            status=500,
+        )
+
+
+def test_netsuite_quirk_defaults_trusted_issuers():
+    """apply_oauth_provider_defaults seeds the NetSuite issuer for SuiteTalk hosts only."""
+    from tools.mcp_oauth import apply_oauth_provider_defaults
+
+    cfg = apply_oauth_provider_defaults({}, server_name="netsuite-sb", server_url=_NS_SERVER)
+    assert cfg["trusted_issuers"] == [_NS_ISSUER]
+
+    # Explicit user value wins.
+    cfg = apply_oauth_provider_defaults(
+        {"trusted_issuers": ["https://other.example"]}, server_url=_NS_SERVER)
+    assert cfg["trusted_issuers"] == ["https://other.example"]
+
+    # Non-NetSuite servers are untouched.
+    cfg = apply_oauth_provider_defaults({}, server_url="https://mcp.example.com/mcp")
+    assert "trusted_issuers" not in cfg

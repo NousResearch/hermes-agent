@@ -467,7 +467,7 @@ function Column({
               <div className="flex flex-col gap-2" key={assignee}>
                 <div className="flex items-center gap-1.5 px-1 pt-1 text-[0.625rem] text-(--ui-text-quaternary)">
                   {assignee !== UNASSIGNED_LANE && <Avatar name={assignee} size="0.875rem" />}
-                  {assignee}
+                  {assignee === UNASSIGNED_LANE ? k.unassigned : assignee}
                   <span className="tabular-nums">{tasks.length}</span>
                 </div>
                 {tasks.map(task => (
@@ -862,7 +862,12 @@ function Intro() {
   )
 }
 
-const UNASSIGNED_LANE = 'unassigned'
+/** Sentinel for "assignee IS NULL", used both as the Running column's lane key and as the
+ *  ASSIGNEE filter's selected value. Deliberately NOT a bare `'unassigned'`: profile names match
+ *  `[a-z0-9][a-z0-9_-]{0,63}` (hermes_cli/profiles.py), so a leading `:` cannot collide with a real
+ *  profile — a profile literally named `unassigned` used to be indistinguishable from "no assignee"
+ *  in both surfaces. Never rendered directly; `k.unassigned` is the display label. */
+export const UNASSIGNED_LANE = ':unassigned'
 
 /** Pure predicate behind the board's client-side filters — extracted for testability
  *  (root AGENTS.md: don't test source shape, test the behavior). `assignee ===

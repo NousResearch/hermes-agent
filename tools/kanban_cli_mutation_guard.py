@@ -28,9 +28,12 @@ _DENIED_KANBAN_ACTIONS = frozenset({
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
     "request-review", "request-changes", "reopen-review", "gc",
 })
+# `hold`/`resume` are the board-automation verbs added by #110196; listed here ahead of that merge so
+# whichever lands first, a delegated child can never reach them. Denying a verb the parser does not yet
+# expose is inert — the pattern simply never matches — so there is no ordering hazard either way.
 _DENIED_BOARD_ACTIONS = frozenset({
     "create", "new", "rm", "remove", "delete", "switch", "use", "rename",
-    "set-default-workdir", "import",
+    "hold", "resume", "set-default-workdir", "import",
 })
 
 _ACTIONS_ALT = "|".join(sorted(_DENIED_KANBAN_ACTIONS))
@@ -42,13 +45,20 @@ _BOARD_ACTIONS_ALT = "|".join(sorted(_DENIED_BOARD_ACTIONS))
 # quotes because it re-scans shlex-tokenized segments instead; this guard is a plain string scan).
 _ARGV_LIST_PUNCTUATION = re.compile(r"[\[\],\"']+")
 
-# Anchored the same way as cron/lifecycle_guard.py's _GATEWAY_LIFECYCLE_PATTERN: the lookbehind keeps
-# `hermes` from matching as a path component or word tail, while every real command position (text start,
-# whitespace, `;`/`&`/`|`, `$(`, backtick) still matches. Flags before AND after `kanban` (`-p profile`,
+# Anchored like cron/lifecycle_guard.py's _GATEWAY_LIFECYCLE_PATTERN, with two deliberate widenings for
+# this guard's threat model (a child actively trying to evade it, rather than a job incidentally naming a
+# command):
+#   * `/` is NOT excluded by the lookbehind, so a path-qualified invocation
+#     (`/usr/local/bin/hermes kanban complete t_x`) still matches. Excluding it would let any child evade
+#     the floor by spelling out an absolute path — the CLI's own env-var check is already unset by then,
+#     so this guard is the last line.
+#   * An optional `.exe` suffix is consumed, so `hermes.exe kanban complete t_x` matches on Windows.
+# `\w`, `.` and `-` stay excluded so a word tail (`myhermes`), a dotted attribute (`pkg.hermes`) or a
+# hyphenated name (`non-hermes`) does not match. Flags before AND after `kanban` (`-p profile`,
 # `--board x`) are allowed so a routed/scoped call is still caught.
 _FLAG_RUN = r"(?:\s+(?:-{1,2}\S+(?:[ =]\S+)?))*"
 _KANBAN_MUTATION_PATTERN = re.compile(
-    r"(?i)(?:(?<![/\w.\-])hermes)\b"
+    r"(?i)(?:(?<![\w.\-])hermes(?:\.exe)?)\b"
     + _FLAG_RUN
     + r"\s+kanban" + _FLAG_RUN
     + r"\s+"

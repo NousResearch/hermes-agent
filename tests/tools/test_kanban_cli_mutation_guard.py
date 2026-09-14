@@ -44,6 +44,27 @@ class TestContainsDeniedKanbanMutation:
     def test_leaves_read_only_and_unrelated_alone(self, command):
         assert not contains_denied_kanban_mutation(command)
 
+    @pytest.mark.parametrize("command", [
+        "/usr/local/bin/hermes kanban complete t_4989b28e",
+        "/home/dima/.local/bin/hermes kanban boards rm victim --delete",
+        "./hermes kanban complete t_4989b28e",
+        r"C:\Users\dima\AppData\hermes.exe kanban complete t_4989b28e",
+        "hermes.exe kanban complete t_4989b28e",
+        "hermes.EXE kanban boards rm victim",
+    ])
+    def test_flags_path_qualified_and_windows_invocations(self, command):
+        """A child that evades the floor by spelling out an absolute path or the `.exe` suffix reaches a
+        CLI whose own env-var check is already unset — this guard is the last line, so it must match."""
+        assert contains_denied_kanban_mutation(command)
+
+    @pytest.mark.parametrize("command", [
+        "myhermes kanban complete t_4989b28e",
+        "non-hermes kanban complete t_4989b28e",
+        "pkg.hermes kanban complete t_4989b28e",
+    ])
+    def test_does_not_match_a_different_binary_whose_name_merely_contains_hermes(self, command):
+        assert not contains_denied_kanban_mutation(command)
+
     def test_known_limitation_quoted_prose_is_not_distinguished_from_a_real_command(self):
         """Documented best-effort gap: unlike cron.lifecycle_guard (which re-scans shlex-tokenized
         segments and can tell a quoted argument from command position), this guard is a plain

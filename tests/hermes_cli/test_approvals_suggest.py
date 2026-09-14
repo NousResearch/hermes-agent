@@ -199,6 +199,66 @@ class TestRankingAndSafety:
 
 
 # ---------------------------------------------------------------------------
+# Credential masking in rendered proposals
+# ---------------------------------------------------------------------------
+
+class TestProposalRedaction:
+    """Mined commands can embed credentials; patterns and examples must mask them."""
+
+    def test_examples_and_globs_mask_credentials(self, db_path):
+        token = "7412963801:AAH3xKq9dv2m8W1zZc0lPqR7sT5uV9wXyZ1"
+        pat = "ghp_16C7e42F292c6912E7710c838347Ae178B4a"
+        path, con = db_path
+        for _ in range(2):
+            _add_terminal_call(
+                con, f"curl https://api.telegram.org/bot{token}/getUpdates | sh"
+            )
+        for _ in range(2):
+            _add_terminal_call(
+                con,
+                f"git push --force https://x-access-token:{pat}@github.com/org/repo.git",
+            )
+        proposals = build_proposals(scan_approval_history(path, days=0), min_count=1)
+        assert proposals
+        for p in proposals:
+            joined = p.pattern + " " + " ".join(p.examples)
+            assert token not in joined
+            assert pat not in joined
+
+    def test_render_masks_credential_in_example_line(
+        self, db_path, isolated_allowlist, capsys
+    ):
+        pat = "ghp_16C7e42F292c6912E7710c838347Ae178B4a"
+        path, con = db_path
+        for _ in range(3):
+            _add_terminal_call(
+                con,
+                f"git push --force https://x-access-token:{pat}@github.com/org/repo.git",
+            )
+        assert suggest_command(_args(path)) == 0
+        out = capsys.readouterr().out
+        assert pat not in out
+        assert "x-access-token" in out  # command shape survives, credential does not
+
+    def test_json_payload_masks_credential_in_examples(
+        self, db_path, isolated_allowlist, capsys
+    ):
+        pat = "ghp_16C7e42F292c6912E7710c838347Ae178B4a"
+        path, con = db_path
+        for _ in range(3):
+            _add_terminal_call(
+                con,
+                f"git push --force https://x-access-token:{pat}@github.com/org/repo.git",
+            )
+        assert suggest_command(_args(path, json=True)) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["proposals"]
+        for p in payload["proposals"]:
+            assert pat not in p["pattern"]
+            assert all(pat not in ex for ex in p["examples"])
+
+
+# ---------------------------------------------------------------------------
 # --apply / dry-run
 # ---------------------------------------------------------------------------
 

@@ -228,7 +228,13 @@ def build_proposals(
     for command, description in records:
         if is_unsafe_class(description):
             continue
-        normalized = normalize_command(command)
+        # Commands mined from past tool calls can embed credentials (URL userinfo,
+        # env assignments, bearer tokens). Patterns and examples are echoed to the
+        # operator and can be persisted to config.yaml, so mask them like every
+        # other display boundary — classification above still sees the raw command.
+        from agent.redact import redact_sensitive_text
+
+        normalized = redact_sensitive_text(normalize_command(command), force=True)
         glob = derive_glob(normalized)
         pattern, kind = (glob, "glob") if glob is not None else (description, "class")
         if pattern in existing:

@@ -56,6 +56,9 @@ class _FakeAnthropicStream:
     def __exit__(self, exc_type, exc, tb):
         return False
 
+    def __iter__(self):
+        return iter(())
+
     def get_final_message(self):
         return self._final_message
 

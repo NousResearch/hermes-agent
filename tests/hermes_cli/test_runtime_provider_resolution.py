@@ -1860,3 +1860,24 @@ def test_custom_provider_pool_target_model_wins(monkeypatch):
 
     assert resolved is not None
     assert resolved["model"] == "myproxy/gemini-flash"
+
+
+def test_custom_provider_stays_authoritative_with_aws_credentials_present(monkeypatch):
+    """Regression for the #20738 runtime path: with model.provider: custom pinned and the boto3
+    chain able to answer 'bedrock' (an EKS node role via IMDS), the runtime seam must stay on the
+    configured custom endpoint — the implicit host credential never overrides explicit intent."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "custom",
+        "base_url": "https://my-gateway.example.com/v1",
+    })
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda **kw: True)
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test-aws-key-id")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test-aws-secret")
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://my-gateway.example.com/v1"

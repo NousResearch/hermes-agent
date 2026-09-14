@@ -14,8 +14,10 @@ never reaches the portal; a dead credential is replaced by the explicit re-mint 
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, Optional
 
@@ -74,6 +76,29 @@ def reset_for_tests() -> None:
         _done.clear()
 
 
+@contextmanager
+def _imds_probe_disabled():
+    """Silence botocore's EC2 instance-metadata probe (169.254.169.254) for the duration.
+
+    The bootstrap's inventory probes run on EVERY boot, and on a host that silently drops the IMDS
+    address (a LAN without a refused connection) each connect burns its full timeout — measured at
+    ~8 s per launch (see the cProfile in the #20764 discussion). Disabling the probe keeps the
+    inventory to its explicit signals: env-var groups, named profiles and container URIs still
+    resolve (botocore honours ``AWS_EC2_METADATA_DISABLED`` for the IMDS provider only), while the
+    implicit instance-credential rung answers "no" at once. The runtime's provider resolution is
+    untouched — the same treatment ``doctor_connectivity.run_probes`` already applies to its
+    Bedrock probe."""
+    _prev = os.environ.get("AWS_EC2_METADATA_DISABLED")
+    os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
+    try:
+        yield
+    finally:
+        if _prev is None:
+            os.environ.pop("AWS_EC2_METADATA_DISABLED", None)
+        else:
+            os.environ["AWS_EC2_METADATA_DISABLED"] = _prev
+
+
 def _inventory_other_providers() -> bool:
     """Is anything usable configured BESIDES the free tier? Asks the resolver ladder itself (the
     thing that picks the provider for a turn) with the free-tier rung hidden: an explicit key, a
@@ -82,7 +107,8 @@ def _inventory_other_providers() -> bool:
     keyless catalog providers as "configured" and is True on a blank machine."""
     from hermes_cli.auth import resolve_provider
     try:
-        return resolve_provider("auto", skip_free_tier=True) != "nous"
+        with _imds_probe_disabled():
+            return resolve_provider("auto", skip_free_tier=True) != "nous"
     except Exception as exc:
         logger.debug("free tier bootstrap: nothing else carries inference (%s)", exc)
         return False
@@ -91,7 +117,8 @@ def _inventory_other_providers() -> bool:
 def _resolve_inference() -> str:
     from hermes_cli.auth import resolve_provider
     try:
-        return str(resolve_provider("auto") or "")
+        with _imds_probe_disabled():
+            return str(resolve_provider("auto") or "")
     except Exception:
         return ""
 

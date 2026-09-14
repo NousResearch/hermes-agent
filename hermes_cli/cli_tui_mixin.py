@@ -41,6 +41,8 @@ from typing import Optional
 # Rows below an overlay panel taken by spinner/tool-progress, status bar, input, separators and
 # prompt symbol (measured ~6 during live PTY approval prompts) — shared by every panel budget.
 _PANEL_RESERVED_BELOW = 6
+# Enter within this many seconds of the last buffer change is a pasted/dictated newline, not a submit.
+_RAPID_INPUT_ENTER_WINDOW_S = 0.05
 _TYPING_CHARS = string.digits + string.ascii_letters + "-_.:/ "
 
 _APPROVAL_CHOICE_LABELS = {
@@ -299,7 +301,7 @@ class CLITuiMixin:
         if self._command_running:
             return _state_fragment("class:prompt-working", self._command_spinner_frame())
         if self._agent_running:
-            return _state_fragment("class:prompt-working", "⚕")
+            return _state_fragment("class:prompt-working", "☤")
         if self._voice_mode:
             return _state_fragment("class:voice-prompt", "🎤")
         return [("class:prompt", symbol)]
@@ -634,6 +636,18 @@ class CLITuiMixin:
             hint = (
                 f"Current: {state.get('current_model', 'unknown')} "
                 f"on {state.get('current_provider', 'unknown')}")
+        elif state.get("stage") == "reasoning":
+            from hermes_cli.cli_model_switch_mixin import _picker_reasoning_rows
+            result = state.get("switch_result")
+            picked = getattr(result, "new_model", "") or "model"
+            title = f"⚙ Model Picker — Reasoning effort for {picked}"
+            rc = self.reasoning_config
+            current = ("none" if isinstance(rc, dict) and rc.get("enabled") is False
+                       else (rc or {}).get("effort", "medium") if isinstance(rc, dict) else "medium")
+            choices = [f"{label}  ← current" if value == current else label
+                       for value, label in _picker_reasoning_rows()]
+            choices += ["← Back", "Cancel"]
+            hint = "Applies with the model switch (same scope) — Enter to choose"
         else:
             provider_data = state.get("provider_data") or {}
             model_list = state.get("model_list") or []
@@ -1164,6 +1178,9 @@ class CLITuiMixin:
             return
         if state.get("stage") == "provider":
             max_idx = len(state.get("providers") or [])
+        elif state.get("stage") == "reasoning":
+            from hermes_cli.cli_model_switch_mixin import _picker_reasoning_rows
+            max_idx = len(_picker_reasoning_rows()) + 1  # + Back + Cancel
         else:
             # +1 for "← Back" and Cancel over the filtered visible rows.
             _fp = state.get("_filtered_pairs")
@@ -1184,10 +1201,14 @@ class CLITuiMixin:
         st["_scroll_offset"] = 0
 
     def _tui_model_picker_escape(self, event):
-        """ESC clears an active filter first, else closes the picker."""
+        """ESC clears an active filter first, else steps back from the effort stage, else closes."""
         st = self._model_picker_state
         if st and st.get("stage") == "model" and (st.get("filter") or ""):
             self._tui_set_filter(st, "")
+            event.app.invalidate()
+            return
+        if st and st.get("stage") == "reasoning":
+            st.update(stage="model", selected=0, _scroll_offset=0, switch_result=None)
             event.app.invalidate()
             return
         self._close_model_picker()
@@ -1350,6 +1371,8 @@ class CLITuiMixin:
             return
         buf = event.app.current_buffer
         raw_text = buf.text
+        # Explicit `\` + Enter continuation runs first so its backslash is consumed identically
+        # whether the Enter was typed or arrived inside a paste.
         if (
             self._tui_multiline_shortcuts
             and buf.cursor_position == len(raw_text)
@@ -1358,6 +1381,13 @@ class CLITuiMixin:
             buf.text = continued
             buf.cursor_position = len(continued)
             event.app.invalidate()
+            return
+        # Paste without bracketed-paste (tmux strips it) and IME/voice dictation deliver each
+        # newline as its own Enter key event; the buffer collapse in _tui_on_text_changed only
+        # sees whole-chunk pastes. Text still arriving (<50 ms since the last change) means this
+        # Enter is a line break inside one message, not a submit (#10994).
+        if time.monotonic() - getattr(self, "_tui_last_text_change", 0.0) < _RAPID_INPUT_ENTER_WINDOW_S:
+            buf.insert_text("\n")
             return
         text = raw_text.strip()
         has_images = bool(self._attached_images)
@@ -1676,6 +1706,7 @@ class CLITuiMixin:
         tick), or the newline count jumped by 4+ (terminals that feed characters individually
         but batch newlines; Alt+Enter adds 1 newline per event so never trips it).
         """
+        self._tui_last_text_change = time.monotonic()
         from cli import _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
         text = _strip_leaked_bracketed_paste_wrappers(buf.text)
         text, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(text)

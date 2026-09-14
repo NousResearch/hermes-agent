@@ -453,18 +453,15 @@ def _resolve_sudo_user_profile_env(name: str) -> str | None:
     sudo invocations the best signal is SUDO_USER: root is only doing the
     privileged install/start action; the profile store belongs to the user.
     """
-    if name == "default" or not hasattr(os, "geteuid") or os.geteuid() != 0:
+    if name == "default":
         return None
-    sudo_user = os.environ.get("SUDO_USER", "").strip()
-    if not sudo_user or sudo_user == "root":
-        return None
-    try:
-        import pwd
+    from hermes_constants import sudo_invoker_default_home
 
-        candidate = Path(pwd.getpwnam(sudo_user).pw_dir) / ".hermes" / "profiles" / name
-        return str(candidate) if candidate.is_dir() else None
-    except Exception:
+    sudo_home = sudo_invoker_default_home()
+    if sudo_home is None:
         return None
+    candidate = sudo_home / "profiles" / name
+    return str(candidate) if candidate.is_dir() else None
 
 
 def _under_gateway_supervisor(argv: list) -> bool:
@@ -607,20 +604,14 @@ load_hermes_dotenv(
 # is read from the same parse to avoid a second full load_config() (~17ms).
 _FORCE_IPV4_EARLY = False
 try:
-    # read_raw_config()'s (mtime, size)-keyed cache means this SAME parse serves
-    # hermes_logging and later raw reads: 3-4 config.yaml parses become one.
-    from hermes_cli.config import read_raw_config as _read_raw_early
+    # The effective-config cache (shared raw parse with read_raw_config()) means this SAME parse
+    # serves hermes_logging, hermes_time and later raw reads: 3-4 config.yaml parses become one.
+    # Managed overlay included: administrator-pinned redact_secrets / force_ipv4 win here too.
+    from hermes_cli.config_effective import load_user_config_effective as _load_effective_early
 
     _cfg_path = get_hermes_home() / "config.yaml"
     if _cfg_path.exists():
-        _early_cfg_raw = _read_raw_early() or {}
-        # Managed scope overlay: administrator-pinned redact_secrets /
-        # force_ipv4 must win here too (load_config isn't usable yet). Fail-open.
-        try:
-            from hermes_cli import managed_scope
-            _early_cfg_raw = managed_scope.apply_managed_overlay(_early_cfg_raw)
-        except Exception:
-            pass
+        _early_cfg_raw = _load_effective_early(_cfg_path)
         if "HERMES_REDACT_SECRETS" not in os.environ:
             _early_sec_cfg = _early_cfg_raw.get("security", {})
             if isinstance(_early_sec_cfg, dict):
@@ -723,6 +714,8 @@ from hermes_cli.main_provider_setup import (
     _clear_stale_openai_base_url,
     _is_profile_api_key_provider,
     _named_custom_provider_map,
+    _offer_reasoning_after_pick,
+    _prompt_main_reasoning_effort,
     _prompt_provider_choice,
     _remove_custom_provider,
 )
@@ -1164,14 +1157,16 @@ def _resolve_workspace_key() -> Optional[str]:
 
 @contextlib.contextmanager
 def _session_db():
-    """Yield a ``SessionDB`` (lazy import, so test patches on ``hermes_state``
-    intercept). Open failures yield None and any error raised by the ``with``
-    body is swallowed — callers fall through to their ``return None``."""
+    """Yield a read-only ``SessionDB`` (lazy import, so test patches on ``hermes_state``
+    intercept). Every caller is a lookup (last session, title → id, recorded cwd), so it
+    never opens a writer beside the one the CLI acquires from the registry a moment later.
+    Open failures yield None and any error raised by the ``with`` body is swallowed —
+    callers fall through to their ``return None``."""
     db = None
     try:
         from hermes_state import SessionDB
 
-        db = SessionDB()
+        db = SessionDB(read_only=True)
     except Exception:
         pass
     try:
@@ -1343,12 +1338,13 @@ def _create_titled_session(title: str) -> Optional[str]:
     """
     db = None
     try:
-        import uuid as _uuid
+        from hermes_state_ids import new_session_id as mint_session_id
+        from hermes_state_registry import acquire
 
-        from hermes_state import SessionDB
-
-        new_session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:6]}"
-        db = SessionDB()
+        new_session_id = mint_session_id()
+        # The CLI acquires the registry handle for this same path moments later; share it
+        # instead of minting a second writer for one INSERT (close() releases the refcount).
+        db = acquire()
         db.create_session(new_session_id, source="cli")
         db.set_session_title(new_session_id, title)
         return new_session_id
@@ -2007,6 +2003,10 @@ def select_provider_and_model(args=None):
     if selected_provider == "aux-config":
         _aux_config_menu()
         return
+    if selected_provider == "reasoning":
+        # Effort for the CURRENT default model, no model change.
+        _prompt_main_reasoning_effort(current_model, active or "")
+        return
 
     # Provider-specific setup + model selection. Flows resolve the
     # _model_flow_* names at call time so test monkeypatches on
@@ -2033,6 +2033,10 @@ def select_provider_and_model(args=None):
         or _is_profile_api_key_provider(selected_provider)
     ):
         _model_flow_api_key_provider(config, selected_provider, current_model)
+
+    # Every flow persists through _save_model_choice; a changed model.default means a pick
+    # landed, so offer its reasoning effort here once instead of inside each flow.
+    _offer_reasoning_after_pick(current_model)
 
     # Post-switch cleanup: switching to a named provider (anything except
     # "custom") leaves a stale OPENAI_BASE_URL in ~/.hermes/.env that poisons

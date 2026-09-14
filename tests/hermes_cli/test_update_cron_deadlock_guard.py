@@ -97,7 +97,7 @@ class TestSelfRestartFireAndForget:
 
         with patch.object(gw.os, "kill"), patch.object(
             gw, "_wait_for_pid_exit",
-            side_effect=lambda pid, t: waited.append((pid, t)) or True,
+            side_effect=lambda pid, t, **_: waited.append((pid, t)) or True,
         ):
             ok = gw._graceful_restart_via_sigusr1(4242, drain_timeout=7.0)
 
@@ -131,7 +131,7 @@ class TestDrainOrSignalTriage:
         monkeypatch.setattr(
             gw,
             "_graceful_restart_via_sigusr1",
-            lambda pid, drain_timeout: calls["drain"].append((pid, drain_timeout))
+            lambda pid, drain_timeout, **_: calls["drain"].append((pid, drain_timeout))
             or True,
         )
         return calls

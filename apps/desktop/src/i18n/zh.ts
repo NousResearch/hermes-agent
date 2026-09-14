@@ -1,8 +1,8 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
-import type { Translations } from './types'
+import { defineLocale } from './define-locale'
 
-export const zh: Translations = {
+export const zh = defineLocale({
   connectors: {
     title: '连接你的应用',
     connect: '连接',
@@ -26,10 +26,9 @@ export const zh: Translations = {
     ownerMissing: '请重新打开此对话以管理连接。',
     search: '查找应用',
     empty: '没有匹配的应用',
-    continue: '在对话中继续',
-    continueBusy: '等待当前操作完成',
-    continueFailed: '无法继续，请重试。',
     disclaimer: '连接为可选操作。请仅授权你希望 Hermes 使用的应用。',
+    connectTitle: app => `连接 ${app}？`,
+    describe: app => `Hermes 会在浏览器中登录 ${app}，读取任何内容前都会先询问。`,
     execution: '连接器工具'
   },
 
@@ -208,7 +207,10 @@ export const zh: Translations = {
       errorTitle: 'MCP 服务器无法连接',
       errorMessage: name => `${name} MCP 健康检查失败。`,
       signIn: '登录',
-      view: '查看'
+      view: '查看',
+      disable: '禁用',
+      disabledMessage: name => `已禁用 ${name} MCP。可随时在「能力 → MCP」中重新启用。`,
+      disableFailed: name => `无法禁用 ${name} MCP。`
     },
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT 需要 ELEVENLABS_API_KEY。',
@@ -240,7 +242,11 @@ export const zh: Translations = {
       transcriptionFailed: '语音转写失败',
       transcriptionUnavailable: '语音转写暂不可用。',
       tryRecordingAgain: '请再录一次。',
-      unavailable: '语音不可用'
+      unavailable: '语音不可用',
+      liveEnded: '实时语音会话已结束',
+      liveError: '实时语音',
+      liveDelegationFailed: '无法将请求交给 Hermes',
+      liveUnavailable: reason => `GPT-Live 语音聊天不可用：${reason}。已改用语音转文字。`
     },
     native: {
       approvalTitle: '需要批准',
@@ -724,10 +730,10 @@ export const zh: Translations = {
       reactionsTitle: '消息回应',
       reactionsDesc: 'iMessage 风格的表情回应 — 你可以给消息添加回应，Hermes 也能回应你的消息。',
       tipsTitle: '应用内提示',
-      tipsDesc: '指向应用某处的小气泡：空闲时偶尔出现，需要时 Hermes 也会给你一条。每条提示只出现一次。',
+      tipsDesc: '偶尔显示来自应用和 Hermes 的提示，每条提示只出现一次。开始使用满30天后自动关闭，你可以重新开启。',
       tipsReset: (count: number) => `再次显示 ${count} 条提示`,
       toursTitle: '引导导览',
-      toursDesc: '让 Hermes 带你熟悉应用：调暗界面并逐步高亮每个位置。',
+      toursDesc: '让 Hermes 逐步高亮每个位置，带你熟悉应用。开始使用满30天后自动关闭，你可以重新开启。',
       composerPopoutTitle: '悬浮输入框',
       composerPopoutDesc: '允许将输入框拖出底部停靠区。关闭后，输入框会锁定在底部。',
       vibeHeartsTitle: '心情爱心',
@@ -747,6 +753,7 @@ export const zh: Translations = {
       technicalDesc: '包含原始工具参数/结果及底层细节。',
       themeTitle: '主题',
       themeDesc: '仅桌面端调色板。所选模式叠加其上。',
+      themeSearchPlaceholder: '搜索本地主题或 VS Code 市场…',
       themeProfileNote: profile => `已为「${profile}」配置文件保存——每个配置文件保留各自的主题。`,
       installTitle: '从 VS Code 安装',
       installDesc: '粘贴 Marketplace 扩展 ID（例如 dracula-theme.theme-dracula），将其配色主题转换为桌面调色板。',
@@ -850,7 +857,8 @@ export const zh: Translations = {
       },
       browser: {
         allowPrivateUrls: '浏览器私有 URL',
-        autoLocalForPrivateUrls: '私有 URL 使用本地浏览器'
+        autoLocalForPrivateUrls: '私有 URL 使用本地浏览器',
+        useRealProfile: '使用我的真实浏览器配置'
       },
       checkpoints: {
         enabled: '文件检查点',
@@ -859,11 +867,17 @@ export const zh: Translations = {
       voice: {
         recordKey: '语音快捷键',
         maxRecordingSeconds: '最长录音时长',
-        autoTts: '朗读回复'
+        autoTts: '朗读回复',
+        voiceChatMode: '语音聊天模式',
+        gptLive: {
+          voice: 'GPT-Live 音色',
+          instructions: 'GPT-Live 人设'
+        }
       },
       stt: {
         enabled: '语音转文字',
         provider: '语音转文字提供方',
+        echoTranscripts: '回显转写文本',
         local: {
           model: '本地转写模型',
           language: '转写语言'
@@ -896,6 +910,10 @@ export const zh: Translations = {
         elevenlabs: {
           voiceId: 'ElevenLabs 语音',
           modelId: 'ElevenLabs 模型'
+        },
+        deepinfra: {
+          model: 'DeepInfra TTS 模型',
+          voice: 'DeepInfra 语音'
         },
         xai: {
           voiceId: 'xAI (Grok) 语音',
@@ -979,7 +997,11 @@ export const zh: Translations = {
       terminal: {
         cwd: '工具与终端操作的默认项目目录。',
         persistentShell: '当后端支持时，在命令之间保留 Shell 状态。',
-        envPassthrough: '传入工具执行的环境变量。'
+        envPassthrough: '传入工具执行的环境变量。',
+        dockerImage: '当执行后端为 Docker 时使用的容器镜像。',
+        singularityImage: '当执行后端为 Singularity 时使用的镜像。',
+        modalImage: '当执行后端为 Modal 时使用的镜像。',
+        daytonaImage: '当执行后端为 Daytona 时使用的镜像。'
       },
       codeExecution: {
         mode: '代码执行被限定到当前项目的严格程度。'
@@ -1005,13 +1027,38 @@ export const zh: Translations = {
       compression: {
         enabled: '当对话变大时对较早的上下文进行摘要。'
       },
+      browser: {
+        useRealProfile:
+          '本地浏览使用你的真实登录状态。Hermes 会把你默认浏览器的配置（Cookie、登录、偏好）复制为受管快照，并用自带的 Chromium 驱动它——不会直接打开你的实时配置，且每次运行都会从实时配置刷新副本。还允许智能体在配置了云端浏览器后端时，按需打开本地真实配置会话。仅支持 Chromium 系浏览器（Chrome、Edge、Brave、Brave Origin、Chromium）；默认浏览器不是 Chromium 系时会给出明确报错。默认关闭。'
+      },
       voice: {
-        autoTts: '自动朗读助手回复。'
+        autoTts: '自动朗读助手回复。',
+        voiceChatMode:
+          'chained：语音转文字 → Hermes → 文字转语音，使用下方的提供商。gpt-live：一个全双工的 OpenAI 语音模型（gpt-live-1）负责听和说，并把每个实际请求交给 Hermes——由你选择的任意模型带着完整工具集作答。需要 OpenAI API 密钥；语音层按每分钟 $0.05 计费。',
+        gptLive: {
+          voice: 'GPT-Live 模式使用的音色，可填写自定义音色 ID。',
+          instructions: '附加到实时语音人设的句子（语气、语速、语言）。Hermes 保留自己的系统提示词。'
+        }
       },
       stt: {
         enabled: '启用本地或提供方支持的语音转写。',
+        echoTranscripts: '将语音消息的原始 🎙️ 转写文本发回聊天。',
         elevenlabs: {
           languageCode: '可选的 ISO-639-3 语言代码。留空让 ElevenLabs 自动检测。'
+        }
+      },
+      tts: {
+        xai: {
+          voiceId: 'xAI 语音 ID（如 eve）或自定义语音 ID。',
+          language: '口语语言代码（如 en、pt-BR），或填 "auto" 自动检测。',
+          speed: '播放速度。0.7 = 较慢，1.0 = 正常，1.5 = 较快。',
+          autoSpeechTags: '合成前让 LLM 在文稿中插入表现力音频标签（如 [laughing]、[sighs]）。',
+          optimizeStreamingLatency: '延迟与质量的权衡。0 = 最佳质量，2 = 最低延迟。',
+          sampleRate: '音频采样率（Hz）。越高音质越好、文件越大。',
+          bitRate: 'MP3 比特率（bps）。仅当编码为 mp3 时生效。'
+        },
+        neutts: {
+          device: 'NeuTTS 的本地推理设备。'
         }
       },
       updates: {
@@ -1019,6 +1066,30 @@ export const zh: Translations = {
           'Hermes 从应用内更新时（无终端提示），保留本地源码修改（暂存）或丢弃（放弃）。通过终端更新时始终会询问。'
       }
     }),
+    uninstallSection: {
+      dangerZone: '危险操作',
+      confirmUninstall: '确认卸载',
+      uninstallHermes: '卸载 Hermes'
+    },
+    poolLimits: {
+      warmBotBackendsAria: '预热机器人后端',
+      warmBotBackendsTitle: '预热机器人后端',
+      backendIdleTimeoutAria: '后端空闲超时（毫秒）',
+      backendIdleTimeoutTitle: '后端空闲超时（毫秒）'
+    },
+    customEndpoints: {
+      title: '自定义端点',
+      deleteEndpoint: '删除端点',
+      emptyDescription: '在下方添加兼容 OpenAI 的端点。',
+      emptyTitle: '暂无自定义端点',
+      namePlaceholder: '我的代理',
+      contextPlaceholder: '自动'
+    },
+    computerUse: {
+      accessibility: '辅助功能',
+      screenRecording: '屏幕录制',
+      driverHealth: '驱动健康状态'
+    },
     about: {
       heading: 'Hermes Desktop',
       version: value => `版本 ${value}`,
@@ -1080,7 +1151,8 @@ export const zh: Translations = {
       attachmentSizeDesc:
         '桌面端为预览和图片附件加载本地文件的大小上限（MB）。默认为 16。远程非图片附件使用单独的 256 MB 上限。设置过大会将整个文件读入内存，可能导致应用卡死或崩溃。',
       attachmentSizeUnit: 'MB',
-      attachmentSizeLabel: '预览 / 图片加载大小上限（MB）'
+      attachmentSizeLabel: '预览 / 图片加载大小上限（MB）',
+      showOptions: '显示选项'
     },
     quickEntry: {
       enabledTitle: '快速输入',
@@ -1453,10 +1525,14 @@ export const zh: Translations = {
       setToMain: '设为主模型',
       change: '更改',
       autoUseMain: '自动 · 使用主模型',
+      inheritMainEffort: '继承 · 主模型推理强度',
       providerDefault: '(提供方默认)',
       fallbackAdd: '添加备用模型',
       fallbackEmpty: '未配置备用模型 — 默认模型失败时才会使用备用模型。',
       notInCatalog: '不在该提供方的模型列表中 — 调用可能回退到备用模型。',
+      moaTitle: '混合智能体（Mixture of Agents）',
+      moaPreset: '预设',
+      moaAggregator: '聚合模型',
       tasks: {
         vision: { label: '视觉', hint: '图片分析' },
         compression: { label: '压缩', hint: '上下文压缩' },
@@ -1465,6 +1541,9 @@ export const zh: Translations = {
         mcp: { label: 'MCP', hint: 'MCP 工具路由' },
         title_generation: { label: '标题生成', hint: '会话标题' },
         review: { label: '评审', hint: '/review 评审子智能体' },
+        triage_specifier: { label: '分类指定', hint: '看板任务规格补全' },
+        kanban_decomposer: { label: '看板分解', hint: '任务拆解' },
+        profile_describer: { label: '配置描述', hint: '自动生成配置描述' },
         curator: { label: '维护器', hint: '技能使用审查' }
       }
     },
@@ -2070,6 +2149,10 @@ export const zh: Translations = {
     restartGateway: '重启网关',
     openBrowser: '打开浏览器',
     gatewayRestartFailed: '网关重启失败。',
+    sharedGatewayRestartTitle: '重启共享网关？',
+    sharedGatewayRestartDescription: bots => `此设备上的所有机器人都会重新连接：${bots}`,
+    sharedGatewayRestartConfirm: '全部重启',
+    sharedGatewayRestarted: count => `共享网关已重启（${count} 个机器人）`,
     updateHermes: '更新 Hermes',
     reloadWindow: '重新载入窗口',
     actionRunning: '运行中',
@@ -2163,6 +2246,7 @@ export const zh: Translations = {
     },
     unknown: '未知',
     hintPendingRestart: '在状态栏重启网关以应用此更改。',
+    sharedListenerUrl: '通过共享网关监听器提供，地址为',
     hintGatewayStopped: '在状态栏启动网关以建立连接。',
     credentialsSet: '凭据已设置',
     needsSetup: '需要设置',
@@ -2189,6 +2273,8 @@ export const zh: Translations = {
     restartToApply: '此更改将在网关重启后生效。',
     setupSaved: name => `${name} 设置已保存`,
     restartToReconnect: '新凭据将在网关重启后生效。',
+    appliedLive: '已应用到正在运行的网关。',
+    connectingLive: '正在运行的网关正在使用新凭据连接。',
     keyCleared: key => `${key} 已清除`,
     setupUpdated: name => `${name} 设置已更新。`,
     failedUpdate: name => `更新 ${name} 失败`,
@@ -2945,6 +3031,13 @@ export const zh: Translations = {
     stopDictation: '停止听写',
     transcribingDictation: '正在转写听写',
     voiceControls: '语音',
+    voiceEngine: '语音聊天引擎',
+    voiceEngineChained: '语音转文字 + Hermes 语音',
+    voiceEngineLive: 'GPT-Live（全双工，委托给 Hermes）',
+    voiceEngineLiveNeedsKey: '需要 OpenAI API 密钥',
+    voiceEngineChangeFailed: '无法更改语音聊天引擎',
+    voiceEngineChainedShort: '语音转文字',
+    voiceEngineLiveShort: 'GPT-Live',
     voiceDictation: '语音听写',
     speakReplies: '朗读回复',
     stopSpeakingReplies: '停止朗读回复',
@@ -4025,6 +4118,19 @@ export const zh: Translations = {
       copyQuery: '复制查询',
       copyFile: '复制文件',
       copyPath: '复制路径',
+      failedCalls: (count: number) => `${count} 次工具调用失败`,
+      skillActivity: {
+        loading: '正在加载技能',
+        loaded: '已加载技能',
+        loadFailed: '技能加载失败',
+        readingResource: '正在读取技能资源',
+        readResource: '已读取技能资源',
+        resourceFailed: '技能资源读取失败',
+        listing: '正在列出技能',
+        listed: '已列出技能',
+        listFailed: '技能列表获取失败',
+        unavailable: '技能结果不可用'
+      },
       outputAlt: '工具输出',
       rawResponse: '原始响应',
       copyActivity: '复制活动',
@@ -4036,6 +4142,7 @@ export const zh: Translations = {
       statusError: '错误',
       statusRecovered: '已恢复',
       statusDone: '完成',
+      resultUnavailable: '结果不可用',
       memoryWriteNoted: '已记下记忆写入',
       actions: {
         read: '已读取',
@@ -4192,6 +4299,8 @@ export const zh: Translations = {
     imageAttach: '附加图片',
     imageWriteFailed: '无法将图片写入磁盘。',
     imageAttachFailed: '附加图片失败',
+    pastedContent: '粘贴内容',
+    pasteAttachFailed: '无法附加粘贴的文本',
     attachImages: '附加图片',
     clipboard: '剪贴板',
     noClipboardImage: '剪贴板中没有图片',
@@ -4278,4 +4387,4 @@ export const zh: Translations = {
       toggle: open => `${open ? '显示' : '隐藏'}侧边栏`
     }
   }
-}
+})

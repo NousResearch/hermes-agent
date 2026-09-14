@@ -715,8 +715,11 @@ class TestSubagentSteerRPC:
                 transport=owner_transport,
                 session_record=owner_record,
             )
-            assert envelope["result"]["status"] == "queued"
-            assert agent.steered == ["ignore serialized capabilities"]
+            # The wire contract refuses unknown keys outright, so a forged runtime artifact never
+            # reaches the handler (before contracts: silently ignored, steer still queued).
+            assert envelope["error"]["code"] == 4000
+            assert "owner_transport" in envelope["error"]["message"]
+            assert agent.steered == []
         finally:
             _unregister_subagent("sid-rpc-param-spoof")
 

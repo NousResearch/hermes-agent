@@ -187,7 +187,7 @@ def _typed_stop_phrase_response(rid, text):
     return _ok(rid, {"voice_stopped": True})
 
 
-_HOSTED_TASK_FIELDS = {"room_id", "task_id", "thread_id", "turn_id", "execution_generation"}
+_HOSTED_TASK_FIELDS = {"room_id", "task_id", "thread_id", "turn_id", "execution_generation", "member_id"}
 
 
 def _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback):
@@ -537,6 +537,10 @@ def _lock_in_submit_turn(
     return None, fields
 
 
+# Per-turn client surfaces that carry a model-bound note (session_notifications._surface_note).
+_CLIENT_SURFACES = frozenset({"hud", "voice-live"})
+
+
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
     from hermes_cli.input_sanitize import sanitize_user_prompt_text
@@ -575,8 +579,13 @@ def _(rid, params: dict) -> dict:
         # leaves the session untouched.  The reason travels as machine-readable data.
         reason = getattr(limit_message, "reason", None)
         return _err(rid, 4090, str(limit_message), {"reason": reason} if reason else None)
-    # Rewritten every submit: a session alternates app window / HUD; stale "hud" misinforms.
-    session["client_surface"] = "hud" if params.get("surface") == "hud" else ""
+    # Rewritten every submit: a session alternates app window / HUD / live voice; a stale value misinforms.
+    session["client_surface"] = params.get("surface") if params.get("surface") in _CLIENT_SURFACES else ""
+    # Live-voice delegations carry the recent spoken transcript for the MODEL INPUT only (the persisted
+    # user row stays the words the user said); anything else clears it.
+    voice_context = params.get("voice_context")
+    session["voice_live_context"] = (
+        voice_context[:6000] if session["client_surface"] == "voice-live" and isinstance(voice_context, str) else "")
     has_truncation = any(params.get(k) is not None for k in _TRUNCATION_PARAMS)
     if has_truncation and isinstance(text, str):
         # A rewind replays what the transcript shows: re-expand a skill invocation or
@@ -929,24 +938,17 @@ def _spawn_side_agent(
 
     def run():
         session_tokens = _set_session_context(task_id, cwd=(cwd or _session_cwd(session)))
-        # Bug #50233: ephemeral agent threads don't inherit the session's HERMES_HOME override (the
-        # ContextVar set on the session-create thread doesn't propagate here), so a background turn under a
-        # non-default profile would run against the wrong home. Re-bind the override for the duration of
-        # this turn, exactly as the normal prompt turn does, and restore it afterward.
-        # Bug #50233: ephemeral preview-restart agent threads don't inherit the session's HERMES_HOME
-        # override (the ContextVar set on the session-create thread doesn't propagate here). Re-bind it for
-        # the duration of the turn, mirroring the normal prompt turn, then restore it. NOTE: we deliberately
-        # do NOT close this agent through task-wide process cleanup — the whole point of preview.restart is
-        # to leave a background server running under this task_id, and AIAgent.close() would kill every
-        # process for the task_id and tear down the very server the restart just started.
-        profile_home = session.get("profile_home")
-        home_token = set_hermes_home_override(profile_home) if profile_home else None
+        # Bug #50233: ephemeral agent threads don't inherit the session's ContextVar scopes (set on the
+        # session-create thread), so a side turn under a non-default profile ran against the wrong home.
+        # Bind the profile's home + secrets + terminal policy for the whole body, exactly as a prompt turn
+        # does: home alone left terminal_tool on the launch process's ambient TERMINAL_* (a docker
+        # secondary's background/btw/preview agent ran local). NOTE: we deliberately do NOT close this
+        # agent through task-wide process cleanup — the whole point of preview.restart is to leave a
+        # background server running under this task_id, and AIAgent.close() would kill every process for
+        # the task_id and tear down the very server the restart just started.
         try:
-            try:
+            with _session_profile_runtime_scope(session):
                 text = body()
-            finally:
-                if home_token is not None:
-                    reset_hermes_home_override(home_token)
             _emit(event, parent, {"task_id": task_id, **extra, "text": text})
         except Exception as e:
             _emit(event, parent, {"task_id": task_id, **extra, "text": f"error: {e}"})
@@ -978,8 +980,10 @@ def _(rid, params: dict) -> dict:
 
     def body():
         from run_agent import AIAgent
-        result = AIAgent(**_background_agent_kwargs(session["agent"], task_id)).run_conversation(
-            user_message=text, task_id=task_id)
+        kwargs = _background_agent_kwargs(session["agent"], task_id)
+        with _side_agent_session_db(kwargs.get("session_db")) as session_db:
+            result = AIAgent(**{**kwargs, "session_db": session_db}).run_conversation(
+                user_message=text, task_id=task_id)
         return _final_response_text(result)
 
     return _spawn_side_agent(rid, session, task_id, parent, "background.complete", body)
@@ -1089,26 +1093,47 @@ def _(rid, params: dict) -> dict:
         cwd=preview_cwd, cleanup=cleanup)
 
 
-# ── late-answer RPCs for tool-driven UI cards ───────────────────────────────
-# allow_expired=True everywhere: a tool's bounded wait can expire (its _pending entry
-# popped) while the card is still visible; a late answer must not surface the raw 4009.
+# ── batch clarify locks ─────────────────────────────────────────────────────
+# A batch ``clarify`` server request is answered one question at a time: each lock is a normal RPC
+# (update-in-place, editable until every qid is locked); the LAST lock resolves the request itself.
+# A cancel-all is the plain response frame with no ``answers``.
 
 
-@method("clarify.respond")
+@method("clarify.lock")
 def _(rid, params: dict) -> dict:
-    if proxied := _respond_compute_host_clarify(rid, params):
+    request_id = str(params.get("request_id") or "")
+    question_id = str(params.get("question_id") or "")
+    if not request_id or not question_id:
+        return _err(rid, 4002, "request_id and question_id required")
+    answer = params.get("answer", "")
+    answer = answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
+    if (proxied := _lock_compute_host_clarify(rid, request_id, question_id, answer)) is not None:
         return proxied
-    return _respond(rid, params, "answer", allow_expired=True)
+    from tui_gateway import server_requests
+    try:
+        remaining = server_requests.lock_answer(request_id, question_id, answer)
+    except ValueError as e:
+        return _err(rid, 4002, str(e))
+    if remaining is None:
+        # The wait already ended (timeout / cancel) while the card was still visible: not an error.
+        return _ok(rid, {"status": "expired"})
+    return _ok(rid, {"status": "ok", "remaining": remaining})
 
 
-_LATE_RESPOND_KEYS = {
-    "terminal.read.respond": "text", "preview.read.respond": "text", "preview.act.respond": "text",
-    "window.read.respond": "text", "tour.respond": "text", "mcp.setup.respond": "result",
-    "sudo.respond": "password", "secret.respond": "value", "vault.unlock.respond": "password",
-    "vault.save_login.respond": "login", "vault.code.respond": "code"}
-for _name, _key in _LATE_RESPOND_KEYS.items():
-    method(_name)(lambda rid, params, _k=_key: _respond(rid, params, _k, allow_expired=True))
-del _name, _key
+@method("request.answer")
+def _(rid, params: dict) -> dict:
+    """Answer an open server→client request from a client that did not receive it (a Bot Mode room
+    window answering a member's prompt mirrored from its resume snapshot). The response-frame path is
+    the norm; this is the proxy for it. ``expired`` when the request already ended."""
+    request_id = str(params.get("id") or "")
+    result = params.get("result")
+    if not request_id or not isinstance(result, dict):
+        return _err(rid, 4002, "id and an object result required")
+    from tui_gateway import server_requests
+    frame = {"jsonrpc": "2.0", "id": request_id, "result": result}
+    if server_requests.resolve_response(frame) or _relay_compute_host_response(frame):
+        return _ok(rid, {"status": "ok"})
+    return _ok(rid, {"status": "expired"})
 
 
 # ── approvals ───────────────────────────────────────────────────────────────

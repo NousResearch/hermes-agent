@@ -1,35 +1,37 @@
 /**
- * What every in-chat onboarding card is made of: the frame it sits in, the
- * props it receives, and the one thing it does when the user is finished —
- * report the pick so the model moves on.
+ * The parts every in-chat onboarding card shares: the frame it renders in, the props it receives, and the commit
+ * helper that submits the pick as a hidden [setup] message so the model moves on.
  */
 
 import { useStore } from '@nanostores/react'
-import { useState } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import { $onboardingAnswers, markStepCommitted } from '@/store/onboarding-answers'
 
 export interface CardProps {
-  /** The directive's raw attrs — the model-written payload. */
+  /** The directive's raw attrs, written by the model. */
   attrs: Record<string, string>
-  /** True while the surrounding turn is still streaming — same card, no clicks. */
+  /** True while the surrounding turn is still streaming; the card renders but does not accept clicks. */
   locked: boolean
 }
 
-export function useCardCommit() {
+/** `step` names the card so Done survives the card remounting: the hidden
+ *  submit and the turn-end hydrate both rebuild the transcript, and a flag in
+ *  component state came back false each time. */
+export function useCardCommit(step: string) {
   const view = useSessionView()
   const storedId = useStore(view.$storedId)
   const target = view.kind === 'tile' ? `tile:${storedId}` : 'main'
-  const [done, setDone] = useState(false)
+  const done = useStore($onboardingAnswers).committed.includes(step)
 
   const commit = (summary: string): boolean => {
     const sent = requestComposerSubmit(`[setup] ${summary}`, { displayKind: 'hidden', target })
 
     if (sent) {
-      setDone(true)
+      markStepCommitted(step)
     }
 
     return sent
@@ -38,17 +40,20 @@ export function useCardCommit() {
   return { commit, done }
 }
 
-/** No chrome — the picker sits directly in the transcript like any other
- *  message content. The interaction IS the affordance; a border would make it
- *  read as a form. */
+/** The frame draws no border or background, so the picker reads as message content in the transcript rather than as
+ *  a form. */
 export function CardFrame({
   children,
+  continueLabel = 'Continue',
   disabled = false,
   done,
   locked = false,
   onContinue
 }: {
   children: React.ReactNode
+  /** The action, named for what it does when the default label says nothing specific.
+   *  "Continue with 2" tells them the picks registered. */
+  continueLabel?: string
   disabled?: boolean
   done: boolean
   locked?: boolean
@@ -71,7 +76,7 @@ export function CardFrame({
           onClick={onContinue}
           size="sm"
         >
-          {done ? '✓ Done' : 'Continue'}
+          {done ? '✓ Done' : continueLabel}
         </Button>
       </div>
     </div>

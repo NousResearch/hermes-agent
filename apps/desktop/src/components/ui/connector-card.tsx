@@ -6,7 +6,7 @@ import { ConnectorLogo, type ConnectorLogoSubject } from '@/components/ui/connec
 import { Input } from '@/components/ui/input'
 import { Tip } from '@/components/ui/tooltip'
 import { MarkdownLinkText } from '@/lib/external-link'
-import { Loader2 } from '@/lib/icons'
+import { CheckCircle2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 /**
@@ -63,6 +63,9 @@ export interface ConnectorCardOutcome {
  *  card stays a leaf that anything can render, tests included. */
 export interface ConnectorCardCopy {
   connectAction: string
+  /** The live offer's heading as a question — "Connect Gmail?" — the same
+   *  shape the MCP setup card asks in. Absent, the card leads with the name. */
+  connectTitle?: (title: string) => string
   decline: string
   envRequired: string
   grantAction: string
@@ -79,7 +82,17 @@ export interface ConnectorCardCopy {
   trustVerifiedTip: (publisher: string) => string
 }
 
+/** What connecting actually means — the endpoint that will be contacted,
+ *  or the catalog it came from. VS Code's trust dialog links the config it
+ *  is about to trust; same idea. Shown under the description in tertiary. */
+export interface ConnectorCardSource {
+  text: string
+}
+
 const SHELL_CLASS = `${WIDGET_SHELL_CLASS} text-[length:var(--conversation-text-font-size)] text-(--ui-text-primary)`
+
+// Same platform sniff the approval bar uses for its accelerator hint.
+const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navigator.platform)
 
 const hostOf = (url: null | string | undefined): string => {
   if (!url) {
@@ -124,7 +137,9 @@ export function ConnectorSummary({
 }: {
   connector: ConnectorLogoSubject
   meta?: string
-  tone?: 'error'
+  /** `ok` is the settled tool row's emerald; `error` its destructive. Absent
+   *  is the neutral grey a skip or a no-answer reads in. */
+  tone?: 'error' | 'ok'
 }) {
   // The scaffold mark goes on the row, never on a container holding several:
   // opacity opens a stacking context and would pin every sibling to one level.
@@ -135,7 +150,17 @@ export function ConnectorSummary({
         <span className="truncate text-[length:var(--conversation-tool-font-size)] text-(--ui-text-primary)">
           {connector.title || connector.name}
         </span>
-        {meta ? <span className={cn(SCAFFOLD_META_CLASS, tone === 'error' && 'text-destructive')}>{meta}</span> : null}
+        {meta ? (
+          <span
+            className={cn(
+              SCAFFOLD_META_CLASS,
+              tone === 'error' && 'text-destructive',
+              tone === 'ok' && 'text-emerald-600/85 dark:text-emerald-400/85'
+            )}
+          >
+            {meta}
+          </span>
+        ) : null}
       </ScaffoldRow>
     </div>
   )
@@ -186,6 +211,15 @@ function TrustBadge({ connector, copy }: { connector: ConnectorCardSubject; copy
 }
 
 export interface ConnectorCardProps {
+  /** Show ⌘⏎ / Esc beside the actions. Only the card that also LISTENS for
+   *  those keys should claim them; a hint on a card that ignores the key is
+   *  a lie the user finds out about by pressing it. */
+  accelerators?: boolean
+  /** Settled cards fold to a scaffold line (the MCP setup default). The
+   *  connector offer keeps the card standing with a green Connected in the
+   *  action slot: a row of identical cards where one collapses reads as a
+   *  row where one broke. */
+  collapseWhenSettled?: boolean
   connector: ConnectorCardSubject
   copy: ConnectorCardCopy
   /** Waved off by the user. Collapses to the same settled line as success. */
@@ -204,7 +238,12 @@ export interface ConnectorCardProps {
   outcome?: ConnectorCardOutcome
   /** Present only while working; replaces the resting state label. */
   phase?: string
+  source?: ConnectorCardSource
   state: ConnectorCardState
+  /** `avatar` leads with the mark at identity scale in a left gutter, the way
+   *  the MCP and Messaging headers introduce a service. `compact` (default)
+   *  trails a small mark on the right like the setup card's tool row. */
+  variant?: 'avatar' | 'compact'
 }
 
 /**
@@ -216,6 +255,8 @@ export interface ConnectorCardProps {
  * spent and the space belongs to the ones still asking.
  */
 export function ConnectorCard({
+  accelerators = false,
+  collapseWhenSettled = true,
   connector,
   copy,
   dismissed = false,
@@ -228,7 +269,9 @@ export function ConnectorCard({
   actionDisabled = false,
   outcome,
   phase,
-  state
+  source,
+  state,
+  variant = 'compact'
 }: ConnectorCardProps) {
   const working = phase !== undefined
   const connected = outcome?.status === 'connected'
@@ -236,9 +279,17 @@ export function ConnectorCard({
 
   // Answered: the offer is spent, so the card collapses to a scaffold line and
   // gives the space back to whatever is still asking.
-  if (connected || dismissed) {
-    return <ConnectorSummary connector={connector} meta={outcomeMeta(outcome ?? { status: 'declined' }, copy)} />
+  if ((connected || dismissed) && collapseWhenSettled) {
+    return (
+      <ConnectorSummary
+        connector={connector}
+        meta={outcomeMeta(outcome ?? { status: 'declined' }, copy)}
+        tone={connected ? 'ok' : undefined}
+      />
+    )
   }
+
+  const settled = connected || dismissed
 
   const stateLabel = state === 'disabled' ? copy.stateDisabled : state === 'needs_auth' ? copy.stateNeedsAuth : null
 
@@ -252,98 +303,131 @@ export function ConnectorCard({
   const envFields = fixable ? (connector.requiredEnv ?? []) : []
   const steps = fixable ? (connector.setup ?? []) : []
 
-  // Logo owns the left rail; everything the card says and every control it
-  // offers shares the one text column, so the buttons sit on the copy's grid
-  // line instead of hanging off the card's edge under the mark.
+  // Same shape as the MCP setup card, which is the consent widget users have
+  // already met: the ask as a heading, one line of what it means, and the
+  // action strip on the shell's own left edge. The mark either trails small
+  // on the right (compact) or leads at identity scale in a left gutter
+  // (avatar) — the MCP tab and Messaging headers' `items-start gap-3` row,
+  // sized up so a first-time user sees WHOSE sign-in is about to open.
+  const avatar = variant === 'avatar'
+
   return (
-    <div className={cn(SHELL_CLASS, 'flex items-start gap-3')} data-slot="connector-card">
-      <ConnectorLogo connector={connector} />
-
-      <div className="grid min-w-0 flex-1 gap-0.5">
-        <div className="flex flex-wrap items-baseline gap-x-1.5">
-          <span className="font-medium">{connector.title}</span>
-          {/* While the card is working its phase replaces the resting state —
-              "Signing in…" is the one the user needs, because the browser tab
-              that just took focus is otherwise unexplained. */}
-          {working ? (
-            <span className="text-[0.6875rem] text-(--ui-text-tertiary)">{phase}</span>
-          ) : (
-            stateLabel && <span className="text-[0.6875rem] text-(--ui-text-tertiary)">{stateLabel}</span>
-          )}
-          <TrustBadge connector={connector} copy={copy} />
-        </div>
-
-        {connector.description ? <p className="text-(--ui-text-secondary)">{connector.description}</p> : null}
-
-        {failed && outcome.detail ? <p className="text-[0.6875rem] text-destructive">{outcome.detail}</p> : null}
-
-        {/* The part we cannot do. Numbered because order matters, linked
-            because the whole cost of these steps is finding the page. */}
-        {steps.length > 0 && (
-          <ol className="mt-1.5 grid gap-1" data-slot="connector-card-steps">
-            {steps.map((step, index) => (
-              <li className="flex gap-1.5 text-[0.6875rem] text-(--ui-text-secondary)" key={step}>
-                <span className="tabular-nums text-(--ui-text-tertiary)">{index + 1}.</span>
-                <MarkdownLinkText text={step} />
-              </li>
-            ))}
-          </ol>
-        )}
-
-        {envOpen && envFields.length > 0 && (
-          <div className="mt-1 grid gap-2" data-slot="connector-card-env">
-            <p className="text-[0.6875rem] text-(--ui-text-tertiary)">{copy.envRequired}</p>
-            {envFields.map(env => (
-              <label className="grid gap-1" key={env.name}>
-                <span className="text-[0.6875rem] text-(--ui-text-secondary)">
-                  {env.prompt || env.name}
-                  {env.required ? ' *' : ''}
-                </span>
-                <Input
-                  className="h-7 text-xs"
-                  onChange={event => onEnvChange?.(env.name, event.currentTarget.value)}
-                  type="password"
-                  value={envDraft[env.name] ?? ''}
-                />
-              </label>
-            ))}
+    <div className={cn(SHELL_CLASS, 'my-1.5 grid gap-1.5')} data-slot="connector-card">
+      <div className={cn('flex items-start', avatar ? 'gap-3' : 'gap-2')}>
+        {avatar ? <ConnectorLogo className="size-10 rounded-xl text-base" connector={connector} /> : null}
+        <div className="grid min-w-0 flex-1 gap-0.5">
+          <div className="flex flex-wrap items-baseline gap-x-1.5">
+            <span className="font-medium leading-(--conversation-line-height)">
+              {copy.connectTitle ? copy.connectTitle(connector.title) : connector.title}
+            </span>
+            {/* While the card is working its phase replaces the resting state —
+                "Signing in…" is the one the user needs, because the browser tab
+                that just took focus is otherwise unexplained. */}
+            {working ? (
+              <span className="text-[0.6875rem] text-(--ui-text-tertiary)">{phase}</span>
+            ) : (
+              stateLabel && <span className="text-[0.6875rem] text-(--ui-text-tertiary)">{stateLabel}</span>
+            )}
+            <TrustBadge connector={connector} copy={copy} />
           </div>
-        )}
 
-        {/* Same strip as the tool approval bar (tool/approval.tsx), down to its
-            `mt-2` stand-off: a bordered primary-tinted action plus a quiet
-            ghost decline. One consent vocabulary across the transcript. */}
-        <div className="mt-2 flex items-center gap-2.5">
-          <div className="inline-flex h-6 items-stretch overflow-hidden rounded-md border border-primary/25 bg-primary/10 text-primary">
+          {connector.description ? <p className="text-(--ui-text-secondary)">{connector.description}</p> : null}
+
+          {source ? <p className="truncate text-[0.6875rem] text-(--ui-text-tertiary)">{source.text}</p> : null}
+
+          {failed && outcome.detail ? <p className="text-[0.6875rem] text-destructive">{outcome.detail}</p> : null}
+
+          {/* The part we cannot do. Numbered because order matters, linked
+              because the whole cost of these steps is finding the page. */}
+          {steps.length > 0 && (
+            <ol className="mt-1.5 grid gap-1" data-slot="connector-card-steps">
+              {steps.map((step, index) => (
+                <li className="flex gap-1.5 text-[0.6875rem] text-(--ui-text-secondary)" key={step}>
+                  <span className="tabular-nums text-(--ui-text-tertiary)">{index + 1}.</span>
+                  <MarkdownLinkText text={step} />
+                </li>
+              ))}
+            </ol>
+          )}
+
+          {envOpen && envFields.length > 0 && (
+            <div className="mt-1 grid gap-2" data-slot="connector-card-env">
+              <p className="text-[0.6875rem] text-(--ui-text-tertiary)">{copy.envRequired}</p>
+              {envFields.map(env => (
+                <label className="grid gap-1" key={env.name}>
+                  <span className="text-[0.6875rem] text-(--ui-text-secondary)">
+                    {env.prompt || env.name}
+                    {env.required ? ' *' : ''}
+                  </span>
+                  <Input
+                    className="h-7 text-xs"
+                    onChange={event => onEnvChange?.(env.name, event.currentTarget.value)}
+                    type="password"
+                    value={envDraft[env.name] ?? ''}
+                  />
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+        {avatar ? null : (
+          <ConnectorLogo className="mt-px size-5 rounded-[0.3rem] text-[0.6875rem]" connector={connector} />
+        )}
+      </div>
+
+      {/* Same strip as the tool approval bar (tool/approval.tsx), down to its
+          stand-off: a bordered primary-tinted action plus a quiet ghost
+          decline. One consent vocabulary across the transcript. In the avatar
+          layout the strip sits on the text column, so the gutter stays the
+          mark's alone. Settled (and kept standing), the action slot holds the
+          verdict in the same box — green Connected, grey Skipped — so the row
+          of cards keeps its rhythm and nothing jumps. */}
+      <div className={cn('flex items-center gap-2.5', avatar && 'pl-13')}>
+        {settled ? (
+          <div
+            className={cn(
+              'inline-flex h-6 items-stretch overflow-hidden rounded-md border',
+              connected
+                ? 'border-emerald-600/25 bg-emerald-600/10 text-emerald-700 dark:border-emerald-400/25 dark:bg-emerald-400/10 dark:text-emerald-300'
+                : 'border-(--ui-stroke-tertiary) bg-(--ui-bg-quaternary) text-(--ui-text-tertiary)'
+            )}
+            data-slot="connector-card-verdict"
+          >
+            <span className="inline-flex h-full items-center gap-1 px-2 text-xs font-medium">
+              {connected ? <CheckCircle2 aria-hidden className="size-3" /> : null}
+              {outcomeMeta(outcome ?? { status: 'declined' }, copy)}
+            </span>
+          </div>
+        ) : (
+          <>
+            <div className="inline-flex h-6 items-stretch overflow-hidden rounded-md border border-primary/25 bg-primary/10 text-primary">
+              <Button
+                className="h-full gap-1 rounded-none px-2 text-xs font-medium text-primary hover:bg-primary/15 hover:text-primary"
+                disabled={otherBusy || actionDisabled}
+                loading={working}
+                onClick={onConnect}
+                size="xs"
+                variant="ghost"
+              >
+                {outcome?.needsAuth ? copy.grantAction : failed ? copy.retryAction : copy.connectAction}
+                {accelerators ? (
+                  <span className="text-[0.625rem] text-primary/60">{isMac ? '⌘⏎' : 'Ctrl⏎'}</span>
+                ) : null}
+              </Button>
+            </div>
+            {/* Never disabled: while a connect is in flight this is the way out
+                of a stuck sign-in tab or a hung install. */}
             <Button
-              className="h-full gap-1 rounded-none px-2 text-xs font-medium text-primary hover:bg-primary/15 hover:text-primary"
-              disabled={working || otherBusy || actionDisabled}
-              onClick={onConnect}
+              className="h-6 gap-1.5 rounded-md px-1.5 text-xs font-normal text-(--ui-text-tertiary) hover:text-foreground"
+              onClick={onDismiss}
               size="xs"
               variant="ghost"
             >
-              {working ? (
-                <Loader2 className="size-3 animate-spin" />
-              ) : outcome?.needsAuth ? (
-                copy.grantAction
-              ) : failed ? (
-                copy.retryAction
-              ) : (
-                copy.connectAction
-              )}
+              {copy.decline}
+              {accelerators ? <span className="text-[0.625rem] opacity-55">Esc</span> : null}
             </Button>
-          </div>
-          {/* Never disabled: while a connect is in flight this is the way out
-              of a stuck sign-in tab or a hung install. */}
-          <Button
-            className="h-6 gap-1.5 rounded-md px-1.5 text-xs font-normal text-(--ui-text-tertiary) hover:text-foreground"
-            onClick={onDismiss}
-            size="xs"
-            variant="ghost"
-          >
-            {copy.decline}
-          </Button>
-        </div>
+          </>
+        )}
       </div>
     </div>
   )

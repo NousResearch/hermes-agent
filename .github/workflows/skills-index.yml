@@ -20,7 +20,10 @@ jobs:
     # Only run on the upstream repository, not on forks
     if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Critical path (Sep 2026): clawhub walk ~14 min ∥ github taps ~8 min, then skills.sh
+    # resolve ~6 min, then a bounded 8 min owner enrichment. 15 min cancelled every
+    # scheduled run for two months and left the live index frozen.
+    timeout-minutes: 50
     environment: trusted-automation
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

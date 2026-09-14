@@ -132,6 +132,26 @@ delegate_task(
 
 The subagent receives a focused system prompt built from your goal and context, instructing it to complete the task and provide a structured summary of what it did, what it found, any files modified, and any issues encountered.
 
+### Forwarding Images to a Subagent
+
+Text context is not enough when the task is inherently visual — a screenshot the user sent, a design mock, a rendered chart. Each task accepts an optional `images` list (up to 8 entries; local file paths, `http(s)` URLs or `data:image/...` URLs):
+
+```python
+delegate_task(tasks=[{
+    "goal": "Compare the rendered dashboard against the design mock and list layout deviations",
+    "context": "The app runs at http://localhost:3000; the repo is at /home/user/dash.",
+    "images": ["/home/user/mocks/dashboard-v2.png",
+               "https://cdn.example.com/current-render.png"],
+}])
+```
+
+Delivery follows the same routing as user-attached images (`agent.image_input_mode`):
+
+- **Vision-capable child model** — the images arrive as native multimodal content on the child's first turn: local files are embedded as data URLs (subject to the same read guard as every other file read), remote and `data:` URLs pass through verbatim. The child sees the actual pixels.
+- **Non-vision child model** — the goal gains `[Image attached at: <path>]` hint lines and the child is told to inspect them with `vision_analyze`.
+
+Forwarding is best-effort: unreadable paths are skipped with a log line, and any failure in the image plumbing falls back to the plain text goal — it can never break a spawn. Images are for things the child must *see*; put text file paths in `context` as usual.
+
 ## Practical Examples
 
 ### Parallel Research

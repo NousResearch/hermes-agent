@@ -14,7 +14,9 @@ from typing import Any, Dict, Optional
 
 from agent.provider_projection import splice_provider_projection
 from agent.trajectory import has_incomplete_scratchpad
-from agent.turn_truncation import continue_codex_incomplete, normalize_response_for_agent, partial_result
+from agent.turn_truncation import (
+    continue_codex_incomplete, normalize_response_for_agent, output_cap_exhausted, partial_result,
+)
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -115,7 +117,7 @@ def _relay_thinking(agent: Any, content: str) -> None:
 def normalize_model_response(
     agent: Any, *, response: Any, messages: Any, api_messages: Any, conversation_history: Any,
     api_call_count: Any, api_duration: Any, api_start_time: Any, api_request_id: Any,
-    effective_task_id: Any, turn_id: Any,
+    effective_task_id: Any, turn_id: Any, api_kwargs: Any = None,
 ) -> ResponseIntakeVerdict:
     """Normalize ``response`` into ``assistant_message`` (str content, never dict/list) and run
     the post-response hooks and continuation guards, in the original order."""
@@ -173,6 +175,7 @@ def normalize_model_response(
         _codex_result = continue_codex_incomplete(
             agent, assistant_message, finish_reason, messages=messages,
             conversation_history=conversation_history, api_call_count=api_call_count,
+            api_kwargs=api_kwargs, output_cap_exhausted=output_cap_exhausted(response),
         )
         if _codex_result is not None:
             return _verdict("return", _codex_result)

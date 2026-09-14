@@ -14,7 +14,10 @@ import time
 from typing import Any, Dict, Optional
 
 from agent.turn_api_call import stop_thinking_spinner
-from agent.turn_truncation import handle_content_policy_refusal, recover_from_truncation
+from agent.turn_truncation import (
+    _OUTPUT_CAP_INCOMPLETE_REASONS, _incomplete_reason, handle_content_policy_refusal,
+    recover_from_truncation,
+)
 from agent.turn_usage import record_response_usage
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -44,18 +47,15 @@ class ResponseCheckVerdict:
 
 def _codex_finish_reason(response: Any) -> str:
     """Responses API max-output exhaustion is a normal Codex incomplete turn: route it to
-    the Codex continuation path (``"incomplete"``), not the length rollback."""
+    the Codex continuation path (``"incomplete"``), not the length rollback.
+
+    Recognition is shared with the continuation's budget escalation
+    (``turn_truncation._OUTPUT_CAP_INCOMPLETE_REASONS``) so the two can never disagree."""
     status = getattr(response, "status", None)
     if isinstance(status, str):
         status = status.strip().lower()
-    incomplete_details = getattr(response, "incomplete_details", None)
-    if isinstance(incomplete_details, dict):
-        incomplete_reason = incomplete_details.get("reason")
-    else:
-        incomplete_reason = getattr(incomplete_details, "reason", None)
-    if incomplete_reason is not None:
-        incomplete_reason = str(incomplete_reason).strip().lower()
-    if status == "incomplete" and incomplete_reason in {"max_output_tokens", "length"}:
+    incomplete_reason = _incomplete_reason(response)
+    if status == "incomplete" and incomplete_reason in _OUTPUT_CAP_INCOMPLETE_REASONS:
         return "incomplete"
     if status == "incomplete" and incomplete_reason == "content_filter":
         return "content_filter"

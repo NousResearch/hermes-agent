@@ -29,6 +29,11 @@ _CONTINUABLE_MODES = {"chat_completions", "bedrock_converse", "anthropic_message
 _THINK_TAG_RE = re.compile(r'<(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>', re.IGNORECASE)
 _TRUNCATED_FINAL = "Response truncated due to output length limit"
 _FIRST_TRUNCATED_FINAL = "First response truncated due to output length limit"
+# Responses turns that ended ``incomplete`` because the output cap ran out (wire shape:
+# ``status=incomplete`` + ``incomplete_details.reason``). Kept as one set so the finish-reason
+# routing (``turn_response_check._codex_finish_reason``) and the continuation's budget
+# escalation (``continue_codex_incomplete``) can never drift apart.
+_OUTPUT_CAP_INCOMPLETE_REASONS = frozenset({"max_output_tokens", "length"})
 # #106260: a stream that died on a context-overflow error after partial delivery must not seed a
 # continuation — the transcript already cannot fit, and appending the partial stub grows every
 # later request into the same overflow. End the turn via the recovery contract instead.
@@ -310,6 +315,38 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     )
 
 
+def _incomplete_reason(response: Any) -> Optional[str]:
+    """Lower-cased ``incomplete_details.reason`` (dict or object wire shape), else ``None``."""
+    details = getattr(response, "incomplete_details", None)
+    reason = details.get("reason") if isinstance(details, dict) else getattr(details, "reason", None)
+    return None if reason is None else str(reason).strip().lower()
+
+
+def output_cap_exhausted(response: Any) -> bool:
+    """True when a Responses turn ended ``incomplete`` because it exhausted the output cap."""
+    status = getattr(response, "status", None)
+    if not (isinstance(status, str) and status.strip().lower() == "incomplete"):
+        return False
+    return _incomplete_reason(response) in _OUTPUT_CAP_INCOMPLETE_REASONS
+
+
+def escalate_output_budget(agent: Any, api_kwargs: Any, retries: int) -> None:
+    """Arm ``agent._ephemeral_max_output_tokens`` for the next request: base × 2**retries,
+    floored at a larger explicit caller cap, ceiling 32 768.
+
+    Every truncation retry shares this one formula, so a retry is never sent with the output
+    cap that just truncated — the provider would cut the same answer at the same place and the
+    attempt is wasted. Consumers: the text continuation, ``_retry_truncated_tool_call`` and the
+    Codex ``status=incomplete`` continuation. Endpoints that ignore the cap (the ChatGPT Codex
+    backend never receives ``max_output_tokens``) are unaffected.
+    """
+    boost = (agent.max_tokens or 4096) * (2 ** retries)
+    requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
+    if requested_cap is not None:
+        boost = max(boost, requested_cap)
+    agent._ephemeral_max_output_tokens = min(boost, max(32768, requested_cap or 0))
+
+
 def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict:
     """Truncated tool call: re-run the same call (up to 4×) with a boosted max_tokens —
     a real output-cap truncation needs it, harmless for a network stall — else refuse to
@@ -322,11 +359,7 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
             agent._buffer_vprint(f"⚠️  Stream interrupted mid tool-call — retrying ({n}/4)...")
         else:
             agent._buffer_vprint(f"⚠️  Truncated tool call detected — retrying API call ({n}/4)...")
-        _tc_boost = (agent.max_tokens if agent.max_tokens else 4096) * (2 ** n)
-        _tc_requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
-        if _tc_requested_cap is not None:
-            _tc_boost = max(_tc_boost, _tc_requested_cap)
-        agent._ephemeral_max_output_tokens = min(_tc_boost, max(32768, _tc_requested_cap or 0))
+        escalate_output_budget(agent, api_kwargs, n)
         return st.done("continue")  # don't append the broken response
     agent._flush_status_buffer()
     if st.is_stub:
@@ -443,7 +476,8 @@ _CODEX_REPLAY_KEYS = (
 
 def continue_codex_incomplete(
     agent: Any, assistant_message: Any, finish_reason: str, *, messages: List[Dict[str, Any]],
-    conversation_history: Any, api_call_count: int,
+    conversation_history: Any, api_call_count: int, api_kwargs: Any = None,
+    output_cap_exhausted: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Codex Responses ``status=incomplete`` continuation (max 3 per turn).
 
@@ -452,7 +486,13 @@ def continue_codex_incomplete(
     overwritten, because the earlier response holds the only native-compaction
     checkpoint) and, when a bare retry would be byte-identical, a user-role nudge — only
     after an assistant row, to preserve role alternation. Returns ``None`` to continue
-    the turn loop, or the terminal ``partial`` result once retries are exhausted."""
+    the turn loop, or the terminal ``partial`` result once retries are exhausted.
+
+    ``output_cap_exhausted`` (``incomplete_details.reason`` was ``max_output_tokens`` /
+    ``length``) escalates the next request's output budget through the shared
+    ``escalate_output_budget``, so the continuation does not re-send the cap that just
+    truncated. Endpoints that ignore the cap (the ChatGPT Codex backend) are unaffected and
+    keep the plain continuation nudge, which is the primary recovery there."""
     from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
 
     agent._codex_incomplete_retries += 1
@@ -498,6 +538,10 @@ def continue_codex_incomplete(
             agent._emit_interim_assistant_message(interim_msg)
 
     if n < 3:
+        if output_cap_exhausted:
+            # The cap cut this response off; a continuation at the same cap is cut off at the
+            # same place, so reuse the shared truncation-retry escalation for the retry.
+            escalate_output_budget(agent, api_kwargs, n)
         # If the interim has nothing the Responses converter will replay, a bare retry is
         # byte-identical; a replayable interim holding only a ``compaction`` checkpoint
         # ALSO re-sends identically. One bare retry, then always nudge.

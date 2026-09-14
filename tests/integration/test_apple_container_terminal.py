@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import json
 import os
+from pathlib import Path
 import platform
 import subprocess
+import sys
+import time
 
+import psutil
 import pytest
 
 
@@ -205,3 +210,150 @@ def test_native_apple_container_cross_tool_lifecycle(monkeypatch, tmp_path):
     assert container_names
     for name in container_names:
         assert not _list_json_contains_identity(listing.stdout, name)
+
+
+@pytest.fixture
+def native_container_cli():
+    from tools.environments import apple_container as apple
+
+    assert apple.is_apple_container_supported_host(), "requires macOS 26+ arm64"
+    apple._container_executable = None
+    executable = apple.find_container_cli()
+    assert executable, "Apple Container CLI is required for explicitly opted-in tests"
+    running, detail = apple.container_system_status(executable)
+    assert running, f"Apple Container service must already be running: {detail}"
+    return executable
+
+
+def _native_command(executable, *arguments):
+    return subprocess.run(
+        [executable, *arguments], capture_output=True, text=True, timeout=15,
+    )
+
+
+def _native_present(executable, name):
+    result = _native_command(executable, "list", "--all", "--format", "json")
+    assert result.returncode == 0, result.stderr
+    assert isinstance(json.loads(result.stdout), list), result.stdout
+    return _list_json_contains_identity(result.stdout, name)
+
+
+def _native_wait_absent(executable, name):
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        if not _native_present(executable, name):
+            return
+        time.sleep(0.2)
+    pytest.fail(f"owner is dead but container still exists: {name}")
+
+
+def _fixture_process_alive(process):
+    try:
+        return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
+
+
+def _recorded_process(record, prefix):
+    created = record.get(f"{prefix}_created")
+    if created is None:
+        return None
+    try:
+        process = psutil.Process(record[f"{prefix}_pid"])
+        if process.create_time() == created:
+            return process
+    except psutil.NoSuchProcess:
+        pass
+    return None
+
+
+@contextmanager
+def _native_owner(executable, root, home, mode):
+    root.mkdir(parents=True)
+    home.mkdir(parents=True, exist_ok=True)
+    child_env = {
+        key: os.environ[key]
+        for key in ("PATH", "HOME", "TMPDIR", "TZ", "LANG", "LC_ALL")
+        if key in os.environ
+    }
+    child_env.update(
+        HERMES_HOME=str(home), HERMES_TEST_ISOLATION=str(home),
+        HERMES_DISABLE_LAZY_INSTALLS="1", PYTHONDONTWRITEBYTECODE="1",
+    )
+    helper = Path(__file__).with_name("apple_container_owner.py")
+    started_path = root / "started.json"
+    ready_path = root / "ready.json"
+    children = {}
+    name = None
+    log_path = root / "owner.log"
+
+    def collect_client():
+        if not started_path.exists():
+            return None
+        started = json.loads(started_path.read_text(encoding="utf-8"))
+        client = _recorded_process(started, "client")
+        if client is not None:
+            children[client.pid] = client
+        return started["name"]
+
+    with log_path.open("wb") as log:
+        owner = subprocess.Popen(
+            [sys.executable, str(helper), mode, executable, str(root), str(home)],
+            env=child_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+            close_fds=True, start_new_session=True,
+        )
+        try:
+            deadline = time.monotonic() + 330
+            while True:
+                name = collect_client() or name
+                if ready_path.exists():
+                    ready = json.loads(ready_path.read_text(encoding="utf-8"))
+                    spectator = _recorded_process(ready, "spectator")
+                    assert spectator is not None, "fixture spectator exited before readiness"
+                    children[spectator.pid] = spectator
+                    break
+                assert owner.poll() is None, log_path.read_text(
+                    encoding="utf-8", errors="replace"
+                )
+                assert time.monotonic() < deadline, log_path.read_text(
+                    encoding="utf-8", errors="replace"
+                )
+                time.sleep(0.1)
+            yield {**ready, "owner": owner, "spectator": spectator}
+        finally:
+            if owner.poll() is None:
+                owner.kill()
+            owner.wait(timeout=10)
+            name = collect_client() or name
+            # A failed assertion must not leave fixture processes behind.
+            # Match recorded creation times as well as PIDs before signaling.
+            if ready_path.exists():
+                ready = json.loads(ready_path.read_text(encoding="utf-8"))
+                spectator = _recorded_process(ready, "spectator")
+                if spectator is not None:
+                    children[spectator.pid] = spectator
+            for process in children.values():
+                try:
+                    if _fixture_process_alive(process):
+                        process.kill()
+                    process.wait(timeout=10)
+                except psutil.NoSuchProcess:
+                    pass
+            if name is not None:
+                _native_command(executable, "delete", "--force", name)
+                assert not _native_present(executable, name), "fixture cleanup failed"
+
+
+# Killing the owner deliberately reparents its helpers outside pytest's tree.
+# Teardown still matches recorded PID + creation time before signaling them.
+@pytest.mark.live_system_guard_bypass
+def test_native_raw_pipe_owner_sigkill_removes_container(native_container_cli, tmp_path):
+    with _native_owner(
+        native_container_cli, tmp_path / "raw-owner", tmp_path / "raw-home", "raw"
+    ) as victim:
+        assert _native_present(native_container_cli, victim["name"])
+        assert victim["pipe_inheritable"] is False
+        victim["owner"].kill()
+        victim["owner"].wait(timeout=10)
+        _native_wait_absent(native_container_cli, victim["name"])
+        assert _fixture_process_alive(victim["spectator"])

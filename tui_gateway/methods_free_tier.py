@@ -8,7 +8,7 @@ Bodies are rebound onto server.py's globals (method_ctx.bind_module) and referen
 
 import logging
 
-from .contracts.common import ProfileParams
+from .contracts.base import Params
 from .contracts.config_free_tier_control import (
     FreeTierAckNoticeResult,
     FreeTierProvisionResult,
@@ -24,7 +24,7 @@ _profile_scoped = _registry.profile_scoped
 
 @method("free_tier.status")
 @_profile_scoped
-def _(rid, params: ProfileParams) -> FreeTierStatusResult | dict:
+def _(rid, params: Params) -> FreeTierStatusResult | dict:
     """``{has_guest, enabled, available, notice_pending, model, label}`` for the focused profile.
     ``available`` = an identity exists AND the tier is on: the free tier (connectors, and the model
     when nothing else carries inference) is there for this install. Whether inference actually runs
@@ -53,7 +53,7 @@ def _(rid, params: ProfileParams) -> FreeTierStatusResult | dict:
 
 @method("free_tier.provision")
 @_profile_scoped
-def _(rid, params: ProfileParams) -> FreeTierProvisionResult | dict:
+def _(rid, params: Params) -> FreeTierProvisionResult | dict:
     """Explicit retry of the free-tier set-up for the focused profile: adopt the shared store's
     identity, else mint one (blocking, short timeout). The boot bootstrap normally did this already;
     the desktop calls this when the record says the identity is missing (portal down at boot, gate
@@ -86,7 +86,7 @@ def _(rid, params: ProfileParams) -> FreeTierProvisionResult | dict:
 
 @method("free_tier.ack_notice")
 @_profile_scoped
-def _(rid, params: ProfileParams) -> FreeTierAckNoticeResult | dict:
+def _(rid, params: Params) -> FreeTierAckNoticeResult | dict:
     """Mark the availability notice shown on the free-tier identity. ``acked`` is false when there is
     no free-tier identity to mark (nothing to show again either)."""
     try:
@@ -97,4 +97,5 @@ def _(rid, params: ProfileParams) -> FreeTierAckNoticeResult | dict:
 
 
 def register(server) -> None:
+    """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
     bind_module(globals(), server, skip=("_",))

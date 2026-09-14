@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from .method_ctx import HandlerRegistry, bind_module
 from .contracts.base import Params
-from .contracts.common import ProfileParams
 from .contracts.projects_pets import (
     ActiveIdResult, OptionalProjectResult, ProjectFolderParams, ProjectIdParams, ProjectResult,
     ProjectsAddFolderParams, ProjectsArchiveParams, ProjectsCreateParams, ProjectsForCwdParams,
@@ -97,7 +96,7 @@ def _(rid, params: ProjectFolderParams, pdb, conn) -> ProjectResult | dict:
 
 
 @_projects_method("projects.list")
-def _(rid, params: ProfileParams, pdb, conn) -> ProjectsPayload | dict:
+def _(rid, params: Params, pdb, conn) -> ProjectsPayload | dict:
     return _projects_payload(conn)
 
 
@@ -415,9 +414,3 @@ def _build_project_tree(
 def register(server) -> None:
     """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
     bind_module(globals(), server, skip=("_",))
-    for model in (
-        ActiveIdResult, OptionalProjectResult, ProjectFolderParams, ProjectIdParams, ProjectResult,
-        ProjectsAddFolderParams, ProjectsArchiveParams, ProjectsCreateParams, ProjectsForCwdParams,
-        ProjectsForCwdResult, ProjectsPayload, ProjectsSetActiveParams, ProjectsUpdateParams,
-    ):
-        setattr(server, model.__name__, model)

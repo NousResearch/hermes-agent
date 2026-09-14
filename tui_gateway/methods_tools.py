@@ -339,7 +339,7 @@ def _(rid, params) -> ReloadMcpResult | dict:
                     _mcp_agent.refresh_agent_mcp_tools(agent, enabled_override=_load_enabled_toolsets(), quiet_mode=True)
             except Exception as _exc:
                 logger.warning("Failed to refresh cached agent tools after /reload-mcp (session %s): %s", sid, _exc)
-            _emit("session.info", sid, SessionInfoPayload.model_validate(_session_info(agent, sess)))
+            _emit("session.info", sid, SessionInfoPayload(**_session_info(agent, sess).model_dump(mode="json")))
 
     def _do_full_reload() -> None:
         """shutdown+discover+refresh under the lock, then mark a completed generation. Config
@@ -1024,9 +1024,9 @@ def _(rid, params) -> BrowserManageResult | dict:
         url = _resolve_browser_cdp_url()
         return BrowserManageResult(connected=bool(url), url=url, messages=None)
     if action == "disconnect":
-        return BrowserManageResult.model_validate(_browser_disconnect(rid))
+        return _browser_disconnect(rid)
     if action == "connect":
-        return BrowserManageResult.model_validate(_browser_connect(rid, {"url": params.url, "session_id": params.session_id}))
+        return _browser_connect(rid, params)
     return _err(rid, 4015, f"unknown action: {action}")
 
 
@@ -1534,7 +1534,5 @@ def _(rid, params) -> ShellExecResult | dict:
 
 
 def register(server) -> None:
-    """Publish imported contract classes before rebinding handler globals onto server."""
-    for model in (ConfigSetParams, SessionInfoPayload, AgentsListResult, BrowserManageResult, CliExecResult, ProcessStopResult, CommandDispatchParams, CommandDispatchResult, CommandResolveResult, CommandsCatalogResult, ConfigShowResult, CronManageResult, InsightsGetResult, ProcessKillResult, ProcessListResult, RollbackDiffResult, RollbackListResult, RollbackRestoreResult, ShellExecResult, SlashExecResult, SystemBatteryResult, LearningDetailResult, LearningFramesResult, LearningMutationResult, McpCatalogResult, McpOauthCallbackResult, McpOauthCancelResult, McpOauthPollResult, McpOauthStartResult, McpServersAddResult, McpServersListResult, McpServersRemoveResult, McpServersSetApiKeyResult, McpServersStatusResult, McpServersTestResult, PluginsListResult, PluginsManageResult, ReloadEnvResult, ReloadMcpResult, SkillsManageResult, SkillsReloadResult, ToolsetsListResult, ToolsConfigureResult, ToolsShowResult):
-        setattr(server, model.__name__, model)
+    """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
     bind_module(globals(), server, skip=("_",))

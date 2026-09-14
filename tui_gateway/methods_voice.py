@@ -764,11 +764,3 @@ def _(rid, params: VoiceTtsParams) -> VoiceTtsResult | dict:
 
 def register(server) -> None:
     bind_module(globals(), server, skip=("_",))
-    for model in (
-        GatewayCapabilitiesResult, PingParams, PingResult, VoiceRecordParams, VoiceRecordResult,
-        VoiceStatusPayload, VoiceToggleParams, VoiceToggleResult, VoiceTranscriptPayload,
-        VoiceTtsParams, VoiceTtsResult, WakeControlParams, WakeDetectedPayload, WakeFeedParams,
-        WakeFeedResult, WakePauseResult, WakeResumeResult, WakeStartParams, WakeStartResult,
-        WakeStatusParams, WakeStatusResult, WakeStopParams, WakeStopResult,
-    ):
-        setattr(server, model.__name__, model)

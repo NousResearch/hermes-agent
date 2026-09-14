@@ -9,7 +9,8 @@ import threading
 
 from .method_ctx import HandlerRegistry, bind_module
 from .contracts.common import SessionLiveInfo
-from .contracts.events import ErrorPayload, MessageCompletePayload
+from .contracts.events import ErrorPayload, MessageCompletePayload, SessionInfoPayload
+from .contracts.prompt_voice import PromptSubmitResult, PromptSubmitStatus
 
 _registry = HandlerRegistry()
 
@@ -94,7 +95,7 @@ def _metadata_mirror(session: dict | None) -> dict:
     return mirror if isinstance(mirror, dict) else {}
 
 
-def _compute_host_session_info(session: dict) -> dict:
+def _compute_host_session_info(session: dict) -> SessionLiveInfo:
     return _session_info(session.get("agent"), session)
 
 
@@ -243,13 +244,13 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
     _release_deferred_active_session_lease(session)
     info = _compute_host_session_info(session)
     if not frame.get("session_info_emitted"):
-        _emit("session.info", sid, SessionLiveInfo.model_validate(info))
+        _emit("session.info", sid, SessionInfoPayload(**info.model_dump(mode="json")))
     _drain_queued_prompt(rid, sid, session)
 
 
 def _submit_prompt_to_compute_host(
     rid: str, sid: str, session: dict, text: Any, image_paths: list[str] | None = None,
-    queued_prompt_generation: int | None = None, display_kind: str | None = None) -> dict:
+    queued_prompt_generation: int | None = None, display_kind: str | None = None) -> PromptSubmitResult | dict:
     cfg = _load_dashboard_process_isolation_config()
     frame = _compute_host_turn_frame(rid, sid, session, text, image_paths=image_paths,
                                      queued_prompt_generation=queued_prompt_generation,
@@ -283,7 +284,7 @@ def _submit_prompt_to_compute_host(
         session["_compute_host_active"] = True
         if image_paths is None:
             session["attached_images"] = []
-    return _ok(rid, {"status": "streaming", "turn_isolation": True})
+    return PromptSubmitResult(status=PromptSubmitStatus.streaming, turn_isolation=True)
 
 
 def _send_compute_host_control(
@@ -329,7 +330,8 @@ def _adopt_late_compute_host_compress_ack(sid: str, session: dict, ack: dict, *,
         _status_update(sid, "ready")
         return
     _apply_compute_host_metadata_mirror(session, ack)
-    _emit("session.info", sid, SessionLiveInfo.model_validate(_compute_host_session_info(session)))
+    _emit("session.info", sid, SessionInfoPayload(
+        **_compute_host_session_info(session).model_dump(mode="json")))
     _status_update(sid, "compacted", "✓ Context compression complete")
 
 

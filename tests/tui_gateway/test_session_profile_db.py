@@ -213,8 +213,8 @@ def _stop_after_truncate(server, monkeypatch):
     monkeypatch.setattr(
         server,
         "_submit_prompt_to_compute_host",
-        lambda rid, sid, session, text, **_kwargs: server._ok(
-            rid, {"status": "streaming"}
+        lambda rid, sid, session, text, **_kwargs: server.PromptSubmitResult(
+            status="streaming"
         ),
     )
 

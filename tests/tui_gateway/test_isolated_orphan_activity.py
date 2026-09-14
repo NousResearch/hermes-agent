@@ -57,7 +57,7 @@ def test_real_child_detached_turn_activity(tmp_path, monkeypatch, mode):
     monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda *args: supervisor)
     try:
         response = server._submit_prompt_to_compute_host("request", sid, session, "work")
-        assert response["result"]["turn_isolation"] is True
+        assert response.turn_isolation is True
         deadline = time.monotonic() + 12
         while not (tmp_path / "provider-started").exists() and time.monotonic() < deadline:
             time.sleep(0.02)

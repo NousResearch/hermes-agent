@@ -54,7 +54,7 @@ def test_dispatch_rejects_unknown_params_without_calling_handler():
 
     assert response is not None
     assert response["error"]["code"] == 4000
-    assert response["error"]["data"][0]["loc"] == ("extra",)
+    assert response["error"]["data"][0]["loc"] == ["extra"]
 
 
 def test_dispatch_redacts_invalid_param_input_from_error_frame():

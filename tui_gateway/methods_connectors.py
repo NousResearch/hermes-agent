@@ -22,7 +22,7 @@ _connector_rpc_origin: contextvars.ContextVar[tuple | None] = contextvars.Contex
 
 
 def _capture_connector_rpc_owner(params):
-    # This runs before the method wrapper validates the raw request frame.
+    # ``params`` is a dict: this runs on the raw request frame, before the method wrapper validates it.
     sid = params.get("session_id")
     _, owner = _current_session_steer_authority(sid if isinstance(sid, str) else "")
     _connector_rpc_origin.set((owner, owner.get("profile_home") if owner is not None else None))

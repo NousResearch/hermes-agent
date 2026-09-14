@@ -839,8 +839,9 @@ def register_method(name: str, fn) -> None:
         try:
             model = contract.params.model_validate(params)
         except ValidationError as exc:
+            # loc arrives as a tuple; a list keeps in-process frames equal to their JSON form.
             data = [
-                {key: error[key] for key in ("loc", "msg", "type")}
+                {"loc": list(error["loc"]), "msg": error["msg"], "type": error["type"]}
                 for error in exc.errors(include_input=False, include_url=False)
             ]
             return _err(rid, 4000, f"invalid params for {name}", data=data)
@@ -3188,17 +3189,6 @@ def _compute_mcp_rev() -> str:
         rev_src = json.dumps({k: cfg.get(k) for k in ("mcp", "mcp_servers", "tools")}, sort_keys=True, default=str)
         return hashlib.sha1(rev_src.encode()).hexdigest()[:12]
     return ""
-
-
-def _finish_reload(rid, params: dict, *, coalesced: bool) -> dict:
-    """Shared tail for both reload paths: honor ``always`` (persist the confirm opt-out) and return the ok payload."""
-    if bool(params.get("always", False)):
-        try:
-            from cli import save_config_value
-            save_config_value("approvals.mcp_reload_confirm", False)
-        except Exception as _exc:
-            logger.warning("Failed to persist mcp_reload_confirm=false: %s", _exc)
-    return _ok(rid, {"status": "reloaded", "loaded_rev": _mcp_reload_loaded_rev, **({"coalesced": True} if coalesced else {})})
 
 
 _TUI_HIDDEN: frozenset[str] = frozenset({"sethome", "set-home", "commands", "approve", "deny"})

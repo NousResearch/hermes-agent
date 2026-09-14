@@ -6,10 +6,9 @@ method_ctx.bind_module), so they reference server.py globals bare.
 
 import contextlib
 
-from tui_gateway.contracts.common import SessionLiveInfo
 from tui_gateway.contracts.events import (
     BackgroundCompletePayload, BtwCompletePayload, ErrorPayload, PreviewRestartCompletePayload,
-    PreviewRestartProgressPayload, VoiceTranscriptPayload)
+    PreviewRestartProgressPayload, SessionInfoPayload, VoiceTranscriptPayload)
 from tui_gateway.contracts.prompt_voice import (
     ApprovalPendingParams, ApprovalPendingResult, ApprovalReceivedParams, ApprovalReceivedResult,
     ApprovalRespondParams, ApprovalRespondResult, AttachedImageResult, ClarifyLockParams,
@@ -516,7 +515,8 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
         with session["history_lock"]:
             session["running"] = False
             session["last_active"] = time.time()
-        _emit("session.info", sid, SessionLiveInfo.model_validate(_session_info(session.get("agent"), session)))
+        _emit("session.info", sid, SessionInfoPayload(**_session_info(
+            session.get("agent"), session).model_dump(mode="json")))
         return
     with session["history_lock"]:
         if session.get("_turn_cancel_requested") or not session.get("running"):
@@ -664,10 +664,9 @@ def _(rid, params: PromptSubmitParams, _turn_author=None, _hosted_task=None, _ho
                          turn_author.get("id"))
         isolated_response = _submit_prompt_to_compute_host(
             rid, sid, session, text, display_kind=display_kind)
-        if not isolated_response.get("error"):
+        if not isinstance(isolated_response, dict):
             # The truncation already happened inline above (memory + DB).
-            isolated_response["result"].update(survivor_fields)
-            return PromptSubmitResult.model_validate(isolated_response["result"])
+            return isolated_response.model_copy(update=survivor_fields)
         # An ordinal/id alone is not consent. A client that carries a leftover ordinal into an ORDINARY
         # submit sends a request that is indistinguishable, field by field, from a real rewind — same
         # method, same shape, an in-range target — and the cut it asks for is a destructive

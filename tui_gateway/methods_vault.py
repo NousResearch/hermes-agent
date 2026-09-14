@@ -53,7 +53,7 @@ def method(name: str):
 
 
 @method("vault.list")
-def _(rid, params: ProfileParams) -> VaultListResult | dict:
+def _(rid, params: Params) -> VaultListResult | dict:
     """Metadata-only listing across every enabled backend (local + unlocked password managers).
     Each item carries ``backend``; locked managers contribute nothing (see vault.sources)."""
     try:
@@ -71,7 +71,7 @@ def _(rid, params: ProfileParams) -> VaultListResult | dict:
 
 
 @method("vault.sources")
-def _(rid, params: ProfileParams) -> VaultSourcesResult | dict:
+def _(rid, params: Params) -> VaultSourcesResult | dict:
     """Status of every login source: {name, display_name, enabled, needs_unlock, unlocked, installed}."""
     from agent.vault_backends import enabled_backends
     from agent.vault_backends.base import external_backend_classes, is_installed

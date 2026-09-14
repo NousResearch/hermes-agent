@@ -110,6 +110,12 @@ def bind_module(module_globals: dict, server, *, skip=()) -> None:
             obj = module_globals[name] = _rebind_in(obj)  # keep the split module's own view in sync
         elif isinstance(obj, type):
             if obj.__module__ != mod_name:
+                # Rebound handlers resolve contract models through ``server``'s globals, so an
+                # imported model must be published too; contract class names are package-unique.
+                prev = g.get(name)
+                if prev is not None and prev is not obj:
+                    raise RuntimeError(f"split-module class collision: {mod_name}.{name} vs {prev!r}")
+                setattr(server, name, obj)
                 continue
             for attr, val in list(vars(obj).items()):
                 if isinstance(val, types.FunctionType):

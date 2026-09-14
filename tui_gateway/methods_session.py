@@ -1570,7 +1570,7 @@ def _(rid, params: SessionStatusParams, session: dict) -> SessionStatusResult:
     key = session.get("session_key") or params.session_id; mirror, live_agent = _metadata_mirror(session), session.get("agent")
     agent = None if session.get("_compute_host_active") else live_agent
     fields = build_status_fields(key, agent, _status_row(session, params, key), model=mirror.get("model") or getattr(live_agent, "model", None), provider=mirror.get("provider") or getattr(live_agent, "provider", None), tokens=_session_usage_snapshot(session).get("total"), agent_running=bool(session.get("running")))
-    project = _project_info_for_cwd(_display_session_cwd(session)); lines = ["Hermes TUI Status", "", *status_lines(fields, "session_id", "path"), *([f"Project: {project['name']}"] if project else []), *status_lines(fields, "title", "model", "created", "last_activity", "tokens", "agent_running")]
+    project = _project_info_for_cwd(_display_session_cwd(session)); lines = ["Hermes TUI Status", "", *status_lines(fields, "session_id", "path"), *([f"Project: {project.name}"] if project else []), *status_lines(fields, "title", "model", "created", "last_activity", "tokens", "agent_running")]
     return SessionStatusResult(output="\n".join(lines))
 
 

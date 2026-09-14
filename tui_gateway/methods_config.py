@@ -2,7 +2,7 @@
 (method_ctx.bind_module) and reference them bare. ``config.set`` lives in methods_config_set.
 """
 
-from .contracts.common import ProfileParams
+from .contracts.base import Params
 from .contracts.config_free_tier_control import (
     ConfigGetParams,
     ConfigGetResult,
@@ -100,7 +100,7 @@ def _stamped_project_tree(db, params, **kwargs):
 
 @_projects_handler("projects.tree")
 def _(rid, params) -> "ProjectsTreeResult | dict":
-    from tui_gateway.contracts.projects_pets import ProjectsTreeNode, ProjectsTreeParams, ProjectsTreeResult
+    from tui_gateway.contracts.projects_pets import ProjectTreeNode, ProjectsTreeParams, ProjectsTreeResult
     assert isinstance(params, ProjectsTreeParams)
     with _profile_db(params) as db:
         if db is None:
@@ -109,7 +109,7 @@ def _(rid, params) -> "ProjectsTreeResult | dict":
             db, params, preview_limit=params.preview_limit or 3, hydrate=True,
             session_limit=params.session_limit or 2000, include_discovered=True)
         return ProjectsTreeResult(
-            projects=[ProjectsTreeNode.model_validate(project) for project in tree["projects"]],
+            projects=[ProjectTreeNode.model_validate(project) for project in tree["projects"]],
             active_id=active_id, scoped_session_ids=tree["scoped_session_ids"],
         )
 
@@ -117,7 +117,7 @@ def _(rid, params) -> "ProjectsTreeResult | dict":
 @_projects_handler("projects.project_sessions")
 def _(rid, params) -> "ProjectsProjectSessionsResult | dict":
     from tui_gateway.contracts.projects_pets import (
-        ProjectsProjectSessionsParams, ProjectsProjectSessionsResult, ProjectsTreeNode,
+        ProjectsProjectSessionsParams, ProjectsProjectSessionsResult, ProjectTreeNode,
     )
     assert isinstance(params, ProjectsProjectSessionsParams)
     with _profile_db(params) as db:
@@ -128,7 +128,7 @@ def _(rid, params) -> "ProjectsProjectSessionsResult | dict":
             session_limit=params.session_limit or 5000, include_discovered=False)
         project = next((item for item in tree["projects"] if item["id"] == params.project_id), None)
         return ProjectsProjectSessionsResult(
-            project=ProjectsTreeNode.model_validate(project) if project else None)
+            project=ProjectTreeNode.model_validate(project) if project else None)
 
 
 # ── config.get — one getter per key returning the result payload.
@@ -288,7 +288,7 @@ def _readiness_check(rid, params, probe, result_type):
 
 
 @method("setup.status")
-def _(rid, params: ProfileParams) -> SetupStatusResult | dict:
+def _(rid, params: Params) -> SetupStatusResult | dict:
     """Loose provider check; ``profile`` (optional) scopes it to that profile's home.
 
     For the launch profile the answer is the boot bootstrap's record (``free_tier_bootstrap``):
@@ -412,4 +412,5 @@ def _(rid, params: DiagnosticsShareNousParams) -> DiagnosticsShareNousResult | d
 
 
 def register(server) -> None:
+    """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
     bind_module(globals(), server, skip=("_",))

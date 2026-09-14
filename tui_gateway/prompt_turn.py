@@ -16,6 +16,24 @@ from .method_ctx import HandlerRegistry, bind_module
 _registry = HandlerRegistry()
 
 
+def _bot_mode_delivery_text(response: Any, *, successful: bool) -> Any:
+    """Return the text Bot Mode may render or relay after a completed turn.
+
+    The gateway owns the canonical marker set.  Keep the row and completion
+    event intact, but make a successful bare marker invisible at every Bot
+    Mode delivery boundary.  Failed turns intentionally fail open so their
+    diagnostic text is never swallowed.
+    """
+    from gateway.response_filters import is_intentional_silence_response
+    return "" if successful and is_intentional_silence_response(response) else response
+
+
+def _is_bot_mode_session(session: dict) -> bool:
+    """Whether this completion belongs to the canonical Bot Chat surface."""
+    from tools.bot_mode_probe import BOT_CHAT_TITLE
+    return any(session.get(field) == BOT_CHAT_TITLE for field in ("pending_title", "title"))
+
+
 def _hook_failure(what: str, exc: BaseException) -> None:
     print(f"[tui_gateway] {what} failed: {type(exc).__name__}: {exc}", file=sys.stderr)
 
@@ -638,6 +656,8 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
         except Exception:
             _error_surface = None
     raw, status, last_reasoning = _turn_outcome(result, _error_surface)
+    if _is_bot_mode_session(session):
+        raw = _bot_mode_delivery_text(raw, successful=status == "complete")
     payload = {"text": raw, "usage": _get_usage(agent), "status": status}
     if last_reasoning:
         payload["reasoning"] = last_reasoning

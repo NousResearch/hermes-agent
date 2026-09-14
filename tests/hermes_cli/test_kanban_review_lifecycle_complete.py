@@ -11,6 +11,7 @@ These tests cover the two review models that must coexist:
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 
@@ -149,6 +150,81 @@ def test_same_card_review_supports_changes_and_approval_without_block_loop(conn)
     assert completed is not None
     assert completed.status == "done"
     assert completed.block_recurrences == 0
+
+
+def test_forged_review_boundary_does_not_authorize_future_pr_comment(conn):
+    task_id = kb.create_task(conn, title="Reject forged boundary", assignee="builder")
+    comment_id = kb.add_comment(conn, task_id, "reviewer", "reviewed")
+    with kb.write_txn(conn):
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, ?, ?, ?)",
+            (task_id, "changes_requested", '{"reviewed_comment_max_id": 999999999}', int(time.time())),
+        )
+    kb.add_comment(conn, task_id, "builder", "https://github.com/acme/project/pull/42")
+    assert comment_id > 0
+    assert kbd._authorized_comment_bound(conn, task_id) is None
+
+
+def test_dispatch_guard_and_claim_share_serialized_boundary(conn, monkeypatch):
+    task_id = kb.create_task(conn, title="Serialize guard claim", assignee="builder")
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    assert row is not None
+    checked = threading.Event()
+    release = threading.Event()
+    writer_started = threading.Event()
+    writer_done = threading.Event()
+    writer_status = []
+    db_path = Path(conn.execute("PRAGMA database_list").fetchone()[2])
+    original_guard = kbd.check_respawn_guard
+
+    def guarded_check(*args, **kwargs):
+        value = original_guard(*args, **kwargs)
+        checked.set()
+        assert release.wait(timeout=5)
+        return value
+
+    def competing_comment():
+        other = kbc.connect(db_path)
+        writer_started.set()
+        try:
+            kb.add_comment(other, task_id, "github", "https://github.com/acme/project/pull/99")
+            persisted = kb.get_task(other, task_id)
+            assert persisted is not None
+            writer_status.append(persisted.status)
+            writer_done.set()
+        finally:
+            other.close()
+
+    monkeypatch.setattr(kbd, "check_respawn_guard", guarded_check)
+    def coordinate_race():
+        assert checked.wait(timeout=5)
+        writer = threading.Thread(target=competing_comment)
+        writer.start()
+        assert writer_started.wait(timeout=5)
+        release.set()
+        writer.join(timeout=5)
+        assert writer_done.is_set()
+
+    coordinator = threading.Thread(target=coordinate_race)
+    coordinator.start()
+    monkeypatch.setattr(kbd, "_profile_exists_fn", lambda: lambda _name: True)
+    # Dispatch blocks at the injected guard barrier while the competing
+    # writer is queued behind its IMMEDIATE transaction.
+    result = kbd.DispatchResult()
+    consumed = kbd._dispatch_lane_task(
+        conn, row, "builder", result,
+        lane="ready", dry_run=False, ttl_seconds=None, board=None,
+        failure_limit=kbd.DEFAULT_FAILURE_LIMIT,
+        spawn_fn=lambda *_args, **_kwargs: 4242,
+        per_profile_cap=None, per_profile_running={},
+    )
+    coordinator.join(timeout=5)
+    assert not coordinator.is_alive()
+    assert consumed
+    assert writer_status == ["running"]
+    final_task = kb.get_task(conn, task_id)
+    assert final_task is not None
+    assert final_task.status == "running"
 
 
 @pytest.mark.parametrize("bad_payload", [None, "{not-json", "{}"])

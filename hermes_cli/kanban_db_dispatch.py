@@ -1162,7 +1162,9 @@ def _authorized_comment_bound(
     ).fetchone()
     if row is None:
         return None
-    bound = _kb.reviewed_comment_bound(row["payload"])
+    bound = _kb.reviewed_comment_bound(
+        row["payload"], conn=conn, task_id=task_id,
+    )
     if bound is None:
         return None
     consumed_placeholders = ", ".join("?" for _ in _REVIEW_CORRECTION_CONSUMED_BY)
@@ -1544,6 +1546,64 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _claim_dispatch_task(
+    conn: sqlite3.Connection, task_id: str, *, lane: str,
+    ttl_seconds: Optional[int],
+) -> tuple[Optional[Task], Optional[str]]:
+    """Check the respawn guard and claim in one serialized write transaction.
+
+    The guard is only preflight if it runs in a separate transaction: a new PR
+    comment can commit after the check and before ``claim_task``. Keeping both
+    operations under the same SQLite IMMEDIATE transaction makes the ordering
+    authoritative; a competing comment writer commits either before the guard
+    read or after the claim.
+    """
+    now = int(time.time())
+    lock = _kb._claimer_id()
+    expires = now + _kb._resolve_claim_ttl_seconds(ttl_seconds)
+    with _kb.write_txn(conn):
+        guard_reason = check_respawn_guard(conn, task_id, lane=lane)
+        if guard_reason is not None:
+            return None, guard_reason
+        if lane == "review":
+            if not _kb._parents_satisfied(conn, task_id):
+                demoted = conn.execute(
+                    "UPDATE tasks SET status = 'todo' "
+                    "WHERE id = ? AND status = 'review' AND claim_lock IS NULL",
+                    (task_id,),
+                )
+                if demoted.rowcount == 1:
+                    _kb._append_event(
+                        conn, task_id, "dependency_wait",
+                        {"reason": "parent_reopened", "source_status": "review"},
+                    )
+                return None, None
+            source_status = "review"
+            extra = {"source_status": "review"}
+        else:
+            if not _kb._parents_satisfied(conn, task_id):
+                conn.execute(
+                    "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
+                    (task_id,),
+                )
+                _kb._append_event(conn, task_id, "claim_rejected", {"reason": "parents_not_done"})
+                return None, None
+            _kb._reclaim_dangling_run(
+                conn, task_id, statuses=("ready",), now=now,
+                note="invariant recovery on re-claim",
+            )
+            source_status = "ready"
+            extra = None
+        run_id = _kb._claim_and_open_run(
+            conn, task_id, source_status, lock, expires, now, event_extra=extra,
+        )
+        if run_id is None:
+            return None, None
+        claimed = _kb.get_task(conn, task_id)
+    _kb._fire_task_hook("kanban_task_claimed", claimed, task_id, run_id)
+    return claimed, None
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -1579,7 +1639,7 @@ def _dispatch_lane_task(
         if current >= per_profile_cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
             return False
-    guard_reason = check_respawn_guard(conn, task_id, lane=lane)
+    guard_reason = check_respawn_guard(conn, task_id, lane=lane) if dry_run else None
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
         # Event so ``hermes kanban tail`` shows why the task looks stuck.
@@ -1604,8 +1664,14 @@ def _dispatch_lane_task(
         result.spawned.append((task_id, assignee, ""))
         _count_spawn(assignee)
         return True
-    claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
-    claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
+    claimed, guard_reason = _claim_dispatch_task(
+        conn, task_id, lane=lane, ttl_seconds=ttl_seconds,
+    )
+    if guard_reason is not None:
+        result.respawn_guarded.append((task_id, guard_reason))
+        with _kb.write_txn(conn):
+            _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
+        return False
     if claimed is None:
         return False
     try:

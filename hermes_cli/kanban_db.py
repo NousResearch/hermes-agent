@@ -3168,11 +3168,28 @@ def _reviewed_comment_bound(conn: sqlite3.Connection, task_id: str) -> int:
     return int(_row_get(row, "max_id") or 0)
 
 
-def reviewed_comment_bound(payload: Any) -> Optional[int]:
-    """Return a valid captured comment boundary; malformed/legacy is None."""
+def reviewed_comment_bound(
+    payload: Any, *, conn: Optional[sqlite3.Connection] = None, task_id: Optional[str] = None,
+) -> Optional[int]:
+    """Return a captured comment boundary that belongs to the task's domain.
+
+    Payloads are audit data, not authority. When the owning connection and task
+    are supplied, reject values beyond the actual ``task_comments`` id range.
+    """
     value = _json_dict(payload).get(REVIEWED_COMMENT_BOUND_KEY)
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return None
+    if conn is not None:
+        if task_id is None:
+            return None
+        # A captured non-zero MAX is necessarily the id of a real comment on
+        # this task. Mere range checking is insufficient because ids are global:
+        # a forged id belonging to another task could still sit below our max.
+        if value and conn.execute(
+            "SELECT 1 FROM task_comments WHERE task_id = ? AND id = ?",
+            (task_id, value),
+        ).fetchone() is None:
+            return None
     return value
 
 
@@ -3406,7 +3423,9 @@ def review_reauthorization_blocker(
             f"task {task_id} has no review correction to re-authorize; "
             "re-authorization never grants a first-time exemption"
         )
-    if reviewed_comment_bound(correction["payload"]) is not None:
+    if reviewed_comment_bound(
+        correction["payload"], conn=conn, task_id=task_id,
+    ) is not None:
         return (
             f"task {task_id} already carries a captured review boundary; "
             "nothing to re-authorize"

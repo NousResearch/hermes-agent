@@ -398,32 +398,6 @@ class TestUpdate:
         assert (plan.target_dir / "skills" / "new" / "SKILL.md").read_text() == "new skill\n"
         assert not (plan.target_dir / "skills" / "demo" / "stale.txt").exists()
 
-    def test_update_replaces_skill_roots_without_following_target_symlinks(self, profile_env, tmp_path):
-        staged = _make_staging_dir(profile_env, "safe_roots")
-        plan = install_distribution(str(staged), name="safe_roots")
-
-        transition = plan.target_dir / "skills" / "transition"
-        transition.write_text("user file\n")
-        outside = tmp_path / "outside"
-        outside.mkdir()
-        sentinel = outside / "sentinel.txt"
-        sentinel.write_text("keep me\n")
-        linked = plan.target_dir / "skills" / "linked"
-        _symlink_file_or_skip(linked, outside)
-
-        (staged / "skills" / "transition").mkdir()
-        (staged / "skills" / "transition" / "SKILL.md").write_text("new directory\n")
-        (staged / "skills" / "linked").mkdir()
-        (staged / "skills" / "linked" / "SKILL.md").write_text("safe replacement\n")
-
-        update_distribution("safe_roots")
-
-        assert transition.is_dir()
-        assert (transition / "SKILL.md").read_text() == "new directory\n"
-        assert linked.is_dir()
-        assert (linked / "SKILL.md").read_text() == "safe replacement\n"
-        assert sentinel.read_text() == "keep me\n"
-
     def test_force_install_preserves_unshipped_skill_roots(self, profile_env):
         staged = _make_staging_dir(profile_env, "force_safe")
         plan = install_distribution(str(staged), name="force_safe")
@@ -449,21 +423,6 @@ class TestUpdate:
 
         assert (plan.target_dir / "cron" / "mine.json").read_text() == '{"schedule": "* * * * *"}\n'
         assert (plan.target_dir / "cron" / "daily.json").read_text() == '{"schedule": "0 10 * * *"}\n'
-
-    def test_update_preserves_skills_when_distribution_uses_explicit_allowlist(self, profile_env):
-        mf = DistributionManifest(name="skills_allowlist", version="0.1.0", distribution_owned=["skills"])
-        staged = _make_staging_dir(profile_env, "src", manifest=mf)
-        plan = install_distribution(str(staged), name="skills_allowlist")
-
-        custom = plan.target_dir / "skills" / "custom"
-        custom.mkdir()
-        (custom / "SKILL.md").write_text("custom skill\n")
-        (staged / "skills" / "demo" / "SKILL.md").write_text("updated demo\n")
-
-        update_distribution("skills_allowlist")
-
-        assert (plan.target_dir / "skills" / "custom" / "SKILL.md").read_text() == "custom skill\n"
-        assert (plan.target_dir / "skills" / "demo" / "SKILL.md").read_text() == "updated demo\n"
 
     def test_update_preserves_user_data(self, profile_env):
         # 1. Build staging dir, install

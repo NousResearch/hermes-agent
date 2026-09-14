@@ -42,7 +42,8 @@ const {
   pruneSecondaryGateways,
   requestGatewayForAgent,
   setPrimaryGateway,
-  SECONDARY_MIN_LIFETIME_MS
+  SECONDARY_MIN_LIFETIME_MS,
+  sweepIdleSecondaries
 } = await import('./gateway')
 
 const { $sessionTiles, foregroundSessionScopes, liveSessionScopes } = await import('./session-states')
@@ -91,6 +92,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   closeSecondaryGateways()
   $sessionTiles.set([])
   vi.clearAllMocks()
@@ -160,9 +162,18 @@ describe('foreground tile retention vs. the live-work pruner (#93892)', () => {
     pruneSecondaryGateways(idleKeepSet())
     expect(gatewayMocks.closed).toEqual([])
 
-    // Tile gone: the next lease release disposes as it always did.
+    // Tile gone: the pin releases. LOCAL ROUTES DIVERGE FROM UPSTREAM HERE.
+    // The local pooled-socket linger (see gateway-local-linger.test.ts) hands
+    // the entry a bounded 20s window at lease release, so the close lands at
+    // the sweep that expires it. What #93892 asserts still holds: the pin does
+    // not latch, and the socket is released once the tile is gone.
+    vi.useFakeTimers()
     $sessionTiles.set([])
     await requestGatewayForAgent('local', 'bot', 'session.usage', { session_id: 'stored-bot' })
+    expect(gatewayMocks.closed).toEqual([])
+
+    vi.advanceTimersByTime(21_000)
+    sweepIdleSecondaries()
     expect(gatewayMocks.closed).toEqual(['wss://local.invalid/api/ws?profile=bot'])
   })
 

@@ -3,6 +3,7 @@ import {
   type GatewayEvent,
   isGatewayReauthRequired,
   isStableOpen,
+  LOCAL_CONNECTION_ID,
   reconnectBackoffDelayMs,
   registryBackendScopeKey,
   resolveGatewayWsUrl,
@@ -194,12 +195,33 @@ interface Secondary {
    * an orphaned lease self-heals.
    */
   activationLeaseUntil: number
+  /**
+   * Epoch-ms deadline keeping a LOCAL pooled socket warm just past its last
+   * request lease. Local routes are exempt from relay retention (see
+   * retainGatewayForRelay), so on a single-source desktop every poll that
+   * fans out over `conn:local::<profile>` scopes dialed and tore down a fresh
+   * WebSocket per bot per tick, and any runtime session those RPCs minted was
+   * reaped with the socket — the next call then hit 4001 "session not found".
+   * A bounded linger coalesces a poll burst onto one socket while still
+   * expiring between slow ticks, so the Electron idle reaper keeps its claim
+   * on genuinely idle backends. Remote entries never set this: their pin is
+   * relayRetainCount, which is unbounded by design.
+   */
+  idleLingerUntil: number
 }
 
 // How long a mid-dial activation holds its prune lease: covers a cold pool
 // backend spawn + socket connect with margin, while still letting a leaked
 // lease expire quickly enough for the reaper to reclaim the entry.
 const ACTIVATION_LEASE_MS = 30_000
+
+// How long a local pooled socket lingers after its last request lease. Chosen
+// against the two cadences that bracket it: comfortably above the ~5s roster /
+// session-status fan-out this exists to coalesce, and strictly below the 30s
+// relay drain so a relay-only profile still goes cold between ticks and stays
+// idle-reap eligible. POOL_IDLE_MS (10 min) is an order of magnitude larger,
+// so a lingering socket can never hold a backend past its reap window.
+const LOCAL_IDLE_LINGER_MS = 20_000
 
 // ── HMR-stable module state ─────────────────────────────────────────────────
 // All mutable singletons (live sockets, active-profile routing, the event
@@ -978,7 +1000,8 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     relayRetainCount: 0,
     wantOpen: true,
     retiredByPool: false,
-    activationLeaseUntil: 0
+    activationLeaseUntil: 0,
+    idleLingerUntil: 0
   }
 
   // Events keep carrying the bare profile — session routing is profile-keyed
@@ -1257,10 +1280,24 @@ export async function requestGatewayForAgent<T>(
       !foregroundPinned(entry) &&
       g.activeKey !== entry.scope
     ) {
-      disposeSecondary(entry)
+      // Local routes get a bounded linger rather than an immediate teardown:
+      // they are exempt from relay retention, so without this every fan-out
+      // tick redialed one socket per bot and reaped the runtime sessions those
+      // RPCs minted. sweepIdleSecondaries() disposes the entry once the linger
+      // lapses, which is what keeps the idle reaper's claim intact. No early
+      // `return` here: this is a `finally`, where one would discard the RPC's
+      // result and swallow any in-flight error.
+      //
+      // A foreground-pinned entry never reaches this branch (the guard above
+      // excludes it), so the pin and the linger cannot both own one socket.
+      if (isLocalPooled(entry)) {
+        entry.idleLingerUntil = Date.now() + LOCAL_IDLE_LINGER_MS
+      } else {
+        disposeSecondary(entry)
 
-      if (g.secondaries.get(entry.scope) === entry) {
-        g.secondaries.delete(entry.scope)
+        if (g.secondaries.get(entry.scope) === entry) {
+          g.secondaries.delete(entry.scope)
+        }
       }
     }
   }
@@ -1296,6 +1333,20 @@ function foregroundPinned(entry: Secondary): boolean {
  *  dev-HMR entries predate the field. */
 function relayRetained(entry: Secondary): boolean {
   return Number.isFinite(entry.relayRetainCount) && entry.relayRetainCount > 0
+}
+
+/** True for a pooled entry on the LOCAL registry source — the routes that
+ *  decline relay retention and therefore need the bounded linger instead. A
+ *  null/empty connectionId collapses to the bare profile scope and never
+ *  reaches the secondary pool, so `local` is the only id that lands here. */
+function isLocalPooled(entry: Secondary): boolean {
+  return String(entry.connectionId ?? '').trim() === LOCAL_CONNECTION_ID
+}
+
+/** True while a local entry's post-request linger is still open. Number guard:
+ *  dev-HMR entries predate the field. */
+function lingering(entry: Secondary): boolean {
+  return Number.isFinite(entry.idleLingerUntil) && entry.idleLingerUntil > Date.now()
 }
 
 /**
@@ -2112,6 +2163,55 @@ export function openSecondaryCount(): number {
   return count
 }
 
+/**
+ * Close local pooled sockets whose post-request linger has lapsed.
+ *
+ * The linger set in requestGatewayForAgent has no timer of its own: leaving one
+ * per entry would mean a timer per bot, each racing dispose against an in-flight
+ * dial. This sweep is the single expiry point, and it MUST run on the same
+ * cadence as the keepalive touch and before it — an expired entry that still
+ * gets touched would hold its backend past POOL_IDLE_MS forever, which is
+ * exactly the reaper defeat the local relay exemption was written to prevent.
+ *
+ * Only entries that are idle by every other measure are eligible, so this can
+ * never evict an active, retained, relay-pinned, foreground-pinned, or mid-dial
+ * socket.
+ *
+ * The foreground guard is load-bearing and is NOT implied by the linger: an
+ * entry takes the linger path only while nothing has it pinned, and a tile can
+ * mount and bind a runtime to that same socket (#93892) during the 20s that
+ * follows. Without this check the next keepalive tick would dispose a socket
+ * whose surface is still mounted, which is the failure the pin exists to stop.
+ */
+export function sweepIdleSecondaries(): void {
+  for (const [key, entry] of [...g.secondaries]) {
+    if (
+      key === g.activeKey ||
+      !isLocalPooled(entry) ||
+      lingering(entry) ||
+      entry.activeRequests > 0 ||
+      entry.retained ||
+      relayRetained(entry) ||
+      foregroundPinned(entry) ||
+      (Number.isFinite(entry.activationLeaseUntil) && entry.activationLeaseUntil > Date.now())
+    ) {
+      continue
+    }
+
+    // An entry that never took the linger path (idleLingerUntil still 0) is
+    // not ours to reap: it is a fresh or externally managed socket, and the
+    // existing prune/dispose paths own its lifecycle.
+    if (!entry.idleLingerUntil) {
+      continue
+    }
+
+    disposeSecondary(entry)
+    g.secondaries.delete(key)
+  }
+
+  restoreActiveToPrimaryIfEvicted()
+}
+
 // Keep the idle reaper from killing a backend we still need: ping every live
 // secondary. The active one is pinged separately (touchActiveGatewayBackend).
 // "Live" means the socket is OPEN: a wantOpen entry stuck in its reconnect
@@ -2241,6 +2341,11 @@ export function pruneSecondaryGateways(keep: Set<string>): void {
       // A mounted tile / the primary thread is bound to a runtime on this
       // socket (#93892) — pinned for as long as that surface is mounted.
       foregroundPinned(entry) ||
+      // Local post-request linger: a recompute landing between two fan-out
+      // ticks must not undo it, or the churn returns through the pruner
+      // instead of the request lease. Bounded, so this only defers the
+      // eviction by at most LOCAL_IDLE_LINGER_MS.
+      lingering(entry) ||
       // Mid-dial activation target: the profile being switched TO is not yet
       // active and has no live work, so without this lease any recompute
       // during its cold spawn disposed the entry and the click died silently

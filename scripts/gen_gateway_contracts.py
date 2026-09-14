@@ -5,7 +5,7 @@ by a deliberately small JSON-Schema-subset renderer — object/properties/requir
 enum, const, anyOf-with-null, array/items, ``$ref``, oneOf + discriminator, additionalProperties.
 Anything else raises at generation time so an unsupported model is fixed at the model, never
 worked around in the output. Prettier runs on the TS when a node_modules binary is present
-(the committed file is the prettier-formatted one either way — CI regenerates and diffs).
+(output is already in the repo's prettier style; the Python CI lane regenerates and diffs it).
 """
 
 from __future__ import annotations
@@ -73,9 +73,9 @@ class Renderer:
             self.ensure(name)
             return name
         if "const" in schema:
-            return json.dumps(schema["const"])
+            return _lit(schema["const"])
         if "enum" in schema:
-            return " | ".join(json.dumps(v) for v in schema["enum"])
+            return " | ".join(_lit(v) for v in schema["enum"])
         if "anyOf" in schema or "oneOf" in schema:
             variants = schema.get("anyOf") or schema.get("oneOf") or []
             rendered = list(dict.fromkeys(self.type_of(v, inline_depth=inline_depth) for v in variants))
@@ -143,14 +143,26 @@ _IDENT = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
 
 
 def _prop(key: str) -> str:
-    return key if _IDENT.match(key) else json.dumps(key)
+    return key if _IDENT.match(key) else _lit(key)
 
 
-def _doc(text: str | None) -> str:
+def _const_items(names: list[str]) -> str:
+    return ",\n".join(f"  {_lit(n)}" for n in names) + "\n"
+
+
+def _lit(value) -> str:
+    """A TS literal in the repo's prettier style (single quotes) so the committed file needs no
+    Node-side formatting pass — the Python CI lane regenerates and diffs it."""
+    if isinstance(value, str):
+        return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+    return json.dumps(value)
+
+
+def _doc(text: str | None, indent: str = "") -> str:
     if not text:
         return ""
     clean = " ".join(text.split())
-    return f"/** {clean} */\n"
+    return f"{indent}/** {clean} */\n"
 
 
 def _pascal(name: str) -> str:
@@ -183,50 +195,38 @@ def render_ts() -> str:
     out.append("\n// ── Client→server methods ──\n")
     out.append("export interface RpcMethods {\n")
     for m in sorted(METHODS.values(), key=lambda x: x.name):
-        out.append(_doc(m.doc))
-        out.append(f"  {json.dumps(m.name)}: {{ params: {name_of[m.params]}; result: {name_of[m.result]} }}\n")
+        out.append(_doc(m.doc, "  "))
+        out.append(f"  {_prop(m.name)}: {{ params: {name_of[m.params]}; result: {name_of[m.result]} }}\n")
     out.append("}\n")
     out.append("export type RpcMethod = keyof RpcMethods\n")
-    out.append("export const RPC_METHODS = [\n")
-    out.extend(f"  {json.dumps(n)},\n" for n in sorted(METHODS))
-    out.append("] as const satisfies readonly RpcMethod[]\n")
+    out.append("export const RPC_METHODS = [\n" + _const_items(sorted(METHODS)) + "] as const satisfies readonly RpcMethod[]\n")
 
     out.append("\n// ── Server→client requests ──\n")
     out.append("export interface ServerRequestMap {\n")
     for s in sorted(SERVER_REQUESTS.values(), key=lambda x: x.name):
-        out.append(_doc(s.doc))
-        out.append(f"  {json.dumps(s.name)}: {{ params: {name_of[s.params]}; result: {name_of[s.result]} }}\n")
+        out.append(_doc(s.doc, "  "))
+        out.append(f"  {_prop(s.name)}: {{ params: {name_of[s.params]}; result: {name_of[s.result]} }}\n")
     out.append("}\n")
     out.append("export type ServerRequestMethod = keyof ServerRequestMap\n")
-    out.append("export const SERVER_REQUEST_METHODS = [\n")
-    out.extend(f"  {json.dumps(n)},\n" for n in sorted(SERVER_REQUESTS))
-    out.append("] as const satisfies readonly ServerRequestMethod[]\n")
+    out.append("export const SERVER_REQUEST_METHODS = [\n" + _const_items(sorted(SERVER_REQUESTS))
+               + "] as const satisfies readonly ServerRequestMethod[]\n")
 
     out.append("\n// ── Notifications (`event` frames) ──\n")
-    out.append("export interface GatewayEventMap {\n")
+    out.append("export interface BackendGatewayEventMap {\n")
     for e in sorted(EVENTS.values(), key=lambda x: x.name):
-        out.append(_doc(e.doc))
+        out.append(_doc(e.doc, "  "))
         payload = name_of[e.payload] if e.payload is not None else "Record<string, never>"
-        out.append(f"  {json.dumps(e.name)}: {payload}\n")
+        out.append(f"  {_prop(e.name)}: {payload}\n")
     out.append("}\n")
-    out.append("export type GatewayEventType = keyof GatewayEventMap\n")
-    out.append("export const GATEWAY_EVENT_TYPES = [\n")
-    out.extend(f"  {json.dumps(n)},\n" for n in sorted(EVENTS))
-    out.append("] as const satisfies readonly GatewayEventType[]\n")
+    out.append("export type BackendGatewayEventName = keyof BackendGatewayEventMap\n")
+    out.append("export const GATEWAY_EVENT_TYPES = [\n" + _const_items(sorted(EVENTS))
+               + "] as const satisfies readonly BackendGatewayEventName[]\n")
     return "".join(out)
 
 
-def prettier(text: str) -> str:
-    bin_ = ROOT / "node_modules" / ".bin" / "prettier"
-    if not bin_.exists():
-        return text
-    proc = subprocess.run(
-        [str(bin_), "--stdin-filepath", str(TS_OUT)], input=text, capture_output=True, text=True,
-        encoding="utf-8", cwd=str(ROOT), check=False,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"prettier failed: {proc.stderr}")
-    return proc.stdout
+def _tidy(text: str) -> str:
+    """No trailing whitespace, single trailing newline (matches `git diff --check` + prettier)."""
+    return "\n".join(line.rstrip() for line in text.splitlines()).rstrip("\n") + "\n"
 
 
 # ── OpenRPC rendering ────────────────────────────────────────────────────────────────────────────
@@ -290,7 +290,7 @@ def render_openrpc() -> str:
 
 
 def render_all() -> dict[Path, str]:
-    return {TS_OUT: prettier(render_ts()), OPENRPC_OUT: render_openrpc()}
+    return {TS_OUT: _tidy(render_ts()), OPENRPC_OUT: render_openrpc()}
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -515,15 +515,15 @@ export interface ConfigSetResult {
 }
 /** ``tui_gateway/server.py::_session_info`` — the ``session.info`` event and the ``info`` field of ``session.create`` / ``session.resume`` / ``session.activate`` results. */
 export interface SessionLiveInfo {
-  model?: string
+  model: string
   provider?: string
   reasoning_effort?: string
   service_tier?: string
   fast?: boolean
   yolo?: boolean
   approval_mode?: string
-  tools?: Record<string, string[]>
-  skills?: Record<string, unknown>
+  tools: Record<string, string[]>
+  skills: Record<string, string[]>
   cwd?: string
   branch?: string | null
   project?: ProjectRef | null
@@ -2416,16 +2416,17 @@ export interface SessionCreateResult {
   messages: TranscriptMessage[]
   info: SessionLiveInfo
 }
-/** One stored transcript row as ``session.history`` / resume ``messages`` deliver it. */
+/** One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``): ``text`` (never ``content``), display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the durable ``row_id`` rewind targets, and for tool rows ``name`` + ``context`` preview + full ``args``. Assistant detail sidecars (``reasoning``, …) ride as extra keys. */
 export interface TranscriptMessage {
   role: string
-  content?: unknown
+  text?: string | null
   timestamp?: number | null
-  tool_calls?: Record<string, unknown>[] | null
-  tool_call_id?: string | null
-  name?: string | null
-  display_kind?: string | null
   row_id?: number | null
+  display_kind?: string | null
+  display_metadata?: unknown | null
+  name?: string | null
+  context?: string | null
+  args?: Record<string, unknown> | null
   reasoning?: string | null
   [key: string]: unknown
 }
@@ -2614,15 +2615,15 @@ export interface SessionCwdSetParams {
 }
 /** The refreshed ``session.info`` view (full agent view, or the lazy shape). */
 export interface SessionCwdSetResult {
-  model?: string
+  model: string
   provider?: string
   reasoning_effort?: string
   service_tier?: string
   fast?: boolean
   yolo?: boolean
   approval_mode?: string
-  tools?: Record<string, string[]>
-  skills?: Record<string, unknown>
+  tools: Record<string, string[]>
+  skills: Record<string, string[]>
   cwd?: string
   branch?: string | null
   project?: ProjectRef | null
@@ -3727,15 +3728,16 @@ export interface GatewayReadyPayload {
 }
 /** ``tui_gateway/change_watcher.py::resolve_skin`` — the resolved active skin (``HermesSkin``). ``{}`` when the skin engine failed to load. Colour maps are token → colour string. */
 export interface SkinPayload {
-  name?: string | null
-  colors?: Record<string, string> | null
-  light_colors?: Record<string, string> | null
-  dark_colors?: Record<string, string> | null
-  branding?: Record<string, string> | null
-  banner_logo?: string | null
-  banner_hero?: string | null
-  tool_prefix?: string | null
-  help_header?: string | null
+  name?: string
+  description?: string
+  colors?: Record<string, string>
+  light_colors?: Record<string, string>
+  dark_colors?: Record<string, string>
+  branding?: Record<string, string>
+  banner_logo?: string
+  banner_hero?: string
+  tool_prefix?: string
+  help_header?: string
   [key: string]: unknown
 }
 /** ``hermes_cli/free_tier_bootstrap.py::SetupRecord.as_payload``. */
@@ -3791,7 +3793,7 @@ export interface BillingBlock {
   provider: string
   provider_label: string
   model: string
-  billing_url?: string | null
+  billing_url: string | null
   is_nous: boolean
   message: string
   unverified?: boolean | null
@@ -4775,7 +4777,7 @@ export const SERVER_REQUEST_METHODS = [
 ] as const satisfies readonly ServerRequestMethod[]
 
 // ── Notifications (`event` frames) ──
-export interface GatewayEventMap {
+export interface BackendGatewayEventMap {
   /** Output chunk from an agent-owned background process. */
   'agent.terminal.output': TerminalOutputPayload
   /** A /background side agent finished. */
@@ -4911,7 +4913,7 @@ export interface GatewayEventMap {
   /** A wake phrase fired. */
   'wake.detected': WakeDetectedPayload
 }
-export type GatewayEventType = keyof GatewayEventMap
+export type BackendGatewayEventName = keyof BackendGatewayEventMap
 export const GATEWAY_EVENT_TYPES = [
   'agent.terminal.output',
   'background.complete',
@@ -4980,4 +4982,4 @@ export const GATEWAY_EVENT_TYPES = [
   'voice.status',
   'voice.transcript',
   'wake.detected'
-] as const satisfies readonly GatewayEventType[]
+] as const satisfies readonly BackendGatewayEventName[]

@@ -389,7 +389,7 @@ def test_review_dispatch_gate_prevents_phantom_reviewer(
         tid = kb.create_task(conn, title="park", assignee="worker")
         kb.claim_task(conn, tid)
         kb.request_review(
-            conn, tid, summary="done",
+            conn, tid, summary="done", reviewer="reviewer",
             expected_run_id=kb.get_task(conn, tid).current_run_id,
         )
         assert kb.get_task(conn, tid).status == "review"
@@ -440,12 +440,12 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
 
     with kbc.connect() as conn:
         # Review-lane task with a fresh PR comment.
-        review_id = kb.create_task(conn, title="review me", assignee="reviewer")
+        review_id = kb.create_task(conn, title="review me", assignee="builder")
         claimed = kb.claim_task(conn, review_id)
         assert claimed is not None
         kb.add_comment(conn, review_id, author="worker", body=pr_comment)
         assert kb.request_review(
-            conn, review_id, summary="PR ready",
+            conn, review_id, summary="PR ready", reviewer="reviewer",
             expected_run_id=claimed.current_run_id,
         )
         # Ready-lane task with the same fresh PR comment.
@@ -500,7 +500,7 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
         task_id = kb.create_task(
             conn,
             title="domain review",
-            assignee="reviewer",
+            assignee="builder",
             skills=["domain-specific-review"],
         )
         implementation = kb.claim_task(conn, task_id)
@@ -509,6 +509,7 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
             conn,
             task_id,
             summary="ready",
+            reviewer="reviewer",
             expected_run_id=implementation.current_run_id,
         )
         monkeypatch.setattr(
@@ -551,13 +552,14 @@ def test_review_dispatch_honors_global_and_per_profile_caps(
 
         review_ids: list[str] = []
         for title in ("review one", "review two"):
-            task_id = kb.create_task(conn, title=title, assignee="reviewer")
+            task_id = kb.create_task(conn, title=title, assignee="builder")
             implementation = kb.claim_task(conn, task_id)
             assert implementation is not None
             assert kb.request_review(
                 conn,
                 task_id,
                 summary="ready",
+                reviewer="reviewer",
                 expected_run_id=implementation.current_run_id,
             )
             review_ids.append(task_id)
@@ -711,3 +713,125 @@ def test_reviewer_reassigns_for_autonomous_dispatch(kanban_home: Path) -> None:
         ev = _events(conn, tid, kind="review_requested")[0][1]
         assert ev["reviewer"] == "lead-reviewer"
         assert ev["implementer"] == "worker"
+
+
+# ---------------------------------------------------------------------------
+# Author-exclusion guard: the review lane never spawns the implementer
+# ---------------------------------------------------------------------------
+
+
+def test_review_lane_never_spawns_the_implementer(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The task's own implementer must never be spawned with the review skill.
+
+    ``request_review`` with no ``reviewer`` leaves the assignee untouched and
+    records the current assignee as the ``implementer`` on the
+    ``review_requested`` event — so on a first review the card is owned by its
+    own author. Dispatching that row would spawn the bot that wrote the change
+    to review it, and it could approve its own work. The guard parks the row
+    instead (fail-closed), and parking is NOT a dead end: naming a distinct
+    reviewer makes the very next tick route the card to that reviewer.
+    """
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(
+        cfgmod,
+        "load_config",
+        lambda *args, **kwargs: {"kanban": {"review_dispatch": True}},
+    )
+    spawned: list[tuple[str, str]] = []
+
+    def spawn(task, workspace):
+        spawned.append((task.id, task.assignee))
+        return None
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="author reviews own work", assignee="builder")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        assert kb.request_review(
+            conn, tid, summary="ready", expected_run_id=claimed.current_run_id,
+        ) is True
+        # No reviewer was named, so the card is still owned by its author.
+        assert conn.execute(
+            "SELECT assignee FROM tasks WHERE id = ?", (tid,)
+        ).fetchone()["assignee"] == "builder"
+
+        result = kbd.dispatch_once(conn, spawn_fn=spawn)
+
+        assert tid not in [s[0] for s in result.spawned]
+        assert spawned == []
+        assert dict(result.skipped_self_review) == {tid: "assignee_is_implementer"}
+        parked = conn.execute(
+            "SELECT status, claim_lock FROM tasks WHERE id = ?", (tid,),
+        ).fetchone()
+        assert parked["status"] == "review"
+        assert parked["claim_lock"] is None
+
+        # Not a dead end: an operator names a distinct reviewer (reassigning a
+        # card parked in review is allowed — only a LIVE claim refuses) and the
+        # next tick routes the review to that reviewer.
+        assert kb.assign_task(conn, tid, "reviewer") is True
+        result = kbd.dispatch_once(conn, spawn_fn=spawn)
+        assert tid in [s[0] for s in result.spawned]
+        assert spawned == [(tid, "reviewer")]
+
+
+def test_parked_self_review_does_not_hold_the_ready_lane_reservation(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A card that can never be dispatched must not reserve the ready lane's slot.
+
+    ``_any_spawnable_review`` is documented as mirroring the review loop's own
+    gate, so it must apply the author-exclusion guard too. If a parked
+    self-review card is counted as spawnable review work, it holds back one slot
+    of the shared budget (the review-lane reservation) while the ready lane has
+    work to do — throttling ready throughput for a review that can never spawn.
+    """
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(
+        cfgmod,
+        "load_config",
+        lambda *args, **kwargs: {"kanban": {"review_dispatch": True}},
+    )
+    spawned: list[str] = []
+
+    def spawn(task, workspace):
+        spawned.append(task.id)
+        return None
+
+    with kbc.connect() as conn:
+        ready_ids = [
+            kb.create_task(conn, title=f"ready {n}", assignee="builder")
+            for n in (1, 2)
+        ]
+        review_id = kb.create_task(
+            conn, title="author reviews own work", assignee="builder",
+        )
+        claimed = kb.claim_task(conn, review_id)
+        assert claimed is not None
+        assert kb.request_review(
+            conn, review_id, summary="ready", expected_run_id=claimed.current_run_id,
+        ) is True
+        assert conn.execute(
+            "SELECT assignee FROM tasks WHERE id = ?", (review_id,)
+        ).fetchone()["assignee"] == "builder"
+
+        result = kbd.dispatch_once(
+            conn, spawn_fn=spawn, max_in_progress=2, max_spawn=None,
+        )
+
+        spawned_ids = [s[0] for s in result.spawned]
+        # Both ready tasks spawn: the parked review must not hold a slot back.
+        assert all(rid in spawned_ids for rid in ready_ids), (
+            f"ready lane was throttled by a parked self-review: {spawned_ids}"
+        )
+        # The self-review card is still never spawned.
+        assert review_id not in spawned_ids
+        assert review_id not in spawned

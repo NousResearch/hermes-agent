@@ -220,7 +220,7 @@ _TICK_ACTIVITY_FIELDS = (
     "spawned", "reclaimed", "promoted", "reconciled_orphans", "crashed", "stale",
     "timed_out", "auto_blocked", "rate_limited", "auto_assigned_default",
     "respawn_guarded", "skipped_per_profile_capped", "skipped_unassigned",
-    "skipped_nonspawnable",
+    "skipped_nonspawnable", "skipped_self_review",
 )
 
 
@@ -3135,6 +3135,22 @@ def request_review(
             _discard_staged_copies(staged_copies, staged_copies[0].parent)
         raise
     return _ret(True)
+
+
+def review_implementer(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Implementer recorded by the latest ``review_requested`` event, else ``None``.
+
+    ``request_review`` stamps the task's assignee at handoff time as
+    ``implementer`` on that event, and only reassigns the row when a distinct
+    ``reviewer`` is named — so for a card parked in ``review`` this is the
+    durable author provenance. The dispatcher uses it to refuse to spawn an
+    implementer as its own reviewer. ``None`` means the card never recorded one
+    (no ``review_requested`` event, or a payload without a usable value);
+    callers must read that as "unknown", never as "distinct".
+    """
+    review_event = _latest_event(conn, task_id, "review_requested")
+    handoff = _json_dict(_row_get(review_event, "payload"))
+    return _nonblank_str(handoff.get("implementer"))
 
 
 def _prior_reviewer(conn: sqlite3.Connection, task_id: str):

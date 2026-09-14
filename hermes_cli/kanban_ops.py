@@ -100,6 +100,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             ],
             "skipped_unassigned": res.skipped_unassigned,
             "skipped_nonspawnable": res.skipped_nonspawnable,
+            "skipped_self_review": [
+                {"task_id": tid, "reason": reason}
+                for (tid, reason) in res.skipped_self_review
+            ],
             "skipped_per_profile_capped": [
                 {"task_id": tid, "assignee": who, "current": current}
                 for (tid, who, current) in res.skipped_per_profile_capped
@@ -136,6 +140,17 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
             f"{', '.join(res.skipped_nonspawnable)}"
         )
+    for tid, reason in res.skipped_self_review:
+        if reason == "implementer_unknown":
+            print(
+                f"Parked in review (no implementer provenance to prove a "
+                f"distinct reviewer): {tid}"
+            )
+        else:
+            print(
+                f"Parked in review (assignee is the implementer - name a "
+                f"distinct reviewer): {tid}"
+            )
     return 0
 
 

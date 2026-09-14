@@ -897,6 +897,26 @@ def _clear_start_attestation() -> None:
         pass
 
 
+# A start attestation older than this is no authority (#110020 review (d)): the marker is a one-shot
+# meant to bridge the seconds between a ✓ and the next ``hermes gateway status``/``update``; a
+# historical marker must never later override Desktop ownership into a duplicate gateway (#76129).
+START_ATTESTATION_MAX_AGE_S = 24 * 3600
+
+
+def _attestation_within_horizon(data: object, now: float | None = None) -> bool:
+    """False for a marker whose ``ts`` is missing, unparsable or older than the horizon (fail closed)."""
+    try:
+        ts = datetime.fromisoformat(str(data["ts"])) if isinstance(data, dict) else None
+        if ts is None:
+            return False
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        age = (time.time() if now is None else now) - ts.timestamp()
+        return 0 <= age <= START_ATTESTATION_MAX_AGE_S
+    except Exception:
+        return False
+
+
 def _attestation_generation(data: object) -> str | None:
     """The marker instance identity, or ``None`` for a marker that carries none."""
     return str(data["generation"]) if isinstance(data, dict) and data.get("generation") else None
@@ -960,7 +980,7 @@ def attested_death_generation(current_pids: list[int]) -> str | None:
     exit): "unknown" must never read as "dead"."""
     data = _read_start_attestation()
     attested = _attested_pids_from(data)
-    if not attested or not _attested_dead(attested, current_pids):
+    if not attested or not _attestation_within_horizon(data) or not _attested_dead(attested, current_pids):
         return None
     return _attestation_generation(data)
 

@@ -228,3 +228,18 @@ def test_attested_probe_fails_closed_without_a_well_formed_dead_attestation(atte
     )
     gateway_windows._write_start_attestation([556], "cold-start after update")
     assert gateway_windows.attested_death_generation(current_pids=[]) is None  # planned stop
+
+
+def test_attested_probe_treats_a_marker_past_the_horizon_as_no_authority(attest_home):
+    """#110020 review (d): a historical marker must not later override Desktop ownership into a
+    duplicate gateway (#76129). Missing/unparsable/old ``ts`` all fail closed."""
+    marker = attest_home / "state" / "gateway.start-attestation.json"
+    marker.parent.mkdir(exist_ok=True)
+    gateway_windows._write_start_attestation([555], "direct spawn (PID 555)")
+    assert gateway_windows.attested_death_generation(current_pids=[]) is not None  # fresh
+    data = json.loads(marker.read_text(encoding="utf-8"))
+    for ts in (None, "not-a-date", "2020-01-01T00:00:00+00:00"):
+        stale = {k: v for k, v in data.items() if k != "ts"} if ts is None else {**data, "ts": ts}
+        marker.write_text(json.dumps(stale), encoding="utf-8")
+        assert gateway_windows.attested_death_generation(current_pids=[]) is None, ts
+        assert marker.exists()  # not consumed either

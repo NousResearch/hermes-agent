@@ -1,7 +1,11 @@
 /**
- * The English bundle is the message shape. ja / zh / zh-hant must cover the
- * same leaves so a locale switch never falls through to a raw key — and the
- * interpolators must still splice their arguments, not drop them.
+ * The English bundle is the message shape. Every other shipped bundle must
+ * cover the same leaves so a locale switch never falls through to a raw key —
+ * and the interpolators must still splice their arguments, not drop them.
+ *
+ * The non-English bundles are derived from BOTS_LOCALES rather than listed by
+ * name: a catalog that names its locales one by one silently stops covering
+ * the next one added.
  */
 
 import { describe, expect, it } from 'vitest'
@@ -21,32 +25,34 @@ function leafEntries(node: unknown, prefix = ''): Array<[string, Leaf]> {
 }
 
 const en = BOTS_LOCALES.en
-const ja = BOTS_LOCALES.ja
-const zh = BOTS_LOCALES.zh
-const zhHant = BOTS_LOCALES['zh-hant']
+const translated = Object.entries(BOTS_LOCALES).filter(([id]) => id !== 'en')
 
 describe('BOTS_LOCALES', () => {
   it('covers the English key tree in every shipped locale', () => {
-    expect(ja).toBeDefined()
-    expect(zh).toBeDefined()
-    expect(zhHant).toBeDefined()
+    // ja / zh / zh-hant shipped before this assertion existed; the count
+    // guards against the filter silently matching nothing.
+    expect(translated.length).toBeGreaterThanOrEqual(3)
 
     const enPaths = leafEntries(en).map(([path]) => path)
 
-    expect(leafEntries(ja).map(([path]) => path)).toEqual(enPaths)
-    expect(leafEntries(zh).map(([path]) => path)).toEqual(enPaths)
-    expect(leafEntries(zhHant).map(([path]) => path)).toEqual(enPaths)
+    for (const [id, locale] of translated) {
+      expect(locale, `${id} bundle is missing`).toBeDefined()
+      expect(leafEntries(locale).map(([path]) => path), `${id} key tree`).toEqual(enPaths)
+    }
   })
 
   it('translates user-visible chrome instead of echoing English', () => {
-    const samples = ['roster.emptyTitle', 'bot.newTitle', 'group.manageTitle', 'tools.skillsHub'] as const
+    // 'tools.skillsHub' was a sample until a Latin-script locale shipped:
+    // 'Hermes Skills Hub' is a product name and stays identical in German, so
+    // asserting it differs from English tests the brand, not the translation.
+    const samples = ['roster.emptyTitle', 'bot.newTitle', 'group.manageTitle'] as const
     const enByPath = Object.fromEntries(leafEntries(en))
 
-    for (const locale of [ja, zh, zhHant]) {
+    for (const [id, locale] of translated) {
       const byPath = Object.fromEntries(leafEntries(locale))
 
       for (const path of samples) {
-        expect(byPath[path]).not.toBe(enByPath[path])
+        expect(byPath[path], `${id}.${path}`).not.toBe(enByPath[path])
       }
     }
   })
@@ -55,7 +61,7 @@ describe('BOTS_LOCALES', () => {
     const sentinel = 'QUERY_SENTINEL'
     const gateway = 'GATEWAY_SENTINEL'
 
-    for (const locale of [en, ja, zh, zhHant]) {
+    for (const [, locale] of Object.entries(BOTS_LOCALES)) {
       const byPath = Object.fromEntries(leafEntries(locale))
       const queryFn = byPath['roster.noMatchQuery'] as (query: string) => string
       const bothFn = byPath['roster.noMatchQueryOn'] as (query: string, gateway: string) => string

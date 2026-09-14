@@ -230,6 +230,9 @@ def _secure_state_db_files(db_path: Path, *, create_main: bool = False) -> None:
     (gateway, desktop ``hermes serve``) keep using the deleted inodes.
     """
     if os.name == "nt":
+        # Windows: POSIX 0600 bits are ACL theater there — access is governed by the
+        # profile-directory ACLs, not chmod-style modes (#110601). Returning without
+        # a chmod keeps the POSIX contract below honest instead of pretending.
         return
 
     main_path = db_path
@@ -257,20 +260,31 @@ def _secure_state_db_files(db_path: Path, *, create_main: bool = False) -> None:
         db_path.with_name(db_path.name + "-wal"),
         db_path.with_name(db_path.name + "-shm"),
     ):
-        # fchmod on an fd of a pre-existing file cannot be used here: close(fd)
-        # would release this process's POSIX locks on that inode, stripping the
-        # locks of any live SQLite connection to the same database. chmod(2)
-        # never opens the file, so it leaves the lock state untouched.
+        # chmod(2) never opens the file, so it leaves POSIX lock state untouched (fchmod
+        # + close would strip this process's locks on the inode). It runs FIRST and
+        # unconditionally: probing-then-tightening left a 0644 file world-readable to
+        # concurrent openers until the chmod landed (#110601). chmod(2) follows symlinks
+        # and only narrows access (0600) — a planted symlink cannot leak anything, so the
+        # lstat below logs it instead of gating the tighten.
+        try:
+            os.chmod(path, 0o600)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            logger.warning("chmod 0600 on state file %s failed: %s", path, exc)
+            continue
         try:
             st = os.lstat(path)
         except FileNotFoundError:
             continue
         if stat.S_ISLNK(st.st_mode):
-            # Refuse a planted symlink exactly like O_NOFOLLOW would.
+            logger.warning(
+                "state file %s is a symlink; the 0600 tighten followed it to the target", path)
             continue
         if not stat.S_ISREG(st.st_mode):
-            continue
-        os.chmod(path, 0o600)
+            logger.warning(
+                "state path %s is not a regular file (mode %s); left as-is",
+                path, oct(st.st_mode))
 
 
 # Openings of the background-review harness prompts (agent/background_review.py).

@@ -6,6 +6,7 @@ def _runner(config):
     runner = object.__new__(GatewayRunner)
     runner.config = config
     runner.pre_delivery_gate = None
+    runner.pre_delivery_gate_mode = "shadow"
     return runner
 
 
@@ -102,3 +103,58 @@ def test_runner_rejects_whitespace_shadow_ids(monkeypatch, tmp_path):
     runner.pre_delivery_gate = None
     runner._init_evaluator_shadow()
     assert runner.pre_delivery_gate is None
+
+
+def test_mode_defaults_to_shadow():
+    assert EvaluatorShadowConfig().mode == "shadow"
+    assert EvaluatorShadowConfig.from_dict({}).mode == "shadow"
+
+
+def test_mode_accepts_strict_and_rejects_unknown_values():
+    assert EvaluatorShadowConfig.from_dict({"mode": "strict"}).mode == "strict"
+    assert EvaluatorShadowConfig.from_dict({"mode": "STRICT"}).mode == "strict"
+    assert EvaluatorShadowConfig.from_dict({"mode": "bogus"}).mode == "shadow"
+
+
+def _complete_shadow_dict(tmp_path, **overrides):
+    script = tmp_path / "scripts" / "live_shadow_policy.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("# fake evaluator entrypoint\n")
+    data = {
+        "enabled": True,
+        "evaluator_root": str(tmp_path),
+        "agent_configuration_id": "hermes-gateway-default-v1",
+        "evaluator_configuration_id": "evaluator-main-v1",
+        **overrides,
+    }
+    return GatewayConfig.from_dict({"gateway": {"evaluator_shadow": data}})
+
+
+def test_complete_strict_config_injects_adapter_and_sets_mode(tmp_path):
+    config = _complete_shadow_dict(tmp_path, mode="strict")
+    runner = _runner(config)
+    runner._init_evaluator_shadow()
+    assert runner.pre_delivery_gate is not None
+    assert runner.pre_delivery_gate_mode == "strict"
+
+
+def test_complete_shadow_config_keeps_shadow_mode(tmp_path):
+    config = _complete_shadow_dict(tmp_path)
+    runner = _runner(config)
+    runner._init_evaluator_shadow()
+    assert runner.pre_delivery_gate is not None
+    assert runner.pre_delivery_gate_mode == "shadow"
+
+
+def test_incomplete_strict_config_stays_disabled(tmp_path, caplog):
+    """Requesting strict mode without a complete config must not silently degrade to a
+    working-but-unnoticed shadow gate, nor crash startup — it stays disabled with a loud log."""
+    import logging
+    config = GatewayConfig.from_dict({
+        "gateway": {"evaluator_shadow": {"enabled": True, "mode": "strict"}},
+    })
+    runner = _runner(config)
+    with caplog.at_level(logging.ERROR, logger="gateway.run"):
+        runner._init_evaluator_shadow()
+    assert runner.pre_delivery_gate is None
+    assert runner.pre_delivery_gate_mode == "shadow"

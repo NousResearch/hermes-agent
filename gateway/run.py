@@ -3328,6 +3328,7 @@ class GatewayRunner(
         # See #64674.
         self.config = config if config is not None else load_gateway_config_for_runner()
         self.pre_delivery_gate = None
+        self.pre_delivery_gate_mode = "shadow"
         self._init_evaluator_shadow()
         # Multiplexer flag flips agent.secret_scope.get_secret() to fail-closed on unscoped credential
         # reads, so a missed migration crashes loudly instead of leaking a cross-profile value.
@@ -3371,7 +3372,11 @@ class GatewayRunner(
             or not agent_id
             or not evaluator_id
         ):
-            logger.warning("Evaluator Shadow disabled: incomplete or invalid configuration")
+            log = logger.error if cfg.mode == "strict" else logger.warning
+            log(
+                "Evaluator %s disabled: incomplete or invalid configuration",
+                "strict gate" if cfg.mode == "strict" else "Shadow",
+            )
             return
         try:
             from gateway.evaluator_shadow import EvaluatorShadowAdapter
@@ -3383,7 +3388,14 @@ class GatewayRunner(
                 evidence_output=output,
                 timeout_seconds=cfg.timeout_seconds,
             )
-            logger.info("Evaluator Shadow gate configured (opt-in; delivery remains Shadow)")
+            self.pre_delivery_gate_mode = cfg.mode
+            if cfg.mode == "strict":
+                logger.info(
+                    "Evaluator strict gate configured (opt-in; blocked/inconclusive answers are "
+                    "withheld from both delivery and persistence)"
+                )
+            else:
+                logger.info("Evaluator Shadow gate configured (opt-in; delivery remains Shadow)")
         except Exception:
             logger.warning("Evaluator Shadow disabled: adapter initialization failed", exc_info=True)
 

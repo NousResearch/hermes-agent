@@ -44,6 +44,12 @@ class EvaluatorShadowAdapter:
     async def __call__(self, result: dict[str, Any], turn_ctx: Any) -> dict[str, Any]:
         return await asyncio.to_thread(self._evaluate_sync, result, turn_ctx)
 
+    def evaluate_final_text_sync(self, final_text: str, turn_ctx: Any) -> dict[str, Any]:
+        """Public synchronous entry point for a caller already on a worker thread (the agent's
+        own turn loop — see agent/pre_persist_gate.py), so a "strict"-mode pre-persist check does
+        not need asyncio. Same request/decision contract as ``__call__``."""
+        return self._evaluate_sync({"final_response": final_text}, turn_ctx)
+
     def _evaluate_sync(self, result: dict[str, Any], turn_ctx: Any) -> dict[str, Any]:
         inbound_id = getattr(turn_ctx, "inbound_message_id", None)
         event_id = getattr(turn_ctx, "event_message_id", None)

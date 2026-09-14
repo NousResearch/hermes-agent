@@ -538,8 +538,17 @@ _TOPLEVEL_BOOL_DEFAULTS = {
 
 @dataclass
 class EvaluatorShadowConfig:
-    """Explicit, opt-in configuration for Hermes-to-Evaluator Shadow observation."""
+    """Explicit, opt-in configuration for Hermes-to-Evaluator Shadow observation.
+
+    ``mode`` — "shadow" (default) never changes delivery or persistence, only records an
+    observation (see gateway/evaluator_shadow.py, gateway/run_turn.py's
+    ``_run_agent_apply_pre_delivery_gate``). "strict" additionally withholds a blocked/
+    inconclusive verdict from BOTH platform delivery and durable persistence (see
+    agent/pre_persist_gate.py, agent/turn_finalizer.py) — a genuine behavior change, opt-in
+    only, and independent of the Shadow observation this config was originally built for.
+    """
     enabled: bool = False
+    mode: str = "shadow"  # "shadow" | "strict"
     evaluator_root: Optional[str] = None
     evidence_output: Optional[str] = None
     agent_configuration_id: Optional[str] = None
@@ -554,6 +563,7 @@ class EvaluatorShadowConfig:
             timeout = 10.0
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
+            mode=_normalize_choice(data.get("mode"), {"shadow", "strict"}, "shadow"),
             evaluator_root=data.get("evaluator_root") if isinstance(data.get("evaluator_root"), str) else None,
             evidence_output=data.get("evidence_output") if isinstance(data.get("evidence_output"), str) else None,
             agent_configuration_id=data.get("agent_configuration_id") if isinstance(data.get("agent_configuration_id"), str) else None,

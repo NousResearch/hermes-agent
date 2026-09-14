@@ -782,12 +782,6 @@ function PlatformDetail({
         {platform.docs_url && (
           <div className="mt-3">
             <Button asChild size="sm" variant="textStrong">
-              {/* Canonical external anchor (native = OS browser): a raw anchor
-                  never leaves Electron (window-open is denied), and a packaged
-                  build's empty/relative href would resolve to the app's own
-                  index.html. Plugin platforms (Teams, etc.) ship no docs_url,
-                  so the guard keeps the button from ever pointing at a local
-                  bundle path. */}
               <ExternalLinkAnchor href={platform.docs_url} native>
                 {m.openSetupGuide}
                 <ExternalLink className="size-3.5" />

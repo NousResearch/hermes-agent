@@ -331,9 +331,6 @@ const StatusbarItemView = memo(function StatusbarItemView({
   }
 
   if (item.href || item.variant === 'link') {
-    // An href-less 'link' variant renders as plain text: there is nothing to
-    // open, so it must not pose as an anchor (a raw anchor no-ops in
-    // Electron anyway — window-open is denied unconditionally).
     const body = item.href ? (
       <ExternalLinkAnchor
         className={cn(STATUSBAR_ACTION_CLASS, item.className)}

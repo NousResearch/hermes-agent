@@ -145,9 +145,6 @@ export function KeyField({
 export function CredentialDocsLink({ href }: { href: string }) {
   const { t } = useI18n()
 
-  // Canonical external anchor (native = OS browser console): a plain anchor
-  // no-ops in Electron (window-open is denied), so docs links must go
-  // through the shared component like every other external link.
   return (
     <ExternalLinkAnchor
       className="inline-flex w-fit items-center gap-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary) underline-offset-4 transition-colors hover:text-foreground hover:underline"

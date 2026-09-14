@@ -332,10 +332,6 @@ function ConfirmingModelPanel({
 }
 
 export function DocsLink({ children, href }: { children: React.ReactNode; href: string }) {
-  // The canonical external anchor (native = OS browser): Electron denies
-  // target=_blank window-open unconditionally (window-open-policy.ts,
-  // GHSA-9f4c-93c8-jc8g), so a plain anchor no-ops. Auth/verification URLs
-  // need the user's own session, hence native rather than the in-app preview.
   return (
     <Button asChild size="xs" variant="text">
       <ExternalLinkAnchor href={href} native>

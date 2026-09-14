@@ -115,10 +115,9 @@ class PtySession:
                 # writer-loop finally, so nothing else will detach this socket: undo the committed
                 # attach here, or the session reads attached forever and reap_idle() — which only
                 # reclaims ``not alive`` or detached sessions with a detach timestamp — leaks the
-                # PTY process group.
-                self._ws = None
-                self.attached = False
-                self.last_detached_at = time.monotonic()
+                # PTY process group. detach()'s superseded-socket guard passes here:
+                # ``_ws`` is still the failing socket we just committed.
+                self.detach(ws)
                 return False
         if force_redraw:
             return await self.write(ws, TUI_FORCE_REDRAW)

@@ -40,71 +40,58 @@ logger = logging.getLogger(__name__)
 
 
 def _callback_api():
-    """Resolve the terminal_tool callback getter/setter.
+    """(getter, setter) pairs for every thread-local prompt callback a tool may need mid-dispatch
+    (lazy: terminal_tool imports tools.approval at load, so a top-level import risks a cycle).
+    Add a new per-thread prompt here — a callback missing from this table is silently absent on
+    every parallel/timeout worker, so the tool believes nobody can answer.
 
-    Imported lazily: ``tools.terminal_tool`` imports ``tools.approval`` at
-    module load, so a top-level import here would risk an import cycle for
-    callers that live in ``tools.approval``.
+    Excludes the sudo-password callback: Hermes removed the SUDO_PASSWORD-piping mechanism
+    (Standing Exclusion 1/2), so there is no ``set_sudo_password_callback`` to propagate.
     """
-    from tools.terminal_tool import (
-        _get_approval_callback,
-        set_approval_callback,
-    )
-    return (
-        _get_approval_callback,
-        set_approval_callback,
-    )
+    from agent.vault_backends import unlock as vault_unlock
+    from tools import terminal_tool as tt
+
+    return ((tt._get_approval_callback, tt.set_approval_callback),
+            (vault_unlock.get_unlock_prompt_callback, vault_unlock.set_unlock_prompt_callback),
+            (vault_unlock.get_save_login_prompt_callback, vault_unlock.set_save_login_prompt_callback),
+            (vault_unlock.get_code_prompt_callback, vault_unlock.set_code_prompt_callback))
 
 
 def propagate_context_to_thread(target: Callable) -> Callable:
-    """Wrap *target* for execution on a worker thread with the *current*
-    thread's ContextVars and approval callback propagated.
+    """Wrap *target* to run with the *current* thread's ContextVars and per-thread prompt callbacks
+    (approval, password-manager unlock).
 
-    Call this on the parent thread; pass the returned callable as the
-    thread/executor target.  The returned callable forwards its positional
-    and keyword arguments to *target* and returns its result.
-
-    Fail-closed: if callback installation raises, the callback is left
-    unset (``None``).  That is the safe outcome — ``prompt_dangerous_approval``
-    denies dangerous commands when no callback is registered in an interactive
-    context, and the gateway approval queue blocks when its notify callback is
-    absent.
+    Fail-closed: if callback installation raises they stay ``None`` — dangerous commands are then
+    denied by ``prompt_dangerous_approval`` and the gateway approval queue blocks.
     """
     ctx = contextvars.copy_context()
-    parent_approval_cb = None
-    setters = None
+    # (setter, parent callback) pairs; None when the callback API could not be captured.
+    installs = None
     try:
-        get_approval, set_approval = _callback_api()
-        parent_approval_cb = get_approval()
-        setters = (set_approval,)
+        installs = tuple((setter, getter()) for getter, setter in _callback_api())
     except Exception:
-        logger.debug("Could not capture parent approval callback", exc_info=True)
+        logger.debug("Could not capture parent approval/vault callbacks", exc_info=True)
 
     def _runner(*args, **kwargs):
         def _inner():
-            if setters is not None:
-                (set_approval,) = setters
-                try:
-                    if parent_approval_cb is not None:
-                        set_approval(parent_approval_cb)
-                except Exception:
-                    logger.debug(
-                        "Failed to install propagated approval callback; "
-                        "dangerous-command approval will fail closed",
-                        exc_info=True,
-                    )
+            if installs is None:
+                return target(*args, **kwargs)
+            try:
+                for setter, cb in installs:
+                    if cb is not None:
+                        setter(cb)
+            except Exception:
+                logger.debug("Failed to install propagated approval/vault callbacks; "
+                             "dangerous-command approval will fail closed", exc_info=True)
             try:
                 return target(*args, **kwargs)
             finally:
-                if setters is not None:
-                    (set_approval,) = setters
-                    try:
-                        set_approval(None)
-                    except Exception:
-                        logger.debug(
-                            "Failed to clear propagated approval callback",
-                            exc_info=True,
-                        )
+                try:
+                    for setter, _cb in installs:
+                        setter(None)
+                except Exception:
+                    logger.debug("Failed to clear propagated approval/vault callbacks",
+                                 exc_info=True)
 
         return ctx.run(_inner)
 

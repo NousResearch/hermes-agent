@@ -1342,12 +1342,18 @@ class TestNodeRuntimeNpmResolution:
             for call in mock_run.call_args_list
         )
 
-    def test_update_rebuilds_desktop_that_disappears_mid_update(self):
+    def test_update_rebuilds_desktop_that_disappears_mid_update(self, tmp_path, monkeypatch):
         """A previously packaged Desktop must be rebuilt when its release tree vanishes."""
         from hermes_cli import main as hm
         from hermes_cli import update_cmd
 
-        desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+        # Isolated fake checkout — writing "{}" into apps/desktop/package.json must never
+        # touch the real repo tree (previously this used the real PROJECT_ROOT directly).
+        project_root = tmp_path / "hermes-agent"
+        desktop_dir = project_root / "apps" / "desktop"
+        desktop_dir.mkdir(parents=True)
+        (desktop_dir / "package.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(hm, "PROJECT_ROOT", project_root)
         packaged_exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
         build_ok = subprocess.CompletedProcess([], 0, stdout="", stderr="")
 
@@ -1370,7 +1376,7 @@ class TestNodeRuntimeNpmResolution:
         assert packaged.call_count == 2
         desktop_build.assert_called_once_with(
             [hm.sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"],
-            cwd=PROJECT_ROOT,
+            cwd=project_root,
             env=ANY,
         )
 

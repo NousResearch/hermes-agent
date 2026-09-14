@@ -45,7 +45,6 @@ from __future__ import annotations
 import difflib
 import json
 import logging
-import os
 import re
 import time
 import uuid
@@ -55,6 +54,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -160,12 +160,8 @@ def stage_write(subsystem: str, payload: Dict[str, Any],
     }
     tmp: Optional[Path] = None
     try:
-        path = _pending_path(subsystem, pid)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
-    except Exception as e:
+        atomic_json_write(_pending_path(subsystem, pid), record)
+    except Exception as e:  # pragma: no cover - disk failure path
         logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
         if tmp is not None:
             try:

@@ -538,7 +538,11 @@ def enable_profile_log_routing(profile_homes: Sequence[str | Path]) -> bool:
     with _queue_state_lock:
         if not _queued_file_handlers:
             return False
-        if any(isinstance(h, _ProfileRoutingFileHandler) for h in _queued_file_handlers):
+        routers = [h for h in _queued_file_handlers if isinstance(h, _ProfileRoutingFileHandler)]
+        if routers:
+            for handler in routers:
+                with handler._profile_handlers_lock:
+                    handler._profile_homes = handler._profile_homes.union(homes)
             return True
         listener = _queue_listener
         if listener is not None:
@@ -726,12 +730,12 @@ def emit_event(
 def _read_logging_config():
     """Best-effort read of ``logging.*`` from config.yaml."""
     try:
-        # Prefer the shared (mtime, size)-keyed raw-config cache so this reuses
-        # hermes_cli.main's early parse (one config.yaml parse per process);
-        # fall back to a direct parse for bare hermes_logging consumers.
+        # Prefer the shared effective-config cache (managed overlay included, so an administrator
+        # can pin logging.*) so this reuses hermes_cli.main's early parse (one config.yaml parse
+        # per process); fall back to a direct parse for bare hermes_logging consumers.
         try:
-            from hermes_cli.config import read_raw_config as _rrc
-            cfg = _rrc() or {}
+            from hermes_cli.config_effective import load_user_config_effective
+            cfg = load_user_config_effective(get_config_path())
         except Exception:
             from utils import fast_safe_load
             config_path = get_config_path()
@@ -741,12 +745,6 @@ def _read_logging_config():
                     cfg = fast_safe_load(f) or {}
         if not cfg:
             return (None, None, None)
-        # Managed scope: an administrator can pin logging.* too (fail-open overlay).
-        try:
-            from hermes_cli import managed_scope
-            cfg = managed_scope.apply_managed_overlay(cfg)
-        except Exception:
-            pass
         log_cfg = cfg.get("logging", {})
         if isinstance(log_cfg, dict):
             return (log_cfg.get("level"), log_cfg.get("max_size_mb"), log_cfg.get("backup_count"))

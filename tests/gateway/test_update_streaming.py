@@ -16,7 +16,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 
@@ -151,16 +151,15 @@ class TestUpdateCommandGatewayFlag:
              patch("subprocess.Popen", mock_popen):
             result = await runner._handle_update_command(event)
 
-        # Check the bash command string contains --gateway.
-        # PYTHONUNBUFFERED is no longer embedded in the string: since the
-        # spawn moved to the shared hermes_cli.action_spawn helper (also
-        # used by the dashboard's HTTP-triggered update path), it's set via
-        # the Popen `env` kwarg instead of a shell-level `VAR=1 cmd` prefix
-        # — same effective environment, different mechanism.
+        # Check the bash command string contains --gateway. _spawn_detached_update builds a
+        # single `bash -c` command (with output redirection and exit-code capture), so
+        # PYTHONUNBUFFERED is embedded as a shell-level `VAR=1 cmd` prefix in that string rather
+        # than passed via the Popen `env` kwarg -- unlike the plain-Popen spawn paths elsewhere,
+        # this one has to carry the env through the shell string itself.
         call_args = mock_popen.call_args[0][0]
         cmd_string = call_args[-1] if isinstance(call_args, list) else str(call_args)
         assert "--gateway" in cmd_string
-        assert mock_popen.call_args.kwargs.get("env", {}).get("PYTHONUNBUFFERED") == "1"
+        assert "PYTHONUNBUFFERED=1" in cmd_string
         assert "rc=$?" in cmd_string
         assert "status=$?" not in cmd_string
         assert "stream progress" in result

@@ -780,6 +780,28 @@ def _has_binary_magic(data: bytes) -> bool:
 def _read_referenced_script(
     path: Path, *, max_bytes: Optional[int] = None
 ) -> tuple[Optional[str], bool]:
+    """Read a referenced script without racing SQLite connection lifecycle.
+
+    The registry check must cover the complete ``open``/``read``/``close``
+    sequence. A separate ``has_live_connection`` check would leave a race in
+    which another thread opens SQLite after the check but before this function
+    closes its descriptor, cancelling that connection's POSIX locks.
+    """
+    from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
+
+    try:
+        with offline_file_access(path, what="read referenced script"):
+            return _read_referenced_script_unlocked(path, max_bytes=max_bytes)
+    except LiveConnectionError:
+        return None, True
+    except (OSError, ValueError):
+        # Invalid path values, including embedded NULs, are not scripts.
+        return None, False
+
+
+def _read_referenced_script_unlocked(
+    path: Path, *, max_bytes: Optional[int] = None
+) -> tuple[Optional[str], bool]:
     """Return ``(text, unsafe)`` using bounded, regular-file-only reads.
 
     Shared choke point for every local script read, so the cloud-placeholder refusal lives here: a

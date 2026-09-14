@@ -38,6 +38,9 @@ _STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
     "DAYTONA_API_KEY", "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET",
     "GATEWAY_RELAY_DELIVERY_KEY", "VERCEL_OIDC_TOKEN", "VERCEL_TOKEN",
     "VERCEL_PROJECT_ID", "VERCEL_TEAM_ID",
+    # Belt-and-braces: the sudo-password-piping mechanism was removed and nothing reads this
+    # anymore, but a stale value from a user's .env must never reach a spawned command's env.
+    "SUDO_PASSWORD",
 })
 
 

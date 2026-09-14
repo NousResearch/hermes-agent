@@ -690,5 +690,64 @@ class TestProtectedInstructionFiles:
         assert rendered["choices"] == ["once", "deny"]
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+class TestMultiplexProfileWriteGuardsAreProfileScoped:
+    """#107327: a multiplexed gateway scopes ``HERMES_HOME`` per turn via a
+    contextvar. The home/config path getters must resolve per call, or whichever
+    profile ran first in the process freezes both the protected-instruction gate
+    and the ``config.yaml`` hard-block for every later profile — up to letting a
+    later profile rewrite its own ``config.yaml`` the block exists to protect."""
+
+    def _profiles(self, tmp_path: Path):
+        root = tmp_path / "home"
+        a, b = root / "profiles" / "alpha", root / "profiles" / "beta"
+        for home in (a, b):
+            (home / "workspace").mkdir(parents=True)
+            (home / "config.yaml").write_text(
+                "model:\n  default: original\n", encoding="utf-8"
+            )
+        return a, b
+
+    def test_home_getter_tracks_active_profile_after_a_prior_scope(self, tmp_path):
+        import tools.file_tools_write_guards as ft
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        a, b = self._profiles(tmp_path)
+        # A normal alpha turn resolves (and, on the buggy path, would freeze) home.
+        tok = set_hermes_home_override(str(a))
+        try:
+            assert ft._get_real_hermes_home() == os.path.realpath(str(a))
+        finally:
+            reset_hermes_home_override(tok)
+        # The next turn is beta — the getter must now return beta's home, not alpha's.
+        tok = set_hermes_home_override(str(b))
+        try:
+            assert ft._get_real_hermes_home() == os.path.realpath(str(b))
+        finally:
+            reset_hermes_home_override(tok)
+
+    def test_config_hard_block_refuses_beta_config_even_after_alpha_turn(self, tmp_path):
+        """End-to-end: the ``config.yaml`` hard-block must fire for beta's own
+        config under beta's scope, regardless of alpha having run first."""
+        import tools.file_tools_write_guards as ft
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        a, b = self._profiles(tmp_path)
+        tok = set_hermes_home_override(str(a))
+        try:
+            ft._get_hermes_config_resolved()  # warm the (formerly poisoning) alpha lookup
+        finally:
+            reset_hermes_home_override(tok)
+
+        tok = set_hermes_home_override(str(b))
+        try:
+            err = ft._check_sensitive_path(str(b / "config.yaml"), "default")
+        finally:
+            reset_hermes_home_override(tok)
+        assert err is not None
+        assert "Refusing to write to Hermes config file" in err

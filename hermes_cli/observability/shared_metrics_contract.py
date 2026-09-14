@@ -38,8 +38,8 @@ _METRIC_IDENTIFIER_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789.
 _METRIC_IDENTIFIER_START_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789")
 
 EXECUTION_SURFACES = frozenset({
-    "api", "batch", "cli", "desktop", "gateway", "python", "scheduled_task", "tui", "other",
-    "unknown",
+    "acp", "api", "batch", "cli", "desktop", "gateway", "python", "scheduled_task", "tui",
+    "other", "unknown",
 })
 TASK_OUTCOMES = frozenset({"cancelled", "failed", "success", "timed_out", "unknown"})
 TASK_END_REASONS = frozenset({
@@ -420,7 +420,9 @@ def task_start_fields(kwargs: dict[str, Any]) -> dict[str, str]:
 
 
 _SURFACE_ENTRYPOINTS = {
-    **dict.fromkeys(("cli", "desktop", "tui"), "interactive"),
+    # An ACP session is a human in an editor (VS Code / Zed / JetBrains), same
+    # dispatch shape as the other interactive surfaces.
+    **dict.fromkeys(("acp", "cli", "desktop", "tui"), "interactive"),
     **{s: s for s in ("api", "batch", "python", "scheduled_task", "unknown")},
     "gateway": "gateway_message",
 }

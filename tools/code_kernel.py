@@ -241,17 +241,14 @@ class CellAuthority:
         self.task_id = task_id
         self.ctx = contextvars.copy_context()
         self.active = True
-        self._approval_cb = None
-        self._callback_setters = None
+        # ((getter, setter), captured value) per thread-local prompt callback (approval, vault unlock…)
+        self._callbacks: list = []
         try:
             from tools.thread_context import _callback_api
-
-            get_approval, set_approval = _callback_api()
-            self._approval_cb = get_approval()
-            self._callback_setters = (set_approval,)
+            self._callbacks = [(pair, pair[0]()) for pair in _callback_api()]
         except Exception:
             # Fail-closed like propagate_context_to_thread: no callbacks → dangerous approvals deny.
-            pass
+            self._callbacks = []
 
     def retire(self) -> None:
         self.active = False
@@ -267,25 +264,22 @@ class CellAuthority:
     def _invoke(self, tool_name: str, tool_args: dict) -> str:
         from model_tools import handle_function_call
         previous = None
-        if self._approval_cb is not None:
+        if self._callbacks:
             try:
-                from tools.thread_context import _callback_api
-
-                get_approval, set_approval = _callback_api()
-                previous = get_approval()
-                set_approval(self._approval_cb)
+                previous = [(setter, getter()) for (getter, setter), _cb in self._callbacks]
+                for (_getter, setter), cb in self._callbacks:
+                    setter(cb)
             except Exception:
                 previous = None
         try:
             return handle_function_call(tool_name, tool_args, task_id=self.task_id)
         finally:
-            if previous is not None and self._callback_setters is not None:
-                (set_approval,) = self._callback_setters
+            if previous is not None:
                 try:
-                    set_approval(previous)
+                    for setter, cb in previous:
+                        setter(cb)
                 except Exception:
                     pass
-
 
 class _BoundedBuffer:
     """Byte chunks capped at a total size; ``drain`` returns text and resets."""

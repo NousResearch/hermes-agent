@@ -136,7 +136,7 @@ async def test_op_gating_falls_back_when_not_advertised(tmp_path: Path):
 
 
 def _make_event(media_urls):
-    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.platforms.event import MessageEvent, MessageType
     from gateway.session import SessionSource
 
     return MessageEvent(

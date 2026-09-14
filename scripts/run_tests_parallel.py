@@ -547,8 +547,8 @@ def _parse_pytest_summary(output: str) -> dict[str, int]:
 
 def _format_file(file: Path, repo_root: Path) -> str:
     """Render a test-file path for display: strip the repo-root prefix
-    when possible so output reads ``tests/acp/test_auth.py`` instead of
-    ``/home/runner/work/hermes-agent/hermes-agent/tests/acp/test_auth.py``.
+    when possible so output reads ``tests/acp_adapter/test_auth.py`` instead of
+    ``/home/runner/work/hermes-agent/hermes-agent/tests/acp_adapter/test_auth.py``.
 
     Falls back to the absolute path for anything outside the repo root.
     """

@@ -12,6 +12,7 @@ import os
 from typing import Any, Callable, Dict, Optional
 
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
+from agent.secret_scope import get_secret_str
 from utils import base_url_hostname
 
 logger = logging.getLogger("hermes_cli.runtime_provider")
@@ -62,16 +63,6 @@ def _lift_model_capabilities(entry: Dict[str, Any], model: Optional[str], result
         result["capabilities"] = capabilities
 
 
-def _lift_max_output_tokens(entry: Dict[str, Any], result: Dict[str, Any]) -> None:
-    """``max_output_tokens`` or ``max_tokens`` on a provider entry pins its own output limit;
-    gateway/CLI map it onto ``AIAgent.max_tokens`` only when top-level ``model.max_tokens`` is
-    unset, so the documented global key still wins."""
-    for key in ("max_output_tokens", "max_tokens"):
-        value = entry.get(key)
-        if isinstance(value, int) and value > 0:
-            result["max_output_tokens"] = value
-            return
-
 
 def _lift_extra_headers(entry: Dict[str, Any], result: Dict[str, Any]) -> None:
     """Copy a validated ``extra_headers`` dict. SECURITY: values carry credentials — never log."""
@@ -93,7 +84,7 @@ def _lift_common_custom_fields(entry: Dict[str, Any], result: Dict[str, Any], *,
     _lift_extra_headers(entry, result)
     if api_mode:
         result["api_mode"] = api_mode
-    _lift_max_output_tokens(entry, result)
+
     _lift_model_capabilities(entry, None, result)
 
 
@@ -126,9 +117,9 @@ def _match_new_style_provider(requested_norm: str, providers: Dict[str, Any]) ->
         if not isinstance(entry, dict) or not is_provider_enabled(entry):
             continue
         # API key from the env var named by key_env, else the inline api_key. Read BEFORE the
-        # alias match (scope-aware ``_getenv`` fails closed identically for every entry).
+        # alias match (scope-aware ``get_secret_str`` fails closed identically for every entry).
         key_env = _clean(entry.get("key_env") or entry.get("api_key_env"))
-        api_key = rp._getenv(key_env, "").strip() if key_env else ""
+        api_key = get_secret_str(key_env, "").strip() if key_env else ""
         if requested_norm not in custom_provider_aliases(str(entry.get("name", "") or ep_name), str(ep_name)):
             continue
         base_url = _entry_url(entry)
@@ -262,16 +253,21 @@ def find_custom_provider_identity_by_model(model: str) -> Optional[str]:
 
 def canonical_custom_identity(*, base_url: Optional[str] = None, config_provider: Optional[str] = None,
                               model: Optional[str] = None) -> Optional[str]:
-    """Recover a routable ``custom:<name>`` identity for a bare custom provider. Every path that
-    persists or restores a session's provider override must run the resolved provider through this
-    so a bare ``"custom"`` is upgraded back to its durable menu key. Sources in priority order:
-    (1) ``base_url`` reverse lookup — the one fact that always survives the round-trip when a URL
-    was recorded; (2) ``model`` reverse lookup (``model``/``default_model``/``models`` catalog);
-    (3) the configured provider (arg, ``model.provider``, ``HERMES_INFERENCE_PROVIDER``) when it
-    names a real entry."""
+    """Recover the durable menu identity for a bare custom provider. Match a configured
+    endpoint first, then the ownership-checked managed server, then a configured model or
+    provider. Every session persistence/restore path shares this lookup."""
     rp = _rp()
-    identity = (find_custom_provider_identity(base_url) if base_url else None) or (
-        find_custom_provider_identity_by_model(model) if model else None)
+    if base_url:
+        identity = find_custom_provider_identity(base_url)
+        if identity:
+            return identity
+        # The managed server has no custom-provider config entry. Recover its menu key
+        # from the ownership-checked endpoint, never from a model name or a fixed port.
+        from hermes_cli.local_runtime.endpoint import _state_endpoint
+        endpoint = _state_endpoint()
+        if endpoint and _normalize_base_url_for_match(base_url) == _normalize_base_url_for_match(endpoint["base_url"]):
+            return "llamacpp"
+    identity = find_custom_provider_identity_by_model(model) if model else None
     if identity:
         return identity
     candidate = str(config_provider or "").strip()
@@ -368,7 +364,7 @@ def _custom_provider_request_overrides(custom_provider: Dict[str, Any]) -> Dict[
 
 
 def _apply_custom_provider_extras(custom_provider: Dict[str, Any], target_model: Optional[str], result: Dict[str, Any]) -> None:
-    """Copy model / capabilities / max_output_tokens / extra_headers / request_overrides onto a
+    """Copy model / capabilities / extra_headers / request_overrides onto a
     resolved custom runtime. An explicit ``target_model`` wins over the provider's configured
     default (auxiliary slots / background-review resolve a concrete model and must not fall back to
     ``default_model``). ``extra_headers`` may carry credentials — NEVER log them."""
@@ -376,8 +372,7 @@ def _apply_custom_provider_extras(custom_provider: Dict[str, Any], target_model:
     if model_name:
         result["model"] = model_name
     _lift_model_capabilities(custom_provider, model_name, result)
-    if isinstance(custom_provider.get("max_output_tokens"), int):
-        result["max_output_tokens"] = custom_provider["max_output_tokens"]
+
     if custom_provider.get("extra_headers"):
         result["extra_headers"] = dict(custom_provider["extra_headers"])
     request_overrides = _custom_provider_request_overrides(custom_provider)
@@ -493,7 +488,7 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     candidates = [
         explicit_key,
         _clean(custom_provider.get("api_key", "")),
-        rp._getenv(_clean(custom_provider.get("key_env", "")), "").strip(),
+        get_secret_str(_clean(custom_provider.get("key_env", "")), "").strip(),
         *rp._host_gated_env_key_candidates(base_url, ollama=False),
     ]
     api_key: Any = next((c for c in candidates if rp.has_usable_secret(c)), "")

@@ -172,7 +172,7 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
     mapped gateways no status record covers."""
     supervisor = _supervisor_classifier()
     with _probe("Gateway-state inventory"):
-        from gateway.status import _pid_exists, read_runtime_status
+        from gateway.status import live_gateway_pid_for_home, read_runtime_status
         from hermes_cli.update_receipt import _socket_identity
 
         for profile, home in profile_homes:
@@ -185,13 +185,13 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
                 declared = record.get("supervisor")
                 sup = str(declared) if declared else supervisor(pid)
             else:
+                # Verified identity, not bare PID existence: a ``stopped`` record whose PID was recycled
+                # by an unrelated process fabricated a phantom gateway the restart phase could never
+                # touch, so `hermes update` exited partial (#109680).
+                pid = live_gateway_pid_for_home(home)
+                if pid is None or pid in seen:
+                    continue
                 record = read_runtime_status(home / "gateway_state.json") or {}
-                try:
-                    pid = int(record.get("pid"))
-                except (TypeError, ValueError):
-                    continue
-                if not _pid_exists(pid):
-                    continue
                 seen.add(pid)
                 sup = supervisor(pid)
             plan.runtimes.append(_runtime("gateway", profile, pid, sup, record.get("code_sha"), record.get("code_version")))
@@ -288,13 +288,25 @@ def _serve_unit_matches_profile(profile: str, unit: object) -> bool:
     return name in {f"hermes-serve{suffix}", f"hermes-dashboard{suffix}"}
 
 
+def _gateway_service_matches_profile(profile: str, service: object) -> bool:
+    """Match an exact gateway service/label (systemd/launchd/s6 shapes) to a profile.
+
+    Never substring-match: ``foo`` must not claim ``hermes-gateway-foobar.service``.
+    Launchd labels are ``ai.hermes.gateway`` / ``ai.hermes.gateway-<profile>`` — they do
+    not contain the substring ``hermes-gateway``, so a successful macOS kickstart must
+    still credit the planned default gateway. A scope prefix (``user/hermes-gateway``,
+    ``gui/501/ai.hermes.gateway``) is stripped the same way serve units are.
+    """
+    name = str(service).removesuffix(".service").rsplit("/", 1)[-1]
+    if profile == "default":
+        return name in {"hermes-gateway", "ai.hermes.gateway", "gateway", "gateway-default"}
+    return name in {f"hermes-gateway-{profile}", f"ai.hermes.gateway-{profile}", f"gateway-{profile}"}
+
+
 def _gateway_named_in(r: RuntimeRecord, names: set) -> bool:
-    # The bare "hermes-gateway" unit name is gateway-specific: a serve/dashboard runtime that merely
-    # shares the default profile is a different process the gateway restart never touched.
-    return any(
-        r.profile in name or (r.kind == "gateway" and r.profile == "default" and "hermes-gateway" in name)
-        for name in names
-    )
+    # Gateway-only vocabulary: a serve/dashboard that merely shares the profile is a
+    # different process. Exact label match (systemd + launchd + s6), not substring.
+    return any(_gateway_service_matches_profile(r.profile, name) for name in names)
 
 
 def match_runtime_outcomes(

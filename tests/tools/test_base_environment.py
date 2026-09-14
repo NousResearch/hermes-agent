@@ -6,6 +6,8 @@ init_session() failure handling, and the CWD marker contract.
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _BoundedOutputCollector
 

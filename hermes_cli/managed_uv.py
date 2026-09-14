@@ -588,9 +588,18 @@ def _stage_candidate_venv(
     # and uv 0.12+ refuses --locked.
     sync_env = dict(env)
     sync_env.pop("UV_NO_CONFIG", None)
+    # stderr=STDOUT: uv writes progress to stderr. Legacy desktop
+    # hand-offs (pre scripts/desktop-update/windows.ps1, which drains
+    # both pipes) only drain the child's stdout while the child runs; a
+    # full stderr pipe (~64KB) blocks uv forever. Merging into stdout
+    # keeps the output streaming through the pipe old hand-offs DO
+    # drain. This module is imported lazily by update_cmd AFTER the git
+    # reset, so even an update running from an old base executes THIS
+    # copy — unlike the heartbeat helper (main_install_repair.py), which
+    # is imported at startup and only protects bases that ship its twin.
     synced = subprocess.run(
         [uv_bin, "sync", "--extra", "all", "--locked", "--python", str(_venv_python(candidate))],
-        cwd=project_root, env=sync_env, check=False)
+        cwd=project_root, env=sync_env, stderr=subprocess.STDOUT, check=False)
     if synced.returncode != 0:
         return reject("candidate dependency sync failed (rc=%d)", synced.returncode)
     healthy, detail, _ = _smoke_candidate_venv(candidate)

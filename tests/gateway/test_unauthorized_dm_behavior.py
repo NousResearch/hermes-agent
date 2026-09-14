@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 
@@ -47,6 +47,7 @@ def _make_event(
     chat_id: str,
     *,
     profile: str | None = None,
+    is_bot: bool = False,
 ) -> MessageEvent:
     return MessageEvent(
         text="hello",
@@ -56,6 +57,7 @@ def _make_event(
             user_id=user_id,
             chat_id=chat_id,
             user_name="tester",
+            is_bot=is_bot,
             chat_type="dm",
             profile=profile,
         ),
@@ -237,6 +239,21 @@ async def test_unauthorized_dm_pairs_by_default(monkeypatch):
     )
     adapter.send.assert_awaited_once()
     assert "ABC12DEF" in adapter.send.await_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_bot_dm_is_never_offered_a_pairing_code(monkeypatch):
+    """A bot cannot pair, and a reply during a loop-guard cooldown would be outbound traffic."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(platforms={Platform.WHATSAPP: PlatformConfig(enabled=True)})
+    runner, adapter = _make_runner(Platform.WHATSAPP, config)
+    jid = "15551234567@s.whatsapp.net"
+
+    result = await runner._handle_message(_make_event(Platform.WHATSAPP, jid, jid, is_bot=True))
+
+    assert result is None
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -2,7 +2,7 @@
 
 [project]
 name = "hermes-agent"
-version = "0.21.0"
+version = "0.21.2"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
 # Upper bound is load-bearing, not cosmetic. uv resolves the project's
@@ -138,6 +138,14 @@ dependencies = [
   # install rather than gating it behind an extra + a mid-session lazy install
   # (which deadlocked the CLI under prompt_toolkit — see #40490).
   "Pillow==12.3.0",
+  # HEIF/HEIC/AVIF decode for the vision tools. iPhone photos and screenshots
+  # are HEIC (frequently mislabeled .jpg by upload pipelines); Pillow has no
+  # built-in HEIF codec, so without this the vision resolver rejects them as
+  # "not a recognized image". pillow-heif registers a Pillow opener so
+  # _normalize_to_supported_image can re-encode HEIF/AVIF to PNG before embed.
+  # Ships prebuilt wheels bundling libheif for the common platforms (no system
+  # libs needed), so it's safe in the base install alongside Pillow.
+  "pillow-heif>=1.4.0,<2",
   # Windows log rotation. Stdlib ``RotatingFileHandler.doRollover()`` uses
   # ``os.rename()`` which fails with ``PermissionError [WinError 32]`` on
   # Windows whenever any other process holds an append-mode handle on
@@ -188,9 +196,9 @@ daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
 hindsight = ["hindsight-client==0.6.1"]
 dev = ["debugpy==1.8.20", "pytest==9.1.1", "pytest-asyncio==1.3.0", "mcp==2.0.0", "httpx2==2.7.0", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==83.0.0"]  # starlette: CVE-2026-48710; setuptools: 83 (torch >=2.13 requires setuptools 83)
-messaging = ["python-telegram-bot[webhooks]==22.8", "discord.py[voice]==2.7.1", "aiohttp==3.14.3", "brotlicffi==1.2.0.1", "slack-bolt==1.30.0", "slack-sdk==3.43.0", "qrcode==7.4.2"]  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
+messaging = ["python-telegram-bot[webhooks]==22.8", "discord.py[voice]==2.7.1", "aiohttp==3.14.3", "brotlicffi==1.2.0.2", "slack-bolt==1.30.0", "slack-sdk==3.44.1", "qrcode==7.4.2"]  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
-slack = ["slack-bolt==1.30.0", "slack-sdk==3.43.0", "aiohttp==3.14.3"]
+slack = ["slack-bolt==1.30.0", "slack-sdk==3.44.1", "aiohttp==3.14.3"]
 matrix = ["mautrix[encryption]==0.21.1", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0", "aiohttp==3.14.3"]  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7 (mautrix/aiohttp-socks only cap aiohttp<4 / >=3.10, so pin the patched floor directly)
 # WeCom callback-mode adapter — parses untrusted XML POST bodies from
 # WeCom-controlled callback endpoints, so we use defusedxml (drop-in
@@ -327,6 +335,19 @@ google = [
   "httplib2==0.32.0",
   "pyasn1==0.6.4",
 ]
+google-chat = [
+  # Google Chat adapter (Pub/Sub inbound + Chat REST). Kept out of [all] so a
+  # quarantined google-cloud-pubsub cannot break every fresh install; Docker
+  # bakes `--extra google-chat` and lazy_deps installs into
+  # HERMES_LAZY_INSTALL_TARGET on sealed hosted images.
+  "google-cloud-pubsub==2.39.0",
+  "google-api-python-client==2.194.0",
+  "google-auth==2.55.1",
+  "google-auth-oauthlib==1.3.1",
+  "google-auth-httplib2==0.3.1",
+  "httplib2==0.32.0",
+  "pyasn1==0.6.4",
+]
 youtube = [
   # Required by skills/media/youtube-content and
   # optional-skills/productivity/memento-flashcards (youtube_quiz.py).
@@ -426,7 +447,125 @@ exclude-newer = "14 days"
 # cutoff can still brick installs. Exempting exact pins is pure brick-risk
 # removal at no supply-chain cost. Guarded by
 # tests/test_packaging_metadata.py::test_build_system_requires_exempt_from_exclude_newer.
-exclude-newer-package = { wheel = false, vercel = false, nemo-relay = false, huggingface_hub = false, aiohttp = false, cryptography = false, defusedxml = false, python-olm = false, unpaddedbase64 = false, setuptools = false, pillow = false, mcp = false }
+#
+# Every other exact-pinned package below: the release-day brick shape
+# (observed 2026-08-29 updating three long-running installs v0.20.0 ->
+# v0.20.6 — one Termux, two Linux servers). Each release exact-pins at least
+# one dependency to a version published days before the release (v0.20.6
+# pinned snowballstemmer==3.1.1 and psutil==7.2.2 in core, plus fastapi /
+# uvicorn / python-telegram-bot pins across extras). For two weeks after
+# release the cutoff filters those versions out, so any venv that predates
+# the release bricks on `hermes update` ("no version of
+# snowballstemmer==3.1.1") until the window passes. Same zero-float-
+# protection logic as setuptools/pillow/mcp above; enforced for every exact
+# pin by
+# tests/test_packaging_metadata.py::test_exact_pinned_deps_exempt_from_exclude_newer.
+#
+# maturin, setuptools-rust: build-system.requires of the cryptography pin
+# above. cryptography itself is exempted, but on wheel-less platforms
+# (Termux/Android) it must build from sdist, and the isolated build
+# environment resolves under the same cutoff ("Failed to resolve
+# requirements from build-system.requires ... maturin>=1.9,<2").
+[tool.uv.exclude-newer-package]
+agent-client-protocol = false
+ai-edge-litert = false
+aiohttp = false
+aiohttp-socks = false
+aiosqlite = false
+alibabacloud-dingtalk = false
+anthropic = false
+asyncpg = false
+azure-identity = false
+boto3 = false
+brotlicffi = false
+certifi = false
+concurrent-log-handler = false
+croniter = false
+cryptography = false
+daytona = false
+debugpy = false
+defusedxml = false
+dingtalk-stream = false
+discord-py = false
+edge-tts = false
+elevenlabs = false
+exa-py = false
+fal-client = false
+fastapi = false
+faster-whisper = false
+fire = false
+firecrawl-py = false
+google-api-python-client = false
+google-auth = false
+google-auth-httplib2 = false
+google-auth-oauthlib = false
+google-cloud-pubsub = false
+h2 = false
+hindsight-client = false
+honcho-ai = false
+httplib2 = false
+httpx = false
+httpx2 = false
+huggingface_hub = false
+jinja2 = false
+lark-oapi = false
+markdown = false
+maturin = false
+mautrix = false
+mcp = false
+mem0ai = false
+microsoft-teams-apps = false
+mistralai = false
+modal = false
+nemo-relay = false
+numpy = false
+onnxruntime = false
+openai = false
+opentelemetry-exporter-otlp-proto-http = false
+opentelemetry-sdk = false
+openwakeword = false
+packaging = false
+parallel-web = false
+pathspec = false
+pillow = false
+prompt-toolkit = false
+psutil = false
+pvporcupine = false
+pyasn1 = false
+pydantic = false
+pyjwt = false
+pytest = false
+pytest-asyncio = false
+python-dotenv = false
+python-multipart = false
+python-olm = false
+python-telegram-bot = false
+pyyaml = false
+qrcode = false
+requests = false
+rich = false
+ruamel-yaml = false
+ruff = false
+sentencepiece = false
+setuptools = false
+setuptools-rust = false
+wheel = false
+sherpa-onnx = false
+slack-bolt = false
+slack-sdk = false
+snowballstemmer = false
+sounddevice = false
+starlette = false
+supermemory = false
+tenacity = false
+ty = false
+tzdata = false
+unpaddedbase64 = false
+uvicorn = false
+vercel = false
+websockets = false
+youtube-transcript-api = false
+
 
 [tool.setuptools]
 # Root single-file modules are derived by setup.py at build time from the
@@ -456,6 +595,7 @@ markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
     "real_concurrent_gate: opt out of the autouse stub that disables _detect_concurrent_hermes_instances",
     "real_agent_prewarm: opt out of the autouse stub that disables the tui_gateway deferred agent pre-warm timer",
+    "real_retry_backoff: opt out of the tests/agent autouse stub that zeroes jittered_backoff",
     "requires_wal: needs the runtime to actually enable SQLite WAL mode (skipped where Hermes falls back to journal_mode=DELETE)",
     "no_isolate: opt out of per-file subprocess isolation (tests share mutable module-level state)",
     "ssh: marks tests requiring a reachable SSH server (skipped in normal CI)",
@@ -580,6 +720,7 @@ select = ["PLW1514", "S110", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251"]
 "gateway/slash_commands.py" = ["S110", "ASYNC220"]
 "gateway/slash_commands_model.py" = ["S110"]
 "gateway/slash_commands_session.py" = ["S110"]
+"gateway/slash_commands_status.py" = ["S110"]
 "gateway/status.py" = ["S110"]
 "gateway/stream_consumer.py" = ["S110"]
 "gateway/streaming_tts_consumer.py" = ["S110"]
@@ -588,6 +729,7 @@ select = ["PLW1514", "S110", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251"]
 "hermes_cli/_install_repair.py" = ["S110"]
 "hermes_cli/_subprocess_compat.py" = ["S110"]
 "hermes_cli/active_sessions.py" = ["S110"]
+"hermes_cli/anon_auth.py" = ["S110"]
 "hermes_cli/auth.py" = ["S110"]
 "hermes_cli/auth_codex.py" = ["S110"]
 "hermes_cli/auth_commands.py" = ["S110"]
@@ -654,6 +796,7 @@ select = ["PLW1514", "S110", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251"]
 "hermes_cli/model_normalize.py" = ["S110"]
 "hermes_cli/model_setup_flows.py" = ["S110"]
 "hermes_cli/model_switch.py" = ["S110"]
+"hermes_cli/model_selection_guards.py" = ["S110"]
 "hermes_cli/model_switch_providers.py" = ["S110"]
 "hermes_cli/models.py" = ["S110"]
 "hermes_cli/models_catalog_static.py" = ["S110"]
@@ -661,6 +804,7 @@ select = ["PLW1514", "S110", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251"]
 "hermes_cli/models_pricing.py" = ["S110"]
 "hermes_cli/observability/relay_shared_metrics.py" = ["S110"]
 "hermes_cli/observability/shared_metrics_contract.py" = ["S110"]
+"hermes_cli/nous_auth_keepalive.py" = ["S110"]
 "hermes_cli/oneshot.py" = ["S110"]
 "hermes_cli/platforms.py" = ["S110"]
 "hermes_cli/plugin_compat.py" = ["S110"]

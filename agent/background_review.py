@@ -369,7 +369,8 @@ _DO_NOT_CAPTURE_BLOCK = (
 _SKILL_REVIEW_PROMPT = (
     "Review the conversation above and update the skill library. Be ACTIVE — most sessions produce "
     "at least one skill update, even if small. A pass that does nothing is a missed learning "
-    "opportunity, not a neutral outcome.\n\n"
+    "opportunity, not a neutral outcome. When a write is refused, read the error, fix that "
+    "specific cause, retry once — a second identical failure means stop, not try harder.\n\n"
     "Target shape of the library: CLASS-LEVEL skills, each with a SKILL.md of always-on rules and a "
     "small `references/` set of topical depth. Not a flat list of narrow one-session skills, and "
     "not an umbrella hoarding a references/ file per session. This shapes HOW you update, not "
@@ -430,8 +431,8 @@ _SKILL_REVIEW_PROMPT = (
     "the user is and what the current situation and state of your operations are'; skills capture "
     "'how to do this class of task for this user'. When they complain about how you handled a "
     "task, the skill that governs that task needs to carry the lesson.\n\n"
-    "If you notice two existing skills that overlap, note it in your reply — the background "
-    "curator handles consolidation at scale.\n\n"
+    "If you notice two existing skills that overlap, leave them — skill overlap costs a little "
+    "prompt budget; a wrong merge by an autonomous actor costs more. No consolidation from here.\n\n"
     "Protected skills (DO NOT edit these):\n"
     "  • Bundled skills (shipped with Hermes, e.g. 'hermes-agent').\n"
     "  • Hub-installed skills (installed via 'hermes skills install').\n"
@@ -459,7 +460,8 @@ _COMBINED_REVIEW_PROMPT = (
     "preferences with the memory tool.\n\n"
     "**Skills**: how to do this class of task. Be ACTIVE — most sessions produce at least one "
     "skill update. A pass that does nothing is a missed learning opportunity, not a neutral "
-    "outcome.\n\n"
+    "outcome. When a write is refused, read the error, fix that specific cause, retry once — a "
+    "second identical failure means stop, not try harder.\n\n"
     "Target shape of the skill library: CLASS-LEVEL skills with a SKILL.md of always-on rules and a "
     "small `references/` set of topical depth — not narrow one-session skills, and not an umbrella "
     "hoarding a references/ file per session.\n\n" + _LESSON_LAYER_BLOCK +
@@ -497,8 +499,8 @@ _COMBINED_REVIEW_PROMPT = (
     "skill that governs that task — memory alone isn't enough. Memory says 'who the user is and "
     "what the current situation and state of your operations are'; skills say 'how to do this "
     "class of task for this user'. Both should carry user-preference lessons when relevant.\n\n"
-    "If you notice overlapping existing skills, mention it — the background curator handles "
-    "consolidation.\n\n"
+    "If you notice overlapping existing skills, leave them — the foreground user decides on "
+    "consolidation; an autonomous merge is the wrong actor.\n\n"
     "Protected skills (DO NOT edit these):\n"
     "  • Bundled skills (shipped with Hermes, e.g. 'hermes-agent').\n"
     "  • Hub-installed skills (installed via 'hermes skills install').\n"
@@ -1118,6 +1120,26 @@ def _run_review_fork(
         _reset_background_review_read_marks()
     try:
         if review_run is None or review_run.begin_request(st.review_agent):
+            # Reflective-genre routing: when insight_save is dispatchable for this fork,
+            # tell it — inside the task message, adjacent to the grant — that thesis-shaped
+            # findings belong to the sidecar, not to skills. Genre assignment beats routing
+            # hints buried in the system prompt; the only instruction that competes with the
+            # dominant genre prompt is one that sits in the task message itself. Gated on
+            # the whitelist (not the raw config) so the block never names a tool the fork's
+            # dispatch would refuse.
+            thesis_block = (
+                "\n\nReflective findings (insight_save is allowed for you): a finding that is a "
+                "THESIS rather than a procedure — a structural conclusion, a falsified assumption, "
+                "a design distinction, a measured constant — must not be distilled into a skill or "
+                "a references/ file. Skills are imperative ('do X, then Y'); a thesis is declarative "
+                "('X is false because Y'), and dressing a conclusion up as a step teaches a future "
+                "session the wrong genre. When the conversation produced a thesis-shaped finding, "
+                "save it with insight_save(text, topic) — max 1200 chars, the finding plus one line "
+                "of evidence. A duplicate refusal means it is already stored: do not loop. One "
+                "review may do both — insight_save for the thesis, a skill update for any real "
+                "procedure. Different stores, different genres; doing one does not excuse dropping "
+                "the other."
+            ) if "insight_save" in review_whitelist else ""
             # Routed -> digest (cache cold anyway); same model -> full snapshot (warm cache reads).
             st.review_agent.run_conversation(
                 user_message=(
@@ -1129,11 +1151,11 @@ def _run_review_fork(
                         + extra_list
                         + ". All other tools will be denied at runtime — do not attempt them."
                     ) if configured_extra_tools else (
-                        prompt + "\n\nYou can only call " + memory_phrase_prompt +
+                        "You can only call " + memory_phrase_prompt +
                         "management tools. Other tools will be denied "
                         "at runtime — do not attempt them."
                     )
-                ),
+                ) + thesis_block,
                 conversation_history=_digest_history(messages_snapshot) if _routed else messages_snapshot,
             )
     finally:

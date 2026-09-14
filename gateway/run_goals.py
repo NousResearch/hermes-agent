@@ -321,7 +321,9 @@ class GatewayGoalsMixin:
         # Empty interrupted/errored responses must not drive /goal, but an in-flight /loop tick
         # still needs to be released and rescheduled.
         hooks = [("loop completion", self._post_turn_loop_completion)]
-        if final_text.strip():
+        skip_goal = (getattr(event, "_gateway_skip_goal_continuation", False) is True
+                     or getattr(session_entry, "compression_paused", False) is True)
+        if final_text.strip() and not skip_goal:
             hooks.insert(0, ("goal continuation", self._post_turn_goal_continuation))
         for label, hook in hooks:
             try:

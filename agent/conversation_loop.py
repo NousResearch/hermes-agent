@@ -1511,7 +1511,7 @@ def _run_conversation_turn(
             should_review_memory=s._should_review_memory,
         )
 
-    while (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+    while s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0:
         if _run_phase(begin_iteration, agent, s).action == "break":
             break
         _run_phase(prepare_iteration, agent, s)

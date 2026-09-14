@@ -5721,12 +5721,11 @@ class TestSystemPromptStability:
 
 
 class TestBudgetPressure:
-    """Budget exhaustion grace call system."""
+    """Budget exhaustion injection flags."""
 
-    def test_grace_call_flags_initialized(self, agent):
-        """Agent should have budget grace call flags."""
+    def test_budget_flags_initialized(self, agent):
+        """Agent should have budget exhaustion injection flags."""
         assert agent._budget_exhausted_injected is False
-        assert agent._budget_grace_call is False
 
 
 class TestSafeWriter:

@@ -294,10 +294,26 @@ def _render_text(proposals: list[Proposal], days: int) -> None:
             print(f"       class: {cls}")
         for ex in p.examples:
             print(f"       e.g. {ex}")
+    # Get profile-specific config path and flag
+    try:
+        from hermes_cli.config import get_hermes_home
+        _config_path = get_hermes_home() / "config.yaml"
+    except Exception:
+        _config_path = "~/.hermes/config.yaml"
+    
+    _profile_flag = ""
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        _profile = get_active_profile_name()
+        if _profile and _profile != "default":
+            _profile_flag = f" -p {_profile}"
+    except Exception:
+        pass
+    
     print(
         "\nNothing has been changed. Apply selected entries with:\n"
         "  hermes approvals suggest --apply 1,3\n"
-        "Entries are merged into command_allowlist in ~/.hermes/config.yaml."
+        f"Entries are merged into command_allowlist in {_config_path}."
     )
 
 

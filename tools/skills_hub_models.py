@@ -171,7 +171,7 @@ class GuardedFetchMixin:
             return None
         try:
             return resp.json()
-        except (ValueError, json.JSONDecodeError):
+        except ValueError:  # JSONDecodeError subclasses ValueError
             return None
 
 

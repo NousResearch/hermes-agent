@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """SSRF guard regression: Browse.sh + LobeHub adapters must route through
-_guardd_http_get (is_safe_url + per-hop redirect re-check), never plain httpx.
+_guarded_http_get (is_safe_url + per-hop redirect re-check), never plain httpx.
 
 Bug: BrowseShSource.fetch did _get_text(md_url, follow_redirects=True) with
 md_url from /api/skills/{slug} (attacker-influenced) — a catalog entry pointing
@@ -70,6 +70,18 @@ class TestBrowseShSSRFGuard(unittest.TestCase):
                         # content blocked -> None, but must not touch unguarded fns
                         bundle = src.fetch("browse-sh/evil.com/pwn-abc123")
                         self.assertIsNone(bundle)
+
+
+class TestRealGuardBlocksMetadata(unittest.TestCase):
+    """End-to-end through the REAL guard (no mocks): metadata URLs return None."""
+
+    def test_fetch_json_blocks_metadata(self):
+        from tools.skills_hub_models import GuardedFetchMixin
+        self.assertIsNone(GuardedFetchMixin._fetch_json(METADATA))
+
+    def test_fetch_text_blocks_metadata(self):
+        from tools.skills_hub_models import GuardedFetchMixin
+        self.assertIsNone(GuardedFetchMixin._fetch_text(METADATA))
 
 
 if __name__ == "__main__":

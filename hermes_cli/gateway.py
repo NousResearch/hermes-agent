@@ -1035,40 +1035,27 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
         # (run_argv leads the profile gateway command), so the task name must
         # come from run_argv, never from the watcher process's own home —
         # otherwise a multi-profile fleet triggers the wrong task.
-        _task_name = ""
-        _task_home = ""
         if sys.platform == "win32":
             try:
                 from pathlib import Path as _Path
-                import re as _re
                 from hermes_cli.config import get_hermes_home as _get_home
-                _cmd = list(cmd)
-                _profile = ""
-                for _i, _part in enumerate(_cmd):
-                    if _part == "--profile" and _i + 1 < len(_cmd):
-                        _profile = _cmd[_i + 1]
-                        break
-                    _m = _re.match(r"--profile=(.+)", _part)
-                    if _m:
-                        _profile = _m.group(1)
-                        break
-                if _profile:
-                    try:
-                        from hermes_constants import get_default_hermes_root as _get_root
-                        _task_home = str((_get_root() / "profiles" / _profile).resolve())
-                    except Exception:
-                        _task_home = _profile
+                from hermes_cli.profiles import _argv_profile_selectors, get_profile_dir
+                _selected = list(_argv_profile_selectors(list(cmd)))
+                if _selected:
+                    # ``default`` maps to the root home; an invalid name raises here, which
+                    # skips the task route (the bare name would hash into a bogus task).
+                    _task_home = str(get_profile_dir(_selected[-1]).resolve())
                 else:
                     _task_home = str(_Path(_get_home()).resolve())
-                # Derive the task name for the relaunched profile (never the
-                # watcher process's own home — otherwise a multi-profile fleet
-                # triggers the wrong task).
-                from hermes_cli.gateway_windows import get_task_name as _get_tn
-                _task_name = _get_tn(home=_task_home)
-                # Prefer the shared helper (snapshot -> /Run -> poll + profile-aware PID check).
                 from hermes_cli import gateway_windows as _gw  # type: ignore
-                if _gw.is_task_registered(task_name=_task_name):
-                    _started_via_task = bool(_gw._spawn_via_scheduled_task(home=_task_home))
+                # Snapshot -> /Run -> poll for a NEW pid in that profile's home; None when the
+                # profile has no registered task (fall through to the direct spawn below).
+                _task_pids = _gw._spawn_via_scheduled_task(home=_task_home)
+                # A task that fired but produced no ready pid still owns the spawn: a direct
+                # Popen beside its (possibly still booting) child would race for the port.
+                _started_via_task = _task_pids is not None
+                if _task_pids == [] and _stdio_fh is not None:
+                    _stdio_fh.write(b"[watcher] task fired but no new gateway became ready\\n")
             except Exception as _e:
                 try:
                     if _stdio_fh is not None:

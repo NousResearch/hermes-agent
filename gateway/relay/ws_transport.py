@@ -957,7 +957,11 @@ class WebSocketRelayTransport:
         # port needed); bufferId (§5.3) is passed through for ack.
         if self._passthrough_handler is not None:
             fwd = _passthrough_from_wire(frame.get("forward", {}))
-            await self._passthrough_handler(fwd, frame.get("bufferId"))
+            buffer_id = frame.get("bufferId")
+            await self._passthrough_handler(fwd, buffer_id)
+            # Advance the replay cursor only after the handler has taken delivery.
+            if buffer_id:
+                await self._send_inbound_ack(str(buffer_id))
 
     _FRAME_HANDLERS = {
         "descriptor": _on_descriptor,

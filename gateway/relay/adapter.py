@@ -1087,24 +1087,27 @@ class RelayAdapter(BasePlatformAdapter):
         any shared-identity credential; the agent later acts via the token-less
         ``send_follow_up`` path. A Discord interaction becomes a normalized
         ``MessageEvent`` on the SAME agent path as chat; other forwards are logged and
-        dropped. NEVER raises: a malformed forward must not kill the read loop."""
+        dropped. Delivery failures propagate so buffered requests remain replayable."""
         try:
             platform = getattr(forward, "platform", "") or ""
             if platform == "discord":
                 event = self._discord_interaction_to_event(forward)
-                if event is not None:
-                    self._capture_scope(event)
-                    # A prompt-token component press is consumed (same gate as _on_inbound).
-                    if await self._consume_prompt_response(event):
-                        return
-                    await self.handle_message(event)
-                    return
+            else:
+                event = None
+        except Exception:  # noqa: BLE001 - malformed provider data is not retryable
+            logger.warning("relay passthrough_forward parsing failed", exc_info=True)
+            return
+        if event is not None:
+            self._capture_scope(event)
+            # A prompt-token component press is consumed (same gate as _on_inbound).
+            if await self._consume_prompt_response(event):
+                return
+            await self.handle_message(event)
+        else:
             logger.info(
                 "relay passthrough_forward dropped (no handler): platform=%s method=%s path=%s",
                 platform, getattr(forward, "method", "?"), getattr(forward, "path", "?"),
             )
-        except Exception:  # noqa: BLE001 - a bad forward must never break the reader
-            logger.warning("relay passthrough_forward handling failed", exc_info=True)
 
     def _discord_interaction_to_event(self, forward):
         """Convert a forwarded Discord interaction body to a MessageEvent, or None for

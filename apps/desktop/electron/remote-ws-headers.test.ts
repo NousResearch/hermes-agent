@@ -2,9 +2,13 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   applyRemoteRequestHeaders,
+  attachRemoteRequestHeaderListener,
+  collectRemoteHeaderSources,
   createRegistryGatewayWsUrlHandler,
   createRemoteWsHeaderStore,
-  type RegistryGatewayWsConnection
+  oauthLoginLoadUrlOptions,
+  type RegistryGatewayWsConnection,
+  resolveRemoteRequestHeaders
 } from './remote-ws-headers'
 
 const accessHeaders = {
@@ -163,5 +167,59 @@ describe('registry gateway WebSocket headers', () => {
     expect(store.headersFor(result)).toEqual(accessHeaders)
     expectRequestHeaders(store, result, accessHeaders)
     expect(store.headersFor('wss://gateway.example/api/ws?token=secret&trace=one')).toEqual({})
+  })
+})
+
+describe('OAuth login and registry extra headers', () => {
+  it('applies Connections extra headers to /login, not only an exact WebSocket URL', () => {
+    const sources = collectRemoteHeaderSources({
+      connections: [
+        { kind: 'local' },
+        {
+          kind: 'remote',
+          url: 'https://gateway.example',
+          headers: {
+            'CF-Access-Client-Id': 'client-id\r\n',
+            'CF-Access-Client-Secret': 'client-secret\r'
+          }
+        }
+      ],
+      v1Remote: { url: 'https://other.example', headers: { 'CF-Access-Client-Id': 'v1-only' } }
+    })
+
+    expect(resolveRemoteRequestHeaders('https://gateway.example/login', { sources })).toEqual(accessHeaders)
+    expect(resolveRemoteRequestHeaders('https://gateway.example/api/status', { sources })).toEqual(accessHeaders)
+    expect(oauthLoginLoadUrlOptions(accessHeaders)).toEqual({
+      extraHeaders: 'CF-Access-Client-Id: client-id\nCF-Access-Client-Secret: client-secret'
+    })
+    expect(resolveRemoteRequestHeaders('https://other.example/login', { sources })).toEqual({
+      'CF-Access-Client-Id': 'v1-only'
+    })
+  })
+
+  it('injects extra headers on an OAuth partition session, not only defaultSession', () => {
+    const listeners = []
+
+    const oauthSession = {
+      webRequest: {
+        onBeforeSendHeaders: listener => {
+          listeners.push(listener)
+        }
+      }
+    }
+
+    const sources = collectRemoteHeaderSources({
+      connections: [{ kind: 'remote', url: 'https://gateway.example', headers: accessHeaders }]
+    })
+
+    attachRemoteRequestHeaderListener(oauthSession, url => resolveRemoteRequestHeaders(url, { sources }))
+
+    const callback = vi.fn()
+    listeners[0]({ url: 'https://gateway.example/login', requestHeaders: { Origin: 'app://hermes' } }, callback)
+
+    expect(listeners).toHaveLength(1)
+    expect(callback).toHaveBeenCalledWith({
+      requestHeaders: { Origin: 'app://hermes', ...accessHeaders }
+    })
   })
 })

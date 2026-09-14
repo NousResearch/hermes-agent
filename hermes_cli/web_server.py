@@ -342,6 +342,11 @@ def _warm_gateway_module() -> None:
         # the models.dev cache on first use.
         "hermes_cli.inventory",
         "hermes_cli.model_switch",
+        # tui_gateway / ws transport — pre-warm the JSON-RPC WebSocket server
+        # so the Desktop / Chat-tab ready-probe is not stalled by module
+        # imports on the event loop during cold startup.
+        "tui_gateway.server",
+        "tui_gateway.ws",
     ):
         try:
             __import__(mod)

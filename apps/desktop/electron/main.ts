@@ -172,7 +172,7 @@ import {
   pumpStreamToFile,
   resolveGatewayFileBackend
 } from './gateway-file-download'
-import { probeGatewayWebSocket } from './gateway-ws-probe'
+import { probeGatewayWebSocket, probeGatewayWebSocketWithRetry } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
 import { clearStaleGitLocks } from './gitlock'
 import { readAndConsumeHandoffResult } from './handoff-result'
@@ -10617,7 +10617,7 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   // Verify the WebSocket session token before declaring backend ready.
   // HTTP /api/status can pass while WS auth fails (separate transport, separate guards).
   const wsUrl = `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(authToken)}`
-  const wsProbe = await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket })
+  const wsProbe = await probeGatewayWebSocketWithRetry(wsUrl, { WebSocketImpl: globalThis.WebSocket })
 
   if (!wsProbe.ok) {
     throw new Error(
@@ -11041,7 +11041,7 @@ async function startHermes() {
 
     // Verify the WebSocket session token before declaring backend ready.
     const wsUrl = `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(authToken)}`
-    const wsProbe = await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket })
+    const wsProbe = await probeGatewayWebSocketWithRetry(wsUrl, { WebSocketImpl: globalThis.WebSocket })
 
     if (!wsProbe.ok) {
       throw new Error(

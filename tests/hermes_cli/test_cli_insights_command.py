@@ -25,6 +25,10 @@ class _InsightsEngineStub:
         self.calls.append({"days": days, "source": source})
         return {"days": days, "source": source}
 
+    def generate_fleet(self, *, days=30, source=None):
+        self.calls.append({"days": days, "source": source, "fleet": True})
+        return {"days": days, "source": source}
+
     def format_terminal(self, report):
         return f"days={report['days']} source={report['source']}"
 
@@ -94,3 +98,15 @@ def test_subcommand_insights_closes_database_when_generation_fails(capsys):
 
     db.close.assert_called_once()
     assert "Error generating insights: boom" in capsys.readouterr().out
+
+
+def test_subcommand_fleet_uses_explicit_fleet_generation(capsys):
+    db = MagicMock()
+    _InsightsEngineStub.calls = []
+    with patch("hermes_state.SessionDB", return_value=db), \
+         patch("agent.insights.InsightsEngine", _InsightsEngineStub):
+        cmd_insights(SimpleNamespace(days=14, source="cli", fleet=True))
+
+    assert _InsightsEngineStub.calls == [{"days": 14, "source": "cli", "fleet": True}]
+    db.close.assert_called_once()
+    assert "days=14 source=cli" in capsys.readouterr().out

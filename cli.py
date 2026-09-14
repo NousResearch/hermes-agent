@@ -4113,6 +4113,9 @@ def _run_quiet_single_query(cli, effective_query):
                 )
                 if isinstance(follow, dict) and follow.get("messages"):
                     history = follow["messages"]
+                # Same sync contract as the main turn: a compression rotation during a
+                # follow-up must not leave a stale id on the exit line / drain key.
+                _sync_cli_session_id_from_agent(cli)
                 return follow
 
             # One shared linger budget for the whole run: the loop below and the later

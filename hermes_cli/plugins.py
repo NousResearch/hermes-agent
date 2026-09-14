@@ -513,7 +513,8 @@ class PluginContext:
         """
         from hermes_cli.plugin_session_toolsets import PluginSessionToolset
         handle = PluginSessionToolset(self, session_key, name, description, direct=direct)
-        self._track("session_toolset", handle.name, handle.dispose)
+        registration = self._track("session_toolset", handle.name, handle._dispose_resources)
+        handle._bind_ownership_registration(registration)
         return handle
 
     # -- capability probing (#64228) -----------------------------------------

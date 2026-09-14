@@ -18,11 +18,10 @@ const SESSION_WINDOW_MIN_HEIGHT = 620
 // throttling opt-out).
 //
 // Background throttling is deliberately NOT set here. It is managed at runtime
-// by main.ts (`setBackgroundThrottling` driven by the merged `hermes:active-work`
-// reports): while any turn is in flight every chat window is unthrottled so the
-// transcript's bounded timer flush keeps painting while blurred, occluded, or
-// minimized — and once all turns finish, Chromium's default throttling returns
-// so an idle hidden window costs ~nothing. A static `backgroundThrottling:
+// by main.ts (`setBackgroundThrottling` driven by each renderer's
+// `hermes:active-work` report): only a window with a turn in flight is
+// unthrottled so its bounded timer flush keeps painting while blurred,
+// occluded, or minimized — sibling windows stay quiet. A static `backgroundThrottling:
 // false` here would pin `document.visibilityState` to 'visible' forever,
 // turning every visibility-gated poll in the renderer into an always-on timer
 // (the "Hermes idles at 20% CPU while minimized" bug). The preload path is

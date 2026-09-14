@@ -79,4 +79,29 @@ describe('contrast', () => {
     expect(ensureContrast('#3D2F13', '#ffffff', 3.9)).toBe('#3D2F13')
     expect(ensureContrast('ansi256(245)', '#ffffff', 3.9)).toBe('ansi256(245)')
   })
+
+  // #109955: a step that can never advance the ladder hung the loop forever
+  // (0, negative) or skipped every rung and returned the failing color (NaN,
+  // Infinity). All now normalize to the documented default; the contract is
+  // "terminates and still clears min", not the old hang.
+  it.each([0, -0.1, Number.NaN, Number.POSITIVE_INFINITY])(
+    'ensureContrast(#777777 on #ffffff, 4.5, step=%s) terminates and clears min',
+    (step) => {
+      const fixed = ensureContrast('#777777', '#ffffff', 4.5, step)
+
+      expect(contrastRatio(fixed, '#ffffff')!).toBeGreaterThanOrEqual(4.5)
+    },
+  )
+
+  it('ensureContrast treats a step wider than the range as straight-to-the-pole', () => {
+    const fixed = ensureContrast('#777777', '#ffffff', 4.5, 5)
+
+    expect(fixed).toBe('#000000')
+    expect(contrastRatio(fixed, '#ffffff')!).toBeGreaterThanOrEqual(4.5)
+  })
+
+  it('explicit step=0.2 is byte-identical to the implicit default ladder', () => {
+    expect(ensureContrast('#0053fd', '#161616', 4.5, 0.2))
+      .toBe(ensureContrast('#0053fd', '#161616', 4.5))
+  })
 })

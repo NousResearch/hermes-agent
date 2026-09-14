@@ -134,7 +134,10 @@ export function readableOn(bg: string, inks: readonly [string, ...string[]] = DE
  * from it and a finer ladder lands visibly different fills (nous `#3b6acb` vs
  * `#3f70d8`). The TUI's chainable form opts into 0.05 for less hue loss.
  * The accumulating loop (rather than `i * step`) is deliberate — it is the
- * exact float sequence the old desktop ladder produced.
+ * exact float sequence the old desktop ladder produced. A `step` that can
+ * never advance the ladder (zero, negative, non-finite) falls back to the
+ * default; a step wider than the whole range means "straight to the pole"
+ * (#109955 — the loop must terminate for every input).
  */
 export function ensureContrast(color: string, bg: string, min: number, step = 0.2): string {
   const bgLuminance = relativeLuminance(bg)
@@ -149,10 +152,11 @@ export function ensureContrast(color: string, bg: string, min: number, step = 0.
     return color
   }
 
+  const rung = Number.isFinite(step) && step > 0 ? Math.min(step, 1) : 0.2
   const pole = bgLuminance < 0.5 ? '#ffffff' : '#000000'
   let best = color
 
-  for (let amount = step; amount <= 1.0001; amount += step) {
+  for (let amount = rung; amount <= 1.0001; amount += rung) {
     best = mix(color, pole, Math.min(amount, 1))
 
     const stepRatio = contrastRatio(best, bg)

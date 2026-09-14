@@ -1,9 +1,15 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesApi from '@/hermes'
 import { $freeTierSignIn, openFreeTierSignIn } from '@/store/free-tier-sign-in'
+
+const openExternalLink = vi.fn()
+
+vi.mock('@/lib/external-link', () => ({
+  openExternalLink: (href: string) => openExternalLink(href)
+}))
 
 const pollOAuthSession = vi.fn()
 const requestGateway = vi.fn(async () => ({ available: true, has_guest: true }))
@@ -76,5 +82,33 @@ describe('FreeTierSignInDialog', () => {
     await waitFor(() => expect(screen.getByText('Signed in as someone@example.com')).toBeTruthy())
     expect(screen.getByText('Your account now carries inference and tools.')).toBeTruthy()
     expect(screen.getByText('Hermes-4-405B')).toBeTruthy()
+  })
+
+  it('opens the sign-in URL through the validated external opener', async () => {
+    const url = 'https://portal.example/claim?code=ABCD-EFGH'
+    $freeTierSignIn.set({
+      code: 'ABCD-EFGH',
+      codeCopied: false,
+      sessionId: 'session-1',
+      status: 'code',
+      url,
+      urlCopied: false
+    })
+
+    const { FreeTierSignInDialog } = await import('./sign-in-dialog')
+
+    await act(async () => {
+      render(
+        <QueryClientProvider client={new QueryClient()}>
+          <FreeTierSignInDialog />
+        </QueryClientProvider>
+      )
+    })
+
+    await act(async () => {
+      fireEvent.click(screen.getByText(url))
+    })
+
+    expect(openExternalLink).toHaveBeenCalledWith(url)
   })
 })

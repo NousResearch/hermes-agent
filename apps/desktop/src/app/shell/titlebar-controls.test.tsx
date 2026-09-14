@@ -1,15 +1,23 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
 import { I18nProvider } from '@/i18n'
+import type * as ExternalLinkModule from '@/lib/external-link'
 import { setTitlebarAppActionsSide } from '@/store/titlebar-app-actions'
 
 import { ROUTES_AREA } from '../routes'
 
 import { TitlebarControls, type TitlebarTool } from './titlebar-controls'
+
+const openExternalLink = vi.fn()
+
+vi.mock('@/lib/external-link', async importOriginal => ({
+  ...(await importOriginal<typeof ExternalLinkModule>()),
+  openExternalLink: (href: string) => openExternalLink(href)
+}))
 
 const PLUGIN_TOOL: TitlebarTool = { icon: <span />, id: 'plugin-tool', label: 'plugin tool' }
 
@@ -131,6 +139,24 @@ describe('TitlebarControls fixed clusters', () => {
 
       expect(pluginChrome()).toBeNull()
     })
+  })
+})
+
+describe('titlebar external tool href', () => {
+  afterEach(() => {
+    cleanup()
+    vi.clearAllMocks()
+  })
+
+  it('opens a tool href through the validated external opener', () => {
+    const href = 'https://hermes-agent.nousresearch.com/docs/user-guide/desktop'
+    renderControls('/', {
+      tools: [{ href, icon: <span />, id: 'docs-tool', label: 'Docs' }]
+    })
+
+    fireEvent.click(screen.getByRole('link', { name: 'Docs' }))
+
+    expect(openExternalLink).toHaveBeenCalledWith(href)
   })
 })
 

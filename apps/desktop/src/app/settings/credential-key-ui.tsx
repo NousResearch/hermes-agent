@@ -3,6 +3,7 @@ import { type ChangeEvent, type KeyboardEvent } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { translateNow, useI18n } from '@/i18n'
+import { openExternalLink } from '@/lib/external-link'
 import { ChevronDown, ExternalLink, Loader2, Save, Trash2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
@@ -141,14 +142,20 @@ export function KeyField({
   )
 }
 
-function CredentialDocsLink({ href }: { href: string }) {
+export function CredentialDocsLink({ href }: { href: string }) {
   const { t } = useI18n()
 
   return (
     <a
       className="inline-flex w-fit items-center gap-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary) underline-offset-4 transition-colors hover:text-foreground hover:underline"
       href={href}
-      onClick={e => e.stopPropagation()}
+      onClick={e => {
+        // Same dead-anchor class as the onboarding DocsLink: Electron denies
+        // target=_blank window-open, so route through the audited opener.
+        e.preventDefault()
+        e.stopPropagation()
+        openExternalLink(href)
+      }}
       rel="noreferrer"
       target="_blank"
     >

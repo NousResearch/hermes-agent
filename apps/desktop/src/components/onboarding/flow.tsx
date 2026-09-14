@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Loader } from '@/components/ui/loader'
 import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { openExternalLink } from '@/lib/external-link'
 import { ExternalLink, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import {
@@ -333,7 +334,20 @@ function ConfirmingModelPanel({
 export function DocsLink({ children, href }: { children: React.ReactNode; href: string }) {
   return (
     <Button asChild size="xs" variant="text">
-      <a href={href} rel="noreferrer" target="_blank">
+      <a
+        href={href}
+        onClick={e => {
+          // Electron denies target=_blank window-open unconditionally
+          // (window-open-policy.ts, GHSA-9f4c-93c8-jc8g), so a plain anchor
+          // no-ops. Route through the audited openExternal IPC channel like
+          // every other docs link (messaging setup guide, env-var menu).
+          e.preventDefault()
+          e.stopPropagation()
+          openExternalLink(href)
+        }}
+        rel="noreferrer"
+        target="_blank"
+      >
         <ExternalLink className="size-3" />
         {children}
       </a>

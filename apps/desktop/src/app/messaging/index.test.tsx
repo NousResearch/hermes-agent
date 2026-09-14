@@ -156,6 +156,39 @@ describe('MessagingView setup-guide link', () => {
 
     await waitFor(() => expect(openExternalLink).toHaveBeenCalledWith(docsUrl))
   })
+
+  it('opens a credential field docs URL through the validated external opener', async () => {
+    const fieldUrl = 'https://vendor.example/docs/credentials'
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({
+          env_vars: [
+            {
+              advanced: false,
+              description: '',
+              is_password: true,
+              is_set: false,
+              key: 'TEAMS_TOKEN',
+              prompt: '',
+              redacted_value: null,
+              required: true,
+              url: fieldUrl
+            }
+          ]
+        })
+      ]
+    })
+
+    await renderMessaging()
+
+    const links = await screen.findAllByRole('link')
+    expect(links.length).toBeGreaterThan(0)
+    await act(async () => {
+      fireEvent.click(links[0])
+    })
+
+    await waitFor(() => expect(openExternalLink).toHaveBeenCalledWith(fieldUrl))
+  })
 })
 
 describe('MessagingView pairing', () => {

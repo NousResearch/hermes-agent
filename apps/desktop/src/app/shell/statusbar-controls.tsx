@@ -15,6 +15,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Tip, TipKeybindLabel, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { ContribRender } from '@/contrib/react/boundary'
 import { useI18n } from '@/i18n'
+import { openExternalLink } from '@/lib/external-link'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
 import {
@@ -296,6 +297,14 @@ const StatusbarItemView = memo(function StatusbarItemView({
                       <a
                         className="inline-flex w-full items-center gap-2"
                         href={menuItem.href}
+                        onClick={event => {
+                          // Raw anchors never leave Electron (window-open is
+                          // denied unconditionally) — route through the
+                          // audited opener like every other external link.
+                          event.preventDefault()
+                          event.stopPropagation()
+                          openExternalLink(menuItem.href!)
+                        }}
                         rel="noreferrer"
                         target="_blank"
                       >
@@ -333,7 +342,18 @@ const StatusbarItemView = memo(function StatusbarItemView({
   if (item.href || item.variant === 'link') {
     return (
       <Tip label={tooltipLabel}>
-        <a className={cn(STATUSBAR_ACTION_CLASS, item.className)} href={item.href} rel="noreferrer" target="_blank">
+        <a
+          className={cn(STATUSBAR_ACTION_CLASS, item.className)}
+          href={item.href}
+          onClick={event => {
+            // Same dead-anchor class as above: route through the opener.
+            event.preventDefault()
+            event.stopPropagation()
+            openExternalLink(item.href!)
+          }}
+          rel="noreferrer"
+          target="_blank"
+        >
           {content}
         </a>
       </Tip>

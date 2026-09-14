@@ -987,7 +987,19 @@ function MessagingField({
           {field.url && (
             <Tip label={m.openDocs}>
               <Button asChild className="size-8 shrink-0" variant="ghost">
-                <a href={field.url} rel="noreferrer" target="_blank">
+                <a
+                  href={field.url}
+                  onClick={event => {
+                    // Same handler as the setup-guide link above: a raw
+                    // anchor never leaves Electron (window-open is denied),
+                    // so route the field docs URL through the opener.
+                    event.preventDefault()
+                    event.stopPropagation()
+                    openExternalLink(field.url!)
+                  }}
+                  rel="noreferrer"
+                  target="_blank"
+                >
                   <ExternalLink className="size-3.5" />
                 </a>
               </Button>

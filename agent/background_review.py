@@ -97,18 +97,26 @@ def finish_background_review_run(agent: Any, run: Optional[_BackgroundReviewRun]
     run.request_done.set()
 
 
-def _interrupt_background_review(review_agent: Any) -> None:
+def _interrupt_background_review(
+    review_agent: Any,
+    *,
+    message: str = "superseded by a new live turn",
+    tool_reason: str = "background review superseded",
+) -> None:
     """Request abort off-thread so a wedged abort hook cannot stall the live turn (the bounded
-    ``request_done`` wait in the canceller relies on this returning fast)."""
+    ``request_done`` wait in the canceller relies on this returning fast).
+
+    ``message``/``tool_reason`` default to the original live-turn-preemption wording; callers
+    cancelling for a different reason (e.g. the owning session itself is ending, #102895) should
+    pass their own so logs/diagnostics describe what actually happened.
+    """
     def _interrupt() -> None:
         try:
             from agent.interrupt_compat import request_hard_interrupt
 
-            request_hard_interrupt(
-                review_agent, "superseded by a new live turn", tool_reason="background review superseded"
-            )
+            request_hard_interrupt(review_agent, message, tool_reason=tool_reason)
         except Exception:
-            logger.debug("Failed to cancel in-flight background review for a new turn", exc_info=True)
+            logger.debug("Failed to cancel in-flight background review (%s)", message, exc_info=True)
 
     try:
         threading.Thread(target=_interrupt, daemon=True, name="bg-review-cancel").start()
@@ -116,13 +124,27 @@ def _interrupt_background_review(review_agent: Any) -> None:
         logger.debug("Failed to start background-review cancellation thread", exc_info=True)
 
 
-def cancel_background_review_for_live_turn(agent: Any) -> None:
+def cancel_background_review_for_live_turn(
+    agent: Any,
+    *,
+    message: str = "superseded by a new live turn",
+    tool_reason: str = "background review superseded",
+) -> None:
     """Cancel the current review and await its request-phase acknowledgement. Foreground priority:
     past the bounded deadline, warn and let the live turn proceed — self-improvement work must
     never block a user-facing turn.
 
     Foreground priority is preserved: if the review does not acknowledge within the bounded deadline, a
     warning is logged and the live turn proceeds anyway. See #84423.
+
+    Despite the name, this is also the session-teardown/interrupt cancellation path
+    (``tui_gateway.session_lifecycle._finalize_session`` and ``_interrupt_session_turn``, #102895): a
+    session ending or being explicitly stopped while its background review is still running must
+    cancel that review the same way a new live turn preempts one — the review fork is invisible to
+    every other interrupt/teardown mechanism (not tracked on ``session["running"]``, not joined by
+    the run-thread wait), so this is the only thing that ever sets its ``_interrupt_requested``. Pass
+    a reason-appropriate ``message``/``tool_reason`` when the caller isn't the live-turn-preemption
+    path so diagnostics describe the real cause.
     """
     with _optional_lock(agent, "_background_review_lock"):
         run = getattr(agent, "_background_review_run", None)
@@ -132,14 +154,14 @@ def cancel_background_review_for_live_turn(agent: Any) -> None:
     # survive teardown. Placed in this finally so a fork that consumed tokens and THEN raised is still
     # attributed (issue #87250). Best-effort: the recorder never raises into the review thread.
     if review_agent is not None:
-        _interrupt_background_review(review_agent)
+        _interrupt_background_review(review_agent, message=message, tool_reason=tool_reason)
     if run is None:
         return
     if not run.request_done.wait(timeout=_BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS):
         logger.warning(
-            "Background review did not acknowledge cancellation within %.1fs; "
-            "proceeding with foreground live turn",
+            "Background review did not acknowledge cancellation within %.1fs; proceeding (%s)",
             _BACKGROUND_REVIEW_CANCEL_TIMEOUT_SECONDS,
+            message,
         )
 
 

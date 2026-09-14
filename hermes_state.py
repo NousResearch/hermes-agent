@@ -51,7 +51,9 @@ from hermes_state_dbfile import (
     refuse_deleted_wal_generation,
 )
 from hermes_state_messages import SessionMessagesMixin
-from hermes_state_wal import _WAL_INCOMPAT_MARKERS, apply_database_pragmas, apply_wal_with_fallback
+from hermes_state_wal import (
+    _WAL_INCOMPAT_MARKERS, apply_database_pragmas, apply_wal_with_fallback, is_sqlite_wal_reset_vulnerable,
+)
 from hermes_state_repair import _claim_repair_attempt, preflight_db_writability, repair_state_db_schema
 from hermes_state_titles import SessionTitlesMixin
 from hermes_state_usage import SessionUsageMixin
@@ -317,6 +319,8 @@ def divert_session_transcript_jsonl(session_id: str, messages) -> "Optional[Path
             if msg is not None:
                 record = msg if isinstance(msg, dict) else {"content": str(msg)}
                 handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
     return path
 
 
@@ -430,6 +434,11 @@ class SessionDB(
         self.db_path = db_path or _default_db_path()
         _ensure_test_isolation(self.db_path)  # before any connection/pragma/mkdir
         self.read_only = read_only
+        if not read_only and is_sqlite_wal_reset_vulnerable(sqlite3.sqlite_version_info):
+            raise RuntimeError(
+                "refusing writable state.db open with vulnerable SQLite runtime "
+                f"{sqlite3.sqlite_version}; use SQLite 3.51.3 or newer"
+            )
         self._lock = threading.Lock()
         # Read-path split (WAL only): reads borrow from a BOUNDED read-only pool so they
         # never queue behind writer flushes on self._lock (see _read_ctx); unbounded

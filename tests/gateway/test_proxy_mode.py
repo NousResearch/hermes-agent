@@ -255,6 +255,54 @@ class TestRunAgentViaProxy:
 
 
     @pytest.mark.asyncio
+    async def test_gated_proxy_buffers_until_persistence_and_gate(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        runner = _make_runner()
+        source = _make_source()
+        events = []
+
+        class _Consumer:
+            def on_delta(self, text):
+                events.append(("delta", text))
+
+            def finish(self, text=None):
+                events.append(("finish", text))
+
+            async def run(self):
+                events.append(("run", None))
+
+        runner.pre_delivery_gate = lambda result, _ctx: events.append(
+            ("gate", result["persistence_confirmed"])
+        ) or {"decision": "passed"}
+        runner._proxy_stream_consumer = lambda *args: _Consumer()
+        resp = _FakeSSEResponse(
+            status=200,
+            sse_chunks=[
+                'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'
+                'data: {"choices":[],"hermes":{"persistence_confirmed":true}}\n\n'
+                'data: [DONE]\n\n'
+            ],
+        )
+        session = _FakeSession(resp)
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    result = await runner._run_agent_via_proxy(
+                        message="hi", context_prompt="", history=[], source=source, session_id="test"
+                    )
+
+        assert events == [
+            ("gate", True),
+            ("delta", "Hello"),
+            ("finish", "Hello"),
+            ("run", None),
+        ]
+        assert result["pre_delivery_gate_result"] == {"decision": "passed"}
+        assert result["persistence_confirmed"] is True
+
+
+    @pytest.mark.asyncio
     async def test_no_system_message_when_context_empty(self, monkeypatch):
         monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
         monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)

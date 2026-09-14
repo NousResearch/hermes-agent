@@ -655,8 +655,11 @@ class OpenAICompatRoutesMixin:
                     finish_chunk["error"] = {
                         "message": err_msg,
                         "type": type(agent_error).__name__ if agent_error else "agent_error"}
-                finish_chunk["hermes"] = _hermes_extras(
-                    completed, is_partial, is_failed, err_msg, finish_reason)
+            finish_chunk["hermes"] = _hermes_extras(
+                completed, is_partial, is_failed, err_msg, finish_reason)
+            finish_chunk["hermes"]["persistence_confirmed"] = (
+                isinstance(result, dict) and result.get("persistence_confirmed") is True
+            )
             await response.write(_sse_frame(finish_chunk))
             await response.write(b"data: [DONE]\n\n")
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):

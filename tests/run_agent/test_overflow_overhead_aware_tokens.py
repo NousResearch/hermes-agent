@@ -122,7 +122,7 @@ class TestHTTP413OverheadAwareTokens:
                 return_value=_SENTINEL_TOKENS,
             ) as mock_estimate,
             patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -166,7 +166,7 @@ class TestHTTP413OverheadAwareTokens:
                 side_effect=_capture_estimate,
             ),
             patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -219,7 +219,7 @@ class TestContextOverflowOverheadAwareTokens:
                 return_value=_SENTINEL_TOKENS,
             ) as mock_estimate,
             patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -260,7 +260,7 @@ class TestContextOverflowOverheadAwareTokens:
                 side_effect=_capture_estimate,
             ),
             patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -293,7 +293,7 @@ class TestContextOverflowOverheadAwareTokens:
                 return_value=_SENTINEL_TOKENS,
             ),
             patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -348,7 +348,7 @@ class TestLongContextTierOverheadAwareTokens:
                 return_value=_SENTINEL_TOKENS,
             ),
             patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -387,7 +387,7 @@ class TestLongContextTierOverheadAwareTokens:
                 side_effect=_capture_estimate,
             ),
             patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):

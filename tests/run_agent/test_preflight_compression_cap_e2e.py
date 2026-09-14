@@ -131,7 +131,7 @@ def test_preflight_runs_fourth_compaction_pass_at_cap_six(monkeypatch, tmp_path)
             side_effect=_shrinking_estimate,
         ),
         patch.object(agent, "_compress_context", side_effect=_fake_compress),
-        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_persist_session", return_value=True),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
     ):

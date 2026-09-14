@@ -208,7 +208,7 @@ def test_pre_api_compression_budget_rearms_only_after_pressure_clears(
         patch.object(agent, "_compress_context", side_effect=_fake_compress),
         patch.object(agent, "_execute_tool_calls", side_effect=_fake_execute_tool_calls),
         patch.object(agent, "_flush_messages_to_session_db", return_value=True),
-        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_persist_session", return_value=True),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
     ):

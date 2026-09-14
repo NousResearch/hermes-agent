@@ -261,7 +261,7 @@ class TestFallbackChainResetOnTransportRecovery:
 
         with (
             patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call),
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),

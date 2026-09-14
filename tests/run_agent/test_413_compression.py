@@ -115,6 +115,7 @@ def test_current_user_turn_is_persisted_before_provider_call(agent):
 
     def _record_persist(messages, conversation_history):
         observed.append(("persist", list(messages), list(conversation_history or [])))
+        return True
 
     def _provider_crash(*_args, **_kwargs):
         observed.append(("provider", [], []))
@@ -162,7 +163,7 @@ class TestHTTP413Compression:
 
         with (
             patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -229,7 +230,7 @@ class TestHTTP413Compression:
 
         with (
             patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -313,7 +314,7 @@ class TestHTTP413Compression:
 
         with (
             patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -361,7 +362,7 @@ class TestHTTP413Compression:
 
         with (
             patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch("agent.model_metadata.save_context_length") as mock_save,
@@ -413,7 +414,7 @@ class TestHTTP413Compression:
 
         with (
             patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -645,7 +646,7 @@ class TestPreflightCompression:
                 "_compress_context",
                 side_effect=lambda msgs, *a, **k: (msgs, agent._cached_system_prompt),
             ) as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -680,7 +681,7 @@ class TestPreflightCompression:
 
         with (
             patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -737,7 +738,7 @@ class TestPreflightCompression:
             patch("agent.turn_context.estimate_request_tokens_rough", side_effect=_rough_estimate),
             patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_rough_estimate),
             patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -788,7 +789,7 @@ class TestPreflightCompression:
             patch("agent.turn_context.estimate_request_tokens_rough", side_effect=_rough_estimate),
             patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_rough_estimate),
             patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -846,7 +847,7 @@ class TestPreflightCompression:
             patch("agent.turn_context.estimate_request_tokens_rough", side_effect=_rough_estimate),
             patch("agent.model_metadata.estimate_request_tokens_rough", side_effect=_rough_estimate),
             patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -876,7 +877,7 @@ class TestPreflightCompression:
 
         with (
             patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -901,7 +902,7 @@ class TestPreflightCompression:
 
         with (
             patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -968,7 +969,7 @@ class TestPreflightCompression:
             patch.object(
                 agent, "_compress_context", side_effect=_compress
             ) as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -1038,7 +1039,7 @@ class TestPreflightCompression:
                 return_value=True,
             ),
             patch.object(agent, "_compress_context", side_effect=_compress) as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -1116,7 +1117,7 @@ class TestPreflightCompression:
                 agent.context_compressor, "update_model", side_effect=_update_model
             ),
             patch.object(agent, "_compress_context", side_effect=_compress) as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -1153,7 +1154,7 @@ class TestPreflightCompression:
         with (
             patch("agent.turn_context.estimate_request_tokens_rough", return_value=144_669),
             patch.object(agent.context_compressor, "should_compress", return_value=False),
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -1196,7 +1197,7 @@ class TestPreflightCompression:
             patch("agent.turn_context.estimate_request_tokens_rough", return_value=144_669),
             patch.object(agent.context_compressor, "should_compress", return_value=True),
             patch.object(agent, "_compress_context", side_effect=_fake_preflight_compress),
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -1239,7 +1240,7 @@ class TestToolResultPreflightCompression:
         with (
             patch("model_tools.handle_function_call", return_value=large_result),
             patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -1296,7 +1297,7 @@ class TestToolResultPreflightCompression:
                     agent._cached_system_prompt,
                 ),
             ) as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -1322,7 +1323,7 @@ class TestToolResultPreflightCompression:
 
         with (
             patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):

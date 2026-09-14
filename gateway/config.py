@@ -537,6 +537,35 @@ _TOPLEVEL_BOOL_DEFAULTS = {
 
 
 @dataclass
+class EvaluatorShadowConfig:
+    """Explicit, opt-in configuration for Hermes-to-Evaluator Shadow observation."""
+    enabled: bool = False
+    evaluator_root: Optional[str] = None
+    evidence_output: Optional[str] = None
+    agent_configuration_id: Optional[str] = None
+    evaluator_configuration_id: Optional[str] = None
+    timeout_seconds: float = 10.0
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EvaluatorShadowConfig":
+        data = _coerce_dict(data)
+        timeout = _coerce_float(data.get("timeout_seconds"), 10.0)
+        if not math.isfinite(timeout) or timeout <= 0 or timeout > 300:
+            timeout = 10.0
+        return cls(
+            enabled=_coerce_bool(data.get("enabled"), False),
+            evaluator_root=data.get("evaluator_root") if isinstance(data.get("evaluator_root"), str) else None,
+            evidence_output=data.get("evidence_output") if isinstance(data.get("evidence_output"), str) else None,
+            agent_configuration_id=data.get("agent_configuration_id") if isinstance(data.get("agent_configuration_id"), str) else None,
+            evaluator_configuration_id=data.get("evaluator_configuration_id") if isinstance(data.get("evaluator_configuration_id"), str) else None,
+            timeout_seconds=timeout,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class GatewayConfig:
     """Main gateway configuration: platform connections, session policies, delivery settings."""
     platforms: Dict[Platform, PlatformConfig] = field(default_factory=dict)
@@ -587,6 +616,7 @@ class GatewayConfig:
     # Prune SessionEntry records older than this (a resumed chat gets a fresh session). 0 = off.
     session_store_max_age_days: int = 90
     profile_routes: list = field(default_factory=list)  # gateway/profile_routing.py
+    evaluator_shadow: EvaluatorShadowConfig = field(default_factory=EvaluatorShadowConfig)
 
     # Scalar fields serialized verbatim by ``to_dict`` (in output order).
     _SCALAR_DICT_FIELDS = (
@@ -673,6 +703,7 @@ class GatewayConfig:
             "profile_routes": [
                 asdict(r) if is_dataclass(r) and not isinstance(r, type) else r for r in self.profile_routes
             ],
+            "evaluator_shadow": self.evaluator_shadow.to_dict(),
         }
 
     @classmethod
@@ -766,6 +797,10 @@ class GatewayConfig:
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
             profile_routes=parse_profile_routes(data.get("profile_routes") or []),
+            evaluator_shadow=EvaluatorShadowConfig.from_dict(
+                data["evaluator_shadow"] if "evaluator_shadow" in data
+                else nested_gateway.get("evaluator_shadow", {})
+            ),
         )
 
     def _extra_choice(self, platform: Optional[Platform], key: str, choices: set, default: str) -> Optional[str]:

@@ -51,7 +51,8 @@ def _make_agent(monkeypatch, api_mode, provider, response_fn):
         def __init__(self, *a, **kw):
             kw.update(skip_context_files=True, skip_memory=True, max_iterations=4)
             super().__init__(*a, **kw)
-            self._cleanup_task_resources = self._persist_session = lambda *a, **k: None
+            self._cleanup_task_resources = lambda *a, **k: None
+            self._persist_session = lambda *a, **k: True
             self._save_trajectory = lambda *a, **k: None
 
         def run_conversation(self, msg, conversation_history=None, task_id=None):

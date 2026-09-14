@@ -84,6 +84,7 @@ _TOPLEVEL_BRIDGE: tuple = (
         "filter_silence_narration",
     ),
     ("unauthorized_dm_behavior", "unauthorized_dm_behavior", "presence", None, _dm_behavior_choice),
+    ("evaluator_shadow", "evaluator_shadow", "presence", lambda v: isinstance(v, dict), None),
 )
 
 

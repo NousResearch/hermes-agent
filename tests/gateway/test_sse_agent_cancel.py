@@ -390,9 +390,9 @@ class TestSSEAgentFailureFinishReason:
 
         reason, finish, _ = self._run(ok)
         assert reason == "stop"
-        # No error/hermes pollution on the happy path.
-        assert "error" not in finish
-        assert "hermes" not in finish
+        # The terminal metadata carries the persistence receipt even on success.
+        hermes = finish.get("hermes") or {}
+        assert hermes.get("persistence_confirmed") is False
 
 
 # ---------------------------------------------------------------------------

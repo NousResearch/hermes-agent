@@ -2007,7 +2007,8 @@ if not _configured_cwd or _configured_cwd in CWD_PLACEHOLDERS:
         os.environ["TERMINAL_CWD"] = _resolved_cwd
 
 from gateway.config import (
-    ChannelOverride, Platform, GatewayConfig, PlatformConfig, _getenv, load_gateway_config)
+    ChannelOverride, Platform, GatewayConfig, PlatformConfig, EvaluatorShadowConfig,
+    _getenv, load_gateway_config)
 from gateway.session import (
     AsyncSessionStore, SessionStore, SessionSource, SessionContext, build_session_key)
 # Telegram topic routing (#22773, regression fixed #52060): a
@@ -3326,6 +3327,8 @@ class GatewayRunner(
         # .env resolve as secondary profiles' do; explicit config= injection (tests) is left untouched.
         # See #64674.
         self.config = config if config is not None else load_gateway_config_for_runner()
+        self.pre_delivery_gate = None
+        self._init_evaluator_shadow()
         # Multiplexer flag flips agent.secret_scope.get_secret() to fail-closed on unscoped credential
         # reads, so a missed migration crashes loudly instead of leaking a cross-profile value.
         try:
@@ -3350,6 +3353,39 @@ class GatewayRunner(
         self._init_startup_checks()
         self._init_session_db()
         self._init_registries_and_clocks()
+
+    def _init_evaluator_shadow(self) -> None:
+        """Construct the Evaluator Shadow gate only from a complete explicit opt-in."""
+        cfg = getattr(self.config, "evaluator_shadow", None)
+        if not isinstance(cfg, EvaluatorShadowConfig) or not cfg.enabled:
+            return
+        root_value = cfg.evaluator_root.strip() if isinstance(cfg.evaluator_root, str) else None
+        output_value = cfg.evidence_output.strip() if isinstance(cfg.evidence_output, str) else None
+        agent_id = cfg.agent_configuration_id.strip() if isinstance(cfg.agent_configuration_id, str) else None
+        evaluator_id = cfg.evaluator_configuration_id.strip() if isinstance(cfg.evaluator_configuration_id, str) else None
+        root = Path(root_value).expanduser() if root_value else None
+        output = Path(output_value).expanduser() if output_value else None
+        if (
+            root is None or not root.is_dir()
+            or not (root / "scripts" / "live_shadow_policy.py").is_file()
+            or not agent_id
+            or not evaluator_id
+        ):
+            logger.warning("Evaluator Shadow disabled: incomplete or invalid configuration")
+            return
+        try:
+            from gateway.evaluator_shadow import EvaluatorShadowAdapter
+            assert agent_id is not None and evaluator_id is not None
+            self.pre_delivery_gate = EvaluatorShadowAdapter(
+                root,
+                agent_configuration_id=agent_id,
+                evaluator_configuration_id=evaluator_id,
+                evidence_output=output,
+                timeout_seconds=cfg.timeout_seconds,
+            )
+            logger.info("Evaluator Shadow gate configured (opt-in; delivery remains Shadow)")
+        except Exception:
+            logger.warning("Evaluator Shadow disabled: adapter initialization failed", exc_info=True)
 
     def _init_runtime_settings(self) -> None:
         """Load ephemeral per-call config (prefill, reasoning, busy modes, timeouts, routing)."""
@@ -3612,6 +3648,28 @@ class GatewayRunner(
         # the clock; and a one-shot latch so the "platform owns the suspend" notice logs once.
         self._scale_to_zero_cooldown_until: float = 0.0
         self._scale_to_zero_no_suspend_logged: bool = False
+
+    async def _evaluate_agent_before_gate(self, context: Dict[str, Any]) -> Optional[str]:
+        """Fail-closed pre-agent decision gate: fires ``agent:before`` hooks before an agent
+        turn is allowed to start. Returns the deny message (a non-empty string) to block the
+        turn, or ``None`` to allow it.
+
+        Unlike the ``command:*`` interceptors in ``_hm_resolve_command`` (which fail OPEN —
+        a broken hook there just means "no interception"), a hook exception here fails
+        CLOSED: this gate exists to catch state conflicts, and a broken hook must not be
+        able to silently downgrade that into an allow."""
+        try:
+            results = await self.hooks.emit_collect_strict("agent:before", context)
+        except Exception as exc:
+            logger.warning("agent:before hook failed — failing closed: %s", exc)
+            return "状態検証に失敗しました。しばらくしてからもう一度お試しください。"
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            if str(result.get("decision", "")).strip().lower() == "deny":
+                message = result.get("message")
+                return message if isinstance(message, str) and message else "このターンはフックによりブロックされました。"
+        return None
 
     def _open_session_db_for_active_scope(self, raise_on_error: bool = False) -> Any:
         """AsyncSessionDB for the active profile scope, resolved per access (not in ``__init__``) since

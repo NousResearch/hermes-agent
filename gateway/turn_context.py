@@ -67,6 +67,13 @@ class TurnContext:
     result_holder: list = field(default_factory=lambda: [None])
     tools_holder: list = field(default_factory=lambda: [None])
     stream_consumer_holder: list = field(default_factory=lambda: [None])
+    # Set only after turn persistence has completed successfully; the outer async
+    # consumer must not perform external delivery before this gate opens.
+    stream_release_event: Any = None
+    # Optional async/sync policy callback invoked after persistence and before
+    # any stream or TTS external side effect. Shadow callbacks must not mutate
+    # the delivery result; they may return bounded observation metadata.
+    pre_delivery_gate: Any = None
     streaming_tts_consumer_holder: list = field(default_factory=lambda: [None])
     # voice-ack wiring
     _voice_ack_fired: list = field(default_factory=lambda: [False])
@@ -84,11 +91,6 @@ class TurnContext:
     _step_callback_sync: Optional[Callable] = None
     _event_callback_sync: Optional[Callable] = None
     _status_callback_sync: Optional[Callable] = None
-    # Slack-native task cards (opt-in); ID-bearing callbacks correlate start/complete by call ID
-    # --- Slack-native task-card progress (opt-in; #29483) ------------------ True when the Slack adapter's
-    # ``native_task_cards_enabled()`` opt-in is set for this turn's platform. The ID-bearing lifecycle
-    # callbacks are published by TurnRunner (like voice_ack_callback above) so tool starts and completions
-    # correlate by real tool-call ID instead of tool name.
     _native_slack_task_cards: bool = False
     native_tool_start_callback: Optional[Callable] = None
     native_tool_complete_callback: Optional[Callable] = None

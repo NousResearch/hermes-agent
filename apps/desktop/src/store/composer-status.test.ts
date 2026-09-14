@@ -16,6 +16,9 @@ import { markSessionGone } from './runtime-gone'
 vi.mock('./notifications', () => ({ notifyError: vi.fn() }))
 import { notifyError } from './notifications'
 
+vi.mock('./native-notifications', () => ({ dispatchNativeNotification: vi.fn() }))
+import { dispatchNativeNotification } from './native-notifications'
+
 const SID = 'sess-1'
 
 const running = (id: string, command = `cmd ${id}`) => ({ command, session_id: id, status: 'running' })
@@ -163,6 +166,64 @@ describe('reconcileBackgroundProcesses', () => {
     vi.advanceTimersByTime(5_000)
 
     expect(itemsOf('sess-arm')).toEqual([])
+  })
+
+  it('dispatches rich backgroundDone notification: title + exit code + output tail', () => {
+    // Start with running, then transition to exited with output
+    reconcileBackgroundProcesses('sess-notify', [running('build-task', 'npm run build\nsome comment')])
+    vi.clearAllMocks()
+
+    const completedProc = {
+      command: 'npm run build\nsome comment',
+      exit_code: 0,
+      output_tail: 'Building...\nCompilation successful\nOutput written to dist/',
+      session_id: 'build-task',
+      status: 'exited'
+    }
+    reconcileBackgroundProcesses('sess-notify', [completedProc])
+
+    expect(dispatchNativeNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: 'npm run build (exit 0)\nCompilation successful\nOutput written to dist/',
+        kind: 'backgroundDone'
+      })
+    )
+  })
+
+  it('omits exit code from notification body when undefined', () => {
+    reconcileBackgroundProcesses('sess-no-exit', [running('task-x')])
+    vi.clearAllMocks()
+
+    reconcileBackgroundProcesses('sess-no-exit', [{
+      command: 'task-x',
+      output_tail: 'line1\nline2\nline3',
+      session_id: 'task-x',
+      status: 'exited'
+    }])
+
+    expect(dispatchNativeNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: 'task-x\nline1\nline2\nline3'
+      })
+    )
+  })
+
+  it('handles notification body when output is empty', () => {
+    reconcileBackgroundProcesses('sess-empty', [running('quick-cmd')])
+    vi.clearAllMocks()
+
+    reconcileBackgroundProcesses('sess-empty', [{
+      command: 'quick-cmd',
+      exit_code: 1,
+      session_id: 'quick-cmd',
+      status: 'exited'
+    }])
+
+    expect(dispatchNativeNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: 'quick-cmd (exit 1)'
+      })
+    )
   })
 })
 

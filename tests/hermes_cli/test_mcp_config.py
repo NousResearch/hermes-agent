@@ -69,6 +69,17 @@ def _seed_config(tmp_path: Path, mcp_servers: dict):
         yaml.safe_dump(config, f)
 
 
+def _seed_string_mcp_servers(tmp_path: Path):
+    """Write a config.yaml whose ``mcp_servers`` is the legacy ``''`` string
+    default — the shape every save path used to crash on."""
+    import yaml
+
+    config = {"mcp_servers": "", "_config_version": 9}
+    config_path = tmp_path / "config.yaml"
+    with open(config_path, "w") as f:
+        yaml.safe_dump(config, f)
+
+
 class FakeTool:
     """Mimics an MCP tool object returned by the SDK."""
 
@@ -658,6 +669,33 @@ class TestConfigHelpers:
         servers = _get_mcp_servers()
         assert "mysvr" in servers
         assert servers["mysvr"]["url"] == "https://example.com/mcp"
+
+
+    def test_save_mcp_server_coerces_legacy_string_default(self, tmp_path):
+        """``hermes mcp add`` must not crash when config has the legacy
+        ``mcp_servers: ''`` string default — it must coerce to a dict, save the
+        server, and persist the key as a dict."""
+        _seed_string_mcp_servers(tmp_path)
+        from hermes_cli.mcp_config import _save_mcp_server, _get_mcp_servers
+
+        assert _save_mcp_server("gbrain", {"url": "https://example.com/mcp"}) is True
+        servers = _get_mcp_servers()
+        assert "gbrain" in servers
+        assert servers["gbrain"]["url"] == "https://example.com/mcp"
+
+        from hermes_cli.config import load_config
+
+        assert isinstance(load_config()["mcp_servers"], dict)
+
+
+    def test_remove_mcp_server_coerces_legacy_string_default(self, tmp_path):
+        """Removing with a string ``mcp_servers`` default must not crash (the
+        ``or {}`` guard returns an empty dict) and must report the server as
+        absent without raising."""
+        _seed_string_mcp_servers(tmp_path)
+        from hermes_cli.mcp_config import _remove_mcp_server
+
+        assert _remove_mcp_server("missing") is False
 
 
     def test_env_key_for_server(self):

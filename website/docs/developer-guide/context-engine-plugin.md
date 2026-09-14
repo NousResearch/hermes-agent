@@ -96,9 +96,20 @@ These have sensible defaults in the ABC. Override as needed:
 | `get_tool_schemas()` | Returns `[]` | Your engine provides agent-callable tools (e.g., `lcm_grep`) |
 | `handle_tool_call(name, args, **kwargs)` | Returns error JSON | You implement tool handlers |
 | `should_compress_preflight(messages)` | Returns `False` | You can do a cheap pre-API-call estimate |
+| `pending_compression_operation(messages)` | Returns `None` | Your preflight can prove the next automatic call is pure sanitation |
 | `get_status()` | Standard token/threshold dict | You have custom metrics to expose |
 | `select_context(request_messages, *, conversation_messages, incoming_message, budget_tokens)` | Returns `None` (no-op) | You select/route which context enters **this** request (retrieval, topic routing) — see below |
 | `on_turn_complete(messages, usage=None, **kwargs)` | No-op | You ingest/index/observe the finished turn — see below |
+
+`pending_compression_operation(messages)` is a narrow optional handshake for
+sanitation-only preflight work. Return `"sanitize"` only when the next automatic
+`compress(messages)` invocation is guaranteed to rewrite that exact message set
+without a summary boundary. The claim must be invalidated by another preflight
+or session and consumed by the next compression attempt. Hermes treats a missing
+method, `None`, any other value, or an exception as generic compression and
+therefore gathers memory context before calling the engine. Manual and overflow
+calls are always generic. Engines should not derive this value from a previous
+`last_compression_status`.
 
 ## Per-turn context selection and observation
 

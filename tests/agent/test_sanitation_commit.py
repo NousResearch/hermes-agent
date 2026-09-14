@@ -13,6 +13,7 @@ from unittest.mock import patch
 import pytest
 
 _SANITATION_GROWTH_BOUND = 1024
+_DEFAULT_OPERATION = object()
 
 
 def _placeholder(pattern: str, secret: str) -> str:
@@ -142,14 +143,21 @@ class _ExternalEngine:
         status: str | None,
         *,
         initial_status: str | None = "idle",
+        current_operation: str | None = "sanitize",
+        updates_status: bool = True,
     ) -> None:
         self.candidate = candidate
         if status is not None:
             self.last_compression_status = initial_status
+        self.current_operation = current_operation
+        self.updates_status = updates_status
         self.calls = 0
         self.call_options: list[dict[str, bool]] = []
         self.after_compress = None
         self.failure_cooldown_calls = 0
+
+    def pending_compression_operation(self, _messages):
+        return self.current_operation
 
     def compress(
         self,
@@ -163,7 +171,7 @@ class _ExternalEngine:
         self.call_options.append(
             {"force": force, "bypass_cooldown": bypass_cooldown}
         )
-        if hasattr(self, "last_compression_status"):
+        if self.updates_status and hasattr(self, "last_compression_status"):
             self.last_compression_status = self._result_status
         if self.after_compress is not None:
             self.after_compress()
@@ -191,6 +199,8 @@ def _make_harness(
     rounds: int,
     status: str | None = "sanitized",
     initial_status: str | None = "idle",
+    current_operation: str | None | object = _DEFAULT_OPERATION,
+    updates_status: bool = True,
 ) -> _Harness:
     from hermes_state import SessionDB
     from run_agent import AIAgent
@@ -220,7 +230,18 @@ def _make_harness(
         for key in ("_row_id", "timestamp"):
             if key in original_message:
                 candidate_message[key] = original_message[key]
-    engine = _ExternalEngine(candidate, status, initial_status=initial_status)
+    resolved_operation = (
+        "sanitize"
+        if current_operation is _DEFAULT_OPERATION and status == "sanitized"
+        else cast(str | None, current_operation)
+    )
+    engine = _ExternalEngine(
+        candidate,
+        status,
+        initial_status=initial_status,
+        current_operation=resolved_operation,
+        updates_status=updates_status,
+    )
     engine._result_status = status
     agent.context_compressor = engine
     memory = _MemoryManager()
@@ -342,6 +363,77 @@ def test_statusless_external_engine_can_report_pure_sanitation_without_memory_ho
     )
 
     assert harness.memory.pre_compress_calls == 0
+
+
+def test_stale_sanitized_status_cannot_classify_current_placeholder_result(
+    tmp_path,
+    monkeypatch,
+):
+    """A previous status cannot turn a generic current result into sanitation."""
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(
+        tmp_path,
+        rounds=1,
+        initial_status="sanitized",
+        current_operation=None,
+        updates_status=False,
+    )
+    generic_boundary_calls = 0
+
+    def _fold(*_args):
+        nonlocal generic_boundary_calls
+        generic_boundary_calls += 1
+
+    monkeypatch.setattr(compression, "_fold_todo_snapshot", _fold)
+    harness.agent.context_compressor.after_compress = lambda: (
+        harness.memory.pre_compress_calls == 1
+        or (_ for _ in ()).throw(
+            AssertionError("generic memory context must be gathered before compress")
+        )
+    )
+
+    compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert generic_boundary_calls == 1
+    assert harness.memory.pre_compress_calls == 1
+    assert len(harness.session_end_calls) == 1
+
+
+def test_known_generic_engine_without_memory_context_keeps_pre_call_memory_semantics(
+    tmp_path,
+):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(
+        tmp_path,
+        rounds=1,
+        status="reassembled",
+        current_operation=None,
+    )
+    harness.agent.context_compressor.candidate = [
+        {"role": "user", "content": "generic compressed context"}
+    ]
+    harness.agent.context_compressor.after_compress = lambda: (
+        harness.memory.pre_compress_calls == 1
+        or (_ for _ in ()).throw(
+            AssertionError("generic memory context must be gathered before compress")
+        )
+    )
+
+    compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert harness.memory.pre_compress_calls == 1
 
 
 def test_automatic_sanitation_commits_exact_candidate_without_boundary_side_effects(

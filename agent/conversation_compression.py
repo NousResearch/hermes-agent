@@ -2791,32 +2791,30 @@ def _resolve_compress_call(
     return compress_fn, compress_kwargs
 
 
-def _pure_automatic_sanitation(agent: Any, *, force: bool, bypass_cooldown: bool) -> bool:
-    """Whether this attempt returned the external engine's pure sanitation result."""
-    return (
-        not force
-        and not bypass_cooldown
-        and getattr(agent.context_compressor, "last_compression_status", None) == "sanitized"
-    )
-
-
-def _defer_external_engine_memory_hook(
-    agent: Any, *, force: bool, bypass_cooldown: bool, checkpoint_required: bool
+def _pure_automatic_sanitation(
+    agent: Any,
+    messages: list,
+    *,
+    force: bool,
+    bypass_cooldown: bool,
 ) -> bool:
-    """Delay memory work until an output-only external operation is known."""
-    compressor = agent.context_compressor
-    if (
-        force
-        or bypass_cooldown
-        or checkpoint_required
-        or not hasattr(compressor, "last_compression_status")
-    ):
+    """Whether preflight proves this exact invocation is pure sanitation."""
+    if force or bypass_cooldown:
         return False
-    probe_kwargs = _supported_compression_kwargs(
-        compressor.compress, current_tokens=None, focus_topic=None, force=False,
-        memory_context="probe", bypass_cooldown=False,
+    operation = getattr(
+        agent.context_compressor, "pending_compression_operation", None
     )
-    return "memory_context" not in probe_kwargs
+    if not callable(operation):
+        return False
+    try:
+        return operation(messages) == "sanitize"
+    except Exception as exc:
+        logger.debug(
+            "pending_compression_operation raised %s; treating the invocation "
+            "as generic compression",
+            type(exc).__name__,
+        )
+        return False
 
 
 def _warn_memory_context_unsupported(agent: Any, memory_context: str) -> None:
@@ -3698,14 +3696,18 @@ def _run_summary_phase(
                 # Adopted list is fully durable: re-anchor persist idx at the end so the post-
                 # compression flush skips it; run_agent marker sync realigns _session_messages.
                 agent._persist_user_message_idx = len(messages)
-        defer_memory_hook = _defer_external_engine_memory_hook(
+        pure_sanitation = _pure_automatic_sanitation(
             agent,
+            messages,
             force=force,
             bypass_cooldown=bypass_cooldown,
-            checkpoint_required=checkpoint_required,
         )
         memory_context = (
-            "" if defer_memory_hook else _pre_compress_memory_context(agent, messages, checkpoint_required)
+            ""
+            if pure_sanitation and not checkpoint_required
+            else _pre_compress_memory_context(
+                agent, messages, checkpoint_required
+            )
         )
         compress_fn, compress_kwargs = _resolve_compress_call(
             agent, approx_tokens=approx_tokens, focus_topic=focus_topic, force=force, memory_context=memory_context,
@@ -3719,12 +3721,6 @@ def _run_summary_phase(
             agent, messages, compress_fn, compress_kwargs, commit_fence=commit_fence,
             attempt_generation=attempt.generation, hard_cancel_event=hard_cancel_event,
         )
-        pure_sanitation = _pure_automatic_sanitation(
-            agent, force=force, bypass_cooldown=bypass_cooldown
-        )
-        if defer_memory_hook and not pure_sanitation:
-            deferred_memory_context = _pre_compress_memory_context(agent, messages, checkpoint_required)
-            _warn_memory_context_unsupported(agent, deferred_memory_context)
     except AuxiliaryExplicitCancellation:
         try:
             attempt.restore_compressor(agent.context_compressor)

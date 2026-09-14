@@ -156,6 +156,19 @@ class ContextEngine(ABC):
         """Cheap rough check before the API call (no real token count yet); default skips."""
         return False
 
+    def pending_compression_operation(
+        self, messages: List[Dict[str, Any]]
+    ) -> str | None:
+        """Describe a preflight-bound next ``compress(messages)`` operation.
+
+        Return ``"sanitize"`` only when the immediately following automatic call
+        is guaranteed to perform pure sanitation for this exact message set.
+        Implementations must invalidate the claim on another preflight or session
+        and consume it on the next compression attempt. The host treats absent,
+        stale, exceptional, and all other values as generic compression.
+        """
+        return None
+
     def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
         """True when preflight should trust recent real usage over the noisy rough
         estimate (avoids re-compacting after a compressed request already fit)."""

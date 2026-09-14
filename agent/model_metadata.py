@@ -1149,7 +1149,11 @@ def get_cached_context_length(model: str, base_url: str, *, bedrock_confirmed: b
 
 
 def _invalidate_cached_context_length(model: str, base_url: str) -> None:
-    """Drop a stale cache entry so it gets re-resolved on the next lookup."""
+    """Drop a stale entry and its probe cooldown using the persisted cache URL.
+
+    Bedrock callers without a runtime endpoint must pass ``bedrock://``, as
+    the resolver does; a blank URL addresses the distinct generic cache key.
+    """
     key = _context_cache_key(model, base_url)
     document = _load_context_cache_document()
     cache = document.get("context_lengths") or {}

@@ -271,6 +271,8 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
                     # compression splits back to the reaped child, forever).
                     if _is_gateway_owned_source((db.get_session(session_id) or {}).get("source", "")):
                         _tui_owns_lifecycle = False
+                        if agent is not None:
+                            agent._end_session_on_close = _tui_owns_lifecycle
                     elif _tui_owns_lifecycle and not _desktop_automatic_cleanup:
                         # Automatic Desktop cleanup (ws_orphan_reap, idle_timeout, etc.) reclaims
                         # runtime but must not end the durable row — the conversation stays open

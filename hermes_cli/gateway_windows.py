@@ -284,11 +284,12 @@ def _gateway_run_argv(python_exe: str, profile_arg: str) -> list[str]:
     return argv
 
 
-def _launcher_settings() -> tuple[str, str, str, str]:
-    """Return (python_path, working_dir, hermes_home, profile_arg) for generated launchers."""
+def _launcher_settings(home: Path | None = None) -> tuple[str, str, str, str]:
+    """Return (python_path, working_dir, hermes_home, profile_arg) for generated launchers.
+    ``home`` targets another profile's HERMES_HOME (per-profile cold-start, #110959)."""
     from hermes_cli.gateway import PROJECT_ROOT, _profile_arg, get_python_path  # avoid circular init
 
-    hermes_home = str(_hermes_home())
+    hermes_home = str(home if home is not None else _hermes_home())
     return (
         _preserve_hermes_home_path(get_python_path()),
         _stable_gateway_working_dir(PROJECT_ROOT),
@@ -573,13 +574,13 @@ def _prepend_pythonpath(env_overlay: dict[str, str], entries: list[str]) -> None
     env_overlay["PYTHONPATH"] = os.pathsep.join(clean_entries)
 
 
-def _build_gateway_argv() -> tuple[list[str], str, dict[str, str]]:
+def _build_gateway_argv(home: Path | None = None) -> tuple[list[str], str, dict[str, str]]:
     """Build (argv, working_dir, env_overlay) for the gateway subprocess — the same logical command
     as gateway.cmd, assembled as a native argv so no cmd.exe layer sits in between."""
     _assert_windows()
     from hermes_cli.gateway import PROJECT_ROOT
 
-    python_path, working_dir, hermes_home, profile_arg = _launcher_settings()
+    python_path, working_dir, hermes_home, profile_arg = _launcher_settings(home)
     python_exe, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
     env_overlay = {"HERMES_HOME": hermes_home, **dict(_GATEWAY_ENV), "VIRTUAL_ENV": _preserve_hermes_home_path(venv_dir)}
     _prepend_pythonpath(env_overlay, [_preserve_hermes_home_path(p) for p in (PROJECT_ROOT, *extra_pythonpath)])
@@ -618,9 +619,9 @@ def windowless_gateway_restart_spec(run_argv: list[str]) -> tuple[list[str], str
     return [hidden_console_python, *run_argv[1:]], _stable_gateway_working_dir(PROJECT_ROOT), env_overlay
 
 
-def _spawn_detached(script_path: Path | None = None) -> int:
+def _spawn_detached(script_path: Path | None = None, home: Path | None = None) -> int:
     """Launch the gateway as a fully detached background process (``script_path`` is ignored; kept
-    for API symmetry). Spawns python.exe directly — a cmd.exe shim inherits the parent console and
+    for API symmetry; ``home`` spawns another profile's gateway — ``--profile`` is derived from it). Spawns python.exe directly — a cmd.exe shim inherits the parent console and
     gets reaped when the shell exits. Flags: CREATE_NEW_PROCESS_GROUP (no Ctrl+C from our group),
     CREATE_NO_WINDOW (hidden console descendants inherit, so nothing flashes — #54220/#56747; the old
     DETACHED_PROCESS made every descendant spawn flash), CREATE_BREAKAWAY_FROM_JOB
@@ -633,7 +634,7 @@ def _spawn_detached(script_path: Path | None = None) -> int:
     process is independent of whichever shell started it.
     """
     _assert_windows()
-    argv, working_dir, env_overlay = _build_gateway_argv()
+    argv, working_dir, env_overlay = _build_gateway_argv(home)
     env = {**os.environ, **env_overlay}
 
     # Stray print()/native stderr goes to a sidecar log; real gateway logs still land in gateway.log
@@ -866,8 +867,9 @@ def _wait_for_gateway_ready(
 _START_ATTESTATION_RELATIVE = ("state", "gateway.start-attestation.json")
 
 
-def _start_attestation_path() -> Path:
-    return _hermes_home().joinpath(*_START_ATTESTATION_RELATIVE)
+def _start_attestation_path(home: Path | None = None) -> Path:
+    """Marker path; ``home`` addresses another profile's marker (per-profile cold-start, #110959)."""
+    return (home if home is not None else _hermes_home()).joinpath(*_START_ATTESTATION_RELATIVE)
 
 
 def _write_start_attestation(pids: list[int], via: str) -> None:
@@ -896,9 +898,9 @@ def _write_start_attestation(pids: list[int], via: str) -> None:
         logger.debug("Failed to write gateway start attestation", exc_info=True)
 
 
-def _clear_start_attestation() -> None:
+def _clear_start_attestation(home: Path | None = None) -> None:
     try:
-        _start_attestation_path().unlink(missing_ok=True)
+        _start_attestation_path(home).unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -932,18 +934,18 @@ def _attestation_generation(data: object) -> str | None:
     return str(data["generation"]) if isinstance(data, dict) and data.get("generation") else None
 
 
-def _consume_start_attestation(generation: str) -> None:
+def _consume_start_attestation(generation: str, home: Path | None = None) -> None:
     """Clear the marker only while it is still the ``generation`` that was acted on; a newer
     marker belongs to a gateway start this caller knows nothing about and keeps its own report."""
     # Best-effort read-then-unlink: a marker written in between loses one post-start report, never authority.
-    if _attestation_generation(_read_start_attestation()) == generation:
-        _clear_start_attestation()
+    if _attestation_generation(_read_start_attestation(home)) == generation:
+        _clear_start_attestation(home)
 
 
-def _read_start_attestation() -> object | None:
+def _read_start_attestation(home: Path | None = None) -> object | None:
     """Parsed attestation payload (any JSON type), or ``None`` when absent/unreadable. Never raises."""
     try:
-        return json.loads(_start_attestation_path().read_text(encoding="utf-8"))
+        return json.loads(_start_attestation_path(home).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
 
@@ -968,7 +970,7 @@ def _attested_create_time(data: object, pid: int) -> float | None:
     return float(value) if type(value) in (int, float) else None
 
 
-def _attested_pid_exited_cleanly(pid: int, create_time: float | None = None) -> bool:
+def _attested_pid_exited_cleanly(pid: int, create_time: float | None = None, home: Path | None = None) -> bool:
     """True when the lifecycle ledger shows a clean exit for ``pid`` — or, for a marker that bound
     ``pid`` to a ``create_time``, whenever the sentinel cannot be shown to describe THAT incarnation
     (#110020 review): a sentinel for another PID or another start time means an unrelated lifecycle
@@ -977,7 +979,8 @@ def _attested_pid_exited_cleanly(pid: int, create_time: float | None = None) -> 
     try:
         from gateway.lifecycle_ledger import get_lifecycle_sentinel_path
 
-        data = json.loads(get_lifecycle_sentinel_path(_hermes_home()).read_text(encoding="utf-8"))
+        sentinel = get_lifecycle_sentinel_path(home if home is not None else _hermes_home())
+        data = json.loads(sentinel.read_text(encoding="utf-8"))
     except OSError:
         return False
     except Exception:
@@ -994,15 +997,17 @@ def _attested_pid_exited_cleanly(pid: int, create_time: float | None = None) -> 
     return data.get("phase") == "exited" and data.get("pid") == pid
 
 
-def _attested_dead(attested: list[int], current_pids: list[int], data: object = None) -> bool:
+def _attested_dead(
+    attested: list[int], current_pids: list[int], data: object = None, home: Path | None = None
+) -> bool:
     """The liveness rule shared by the consuming and read-only probes: attested PIDs are dead when
     no gateway runs now and the lifecycle ledger shows no clean exit for any of them."""
     return not current_pids and not any(
-        _attested_pid_exited_cleanly(pid, _attested_create_time(data, pid)) for pid in attested
+        _attested_pid_exited_cleanly(pid, _attested_create_time(data, pid), home) for pid in attested
     )
 
 
-def attested_death_generation(current_pids: list[int]) -> str | None:
+def attested_death_generation(current_pids: list[int], home: Path | None = None) -> str | None:
     """The generation of a start attestation that vouches for gateway PID(s) gone without a clean exit,
     or ``None``.
 
@@ -1012,10 +1017,11 @@ def attested_death_generation(current_pids: list[int]) -> str | None:
     execution step consumes exactly the marker it was authorized by. Callers pass the liveness they
     already established (``[]`` after their own discovery came back empty) so the process table is
     not scanned twice. ``None`` for anything undecidable (no marker, no generation, a clean ledger
-    exit): "unknown" must never read as "dead"."""
-    data = _read_start_attestation()
+    exit): "unknown" must never read as "dead". ``home`` probes another profile's marker and ledger
+    (the updater evaluates every profile that is not running, #110959)."""
+    data = _read_start_attestation(home)
     attested = _attested_pids_from(data)
-    if not attested or not _attestation_within_horizon(data) or not _attested_dead(attested, current_pids, data):
+    if not attested or not _attestation_within_horizon(data) or not _attested_dead(attested, current_pids, data, home):
         return None
     return _attestation_generation(data)
 

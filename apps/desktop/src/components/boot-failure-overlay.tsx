@@ -410,7 +410,7 @@ export function BootFailureOverlay() {
           {/* Subtle back affordance (projects/overlay idiom): muted → foreground
               on hover, no divider. */}
           <button
-            className="flex w-full items-center gap-1.5 px-4 pt-4 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
+            className="flex w-full items-center gap-1.5 px-4 pt-4 text-start text-xs text-muted-foreground transition-colors hover:text-foreground"
             onClick={() => setView('recovery')}
             type="button"
           >
@@ -479,7 +479,7 @@ export function BootFailureOverlay() {
           {logs.length > 0 ? (
             <div className="grid gap-2">
               <Button
-                className="-ml-2 self-start font-medium"
+                className="-ms-2 self-start font-medium"
                 onClick={() => setShowLogs(v => !v)}
                 size="xs"
                 type="button"

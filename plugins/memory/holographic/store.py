@@ -129,7 +129,8 @@ class MemoryStore:
         apply_wal_with_fallback(self._conn, db_label="memory_store.db (holographic)")
         self._conn.executescript(_SCHEMA)
         if "hrr_vector" not in {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}:
-            self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
+            from hermes_cli.sqlite_util import add_column_if_missing
+            add_column_if_missing(self._conn, "facts", "hrr_vector", "hrr_vector BLOB")
         self._conn.commit()
 
     def _one(self, sql: str, params=()):

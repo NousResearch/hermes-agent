@@ -8,7 +8,6 @@ export interface LangPack {
   status: Record<string, string>
   /** UI string catalog — key set is authoritative from the EN pack. */
   catalog: Record<string, string>
-  trail: { draftPrefix: string; analyzeLabel: string }
   /** How the status bar renders thinking verbs.
    *  'pad' — pad to a fixed width (Latin languages)
    *  'ellipsis' — append '…' (CJK languages) */
@@ -20,7 +19,6 @@ export interface LangPackOverlay<CatalogKey extends string = string> {
   catalog?: Partial<Record<CatalogKey, string>>
   status?: Record<string, string>
   toolVerbs?: Record<string, string>
-  trail?: Partial<LangPack['trail']>
   verbs?: string[]
   verbStyle?: LangPack['verbStyle']
 }

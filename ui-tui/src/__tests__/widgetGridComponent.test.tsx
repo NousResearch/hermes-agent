@@ -1,13 +1,13 @@
 import { PassThrough } from 'stream'
 
 import { renderSync, Text } from '@hermes/ink'
+import { stripAnsi } from '@hermes/shared/ansi'
 import React, { useState } from 'react'
 import { describe, expect, it } from 'vitest'
 
 import { GridStreamsDemo, STREAM_DEFS } from '../components/gridStreamsDemo.js'
 import { GridAreas, type GridAreaWidget, WidgetGrid, type WidgetGridWidget } from '../components/widgetGrid.js'
 import { translate } from '../i18n/index.js'
-import { stripAnsi } from '../lib/text.js'
 import { GRID_STREAM_COUNT, type GridTestState } from '../sdk/apps/gridTestState.js'
 import { DEFAULT_THEME } from '../theme.js'
 

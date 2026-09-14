@@ -146,7 +146,7 @@ describe('Dashboard i18n framework', () => {
 
     await persistConfiguredLocale('zh')
 
-    expect(save).toHaveBeenCalledWith({ display: { language: 'zh' } })
+    expect(save).toHaveBeenCalledWith({ display: { language: 'zh' } }, '')
   })
 
   it('skips the full config read while its lightweight revision is unchanged', async () => {

@@ -1,4 +1,5 @@
 import { Box, NoSelect, Text } from '@hermes/ink'
+import { compactNumber } from '@hermes/shared/format'
 import { memo, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
@@ -19,9 +20,7 @@ import {
   boundedLiveRenderText,
   compactPreview,
   estimateTokensRough,
-  fmtK,
   formatToolCall,
-  matchTransientTrailLine,
   parseToolTrailResultLine,
   pick,
   splitToolDuration,
@@ -29,6 +28,7 @@ import {
   toolTrailLabel
 } from '../lib/text.js'
 import type { Theme } from '../theme.js'
+import type { ToolTrailEntry } from '../types.js'
 import type {
   ActiveTool,
   ActivityItem,
@@ -738,7 +738,7 @@ export const ToolTrail = memo(function ToolTrail({
   t: Theme
   tools?: ActiveTool[]
   toolTokens?: number
-  trail?: string[]
+  trail?: ToolTrailEntry[]
   activity?: ActivityItem[]
 }) {
   const visible = useMemo(
@@ -853,7 +853,7 @@ export const ToolTrail = memo(function ToolTrail({
   const pushDetail = (row: DetailRow) => (groups.at(-1)?.details ?? meta).push(row)
 
   for (const [i, line] of trail.entries()) {
-    const parsed = parseToolTrailResultLine(line)
+    const parsed = typeof line === 'string' ? parseToolTrailResultLine(line) : null
 
     if (parsed) {
       groups.push({
@@ -877,10 +877,8 @@ export const ToolTrail = memo(function ToolTrail({
       continue
     }
 
-    const transient = matchTransientTrailLine(line)
-
-    if (transient?.kind === 'draft') {
-      const label = toolTrailLabel(line.slice(transient.pattern.draftPrefix.length).replace(/…$/, '').trim())
+    if (typeof line !== 'string' && line.kind === 'draft') {
+      const label = toolTrailLabel(line.name)
 
       groups.push({
         color: t.color.text,
@@ -894,24 +892,26 @@ export const ToolTrail = memo(function ToolTrail({
       continue
     }
 
-    if (transient?.kind === 'analyze') {
+    if (typeof line !== 'string' && line.kind === 'analyze') {
       pushDetail({
         color: t.color.muted,
         dimColor: true,
         key: `tr-${i}`,
         content: groups.length ? (
           <>
-            <Spinner color={t.color.accent} variant="think" /> {line}
+            <Spinner color={t.color.accent} variant="think" /> {ti('tool.outputAnalysis')}
           </>
         ) : (
-          line
+          ti('tool.outputAnalysis')
         )
       })
 
       continue
     }
 
-    meta.push({ color: t.color.muted, content: line, dimColor: true, key: `tr-${i}` })
+    if (typeof line === 'string') {
+      meta.push({ color: t.color.muted, content: line, dimColor: true, key: `tr-${i}` })
+    }
   }
 
   for (const tool of tools) {
@@ -960,13 +960,13 @@ export const ToolTrail = memo(function ToolTrail({
 
   const toolTokenCount = toolTokens ?? 0
   const totalTokenCount = tokenCount + toolTokenCount
-  const thinkingTokensLabel = tokenCount > 0 ? ti('tool.tokenCount', { count: fmtK(tokenCount) }) : null
+  const thinkingTokensLabel = tokenCount > 0 ? ti('tool.tokenCount', { count: compactNumber(tokenCount) }) : null
 
   const toolTokensLabel =
-    toolTokens !== undefined && toolTokens > 0 ? ti('tool.tokenCount', { count: fmtK(toolTokens) }) : undefined
+    toolTokens !== undefined && toolTokens > 0 ? ti('tool.tokenCount', { count: compactNumber(toolTokens) }) : undefined
 
   const totalTokensLabel =
-    tokenCount > 0 && toolTokenCount > 0 ? ti('tool.totalTokenCount', { count: fmtK(totalTokenCount) }) : null
+    tokenCount > 0 && toolTokenCount > 0 ? ti('tool.totalTokenCount', { count: compactNumber(totalTokenCount) }) : null
 
   const delegateGroups = groups.filter(g => g.isDelegate)
   const inlineDelegateKey = hasSubagents && delegateGroups.length === 1 ? delegateGroups[0]!.key : null

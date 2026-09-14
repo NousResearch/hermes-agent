@@ -1,11 +1,12 @@
+import { looksLikeSlashCommand } from '@hermes/shared/slash'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { CompletionItem } from '../app/interfaces.js'
 import { rankSlashItems } from '../app/slash/fuzzyScore.js'
-import { inlineSlashTrigger, looksLikeSlashCommand } from '../domain/slash.js'
+import { inlineSlashTrigger } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { CompletionResponse, GatewayCompletionItem } from '../gatewayTypes.js'
-import { translate, translateSlashDescription, type TranslationKey, useI18n } from '../i18n/index.js'
+import { translate, translateOptional, translateSlashDescription, type TranslationKey, useI18n } from '../i18n/index.js'
 import { asRpcResult } from '../lib/rpc.js'
 import { listWidgetApps, widgetHelp } from '../sdk/registry.js'
 
@@ -35,7 +36,7 @@ const TAB_PATH_RE = /((?:["']?(?:[A-Za-z]:[\\/]|\.{1,2}\/|~\/|\/|@|[^"'`\s]+\/))
 
 export interface LocalizableCompletionItem extends CompletionItem {
   displayTranslationKey?: TranslationKey
-  metaTranslationKey?: TranslationKey
+  metaTranslationKey?: string
   metaTranslationVars?: Record<string, string | number>
   slashDescriptionId?: string
 }
@@ -50,13 +51,13 @@ export const localizeCompletionItems = (
     meta: item.slashDescriptionId
       ? translateSlashDescription(locale, item.slashDescriptionId, item.meta ?? '')
       : item.metaTranslationKey
-        ? translate(locale, item.metaTranslationKey, item.metaTranslationVars)
+        ? translateOptional(locale, item.metaTranslationKey, item.meta ?? '', item.metaTranslationVars)
         : item.meta,
     text: item.text
   }))
 
 export const localizableCompletionItem = (item: GatewayCompletionItem): LocalizableCompletionItem => {
-  const presentationKey = item.meta_key?.startsWith('completion.') ? (item.meta_key as TranslationKey) : undefined
+  const presentationKey = item.meta_key?.startsWith('completion.') ? item.meta_key : undefined
 
   return {
     display: item.display,

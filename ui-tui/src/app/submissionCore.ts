@@ -54,6 +54,7 @@ export function submitPrompt(
   opts: { skipDetectDrop?: boolean } = {}
 ): void {
   const sid = getUiState().sid
+
   const tr = (key: Parameters<typeof translate>[1], vars?: Record<string, string | number>) =>
     translate(getUiState().locale, key, vars)
 

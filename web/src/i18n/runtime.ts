@@ -1,3 +1,4 @@
+import { mergeTranslations } from "@hermes/shared/i18n";
 import { createContext } from "react";
 
 import {
@@ -64,50 +65,16 @@ export const LOCALE_META = LOCALE_METADATA;
 const STORAGE_KEY = "hermes-locale";
 export const normalizeLocale = normalizeLocaleInput;
 
-function mergeTranslationTree(fallback: unknown, override: unknown): unknown {
-  if (
-    !fallback ||
-    !override ||
-    typeof fallback !== "object" ||
-    typeof override !== "object" ||
-    Array.isArray(fallback) ||
-    Array.isArray(override)
-  ) {
-    return override ?? fallback;
-  }
-
-  const result: Record<string, unknown> = {
-    ...(fallback as Record<string, unknown>),
-  };
-  for (const [key, value] of Object.entries(
-    override as Record<string, unknown>,
-  )) {
-    const base = result[key];
-    result[key] =
-      base &&
-      value &&
-      typeof base === "object" &&
-      typeof value === "object" &&
-      !Array.isArray(base) &&
-      !Array.isArray(value)
-        ? mergeTranslationTree(base, value)
-        : value;
-  }
-  return result;
-}
-
 /** Resolve any locale overlay independently against the English source. */
 export function resolveTranslationOverlay(
   overlay: TranslationOverlay,
 ): Translations {
-  return mergeTranslationTree(en, overlay) as Translations;
+  return mergeTranslations<Translations>(en, overlay);
 }
 
 /** Return a complete catalog, overlaying the locale on the English source. */
 export function resolveTranslations(locale: Locale): Translations {
-  return locale === "en"
-    ? en
-    : resolveTranslationOverlay(TRANSLATIONS[locale]);
+  return locale === "en" ? en : resolveTranslationOverlay(TRANSLATIONS[locale]);
 }
 
 export function getInitialLocale(): Locale {
@@ -141,8 +108,11 @@ export function formatTranslation(
 }
 
 /** Persist only the authoritative config leaf; the backend deep-merges it. */
-export function persistConfiguredLocale(locale: Locale) {
-  return api.saveConfig({ display: { language: locale } });
+export function persistConfiguredLocale(
+  locale: Locale,
+  profile = getManagementProfile(),
+) {
+  return api.saveConfig({ display: { language: locale } }, profile);
 }
 
 export function readConfiguredLocale(config: Record<string, unknown>): Locale {

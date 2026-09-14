@@ -6,14 +6,14 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { GatewayClient } from "@/lib/gatewayClient";
+import type { ModelOptionProvider, ModelOptionsResponse } from "@hermes/shared";
 import { Check, RefreshCw, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "@/i18n";
 import { cn, themedBody } from "@/lib/utils";
-import { fuzzyRank } from "@/lib/fuzzy";
 import { queryMatchesProviderOnly } from "@/lib/model-picker-filter";
-import { modelSearchText } from "@/lib/model-search-text";
+import { fuzzyRank, modelSearchText } from "@hermes/shared";
 
 /**
  * Two-stage model picker modal.
@@ -34,21 +34,6 @@ import { modelSearchText } from "@/lib/model-search-text";
  *    command.  This lets the Models page reuse the same UI without
  *    requiring an open chat PTY.
  */
-
-interface ModelOptionProvider {
-  name: string;
-  slug: string;
-  models?: string[];
-  total_models?: number;
-  is_current?: boolean;
-  warning?: string;
-}
-
-interface ModelOptionsResponse {
-  model?: string;
-  provider?: string;
-  providers?: ModelOptionProvider[];
-}
 
 interface ExpensiveModelConfirmResponse {
   confirm_message?: string;

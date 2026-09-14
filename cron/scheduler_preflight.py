@@ -14,6 +14,8 @@ import logging
 import os
 from typing import Optional
 
+from cron.env_settings import cron_env_setting
+
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
 
@@ -94,7 +96,7 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     _cron_cfg = cfg.get("cron") if isinstance(cfg.get("cron"), dict) else {}
     requested = (
         job.get("provider") or str((_cron_cfg or {}).get("model_provider") or "").strip() or None)
-    model = job.get("model") or os.getenv("HERMES_MODEL") or ""
+    model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
 
     from hermes_cli.auth import AuthError
     try:
@@ -308,6 +310,29 @@ def _preflight_check_skills(job: dict) -> Optional[str]:
                 "skill from this job."
             )
     return None
+
+
+def _empty_requested_mcp_toolsets(job: dict, cfg: dict) -> Optional[str]:
+    """Reason when an MCP server the job's own ``enabled_toolsets`` names resolves to zero tools.
+
+    Runs AFTER cron MCP discovery. The server's toolset alias is process-global while its tools
+    are registered per profile overlay, so under a multiplexer a job can name a server that is
+    connected for another profile and build a tool-less agent that ``quiet_mode`` never reports.
+    Only servers the job explicitly asked for count; the implicit enabled-server merge does not.
+    """
+    requested = [str(name) for name in (job.get("enabled_toolsets") or [])]
+    if not requested:
+        return None
+    from hermes_cli.tools_config import enabled_mcp_server_names
+    from toolsets import resolve_toolset
+    missing = [name for name in requested
+               if name in enabled_mcp_server_names(cfg) and not resolve_toolset(name)]
+    if not missing:
+        return None
+    return (
+        f"MCP server(s) {', '.join(sorted(missing))} named in this job's enabled_toolsets "
+        "resolved to zero tools for this profile (not connected, or connected for another "
+        "profile only). Fix the server or remove it from the job's toolsets.")
 
 
 def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:

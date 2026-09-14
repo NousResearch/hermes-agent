@@ -7,17 +7,13 @@ import {
   edgePreview,
   estimateRows,
   estimateTokensRough,
-  fmtK,
-  hasAnsi,
   isToolTrailResultLine,
-  isTransientTrailLine,
+  isTransientToolProgress,
   lastCotTrailIndex,
   parseToolTrailResultLine,
   pasteTokenLabel,
   sameToolTrailGroup,
-  sanitizeAnsiForRender,
   splitToolDuration,
-  stripAnsi,
   thinkingPreview
 } from '../lib/text.js'
 
@@ -29,13 +25,13 @@ describe('isToolTrailResultLine', () => {
   })
 })
 
-describe('isTransientTrailLine', () => {
-  it('recognizes rows captured in any registered locale', () => {
-    expect(isTransientTrailLine('drafting terminal…')).toBe(true)
-    expect(isTransientTrailLine('正在生成 terminal…')).toBe(true)
-    expect(isTransientTrailLine('analyzing tool output…')).toBe(true)
-    expect(isTransientTrailLine('正在分析工具输出…')).toBe(true)
-    expect(isTransientTrailLine('Terminal ✓')).toBe(false)
+describe('isTransientToolProgress', () => {
+  it('classifies transient progress by state while preserving arbitrary tool output', () => {
+    expect(isTransientToolProgress({ kind: 'draft', name: 'terminal' })).toBe(true)
+    expect(isTransientToolProgress({ kind: 'analyze' })).toBe(true)
+    expect(isTransientToolProgress('drafting terminal…')).toBe(false)
+    expect(isTransientToolProgress('正在分析工具输出…')).toBe(false)
+    expect(isTransientToolProgress('Terminal ✓')).toBe(false)
   })
 })
 
@@ -129,68 +125,12 @@ describe('sameToolTrailGroup', () => {
   })
 })
 
-describe('fmtK', () => {
-  it('keeps small numbers plain', () => {
-    expect(fmtK(999)).toBe('999')
-  })
-
-  it('formats thousands as lowercase k', () => {
-    expect(fmtK(1000)).toBe('1k')
-    expect(fmtK(1500)).toBe('1.5k')
-  })
-
-  it('formats millions and billions with lowercase suffixes', () => {
-    expect(fmtK(1_000_000)).toBe('1m')
-    expect(fmtK(1_000_000_000)).toBe('1b')
-  })
-})
-
 describe('estimateTokensRough', () => {
   it('uses 4 chars per token rounding up', () => {
     expect(estimateTokensRough('')).toBe(0)
     expect(estimateTokensRough('a')).toBe(1)
     expect(estimateTokensRough('abcd')).toBe(1)
     expect(estimateTokensRough('abcde')).toBe(2)
-  })
-})
-
-describe('ANSI sanitizers', () => {
-  const ESC = String.fromCharCode(27)
-  const BEL = String.fromCharCode(7)
-
-  it('strips CSI/OSC/control bytes from plain previews', () => {
-    const sample = `A${ESC}[31mB${ESC}[39m${ESC}[2J${ESC}]0;title${BEL}C${ESC}[?25lD`
-
-    expect(stripAnsi(sample)).toBe('ABCD')
-  })
-
-  it('strips incomplete CSI prefixes and carriage returns', () => {
-    const sample = `A${ESC}[31mB${ESC}[12;${ESC}[CD\rE`
-
-    expect(stripAnsi(sample)).toBe('ABDE')
-  })
-
-  it('keeps SGR color spans but removes cursor controls for Ansi rendering', () => {
-    const sample = `A${ESC}[31mB${ESC}[39m${ESC}[2J${ESC}]0;title${BEL}${ESC}[?25lC`
-
-    expect(sanitizeAnsiForRender(sample)).toBe(`A${ESC}[31mB${ESC}[39mC`)
-  })
-
-  it('keeps valid SGR while removing dangling CSI and carriage returns', () => {
-    const sample = `A${ESC}[31mB${ESC}[12;${ESC}[39mC\rD`
-
-    expect(sanitizeAnsiForRender(sample)).toBe(`A${ESC}[31mB${ESC}[39mCD`)
-  })
-
-  it('strips multi-byte non-CSI ESC sequences without leaving trailing bytes', () => {
-    const sample = `A${ESC}(0B${ESC}%GC${ESC})0D`
-
-    expect(stripAnsi(sample)).toBe('ABCD')
-    expect(sanitizeAnsiForRender(sample)).toBe('ABCD')
-  })
-
-  it('detects non-CSI escape prefixes too', () => {
-    expect(hasAnsi(`ok${ESC}Ppayload${ESC}\\`)).toBe(true)
   })
 })
 

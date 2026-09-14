@@ -1,3 +1,6 @@
+import { stripAnsi } from '@hermes/shared/ansi'
+import { compactNumber } from '@hermes/shared/format'
+
 import {
   LIVE_RENDER_MAX_CHARS,
   LIVE_RENDER_MAX_LINES,
@@ -6,45 +9,11 @@ import {
   VERBOSE_TRAIL_MAX_LINES
 } from '../config/limits.js'
 import { VERBS } from '../content/verbs.js'
-import { type Locale, TRAIL_PATTERNS, translate } from '../i18n/index.js'
+import { type Locale, translate } from '../i18n/index.js'
+import type { ToolTrailEntry } from '../types.js'
 import type { ThinkingMode } from '../types.js'
 
-const ESC = String.fromCharCode(27)
-const BEL = String.fromCharCode(7)
-const ANSI_CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, 'g')
-const ANSI_CSI_WITH_CMD_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*([@-~])`, 'g')
-const ANSI_INCOMPLETE_CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*(?=${ESC}|\\n|$)`, 'g')
-const ANSI_OSC_RE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
-const ANSI_STRING_RE = new RegExp(`${ESC}[PX^_][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
-const ANSI_NON_CSI_ESC_SEQ_RE = new RegExp(`${ESC}(?!\\[|\\]|P|X|\\^|_)[ -/]*[0-~]`, 'g')
-const ANSI_STRAY_ESC_RE = new RegExp(`${ESC}(?!\\[)[\\s\\S]?`, 'g')
-// eslint-disable-next-line no-control-regex -- intentionally strips C0/C1 control chars
-const CONTROL_RE = /[\x00-\x08\x0B\x0C\x0D\x0E-\x1A\x1C-\x1F\x7F]/g
 const WS_RE = /\s+/g
-
-export const stripAnsi = (s: string) =>
-  s
-    .replace(ANSI_OSC_RE, '')
-    .replace(ANSI_STRING_RE, '')
-    .replace(ANSI_INCOMPLETE_CSI_RE, '')
-    .replace(ANSI_CSI_RE, '')
-    .replace(ANSI_INCOMPLETE_CSI_RE, '')
-    .replace(ANSI_NON_CSI_ESC_SEQ_RE, '')
-    .replace(ANSI_STRAY_ESC_RE, '')
-    .replace(CONTROL_RE, '')
-
-export const sanitizeAnsiForRender = (s: string) =>
-  s
-    .replace(ANSI_OSC_RE, '')
-    .replace(ANSI_STRING_RE, '')
-    .replace(ANSI_INCOMPLETE_CSI_RE, '')
-    .replace(ANSI_CSI_WITH_CMD_RE, (seq, cmd: string) => (cmd === 'm' ? seq : ''))
-    .replace(ANSI_INCOMPLETE_CSI_RE, '')
-    .replace(ANSI_NON_CSI_ESC_SEQ_RE, '')
-    .replace(ANSI_STRAY_ESC_RE, '')
-    .replace(CONTROL_RE, '')
-
-export const hasAnsi = (s: string) => s.includes(ESC)
 
 const renderEstimateLine = (line: string) => {
   const trimmed = line.trim()
@@ -95,7 +64,7 @@ export const edgePreview = (s: string, head = 16, tail = 28) => {
 
 export const pasteTokenLabel = (text: string, lineCount: number, locale: Locale = 'en') => {
   const preview = edgePreview(text)
-  const lineLabel = translate(locale, 'input.pasteLines', { count: fmtK(lineCount) })
+  const lineLabel = translate(locale, 'input.pasteLines', { count: compactNumber(lineCount) })
 
   if (!preview) {
     return `[[ [${lineLabel}] ]]`
@@ -177,8 +146,8 @@ const boundedRenderText = (
   const omittedChars = Math.max(0, text.length - tail.length)
 
   const label = translate(locale, omittedLines > 0 ? 'liveRender.omittedLines' : 'liveRender.omittedChars', {
-    chars: fmtK(omittedChars),
-    lines: fmtK(omittedLines)
+    chars: compactNumber(omittedChars),
+    lines: compactNumber(omittedLines)
   })
 
   return `${label}${tail}`
@@ -295,40 +264,15 @@ export const splitToolDuration = (call: string) => {
   return match ? { label: match[1]!, duration: match[2]! } : { label: call, duration: '' }
 }
 
-export interface TransientTrailMatch {
-  kind: 'analyze' | 'draft'
-  pattern: (typeof TRAIL_PATTERNS)[Locale]
-}
+export const isTransientToolProgress = (entry: ToolTrailEntry) => typeof entry !== 'string'
 
-/** Match persisted transient rows against every registered locale.
- *
- * Trail rows are strings captured at event time, so their language may differ
- * from the currently selected locale after a live config change. Deriving the
- * candidates from the registry-backed catalogs keeps pruning and rendering
- * correct without feature-code branches for named languages.
- */
-export const matchTransientTrailLine = (line: string): TransientTrailMatch | null => {
-  for (const pattern of Object.values(TRAIL_PATTERNS)) {
-    if (line.startsWith(pattern.draftPrefix)) {
-      return { kind: 'draft', pattern }
-    }
-
-    if (line === pattern.analyzeLabel) {
-      return { kind: 'analyze', pattern }
-    }
-  }
-
-  return null
-}
-
-export const isTransientTrailLine = (line: string) => matchTransientTrailLine(line) !== null
-
-export const sameToolTrailGroup = (label: string, entry: string) =>
-  entry === `${label} ✓` ||
-  entry === `${label} ✗` ||
-  entry.startsWith(`${label}(`) ||
-  entry.startsWith(`${label} ::`) ||
-  entry.startsWith(`${label}:`)
+export const sameToolTrailGroup = (label: string, entry: ToolTrailEntry) =>
+  typeof entry === 'string' &&
+  (entry === `${label} ✓` ||
+    entry === `${label} ✗` ||
+    entry.startsWith(`${label}(`) ||
+    entry.startsWith(`${label} ::`) ||
+    entry.startsWith(`${label}:`))
 
 export const lastCotTrailIndex = (trail: readonly string[]) => {
   for (let i = trail.length - 1; i >= 0; i--) {
@@ -459,10 +403,6 @@ export const clarifyBatchRevisitState = (
 }
 
 export const flat = (r: Record<string, string[]>) => Object.values(r).flat()
-
-const COMPACT_NUMBER = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1, notation: 'compact' })
-
-export const fmtK = (n: number) => COMPACT_NUMBER.format(n).replace(/[KMBT]$/, s => s.toLowerCase())
 
 export const pick = <T>(a: T[]) => a[Math.floor(Math.random() * a.length)]!
 

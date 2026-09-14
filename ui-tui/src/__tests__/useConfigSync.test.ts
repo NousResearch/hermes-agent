@@ -9,7 +9,6 @@ import {
   normalizeIndicatorStyle,
   normalizeMouseTracking,
   normalizeStatusBar,
-  syncChangedConfig,
   syncConfigRevision,
   syncMcpReload
 } from '../app/useConfigSync.js'
@@ -581,7 +580,7 @@ describe('hydrateFullConfig', () => {
     const gw = makeFakeGw({ config: { display: { language: 'zh' } } })
     const setBell = vi.fn()
 
-    await syncChangedConfig(gw, setBell)
+    await hydrateFullConfig(gw, setBell)
 
     expect(gw.request).toHaveBeenCalledTimes(1)
     expect(gw.request).toHaveBeenCalledWith('config.get', { key: 'full' })
@@ -630,6 +629,7 @@ describe('syncConfigRevision', () => {
       on: vi.fn(),
       off: vi.fn()
     } as any
+
     const setBell = vi.fn()
 
     const afterFailure = await syncConfigRevision(gw, 41, setBell)
@@ -641,4 +641,27 @@ describe('syncConfigRevision', () => {
     expect($uiState.get().locale).toBe('zh')
     expect(gw.request).toHaveBeenNthCalledWith(4, 'config.get', { key: 'full' })
   })
+})
+
+it('ignores config returned after its session display subscription ended', async () => {
+  resetUiState()
+  const controller = new AbortController()
+  let resolve!: (value: unknown) => void
+
+  const gw = {
+    request: vi.fn(
+      () =>
+        new Promise(yes => {
+          resolve = yes
+        })
+    )
+  } as any
+
+  const setBell = vi.fn()
+  const hydration = hydrateFullConfig(gw, setBell, undefined, undefined, controller.signal)
+  controller.abort()
+  resolve({ config: { display: { language: 'zh', bell_on_complete: true } } })
+  expect(await hydration).toBeNull()
+  expect($uiState.get().locale).toBe('en')
+  expect(setBell).not.toHaveBeenCalled()
 })

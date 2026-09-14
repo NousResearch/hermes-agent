@@ -973,20 +973,19 @@ export default function PluginsPage() {
         <div className="flex flex-col gap-3" data-testid="plugin-catalog-section">
 
           <h3 className="font-mondwest text-display text-xs tracking-[0.12em] text-text-secondary">
-            {t.pluginsPage.catalogHeading ?? "Plugin catalog"}
+            {t.pluginsPage.catalogHeading}
           </h3>
 
           <p className="text-xs tracking-[0.06em] text-text-tertiary">
-            {t.pluginsPage.catalogHint ??
-              "Curated, Nous-reviewed plugins pinned to exact commits."}
+            {t.pluginsPage.catalogHint}
           </p>
 
           <Input
             className="max-w-md"
-            placeholder={t.pluginsPage.catalogSearchPlaceholder ?? "Search catalog..."}
+            placeholder={t.pluginsPage.catalogSearchPlaceholder}
             value={catalogSearch}
             onChange={(e) => setCatalogSearch(e.target.value)}
-            aria-label={t.pluginsPage.catalogSearchPlaceholder ?? "Search catalog..."}
+            aria-label={t.pluginsPage.catalogSearchPlaceholder}
           />
 
           {catalogLoading ? (
@@ -996,14 +995,14 @@ export default function PluginsPage() {
             </div>
           ) : catalogEntries.length === 0 ? (
             <p className="text-xs text-text-tertiary">
-              {t.pluginsPage.catalogEmpty ?? "No catalog entries match."}{" "}
+              {t.pluginsPage.catalogEmpty}{" "}
               <a
                 className="underline"
                 href="https://hermes-agent.nousresearch.com/docs/plugins"
                 target="_blank"
                 rel="noreferrer"
               >
-                {t.pluginsPage.catalogEmptyDocsLink ?? "Learn about Hermes plugins"}
+                {t.pluginsPage.catalogEmptyDocsLink}
               </a>
             </p>
           ) : (
@@ -1108,22 +1107,21 @@ export default function PluginsPage() {
         onConfirm={() => {
           if (catalogConfirm) void onCatalogInstall(catalogConfirm);
         }}
-        title={t.pluginsPage.catalogConfirmTitle ?? "Install this plugin?"}
+        title={t.pluginsPage.catalogConfirmTitle}
         description={
           catalogConfirm
             ? [
                 catalogConfirm.capability_summary,
                 catalogConfirm.capabilities.requires_env.length
-                  ? `${t.pluginsPage.catalogRequiresEnv ?? "Requires env"}: ${catalogConfirm.capabilities.requires_env.join(", ")}`
+                  ? `${t.pluginsPage.catalogRequiresEnv}: ${catalogConfirm.capabilities.requires_env.join(", ")}`
                   : "",
-                t.pluginsPage.catalogConfirmInstallNote ??
-                  "Plugins install disabled; enable it after install to activate.",
+                t.pluginsPage.catalogConfirmInstallNote,
               ]
                 .filter(Boolean)
                 .join("\n\n")
             : ""
         }
-        confirmLabel={t.pluginsPage.catalogInstallBtn ?? "Install"}
+        confirmLabel={t.pluginsPage.catalogInstallBtn}
       />
     </div>
   );
@@ -1194,7 +1192,7 @@ function PluginRowCard(props: PluginRowCardProps) {
 
             {row.removed_reason ? (
               <Badge tone="destructive">
-                {t.pluginsPage.catalogRemovedBadge ?? "Removed"}
+                {t.pluginsPage.catalogRemovedBadge}
               </Badge>
             ) : null}
           </div>
@@ -1312,7 +1310,7 @@ function PluginRowCard(props: PluginRowCardProps) {
 
         {row.removed_reason ? (
           <p className="border border-destructive/50 px-3 py-2 text-xs text-destructive">
-            {t.pluginsPage.removedFromCatalog ?? "Removed from catalog"}: {row.removed_reason}
+            {t.pluginsPage.removedFromCatalog}: {row.removed_reason}
           </p>
         ) : null}
 
@@ -1401,7 +1399,7 @@ function CatalogEntryCard(props: CatalogEntryCardProps) {
 
             {isRemoved ? (
               <Badge tone="destructive">
-                {t.pluginsPage.catalogRemovedBadge ?? "Removed"}
+                {t.pluginsPage.catalogRemovedBadge}
               </Badge>
             ) : null}
           </div>
@@ -1409,14 +1407,14 @@ function CatalogEntryCard(props: CatalogEntryCardProps) {
           <div className="flex flex-wrap items-center gap-2 shrink-0">
             {isRemoved ? null : entry.installed && !entry.update_available ? (
               <Badge tone="success">
-                {t.pluginsPage.catalogInstalledBadge ?? "Installed ✓"}
+                {t.pluginsPage.catalogInstalledBadge}
               </Badge>
             ) : (
               <Button disabled={busy} ghost size="sm" onClick={onInstall}>
                 {busy ? <Spinner /> : null}
                 {entry.update_available
-                  ? t.pluginsPage.catalogUpdateBtn ?? "Update available"
-                  : t.pluginsPage.catalogInstallBtn ?? "Install"}
+                  ? t.pluginsPage.catalogUpdateBtn
+                  : t.pluginsPage.catalogInstallBtn}
               </Button>
             )}
           </div>
@@ -1424,7 +1422,7 @@ function CatalogEntryCard(props: CatalogEntryCardProps) {
 
         {isRemoved ? (
           <p className="border border-destructive/50 px-3 py-2 text-xs text-destructive">
-            {t.pluginsPage.removedFromCatalog ?? "Removed from catalog"}
+            {t.pluginsPage.removedFromCatalog}
             {removed.reason ? `: ${removed.reason}` : ""}
             {removed.date ? ` (${removed.date})` : ""}
           </p>

@@ -1,3 +1,5 @@
+import type { SubagentStatus, Usage } from '@hermes/shared/gateway-events'
+
 export interface ActiveTool {
   context?: string
   id: string
@@ -19,8 +21,6 @@ export interface ActivityItem {
   text: string
   tone: 'error' | 'info' | 'warn'
 }
-
-export type SubagentStatus = 'completed' | 'error' | 'failed' | 'interrupted' | 'queued' | 'running' | 'timeout'
 
 export interface SubagentProgress {
   apiCalls?: number
@@ -209,30 +209,6 @@ export interface SessionInfo {
   version?: string
 }
 
-export interface Usage {
-  active_subagents?: number
-  /** Rolling mean API latency over the last 10 calls (seconds). */
-  avg_latency_s?: number
-  /** Rolling output tokens/sec over the last 10 calls. */
-  avg_tps?: number
-  /** Session prompt-cache hit ratio (cache_read / prompt tokens, %). */
-  cache_hit_pct?: number
-  calls: number
-  compressions?: number
-  context_max?: number
-  context_percent?: number
-  context_estimated?: boolean
-  context_source?: string
-  context_used?: number
-  cost_status?: string
-  cost_usd?: number
-  dev_credits_spent_micros?: number
-  input: number
-  output: number
-  reasoning?: number
-  total: number
-}
-
 export interface SudoReq {
   requestId: string
 }
@@ -276,3 +252,6 @@ export interface SlashCategory {
   name: string
   pairs: [string, string][]
 }
+
+/** Live tool progress carries state independently of the selected display language. */
+export type ToolTrailEntry = string | { kind: 'draft'; name: string } | { kind: 'analyze' }

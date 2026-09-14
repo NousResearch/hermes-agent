@@ -20,7 +20,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
-from agent.replay_cleanup import strip_stale_dangerous_confirmations
+from agent.replay_cleanup import canonicalize_replay_history
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
@@ -33,6 +33,16 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
+    """True when the adapter class renders native approval buttons. BasePlatformAdapter subclasses
+    say so through ``supports_exec_approval_buttons``; anything else (test doubles, relay-style
+    duck types) counts when it defines ``send_exec_approval`` itself."""
+    probe = getattr(adapter_cls, "supports_exec_approval_buttons", None)
+    if callable(probe) and issubclass(adapter_cls, BasePlatformAdapter):
+        return bool(probe())
+    return getattr(adapter_cls, "send_exec_approval", None) is not None
 
 
 class _ExecApprovalDeclined(RuntimeError):
@@ -1309,7 +1319,7 @@ class TurnRunner:
         desc = approval_data.get("description", "dangerous command")
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
-        if getattr(type(adapter), "send_exec_approval", None) is not None:
+        if _renders_exec_approval_buttons(type(adapter)):
             try:
                 fut = self._schedule(
                     adapter.send_exec_approval(
@@ -1409,9 +1419,9 @@ class TurnRunner:
                     "conversation context (possible FTS write corruption)",
                     ctx.session_key, len(agent_history), len(selected),
                 )
-                # The live history bypassed _build_gateway_agent_history's cleanup — re-apply the
-                # stale-confirmation expiry so a dangerous confirmation can't slip through.
-                agent_history = strip_stale_dangerous_confirmations(selected, now=time.time())
+                # The live history bypassed _build_gateway_agent_history's cleanup — re-apply
+                # the full canonicalization so no replay transform can slip through.
+                agent_history = canonicalize_replay_history(selected)
         # MEDIA paths already in history are excluded from this turn's extraction (compression-safe).
         return agent_history, observed_group_context, _collect_history_media_paths(agent_history)
 

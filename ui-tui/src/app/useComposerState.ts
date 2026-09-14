@@ -226,12 +226,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
         const extractionFailed =
           r?.reason === 'extract_failed' || r?.message === 'Clipboard has image but extraction failed'
 
-        sys(
-          translate(
-            getUiState().locale,
-            extractionFailed ? 'paste.imageExtractionFailed' : 'paste.noImage'
-          )
-        )
+        sys(translate(getUiState().locale, extractionFailed ? 'paste.imageExtractionFailed' : 'paste.noImage'))
       }
 
       return null

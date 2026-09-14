@@ -1,3 +1,4 @@
+import { mergeTranslations } from '@hermes/shared/i18n'
 import { DEFAULT_LOCALE, normalizeLocaleInput } from '@hermes/shared/locale-registry'
 import { createContext, type ReactNode, useContext, useMemo } from 'react'
 
@@ -46,14 +47,7 @@ const OVERLAYS: Record<Locale, TuiLocaleOverlay> = {
 }
 
 /** Resolve a partial locale overlay into a complete runtime pack. */
-export const resolveLangPack = (overlay: TuiLocaleOverlay): LangPack => ({
-  catalog: { ...en.catalog, ...overlay.catalog },
-  status: { ...en.status, ...overlay.status },
-  toolVerbs: { ...en.toolVerbs, ...overlay.toolVerbs },
-  trail: { ...en.trail, ...overlay.trail },
-  verbs: overlay.verbs ?? en.verbs,
-  verbStyle: overlay.verbStyle ?? en.verbStyle
-})
+export const resolveLangPack = (overlay: TuiLocaleOverlay): LangPack => mergeTranslations<LangPack>(en, overlay)
 
 const CATALOGS = Object.fromEntries(LOCALES.map(locale => [locale, resolveLangPack(OVERLAYS[locale])])) as Record<
   Locale,
@@ -61,11 +55,6 @@ const CATALOGS = Object.fromEntries(LOCALES.map(locale => [locale, resolveLangPa
 >
 
 const getPack = (locale: Locale): LangPack => CATALOGS[locale] ?? en
-
-// ── Locale-specific transient trail patterns ───────────────────
-export const TRAIL_PATTERNS: Record<Locale, { draftPrefix: string; analyzeLabel: string }> = Object.fromEntries(
-  LOCALES.map(l => [l, getPack(l).trail])
-) as Record<Locale, { draftPrefix: string; analyzeLabel: string }>
 
 // ── Public API ─────────────────────────────────────────────────
 
@@ -78,7 +67,7 @@ export interface I18nApi {
 }
 
 const interpolate = (template: string, vars: Record<string, string | number> = {}) =>
-  template.replace(/\{(\w+)\}/g, (_m, key: string) => String(vars[key] ?? `{${key}}`))
+  template.replace(/\{(\w+)\}/g, (_m, key: string) => String(Object.hasOwn(vars, key) ? vars[key] : `{${key}}`))
 
 export const normalizeLocale = (value: unknown): Locale => {
   return normalizeLocaleInput(value) ?? DEFAULT_LOCALE
@@ -86,7 +75,7 @@ export const normalizeLocale = (value: unknown): Locale => {
 
 export const translate = (locale: Locale, key: TranslationKey, vars?: Record<string, string | number>) => {
   const pack = getPack(locale)
-  const value = pack.catalog[key] ?? en.catalog[key] ?? key
+  const value = pack.catalog[key] ?? key
 
   return interpolate(value, vars)
 }
@@ -99,7 +88,7 @@ export const translateOptional = (
   vars?: Record<string, string | number>
 ) => {
   const pack = getPack(locale)
-  const value = pack.catalog[key] ?? en.catalog[key]
+  const value = Object.hasOwn(pack.catalog, key) ? pack.catalog[key] : undefined
 
   return interpolate(value == null ? fallback : value, vars)
 }
@@ -111,10 +100,10 @@ export const translateSlashCategory = (locale: Locale, id: string | undefined, f
   id ? translateOptional(locale, `slashCategory.${id}`, fallback) : fallback
 
 export const translateStatus = (locale: Locale, status: string) =>
-  getPack(locale).status[status] ?? en.status[status] ?? status
+  Object.hasOwn(getPack(locale).status, status) ? getPack(locale).status[status] : status
 
 export const getToolVerb = (locale: Locale, name: string) =>
-  getPack(locale).toolVerbs[name] ?? en.toolVerbs[name] ?? 'running'
+  Object.hasOwn(getPack(locale).toolVerbs, name) ? getPack(locale).toolVerbs[name] : 'running'
 
 export const getThinkingVerbs = (locale: Locale) => getPack(locale).verbs
 

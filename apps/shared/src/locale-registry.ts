@@ -60,13 +60,13 @@ export function normalizeLocaleInput(value: unknown): Locale | null {
 
   const alias = (registry.aliases as Record<string, Locale>)[normalized]
 
-  if (alias) {
+  if (hasOwn(registry.aliases, normalized)) {
     return alias
   }
 
   const compatibilityAlias = (registry.compatibilityAliases as Record<string, Locale>)[normalized]
 
-  if (compatibilityAlias) {
+  if (hasOwn(registry.compatibilityAliases, normalized)) {
     return compatibilityAlias
   }
 
@@ -80,9 +80,7 @@ export function normalizeLocaleInput(value: unknown): Locale | null {
   // language in that family. If multiple independent packs share the primary
   // tag, callers must use a registered value or an explicit compatibility
   // alias instead of guessing which pack owns the input.
-  const hasSiblingPack = LOCALES.some(
-    locale => locale !== primary && locale.startsWith(`${primary}-`)
-  )
+  const hasSiblingPack = LOCALES.some(locale => locale !== primary && locale.startsWith(`${primary}-`))
 
   return hasSiblingPack ? null : primary
 }

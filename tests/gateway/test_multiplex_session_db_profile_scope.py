@@ -790,3 +790,33 @@ def test_default_namespace_rows_stay_in_launch_store_under_secondary_scope(multi
         reset_hermes_home_override(scope)
 
     assert Path(db.db_path) == root / "state.db"
+
+
+def test_profile_named_main_keeps_its_own_namespace_and_store(multiplex_homes):
+    """``main`` is a valid profile name, but ``agent:main`` is the default profile's namespace: a
+    profile literally named ``main`` produced byte-identical keys to the default and, once default
+    keys were pinned to the launch store, its scoped sessions were written into the ROOT
+    ``state.db``. Its namespace must differ from the default's and resolve back to ``profiles/main``."""
+    from gateway.run import _parse_session_key
+    from gateway.session import build_session_key
+
+    root, _profile = multiplex_homes
+    main_home = root / "profiles" / "main"
+    main_home.mkdir(parents=True)
+    store = _multiplex_store(root)
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="555", user_id="u1", profile="main")
+
+    main_key = build_session_key(source, profile="main")
+    default_key = build_session_key(source, profile=None)
+    assert main_key != default_key
+    assert store._profile_from_session_key(main_key) == "main"
+    assert store._profile_from_session_key(default_key) == "default"
+    assert _parse_session_key(main_key)["profile"] == "main"
+    assert "profile" not in _parse_session_key(default_key)
+
+    scope = set_hermes_home_override(str(main_home))
+    try:
+        assert Path(store._db_for_key(main_key).db_path) == main_home / "state.db"
+        assert Path(store._db_for_key(default_key).db_path) == root / "state.db"
+    finally:
+        reset_hermes_home_override(scope)

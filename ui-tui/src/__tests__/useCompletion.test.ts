@@ -63,3 +63,13 @@ describe('localized completion metadata', () => {
     expect(localizeCompletionItems([item], 'zh')[0]?.meta).toBe('设置 thinking')
   })
 })
+
+it('keeps the gateway description for a newer completion key the client does not know', () => {
+  const item = localizableCompletionItem({
+    text: 'new-option',
+    meta: 'New gateway option',
+    meta_key: 'completion.futureOption'
+  })
+
+  expect(localizeCompletionItems([item], 'zh')[0].meta).toBe('New gateway option')
+})

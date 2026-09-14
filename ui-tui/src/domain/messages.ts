@@ -72,16 +72,18 @@ export const toTranscriptMessages = (rows: unknown, locale: Locale = 'en'): Msg[
       continue
     }
 
-    if (display_kind === 'async_delegation_complete') {
+    if (display_kind === 'async_delegation_complete' || display_kind === 'process_complete') {
       const meta = (row as TranscriptRow).display_metadata
       const count = meta && typeof meta.task_count === 'number' ? meta.task_count : undefined
 
       const label =
-        count === undefined
-          ? translate(locale, 'transcript.backgroundAgentWorkFinished')
-          : count === 1
-            ? translate(locale, 'transcript.backgroundAgentFinished', { count })
-            : translate(locale, 'transcript.backgroundAgentsFinished', { count })
+        display_kind === 'process_complete'
+          ? translate(locale, 'transcript.backgroundProcessFinished')
+          : count === undefined
+            ? translate(locale, 'transcript.backgroundAgentWorkFinished')
+            : count === 1
+              ? translate(locale, 'transcript.backgroundAgentFinished', { count })
+              : translate(locale, 'transcript.backgroundAgentsFinished', { count })
 
       out.push({
         kind: 'event',

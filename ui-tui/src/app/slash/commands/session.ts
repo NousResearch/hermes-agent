@@ -1,3 +1,5 @@
+import { compactNumber } from '@hermes/shared/format'
+
 import { usageBarsText } from '../../../components/overlayPrimitives.js'
 import { introMsg, toTranscriptMessages } from '../../../domain/messages.js'
 import { sessionScopedModelArg, TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
@@ -13,7 +15,6 @@ import type {
 } from '../../../gatewayTypes.js'
 import { translate, type TranslationKey } from '../../../i18n/index.js'
 import { formatVoiceRecordKey, parseVoiceRecordKey } from '../../../lib/platform.js'
-import { fmtK } from '../../../lib/text.js'
 import type { PanelSection } from '../../../types.js'
 import { applyConfiguredTuiTheme } from '../../createGatewayEventHandler.js'
 import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
@@ -389,7 +390,7 @@ export const sessionCommands: SlashCommand[] = [
               translate(ctx.ui.locale, 'sys.compressedMessages', {
                 count: r.removed ?? 0,
                 tokens: r.usage?.total
-                  ? ` · ${fmtK(r.usage.total)} ${translate(ctx.ui.locale, 'usage.tokensShort')}`
+                  ? ` · ${compactNumber(r.usage.total)} ${translate(ctx.ui.locale, 'usage.tokensShort')}`
                   : ''
               })
             )
@@ -666,6 +667,7 @@ export const sessionCommands: SlashCommand[] = [
     name: 'approvals',
     run: (arg, ctx) => {
       const mode = arg.trim().toLowerCase()
+
       const showMode = (value?: string) =>
         ctx.transcript.sys(
           translate(ctx.ui.locale, 'sys.approvalMode', {

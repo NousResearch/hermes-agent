@@ -1,5 +1,12 @@
 import type { SchemaTranslations } from "./types";
 
+function lookup(
+  table: Record<string, string>,
+  key: string,
+): string | undefined {
+  return Object.hasOwn(table, key) ? table[key] : undefined;
+}
+
 function joinTranslatedTerms(terms: string[]): string {
   return terms.reduce((label, term) => {
     if (!label) return term;
@@ -20,11 +27,11 @@ function generatedSchemaLabel(
     .split(".")
     .map(
       (segment) =>
-        translations.segments[segment] ??
+        lookup(translations.segments, segment) ??
         joinTranslatedTerms(
           segment
             .split("_")
-            .map((term) => translations.terms[term] ?? term),
+            .map((term) => lookup(translations.terms, term) ?? term),
         ),
     )
     .join(translations.pathSeparator);
@@ -37,7 +44,7 @@ export function resolveSchemaLabel(
   fallback: string,
 ): string {
   return (
-    translations.labels[schemaKey] ??
+    lookup(translations.labels, schemaKey) ??
     (translations.generateLabels
       ? generatedSchemaLabel(translations, schemaKey)
       : fallback)
@@ -63,5 +70,5 @@ export function resolveSchemaDescription(
   schemaKey: string,
   fallback: string,
 ): string {
-  return translations.descriptions[schemaKey] ?? fallback;
+  return lookup(translations.descriptions, schemaKey) ?? fallback;
 }

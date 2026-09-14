@@ -317,6 +317,7 @@ const catalog = {
   'transcript.modelChanged': 'model changed',
   'transcript.personalityChanged': 'personality changed',
   'transcript.resumedInterruptedTurn': 'resumed interrupted turn',
+  'transcript.backgroundProcessFinished': 'background process finished',
   'transcript.backgroundAgentWorkFinished': 'background agent work finished',
   'transcript.backgroundAgentFinished': '{count} background agent finished',
   'transcript.backgroundAgentsFinished': '{count} background agents finished',
@@ -703,7 +704,7 @@ const catalog = {
   'modelPicker.loading': 'loading models…',
   'modelPicker.invalidResponse': 'invalid response: model.options',
   'modelPicker.keySaveFailed': 'failed to save key',
-  'modelPicker.modelFilterHint': '↑/↓ select · Enter switch · Esc clear/back · q close',
+  'modelPicker.modelFilterHint': '↑/↓ select · Enter next · Esc clear/back · q close',
   'modelPicker.modelHint': '↑↓ select · Enter switch · Esc back · q close',
   'modelPicker.modelHintEmpty': 'Enter/Esc back · q close',
   'modelPicker.modelsCount': '{count} models',
@@ -724,8 +725,20 @@ const catalog = {
   'modelPicker.providerBack': '{provider} · Esc back',
   'modelPicker.runConfigure': 'run `hermes model` to configure',
   'modelPicker.saving': 'saving…',
-  'modelPicker.selectModel': 'Select model (step 2/2)',
-  'modelPicker.selectProvider': 'Select provider (step 1/2)',
+  'modelPicker.reasoningTitle': 'Reasoning effort (step 3/3)',
+  'modelPicker.reasoningHint': '{model} · applies with the switch (same scope) · Esc back',
+  'modelPicker.reasoningKeys': '↑/↓ select · Enter switch · Esc back · q close',
+  'reasoningEffort.none': 'Off (no thinking)',
+  'reasoningEffort.minimal': 'Minimal',
+  'reasoningEffort.low': 'Low',
+  'reasoningEffort.medium': 'Medium',
+  'reasoningEffort.high': 'High',
+  'reasoningEffort.xhigh': 'Extra high',
+  'reasoningEffort.max': 'Max',
+  'reasoningEffort.ultra': 'Ultra',
+  'reasoningEffort.keep': 'Keep current effort',
+  'modelPicker.selectModel': 'Select model (step 2/3)',
+  'modelPicker.selectProvider': 'Select provider (step 1/3)',
   'modelPicker.unknown': '(unknown)',
   'modelPicker.unknownProvider': '(unknown provider)',
   'section.status': 'Status',
@@ -1394,8 +1407,5 @@ const catalog = {
 export type TranslationKey = keyof typeof catalog
 export type TuiLocaleOverlay = LangPackOverlay<TranslationKey>
 
-// ── Transient trail patterns (used by TS-only modules) ──────────
-const trail = { draftPrefix: 'drafting ', analyzeLabel: 'analyzing tool output…' }
-
 // ── Full language pack ───────────────────────────────────────────
-export const en: LangPack = { toolVerbs, verbs, status, catalog, trail, verbStyle: 'pad' as const }
+export const en: LangPack = { toolVerbs, verbs, status, catalog, verbStyle: 'pad' as const }

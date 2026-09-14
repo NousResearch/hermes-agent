@@ -253,28 +253,22 @@ export async function hydrateFullConfig(
   gw: GatewayClient,
   setBell: (v: boolean) => void,
   setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
-  setBellOnPrompt?: (v: boolean) => void
+  setBellOnPrompt?: (v: boolean) => void,
+  signal?: AbortSignal
 ): Promise<ConfigFullResponse | null> {
   const cfg = await quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full' })
+
+  if (signal?.aborted) {
+    return null
+  }
 
   // A transient read failure must preserve every last-good display value,
   // not only locale and voice.record_key. The mtime poll deliberately keeps
   // the previous revision in this case so the same edit is retried.
-  if (cfg) {
-    applyDisplay(cfg, setBell, setVoiceRecordKey, setBellOnPrompt)
-  }
+  applyDisplay(cfg, setBell, setVoiceRecordKey, setBellOnPrompt)
 
   return cfg
 }
-
-/** Apply a live config-file change without rebuilding the agent tool schema.
- *
- * MCP reloads belong to the independent ``mcp_rev`` handshake (or the
- * explicit slash command). Display-only changes — most notably
- * ``display.language`` — must never pay that prompt-cache cost merely because
- * they share ``config.yaml`` with MCP settings.
- */
-export const syncChangedConfig = hydrateFullConfig
 
 /** Refresh a changed config revision and acknowledge it only after the full
  * config payload was applied successfully. Keeping the old revision on failure
@@ -285,7 +279,8 @@ export async function syncConfigRevision(
   setBell: (v: boolean) => void,
   setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
   observedRevision?: ConfigMtimeResponse | null,
-  setBellOnPrompt?: (v: boolean) => void
+  setBellOnPrompt?: (v: boolean) => void,
+  signal?: AbortSignal
 ): Promise<number> {
   const revision =
     observedRevision === undefined
@@ -298,7 +293,7 @@ export async function syncConfigRevision(
     return previousMtime
   }
 
-  const cfg = await syncChangedConfig(gw, setBell, setVoiceRecordKey, setBellOnPrompt)
+  const cfg = await hydrateFullConfig(gw, setBell, setVoiceRecordKey, setBellOnPrompt, signal)
 
   return cfg ? next : previousMtime
 }
@@ -333,7 +328,7 @@ export const applyDisplay = (
     // Fail safe: only YAML boolean false disables the prompt. A transient
     // config RPC failure (cfg=null) preserves the last known policy instead
     // of silently changing approval behavior until the next successful poll.
-    ...(cfg ? { destructiveSlashConfirm: approvals?.destructive_slash_confirm !== false } : {}),
+    destructiveSlashConfirm: approvals?.destructive_slash_confirm !== false,
     detailsMode: resolveDetailsMode(d),
     detailsModeCommandOverride: false,
     focusView: !!d.focus_view,
@@ -378,13 +373,18 @@ export function useConfigSync({
     mtimeRef.current = 0
     mcpRevRef.current = { accepted: '', inFlight: false }
     setVoiceEnabled(process.env.HERMES_VOICE === '1')
-    let active = true
+    const controller = new AbortController()
     syncInFlightRef.current = true
     void (async () => {
       const revision = await quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' })
-      const cfg = await hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setBellOnPrompt)
 
-      if (active) {
+      if (controller.signal.aborted) {
+        return
+      }
+
+      const cfg = await hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setBellOnPrompt, controller.signal)
+
+      if (!controller.signal.aborted) {
         mcpRevRef.current.accepted = String(revision?.mcp_rev ?? '')
 
         if (cfg) {
@@ -392,12 +392,13 @@ export function useConfigSync({
         }
       }
     })().finally(() => {
-      if (active) {
+      if (!controller.signal.aborted) {
         syncInFlightRef.current = false
       }
     })
+
     return () => {
-      active = false
+      controller.abort()
       syncInFlightRef.current = false
     }
   }, [gw, setBellOnComplete, setBellOnPrompt, setVoiceEnabled, setVoiceRecordKey, sid])
@@ -407,7 +408,7 @@ export function useConfigSync({
       return
     }
 
-    let active = true
+    const controller = new AbortController()
 
     const id = setInterval(() => {
       if (syncInFlightRef.current) {
@@ -418,7 +419,7 @@ export function useConfigSync({
       void (async () => {
         const revision = await quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' })
 
-        if (!active || !revision) {
+        if (controller.signal.aborted || !revision) {
           return
         }
 
@@ -430,9 +431,11 @@ export function useConfigSync({
           // be mistaken for a new MCP edit.
           mcpRevRef.current.accepted = nextMcpRev
         } else if (nextMcpRev) {
-          void syncMcpReload(gw, sid, nextMcpRev, mcpRevRef.current, () =>
-            turnController.pushActivity(translate(getUiState().locale, 'activity.mcpReloadedAfterConfigChange'))
-          )
+          void syncMcpReload(gw, sid, nextMcpRev, mcpRevRef.current, () => {
+            if (!controller.signal.aborted) {
+              turnController.pushActivity(translate(getUiState().locale, 'activity.mcpReloadedAfterConfigChange'))
+            }
+          })
         }
 
         const next = await syncConfigRevision(
@@ -441,21 +444,22 @@ export function useConfigSync({
           setBellOnComplete,
           setVoiceRecordKey,
           revision,
-          setBellOnPrompt
+          setBellOnPrompt,
+          controller.signal
         )
 
-        if (active) {
+        if (!controller.signal.aborted) {
           mtimeRef.current = next
         }
       })().finally(() => {
-        if (active) {
+        if (!controller.signal.aborted) {
           syncInFlightRef.current = false
         }
       })
     }, MTIME_POLL_MS)
 
     return () => {
-      active = false
+      controller.abort()
       clearInterval(id)
       syncInFlightRef.current = false
     }

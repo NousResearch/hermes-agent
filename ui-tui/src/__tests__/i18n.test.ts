@@ -10,6 +10,7 @@ import {
   shouldEllipsisVerb,
   toolsetLabel,
   translate,
+  translateOptional,
   translateSlashCategory,
   translateSlashDescription,
   translateStatus
@@ -67,7 +68,6 @@ describe('TranslationKey coverage', () => {
       catalog: { 'branding.tagline': 'Localized tagline' },
       status: { ready: 'localized ready' },
       toolVerbs: { browser: 'localized browser' },
-      trail: { analyzeLabel: 'localized analysis' },
       verbStyle: 'ellipsis'
     })
 
@@ -77,8 +77,6 @@ describe('TranslationKey coverage', () => {
     expect(pack.status.queued).toBe(en.status.queued)
     expect(pack.toolVerbs.browser).toBe('localized browser')
     expect(pack.toolVerbs.terminal).toBe(en.toolVerbs.terminal)
-    expect(pack.trail.analyzeLabel).toBe('localized analysis')
-    expect(pack.trail.draftPrefix).toBe(en.trail.draftPrefix)
     expect(pack.verbs).toBe(en.verbs)
     expect(pack.verbStyle).toBe('ellipsis')
   })
@@ -218,7 +216,6 @@ describe('partial locale packs', () => {
     expect(pack.toolVerbs).toEqual(en.toolVerbs)
     expect(pack.verbs).toBe(en.verbs)
     expect(pack.status).toEqual(en.status)
-    expect(pack.trail).toEqual(en.trail)
   })
 })
 
@@ -282,16 +279,13 @@ describe('toolsetLabel', () => {
   })
 })
 
-// ─── TRAIL_PATTERNS ────────────────────────────────────────────
+it('treats unknown wire ids as data, including Object prototype names', () => {
+  for (const id of ['constructor', 'toString', '__proto__']) {
+    expect(translateOptional('zh', id, 'Original description')).toBe('Original description')
+    expect(translateStatus('zh', id)).toBe(id)
+    expect(getToolVerb('zh', id)).toBe('running')
+  }
 
-describe('TRAIL_PATTERNS', () => {
-  it('every locale has a trail entry', async () => {
-    const { TRAIL_PATTERNS } = await import('../i18n/index.js')
-
-    for (const loc of LOCALES) {
-      expect(TRAIL_PATTERNS[loc]).toBeDefined()
-      expect(typeof TRAIL_PATTERNS[loc].draftPrefix).toBe('string')
-      expect(typeof TRAIL_PATTERNS[loc].analyzeLabel).toBe('string')
-    }
-  })
+  const pack = resolveLangPack({ catalog: { 'common.cancel': undefined } })
+  expect(pack.catalog['common.cancel']).toBe(en.catalog['common.cancel'])
 })

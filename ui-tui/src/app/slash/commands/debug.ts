@@ -88,7 +88,10 @@ export const debugCommands: SlashCommand[] = [
       ctx.transcript.panel(translate(locale, 'debug.theme.title'), [
         {
           rows: [
-            [translate(locale, 'debug.theme.oscBackground'), terminalBackgroundHex() ?? translate(locale, 'common.noReply')],
+            [
+              translate(locale, 'debug.theme.oscBackground'),
+              terminalBackgroundHex() ?? translate(locale, 'common.noReply')
+            ],
             ['HERMES_TUI_BACKGROUND', process.env.HERMES_TUI_BACKGROUND ?? translate(locale, 'common.unset')],
             ['HERMES_TUI_THEME', process.env.HERMES_TUI_THEME ?? translate(locale, 'common.unset')],
             ['COLORFGBG', process.env.COLORFGBG ?? translate(locale, 'common.unset')],

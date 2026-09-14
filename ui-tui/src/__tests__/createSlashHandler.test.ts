@@ -188,6 +188,7 @@ describe('createSlashHandler', () => {
 
   it('renders structured /status details through the active locale catalog', async () => {
     patchUiState({ locale: 'zh', sid: 'sid-abc' })
+
     const rpc = vi.fn(() =>
       Promise.resolve({
         details: {
@@ -205,6 +206,7 @@ describe('createSlashHandler', () => {
         output: 'legacy English output'
       })
     )
+
     const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
 
     expect(createSlashHandler(ctx)('/status')).toBe(true)
@@ -386,6 +388,7 @@ describe('createSlashHandler', () => {
 
   it('reads and localizes /reasoning status for the active session', async () => {
     patchUiState({ locale: 'zh', sid: 'sid-abc' })
+
     const ctx = buildCtx({
       gateway: {
         ...buildGateway(),

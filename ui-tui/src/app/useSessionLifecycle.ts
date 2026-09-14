@@ -2,6 +2,7 @@ import { writeFileSync } from 'node:fs'
 
 import type { ScrollBoxHandle } from '@hermes/ink'
 import { evictInkCaches } from '@hermes/ink'
+import type { SessionInflightTurn, SessionResumeResponse, Usage } from '@hermes/shared/gateway-events'
 import { type RefObject, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup.js'
@@ -12,14 +13,12 @@ import type {
   SessionActivateResponse,
   SessionCloseResponse,
   SessionCreateResponse,
-  SessionInflightTurn,
-  SessionResumeResponse,
   SessionTitleResponse,
   SetupStatusResponse
 } from '../gatewayTypes.js'
 import { translate, type TranslationKey } from '../i18n/index.js'
 import { asRpcResult } from '../lib/rpc.js'
-import type { Msg, PanelSection, SessionInfo, Usage } from '../types.js'
+import type { Msg, PanelSection, SessionInfo } from '../types.js'
 
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
@@ -86,6 +85,8 @@ export const signalFreshSessionBoundary = (
   return true
 }
 
+const ti = (key: TranslationKey, vars?: Record<string, string | number>) => translate(getUiState().locale, key, vars)
+
 const trimTail = (items: Msg[]) => {
   const q = [...items]
 
@@ -142,8 +143,6 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   )
 
   const cancelResumeScrollRef = useRef<null | (() => void)>(null)
-
-  const ti = (key: TranslationKey, vars?: Record<string, string | number>) => translate(getUiState().locale, key, vars)
 
   const resetSession = useCallback(() => {
     cancelResumeScrollRef.current?.()
@@ -308,10 +307,12 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
           resetSession()
           setSessionStartedAt(r.started_at ? r.started_at * 1000 : Date.now())
+
           const transcript = [
             ...toTranscriptMessages(r.messages, getUiState().locale),
             ...liveSessionInflightMessages(r.inflight)
           ]
+
           setHistoryItems(info ? [introMsg(info), ...transcript] : transcript)
           writeActiveSessionFile(r.session_key ?? r.session_id)
           patchUiState({
@@ -349,9 +350,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
         const previousSid = getUiState().sid
 
-        gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id })
+        gw.request<SessionResumeResponse<SessionInfo>>('session.resume', { cols: colsRef.current, session_id: id })
           .then(raw => {
-            const r = asRpcResult<SessionResumeResponse>(raw)
+            const r = asRpcResult<SessionResumeResponse<SessionInfo>>(raw)
 
             if (!r) {
               sys(ti('errors.invalidResponse', { method: 'session.resume' }))
@@ -406,7 +407,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
       return true
     },
-    [sys, ti]
+    [sys]
   )
 
   return useMemo(
@@ -429,8 +430,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       newSession,
       resetSession,
       resetVisibleHistory,
-      resumeById,
-      trimTail
+      resumeById
     ]
   )
 }

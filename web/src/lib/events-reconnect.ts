@@ -6,6 +6,8 @@
  * decision so both can be unit-tested without a fake WebSocket.
  */
 
+import { reconnectBackoffDelayMs } from '@hermes/shared'
+
 export const EVENTS_RECONNECT_BASE_MS = 1_000
 export const EVENTS_RECONNECT_MAX_MS = 30_000
 export const EVENTS_MAX_RECONNECT_ATTEMPTS = 15
@@ -18,19 +20,18 @@ const WS_CLOSE_NORMAL = 1000
 const WS_CLOSE_AUTH_CODES = new Set([4401, 4403])
 
 /**
- * Exponential backoff, 1s → 2s → 4s → … → 30s cap.
+ * Exponential backoff, 1s → 2s → 4s → … → 30s cap. Deterministic (no jitter)
+ * because the banner prints the exact delay.
  *
  * `attempt` is 0-based: attempt 0 is the first retry after the initial
  * connection dropped.
  */
 export function eventsReconnectDelayMs(attempt: number): number {
-  const exponent = Math.max(0, Math.trunc(attempt))
-
-  // 2 ** exponent overflows to Infinity long before it matters; Math.min
-  // still clamps correctly, but guard anyway so the delay stays a number.
-  const raw = EVENTS_RECONNECT_BASE_MS * 2 ** Math.min(exponent, 32)
-
-  return Math.min(raw, EVENTS_RECONNECT_MAX_MS)
+  return reconnectBackoffDelayMs(attempt, {
+    baseDelayMs: EVENTS_RECONNECT_BASE_MS,
+    capMs: EVENTS_RECONNECT_MAX_MS,
+    jitter: false
+  })
 }
 
 /**

@@ -43,10 +43,12 @@ import { shouldRestoreTerminalFocus } from '@/lib/pty-focus'
 import { PtyResumeSanitizer } from '@/lib/pty-resume-sanitizer'
 import {
   PTY_CONNECTING_TIMEOUT_MS,
+  PTY_RECONNECT_MAX_ATTEMPTS,
   PTY_RESUME_RECONNECT_THROTTLE_MS,
   PTY_RESUME_SANITIZE_WINDOW_MS,
   PTY_TICKET_TIMEOUT_MS,
   type PtyConnectionState,
+  ptyReconnectDelayMs,
   shouldBlockPtyInput,
   shouldReconnectPtyOnPageResume
 } from '@/lib/pty-reconnect'
@@ -1100,12 +1102,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (reconnectTimerRef.current) {
         return
       }
-      const attempt = Math.min(reconnectAttemptRef.current + 1, 5)
-      reconnectAttemptRef.current = attempt
-      const delayMs = Math.min(250 * 2 ** (attempt - 1), 3000)
-      setBanner(null)
-      setLastCloseCode(code)
-      setPtyState('reconnecting')
+      const attempt = Math.min(reconnectAttemptRef.current + 1, PTY_RECONNECT_MAX_ATTEMPTS);
+      reconnectAttemptRef.current = attempt;
+      const delayMs = ptyReconnectDelayMs(attempt);
+      setBanner(null);
+      setLastCloseCode(code);
+      setPtyState("reconnecting");
       reconnectTimerRef.current = setTimeout(() => {
         reconnectTimerRef.current = null
         setReconnectNonce(n => n + 1)
@@ -1682,14 +1684,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           role="complementary"
           aria-label={modelToolsLabel}
           className={cn(
-            'font-mondwest fixed top-0 right-0 z-[60] flex h-dvh max-h-dvh w-64 min-w-0 flex-col antialiased',
-            'border-l border-current/20 text-midground',
-            'bg-background-base/95',
-            'transition-transform duration-200 ease-out',
-            '[background:var(--component-sidebar-background)]',
-            '[clip-path:var(--component-sidebar-clip-path)]',
-            '[border-image:var(--component-sidebar-border-image)]',
-            mobilePanelOpen ? 'translate-x-0' : 'pointer-events-none translate-x-full'
+            "font-mondwest fixed top-0 right-0 z-[60] flex h-dvh max-h-dvh w-64 min-w-0 flex-col antialiased",
+            "border-l border-current/20 text-midground",
+            "bg-background-base/95",
+            "transition-transform duration-200 ease-out",
+            "[background:var(--component-sidebar-background,var(--background-base))]",
+            "[clip-path:var(--component-sidebar-clip-path)]",
+            "[border-image:var(--component-sidebar-border-image)]",
+            mobilePanelOpen
+              ? "translate-x-0"
+              : "pointer-events-none translate-x-full",
           )}
         >
           <div className={cn('flex h-14 shrink-0 items-center justify-between gap-2 border-b border-current/20 px-5')}>

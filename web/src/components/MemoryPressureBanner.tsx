@@ -144,22 +144,17 @@ export function MemoryPressureBanner({
   const message =
     trigger === "disk_critical"
       ? `${
-          t.app.diskCriticalBanner ??
-          "Your agent's disk is almost full. New messages, memories, and settings may fail to save."
+          t.app.diskCriticalBanner
         }${diskFreeLabel}`
       : trigger === "disk_elevated"
         ? `${
-            t.app.diskElevatedBanner ??
-            "Your agent's disk is filling up. Consider clearing old sessions or expanding its storage."
+            t.app.diskElevatedBanner
           }${diskFreeLabel}`
         : trigger === "oom_restart"
-          ? (t.app.memoryOomRestartBanner ??
-            "Your agent restarted unexpectedly, most likely because it ran out of memory. Long sessions and many concurrent tasks increase memory use.")
+          ? (t.app.memoryOomRestartBanner)
           : critical
-            ? (t.app.memoryCriticalBanner ??
-              "Your agent is almost out of memory and may restart. Consider closing idle sessions or upgrading its memory.")
-            : (t.app.memoryElevatedBanner ??
-              "Your agent is running low on memory.");
+            ? (t.app.memoryCriticalBanner)
+            : (t.app.memoryElevatedBanner);
 
   return (
     <div
@@ -175,7 +170,7 @@ export function MemoryPressureBanner({
       <span className="min-w-0 flex-1">{message}</span>
       <button
         type="button"
-        aria-label={t.app.dismiss ?? "Dismiss"}
+        aria-label={t.app.dismiss}
         onClick={dismiss}
         className="shrink-0 opacity-70 hover:opacity-100"
       >

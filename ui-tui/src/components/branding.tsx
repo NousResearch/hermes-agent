@@ -1,10 +1,10 @@
 import { Box, Text, useStdout } from '@hermes/ink'
+import { mix } from '@hermes/shared/color'
 import { useEffect, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
 import { toolsetLabel, useI18n } from '../i18n/index.js'
-import { mix } from '../lib/color.js'
 import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
@@ -404,12 +404,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
       {/* ── Tools (expanded by default) ── */}
       <Box flexDirection="column" marginTop={1}>
-        <Accordion
-          onToggle={() => setToolsOpen(v => !v)}
-          open={toolsOpen}
-          t={t}
-          title={ti('branding.availableTools')}
-        >
+        <Accordion onToggle={() => setToolsOpen(v => !v)} open={toolsOpen} t={t} title={ti('branding.availableTools')}>
           {toolsBody()}
         </Accordion>
       </Box>
@@ -420,9 +415,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           count={skillsTotal}
           onToggle={() => setSkillsOpen(v => !v)}
           open={skillsOpen}
-          suffix={
-            skillsCatCount > 0 ? ti('branding.skillsInCategories', { count: String(skillsCatCount) }) : undefined
-          }
+          suffix={skillsCatCount > 0 ? ti('branding.skillsInCategories', { count: String(skillsCatCount) }) : undefined}
           t={t}
           title={ti('branding.availableSkills')}
         >

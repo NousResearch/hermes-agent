@@ -12,25 +12,17 @@ _profile_scoped = _registry.profile_scoped
 
 _BUILTIN_AT_PREFIXES = frozenset({"file", "folder", "url", "git", "diff", "staged"})
 _AT_DIRECTIVE_HINTS = [
-    ("@diff", "git diff"), ("@staged", "staged diff"), ("@file:", "attach file"),
-    ("@folder:", "attach folder"), ("@url:", "fetch url"), ("@git:", "git log")]
+    ("@diff", "git diff", "completion.gitDiff"),
+    ("@staged", "staged diff", "completion.stagedDiff"),
+    ("@file:", "attach file", "completion.attachFile"),
+    ("@folder:", "attach folder", "completion.attachFolder"),
+    ("@url:", "fetch url", "completion.fetchUrl"),
+    ("@git:", "git log", "completion.gitLog"),
+]
 _SLASH_EXTRAS = [
     ("/density", "Toggle compact display mode"), ("/details", "Control agent detail visibility"),
     ("/logs", "Show recent gateway log lines"),
     ("/mouse", "Set mouse tracking preset [on|off|toggle|wheel|buttons|all]")]
-
-_COMPLETION_META_KEYS = {
-    "@diff": "completion.gitDiff",
-    "@staged": "completion.stagedDiff",
-    "@file:": "completion.attachFile",
-    "@folder:": "completion.attachFolder",
-    "@url:": "completion.fetchUrl",
-    "@git:": "completion.gitLog",
-    "/density": "density",
-    "/details": "details",
-    "/logs": "logs",
-    "/mouse": "mouse",
-}
 
 
 def _item(
@@ -42,11 +34,8 @@ def _item(
     meta_vars: dict | None = None,
 ) -> dict:
     item = {"text": text, "display": display if display is not None else text, "meta": meta}
-    presentation_key = meta_key or _COMPLETION_META_KEYS.get(text)
-    if presentation_key:
-        item["meta_key"] = presentation_key
-    elif meta == "dir":
-        item["meta_key"] = "completion.directory"
+    if meta_key:
+        item["meta_key"] = meta_key
     if meta_vars:
         item["meta_vars"] = meta_vars
     return item
@@ -161,13 +150,14 @@ def _fuzzy_basename_items(root: str, path_part: str, prefix_tag: str) -> list[di
     return [
         _item(
             f"@{'folder' if is_dir else tag}:{rel}{'/' if is_dir else ''}",
-            "dir" if is_dir else os.path.dirname(rel), basename + ("/" if is_dir else ""))
+            "dir" if is_dir else os.path.dirname(rel), basename + ("/" if is_dir else ""),
+            meta_key="completion.directory" if is_dir else None)
         for _, rel, basename, is_dir in ranked[:30]]
 
 
 def _at_root_items() -> list[dict]:
     """Completions for a bare ``@``: directive hints, agent profiles, plugin ``@<prefix>:`` providers."""
-    items = [_item(t, m) for t, m in _AT_DIRECTIVE_HINTS] + _profile_mention_items("")
+    items = [_item(text, meta, meta_key=key) for text, meta, key in _AT_DIRECTIVE_HINTS] + _profile_mention_items("")
     with contextlib.suppress(Exception):
         from agent.context_references import get_context_reference_providers
         for pfx, prov in sorted(get_context_reference_providers().items()):
@@ -203,7 +193,8 @@ def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is
             text = "~/" + os.path.relpath(full, os.path.expanduser("~")) + suffix
         else:
             text = ("./" if word.startswith("./") else "") + rel + suffix
-        items.append(_item(text, "dir" if is_dir else "", entry + suffix))
+        items.append(_item(text, "dir" if is_dir else "", entry + suffix,
+                           meta_key="completion.directory" if is_dir else None))
         if len(items) >= 30:
             break
     return items
@@ -287,8 +278,9 @@ def _(rid, params: dict) -> dict:
                 ),
             }
             token = completion.text if completion.text.startswith("/") else f"/{completion.text}"
-            if description_key := command_keys.get(token):
-                item["meta_key"] = description_key
+            if " " not in doc.text and item["kind"] == "command":
+                if description_key := command_keys.get(token):
+                    item["meta_key"] = description_key
             items.append(item)
         return items
     items = to_items(Document(text, len(text)))
@@ -309,7 +301,7 @@ def _(rid, params: dict) -> dict:
     text_lower = text.lower()
     for extra_text, extra_meta in _SLASH_EXTRAS:
         if extra_text.startswith(text_lower) and not any(item["text"] == extra_text for item in items):
-            items.append({**_item(extra_text, extra_meta), "kind": "command"})
+            items.append({**_item(extra_text, extra_meta, meta_key=extra_text.lstrip("/")), "kind": "command"})
     if (details_items := _details_completions(text)) is not None:
         return _ok(rid, {"items": details_items, "replace_from": text.rfind(" ") + 1 if " " in text else len(text)})
     return _ok(rid, {"items": items, "replace_from": text.rfind(" ") + 1 if " " in text else 1})

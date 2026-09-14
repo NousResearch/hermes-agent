@@ -37,8 +37,10 @@ from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
-from agent.message_sanitization import (_sanitize_surrogates, _repair_tool_call_arguments)
-from agent.reasoning_summaries import separate_glued_reasoning_blocks
+from agent.message_sanitization import (
+    _sanitize_surrogates, _repair_tool_call_arguments, normalize_finish_reason as _normalize_finish_reason,
+)
+from agent.reasoning_summaries import append_streamed_reasoning_detail, separate_glued_reasoning_blocks
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
@@ -2074,7 +2076,11 @@ def _summary_text(agent, response, **normalize_kwargs) -> str:
 def _codex_summary_attempt(agent, api_messages: list, api_request_id: str):
     def _attempt(retry_count: int) -> str:
         codex_kwargs = agent._build_api_kwargs(api_messages)
+        # The transport emits these three as one block (transports/codex.py build_kwargs);
+        # strict Responses backends 400 on tool_choice/parallel_tool_calls without tools.
         codex_kwargs.pop("tools", None)
+        codex_kwargs.pop("tool_choice", None)
+        codex_kwargs.pop("parallel_tool_calls", None)
         return _summary_text(agent, agent._run_codex_stream(codex_kwargs))
     return _attempt
 
@@ -2214,6 +2220,18 @@ def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, u
 _SSE_CONN_PHRASES = ("connection lost", "connection reset", "connection closed", "connection terminated",
     "network error", "network connection", "terminated", "peer closed", "broken pipe",
     "upstream connect error")
+
+
+def _rejects_stream_options(exc: BaseException) -> bool:
+    """A 400/422 whose body names ``stream_options`` as an unknown/extra field: strict
+    OpenAI-compatible endpoints (Azure AI Foundry MaaS, Pydantic ``extra_forbidden``) reject
+    the usage extension outright (#9705). Distinct from "stream not supported", which flips
+    the whole session to non-streaming."""
+    if getattr(exc, "status_code", None) not in (400, 422):
+        return False
+    body = f"{getattr(exc, 'body', '') or ''} {exc}".lower()
+    return "stream_options" in body and any(
+        k in body for k in ("extra", "not supported", "unrecognized", "unexpected", "unknown"))
 
 
 def _is_sse_connection_error(exc: BaseException) -> bool:
@@ -2694,8 +2712,9 @@ class _StreamingCall(StreamingWaitMonitor):
         return usage, finish_reason
 
     def _open_chat_stream(self, stream_kwargs: dict[str, Any]):
-        # Native Gemini rejects OpenAI's usage-streaming extension.
-        if not is_native_gemini_base_url(self.agent.base_url):
+        # Native Gemini rejects OpenAI's usage-streaming extension; so do strict endpoints that
+        # already 4xx'd on it this session (``_stream_options_unsupported``, see #9705).
+        if not is_native_gemini_base_url(self.agent.base_url) and not getattr(self.agent, "_stream_options_unsupported", False):
             stream_kwargs["stream_options"] = {"include_usage": True}
         request_client = self._attempt_request_client = self.clients.set_client(
             self.agent._create_request_openai_client(reason="chat_completion_stream_request", api_kwargs=stream_kwargs))
@@ -2751,6 +2770,7 @@ class _StreamingCall(StreamingWaitMonitor):
         base_timeout, read_timeout, conn_cap = self._stream_timeouts()
         content_parts: list = []
         reasoning_parts: list = []
+        reasoning_details: list = []  # OpenRouter replay data (signatures, encrypted blocks)
         pending_text_parts: list[str] = []
         tool_calls = _ToolCallAccumulator()
         tool_calls_acc = tool_calls.acc
@@ -2814,7 +2834,7 @@ class _StreamingCall(StreamingWaitMonitor):
             delta = choice.delta
             # Read finish_reason/usage BEFORE any content-shape `continue`: the SSE-echo
             # guard can swallow a merged finish chunk (vLLM standalone ':' tokens).
-            finish_reason = getattr(choice, "finish_reason", None) or finish_reason
+            finish_reason = _normalize_finish_reason(getattr(choice, "finish_reason", None)) or finish_reason
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
 
@@ -2825,6 +2845,15 @@ class _StreamingCall(StreamingWaitMonitor):
                     reasoning_parts[-1] if reasoning_parts else "", reasoning_text)
                 reasoning_parts.append(reasoning_text)
                 self._emit_reasoning(reasoning_text)
+            # Structured reasoning_details deltas carry the provider's replay data; the
+            # non-streaming path already keeps them, so dropping them here lost
+            # reasoning continuity on nearly every turn. Pydantic parks unknown fields
+            # in ``model_extra``.
+            rd_delta = getattr(delta, "reasoning_details", None)
+            if rd_delta is None and isinstance(getattr(delta, "model_extra", None), dict):
+                rd_delta = delta.model_extra.get("reasoning_details")
+            for rd in rd_delta if isinstance(rd_delta, (list, tuple)) else ():
+                append_streamed_reasoning_detail(reasoning_details, rd)
 
             # Text (list-of-blocks deltas flattened once); possible echoed SSE is
             # buffered until it can be judged.
@@ -2860,7 +2889,7 @@ class _StreamingCall(StreamingWaitMonitor):
             return self._adopt_final_response(stream.final_response)
         return self._finish_chat_stream(stream, role, content_parts, reasoning_parts, tool_calls_acc,
             finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
-            response_id=response_id, upstream_provider=upstream_provider)
+            response_id=response_id, upstream_provider=upstream_provider, reasoning_details=reasoning_details)
 
     def _adopt_final_response(self, final_response):
         """Adapter returned a completed response for ``stream=True``: switch the
@@ -2909,7 +2938,7 @@ class _StreamingCall(StreamingWaitMonitor):
         return mock_tool_calls or None, has_truncated_tool_args
 
     def _finish_chat_stream(self, stream, role, content_parts, reasoning_parts, tool_calls_acc, finish_reason,
-        model_name, usage_obj, *, flush_pending, response_id=None, upstream_provider=None):
+        model_name, usage_obj, *, flush_pending, response_id=None, upstream_provider=None, reasoning_details=None):
         """Assemble the non-streaming-shaped response after the chunk loop. A
         stream ending with no finish_reason is a drop, not a completion: return a
         partial-stream stub so the loop fails fast instead of executing empty
@@ -2931,9 +2960,11 @@ class _StreamingCall(StreamingWaitMonitor):
                 _dropped_names)
             return _build_partial_stream_stub(
                 role, full_content, full_reasoning, model_name, usage_obj, dropped_tool_names=_dropped_names or None)
-        if finish_reason is None and content_parts and not tool_calls_acc and usage_obj is None:
-            # Text-only drop: otherwise the partial text is stamped "stop" and the next step is
-            # lost. A usage object proves the provider finished (include_usage's final chunk).
+        if finish_reason is None and (content_parts or reasoning_parts) and not tool_calls_acc and usage_obj is None:
+            # Text-only (or reasoning-only) drop: otherwise the partial text is stamped "stop"
+            # and the next step is lost — for reasoning-only, the clean-stop promotion in
+            # finish_text_response would then surface a truncated thought as the answer.
+            # A usage object proves the provider finished (include_usage's final chunk).
             logger.warning(
                 "Stream ended with no finish_reason after delivering text with no tool calls; treating as a mid-stream drop.")
             return _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj)
@@ -2944,6 +2975,10 @@ class _StreamingCall(StreamingWaitMonitor):
             raise provider_stream_error
         flush_pending()
         message = SimpleNamespace(role=role, content=full_content, tool_calls=mock_tool_calls, reasoning_content=full_reasoning)
+        if reasoning_details:
+            # Only when present: _build_assistant_message's passthrough persists them
+            # for replay, and non-reasoning providers keep the attribute absent.
+            message.reasoning_details = reasoning_details
         # The provider's id when the chunks carried one (chatcmpl-/gen-...): it is what a provider needs to
         # look a request up. Fabricated only when the stream never sent one.
         return SimpleNamespace(id=response_id or ("stream-" + str(uuid.uuid4())), model=model_name, usage=usage_obj,
@@ -3103,6 +3138,16 @@ class _StreamingCall(StreamingWaitMonitor):
         _is_sse_conn_err = not _is_timeout and not _is_conn_err and _is_sse_connection_error(e)
         _is_transient = _is_timeout or _is_conn_err or _is_sse_conn_err or _is_stream_parse_err
 
+        if not self.deltas_were_sent["yes"] and not getattr(self.agent, "_stream_options_unsupported", False) and _rejects_stream_options(e):
+            # Nothing streamed yet: drop the usage extension for this session and re-open.
+            self.agent._stream_options_unsupported = True
+            self._compat_retries = 1
+            logger.info("Endpoint rejected stream_options (HTTP %s); retrying without it for this session.",
+                        getattr(e, "status_code", None))
+            self._cancel_current_stream_attempt("stream_options_rejected_retry")
+            self.clients.close_once("stream_options_rejected_retry")
+            return True
+
         if self.deltas_were_sent["yes"]:
             # Died AFTER tokens were delivered: normally no retry (would duplicate
             # text). Exception: a tool call in flight — aborting discards it, so
@@ -3154,8 +3199,14 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _call(self):
         _max_stream_retries = env_int("HERMES_STREAM_RETRIES", 2)
+        # The one stream_options compatibility retry (#9705) is not a network retry and must not
+        # consume the transient budget: on the last attempt (or HERMES_STREAM_RETRIES=0) the
+        # handler returned True and the loop ended with neither a response nor an error set.
+        self._compat_retries = 0
+        _stream_attempt = -1
         try:
-            for _stream_attempt in range(_max_stream_retries + 1):
+            while _stream_attempt < _max_stream_retries + self._compat_retries:
+                _stream_attempt += 1
                 stream_attempt_id = self._start_stream_attempt()
                 # Otherwise /stop closes the connection and the retry opens a
                 # FRESH one, blocking up to a full read timeout per attempt.

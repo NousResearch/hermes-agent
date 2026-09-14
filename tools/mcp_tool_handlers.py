@@ -41,10 +41,12 @@ _STDIO_OUTCOME_UNCERTAIN_MSG = (
 def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
     """Approval gate for write-capable tools on ``trust: untrusted`` servers. None to proceed,
     else a ``tool_error``. Fail-closed: approval-system errors block."""
-    from tools.mcp_tool_scope import _resolve_server_key
-    key = _resolve_server_key(server_name)
-    if (_core._server_trust_levels.get(key, _core._TRUST_FULL) != _core._TRUST_UNTRUSTED
-            or _core._tool_read_only_hints.get(key, {}).get(tool_name) is True):
+    from tools.mcp_tool_scope import _resolve_server_key, _server_key
+    # Trust is the calling profile's own policy (an adopter of a shared connection keeps its own tier);
+    # readOnlyHint is a property of the connection's tools, so it lives under the connection key.
+    trust = _core._server_trust_levels.get(_server_key(server_name), _core._TRUST_FULL)
+    if (trust != _core._TRUST_UNTRUSTED
+            or _core._tool_read_only_hints.get(_resolve_server_key(server_name), {}).get(tool_name) is True):
         return None
     try:  # lazy: tools.approval routes the prompt to whichever surface owns the session
         from tools.approval_prompt import request_elicitation_consent
@@ -75,8 +77,15 @@ def _check_circuit_breaker(server_name: str) -> Optional[str]:
     age = time.monotonic() - _core._server_breaker_opened_at.get(key, 0.0)
     if failures < _core._CIRCUIT_BREAKER_THRESHOLD or age >= _core._CIRCUIT_BREAKER_COOLDOWN_SEC:
         return None
+    retry_in = max(1, int(_core._CIRCUIT_BREAKER_COOLDOWN_SEC - age))
+    if _core._server_errors_all_application.get(key):
+        # The server answered every time; the calls were rejected. Calling it "unreachable" sent the
+        # model to the user instead of to its own arguments (#11113).
+        return tool_error(f"MCP server '{server_name}' rejected the last {failures} calls (it is reachable; see the "
+                          f"error text those calls returned). Paused for ~{retry_in}s. Do NOT repeat the same call — "
+                          f"fix the arguments/URL/target or use a different approach.")
     return tool_error(f"MCP server '{server_name}' is unreachable after {failures} consecutive failures. "
-                      f"Auto-retry available in ~{max(1, int(_core._CIRCUIT_BREAKER_COOLDOWN_SEC - age))}s. Do NOT retry "
+                      f"Auto-retry available in ~{retry_in}s. Do NOT retry "
                       f"this tool yet — use alternative approaches or ask the user to check the MCP server.")
 
 
@@ -106,8 +115,12 @@ def _result_is_error(result) -> bool:
 
 
 def _record_call_outcome(server_name: str, result) -> Any:
-    """Breaker bookkeeping: an error payload from the tool itself still counts as a strike."""
-    (_core._bump_server_error if _result_is_error(result) else _core._reset_server_error)(server_name)
+    """Breaker bookkeeping: an error payload from the tool itself still counts as a strike (#10447),
+    flagged as an application error so the open-breaker message stays truthful."""
+    if _result_is_error(result):
+        _core._bump_server_error(server_name, application=True)
+    else:
+        _core._reset_server_error(server_name)
     return result
 
 
@@ -132,17 +145,15 @@ def _lookup_reconnectable_server(server_name: str, require_loop: bool = False):
 
 
 def _retry_once(server_name: str, retry_call, op_description: str, what: str):
-    """Re-run ``retry_call`` after a recovery step. Returns the result (closing the breaker)
-    when it is not an error payload; None when the retry raised or errored (caller falls through)."""
+    """Re-run ``retry_call`` after a recovery step. Returns the result when the RPC completed
+    (an application error is still the tool's real answer, and still a breaker strike per #10447);
+    None when the retry raised (caller falls through)."""
     try:
         result = retry_call()
     except Exception as retry_exc:
         logger.warning("MCP %s/%s retry after %s failed: %s", server_name, op_description, what, retry_exc)
         return None
-    if _result_is_error(result):
-        return None
-    _core._reset_server_error(server_name)
-    return result
+    return _record_call_outcome(server_name, result)
 
 
 def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str):

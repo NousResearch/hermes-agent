@@ -203,6 +203,8 @@ In gateway deployments (Telegram, Discord, Slack, etc.) each user arrives with a
 | `userPeerAliases` | object | `{}` | Map of runtime IDs to peer IDs (`{"7654321": "alice"}`). Many-to-one is the intended pattern — alias all your runtime IDs to one peer name. One-to-many is not supported; one runtime ID resolves to exactly one peer |
 | `runtimePeerPrefix` | string | `""` | Prepended to unknown runtime IDs to namespace them (e.g. `"telegram_"` → `telegram_7654321`). Used only when no alias matches. Prevents collisions between platforms whose runtime IDs share the same shape |
 
+A dashboard login is a runtime identity too. The desktop passes `<provider>:<user id>` (for example `basic:alice` or `oidc:google-oauth2|1183…`) as the runtime user, so a logged-in session resolves like a gateway user: alias, then prefix, else the raw id. Enabling dashboard login on an install that ran on `peerName` moves new sessions to that peer. Keep the old history with `pinUserPeer: true` or a `userPeerAliases` entry for the login id. Without a login the desktop still uses `peerName`.
+
 > **Deprecated:** `pinPeerName` is a legacy alias for `pinUserPeer`, still read for back-compat (`pinUserPeer` wins where both are set). `hermes honcho setup` migrates it onto `pinUserPeer` on touch and never writes it.
 
 **Resolver ladder** (first match wins):
@@ -214,8 +216,10 @@ In gateway deployments (Telegram, Discord, Slack, etc.) each user arrives with a
 4. runtimePeerPrefix + runtime_id → namespaced peer, with sha256 collision escalation
 5. raw sanitized runtime_id      → fallback peer
 6. peerName                      → no runtime ID at all (CLI/TUI)
-7. session-key fallback          → no config either
+7. neither                       → session init fails with a one-time notice; no peer is minted
 ```
+
+Step 7 used to derive a peer from the session key (`user-default-<dir>`). That put a desktop or CLI session with no `peerName` on a phantom peer per directory, so its turns and memory never reached the operator's own peer (#93326). Set `peerName` (`hermes honcho peer --user <name>`) or run under a gateway that supplies a user ID.
 
 **Why no `pinAiPeer`?** The AI peer is already pinned by construction — `aiPeer` is the only AI-side identity setting and the resolver never overrides it. Only the user-side peer has the runtime-vs-config tension that `pinUserPeer` resolves.
 
@@ -228,6 +232,12 @@ In gateway deployments (Telegram, Discord, Slack, etc.) each user arrives with a
 - **me + other people / only other people** → `pinUserPeer: false`, optional `runtimePeerPrefix`. Each runtime user → own peer. For bots serving many humans.
 
 Pick **[e]** at the prompt to set the three keys directly instead of going through the tree.
+
+**Interactive mapping — `hermes honcho peers map`.** The setup tree covers the common shapes; `hermes honcho peers map` is the full identity view for a gateway with many users and agents. It joins two sources: the workspace's peers fetched from the Honcho API (labeled from local config — your peer, each profile's AI peer, alias targets, runtime peers of seen accounts, `user-*` fallback peers, honestly `unrecognized` otherwise), and the gateway accounts recorded in the local session store (platform, runtime ID, name, and what each currently resolves to, with `✓` when that peer already exists and `○ new` when it would be created on first message).
+
+Mapping targets are picked from the workspace list (`p3`) rather than typed, so a typo cannot silently create a fresh peer; typing a name stays available for the deliberate new-peer case, and `-` clears an alias. Every assignment states its consequence: aliases move future messages only, and a runtime peer left behind keeps its history. `p<N>` alone peeks at a peer's card. `w` lists every workspace the key can reach — the wrong-workspace fallback when the peers shown aren't yours — and lets you browse one and, on explicit confirmation, repoint the profile's `workspace` at it. For a standalone workspace browser beyond mapping, [honcho-cli](https://pypi.org/project/honcho-cli/) is an optional companion (`uv tool install honcho-cli`).
+
+With multiple profiles: saving a root-cascading map asks whether the edit applies to all profiles (root) or forks this profile's host block; a root write with profiles on other workspaces warns that picked peers may not exist there; and the accounts table marks siblings that resolve the same account to a different peer (`≠ dreamer→bob`). Offline, the command degrades to typed targets over the local account list. `hermes honcho peers` without `map` stays a read-only view.
 
 **Un-pinning (single → per-user).** Flipping `pinUserPeer` from `true` to `false` does not migrate data. Memory accumulated under `peerName` while pinned stays there; runtime users now resolve to fresh, empty peers. To preserve your own continuity, choose the **pooled** path — alias your runtime IDs back to `peerName` so your turns keep landing on the pooled history while other users get their own peers. The wizard offers this steer automatically when it detects you're un-pinning a previously pinned profile.
 
@@ -252,8 +262,9 @@ Pick **[e]** at the prompt to set the three keys directly instead of going throu
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `sessionStrategy` | string | `"per-directory"` | `"per-directory"`, `"per-session"`, `"per-repo"` (git root), `"global"` |
-| `sessionPeerPrefix` | bool | `false` | Prepend peer name to session keys |
 | `a2aSessions` | bool | `true` | Write DMs from other bots into their own session per sender bot. `false` skips bot-authored turns |
+| `sessionPeerPrefix` | bool | `false` | Prepend the user peer name to session keys |
+| `sessionAiPeerPrefix` | bool | `false` | Prepend the AI peer (`aiPeer`) to session keys — keeps sessions disjoint when multiple AI peers share a workspace |
 | `sessions` | object | `{}` | Manual directory-to-session-name mappings |
 
 #### Session Name Resolution
@@ -272,7 +283,9 @@ The Honcho session name determines which conversation bucket memory lands in. Re
 
 Gateway platforms always resolve via priority 3 (per-chat isolation) regardless of `sessionStrategy`. The strategy setting only affects CLI sessions.
 
-If `sessionPeerPrefix` is `true`, the peer name is prepended: `alice-hermes-agent`.
+If `sessionPeerPrefix` is `true`, the user peer name is prepended: `alice-hermes-agent`.
+
+If `sessionAiPeerPrefix` is `true`, the AI peer (`aiPeer`) is prepended to the final name on **every** path — including priority 3. This is the symmetric counterpart to `sessionPeerPrefix` and exists because the gateway session key is AI-peer-agnostic: when several AI peers share one workspace, peer name, and gateway chat key, they would otherwise collide on a single session. With `aiPeer: ivy`, priority 3 becomes `ivy-agent-main-telegram-dm-8439114563`.
 
 #### Bot DMs (`a2aSessions`)
 
@@ -340,6 +353,8 @@ Host key is derived from the active Hermes profile: `hermes` (default) or `herme
 | `contextCadence` | int | `1` | Minimum turns between base context refreshes (session summary + representation + card) |
 | `dialecticCadence` | int | `1` | Minimum turns between dialectic `.chat()` firings |
 | `injectionFrequency` | string | `"every-turn"` | `"every-turn"` or `"first-turn"` (inject base context on the first user message only; the dialectic supplement keeps its own cadence) |
+| `injection.sessionStart` | list | unset | Which base-context sections to inject: any of `summary`, `peerRepresentation`, `peerCard`, `aiRepresentation`, `aiCard`. Unset injects all of them in that order. `[]` injects nothing. A host block with an `injection` object replaces the root pin wholesale |
+| `logging` | bool | `false` | Append one JSON record per turn to `~/.honcho/injection.log` saying what was injected and why. The file is owner-only and holds the user's representation verbatim. `HONCHO_LOGGING=1` also switches it on and `HONCHO_INJECTION_LOG=<path>` moves it |
 | `queryRewrite` | bool | `false` | Rewrite the latest message into a retrieval query before dialectic (one extra auxiliary LLM call per cycle) |
 | `firstTurnBaseWait` | float | `3.0` | Max seconds turn 1 waits for base context / session init. `0` disables the wait (fully async; context surfaces on later turns). Turns 2+ never wait on a stalled init |
 | `firstTurnDialecticWait` | float | `2.0` | Max seconds turn 1 waits for a dialectic result. `0` disables |

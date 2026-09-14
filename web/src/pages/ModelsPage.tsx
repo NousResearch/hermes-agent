@@ -14,22 +14,22 @@ import { timeAgo, cn, themedBody } from '@/lib/utils'
 import {
   DASHBOARD_MODAL_BACKDROP,
   DASHBOARD_MODAL_PANEL,
-  shouldCloseOuterModalOnEscape
-} from '@/lib/dashboard-modal-shell'
-import { formatTokenCount } from '@/lib/format'
-import { Button } from '@nous-research/ui/ui/components/button'
-import { Spinner } from '@nous-research/ui/ui/components/spinner'
-import { Stats } from '@nous-research/ui/ui/components/stats'
-import { Card, CardContent, CardHeader, CardTitle } from '@nous-research/ui/ui/components/card'
-import { Badge } from '@nous-research/ui/ui/components/badge'
-import { Switch } from '@nous-research/ui/ui/components/switch'
-import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { useModalBehavior } from '@/hooks/useModalBehavior'
-import { usePageHeader } from '@/contexts/usePageHeader'
-import { useI18n } from '@/i18n'
-import { PluginSlot } from '@/plugins'
-import { ModelPickerDialog } from '@/components/ModelPickerDialog'
-import { ModelReloadConfirm } from '@/components/ModelReloadConfirm'
+  shouldCloseOuterModalOnEscape,
+} from "@/lib/dashboard-modal-shell";
+import { compactNumber } from "@hermes/shared";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { Stats } from "@nous-research/ui/ui/components/stats";
+import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
+import { Badge } from "@nous-research/ui/ui/components/badge";
+import { Switch } from "@nous-research/ui/ui/components/switch";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { useModalBehavior } from "@/hooks/useModalBehavior";
+import { usePageHeader } from "@/contexts/usePageHeader";
+import { useI18n } from "@/i18n";
+import { PluginSlot } from "@/plugins";
+import { ModelPickerDialog } from "@/components/ModelPickerDialog";
+import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
 
 const PERIODS = [
   { label: '7d', days: 7 },
@@ -408,12 +408,12 @@ function ModelCard({
               )}
               {caps.context_window && caps.context_window > 0 && (
                 <span className="text-xs text-text-secondary">
-                  {formatTokenCount(caps.context_window)} {t.modelSettings.contextShort}
+                  {compactNumber(caps.context_window)} {t.modelSettings.contextShort}
                 </span>
               )}
               {caps.max_output_tokens && caps.max_output_tokens > 0 && (
                 <span className="text-xs text-text-secondary">
-                  {formatTokenCount(caps.max_output_tokens)} {t.modelSettings.maxOutputShort}
+                  {compactNumber(caps.max_output_tokens)} {t.modelSettings.maxOutputShort}
                 </span>
               )}
             </div>

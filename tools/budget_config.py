@@ -4,6 +4,8 @@ Per-tool resolution: pinned > config overrides > registry > default."""
 from dataclasses import dataclass, field
 from typing import Dict
 
+from agent.model_metadata import CHARS_PER_TOKEN
+
 # Never overridden; read_file=inf prevents infinite persist->read->persist loops.
 PINNED_THRESHOLDS: Dict[str, float] = {"read_file": float("inf")}
 
@@ -76,9 +78,8 @@ class BudgetConfig:
 # Default config -- matches the historical hardcoded behavior exactly.
 DEFAULT_BUDGET = BudgetConfig()
 
-# Same rough 4-chars-per-token the estimator uses (agent/model_metadata.py);
-# a smaller divisor would UNDER-protect small models.
-_CHARS_PER_TOKEN: int = 4
+# Same rough chars-per-token the estimator uses; a smaller divisor would UNDER-protect small models.
+_CHARS_PER_TOKEN: int = CHARS_PER_TOKEN
 # Window fraction ONE result / the WHOLE turn's tool output may occupy — well
 # under 1.0 since system prompt, schemas, history and the reply all compete.
 _PER_RESULT_WINDOW_FRACTION: float = 0.15

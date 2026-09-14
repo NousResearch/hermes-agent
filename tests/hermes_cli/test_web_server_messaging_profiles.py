@@ -164,11 +164,11 @@ class TestProfileScopedMessagingWrites:
 
         # Enablement lands in the target profile's config.yaml.
         worker_cfg = yaml.safe_load(
-            (isolated_profiles["worker_alpha"] / "config.yaml").read_text()
+            (isolated_profiles["worker_alpha"] / "config.yaml").read_text(encoding="utf-8")
         ) or {}
         assert worker_cfg.get("platforms", {}).get("telegram", {}).get("enabled") is True
         root_cfg = yaml.safe_load(
-            (isolated_profiles["default"] / "config.yaml").read_text()
+            (isolated_profiles["default"] / "config.yaml").read_text(encoding="utf-8")
         ) or {}
         assert "telegram" not in (root_cfg.get("platforms") or {})
 
@@ -202,13 +202,9 @@ def _enable_multiplex(default_home):
 
 
 class TestMultiplexPortBindingGuard:
-    """Enabling a port-binding channel on a secondary multiplexed profile
-    must be rejected BEFORE anything is persisted.
-
-    The gateway fail-fasts with ``MultiplexConfigError`` when a secondary
-    profile enables a port-binding platform under
-    ``gateway.multiplex_profiles`` — but the dashboard used to persist that
-    exact config, so the next gateway start died for EVERY profile (#62791).
+    """Enabling api_server/webhook on a secondary multiplexed profile is rejected BEFORE anything
+    is persisted: the default profile's listener already mirrors them at ``/p/<profile>/`` (#62791).
+    Every other inbound-port platform is allowed — the gateway serves it on the shared listener.
     """
 
     @pytest.fixture(autouse=True)
@@ -217,21 +213,25 @@ class TestMultiplexPortBindingGuard:
         # multiplex flag under test comes from the default profile's config.
         monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
 
-    def test_rejects_every_port_binding_platform_on_secondary(
+    def test_rejects_only_mirrored_listeners_on_secondary(
         self, client, isolated_profiles
     ):
-        from gateway.config import PORT_BINDING_PLATFORM_VALUES
+        from gateway.config import PORT_BINDING_PLATFORM_VALUES, SHARED_LISTENER_MIRROR_PLATFORMS
 
         _enable_multiplex(isolated_profiles["default"])
-        assert PORT_BINDING_PLATFORM_VALUES  # guard set must not be empty
-        for platform_id in sorted(PORT_BINDING_PLATFORM_VALUES):
+        assert SHARED_LISTENER_MIRROR_PLATFORMS  # guard set must not be empty
+        catalog = {p["id"] for p in client.get("/api/messaging/platforms").json()["platforms"]}
+        for platform_id in sorted(PORT_BINDING_PLATFORM_VALUES & catalog):
             resp = client.put(
                 f"/api/messaging/platforms/{platform_id}",
                 params={"profile": "worker_alpha"},
                 json={"enabled": True},
             )
-            assert resp.status_code == 409, platform_id
-            assert "default profile" in resp.json()["detail"]
+            if platform_id in SHARED_LISTENER_MIRROR_PLATFORMS:
+                assert resp.status_code == 409, platform_id
+                assert "default profile" in resp.json()["detail"]
+            else:  # served at /p/worker_alpha/<path> on the shared listener
+                assert resp.status_code == 200, (platform_id, resp.text)
 
 
 
@@ -253,7 +253,7 @@ class TestMultiplexPortBindingGuard:
             json={"enabled": False},
         )
         assert resp.status_code == 200
-        cfg = yaml.safe_load((worker_home / "config.yaml").read_text())
+        cfg = yaml.safe_load((worker_home / "config.yaml").read_text(encoding="utf-8"))
         assert cfg["platforms"]["api_server"]["enabled"] is False
 
         catalog = client.get(
@@ -305,3 +305,37 @@ def test_scoped_enablement_uses_only_own_credentials(client, isolated_profiles, 
         assert platform["enabled"] is enabled
         assert platform["configured"] is True
     assert "root-token" in (isolated_profiles["default"] / ".env").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("topology", ["scoped_query", "pooled_unscoped"])
+def test_credential_write_hot_serves_a_multiplexed_profile(client, isolated_profiles, monkeypatch, topology):
+    """A token saved for a profile the live multiplexer serves is handed to the multiplexer right
+    away (``hot_served``), so the UI skips its restart banner. Both Desktop topologies: the dashboard's
+    ``?profile=`` and a pooled ``hermes --profile X serve`` that receives the PUT unscoped (#109088)."""
+    import hermes_cli.gateway as gateway_cli
+    import hermes_cli.gateway_multiplex_served as served_mod
+    notified = []
+    monkeypatch.setattr(gateway_cli, "named_profile_served_by_running_multiplexer", lambda name=None: name == "worker_alpha")
+    monkeypatch.setattr(served_mod, "notify_multiplexer_profiles_changed", lambda name, **kw: notified.append(name) or ["default", name])
+    if topology == "pooled_unscoped":
+        monkeypatch.setattr(gateway_cli, "_current_profile_name", lambda: "worker_alpha")
+        params = {}
+    else:
+        params = {"profile": "worker_alpha"}
+    resp = client.put("/api/messaging/platforms/telegram", params=params,
+                      json={"enabled": True, "env": {"TELEGRAM_BOT_TOKEN": _VALID_WORKER_BOT_TOKEN}})
+    assert resp.status_code == 200
+    assert resp.json()["hot_served"] is True
+    assert notified == ["worker_alpha"]
+
+
+def test_credential_write_on_default_profile_is_not_hot_served(client, isolated_profiles, monkeypatch):
+    """The default profile is the multiplexer itself (its own adapters are restart-managed): never
+    claim a hot serve for it."""
+    import hermes_cli.gateway_multiplex_served as served_mod
+    monkeypatch.setattr(served_mod, "notify_multiplexer_profiles_changed",
+                        lambda name, **kw: pytest.fail("default profile must not ping the multiplexer"))
+    resp = client.put("/api/messaging/platforms/telegram",
+                      json={"enabled": True, "env": {"TELEGRAM_BOT_TOKEN": _VALID_WORKER_BOT_TOKEN}})
+    assert resp.status_code == 200
+    assert resp.json()["hot_served"] is False

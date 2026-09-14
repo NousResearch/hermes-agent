@@ -28,18 +28,15 @@
     if (node) {
       const parts = path.split(".");
       for (let i = 0; i < parts.length; i++) {
-        if (node && typeof node === "object" && parts[i] in node) {
+        if (node && typeof node === "object" && Object.prototype.hasOwnProperty.call(node, parts[i])) {
           node = node[parts[i]];
         } else { node = null; break; }
       }
     }
-    let str = (typeof node === "string") ? node : fallback;
-    if (vars) {
-      for (const k in vars) {
-        str = str.replace(new RegExp("\\{" + k + "\\}", "g"), vars[k]);
-      }
-    }
-    return str;
+    const str = (typeof node === "string") ? node : fallback;
+    return str.replace(/\{(\w+)\}/g, function (placeholder, key) {
+      return vars && Object.prototype.hasOwnProperty.call(vars, key) ? String(vars[key]) : placeholder;
+    });
   }
 
   function catalogId(value) {

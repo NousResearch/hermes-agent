@@ -87,6 +87,7 @@ const STATUS_LABEL: Record<Status, TranslationKey> = {
   running: 'agents.status.running',
   timeout: 'agents.status.timeout'
 }
+
 // Heatmap palette — cold → hot, resolved against the active theme.
 const heatPalette = (t: Theme) => [t.color.border, t.color.accent, t.color.primary, t.color.warn, t.color.error]
 

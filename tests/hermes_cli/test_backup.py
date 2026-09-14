@@ -2,6 +2,7 @@
 
 import json
 import os
+import socket
 import sqlite3
 import stat
 import zipfile
@@ -171,6 +172,17 @@ class TestShouldExclude:
         assert _should_exclude(Path("profiles/clean/models/big.gguf"))
         assert _should_exclude(Path("profiles/clean/runtimes/llamacpp/x.dll"))
 
+    def test_excludes_regenerable_cache_but_keeps_durable_artifacts(self):
+        """Catalogs and live browser profiles are rebuilt on demand; delivered media and the
+        citation ledger are not, so they stay in the archive."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("cache/model_catalog.json"))
+        assert _should_exclude(Path("cache/chrome-debug/Default/Cookies"))
+        assert _should_exclude(Path("profiles/sage/cache/chrome-debug/cache.db"))
+        assert not _should_exclude(Path("cache/images/x.png"))
+        assert not _should_exclude(Path("profiles/sage/cache/citations/ledger.json"))
+        assert not _should_exclude(Path("skills/example/cache/notes.md"))
+
     def test_keeps_nested_dirs_named_like_runtime_trees(self):
         """A deeper directory that happens to be called models/ or node/ is
         user data (a skill's assets, project files) and must survive."""
@@ -232,6 +244,32 @@ class TestIterBackupFiles:
         assert str(Path("models/big.gguf")) not in selected
         assert not any(s.startswith("hermes-agent") for s in selected)
 
+    def test_prunes_regenerable_caches_but_keeps_durable_and_nested(self, tmp_path):
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        files = {
+            "cache/model_catalog.json": False,
+            "cache/chrome-debug/Default/Cookies": False,
+            "profiles/sage/cache/chrome-debug/cache.db": False,
+            "cache/images/x.png": True,
+            "cache/citations/ledger.json": True,
+            "profiles/sage/cache/images/y.png": True,
+            "skills/example/cache/state.db": True,
+        }
+        for rel in files:
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_bytes(b"x")
+
+        skipped: set = set()
+        selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip", skipped)}
+
+        assert {rel for rel, keep in files.items() if keep} == {s.replace(os.sep, "/") for s in selected}
+        assert str(Path("cache/chrome-debug")) in skipped
+        assert str(Path("profiles/sage/cache/chrome-debug")) in skipped
+        assert "cache" not in skipped
+
     def test_skipped_dirs_collected_for_summary(self, tmp_path):
         from hermes_cli.backup import _iter_backup_files
 
@@ -245,6 +283,22 @@ class TestIterBackupFiles:
         list(_iter_backup_files(root, tmp_path / "out.zip", skipped))
         assert "models" in skipped
         assert "hermes-agent" in skipped
+
+    @pytest.mark.linux_only
+    def test_skips_unix_sockets(self, tmp_path, monkeypatch):
+        from hermes_cli.backup import _iter_backup_files
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        # AF_UNIX paths are capped at ~108 bytes; pytest's tmp_path overflows that under the
+        # test runner's deep temp root, so bind by a relative name from inside ``root``.
+        monkeypatch.chdir(root)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as gateway_socket:
+            gateway_socket.bind("gateway.sock")
+
+            selected = {str(rel) for _, rel in _iter_backup_files(root, tmp_path / "out.zip")}
+
+        assert "gateway.sock" not in selected
 
 
 # ---------------------------------------------------------------------------

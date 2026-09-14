@@ -7,8 +7,9 @@ import {
   type ReactNode,
 } from "react";
 
-import { localeDirection } from "@hermes/shared/locale-registry";
+import { applyDocumentLocale } from "@hermes/shared/document-locale";
 
+import { getManagementProfile } from "../lib/api";
 import type { Locale } from "./types";
 import {
   I18nContext,
@@ -25,7 +26,7 @@ const CONFIG_REVISION_POLL_MS = 5_000;
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(getInitialLocale);
   const localeChangeVersionRef = useRef(0);
-  const localeSavePendingRef = useRef(false);
+  const pendingSaveRef = useRef<Promise<void> | null>(null);
   const revisionRef = useRef<string | null>(null);
   const syncActiveRef = useRef(false);
   const syncInFlightRef = useRef(false);
@@ -38,53 +39,56 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   const setLocale = useCallback(
     async (nextLocale: Locale) => {
-      if (nextLocale === locale) return;
-      const previousLocale = locale;
-      localeChangeVersionRef.current += 1;
-      localeSavePendingRef.current = true;
-      applyLocale(nextLocale);
-      // The backend deep-merges config updates, so send only the authoritative
-      // leaf instead of GET-modify-PUT of the full config. This avoids
-      // clobbering a concurrent settings edit.
+      const profile = getManagementProfile();
+      const version = ++localeChangeVersionRef.current;
+      // Serialize writes to the captured profile. Publish only the newest successful
+      // choice, so rejected or superseded requests cannot overwrite the displayed language.
+      const save = (pendingSaveRef.current ?? Promise.resolve())
+        .catch(() => {})
+        .then(() => persistConfiguredLocale(nextLocale, profile))
+        .then(() => {
+          if (
+            version === localeChangeVersionRef.current &&
+            getManagementProfile() === profile
+          ) {
+            applyLocale(nextLocale);
+          }
+        });
+      pendingSaveRef.current = save;
       try {
-        await persistConfiguredLocale(nextLocale);
-      } catch (error) {
-        // Do not leave the Dashboard and TUI on conflicting languages while
-        // implying that the shared setting was saved successfully.
-        applyLocale(previousLocale);
-        throw error;
+        await save;
       } finally {
-        localeSavePendingRef.current = false;
-        // Invalidate any config read that overlapped the optimistic save. A
-        // later revision poll will observe the committed file authoritatively.
-        localeChangeVersionRef.current += 1;
+        if (pendingSaveRef.current === save) pendingSaveRef.current = null;
+        // An overlapping read was not applied: leave it eligible for the next poll.
+        revisionRef.current = null;
       }
     },
-    [applyLocale, locale],
+    [applyLocale],
   );
 
   useEffect(() => {
-    if (typeof document === "undefined") return;
-    document.documentElement.lang = locale;
-    document.documentElement.dir = localeDirection(locale);
+    applyDocumentLocale(locale);
   }, [locale]);
 
   const syncConfiguredLocale = useCallback(async () => {
-    if (!syncActiveRef.current || syncInFlightRef.current) return;
+    if (
+      !syncActiveRef.current ||
+      syncInFlightRef.current ||
+      pendingSaveRef.current
+    )
+      return;
 
     syncInFlightRef.current = true;
     const localeChangeVersion = localeChangeVersionRef.current;
     try {
       const change = await readConfiguredLocaleChange(revisionRef.current);
       if (!syncActiveRef.current) return;
-      revisionRef.current = change.revision;
-
       if (
-        change.locale &&
-        !localeSavePendingRef.current &&
+        !pendingSaveRef.current &&
         localeChangeVersion === localeChangeVersionRef.current
       ) {
-        applyLocale(change.locale);
+        revisionRef.current = change.revision;
+        if (change.locale) applyLocale(change.locale);
       }
     } catch {
       // Keep the last-good locale and revision while config is unavailable.
@@ -111,6 +115,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     document.addEventListener("visibilitychange", syncWhenVisible);
     return () => {
       syncActiveRef.current = false;
+      localeChangeVersionRef.current += 1;
       window.clearInterval(interval);
       window.removeEventListener("focus", syncWhenVisible);
       document.removeEventListener("visibilitychange", syncWhenVisible);

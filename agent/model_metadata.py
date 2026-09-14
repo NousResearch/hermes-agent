@@ -105,8 +105,10 @@ def _strip_provider_prefix(model: str) -> str:
 _model_metadata_cache: Dict[str, Dict[str, Any]] = {}
 _model_metadata_cache_time: float = 0
 _MODEL_CACHE_TTL = 3600
-_endpoint_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
-_endpoint_model_metadata_cache_time: Dict[str, float] = {}
+# In-memory memo keyed by (base_url, api-key fingerprint): per-key gateways return a per-key catalog, and
+# in a multiplexed process two profiles may share a URL with different keys. The disk memo stays per URL.
+_endpoint_model_metadata_cache: Dict[Tuple[str, str], Dict[str, Dict[str, Any]]] = {}
+_endpoint_model_metadata_cache_time: Dict[Tuple[str, str], float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
 # Server-type verdicts (server_type, monotonic_ts): positive ones live an hour so a
 # server swap on the same port is re-detected; None gets the short TTL so a
@@ -940,9 +942,15 @@ def _apply_llamacpp_props(cache: Dict[str, Dict[str, Any]], request_candidate: s
             cache[child_id]["context_length"] = child_ctx
 
 
-def _remember_endpoint_models(normalized: str, cache: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    _endpoint_model_metadata_cache[normalized] = cache
-    _endpoint_model_metadata_cache_time[normalized] = time.time()
+def _endpoint_memo_key(normalized: str, api_key: object) -> Tuple[str, str]:
+    from agent.credential_persistence import fingerprint_secret_value
+    # Callable (minted) keys are not fingerprinted here: doing so would mint on every cache hit.
+    return normalized, (fingerprint_secret_value(api_key) or "") if isinstance(api_key, str) else ""
+
+
+def _remember_endpoint_models(memo_key: Tuple[str, str], cache: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    _endpoint_model_metadata_cache[memo_key] = cache
+    _endpoint_model_metadata_cache_time[memo_key] = time.time()
     return cache
 
 
@@ -962,13 +970,14 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
         return {}
     _ensure_requests()
     local = is_local_endpoint(normalized)
+    memo_key = _endpoint_memo_key(normalized, api_key)
     if not force_refresh:
-        cached = _endpoint_model_metadata_cache.get(normalized)
-        if cached is not None and (time.time() - _endpoint_model_metadata_cache_time.get(normalized, 0)) < _ENDPOINT_MODEL_CACHE_TTL:
+        cached = _endpoint_model_metadata_cache.get(memo_key)
+        if cached is not None and (time.time() - _endpoint_model_metadata_cache_time.get(memo_key, 0)) < _ENDPOINT_MODEL_CACHE_TTL:
             return cached
         memo = _endpoint_disk_cache_get(normalized) if not local else None
         if memo is not None:
-            return _remember_endpoint_models(normalized, memo)
+            return _remember_endpoint_models(memo_key, memo)
     # Blackholed: return empty WITHOUT caching so it is retried once the entry expires.
     if _endpoint_blackholed(normalized):
         return {}
@@ -980,7 +989,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
     if local:
         try:
             if detect_local_server_type(normalized, api_key=api_key) == "lm-studio":
-                return _remember_endpoint_models(normalized, _lmstudio_native_models(normalized, headers))
+                return _remember_endpoint_models(memo_key, _lmstudio_native_models(normalized, headers))
         except Exception as exc:
             last_error = exc
             _note_if_connect_timeout(exc, normalized)
@@ -1005,7 +1014,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
                     _apply_llamacpp_props(cache, request_candidate, headers, verify)
             if cache and not local:
                 _endpoint_disk_cache_put(normalized, cache)
-            return _remember_endpoint_models(normalized, cache)
+            return _remember_endpoint_models(memo_key, cache)
         except Exception as exc:
             last_error = exc
             _note_if_connect_timeout(exc, normalized)
@@ -1014,7 +1023,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
                 response.close()
     if last_error:
         logger.debug("Failed to fetch model metadata from %s/models: %s", normalized, last_error)
-    return _remember_endpoint_models(normalized, {})
+    return _remember_endpoint_models(memo_key, {})
 
 
 def _resolve_endpoint_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
@@ -1111,8 +1120,13 @@ def get_next_probe_tier(current_length: int) -> Optional[int]:
 
 
 def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
-    """Context limit quoted in a provider error ("maximum context length is 32768 tokens"), if any."""
+    """Context limit quoted in a provider error ("maximum context length is 32768 tokens"), if any.
+
+    A message about only an OUTPUT cap ("... model output limit of 16384") never says "context";
+    bail out so the generic "limit ... of N" pattern can't cache the output cap as the window."""
     error_lower = error_msg.lower()
+    if ("output limit" in error_lower or "output tokens" in error_lower or "output token" in error_lower) and "context" not in error_lower:
+        return None
     patterns = (
         r'max_model_len\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM: "max_model_len 32768", "=32768", ": 32768", "(32768)", "is 32768"
         r'maximum model length\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM alt: "maximum model length 131072", "... is 131072"
@@ -1154,6 +1168,8 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         r'range of max_tokens should be\s*\[\s*\d+\s*,\s*(\d+)\s*\]',
         r'available_tokens[:\s]+(\d+)',
         r'available\s+tokens[:\s]+(\d+)',
+        # Switchyard: "max_tokens cannot exceed the configured model output limit of 16384".
+        r'output limit (?:of|is)\s*(\d+)',
         r'=\s*(\d+)\s*$',
     ):
         match = re.search(pattern, error_lower)
@@ -1197,6 +1213,7 @@ _OUTPUT_CAP_SIGNALS = (
     ("range of max_tokens should be",), ("available_tokens",), ("available tokens",),
     ("in the output", "maximum context length"), ("requested", "output tokens"),
     ("should be",), ("less than or equal",), ("must be",), ("exceeds model", "maximum output tokens"),
+    ("output limit",),
 )
 _INPUT_OVERFLOW_SIGNALS = (
     "prompt is too long", "prompt too long", "input is too long", "input token",
@@ -1211,6 +1228,7 @@ _PARSEABLE_OUTPUT_CAP_SIGNALS = (
     ("in the output", "maximum context length"),
     ("maximum context length", "requested", "output tokens"),
     ("range of max_tokens should be",), ("exceeds model", "maximum output tokens"),
+    ("output limit",),
 )
 
 
@@ -1577,6 +1595,13 @@ def _verified_codex_ctx_for_slug(model_bare: str) -> Optional[int]:
 
 _codex_oauth_context_cache: Dict[str, Tuple[Dict[str, int], float]] = {}
 _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
+# The Codex models endpoint reads ``client_version`` as a Codex CLI compatibility version and
+# hides models whose ``minimal_client_version`` is newer, so a made-up version (the old
+# "1.0.0") silently drops future models. "0.0.0" is the backend's ungated sentinel returning
+# the full account catalog; other out-of-sequence values return an empty catalog and omitting
+# the parameter is HTTP 400.
+CODEX_UNGATED_CLIENT_VERSION = "0.0.0"
+CODEX_MODELS_CATALOG_URL = f"https://chatgpt.com/backend-api/codex/models?client_version={CODEX_UNGATED_CLIENT_VERSION}"
 
 
 def _codex_oauth_token_fingerprint(access_token: str) -> str:
@@ -1612,7 +1637,7 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str) -> Tuple[D
         headers["ChatGPT-Account-Id"] = acct_id
     try:
         _ensure_requests()
-        resp = requests.get("https://chatgpt.com/backend-api/codex/models?client_version=1.0.0", headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
+        resp = requests.get(CODEX_MODELS_CATALOG_URL, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
         if resp.status_code != 200:
             logger.debug("Codex /models probe returned HTTP %s; falling back to hardcoded defaults", resp.status_code)
             return {}, False
@@ -2019,6 +2044,10 @@ async def get_model_context_length_async(model: str, base_url: str = "", api_key
 
 # CJK/Hangul/Kana codepoints (~1 token each), counted in one C-level regex pass: Hangul
 # Jamo (+Ext-A), CJK radicals/ideographs (+compat), Hangul syllables, fullwidth/halfwidth.
+# Rough chars-per-token ratio for ASCII text; the single source for every "N tokens ≈ N*4 chars"
+# budget conversion (context files, tool-output budgets, whisper prompt cap, compressor metadata).
+CHARS_PER_TOKEN = 4
+
 _CJK_DENSE_RE = re.compile("[\u1100-\u11ff\u2e80-\u9fff\ua960-\ua97f\uac00-\ud7af\uf900-\ufaff\uff00-\uffef]")
 
 
@@ -2040,10 +2069,10 @@ def estimate_tokens_rough(text: str) -> int:
         return 0
     text = str(text)
     if text.isascii():  # flag check on CPython; ASCII cannot contain token-dense CJK
-        return (len(text) + 3) // 4
+        return (len(text) + 3) // CHARS_PER_TOKEN
     stripped = _CJK_DENSE_RE.sub("", text)
     dense = len(text) - len(stripped)
-    return dense + ((len(stripped.encode("utf-8", "replace")) + 3) // 4)
+    return dense + ((len(stripped.encode("utf-8", "replace")) + 3) // CHARS_PER_TOKEN)
 
 
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]], *, charge_stale_thinking: bool = True) -> int:

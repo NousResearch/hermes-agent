@@ -1,6 +1,7 @@
 import { PassThrough } from 'stream'
 
 import { renderSync } from '@hermes/ink'
+import { stripAnsi } from '@hermes/shared/ansi'
 import React from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -12,7 +13,6 @@ import { StatusRule } from '../components/appChrome.js'
 import { AppLayout } from '../components/appLayout.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import { DEFAULT_VOICE_RECORD_KEY } from '../lib/platform.js'
-import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 type StatusRuleProps = React.ComponentProps<typeof StatusRule>
@@ -306,6 +306,7 @@ describe('status-chrome timers under an occluding overlay', () => {
     resetOverlayState()
     await flush()
 
+    await vi.waitFor(() => expect(rule.output()).toContain('6m 0s'), { timeout: 2000 })
     const resumed = rule.output()
 
     // Caught up to real elapsed time, not stuck on the pre-overlay values.

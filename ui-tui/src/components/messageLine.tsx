@@ -1,4 +1,5 @@
 import { Ansi, Box, NoSelect, Text } from '@hermes/ink'
+import { hasAnsi, sanitizeAnsiForRender, stripAnsi } from '@hermes/shared/ansi'
 import { memo, useState } from 'react'
 
 import { TERMUX_TUI_MODE } from '../config/env.js'
@@ -10,14 +11,7 @@ import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
 import { useI18n } from '../i18n/index.js'
 import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
-import {
-  boundedLiveRenderText,
-  compactPreview,
-  hasAnsi,
-  isPasteBackedText,
-  sanitizeAnsiForRender,
-  stripAnsi
-} from '../lib/text.js'
+import { boundedLiveRenderText, compactPreview, isPasteBackedText } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 

@@ -314,6 +314,7 @@ const catalog: Record<TranslationKey, string> = {
   'transcript.modelChanged': '模型已更换',
   'transcript.personalityChanged': '个性已更换',
   'transcript.resumedInterruptedTurn': '已恢复中断的轮次',
+  'transcript.backgroundProcessFinished': '后台进程已完成',
   'transcript.backgroundAgentWorkFinished': '后台 Agent 工作已完成',
   'transcript.backgroundAgentFinished': '{count} 个后台 Agent 已完成',
   'transcript.backgroundAgentsFinished': '{count} 个后台 Agent 已完成',
@@ -697,7 +698,7 @@ const catalog: Record<TranslationKey, string> = {
   'modelPicker.loading': '正在加载模型…',
   'modelPicker.invalidResponse': '无效响应：model.options',
   'modelPicker.keySaveFailed': '密钥保存失败',
-  'modelPicker.modelFilterHint': '↑/↓ 选择 · Enter 切换 · Esc 清空/返回 · q 关闭',
+  'modelPicker.modelFilterHint': '↑/↓ 选择 · Enter 下一步 · Esc 清空/返回 · q 关闭',
   'modelPicker.modelHint': '↑↓ 选择 · Enter 切换 · Esc 返回 · q 关闭',
   'modelPicker.modelHintEmpty': 'Enter/Esc 返回 · q 关闭',
   'modelPicker.modelsCount': '{count} 个模型',
@@ -718,6 +719,18 @@ const catalog: Record<TranslationKey, string> = {
   'modelPicker.providerBack': '{provider} · Esc 返回',
   'modelPicker.runConfigure': '运行 `hermes model` 进行配置',
   'modelPicker.saving': '正在保存…',
+  'modelPicker.reasoningTitle': '推理强度（第 3/3 步）',
+  'modelPicker.reasoningHint': '{model} · 随模型切换生效（相同范围）· Esc 返回',
+  'modelPicker.reasoningKeys': '↑/↓ 选择 · Enter 切换 · Esc 返回 · q 关闭',
+  'reasoningEffort.none': '关闭（不推理）',
+  'reasoningEffort.minimal': '最低',
+  'reasoningEffort.low': '低',
+  'reasoningEffort.medium': '中',
+  'reasoningEffort.high': '高',
+  'reasoningEffort.xhigh': '极高',
+  'reasoningEffort.max': '最大',
+  'reasoningEffort.ultra': '超高',
+  'reasoningEffort.keep': '保持当前推理强度',
   'modelPicker.selectModel': '选择模型（步骤 2/2）',
   'modelPicker.selectProvider': '选择服务商（步骤 1/2）',
   'modelPicker.unknown': '（未知）',
@@ -1353,8 +1366,5 @@ const catalog: Record<TranslationKey, string> = {
   'debug.uptime': '运行时间'
 }
 
-// ── Transient trail patterns ──────────────────────────────────────
-const trail = { draftPrefix: '正在生成 ', analyzeLabel: '正在分析工具输出…' }
-
 // ── Full language pack ───────────────────────────────────────────
-export const zh: LangPack = { toolVerbs, verbs, status, catalog, trail, verbStyle: 'ellipsis' as const }
+export const zh: LangPack = { toolVerbs, verbs, status, catalog, verbStyle: 'ellipsis' as const }

@@ -126,3 +126,12 @@ describe('schema localization', () => {
     expect(resolveSchemaDescription(schema, 'display.language', 'Display language')).toBe('Display language')
   })
 })
+
+
+it('treats prototype property names as unknown schema fields', () => {
+  const english = resolveTranslations('en').schema
+  for (const key of ['constructor', 'toString', '__proto__']) {
+    expect(resolveSchemaLabel(english, key, 'Original label')).toBe('Original label')
+    expect(resolveSchemaDescription(zhSchema, key, 'Original description')).toBe('Original description')
+  }
+})

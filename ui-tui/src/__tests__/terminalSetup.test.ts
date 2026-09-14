@@ -486,7 +486,7 @@ describe('configureTerminalKeybindings', () => {
       fileOps: { copyFile, mkdir, readFile, writeFile },
       homeDir: '/Users/me',
       platform: 'darwin'
-      })
+    })
 
     expect(result.success).toBe(true)
     expect(result.requiresRestart).toBe(true)

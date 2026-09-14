@@ -1,9 +1,9 @@
 import { Box, Text } from '@hermes/ink'
+import { mix } from '@hermes/shared/color'
 
 import { ShimmerRows } from '../../components/loaders.js'
 import { Dialog } from '../../components/overlay.js'
 import { useI18n } from '../../i18n/index.js'
-import { mix } from '../../lib/color.js'
 import type { Theme } from '../../theme.js'
 import { updateWidget } from '../host.js'
 import { defineWidgetApp } from '../registry.js'

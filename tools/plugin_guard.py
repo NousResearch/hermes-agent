@@ -41,7 +41,7 @@ CODE_FILE_EXTENSIONS = {".py", ".js", ".ts", ".sh", ".bash", ".rb", ".pl", ".php
 # notes like "# a symlink could point at /etc/passwd" are prose *about* a defense.
 COMMENT_PREFIXES_BY_EXTENSION = {
     ".py": "#", ".sh": "#", ".bash": "#", ".rb": "#", ".pl": "#", ".r": "#", ".jl": "#",
-    ".js": "//", ".ts": "//", ".php": "//", ".css": "//"}
+    ".js": "//", ".ts": "//", ".php": "//"}
 
 # One severity step down from the pattern's default.
 _COMMENT_SEVERITY_CAP = {"critical": "high", "high": "medium"}

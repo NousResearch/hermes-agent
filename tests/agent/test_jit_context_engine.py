@@ -141,3 +141,68 @@ def test_enforce_minimum_context_scoping():
 
     # Should not raise
     _enforce_minimum_context(agent)
+
+
+def test_jit_obsidian_ssot_integration(tmp_path):
+    from plugins.context_engine.jit.l1.project_cache import get_project_summary
+
+    projects_dir = tmp_path / "projects"
+    projects_dir.mkdir(parents=True)
+    doc = projects_dir / "boocco.md"
+    doc.write_text("# Boocco Project\nNext.js booking SaaS for salons with Supabase backend.", encoding="utf-8")
+
+    summary = get_project_summary("boocco", vault_dir=str(tmp_path))
+    assert summary is not None
+    assert "Obsidian SSOT: boocco.md" in summary
+    assert "Next.js booking SaaS" in summary
+
+
+def test_jit_context_selection_never_breaks_tool_pairing():
+    engine = load_context_engine("jit")
+    assert engine is not None
+
+    messages = [
+        {"role": "system", "content": "You are Hermes."},
+        {"role": "user", "content": "Query 1"},
+        {"role": "assistant", "content": "Answer 1"},
+        {"role": "user", "content": "Query 2 (call tools)"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}},
+                {"id": "call_2", "type": "function", "function": {"name": "search_files", "arguments": "{}"}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "name": "read_file", "content": "file contents line 1\nline 2"},
+        {"role": "tool", "tool_call_id": "call_2", "name": "search_files", "content": "search results match 1"},
+        {"role": "assistant", "content": "Both tools executed."},
+        {"role": "user", "content": "Query 3 (current turn huge tool)"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call_3", "type": "function", "function": {"name": "run_command", "arguments": "{}"}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_3", "name": "run_command", "content": "OUTPUT " * 2000},
+    ]
+
+    selected = engine.select_context(messages)
+    assert len(selected) > 0
+    assert selected[0]["role"] == "system"
+    assert "<ONA_CONTEXT" in selected[0]["content"]
+
+    # Verify tool pairing: every tool message must have its tool_call_id in preceding assistant tool_calls
+    assistant_call_ids = set()
+    for m in selected:
+        if m["role"] == "assistant" and "tool_calls" in m:
+            for tc in m["tool_calls"]:
+                assistant_call_ids.add(tc["id"])
+        elif m["role"] == "tool":
+            assert m["tool_call_id"] in assistant_call_ids
+            # Ensure huge output was clamped
+            if m["tool_call_id"] == "call_3":
+                assert len(m["content"]) < 4000
+                assert "truncated by JIT context engine" in m["content"]
+

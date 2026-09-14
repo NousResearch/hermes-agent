@@ -7,6 +7,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from .l0.overlay import ensure_session, get_active_overlays
+from .l1.project_cache import get_project_summary
 from .l1.scope import resolve_scope
 from .renderer import render_capsule
 
@@ -55,9 +56,9 @@ def compile_context(
         if val and val not in current_statements:
             current_statements.append(val)
 
-    # Extract any project hints from session_cwd if present
-    project_summary = None
-    if session_cwd:
+    # Extract project context from Obsidian SSOT or session_cwd
+    project_summary = get_project_summary(resolved_scope, session_cwd=session_cwd)
+    if not project_summary and session_cwd:
         project_summary = f"Working directory: {session_cwd}"
 
     rendered = render_capsule(

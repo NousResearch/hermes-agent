@@ -4506,18 +4506,37 @@ def _housekeeping_auto_archive(runner=None) -> None:
     in ``hermes_cli/web_server_sessions.py``) to avoid tearing the WAL this process holds — which
     means the multiplexer is the only remaining sweeper for those stores. Before #109727 this swept
     only ``acquire()`` (the launch home) and a satellite with ``auto_archive`` enabled never archived.
-    Each home is scoped so it is gated by its OWN ``sessions`` config, not the launch profile's.
+
+    Every home is isolated, including the launch one: ``GatewayRunner._init_session_db()`` tolerates a
+    failed primary-store init and keeps running, so a multiplexer can serve healthy satellites while its
+    OWN store is unavailable. Letting a launch-side raise escape would abandon the satellites on every
+    tick — and the dashboard has already stood down for them.
+
+    Each satellite runs under ``_profile_runtime_scope``, not a bare HERMES_HOME override: ``load_config()``
+    expands ``${VAR}`` through ``agent.secret_scope``, so without the profile's secret scope a value like
+    ``auto_archive_days: ${ARCHIVE_DAYS}`` silently resolves against the LAUNCH process environment (or
+    fails conversion and skips the profile entirely).
     """
-    _auto_archive_one_home()
+    def _sweep(label: str, db_path=None) -> None:
+        try:
+            _auto_archive_one_home(db_path)
+        except Exception as exc:
+            # One unreadable store must never strand the others.
+            logger.debug("Auto-archive tick skipped for %s: %s", label, exc)
+
+    _sweep("the launch profile")
 
     homes = dict(getattr(runner, "_served_profile_homes", None) or {}) if runner is not None else {}
     if not homes:
         return
     from pathlib import Path as _Path
 
-    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from hermes_constants import get_hermes_home
 
-    launch_home = get_hermes_home().resolve()
+    try:
+        launch_home = get_hermes_home().resolve()
+    except OSError:
+        launch_home = get_hermes_home()
     for _name, _home in homes.items():
         try:
             home = _Path(_home).resolve()
@@ -4525,14 +4544,12 @@ def _housekeeping_auto_archive(runner=None) -> None:
             home = _Path(_home)
         if home == launch_home:
             continue  # already swept above as this process's own store
-        _token = set_hermes_home_override(str(home))
         try:
-            _auto_archive_one_home(home / "state.db")
+            with _profile_runtime_scope(home):
+                _sweep(f"profile {_name}", home / "state.db")
         except Exception as exc:
-            # One unreadable satellite must not stop the rest of the sweep.
-            logger.debug("Auto-archive tick skipped for profile %s: %s", _name, exc)
-        finally:
-            reset_hermes_home_override(_token)
+            # Scope construction itself (secret hydration, terminal policy) can fail.
+            logger.debug("Auto-archive tick could not scope profile %s: %s", _name, exc)
 
 
 def _housekeeping_deferred_fts_retry() -> None:

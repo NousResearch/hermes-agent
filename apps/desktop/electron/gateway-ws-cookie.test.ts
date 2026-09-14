@@ -189,6 +189,46 @@ describe('gateway WebSocket cookie forwarding', () => {
     expect(cookieOn(store, agentWs)).toBeUndefined()
   })
 
+  // resolvePartition reads the live connections registry, so the partition a
+  // url resolves to can change while an entry is live. Sign-out must still
+  // reach the entry it authorized.
+  it('drops authority even when the url has since moved partition', async () => {
+    const partitions: Record<string, string> = { [GATEWAY]: 'persist:hermes-oauth-one' }
+    const store = createGatewayWsCookieStore({
+      readCookies: async () => proxyJar,
+      resolvePartition: baseUrl => partitions[baseUrl] ?? LEGACY
+    })
+
+    await store.register(WS_URL, GATEWAY, 'ws-url:default')
+
+    // A registry edit re-resolves this gateway to a different jar.
+    partitions[GATEWAY] = 'persist:hermes-oauth-two'
+    store.forget(GATEWAY)
+
+    expect(cookieOn(store, WS_URL)).toBeUndefined()
+  })
+
+  it('fences a pending read against a sign-out that resolved another partition', async () => {
+    const partitions: Record<string, string> = { [GATEWAY]: 'persist:hermes-oauth-one' }
+    const jar = deferred<GatewayCookie[]>()
+    const store = createGatewayWsCookieStore({
+      readCookies: () => jar.promise,
+      resolvePartition: baseUrl => partitions[baseUrl] ?? LEGACY
+    })
+
+    const pending = store.register(WS_URL, GATEWAY, 'ws-url:default')
+
+    partitions[GATEWAY] = 'persist:hermes-oauth-two'
+
+    const signOutDone = store.forget(GATEWAY)
+
+    signOutDone()
+    jar.resolve(proxyJar)
+    await pending
+
+    expect(cookieOn(store, WS_URL)).toBeUndefined()
+  })
+
   it('keeps two gateways on separate partitions independent', async () => {
     const one = 'https://one.example'
     const two = 'https://two.example'

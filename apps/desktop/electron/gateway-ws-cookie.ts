@@ -94,16 +94,22 @@ interface GatewayWsCookieEntry {
 
 export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDependencies) {
   const entries = new Map<string, GatewayWsCookieEntry>()
-  // Latest generation issued per owner, and the current logout epoch per
-  // partition. Both are read before the jar await and re-checked after it.
+  // Latest generation issued per owner, and the logout state per SCOPE. A
+  // registration belongs to two scopes -- its partition and its base url --
+  // because the partition a url resolves to is read from the live registry and
+  // can change under us: a sign-out that resolved a different partition than
+  // the entry recorded would otherwise leave that entry authorized. Both are
+  // read before the jar await and re-checked after it.
   // Generations come from one process-wide counter rather than a per-owner
   // one, so a forgotten owner can never reissue a number a pending read is
   // still holding: that read simply finds no generation and stands down.
   let sequence = 0
   const generations = new Map<string, number>()
   const epochs = new Map<string, number>()
-  // Sign-outs still clearing their jar, per partition.
+  // Sign-outs still clearing their jar, per scope.
   const signOuts = new Map<string, number>()
+  const partitionScope = (partition: string) => `partition\n${partition}`
+  const baseUrlScope = (baseUrl: string) => `baseUrl\n${baseUrl}`
   const now = () => (dependencies.now ? dependencies.now() : Date.now())
   const ttlMs = dependencies.ttlMs ?? DEFAULT_TTL_MS
 
@@ -147,7 +153,8 @@ export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDep
     const owner = `${baseUrl}\n${consumer ?? ''}`
     const partition = dependencies.resolvePartition(baseUrl)
     const generation = ++sequence
-    const epoch = epochs.get(partition) ?? 0
+    const scopes = [partitionScope(partition), baseUrlScope(baseUrl)]
+    const scopedEpochs = scopes.map(scope => [scope, epochs.get(scope) ?? 0] as const)
 
     // Re-inserted so the map stays in least-recently-registered order.
     generations.delete(owner)
@@ -164,12 +171,12 @@ export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDep
     }
 
     // True only while this registration is still the newest one for its
-    // gateway AND no sign-out emptied the jar it read from. Checked on both
-    // exits: superseded or revoked work must neither publish nor delete.
+    // consumer AND no sign-out has touched either scope it read from. Checked
+    // on both exits: superseded or revoked work must neither publish nor
+    // delete.
     const stillCurrent = () =>
       generations.get(owner) === generation &&
-      (epochs.get(partition) ?? 0) === epoch &&
-      !signOuts.get(partition)
+      scopedEpochs.every(([scope, epoch]) => (epochs.get(scope) ?? 0) === epoch && !signOuts.get(scope))
 
     let cookies: GatewayCookie[] | null
 
@@ -217,16 +224,26 @@ export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDep
     }
 
     const partition = dependencies.resolvePartition(baseUrl)
+    const scopes = [partitionScope(partition), baseUrlScope(baseUrl)]
+    const ownerPrefix = `${baseUrl}\n`
 
-    // Bump the epoch as well as dropping the live entries: a jar read already
-    // in flight for this partition must not publish the signed-out cookie.
+    // Bump each scope's epoch as well as dropping the live entries: a jar read
+    // already in flight must not publish the signed-out cookie. Entries are
+    // matched by partition OR by base url, so a registry edit that moved this
+    // url to another partition since it registered cannot strand its cookie.
     const revoke = () => {
-      epochs.set(partition, (epochs.get(partition) ?? 0) + 1)
-      dropWhere(entry => entry.partition === partition)
+      for (const scope of scopes) {
+        epochs.set(scope, (epochs.get(scope) ?? 0) + 1)
+      }
+
+      dropWhere(entry => entry.partition === partition || entry.owner.startsWith(ownerPrefix))
     }
 
     revoke()
-    signOuts.set(partition, (signOuts.get(partition) ?? 0) + 1)
+
+    for (const scope of scopes) {
+      signOuts.set(scope, (signOuts.get(scope) ?? 0) + 1)
+    }
 
     let closed = false
 
@@ -237,18 +254,21 @@ export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDep
 
       closed = true
 
-      const remaining = (signOuts.get(partition) ?? 1) - 1
+      for (const scope of scopes) {
+        const remaining = (signOuts.get(scope) ?? 1) - 1
 
-      if (remaining > 0) {
-        signOuts.set(partition, remaining)
-
-        return
+        if (remaining > 0) {
+          signOuts.set(scope, remaining)
+        } else {
+          signOuts.delete(scope)
+        }
       }
 
-      signOuts.delete(partition)
       // A read that began during the window resolves against the pre-logout
       // jar, so retire that generation too rather than let it land late.
-      revoke()
+      if (scopes.every(scope => !signOuts.get(scope))) {
+        revoke()
+      }
     }
   }
 

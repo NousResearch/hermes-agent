@@ -701,6 +701,8 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: boo
             if pending is None and find_canonical_live_owner(home) is None and find_canonical_owner(home):
                 pending = defer(key, dict(job), content, profile, home)
             if pending is not None:
+                if pending["content"] != content or pending["home"] != str(home):
+                    raise ValueError("delivery id already belongs to a different payload")
                 status = pending["status"]
                 target = f"bot-chat:{profile_label}"
                 job.setdefault("_bot_chat_delivery_receipts", {})[target] = {

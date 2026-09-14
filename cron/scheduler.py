@@ -2084,8 +2084,15 @@ class _CronRunScope:
         self._cron_session_var = _VAR_MAP["HERMES_CRON_SESSION"]
         self._cron_session_token = None
         self._non_dispatcher_token = None
+        self._continuation_token = None
+        self._continuation_context = {
+            "job_id": job_id, "execution_id": execution_id or job.get("execution_id"),
+            "task_id": self.task_id, "continuation": bool(job.get("_process_continuation")),
+        }
 
     def enter(self) -> None:
+        from cron.continuations import run_context
+        self._continuation_token = run_context.set(self._continuation_context)
         # Scope cron approval policy; exit() RESETS via token (pinning "" would suppress the legacy
         # os.environ fallback used by standalone entrypoints/tests).
         self._cron_session_token = self._cron_session_var.set("1")
@@ -2096,6 +2103,9 @@ class _CronRunScope:
         self._non_dispatcher_token = enter_non_dispatcher_owned_context()
 
     def exit(self) -> None:
+        from cron.continuations import run_context
+        if self._continuation_token is not None:
+            run_context.reset(self._continuation_token)
         from gateway.session_context import clear_session_vars
         from tools.terminal_tool import clear_session_cwd
 
@@ -2686,7 +2696,8 @@ def _save_compose_deliver(
         output_file=output_file)
     # Whitespace-only == empty: skip delivery; the guard below marks it a soft failure.
     d.should_deliver = bool(deliver_content.strip()) and not _silent_alert
-    if d.should_deliver and not d.success and job.get("_model_unreachable"):
+    if (d.should_deliver and not d.success and job.get("_model_unreachable")
+            and not job.get("_process_continuation")):
         # The model was never reached and a bounded automatic re-run will be scheduled
         # (cron/unreachable_retry.py): hold the failure notice — the re-run either
         # delivers the real result or, once the ladder is exhausted, the next failure
@@ -2862,7 +2873,7 @@ def _run_one_job_body(
         # re-fire it forever on restart. No-op for recurring/infinite jobs (at-most-times).
         # This lives here in the shared body so BOTH the built-in ticker and the external provider (Chronos
         # fire_due) get at-most-times semantics. See #38758.
-        if not claim_dispatch(job["id"]):
+        if not job.get("_process_continuation") and not claim_dispatch(job["id"]):
             logger.info(
                 "Job '%s': one-shot dispatch limit reached — skipping",
                 job.get("name", job["id"]))
@@ -3624,7 +3635,16 @@ def _sweep_mcp_orphans() -> None:
 def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     """Run one due job via the shared ``run_one_job`` body."""
     # Claim only when the worker actually starts, so a queued lease can't expire first.
-    claimed = claim_job_for_fire(job["id"], return_job=True)
+    if job.get("_process_continuation"):
+        from cron.continuations import claim_job
+        try:
+            claimed = claim_job(job)
+        except Exception as exc:
+            logger.exception("Continuation claim failed for job %s", job["id"])
+            finish_execution(job["execution_id"], success=False, error=str(exc))
+            return False
+    else:
+        claimed = claim_job_for_fire(job["id"], return_job=True)
     if not claimed:
         finish_execution(
             job["execution_id"], success=False, error="Fire claim lost; execution was not started.")
@@ -3656,6 +3676,8 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
         tick (#86522).
         """
         _schedule = job.get("schedule")
+        if job.get("_process_continuation"):
+            return
         if not (isinstance(_schedule, dict) and _schedule.get("kind") == "once"):
             return
         try:
@@ -3687,7 +3709,8 @@ def _submit_with_guard(job: dict, pool: concurrent.futures.ThreadPoolExecutor, p
     # Record the attempt before dispatch; recovery marks abandoned rows unknown (no retry).
     try:
         execution = create_execution(
-            job_id, source="builtin", scheduled_instant=job.get("_scheduled_instant"))
+            job_id, source="continuation" if job.get("_process_continuation") else "builtin",
+            scheduled_instant=job.get("_scheduled_instant"))
         dispatched_job = dict(job, execution_id=execution["id"])
         _ctx = contextvars.copy_context()
     except Exception as execution_err:
@@ -3785,8 +3808,10 @@ def tick(
 
         due_jobs = get_due_jobs()
         _sweep_stale_inflight_for_tick(due_jobs)
+        from cron.continuations import pending_jobs
+        continuation_jobs = pending_jobs()
 
-        if not due_jobs:
+        if not due_jobs and not continuation_jobs:
             # Idle tick: skip config load + pool setup, but still reap crashed jobs' MCP orphans.
             if verbose:
                 # Idle tick: skip config load + pool partitioning entirely (#33612 — the gateway ticker
@@ -3805,6 +3830,7 @@ def tick(
         # (at-most-once). Re-advancing running jobs keeps the grace window alive; mark_job_run
         # overwrites it on completion. Composes with the claim-time advance in claim_job_for_fire.
         advance_next_runs([job["id"] for job in due_jobs])
+        due_jobs.extend(continuation_jobs)
 
         _max_workers = _resolve_max_parallel_workers()
         if verbose:

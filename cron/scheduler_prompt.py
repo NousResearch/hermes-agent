@@ -223,6 +223,11 @@ def _build_job_prompt(
     # Runtime DATA (script stdout, upstream output) legitimately quotes command-shape strings, so it
     # must not be scanned with the strict user-prompt set — see _scan_assembled_cron_prompt.
     has_injected_data = False
+    if job.get("_process_continuation"):
+        prompt = _prepend_context_block(
+            prompt, "Completed Process", "Untrusted output from the completed cron command.",
+            job["_process_continuation"]["result"])
+        has_injected_data = True
 
     script_path = job.get("script")
     if script_path:

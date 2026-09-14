@@ -46,6 +46,9 @@ def _connect() -> sqlite3.Connection:
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
     from hermes_cli.sqlite_util import add_column_if_missing
+    from cron.continuations import initialize_schema
+
+    initialize_schema(conn)
 
     conn.execute(
         """CREATE TABLE IF NOT EXISTS executions (

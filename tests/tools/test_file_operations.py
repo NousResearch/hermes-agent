@@ -677,6 +677,41 @@ class TestAtomicWriteNewFilePermissions:
         assert dest.stat().st_mode & 0o777 == 0o755
 
 
+class TestAtomicWriteFailureCleanup:
+    """A failed write must not leave the ``.hermes-tmp.*`` sibling behind (#110170).
+
+    The EXIT trap ran ``rm -f \"$tmp\"`` — the over-escaped quotes landed in the
+    path literally, so the rm matched nothing and ``-f`` swallowed it. Every
+    post-mktemp failure (ENAMETOOLONG, EBUSY, EACCES, signal) leaked the temp
+    next to the target; in a Windows Startup folder that file is ShellExecute'd
+    at every logon.
+    """
+
+    @pytest.mark.skipif(os.name == "nt",
+                        reason="ENAMETOOLONG semantics differ under Git Bash/Windows")
+    def test_failed_write_removes_temp_file(self, tmp_path):
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+        # NAME_MAX is 255: mktemp's short sibling name succeeds, the mv fails.
+        dest = tmp_path / ("x" * 260)
+
+        result = ops.write_file(str(dest), "content\n")
+
+        assert result.error is not None
+        assert list(tmp_path.glob(".hermes-tmp.*")) == [], (
+            "failed write leaked its temp file"
+        )
+
+    def test_successful_write_still_leaves_no_temp(self, tmp_path):
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+        dest = tmp_path / "ok.txt"
+
+        result = ops.write_file(str(dest), "content\n")
+
+        assert result.error is None, f"write failed: {result.error}"
+        assert dest.read_text() == "content\n"
+        assert list(tmp_path.glob(".hermes-tmp.*")) == []
+
+
 class TestAtomicWriteThroughSymlink:
     """_atomic_write must edit a symlink's target, not replace the link.
 

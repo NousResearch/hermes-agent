@@ -22,7 +22,7 @@
     Badge, Button, Input, Label, Select, SelectOption,
   } = SDK.components;
   const { useState, useEffect, useCallback, useMemo, useRef } = SDK.hooks;
-  const { cn, timeAgo } = SDK.utils;
+  const { cn, timeAgo, handleImagePaste } = SDK.utils;
 
   // Newer host dashboards expose a DS-styled Checkbox on the plugin SDK.
   // Fall back to a native <input type="checkbox"> shim so older hosts that
@@ -311,6 +311,26 @@
     if (!board) return url;
     const sep = url.indexOf("?") >= 0 ? "&" : "?";
     return `${url}${sep}board=${encodeURIComponent(board)}`;
+  }
+
+  function uploadTaskAttachments(taskId, board, fileList) {
+    const files = Array.prototype.slice.call(fileList || []);
+    if (!files.length) return Promise.resolve();
+    const url = withBoard(`${API}/tasks/${encodeURIComponent(taskId)}/attachments`, board);
+    let chain = Promise.resolve();
+    files.forEach(function (file, index) {
+      chain = chain.then(function () {
+        const fd = new FormData();
+        fd.append("file", file, file.name || `clipboard-image-${index + 1}`);
+        return SDK.authedFetch(url, { method: "POST", body: fd }).then(function (resp) {
+          if (resp.ok) return undefined;
+          return resp.text().then(function (txt) {
+            throw new Error(parseApiErrorMessage(new Error(resp.status + ": " + txt)));
+          });
+        });
+      });
+    });
+    return chain;
   }
 
   // The SDK's Select component fires ``onValueChange(value)`` directly
@@ -620,6 +640,7 @@
     const [config, setConfig] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    const [actionError, setActionError] = useState(null);
 
     const [tenantFilter, setTenantFilter] = useState("");
     const [assigneeFilter, setAssigneeFilter] = useState("");
@@ -643,9 +664,11 @@
 
     const cursorRef = useRef(0);
     const reloadTimerRef = useRef(null);
-    const wsRef = useRef(null);
     const wsBackoffRef = useRef(1000);
-    const wsClosedRef = useRef(false);
+    const boardSelectionRef = useRef(board);
+    const boardRequestRef = useRef(0);
+    const createOperationRef = useRef(0);
+    boardSelectionRef.current = board;
 
     // --- load config once ---------------------------------------------------
     useEffect(function () {
@@ -664,20 +687,29 @@
 
     // --- fetch full board ---------------------------------------------------
     const loadBoard = useCallback(() => {
+      if (board !== boardSelectionRef.current) return Promise.resolve();
+      const requestedBoard = board;
+      const requestId = ++boardRequestRef.current;
       const qs = new URLSearchParams();
       if (tenantFilter) qs.set("tenant", tenantFilter);
       if (includeArchived) qs.set("include_archived", "true");
       const url = qs.toString() ? `${API}/board?${qs}` : `${API}/board`;
       return SDK.fetchJSON(withBoard(url, board))
         .then(function (data) {
+          if (requestId !== boardRequestRef.current || requestedBoard !== boardSelectionRef.current) return;
           setBoardData(data);
           cursorRef.current = data.latest_event_id || 0;
           setError(null);
         })
         .catch(function (err) {
+          if (requestId !== boardRequestRef.current || requestedBoard !== boardSelectionRef.current) return;
           setError(String(err && err.message ? err.message : err));
         })
-        .finally(function () { setLoading(false); });
+        .finally(function () {
+          if (requestId === boardRequestRef.current && requestedBoard === boardSelectionRef.current) {
+            setLoading(false);
+          }
+        });
     }, [tenantFilter, includeArchived, board]);
 
     // --- load list of boards for the switcher ------------------------------
@@ -725,9 +757,11 @@
     // --- WebSocket ---------------------------------------------------------
     useEffect(function () {
       if (!boardData) return undefined;
-      wsClosedRef.current = false;
+      let cancelled = false;
+      let reconnectTimer = null;
+      let ws = null;
       function openWs() {
-        if (wsClosedRef.current) return;
+        if (cancelled) return;
         // Build the WS URL via the host SDK so the correct auth param is used
         // in BOTH modes: single-use ?ticket= in gated OAuth mode, ?token= in
         // loopback. Reading window.__HERMES_SESSION_TOKEN__ directly (the old
@@ -743,12 +777,11 @@
         // Regression: #20879.
         if (board) wsParams.board = board;
         SDK.buildWsUrl(`${API}/events`, wsParams).then(function (url) {
-          if (wsClosedRef.current) return;
-          let ws;
+          if (cancelled) return;
           try { ws = new WebSocket(url); } catch (_e) { return; }
-          wsRef.current = ws;
           ws.onopen = function () { wsBackoffRef.current = 1000; };
           ws.onmessage = function (ev) {
+            if (cancelled) return;
             try {
               const msg = JSON.parse(ev.data);
               if (msg && Array.isArray(msg.events) && msg.events.length > 0) {
@@ -766,7 +799,7 @@
             } catch (_e) { /* ignore */ }
           };
           ws.onclose = function (ev) {
-            if (wsClosedRef.current) return;
+            if (cancelled) return;
             if (ev && ev.code === 1008) {
               setError(tx(t, "wsAuthFailed",
                 "WebSocket auth failed — reload the page to refresh the session token."));
@@ -774,21 +807,22 @@
             }
             const delay = Math.min(wsBackoffRef.current, 30000);
             wsBackoffRef.current = Math.min(wsBackoffRef.current * 2, 30000);
-            setTimeout(openWs, delay);
+            reconnectTimer = setTimeout(openWs, delay);
           };
         }).catch(function () {
           // Ticket mint / URL build failed (e.g. session expired). Back off
           // and retry; a hard auth failure surfaces via the 1008 close path.
-          if (wsClosedRef.current) return;
+          if (cancelled) return;
           const delay = Math.min(wsBackoffRef.current, 30000);
           wsBackoffRef.current = Math.min(wsBackoffRef.current * 2, 30000);
-          setTimeout(openWs, delay);
+          reconnectTimer = setTimeout(openWs, delay);
         });
       }
       openWs();
       return function () {
-        wsClosedRef.current = true;
-        try { wsRef.current && wsRef.current.close(); } catch (_e) { /* noop */ }
+        cancelled = true;
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        try { ws && ws.close(); } catch (_e) { /* noop */ }
       };
     }, [!!boardData, board, scheduleReload]);
 
@@ -980,7 +1014,15 @@
         .catch(function () { /* dialog cancelled */ });
     }, [selectedIds, requestMoveConfirm, requestCompletionSummary, performMoveTask]);
 
-    const createTask = useCallback(function (body) {
+    const createTask = useCallback(function (body, attachments) {
+      const operationId = ++createOperationRef.current;
+      const originBoard = board;
+      const showActionError = function (message) {
+        if (operationId === createOperationRef.current) {
+          setActionError({ board: originBoard, message: message });
+        }
+      };
+      setActionError(null);
       return SDK.fetchJSON(withBoard(`${API}/tasks`, board), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -991,10 +1033,18 @@
         // the task was created successfully — but the user should know
         // their ready task will sit idle until the gateway is up.
         if (res && res.warning) {
-          setError(tx(t, "taskCreatedWarning", "Task created, but: ") + res.warning);
+          showActionError(tx(t, "taskCreatedWarning", "Task created, but: ") + res.warning);
         }
+        const taskId = res && res.task && res.task.id;
         loadBoard();
         loadBoardList();  // refresh counts in the switcher
+        if (!taskId || !attachments || !attachments.length) return res;
+        uploadTaskAttachments(taskId, board, attachments).catch(function (e) {
+          // The task already exists; report the background failure without
+          // reopening the create flow where a retry could duplicate the card.
+          showActionError(tx(t, "taskCreatedUploadFailed",
+            "Task created, but attachment upload failed: ") + String(e.message || e));
+        });
         return res;
       });
     }, [loadBoard, loadBoardList, board, t]);
@@ -1143,6 +1193,8 @@
       // Optimistic UI: clear the current grid + show loading, reset the
       // event cursor so the WS reopens aligned to the new board's
       // latest_event_id on the next loadBoard.
+      boardSelectionRef.current = nextSlug;
+      boardRequestRef.current += 1;
       setBoardData(null);
       cursorRef.current = 0;
       setLoading(true);
@@ -1308,6 +1360,9 @@
          onDelete: deleteSelected,
        }) : null,
         error ? h("div", { className: "text-xs text-destructive px-2" }, error) : null,
+        actionError && actionError.board === board
+          ? h("div", { className: "text-xs text-destructive px-2" }, actionError.message)
+          : null,
         h(KanbanDialogs, {
           dialogProps: kanbanDialogs.dialogProps,
           dialogState: kanbanDialogs.dialogState,
@@ -2922,8 +2977,8 @@
         allTasks: props.allTasks,
         defaultWorkspaceKind: (props.boardMeta && props.boardMeta.default_workspace_kind) || "scratch",
         defaultWorkspacePath: (props.boardMeta && props.boardMeta.default_workdir) || "",
-        onSubmit: function (body) {
-          props.onCreate(body).then(function () { setShowCreate(false); });
+        onSubmit: function (body, attachments) {
+          return props.onCreate(body, attachments).then(function () { setShowCreate(false); });
         },
         onCancel: function () { setShowCreate(false); },
       }) : null,
@@ -3164,6 +3219,10 @@
   function InlineCreate(props) {
     const { t } = useI18n();
     const [title, setTitle] = useState("");
+    const [description, setDescription] = useState("");
+    const [pendingImages, setPendingImages] = useState([]);
+    const [submitBusy, setSubmitBusy] = useState(false);
+    const [submitErr, setSubmitErr] = useState(null);
     const [assignee, setAssignee] = useState("");
     const [priority, setPriority] = useState(0);
     const [parent, setParent] = useState("");
@@ -3185,9 +3244,10 @@
 
     const submit = function () {
       const trimmed = title.trim();
-      if (!trimmed) return;
+      if (!trimmed || submitBusy) return;
       const body = {
         title: trimmed,
+        body: description.trim() || null,
         assignee: assignee.trim() || null,
         priority: Number(priority) || 0,
         triage: props.columnName === "triage",
@@ -3215,10 +3275,16 @@
         const gmt = parseInt(goalMaxTurns, 10);
         if (Number.isFinite(gmt) && gmt > 0) body.goal_max_turns = gmt;
       }
-      props.onSubmit(body);
-      setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills("");
-      setWorkspaceKind(defaultWorkspaceKind); setWorkspacePath(defaultWorkspacePath);
-      setGoalMode(false); setGoalMaxTurns("");
+      setSubmitBusy(true);
+      setSubmitErr(null);
+      props.onSubmit(body, pendingImages).then(function () {
+        setTitle(""); setDescription(""); setPendingImages([]);
+        setAssignee(""); setPriority(0); setParent(""); setSkills("");
+        setWorkspaceKind(defaultWorkspaceKind); setWorkspacePath(defaultWorkspacePath);
+        setGoalMode(false); setGoalMaxTurns("");
+      }).catch(function (e) {
+        setSubmitErr(String(e.message || e));
+      }).finally(function () { setSubmitBusy(false); });
     };
 
     const showPathInput = workspaceKind !== "scratch";
@@ -3260,6 +3326,26 @@
               className: "text-sm min-h-[3rem] max-h-48 resize-y w-full border border-input bg-transparent px-2 py-1 rounded-md focus:outline-none focus:ring-2 focus:ring-ring",
               rows: 3,
             }),
+          ),
+          h("div", { className: "flex flex-col gap-1" },
+            fieldLabel(tx(t, "description", "Description")),
+            h("textarea", {
+              value: description,
+              onChange: function (e) { setDescription(e.target.value); },
+              onPaste: function (e) {
+                handleImagePaste(e, function (files) {
+                  setPendingImages(function (current) { return current.concat(files); });
+                });
+              },
+              placeholder: tx(t, "taskDescriptionPlaceholder",
+                "Task details… Paste screenshots here to attach them."),
+              className: "text-sm min-h-[5rem] max-h-64 resize-y w-full border border-input bg-transparent px-2 py-1 rounded-md focus:outline-none focus:ring-2 focus:ring-ring",
+              rows: 5,
+            }),
+            pendingImages.length > 0 ? h("div", {
+              className: "text-xs text-muted-foreground",
+            }, `${pendingImages.length} pasted image${pendingImages.length === 1 ? "" : "s"} will be attached`) : null,
+            submitErr ? h("div", { className: "text-xs text-destructive" }, submitErr) : null,
           ),
           h("div", { className: "flex gap-2" },
             h("div", { className: "flex flex-col gap-1 flex-1" },
@@ -3383,8 +3469,8 @@
           h(Button, {
             type: "submit",
             size: "sm",
-            disabled: !title.trim(),
-          }, tx(t, "create", "Create")),
+            disabled: !title.trim() || submitBusy,
+          }, submitBusy ? tx(t, "creating", "Creating…") : tx(t, "create", "Create")),
         ),
       ),
     );
@@ -3463,28 +3549,7 @@
       if (!files.length) return;
       setUploadBusy(true);
       setUploadErr(null);
-      const url = withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/attachments`, boardSlug);
-      // Upload sequentially so a partial failure leaves a clear state.
-      let chain = Promise.resolve();
-      files.forEach(function (f) {
-        chain = chain.then(function () {
-          const fd = new FormData();
-          fd.append("file", f, f.name);
-          // SDK.authedFetch handles auth in BOTH modes (loopback token header /
-          // gated cookie) and applies the dashboard base-path prefix. The old
-          // hand-rolled Authorization:Bearer + credentials:'same-origin' sent
-          // an empty token and 401'd in gated mode.
-          return SDK.authedFetch(url, { method: "POST", body: fd })
-            .then(function (resp) {
-              if (!resp.ok) {
-                return resp.text().then(function (txt) {
-                  throw new Error(parseApiErrorMessage(new Error(resp.status + ": " + txt)));
-                });
-              }
-            });
-        });
-      });
-      chain.then(function () {
+      uploadTaskAttachments(props.taskId, boardSlug, files).then(function () {
         load();
         props.onRefresh();
       }).catch(function (e) {
@@ -3730,6 +3795,9 @@
             h(Input, {
               value: newComment,
               onChange: function (e) { setNewComment(e.target.value); },
+              onPaste: function (e) {
+                if (!uploadBusy) handleImagePaste(e, handleUpload);
+              },
               onKeyDown: function (e) {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault(); handleComment();
@@ -3936,6 +4004,8 @@
         task: t,
         renderMarkdown: props.renderMarkdown,
         onPatch: props.onPatch,
+        onUpload: props.onUpload,
+        uploadBusy: props.uploadBusy,
       }),
       h(DependencyEditor, {
         task: t,
@@ -4504,6 +4574,9 @@
             value: v,
             rows: 8,
             onChange: function (e) { setV(e.target.value); },
+            onPaste: function (e) {
+              if (!props.uploadBusy) handleImagePaste(e, props.onUpload);
+            },
           })
         : props.task.body
           ? h(MarkdownBlock, { source: props.task.body, enabled: props.renderMarkdown })

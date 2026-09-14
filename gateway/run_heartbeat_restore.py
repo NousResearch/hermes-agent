@@ -6,6 +6,34 @@ import logging
 logger = logging.getLogger("gateway.run")
 
 
+def _profile_has_heartbeat_keys(profile_home) -> bool:
+    """Indexed ``heartbeat:*`` probe on one profile's SessionDB — no config/secret parsing.
+
+    Fails OPEN: a probe error or unavailable DB must not suppress the restore sweep.
+    """
+    from gateway.run import _profile_session_db_probe
+
+    db = _profile_session_db_probe(profile_home)
+    if db is None:
+        return True
+    try:
+        return bool(db.list_meta_prefix("heartbeat:"))
+    except Exception:
+        logger.debug("heartbeat probe failed for %s; running full sweep", profile_home, exc_info=True)
+        return True
+
+
+def _served_profile_homes(runner, default_home):
+    """Homes whose SessionDBs may hold heartbeat state (multiplex set, else just the default)."""
+    try:
+        from hermes_cli.profiles import profiles_to_serve
+        multiplex = bool(getattr(getattr(runner, "config", None), "multiplex_profiles", False))
+        homes = [home for _name, home in profiles_to_serve(multiplex)]
+        return homes or [default_home]
+    except Exception:
+        return [default_home]
+
+
 async def restore_heartbeat_watches(runner) -> None:
     """Retryable startup/poll scan; failed reads never prune existing watches.
 
@@ -24,6 +52,10 @@ async def restore_heartbeat_watches(runner) -> None:
         # The poller may have been spawned by a named profile's /heartbeat command.
         # Anchor even default origins to the gateway home, not inherited context.
         home = getattr(store, "_routing_home", None) or get_hermes_home()
+        # Cheap gate: with no heartbeat persisted in any served profile there is nothing to
+        # restore — skip the per-origin profile-scope re-parse over every routed session.
+        if not any(_profile_has_heartbeat_keys(h) for h in _served_profile_homes(runner, home)):
+            return restored
         with _profile_runtime_scope(home):
             entries = store.list_sessions()
             for entry in entries:

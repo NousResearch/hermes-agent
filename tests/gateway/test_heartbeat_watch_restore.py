@@ -80,6 +80,44 @@ async def test_restore_retries_persisted_routes_in_their_own_profiles(tmp_path, 
 
 
 @pytest.mark.asyncio
+async def test_restore_skips_session_sweep_when_no_heartbeats_exist(tmp_path, monkeypatch):
+    """Idle case: no ``heartbeat:*`` key in any served profile → the restore poll must not
+    sweep the routing index (each swept origin re-parses that profile's config/secrets)."""
+    from gateway.run_heartbeat_restore import restore_heartbeat_watches
+
+    home = tmp_path / '.hermes'
+    named = home / 'profiles' / 'work'
+    named.mkdir(parents=True)
+    (named / 'config.yaml').write_text('{}')
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    dbs = {str(p): SessionDB(db_path=p / 'state.db') for p in (home, named)}
+    monkeypatch.setattr(goals, '_DB_CACHE', dbs)
+    config = GatewayConfig(multiplex_profiles=True)
+    store = SessionStore(home / 'sessions', config)
+    try:
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id='chat',
+                               thread_id='7', profile=None, scope_id=None)
+        store.get_or_create_session(source)
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = config
+        runner.session_store = store
+        runner._heartbeat_watch = {}
+        runner._run_in_executor_with_context = asyncio.to_thread
+        sweeps = []
+        original = store.list_sessions
+        monkeypatch.setattr(store, 'list_sessions',
+                            lambda: (sweeps.append(1), original())[1])
+        await restore_heartbeat_watches(runner)
+        assert sweeps == []
+        assert runner._heartbeat_watch == {}
+    finally:
+        store.close_all_db_handles()
+        for db in dbs.values():
+            db.close()
+
+
+@pytest.mark.asyncio
 async def test_startup_arms_retry_poller_even_without_any_watches(monkeypatch):
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._heartbeat_watch = {}

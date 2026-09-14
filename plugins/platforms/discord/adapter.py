@@ -1050,6 +1050,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._threads = ThreadParticipationTracker("discord")
         # Persistent typing loops per channel (DMs don't reliably show bot typing events).
         self._typing_tasks: Dict[str, asyncio.Task] = {}
+        self._typing_loop_max_seconds = self._load_discord_int_config(
+            "typing_loop_max_seconds", 600,
+        )
         self._bot_task: Optional[asyncio.Task] = None
         # Background task that runs post-connect housekeeping (command-menu registration + DM-topic setup)
         # off the connect path so a slow Bot API call (e.g. a set_my_commands stall for certain tokens)
@@ -3998,7 +4001,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Start a persistent typing loop (POST typing every 12s; indicator lasts ~10s).
-        TYPING_START is unreliable for bots in DMs; 429 sleeps ``retry_after``; CancelledError ends it."""
+        TYPING_START is unreliable for bots in DMs; 429 sleeps ``retry_after``; a deadline or
+        CancelledError ends it."""
         if not self._client:
             return
         if chat_id in self._typing_tasks:
@@ -4006,27 +4010,31 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
         async def _typing_loop() -> None:
             try:
-                while True:
-                    try:
-                        route = discord.http.Route(
-                            "POST", "/channels/{channel_id}/typing", channel_id=chat_id,
-                        )
-                        await self._client.http.request(route)
-                    except asyncio.CancelledError:
-                        return
-                    except Exception as e:
-                        retry_after = self._extract_discord_retry_after(e)
-                        if retry_after is not None:
-                            logger.warning(
-                                "Typing indicator rate-limited for %s; retrying in %.1fs",
-                                chat_id, retry_after,
+                timeout = self._typing_loop_max_seconds or None
+                async with asyncio.timeout(timeout):
+                    while True:
+                        try:
+                            route = discord.http.Route(
+                                "POST", "/channels/{channel_id}/typing", channel_id=chat_id,
                             )
-                        else:
-                            logger.debug("Discord typing indicator failed for %s: %s", chat_id, e)
+                            await self._client.http.request(route)
+                        except asyncio.CancelledError:
                             return
-                        await asyncio.sleep(retry_after)
-                        continue
-                    await asyncio.sleep(12)
+                        except Exception as e:
+                            retry_after = self._extract_discord_retry_after(e)
+                            if retry_after is not None:
+                                logger.warning(
+                                    "Typing indicator rate-limited for %s; retrying in %.1fs",
+                                    chat_id, retry_after,
+                                )
+                            else:
+                                logger.debug("Discord typing indicator failed for %s: %s", chat_id, e)
+                                return
+                            await asyncio.sleep(retry_after)
+                            continue
+                        await asyncio.sleep(12)
+            except TimeoutError:
+                logger.info("Discord typing indicator expired for %s", chat_id)
             except asyncio.CancelledError:
                 pass
             finally:

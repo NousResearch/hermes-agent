@@ -1428,6 +1428,7 @@ DEFAULT_CONFIG = {
 
     "discord": {
         "require_mention": True,  # require @mention to respond in server channels
+        "typing_loop_max_seconds": 600,  # stop orphaned typing loops; 0 disables the limit
         "free_response_channels": "",  # comma-separated channel IDs answered without mention
         "allowed_channels": "",  # if set, ONLY respond in these channel IDs (whitelist)
         "auto_thread": True,  # auto-create threads on @mention in channels (like Slack)

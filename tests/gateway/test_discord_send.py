@@ -270,6 +270,21 @@ async def test_typing_restartable_after_error():
         "Should restart typing after previous failure"
 
 
+@pytest.mark.asyncio
+async def test_typing_loop_expires_without_stop():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._client = MagicMock()
+    adapter._client.http.request = AsyncMock()
+    adapter._typing_loop_max_seconds = 0.01
+
+    await adapter.send_typing("12345")
+    try:
+        await asyncio.sleep(0.05)
+        assert "12345" not in adapter._typing_tasks
+    finally:
+        await adapter.stop_typing("12345")
+
+
 # ---------------------------------------------------------------------------
 # #66797 — outbound MEDIA video must reach channel.send as a real attachment
 # ---------------------------------------------------------------------------

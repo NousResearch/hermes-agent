@@ -229,9 +229,23 @@ def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -
     return DecomposeOutcome(task.id, True, "single task (no fanout)", fanout=False, new_title=title_val)
 
 
+# EAGLECLAW LOCAL PATCH 2026-09-14 — hard ceiling on fan-out width.
+# The system prompt asks for "2-6 tasks" but nothing enforced it: _apply_fanout
+# accepted any non-empty list, so one bad completion could spawn 20 workers'
+# worth of cards from a single card. Decomposition is one level deep (children
+# are inserted 'todo', never 'triage'), so this is the only unbounded dimension.
+# REJECT rather than truncate: `parents` are indices into this same list, so
+# dropping entries would silently corrupt the dependency graph. A rejected card
+# stays in triage, visible, and can be retried or split by hand.
+MAX_FANOUT_CHILDREN = 8
+
+
 def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[list[dict], str]:
     """Validate/normalise the LLM's ``tasks`` list; ``(children, "")`` or ``([], reason)``.
     Unknown assignees route to the default; never assignee=None."""
+    if len(raw_tasks) > MAX_FANOUT_CHILDREN:
+        return [], (f"decomposer returned {len(raw_tasks)} children, over the "
+                    f"MAX_FANOUT_CHILDREN={MAX_FANOUT_CHILDREN} ceiling; left in triage")
     children: list[dict] = []
     for idx, entry in enumerate(raw_tasks):
         if not isinstance(entry, dict):

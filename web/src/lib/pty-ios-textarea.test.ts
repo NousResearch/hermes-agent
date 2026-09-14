@@ -44,7 +44,19 @@ describe("preparePtyTextareaForDictation", () => {
     expect(textarea.style.getPropertyValue("-webkit-text-fill-color")).toBe("transparent");
   });
 
-  it("keeps helper glyphs invisible after Safari autocorrect paints black fill", () => {
+  it("keeps a visible-to-Safari in-layout box so dictation is not garbled", () => {
+    const textarea = document.createElement("textarea");
+    preparePtyTextareaForDictation(textarea);
+    restorePtyTextareaLayout(textarea, composerTextareaBox(20, 400));
+    expect(textarea.style.textIndent).not.toBe("-9999px");
+    expect(textarea.style.opacity).toBe("0.01");
+    expect(textarea.style.zIndex).toBe("2");
+    expect(textarea.style.width).toBe("100%");
+    expect(textarea.style.height).toBe("20px");
+    expect(textarea.style.getPropertyValue("-webkit-text-fill-color")).toBe("transparent");
+  });
+
+  it("keeps helper fill transparent after Safari autocorrect", () => {
     const textarea = document.createElement("textarea");
     document.body.append(textarea);
     const stop = watchPtyTextareaLayout(textarea, () => composerTextareaBox(20, 400));
@@ -60,8 +72,7 @@ describe("preparePtyTextareaForDictation", () => {
     expect(textarea.style.getPropertyPriority("color")).toBe("important");
     expect(textarea.style.getPropertyValue("-webkit-text-fill-color")).toBe("transparent");
     expect(textarea.style.getPropertyPriority("-webkit-text-fill-color")).toBe("important");
-    expect(textarea.style.textIndent).toBe("-9999px");
-    expect(textarea.style.overflow).toBe("hidden");
+    expect(textarea.style.textIndent).not.toBe("-9999px");
     stop();
     textarea.remove();
   });
@@ -77,9 +88,9 @@ describe("preparePtyTextareaForDictation", () => {
     textarea.style.cssText = "opacity:1;color:#000;-webkit-text-fill-color:#000;caret-color:#000";
     const sheet = document.getElementById("pty-helper-ink");
     expect(sheet?.textContent).toContain("-webkit-text-fill-color:transparent");
-    expect(sheet?.textContent).toContain("opacity:0");
-    expect(sheet?.textContent).toContain("text-indent:-9999px");
-    expect(getComputedStyle(textarea).opacity).toBe("0");
+    expect(sheet?.textContent).toContain("opacity:0.01");
+    expect(sheet?.textContent).not.toContain("text-indent:-9999px");
+    expect(getComputedStyle(textarea).opacity).toBe("0.01");
     host.remove();
   });
 

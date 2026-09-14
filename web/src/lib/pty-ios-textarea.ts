@@ -13,20 +13,15 @@ export const PTY_HELPER_INK_STYLE_ID = "pty-helper-ink";
 
 /** Survives xterm rewriting the helper's inline style (Safari autocorrect paints black otherwise). */
 export function ensurePtyHelperInkCss(doc: Document): void {
-  if (doc.getElementById(PTY_HELPER_INK_STYLE_ID)) return;
-  const style = doc.createElement("style");
-  style.id = PTY_HELPER_INK_STYLE_ID;
-  style.textContent = [
+  const css = [
     ".xterm textarea.xterm-helper-textarea,.xterm .xterm-helper-textarea{",
     "color:transparent!important;",
     "caret-color:transparent!important;",
     "-webkit-text-fill-color:transparent!important;",
     "background:transparent!important;",
-    "opacity:0!important;",
+    "opacity:0.01!important;",
     "text-shadow:none!important;",
-    "text-indent:-9999px!important;",
-    "overflow:hidden!important;",
-    "z-index:-5!important;",
+    "z-index:2!important;",
     "}",
     ".xterm .composition-view,.xterm .composition-view.active{",
     "color:transparent!important;",
@@ -35,6 +30,14 @@ export function ensurePtyHelperInkCss(doc: Document): void {
     "text-shadow:none!important;",
     "}",
   ].join("");
+  const existing = doc.getElementById(PTY_HELPER_INK_STYLE_ID);
+  if (existing) {
+    existing.textContent = css;
+    return;
+  }
+  const style = doc.createElement("style");
+  style.id = PTY_HELPER_INK_STYLE_ID;
+  style.textContent = css;
   (doc.head ?? doc.documentElement).append(style);
 }
 
@@ -85,7 +88,7 @@ export function restorePtyTextareaLayout(
   }
   const height = box?.height ?? 24;
   const top = box?.top ?? 0;
-  textarea.style.opacity = "0";
+  textarea.style.opacity = "0.01";
   textarea.style.setProperty("color", "transparent", "important");
   textarea.style.setProperty("caret-color", "transparent", "important");
   textarea.style.setProperty("-webkit-text-fill-color", "transparent", "important");
@@ -102,9 +105,9 @@ export function restorePtyTextareaLayout(
   textarea.style.right = "0";
   textarea.style.top = `${top}px`;
   textarea.style.bottom = "auto";
-  textarea.style.zIndex = "-5";
+  textarea.style.zIndex = "2";
   textarea.style.overflow = "hidden";
-  textarea.style.setProperty("text-indent", "-9999px", "important");
+  textarea.style.removeProperty("text-indent");
   textarea.style.pointerEvents = "auto";
   textarea.style.padding = "0";
   textarea.style.border = "0";

@@ -5,6 +5,7 @@ Stdlib only. ``extract_text`` stays tolerant of v0.3 peers."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -125,6 +126,12 @@ def new_task_id() -> str:
 
 def new_context_id() -> str:
     return "ctx-" + uuid.uuid4().hex[:16]
+
+
+def message_context_id(scope: str, message_id: str) -> str:
+    """The context a first message without a ``contextId`` opens. Named by the message, so a retry
+    of that send after a timeout reopens the same context instead of a fresh one."""
+    return "ctx-" + hashlib.sha256(f"{scope}\0{message_id}".encode()).hexdigest()[:16]
 
 
 def text_part(text: str) -> dict:

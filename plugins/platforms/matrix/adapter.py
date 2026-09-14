@@ -228,6 +228,26 @@ def _is_permanent_matrix_auth_error(exc: BaseException) -> bool:
     return isinstance(status, int) and status in (401, 403)
 
 
+def _split_reply_fallback(body: str) -> tuple[str, str]:
+    """Split ``> quote\\n\\nreply`` into ``(quote_block, reply_text)``; ``("", body)`` when absent.
+
+    The two halves always concatenate back to *body* verbatim (``quote + reply == body``), so
+    callers can transform one half and rebuild the body without disturbing the other. The blank
+    separator line belongs to the quote block. Used to keep the ``> <@user:srv>`` reply pill —
+    the only mention text in a reply-to-the-bot — out of whole-body rewrites.
+    """
+    if not body or not body.startswith("> "):
+        return "", body
+    lines = body.split("\n")
+    idx = 0
+    while idx < len(lines) and (lines[idx].startswith("> ") or lines[idx] == ">"):
+        idx += 1
+    if idx < len(lines) and lines[idx] == "":
+        idx += 1  # the blank line separating the quote from the reply belongs to the quote
+    head = "\n".join(lines[:idx])
+    return (head, "") if idx >= len(lines) else (head + "\n", "\n".join(lines[idx:]))
+
+
 class _MatrixHtmlSanitizer(HTMLParser):
     """Allowlist sanitizer for Matrix-compatible formatted HTML."""
 
@@ -2002,7 +2022,12 @@ class MatrixAdapter(BasePlatformAdapter):
                     event_id, thread_id)
                 return None
         if is_mentioned and self._require_mention:
-            body = self._strip_mention(body)
+            # Strip the mention from the reply text only: the quote block carries the
+            # ``> <@bot:srv> ...`` reply pill, which _extract_reply_context parses later
+            # for reply_to_author_id. A whole-body replace rewrote the pill to ``> <>``
+            # and silently dropped the replied-to author (#111233).
+            quote_block, reply_text = _split_reply_fallback(body)
+            body = quote_block + self._strip_mention(reply_text)
         # Real thread roots are preserved above; synthetic roots (this event) follow policy: DM
         # @mention threads / DM auto-thread, or room auto-thread unless session_scope pins the room.
         if not thread_id:

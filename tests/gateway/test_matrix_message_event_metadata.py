@@ -246,3 +246,106 @@ async def test_media_message_carries_sender_and_reply_context(monkeypatch):
     assert "nice photo" in msg.reply_to_text
     assert msg.reply_to_author_id == "@erin:example.org"
     assert msg.reply_to_author_name == "erin"
+
+
+# ---------------------------------------------------------------------------
+# Reply fallback vs. the mention strip (#111233)
+#
+# A reply to the bot names the bot in the ``> <@bot:srv> ...`` pill, which is
+# what makes the message count as a mention under the default
+# MATRIX_REQUIRE_MENTION=true. The mention strip therefore runs on exactly the
+# messages that carry a reply pill, and it must not rewrite the pill before
+# _extract_reply_context parses it.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reply_to_bot_under_require_mention_keeps_reply_author(monkeypatch):
+    """Replying to the bot must keep the replied-to author under the default mention gate.
+
+    The pill is the mention, so the strip runs and used to rewrite ``> <@bot>`` to
+    ``> <>`` before the fallback parse — losing reply_to_author_id and mangling
+    reply_to_text, so the prompt rendered "[Replying to: "<> did you check the logs?"]"
+    instead of "[Replying to your previous message: ...]".
+    """
+    adapter = _make_adapter(require_mention=True, monkeypatch=monkeypatch)
+    adapter._startup_ts = time.time() - 10
+
+    # No explicit "@hermes" in the reply text: the pill is the only mention.
+    assert adapter._user_id not in "hello there"
+    body = "> <@hermes:example.org> did you check the logs?\n\nhello there"
+    event = _make_event(body, in_reply_to_event_id="$bot_msg", event_id="$evt_reply_bot")
+    await adapter._on_room_message(event)
+
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+
+    assert msg.reply_to_message_id == "$bot_msg"
+    assert msg.reply_to_author_id == "@hermes:example.org"
+    assert msg.reply_to_author_name == "hermes"
+    # The quoted text must be the reply target's text, never the mangled "<> ..." pill remnant.
+    assert msg.reply_to_text == "did you check the logs?"
+    # The user's actual reply is still delivered, with the quote block stripped.
+    assert msg.text == "hello there"
+
+
+@pytest.mark.asyncio
+async def test_reply_with_explicit_mention_still_strips_it_from_reply_text(monkeypatch):
+    """The narrower strip must still remove an explicit @bot from the reply text.
+
+    Only the quote block is exempt; a typed mention in the reply itself is stripped as
+    before, so the model does not see the addressing token.
+    """
+    adapter = _make_adapter(require_mention=True, monkeypatch=monkeypatch)
+    adapter._startup_ts = time.time() - 10
+
+    body = "> <@carol:example.org> original question\n\n@hermes:example.org because reasons"
+    event = _make_event(body, in_reply_to_event_id="$carol_msg", event_id="$evt_reply_carol")
+    await adapter._on_room_message(event)
+
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.reply_to_author_id == "@carol:example.org"
+    assert msg.reply_to_text == "original question"
+    assert msg.text == "because reasons"
+
+
+@pytest.mark.asyncio
+async def test_plain_mention_without_quote_is_still_stripped(monkeypatch):
+    """A non-quote mention keeps the previous whole-body strip behaviour."""
+    adapter = _make_adapter(require_mention=True, monkeypatch=monkeypatch)
+    adapter._startup_ts = time.time() - 10
+
+    event = _make_event("@hermes:example.org hello there", event_id="$evt_plain_mention")
+    await adapter._on_room_message(event)
+
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.text == "hello there"
+    assert msg.reply_to_author_id is None
+
+
+def test_split_reply_fallback_reassembles_body():
+    """The split is lossless: the two halves rebuild the original body byte for byte.
+
+    Callers transform one half and rebuild the body, so any drift between the split and
+    the original text would silently rewrite the message.
+    """
+    from plugins.platforms.matrix.adapter import _split_reply_fallback
+
+    cases = [
+        ("> <@a:ex.org> q\n\nreply", ("> <@a:ex.org> q\n\n", "reply")),
+        ("> <@a:ex.org> q\nreply", ("> <@a:ex.org> q\n", "reply")),
+        ("> <@a:ex.org> q", ("> <@a:ex.org> q", "")),
+        ("> <@a:ex.org> q\n", ("> <@a:ex.org> q\n", "")),
+        ("> q\n> more\n\nreply", ("> q\n> more\n\n", "reply")),
+        ("> q\n>\n\nreply", ("> q\n>\n\n", "reply")),
+        # CRLF: the "\r" line is not the empty separator, so the quote block keeps "\r\n"
+        # and the reply text keeps the leading break — which the strip's .strip() removes.
+        ("> <@a:ex.org> q\r\n\r\nreply", ("> <@a:ex.org> q\r\n", "\r\nreply")),
+        ("no quote here", ("", "no quote here")),
+        ("", ("", "")),
+    ]
+    for body, expected in cases:
+        quote, reply = _split_reply_fallback(body)
+        assert (quote, reply) == expected
+        # The split must be lossless: callers rebuild the body from the two halves.
+        assert quote + reply == body

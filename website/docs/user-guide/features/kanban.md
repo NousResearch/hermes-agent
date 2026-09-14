@@ -341,6 +341,32 @@ parent, missing input, unmet capability) before unblocking, or raise
 `BLOCK_RECURRENCE_LIMIT` if the loop is expected.
 :::
 
+### Creator-first blocked escalation
+
+Tasks created by an agent inherit that creator's durable notification route. A
+`blocked` event therefore wakes the creator first with the task, worker, block
+kind, reason, and recurrence count so it can add context or restructure the
+work using normal Kanban actions. `needs_input` remains an explicit human gate.
+
+Installations that want an auxiliary fallback when no creator route exists can
+opt in:
+
+```yaml
+kanban:
+  blocked_escalation:
+    enabled: true
+    resolver_fallback: true
+    max_attempts: 1
+auxiliary:
+  kanban_block_resolver:
+    provider: auto
+```
+
+The fallback may add bounded context and retry a generic/transient blocker, or
+leave it blocked with a recommendation. It never auto-unblocks `needs_input` or
+`capability`, and the attempt budget prevents resolver loops. The feature is
+disabled by default, preserving existing blocked-task behavior.
+
 ## How workers interact with the board
 
 **Workers do not shell out to `hermes kanban`.** When the dispatcher spawns a worker it sets `HERMES_KANBAN_TASK=t_abcd` in the child's env, and that env var flips on a dedicated **kanban toolset** in the model's schema. The same toolset is also available to orchestrator profiles that enable `kanban` in their toolsets config. These tools read and mutate the board directly via the Python `kanban_db` layer, same as the CLI does. A running worker calls these like any other tool; it never sees or needs the `hermes kanban` CLI.

@@ -41,6 +41,9 @@ class _DispatcherSettings:
     reconcile_orphans: bool
     default_assignee: Optional[str]
     max_in_progress_per_profile: Optional[int]
+    blocked_escalation_enabled: bool
+    blocked_resolver_fallback: bool
+    blocked_remediation_max_attempts: int
 
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:
@@ -101,6 +104,18 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         logger.info("kanban dispatcher: default_assignee=%r (unassigned ready tasks "
                     "will route to this profile)", default_assignee)
 
+    blocked_cfg = kanban_cfg.get("blocked_escalation", {})
+    blocked_cfg = blocked_cfg if isinstance(blocked_cfg, dict) else {}
+    raw_block_attempts = blocked_cfg.get("max_attempts", 1)
+    try:
+        blocked_attempts = max(1, int(raw_block_attempts))
+    except (TypeError, ValueError):
+        logger.warning(
+            "kanban dispatcher: invalid blocked_escalation.max_attempts=%r; using 1",
+            raw_block_attempts,
+        )
+        blocked_attempts = 1
+
     return _DispatcherSettings(
         interval=interval,
         max_spawn=max_spawn,
@@ -114,6 +129,9 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         # Per-profile concurrency cap: no single profile's local model / API
         # quota / browser pool gets overwhelmed by a fan-out.
         max_in_progress_per_profile=_positive_int_setting(kanban_cfg, "max_in_progress_per_profile"),
+        blocked_escalation_enabled=bool(blocked_cfg.get("enabled", False)),
+        blocked_resolver_fallback=bool(blocked_cfg.get("resolver_fallback", True)),
+        blocked_remediation_max_attempts=blocked_attempts,
     )
 
 
@@ -180,11 +198,28 @@ class _KanbanDispatcher:
         fingerprint = self.board_db_fingerprint(slug)
         if not self._quarantine_lifted(slug, fingerprint):
             return None
-        kwargs = {k: v for k, v in asdict(self.settings).items() if k != "interval"}
+        kwargs = {
+            k: v for k, v in asdict(self.settings).items()
+            if k not in {
+                "interval", "blocked_escalation_enabled", "blocked_resolver_fallback",
+                "blocked_remediation_max_attempts",
+            }
+        }
         try:
             # No explicit init_db(): connect() runs the migration once per
             # process (see the matching note in the notifier collector).
             conn = _kbc().connect(board=slug)
+            if self.settings.blocked_escalation_enabled and self.settings.blocked_resolver_fallback:
+                from hermes_cli.kanban_block_resolver import resolve_one
+
+                outcome = resolve_one(
+                    conn, max_attempts=self.settings.blocked_remediation_max_attempts,
+                )
+                if outcome.attempted:
+                    logger.info(
+                        "kanban blocked resolver [%s]: task=%s action=%s result=%s",
+                        slug, outcome.task_id, outcome.action or "none", outcome.reason,
+                    )
             return _kbd().dispatch_once(conn, board=slug, **kwargs)
         except Exception as exc:
             if self.is_corrupt_board_db_error(exc):

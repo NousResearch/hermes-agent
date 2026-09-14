@@ -727,9 +727,11 @@ DEFAULT_CONFIG = {
         "memory_query_rewrite": _aux(8, reasoning_effort=False),
         "tts_audio_tags": _aux(30),
         # Kanban: triage_specifier expands a Triage one-liner into a spec (cheap model OK);
-        # kanban_decomposer emits a JSON graph of child tasks (more tokens).
+        # kanban_decomposer emits a JSON graph of child tasks (more tokens);
+        # kanban_block_resolver is an opt-in fallback when no creator session can be woken.
         "triage_specifier": _aux(120),
         "kanban_decomposer": _aux(180),
+        "kanban_block_resolver": _aux(120),
         "profile_describer": _aux(60),   # 1-2 sentence profile blurb; short, cheap
         "goal_judge": _aux(60),          # /goal satisfaction + contract drafting; JSON calls
         # Curator skill-usage review can take minutes on reasoning models (umbrellas over hundreds
@@ -1729,6 +1731,13 @@ DEFAULT_CONFIG = {
         # kanban_create is called from a session with a persistent delivery channel. Disable for
         # profiles that prefer explicit kanban_notify-subscribe calls per task.
         "auto_subscribe_on_create": True,
+        # Optional last-resort remediation for blocked tasks without a resumable creator route.
+        # Creator wake always wins; explicit human/capability gates are never auto-unblocked.
+        "blocked_escalation": {
+            "enabled": False,
+            "resolver_fallback": True,
+            "max_attempts": 1,
+        },
         # Run the dispatcher inside the gateway process (~300µs per idle tick). False only if you
         # run it as a separate unit or don't want the gateway spawning workers.
         "dispatch_in_gateway": True,

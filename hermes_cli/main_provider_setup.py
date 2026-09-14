@@ -62,6 +62,7 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("skills_hub", "Skills hub", "skills search/install"),
     ("triage_specifier", "Triage specifier", "kanban spec fleshing"),
     ("kanban_decomposer", "Kanban decomposer", "task decomposition"),
+    ("kanban_block_resolver", "Kanban block resolver", "blocked-task fallback remediation"),
     ("profile_describer", "Profile describer", "auto profile descriptions"),
     ("curator", "Curator", "skill-usage review pass")]
 

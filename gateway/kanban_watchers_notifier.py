@@ -341,12 +341,21 @@ def _fmt_changes_requested(ev, n) -> tuple:
     return msg, None, reason_text
 
 
+def _fmt_blocked(ev, n) -> tuple:
+    payload = ev.payload or {}
+    reason = _safe_review_reason(payload.get("reason")) or "no reason recorded"
+    kind = _safe_review_reason(payload.get("kind"), 48) or "unspecified"
+    recurrence = payload.get("recurrences") or 1
+    detail = f"Blocked ({kind}, occurrence {recurrence}): {reason}"
+    return f"⏸ {n.head} blocked: {reason}", detail, None
+
+
 # archived / unblocked are claimed (so the cursor advances past them) but
 # intentionally silent (no formatter), and excluded from _WAKE_KINDS so they
 # never wake the creator.
 _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "completed": _fmt_completed,
-    "blocked": lambda ev, n: (f"⏸ {n.head} blocked{_clip(ev, 'reason', ': {}', 160)}", None, None),
+    "blocked": _fmt_blocked,
     "gave_up": lambda ev, n: (
         f"✖ {n.head} gave up after repeated spawn failures{_clip(ev, 'error', _NL, 200)}", None, None,
     ),

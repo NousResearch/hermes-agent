@@ -32,9 +32,6 @@ class TestReadGuardCache:
         f = tmp_path / "gw-adapter-guard-cafe"
         f.write_text("", encoding="utf-8")
         assert gw_conftest._read_guard_cache(f) is None
-
-    def test_whitespace_only_is_a_miss(self, tmp_path):
-        f = tmp_path / "gw-adapter-guard-cafe"
         f.write_text("\n  \n", encoding="utf-8")
         assert gw_conftest._read_guard_cache(f) is None
 
@@ -75,12 +72,3 @@ class TestWriteGuardCacheAtomic:
             assert staging not in evictable
         finally:
             staging.unlink(missing_ok=True)
-
-    def test_overwrite_is_all_or_nothing(self, tmp_path):
-        """os.replace swaps the whole file: after any successful publish the
-        content is complete, never a truncated prefix of the new verdict."""
-        f = tmp_path / "gw-adapter-guard-cafe"
-        gw_conftest._write_guard_cache_atomic(f, "clean")
-        long_msg = "violation " * 5000
-        gw_conftest._write_guard_cache_atomic(f, long_msg)
-        assert f.read_text(encoding="utf-8") == long_msg

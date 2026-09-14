@@ -373,6 +373,8 @@ def _candidate_artifacts(rows):
             context={
                 'sources': sources,
                 'recommended_action': verdict,
+                'selection_reason': reason,
+                'stance': str(data.get('stance') or ''),
                 'grounding': data.get('_grounding', {}),
                 'disclosure_review_required': bool(data.get('_grounding', {}).get('repositories') or data.get('_grounding', {}).get('memory')),
                 'thread_context': tweet.get('thread_context', []),
@@ -468,11 +470,6 @@ def _record_reported(artifacts) -> None:
 
 def main():
     _load_env()
-    from x_reference_refresh import refresh_references
-    try:
-        refresh_references()
-    except Exception as exc:
-        print(f'[x-scout] reference refresh unavailable: {type(exc).__name__}; retain previous observed references', file=sys.stderr)
     rows = _collect()
     if not rows:
         return
@@ -493,9 +490,9 @@ def main():
     if not staged:
         return
     report = render_report(staged, lane='quote-scout',
-                           title='Quote-post recommendations')
+                           title='Replies and quote-post recommendations')
     _record_reported(staged)
-    print(f"X Manager · {len(staged)} post recommendations (replies + quotes)")
+    print(f"X Manager · {len(staged)} post recommendation{'s' if len(staged) != 1 else ''} (replies + quotes)")
     print("Original posts and recommended drafts are in the attached review.")
     print(f"MEDIA:{report}")
 

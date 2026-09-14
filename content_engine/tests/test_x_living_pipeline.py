@@ -81,3 +81,7 @@ def test_collection_refreshes_living_own_references(monkeypatch,tmp_path):
     monkeypatch.setattr(scout,'CANDIDATES_JSON',tmp_path/'candidates.json')
     assert scout._collect()==[]
     assert called==[True]
+    monkeypatch.setattr(scout, "_load_env", lambda: None)
+    called.clear()
+    scout.main()
+    assert called==[True], "A normal scout run must refresh own references once, not twice"

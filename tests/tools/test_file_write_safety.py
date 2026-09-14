@@ -690,6 +690,147 @@ class TestProtectedInstructionFiles:
         assert rendered["choices"] == ["once", "deny"]
 
 
+class TestProfileHomeExemptsHermesRoot:
+    """issue #60: under ``hermes -p <name>`` (``HERMES_HOME=<root>/profiles/<name>``)
+    the exemption used to cover ONLY the profile dir, so the ROOT's direct files
+    (LEDGER.md / MEMORY.md / SOUL.md ...) fell through to the ``.hermes`` component
+    rule, were read as project-local ``.hermes`` config, and — having no approval
+    channel headless — failed closed. That blocked #54 (LEDGER.md edit). The gate
+    must exempt the whole Hermes tree, exactly like the default profile does.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _gate_on(self, monkeypatch):
+        import tools.file_tools_write_guards as ft
+        monkeypatch.setattr(
+            ft, "_protected_instruction_config", lambda: (True, [])
+        )
+        # The resolved-home slot is filled once per process; keep the fixture honest.
+        monkeypatch.setattr(ft, "_real_hermes_home_loaded", False)
+        monkeypatch.setattr(ft, "_real_hermes_home_cached", None)
+        yield
+
+    @pytest.fixture
+    def approvals(self, monkeypatch):
+        from tools.terminal_tool import set_approval_callback
+        state = {"calls": [], "answer": "deny"}
+
+        def cb(command, description, **kwargs):
+            state["calls"].append({"command": command, "description": description})
+            return state["answer"]
+
+        set_approval_callback(cb)
+        yield state
+        set_approval_callback(None)
+
+    def _write(self, path, content="injected"):
+        import json
+        from tools.file_tools import write_file_tool
+        return json.loads(write_file_tool(str(path), content))
+
+    def _profile_layout(self, tmp_path: Path):
+        """A real-shaped Hermes root: ``<tmp>/home/profiles/worker`` + root markers."""
+        root = tmp_path / "home"
+        profile = root / "profiles" / "worker"
+        (profile / "workspace").mkdir(parents=True)
+        (root / "config.yaml").write_text("model:\n  default: x\n", encoding="utf-8")
+        return root, profile
+
+    def test_profile_home_exempts_root_direct_files(
+        self, tmp_path, monkeypatch, approvals
+    ):
+        """Positive: the root's own store is not project-local ``.hermes`` config."""
+        import tools.file_tools_write_guards as ft
+        root, profile = self._profile_layout(tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+
+        assert os.path.realpath(str(profile)) in ft._hermes_exempt_homes()
+        assert os.path.realpath(str(root)) in ft._hermes_exempt_homes()
+        for name in ("LEDGER.md", "MEMORY.md", "USER.md", "SOUL.md", "AGENTS.md"):
+            reason = ft._protected_instruction_reason(str(root / name))
+            assert reason is None, f"{name} misread as project-local .hermes config"
+
+        # …and the write actually lands, with no approval prompt at all.
+        res = self._write(root / "LEDGER.md", "caliber fixed")
+        assert not res.get("error"), res
+        assert (root / "LEDGER.md").read_text(encoding="utf-8") == "caliber fixed"
+        assert approvals["calls"] == []
+
+    def test_negatives_still_gated_under_profile_home(
+        self, tmp_path, monkeypatch, approvals
+    ):
+        """Negative samples must keep failing closed with the profile home active."""
+        import tools.file_tools_write_guards as ft
+        root, profile = self._profile_layout(tmp_path)
+        repo = tmp_path / "repo"          # a checkout OUTSIDE the Hermes tree
+        (repo / ".hermes").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+
+        assert ft._protected_instruction_reason(str(repo / ".hermes" / "config.yaml"))
+        for name in ("AGENTS.md", "SOUL.md", "CLAUDE.md"):
+            assert ft._protected_instruction_reason(str(repo / name)) == name
+        assert ft._protected_instruction_reason("/tmp/elsewhere/docs/AGENTS.md")
+
+        # End-to-end: the project-local .hermes config is still refused, unwritten.
+        target = repo / ".hermes" / "config.yaml"
+        res = self._write(target, "gate: off\n")
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert not target.exists()
+        assert len(approvals["calls"]) == 1
+
+    def test_lookalike_profiles_dir_does_not_exempt_parent(
+        self, tmp_path, monkeypatch
+    ):
+        """Only a REAL Hermes root is exempt; a coincidental ``profiles/`` dir is not.
+
+        The root is derived from the ACTIVE home (contextvar scope — the multiplex
+        path), not from ``HERMES_HOME``, so a random ``.../profiles/<name>`` tree
+        cannot quietly exempt its parent directory.
+        """
+        import tools.file_tools_write_guards as ft
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        fake = tmp_path / "not-a-hermes-root"
+        profile = fake / "profiles" / "worker"
+        profile.mkdir(parents=True)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        token = set_hermes_home_override(str(profile))
+        try:
+            assert ft._hermes_exempt_homes() == (os.path.realpath(str(profile)),)
+            proj = fake / "proj" / ".hermes"
+            proj.mkdir(parents=True)
+            assert ft._protected_instruction_reason(str(proj / "config.yaml"))
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_multiplex_profile_scope_exempts_root(
+        self, tmp_path, monkeypatch
+    ):
+        """The contextvar scope (multiplex gateway) resolves the root the same way."""
+        import tools.file_tools_write_guards as ft
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        root, _profile = self._profile_layout(tmp_path)
+        alpha = root / "profiles" / "alpha"
+        alpha.mkdir(parents=True)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        token = set_hermes_home_override(str(alpha))
+        try:
+            assert os.path.realpath(str(root)) in ft._hermes_exempt_homes()
+            assert ft._protected_instruction_reason(str(root / "LEDGER.md")) is None
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_default_profile_exemption_unchanged(self, tmp_path, monkeypatch):
+        """HERMES_HOME=<root> (default profile): one exempt tree, as before."""
+        import tools.file_tools_write_guards as ft
+        root, _profile = self._profile_layout(tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(root))
+
+        assert ft._hermes_exempt_homes() == (os.path.realpath(str(root)),)
+        assert ft._protected_instruction_reason(str(root / "LEDGER.md")) is None
+
+
 class TestMultiplexProfileWriteGuardsAreProfileScoped:
     """#107327: a multiplexed gateway scopes ``HERMES_HOME`` per turn via a
     contextvar. The home/config path getters must resolve per call, or whichever

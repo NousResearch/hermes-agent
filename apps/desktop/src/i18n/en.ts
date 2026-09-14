@@ -3477,15 +3477,39 @@ export const en: Translations = {
     notNow: 'Not now',
     tryAgain: 'Try again',
     startAgain: 'Start again',
-    didNotComplete: 'Sign-in did not complete',
-    rejectedBody: 'Sign-in was rejected in the browser. You are still on the free tier.',
-    supersededBody: 'A newer sign-in code replaced this one.',
-    timedOutHeading: 'Sign-in timed out',
-    timedOutBody: 'The code was not used in time. You are still on the free tier.',
-    retiredBody: 'This free-tier identity was already used or expired; a new one is set up on the next start.',
-    errorBody: 'Sign-in did not complete; run it again.',
+    didNotComplete: "Sign-in didn't finish",
+    rejectedBody: "No problem, you're still on the free Nous service. Sign in whenever you're ready.",
+    supersededBody: 'A newer sign-in code replaced this one. Use the newest one, or start again.',
+    timedOutHeading: 'That sign-in link has expired',
+    timedOutBody: "Start again whenever you're ready. You're still on the free Nous service.",
+    retiredBody:
+      'Your session ended before the sign-in finished. Hermes will start a new one; then sign in again whenever you\'re ready.',
+    errorBody: "Sign-in didn't finish. Try again whenever you're ready.",
+    busyHeading: 'Almost there',
+    busyBody: wait =>
+      `Hermes couldn't finish signing you in because the Nous service is busy. Try again in ${wait}. Your session is still here in the meantime.`,
+    unreachableBody:
+      "Hermes couldn't reach the Nous service to finish signing you in. Check your internet connection and try again. Your session is still here.",
     alreadySignedInHeading: 'Already signed in.',
-    alreadySignedInBody: 'This Hermes is already signed in to a Nous account.'
+    alreadySignedInBody: 'This Hermes is already signed in to a Nous account.',
+    setupFailed: {
+      gateClosed:
+        "This version of Hermes can't start without a Nous account. Sign in or create one, it's free and only takes a minute.",
+      paused:
+        'Using Hermes without signing in is paused for a moment. Hermes will keep checking. Signing in is free and gets you going right now.',
+      rateLimited: wait =>
+        `Lots of people are getting started right now, so Hermes will try again in ${wait}. Signing in is free and skips the wait.`,
+      unreachable:
+        "Hermes couldn't reach the Nous service. Check your internet connection, then tap Try again. Or connect another provider for now.",
+      serverError: 'The Nous service had a hiccup. Tap Try again in a moment, or connect another provider for now.',
+      powRequired:
+        "The Nous server asked for a proof of work, but that isn't implemented in your Agent yet. Sign in or create a free Nous account to continue.",
+      locked: "This session can't continue without signing in. Sign in or create a free Nous account to keep going.",
+      generic: "Hermes couldn't set up free access without signing in. Signing in is free, or connect another provider.",
+      signInBelow: 'Signing in is free and keeps the free model. Pick Nous below.',
+      tryAgain: 'Try again',
+      retrying: 'Trying again…'
+    }
   },
 
   modelPicker: {

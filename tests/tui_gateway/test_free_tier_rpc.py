@@ -105,7 +105,7 @@ def test_provision_sets_the_free_tier_up_through_the_lifecycle_primitive(tmp_pat
 
     monkeypatch.setattr(anon_auth, "ensure_portal_identity", fake_provision)
     assert _call("free_tier.provision") == {"has_guest": True, "enabled": True}
-    assert calls == [{"explicit": True}]
+    assert calls == [{"explicit": True, "force": True}]
     assert _call("free_tier.provision") == {"has_guest": True, "enabled": True}
     assert len(calls) == 1                       # idempotent: an identity exists, nothing is minted
 

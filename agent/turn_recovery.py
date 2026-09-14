@@ -267,6 +267,16 @@ def _print_nous_401_diagnostics(agent: Any, api_error: Exception) -> None:
     _plines(agent, "🔐 Nous 401 — Portal authentication failed.")
     if _body_text:
         _plines(agent, f"   Response: {_body_text}")
+    try:
+        from hermes_cli.anon_auth import route_is_welcome_host
+        if route_is_welcome_host(getattr(agent, "base_url", "")):
+            # The free tier has no credits, no agent key and no auth.json to inspect: its session
+            # ended and could not be replaced. The two doors are a sign-in or another provider.
+            _plines(agent, "   Your session ended and Hermes couldn't start a new one.",
+                    "   Sign in with a Nous account (it's free), or switch providers with /model.")
+            return
+    except Exception:
+        pass
     if not _print_nous_entitlement_guidance(agent, "Nous model access"):
         _plines(agent, "   Most likely: Portal OAuth expired, account out of credits, or agent key revoked.")
     _plines(
@@ -470,6 +480,42 @@ def _recover_format_errors(
     return False
 
 
+def _recover_welcome_tier(agent: Any, classified: Any, _retry: TurnRetryState, error_context: Any) -> bool:
+    """Two one-shot repairs for the Nous free tier, both silent on the wire and named once in chat.
+
+    ``model_not_free``: the session asked the welcome host for a model it does not serve; move
+    to the first alternate the gateway named (its own model) and retry, instead of failing the
+    turn. ``anon_on_paid_host``: this process is pointed at the paid host with a free-tier
+    identity (a stale route); re-read the credentials, which heals the URL, and retry."""
+    ctx = error_context if isinstance(error_context, dict) else (getattr(classified, "error_context", None) or {})
+    refusal = ctx.get("welcome_refusal") if isinstance(ctx, dict) else None
+    if isinstance(refusal, dict) and refusal.get("reason") == "model_not_free" and not _retry.welcome_model_switch_attempted:
+        _retry.welcome_model_switch_attempted = True
+        alternates = [a for a in (refusal.get("alternates") or []) if isinstance(a, str) and a]
+        requested = str(getattr(agent, "model", "") or "")
+        target = alternates[0] if alternates else None
+        if target and target != requested:
+            try:
+                agent.model = target
+                agent._nous_model_switch = (requested, target)
+            except Exception:
+                return False
+            _vlines(agent, f"↪️  {requested} isn't available without signing in; using {target} for now. Retrying...")
+            logger.info("%sNous free tier: moved %s -> %s after model_not_free", agent.log_prefix, requested, target)
+            return True
+    route = ctx.get("welcome_route") if isinstance(ctx, dict) else None
+    if route == "anon_on_paid_host" and not _retry.welcome_route_heal_attempted:
+        _retry.welcome_route_heal_attempted = True
+        try:
+            healed = bool(agent._try_refresh_nous_client_credentials(force=True))
+        except Exception:
+            healed = False
+        if healed:
+            _vlines(agent, "🔐 Reconnected to the free model's own route. Retrying request...")
+            return True
+    return False
+
+
 def recover_after_classification(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState, *,
     status_code: Optional[int], error_context: Any, messages: List[Dict[str, Any]],
@@ -482,6 +528,9 @@ def recover_after_classification(
     disable → per-provider 401 credential refresh → format-recovery strips.
     Returns ``(retry_now, recovered_with_pool)``; the latter feeds the Nous rate-limit guard."""
     from agent.conversation_loop import _is_nous_inference_route
+
+    if _recover_welcome_tier(agent, classified, _retry, error_context):
+        return True, False
 
     if (
         classified.reason == FailoverReason.billing
@@ -666,6 +715,22 @@ def _welcome_tier_guidance(classified: Any, *, model: Any, in_chat: bool) -> str
     return welcome_route_refusal_copy(str(route), in_chat=in_chat)
 
 
+def _welcome_outage_copy(base_url: Any, classified: Any) -> str:
+    """On the Nous free tier, a transport / server failure that outlived every retry reads as one
+    plain sentence (the free model is having trouble) rather than the technical summary. Empty
+    for every other route and for rate limits / billing, which have their own copy."""
+    try:
+        from hermes_cli.anon_auth import FREE_TIER_OUTAGE_COPY, route_is_welcome_host
+        if not route_is_welcome_host(base_url):
+            return ""
+        if classified.reason in (FailoverReason.timeout, FailoverReason.overloaded,
+                                 FailoverReason.server_error, FailoverReason.unknown):
+            return FREE_TIER_OUTAGE_COPY
+    except Exception:
+        pass
+    return ""
+
+
 # Terminal status label per non-retryable reason (default names the HTTP status).
 _NONRETRYABLE_LABELS = {
     FailoverReason.content_policy_blocked: "The provider's safety filter refused this request",
@@ -773,7 +838,9 @@ def nonretryable_client_error_result(
             api_call_count=api_call_count, provider=provider, base_url=base_url, model=model,
         )
     if _welcome_hint:
-        _final_response = f"{_nonretryable_summary}\n\n{_welcome_tier_guidance(classified, model=model, in_chat=True)}"
+        # A free-tier refusal is fully explained by its own sentence; the raw provider summary
+        # (status codes, JSON) is for the log, not for a first-time user's chat.
+        _final_response = _welcome_tier_guidance(classified, model=model, in_chat=True)
     else:
         # Every surface reads final_response; the CLI hint lines above never reach chat.
         _final_response = nonretryable_copy(
@@ -889,7 +956,9 @@ def max_retries_exhausted_result(
             summary=_final_summary,
         )
         if _welcome_hint:
-            _final_response += f"\n\n{_welcome_tier_guidance(classified, model=model, in_chat=True)}"
+            _final_response = _welcome_tier_guidance(classified, model=model, in_chat=True)
+        else:
+            _final_response = _welcome_outage_copy(base_url, classified) or _final_response
     if _is_thinking_timeout:
         # Thinking-timeout guidance overrides stream-drop guidance, which would wrongly
         # suggest splitting large file writes.
@@ -1297,10 +1366,16 @@ def _is_genuine_nous_rate_limit(agent: Any, api_error: Exception, error_context:
     capacity 429s (no exhausted bucket in headers or last-known state) are left alone."""
     _genuine = False
     try:
-        from agent.nous_rate_guard import is_genuine_nous_rate_limit, record_nous_rate_limit
+        from agent.nous_rate_guard import (
+            is_genuine_nous_rate_limit, is_long_welcome_rate_limit, record_nous_rate_limit)
         _err_resp = getattr(api_error, "response", None)
         _err_hdrs = getattr(_err_resp, "headers", None) if _err_resp else None
-        _genuine = is_genuine_nous_rate_limit(headers=_err_hdrs, last_known_state=agent._rate_limit_state)
+        # The welcome tier's structured ``rate_limited`` refusal names its own reset; a long one
+        # is an exhausted allowance whatever the headers say, and the one place the user is told
+        # that signing in lifts it.
+        _genuine = (
+            is_long_welcome_rate_limit(error_context)
+            or is_genuine_nous_rate_limit(headers=_err_hdrs, last_known_state=agent._rate_limit_state))
         if _genuine:
             record_nous_rate_limit(headers=_err_hdrs, error_context=error_context)
         else:

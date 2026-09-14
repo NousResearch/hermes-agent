@@ -14,9 +14,10 @@ import { isSubmitEnter } from '@/lib/ime'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { cn } from '@/lib/utils'
 import { $desktopBoot, type DesktopBootState } from '@/store/boot'
-import { FREE_TIER_MODEL } from '@/store/free-tier'
+import { $freeTierStatus, FREE_TIER_MODEL, freeTierSetupFailure } from '@/store/free-tier'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { $introReveal, shouldPlayFirstRunIntro } from '@/store/intro-reveal'
+import { $setupReadyTick } from '@/store/live-sync'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import {
   $desktopOnboarding,
@@ -40,6 +41,7 @@ import { $onboardingSurfaces, onboardingSurfaceActive } from '@/store/onboarding
 import type { OAuthProvider } from '@/types/hermes'
 
 import { DocsLink, FlowPanel, Status } from './flow'
+import { FreeTierSetupNotice } from './free-tier-setup-notice'
 import { DecodedLabel } from './glyph'
 import {
   FeaturedProviderRow,
@@ -282,6 +284,25 @@ export function DesktopOnboardingOverlay({
     }
   }, [ctx, enabled, onboarding.requested])
 
+  // The boot bootstrap re-announces `setup.ready` when a background retry of
+  // the free-tier set-up succeeds after a failed first attempt. A picker that
+  // is up only because that set-up failed re-checks readiness and gives way
+  // on its own; a manual open, or a picker the user is mid-flow in, is left
+  // alone.
+  useEffect(
+    () =>
+      $setupReadyTick.listen(() => {
+        const current = $desktopOnboarding.get()
+
+        if (!current.manual && current.configured === false && current.flow.status === 'idle') {
+          void refreshOnboarding(ctx)
+        }
+      }),
+    [ctx]
+  )
+  const freeTierStatus = useStore($freeTierStatus)
+  const setupFailure = !onboarding.manual ? freeTierSetupFailure(freeTierStatus) : null
+
   // When the Providers settings page asked to connect a specific provider, the
   // store stashed its id. Once the provider list has loaded and we're back at
   // an idle picker, launch that exact OAuth flow so the user lands directly in
@@ -341,8 +362,12 @@ export function DesktopOnboardingOverlay({
   // (those are surfaced by FlowPanel, not as a banner).
   const rawReason = onboarding.reason?.trim() || null
 
+  // When the free tier itself failed to set up, its own notice explains the
+  // picker; the runtime check's technical reason ("No usable credentials
+  // found for nous.") would only restate it in the wrong words.
   const reason =
     rawReason &&
+    !setupFailure &&
     !isProviderSetupErrorMessage(rawReason) &&
     rawReason !== DEFAULT_ONBOARDING_REASON &&
     rawReason !== DEFAULT_MANUAL_ONBOARDING_REASON
@@ -403,6 +428,7 @@ export function DesktopOnboardingOverlay({
         ) : null}
         <div className="grid gap-3 p-5">
           {reason ? <ReasonNotice reason={reason} /> : null}
+          {ready && showPicker && !freeTierIntro && !onboarding.manual ? <FreeTierSetupNotice ctx={ctx} /> : null}
           {ready ? (
             freeTierIntro ? (
               <FreeTierReadyPanel leaving={leaving} onDismiss={dismissFreeTierIntro} />

@@ -764,16 +764,15 @@ class AutoSetHomeMiddleware(InboundMiddleware):
     @staticmethod
     def _persist_home(adapter, ctx: InboundContext) -> None:
         try:
-            from hermes_constants import get_hermes_home
-            from hermes_cli.config import atomic_config_write, read_user_config_raw
-            config_path = get_hermes_home() / "config.yaml"
-            # Raw read: merged defaults must not be persisted to the user's file.
-            user_config: dict = read_user_config_raw(config_path)
-            user_config["YUANBAO_HOME_CHANNEL"] = ctx.chat_id
-            atomic_config_write(config_path, user_config)
-            # The profile's config.yaml (scoped home above) is the durable record. Under a multiplexed
-            # secondary's scope the process env is the DEFAULT profile's; writing there would make this
-            # tenant's chat the default profile's cron/notification home.
+            from gateway.config import HomeChannel, persist_home_channel
+            home = HomeChannel(platform=Platform.YUANBAO, chat_id=str(ctx.chat_id), name=str(ctx.chat_name or "Home"))
+            # ``platforms.yuanbao.home_channel`` in the owning profile's config.yaml is the durable record
+            # ``load_gateway_config`` reads back; the live PlatformConfig is updated so cron/home-channel
+            # delivery in THIS process has a target without a restart.
+            persist_home_channel(home)
+            adapter.config.home_channel = home
+            # Under a multiplexed secondary's scope the process env is the DEFAULT profile's; writing there
+            # would make this tenant's chat the default profile's cron/notification home.
             if not _profile_scoped():
                 os.environ["YUANBAO_HOME_CHANNEL"] = str(ctx.chat_id)
             logger.info("[%s] Auto-sethome: designated %s (%s) as Yuanbao home channel", adapter.name, ctx.chat_id, ctx.chat_name)

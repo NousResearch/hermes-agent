@@ -1305,7 +1305,8 @@ class AIAgent(
             goal=function_args.get("goal"), context=function_args.get("context"),
             tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
             max_iterations=function_args.get("max_iterations"), role=function_args.get("role"),
-            background=not (getattr(self, "_delegate_depth", 0) > 0), action=function_args.get("action"),
+            background=not (getattr(self, "_delegate_depth", 0) > 0), images=function_args.get("images"),
+            action=function_args.get("action"),
             subagent_id=function_args.get("subagent_id"), message=function_args.get("message"), parent_agent=self,
         )
 
@@ -1332,6 +1333,9 @@ class AIAgent(
     def _conversation_root_id(self) -> Optional[str]:
         """Session-lineage ROOT id for Portal usage attribution, so one conversation keeps a single
         ``conversation=`` tag across compression rotation; subagents resolve via ``_parent_session_id``."""
+        cached = getattr(self, "_cached_conversation_root", None)
+        if cached:
+            return str(cached)
         sid = getattr(self, "session_id", None)
         if not sid:
             return None

@@ -276,6 +276,10 @@ RESTRUCTURE_SPEC = {
                 "D6": {"formula": "LOG10(B4)"},
                 "E6": {"formula": "SUM(B:B)"},
                 "F6": {"formula": '"row B2: "&B2'},
+                "H1": "Item", "I1": "Qty",
+                "H2": "a", "I2": 1,
+                "H3": "b", "I3": 2,
+                "H4": "c", "I4": 3,
             },
             "merges": ["E2:E4", "A7:B7"],
             "freeze_panes": "A2",
@@ -289,8 +293,10 @@ RESTRUCTURE_SPEC = {
                 {"range": "C2:C4", "type": "list",
                  "formula1": '"0.2,0.3,0.5"'},
             ],
+            # disjoint from the autofilter range: Excel forbids a sheet
+            # autofilter overlapping a table (see the overlap-guard tests)
             "tables": [
-                {"name": "SalesTbl", "range": "A1:C4"},
+                {"name": "SalesTbl", "range": "H1:I4"},
             ],
         },
         {
@@ -353,7 +359,7 @@ def test_restructure_insert_rows_shifts_everything(restructure_book):
     cf = list(data.conditional_formatting)[0]
     assert str(cf.sqref) == "B2:B6"
     # native table expanded
-    assert data.tables["SalesTbl"].ref == "A1:C6"
+    assert data.tables["SalesTbl"].ref == "H1:I6"
     # defined name rewritten
     assert wb.defined_names["SalesRange"].attr_text == "'Data'!$B$2:$B$6"
     # report is honest about limits
@@ -372,7 +378,7 @@ def test_restructure_delete_rows_and_ref_errors(restructure_book):
     # single-cell ref into the deleted row becomes #REF!
     assert summary["B2"].value == "='Data'!#REF!"
     assert summary["B1"].value == "=SUM(Data!B2:B3)"
-    assert data.tables["SalesTbl"].ref == "A1:C3"
+    assert data.tables["SalesTbl"].ref == "H1:I3"
 
 
 def test_restructure_insert_cols(restructure_book):
@@ -390,6 +396,7 @@ def test_restructure_insert_cols(restructure_book):
     merged = [str(r) for r in data.merged_cells.ranges]
     assert "F2:F4" in merged                    # merge shifted right
     assert "A7:C7" in merged                    # merge expanded across col B
+    assert data.tables["SalesTbl"].ref == "I1:J4"   # table shifted right
 
 
 # ---------------------------------------------------------------------------
@@ -412,7 +419,9 @@ def test_tables_create_append_list(tmp_path):
     assert tbl.tableStyleInfo.name == "TableStyleLight1"
 
     # --add-table + --table-append auto-extends the range
+    # (--set runs before --add-table, so headers land first)
     run("xlsx_edit.py", book, "--sheet", "T",
+        "--set", "D1=Part", "--set", "E1=Count",
         "--add-table", "Extra:D1:E2",
         "--table-append", 'Stock=["c", 3]')
     wb = load_workbook(book)
@@ -428,6 +437,103 @@ def test_tables_create_append_list(tmp_path):
     # tables also appear in the read inventory
     inv = json.loads(run("xlsx_read.py", book, "--sheets").stdout)
     assert inv["sheets"][0]["tables"]["Stock"] == "A1:B4"
+
+
+def test_create_drops_autofilter_overlapping_table(tmp_path):
+    # Excel repair-strips workbooks carrying a sheet autofilter AND a
+    # table over intersecting cells ("We found a problem with some
+    # content"); the builder must keep the table and drop the filter.
+    spec = {"sheets": [{"name": "G",
+                        "rows": [["Item", "Qty"], ["a", 1], ["b", 2]],
+                        "autofilter": "A1:B3",
+                        "tables": [{"name": "Stock", "range": "A1:B3"}]}]}
+    spec_path = tmp_path / "gspec.json"
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    book = tmp_path / "guard.xlsx"
+    summary = json.loads(run("xlsx_create.py", spec_path, book).stdout)
+    assert summary["ok"]
+    assert any("autofilter" in w and "Stock" in w
+               for w in summary["warnings"])
+    wb = load_workbook(book)
+    ws = wb["G"]
+    assert ws.auto_filter.ref is None           # dropped by the guard
+    assert ws.tables["Stock"].ref == "A1:B3"    # table kept
+
+    # disjoint autofilter + table coexist with no warning
+    spec["sheets"][0]["autofilter"] = "D1:E3"
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    summary = json.loads(run("xlsx_create.py", spec_path, book).stdout)
+    assert "warnings" not in summary
+    assert load_workbook(book)["G"].auto_filter.ref == "D1:E3"
+
+
+def test_edit_add_table_drops_overlapping_autofilter(tmp_path):
+    spec = {"sheets": [{"name": "E",
+                        "rows": [["Item", "Qty"], ["a", 1]],
+                        "autofilter": "A1:B2"}]}
+    spec_path = tmp_path / "espec.json"
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    book = tmp_path / "edit_guard.xlsx"
+    run("xlsx_create.py", spec_path, book)
+
+    result = json.loads(run("xlsx_edit.py", book, "--sheet", "E",
+                            "--add-table", "Items:A1:B2").stdout)
+    assert any("autofilter" in w and "Items" in w
+               for w in result["warnings"])
+    ws = load_workbook(book)["E"]
+    assert ws.auto_filter.ref is None
+    assert ws.tables["Items"].ref == "A1:B2"
+
+
+def test_edit_table_append_extending_into_autofilter(tmp_path):
+    # appending extends the table range downward into cells covered by
+    # a sheet autofilter -> the filter must go
+    spec = {"sheets": [{"name": "E",
+                        "rows": [["Item", "Qty"], ["a", 1],
+                                 ["Col", "Val"], ["x", 9]],
+                        "autofilter": "A3:B4",
+                        "tables": [{"name": "Items", "range": "A1:B2"}]}]}
+    spec_path = tmp_path / "aspec.json"
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    book = tmp_path / "append_guard.xlsx"
+    run("xlsx_create.py", spec_path, book)
+    assert load_workbook(book)["E"].auto_filter.ref == "A3:B4"
+
+    result = json.loads(run("xlsx_edit.py", book, "--sheet", "E",
+                            "--table-append", 'Items=["b", 2]').stdout)
+    assert any("autofilter" in w and "Items" in w
+               for w in result["warnings"])
+    ws = load_workbook(book)["E"]
+    assert ws.auto_filter.ref is None
+    assert ws.tables["Items"].ref == "A1:B3"
+    assert ws["A3"].value == "b" and ws["B3"].value == 2
+
+
+def test_table_header_cells_validated(tmp_path):
+    # empty header cell -> hard error (Excel repairs such tables)
+    spec = {"sheets": [{"name": "H", "rows": [["Item", None], ["a", 1]],
+                        "tables": [{"name": "Bad", "range": "A1:B2"}]}]}
+    spec_path = tmp_path / "hspec.json"
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    book = tmp_path / "hdr.xlsx"
+    bad = run("xlsx_create.py", spec_path, book, expect_ok=False)
+    assert bad.returncode != 0
+    err = json.loads(bad.stderr)
+    assert err["ok"] is False and "empty" in err["error"]
+
+    # duplicate headers -> hard error
+    spec["sheets"][0]["rows"][0] = ["Item", "Item"]
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    bad = run("xlsx_create.py", spec_path, book, expect_ok=False)
+    assert "unique" in json.loads(bad.stderr)["error"]
+
+    # same checks on the edit path
+    spec["sheets"][0] = {"name": "H", "rows": [["Item", None], ["a", 1]]}
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    run("xlsx_create.py", spec_path, book)
+    bad = run("xlsx_edit.py", book, "--sheet", "H",
+              "--add-table", "Bad:A1:B2", expect_ok=False)
+    assert "empty" in json.loads(bad.stderr)["error"]
 
 
 def test_names_hyperlinks_notes(tmp_path):

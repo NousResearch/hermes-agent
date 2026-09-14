@@ -101,6 +101,40 @@ def test_empty_path_value_is_not_mangled():
     assert out == 'declare -x PATH=""\n'
 
 
+@requires_shell
+def test_leading_empty_component_is_preserved():
+    """An empty PATH component means the current directory; it must not be dropped.
+
+    The old loop compared each field against ``last`` initialized to ``""``, so a leading ``:``
+    compared equal and vanished — changing command resolution rather than deduplicating.
+    """
+    out = _run_awk('declare -x PATH=":/bin:/usr/bin"\n')
+    assert out == 'declare -x PATH=":/bin:/usr/bin"\n'
+
+
+@requires_shell
+def test_adjacent_duplicates_after_a_leading_empty_are_still_collapsed():
+    out = _run_awk('declare -x PATH=":/bin:/bin:/usr"\n')
+    assert out == 'declare -x PATH=":/bin:/usr"\n'
+
+
+@requires_shell
+def test_interior_and_trailing_empty_components_survive():
+    out = _run_awk('declare -x PATH="/a::/b:"\n')
+    assert out == 'declare -x PATH="/a::/b:"\n'
+
+
+@requires_shell
+def test_ansi_c_quoted_line_is_passed_through_untouched():
+    """Bash emits ANSI-C quoting for values with special characters; the guard must skip them.
+
+    The rewrite strips a leading ``declare -x PATH="`` and a trailing ``"``, neither of which is
+    present in ``$'...'`` form — rewriting it would corrupt the value.
+    """
+    stdin = "declare -x PATH=$'/a:/a:/b\\n'\ndeclare -x EDITOR=\"vim\"\n"
+    assert _run_awk(stdin) == stdin
+
+
 # ---------------------------------------------------------------------------
 # The wrapper actually wires it in.
 # ---------------------------------------------------------------------------
@@ -126,8 +160,10 @@ def test_wrapper_stages_the_dump_then_filters_it():
     # upstream of the pipe, which sends the dump away from awk and points both sides at one file.
     assert f"> {raw} | " not in script
     assert "| awk" not in script
-    # Both staging files are cleaned up on the failure path.
-    assert f"rm -f {tmp} {raw}" in script
+    # Both staging files are cleaned up on EVERY outcome, not just the failure path: the raw dump
+    # carries the whole environment, so leaving it behind on success accumulated one per command.
+    assert f"; rm -f {tmp} {raw}" in script
+    assert f"|| rm -f {tmp} {raw}" not in script
 
 
 def test_wrapper_omits_the_filter_when_there_is_no_snapshot():
@@ -173,3 +209,36 @@ def test_round_trip_actually_dedupes_the_persisted_path(tmp_path):
 
     # Not just a PATH-only file either: the rest of the environment must round-trip.
     assert "HERMES_DEDUPE_ROUNDTRIP" in content
+
+
+@requires_shell
+def test_successful_round_trip_leaves_no_staging_files(tmp_path):
+    """The raw dump holds the whole environment; it must not survive a successful publish.
+
+    The success chain used to move only the filtered temp into place and clean the raw staging file
+    on the failure path alone, so every command left one complete ``export -p`` dump (secrets
+    included) beside the snapshot.
+    """
+    snap = tmp_path / "snapshot.env"
+    script = _wrap_command_script(
+        "true",
+        quoted_cwd="/tmp",
+        quoted_snap=f'"{snap.as_posix()}"',
+        snap_tmp_template=f'"{tmp_path.as_posix()}/snap.tmp.XXXXXXXXXX"',
+        passthrough_names=(),
+        snapshot_ready=True,
+        cwd_marker="__HERMES_CWD__",
+    )
+    runner = tmp_path / "run.sh"
+    runner.write_text(
+        'export PATH="/dupe:/dupe:$PATH"\n'
+        f"{script}\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    proc = subprocess.run([_BASH, str(runner)], capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+
+    assert snap.exists(), "wrapper published no snapshot"
+    leftovers = sorted(p.name for p in tmp_path.iterdir() if p.name.startswith("snap.tmp."))
+    assert leftovers == [], f"staging files left behind after a successful run: {leftovers}"

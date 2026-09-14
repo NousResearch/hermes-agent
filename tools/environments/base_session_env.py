@@ -39,15 +39,14 @@ _SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # with macOS, Linux and Git Bash alike.
 # Regression coverage: tests/tools/test_snapshot_path_dedupe.py.
 _PATH_DEDUPE_AWK = (
-    "awk 'BEGIN{prev=\"\"} /^declare -x PATH=/{"
-    "  sub(/^declare -x PATH=\"/, \"\", $0);"
-    "  sub(/\"$/, \"\", $0);"
-    "  n=split($0, parts, \":\");"
-    "  out=\"\"; last=\"\";"
-    "  for(i=1;i<=n;i++) if(parts[i] != last) { out = (out == \"\" ? parts[i] : out \":\" parts[i]); last = parts[i] }"
-    "  print \"declare -x PATH=\\\"\" out \"\\\"\";"
-    "  prev=$0; next"
-    "} { if(prev ~ /^declare -x PATH=/) next; print; prev=$0 }'"
+    "awk '/^declare -x PATH=\"/{  "
+    "sub(/^declare -x PATH=\"/, \"\", $0);  "
+    "sub(/\"$/, \"\", $0);  "
+    "n=split($0, parts, \":\");  "
+    "out=\"\"; have=0; last=\"\";  "
+    "for(i=1;i<=n;i++) { if(have && parts[i] == last) continue; out = (have ? out \":\" parts[i] : parts[i]); have=1; last=parts[i] }  "
+    "print \"declare -x PATH=\\\"\" out \"\\\"\";  "
+    "next} { print }'"
 )
 
 # mktemp template suffix + the shell variable holding the allocated temp path.
@@ -187,13 +186,17 @@ def _wrap_command_script(
         # stdout AWAY from awk and have both sides truncate/write the same file — awk would filter an
         # empty stream and the snapshot could publish empty or corrupt. Stage the raw dump, then read
         # it back through the filter into the snapshot temp.
+        # Cleanup is UNCONDITIONAL rather than failure-only: the raw file holds the whole environment
+        # (secrets included), and leaving it behind on success accumulated one full dump per command
+        # beside the snapshot. It cannot mask the command's status — ``__hermes_ec`` is captured above
+        # and is what the script exits with.
         parts.append(
             f"__hermes_snap_raw=$(mktemp {snap_tmp_template}) && "
             f"__hermes_snap_tmp=$(mktemp {snap_tmp_template}) && "
             f"{{ {_export_dump_excluding_session_vars(_SNAP_RAW, passthrough_names)} "
             f"&& {_PATH_DEDUPE_AWK} < {_SNAP_RAW} > {_SNAP_TMP} "
-            f"&& mv -f {_SNAP_TMP} {quoted_snap}; }} "
-            f"2>/dev/null || rm -f {_SNAP_TMP} {_SNAP_RAW} 2>/dev/null || true")
+            f"&& mv -f {_SNAP_TMP} {quoted_snap}; }} 2>/dev/null; "
+            f"rm -f {_SNAP_TMP} {_SNAP_RAW} 2>/dev/null || true")
     parts += [_cwd_marker_printf(cwd_marker), "exit $__hermes_ec"]
     return "\n".join(parts)
 

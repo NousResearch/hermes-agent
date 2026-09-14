@@ -19,6 +19,7 @@ from unittest.mock import patch
 import pytest
 
 import tools.web_tools as web_tools
+from tools import web_tools_rescue
 from plugins.web import keyless_mcp
 from plugins.web.keenable.provider import KeenableWebSearchProvider
 
@@ -73,33 +74,33 @@ def _ring_ok(vendor="exa"):
 
 class TestEligibility:
     def test_keyed_ring_vendor_is_eligible(self):
-        assert web_tools._rescue_eligible(_KeyedBoomProvider()) is True
+        assert web_tools_rescue._rescue_eligible(_KeyedBoomProvider()) is True
 
     def test_keyless_mode_ring_vendor_not_eligible(self, monkeypatch):
         # No key: the keenable call already rode the ring; no double-walk.
         monkeypatch.setattr(
             "agent.web_search_provider.get_provider_env", lambda name: ""
         )
-        assert web_tools._rescue_eligible(KeenableWebSearchProvider()) is False
+        assert web_tools_rescue._rescue_eligible(KeenableWebSearchProvider()) is False
 
     def test_non_ring_backend_is_eligible(self):
         class _SearxProvider(_KeyedBoomProvider):
             name = "searxng"
 
-        assert web_tools._rescue_eligible(_SearxProvider()) is True
+        assert web_tools_rescue._rescue_eligible(_SearxProvider()) is True
 
     def test_config_gate_disables(self, monkeypatch):
         monkeypatch.setattr(
             web_tools, "_load_web_config",
             lambda: {"backend": "keenable", "keyless_rescue": False},
         )
-        assert web_tools._rescue_eligible(_KeyedBoomProvider()) is False
+        assert web_tools_rescue._rescue_eligible(_KeyedBoomProvider()) is False
 
     def test_keyless_fallback_off_disables(self, monkeypatch):
         monkeypatch.setattr(
             "agent.web_search_registry._keyless_tier_enabled", lambda: False
         )
-        assert web_tools._rescue_eligible(_KeyedBoomProvider()) is False
+        assert web_tools_rescue._rescue_eligible(_KeyedBoomProvider()) is False
 
 
 class TestSearchRescue:
@@ -211,7 +212,7 @@ class TestExtractRescue:
         with patch.object(
             keyless_mcp, "extract_with_failover", return_value=good
         ):
-            out = web_tools._rescue_extract("keenable", ["https://a"], failed)
+            out = web_tools_rescue._rescue_extract("keenable", ["https://a"], failed)
         assert out[0]["metadata"]["rescued_from"] == "keenable"
         assert "HTTP 500" in out[0]["metadata"]["backend_error"]
 

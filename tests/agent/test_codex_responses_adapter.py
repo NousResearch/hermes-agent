@@ -48,6 +48,16 @@ def test_chat_content_keeps_images_on_user_role():
     }]
 
 
+@pytest.mark.parametrize("part_type", ["video_url", "video", "input_video"])
+def test_chat_content_rejects_video_instead_of_sending_text_only(part_type):
+    content = [
+        {"type": part_type, part_type: {"url": "data:video/mp4;base64,AAAA"}},
+        {"type": "text", "text": "Describe the video"},
+    ]
+    with pytest.raises(ValueError, match=f"does not support {part_type} input"):
+        _chat_messages_to_responses_input([{"role": "user", "content": content}])
+
+
 def test_preflight_rewrites_raw_assistant_images_to_text_markers():
     raw = [{
         "role": "assistant",

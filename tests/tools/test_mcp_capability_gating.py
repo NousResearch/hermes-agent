@@ -201,12 +201,12 @@ class TestMethodNotFoundDetection:
     """``_is_method_not_found_error`` underpins the ping→list_tools fallback."""
 
     def test_structural_code_match(self):
-        from tools.mcp_tool import _is_method_not_found_error
+        from tools.mcp_tool_errors import _is_method_not_found_error
         assert _is_method_not_found_error(_mcp_error(-32601)) is True
 
 
     def test_unrelated_exception_is_not_match(self):
-        from tools.mcp_tool import _is_method_not_found_error
+        from tools.mcp_tool_errors import _is_method_not_found_error
         assert _is_method_not_found_error(TimeoutError()) is False
         assert _is_method_not_found_error(Exception("session terminated")) is False
 

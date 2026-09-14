@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
 """Propose an MCP server to the user as an inline card in the desktop chat.
 
-The card (install / enable / authorize + decline) lives in the desktop
-renderer, so this tool round-trips through the gateway's blocking-prompt
-bridge — the same one ``clarify`` uses: tui_gateway emits
-``mcp.setup.request``, the renderer walks the user through the flow via the
-existing REST endpoints (catalog install, enable, OAuth), and answers with
-``mcp.setup.respond`` once the flow settles. This module is just schema + a
-thin dispatcher over the platform-injected callback.
-
-Lives in the ``desktop_ui`` toolset, which the GUI gateway enables only for
-desktop-sourced sessions — on every other surface the agent falls back to
-``hermes mcp install <name>`` in the terminal.
+The card (install / enable / authorize + decline) lives in the desktop renderer, so this
+tool round-trips through the gateway's blocking-prompt bridge (the one ``clarify`` uses):
+tui_gateway emits ``mcp.setup.request``, the renderer walks the user through the existing
+REST flows (catalog install, enable, OAuth) and answers with ``mcp.setup.respond``. Lives in
+the ``desktop_ui`` toolset, which the GUI gateway enables only for desktop-sourced sessions;
+elsewhere the agent falls back to ``hermes mcp install <name>`` in the terminal.
 """
 
 import json
@@ -22,19 +17,19 @@ from tools.registry import registry, tool_error
 _ACTIONS = ("install", "enable", "authorize")
 
 
-def setup_mcp_tool(
-    server: str = "",
-    action: str = "install",
-    reason: str = "",
-    callback: Optional[Callable] = None,
-) -> str:
+def setup_mcp_tool(server: str = "", action: str = "install", reason: str = "", callback: Optional[Callable] = None) -> str:
     """Ask the desktop GUI to run an MCP setup flow; return its JSON outcome."""
     if callback is None:
+        # Still down — the server task is reconnecting, or it has exhausted its retry budget and parked
+        # (e.g. a dead stdio subprocess). Probing here would write into a dead/absent transport and re-arm
+        # the breaker forever (#16788). Instead, ask the (always-present) server task to rebuild the
+        # transport — which respawns a dead stdio subprocess — and return a clean "reconnecting" error so
+        # the model backs off without burning iterations. The breaker resets once the fresh session
+        # initializes (_run_stdio/_run_http call _reset_server_error).
         return tool_error(
             "setup_mcp is only available in the Hermes desktop app. Use the "
             "terminal instead: `hermes mcp install <name>` for catalog entries, "
-            "`hermes mcp login <name>` for OAuth."
-        )
+            "`hermes mcp login <name>` for OAuth.")
 
     name = (server or "").strip()
     if not name:
@@ -50,19 +45,14 @@ def setup_mcp_tool(
         return tool_error(f"MCP setup flow failed: {exc}")
 
     if not raw:
-        # The renderer never answered (timeout / closed window). Distinct from
-        # an explicit decline, which arrives as {"status": "declined"}.
-        return json.dumps(
-            {
-                "status": "unanswered",
-                "server": name,
-                "note": (
-                    "The user did not respond to the setup card. Do not retry "
-                    "immediately; continue without the server or ask in chat."
-                ),
-            },
-            ensure_ascii=False,
-        )
+        # The renderer never answered (timeout / closed window). Distinct from an explicit
+        # decline, which arrives as {"status": "declined"}.
+        return json.dumps({
+            "status": "unanswered",
+            "server": name,
+            "note": ("The user did not respond to the setup card. Do not retry "
+                     "immediately; continue without the server or ask in chat."),
+        }, ensure_ascii=False)
 
     # Desktop answers with a JSON object; pass it through, else wrap the raw text.
     try:

@@ -48,31 +48,17 @@ export function saveMcpServers(
   })
 }
 
-/** Start an MCP OAuth flow and return the authorization URL. */
-export function authMcpServer(name: string, profile?: ProfileScope): Promise<McpOAuthFlow> {
-  return window.hermesDesktop.api<McpOAuthFlow>({
-    ...capabilityScoped(profile),
-    path: `/api/mcp/servers/${encodeURIComponent(name)}/auth`,
-    method: 'POST',
-    timeoutMs: 60_000
-  })
-}
+/** Capture the source before the first await. Every OAuth RPC, including
+ *  cleanup after a foreground switch, belongs to this (connection, profile).
+ *  Import the store lazily: it consumes the API barrel during initialization. */
+export function mcpOAuthRpc(scope?: ProfileScope) {
+  const { connectionId = null, profile = 'default' } = capabilityScoped(scope)
 
-export function getMcpOAuthFlow(flowId: string, profile?: ProfileScope): Promise<McpOAuthFlow> {
-  return window.hermesDesktop.api<McpOAuthFlow>({
-    ...capabilityScoped(profile),
-    path: `/api/mcp/oauth/flows/${encodeURIComponent(flowId)}`
-  })
-}
+  return async <T>(action: 'start' | 'poll' | 'callback' | 'cancel', params: Record<string, unknown>): Promise<T> => {
+    const { requestGatewayForAgent } = await import('@/store/gateway')
 
-/** Cancel an in-flight MCP OAuth flow server-side, freeing the per-server
- *  "already in progress" slot so a retry doesn't 409. */
-export function cancelMcpOAuthFlow(flowId: string, profile?: null | string): Promise<{ ok: boolean; status: string }> {
-  return hermesApi<{ ok: boolean; status: string }>({
-    ...profileScoped(profile),
-    path: `/api/mcp/oauth/flows/${encodeURIComponent(flowId)}`,
-    method: 'DELETE'
-  })
+    return requestGatewayForAgent<T>(connectionId, profile, `mcp.servers.oauth.${action}`, params, 60_000)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -90,16 +76,19 @@ export function listMcpServers(): Promise<{ servers: McpServerSummary[] }> {
 
 /** Add one server to `mcp_servers` (validated + name-collision-checked
  *  server-side — the same endpoint the dashboard's add form uses). */
-export function addMcpServer(body: {
-  name: string
-  url?: string
-  command?: string
-  args?: string[]
-  env?: Record<string, string>
-  auth?: string
-}): Promise<McpServerSummary> {
-  return hermesApi<McpServerSummary>({
-    ...profileScoped(),
+export function addMcpServer(
+  body: {
+    name: string
+    url?: string
+    command?: string
+    args?: string[]
+    env?: Record<string, string>
+    auth?: string
+  },
+  profile?: ProfileScope
+): Promise<McpServerSummary> {
+  return window.hermesDesktop.api<McpServerSummary>({
+    ...capabilityScoped(profile),
     path: '/api/mcp/servers',
     method: 'POST',
     body
@@ -108,9 +97,9 @@ export function addMcpServer(body: {
 
 /** Remove one server from `mcp_servers` (the inline setup card's rollback
  *  when a directory install is cancelled after the config write). */
-export function removeMcpServer(name: string): Promise<{ ok: boolean }> {
-  return hermesApi<{ ok: boolean }>({
-    ...profileScoped(),
+export function removeMcpServer(name: string, profile?: ProfileScope): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...capabilityScoped(profile),
     path: `/api/mcp/servers/${encodeURIComponent(name)}`,
     method: 'DELETE'
   })

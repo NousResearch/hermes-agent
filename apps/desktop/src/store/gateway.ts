@@ -9,7 +9,13 @@ import { atom } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
 import { HermesGateway, setApiRequestConnection } from '@/hermes'
-import { isTimeoutError, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
+import {
+  BACKEND_BOOT_WAIT_TIMEOUT_MS,
+  isTimeoutError,
+  RECONNECT_ATTEMPT_TIMEOUT_MS,
+  TimeoutError,
+  withTimeout
+} from '@/lib/with-timeout'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
 import { stampSecondaryProfileOwner } from '@/store/session-event-provenance'
@@ -31,6 +37,88 @@ const normKey = (profile: string | null | undefined): string => (profile ?? '').
 // roster hydration, hover prewarm and untagged dials are 'background' — main's
 // default, so background dials keep the pre-priority IPC payload shape.
 type SpawnPriority = 'foreground' | 'background'
+
+/**
+ * One absolute budget for an explicit foreground operation that MAY need
+ * Electron main to spawn a backend. Renderer history cannot prove the child
+ * is still alive, so caller intent — not openedOnce / cached descriptors — is
+ * the honest classifier. The same object follows route probes, pending-dial
+ * joins and promotion so no hop resets the cold-start allowance.
+ */
+interface MaySpawnActivation {
+  deadline: number
+  owner: symbol
+  order: number
+}
+
+interface MaySpawnActivationHandoff {
+  activation: MaySpawnActivation
+  scope: string
+}
+
+function beginMaySpawnActivation(): MaySpawnActivation {
+  g.maySpawnActivationOrder = Number.isFinite(g.maySpawnActivationOrder) ? g.maySpawnActivationOrder + 1 : 1
+
+  return {
+    deadline: Date.now() + BACKEND_BOOT_WAIT_TIMEOUT_MS,
+    owner: Symbol('gateway-may-spawn-activation'),
+    order: g.maySpawnActivationOrder
+  }
+}
+
+function remainingActivationMs(activation: MaySpawnActivation): number {
+  return Math.max(0, activation.deadline - Date.now())
+}
+
+function assertActivationLive(activation: MaySpawnActivation | undefined, message: string): void {
+  if (activation && remainingActivationMs(activation) <= 0) {
+    throw new TimeoutError(message)
+  }
+}
+
+function spawnIpcTimeoutMs(activation?: MaySpawnActivation): number {
+  return activation ? remainingActivationMs(activation) : RECONNECT_ATTEMPT_TIMEOUT_MS
+}
+
+function shortActivationStepTimeoutMs(activation?: MaySpawnActivation): number {
+  return activation
+    ? Math.min(RECONNECT_ATTEMPT_TIMEOUT_MS, remainingActivationMs(activation))
+    : RECONNECT_ATTEMPT_TIMEOUT_MS
+}
+
+function withSpawnIpcTimeout<T>(
+  start: () => Promise<T>,
+  activation: MaySpawnActivation | undefined,
+  message: string
+): Promise<T> {
+  const timeoutMs = spawnIpcTimeoutMs(activation)
+
+  // Do not even start another IPC after the absolute activation deadline.
+  // withTimeout(Promise.resolve(...), 0) would let the promise microtask win
+  // and accidentally turn an expired route fallback into a successful open.
+  if (activation && timeoutMs <= 0) {
+    return Promise.reject(new TimeoutError(message))
+  }
+
+  return withTimeout(start(), timeoutMs, message)
+}
+
+function withShortActivationStepTimeout<T>(
+  start: () => Promise<T>,
+  activation: MaySpawnActivation | undefined,
+  message: string,
+  onTimeout?: () => void
+): Promise<T> {
+  const timeoutMs = shortActivationStepTimeoutMs(activation)
+
+  if (activation && timeoutMs <= 0) {
+    onTimeout?.()
+
+    return Promise.reject(new TimeoutError(message))
+  }
+
+  return withTimeout(start(), timeoutMs, message, onTimeout)
+}
 
 function dialOptions(
   spawnPriority: SpawnPriority,
@@ -151,12 +239,116 @@ interface Secondary {
    * an orphaned lease self-heals.
    */
   activationLeaseUntil: number
+  /** Token owning activationLeaseUntil; prevents an older finally block from
+   * clearing a newer foreground activation's prune protection. */
+  activationLeaseOwner: symbol | null
+  activationLeaseOrder: number
+  /** Entry-side marker for a correlated phase-one handoff. Authorization to
+   * claim it lives in activationHandoffs and requires the same AbortSignal. */
+  activationHandoffOwner: symbol | null
+  /** Exact gateway.connect attempt allowed to close a half-open socket when
+   * its deadline fires. A stale timer must never close a newer attempt. */
+  connectAttemptOwner: symbol | null
 }
 
-// How long a mid-dial activation holds its prune lease: covers a cold pool
-// backend spawn + socket connect with margin, while still letting a leaked
-// lease expire quickly enough for the reaper to reclaim the entry.
-const ACTIVATION_LEASE_MS = 30_000
+function holdActivationLease(entry: Secondary, activation: MaySpawnActivation): boolean {
+  if (remainingActivationMs(activation) <= 0) {
+    return false
+  }
+
+  if (
+    entry.activationLeaseOwner &&
+    entry.activationLeaseOwner !== activation.owner &&
+    Number.isFinite(entry.activationLeaseUntil) &&
+    entry.activationLeaseUntil > Date.now() &&
+    Number.isFinite(entry.activationLeaseOrder) &&
+    entry.activationLeaseOrder > activation.order
+  ) {
+    return false
+  }
+
+  entry.activationLeaseUntil = activation.deadline
+  entry.activationLeaseOwner = activation.owner
+  entry.activationLeaseOrder = activation.order
+  entry.activationHandoffOwner = null
+
+  return true
+}
+
+function releaseActivationLease(entry: Secondary, activation: MaySpawnActivation): void {
+  if (entry.activationHandoffOwner === activation.owner) {
+    entry.activationHandoffOwner = null
+  }
+
+  if (entry.activationLeaseOwner === activation.owner) {
+    entry.activationLeaseUntil = 0
+    entry.activationLeaseOwner = null
+    entry.activationLeaseOrder = 0
+  }
+}
+
+function cancelActivationHandoff(signal: AbortSignal): void {
+  const handoff = g.activationHandoffs.get(signal)
+
+  if (!handoff) {
+    return
+  }
+
+  g.activationHandoffs.delete(signal)
+
+  const entry = g.secondaries.get(handoff.scope)
+
+  if (entry) {
+    releaseActivationLease(entry, handoff.activation)
+  }
+}
+
+function offerActivationHandoff(
+  scope: string,
+  entry: Secondary | undefined,
+  activation: MaySpawnActivation,
+  signal: AbortSignal | undefined
+): boolean {
+  if (entry && entry.activationLeaseOwner !== activation.owner) {
+    return false
+  }
+
+  // Preserve the pre-correlation activationLease contract for low-level
+  // callers: without a transaction signal the lease may protect this prepared
+  // entry until its bounded deadline, but no later ensure can claim its budget.
+  if (!signal) {
+    return Boolean(entry)
+  }
+
+  if (signal.aborted) {
+    return false
+  }
+
+  if (entry) {
+    entry.activationHandoffOwner = activation.owner
+  }
+
+  g.activationHandoffs.set(signal, { activation, scope })
+  signal.addEventListener('abort', () => cancelActivationHandoff(signal), { once: true })
+
+  return true
+}
+
+function claimActivationHandoff(scope: string, signal: AbortSignal | undefined): MaySpawnActivation | null {
+  if (!signal) {
+    return null
+  }
+
+  const handoff = g.activationHandoffs.get(signal)
+
+  if (!handoff || handoff.scope !== scope) {
+    return null
+  }
+
+  g.activationHandoffs.delete(signal)
+
+  return handoff.activation
+}
 
 // ── HMR-stable module state ─────────────────────────────────────────────────
 // All mutable singletons (live sockets, active-profile routing, the event
@@ -177,6 +369,10 @@ interface GatewayRegistryState {
   primaryProfile: string
   activeKey: string
   activationEpoch: number
+  maySpawnActivationOrder: number
+  /** Source-switch phase-one contexts, weakly keyed by their transaction's
+   * AbortSignal so unrelated ensures cannot consume an abandoned deadline. */
+  activationHandoffs: WeakMap<AbortSignal, MaySpawnActivationHandoff>
   secondaries: Map<string, Secondary>
   /** Scopes that opened in this renderer generation, even if later pruned. */
   openedSecondaryScopes?: Set<string>
@@ -198,6 +394,8 @@ function createRegistryState(): GatewayRegistryState {
     primaryProfile: 'default',
     activeKey: 'default',
     activationEpoch: 0,
+    maySpawnActivationOrder: 0,
+    activationHandoffs: new WeakMap(),
     secondaries: new Map<string, Secondary>(),
     openedSecondaryScopes: new Set<string>(),
     turnLeases: new Map<string, () => void>(),
@@ -231,6 +429,7 @@ function gatewayState(): GatewayRegistryState {
     // Existing dev-HMR containers predate whole-turn leases.
     store[STATE_KEY].turnLeases ??= new Map()
     store[STATE_KEY].turnLeaseReleaseTimers ??= new Map()
+    store[STATE_KEY].activationHandoffs ??= new WeakMap()
 
     return store[STATE_KEY]
   }
@@ -347,7 +546,8 @@ async function isAttachedSharedRemote(
   connectionId: null | string,
   profile: string,
   spawnPriority: SpawnPriority = 'background',
-  speculative = false
+  speculative = false,
+  activation?: MaySpawnActivation
 ): Promise<boolean> {
   const id = String(connectionId ?? '').trim()
   const key = normKey(profile)
@@ -367,14 +567,23 @@ async function isAttachedSharedRemote(
   }
 
   try {
-    const conn = await withTimeout(
-      desktop.getConnectionFor({ connectionId: id, profile: key, ...(dialOptions(spawnPriority, speculative) ?? {}) }),
-      RECONNECT_ATTEMPT_TIMEOUT_MS,
+    const conn = await withSpawnIpcTimeout(
+      () =>
+        desktop.getConnectionFor!({
+          connectionId: id,
+          profile: key,
+          ...(dialOptions(spawnPriority, speculative) ?? {})
+        }),
+      activation,
       `Timed out resolving shared-remote route for "${key}"`
     )
 
     return Boolean(conn && typeof conn === 'object' && (conn as { sharedRemote?: boolean }).sharedRemote === true)
-  } catch {
+  } catch (error) {
+    if (activation && isTimeoutError(error)) {
+      throw error
+    }
+
     // Probe failed. A secondary at this already-attached source is the #96493
     // ghost WebSocket (accept/close, messages=1). Prefer the primary until a
     // later probe can prove isolation (`sharedRemote: false`). Isolated SSH
@@ -538,7 +747,8 @@ function clearTimer(entry: Secondary): void {
 async function openSecondary(
   entry: Secondary,
   spawnPriority: SpawnPriority = 'background',
-  speculative = false
+  speculative = false,
+  activation?: MaySpawnActivation
 ): Promise<void> {
   const desktop = window.hermesDesktop
 
@@ -560,15 +770,26 @@ async function openSecondary(
       // rejection unobserved until `pending` settles creates an
       // unhandledrejection, while a wedged IPC would otherwise keep the
       // user-facing switch latched forever.
-      const promoted = withTimeout(
-        entry.connectionId && desktop.getConnectionFor
-          ? desktop.getConnectionFor({
-              connectionId: entry.connectionId,
-              profile: entry.profile,
-              priority: 'foreground'
-            })
-          : desktop.getConnection(entry.profile, { priority: 'foreground' }),
-        RECONNECT_ATTEMPT_TIMEOUT_MS,
+      let pendingSettled = false
+      void pending.then(
+        () => {
+          pendingSettled = true
+        },
+        () => {
+          pendingSettled = true
+        }
+      )
+
+      const promoted = withSpawnIpcTimeout(
+        () =>
+          entry.connectionId && desktop.getConnectionFor
+            ? desktop.getConnectionFor({
+                connectionId: entry.connectionId,
+                profile: entry.profile,
+                priority: 'foreground'
+              })
+            : desktop.getConnection(entry.profile, { priority: 'foreground' }),
+        activation,
         `Timed out promoting connection to profile "${entry.profile}"`
       ).then(
         () => true,
@@ -576,11 +797,28 @@ async function openSecondary(
       )
 
       try {
-        await pending
+        await (activation
+          ? withTimeout(
+              pending,
+              remainingActivationMs(activation),
+              `Timed out joining the pending connection to profile "${entry.profile}"`
+            )
+          : pending)
+        assertActivationLive(activation, `Timed out joining the pending connection to profile "${entry.profile}"`)
       } catch (error) {
         if (!(await promoted)) {
           // The original dial carries the useful failure when promotion also
           // fails; preserve it for the caller's recovery UI.
+          throw error
+        }
+
+        // A deadline only stops THIS waiter; it does not cancel the shared
+        // prewarm promise. Never clear a still-running dial (or one now owned
+        // by a newer activation) and start a second socket beside it.
+        if (
+          !pendingSettled ||
+          (activation && (remainingActivationMs(activation) <= 0 || entry.activationLeaseOwner !== activation.owner))
+        ) {
           throw error
         }
 
@@ -592,7 +830,7 @@ async function openSecondary(
           entry.connectPromise = null
         }
 
-        await openSecondary(entry, 'foreground')
+        await openSecondary(entry, 'foreground', false, activation)
       }
 
       return
@@ -643,21 +881,23 @@ async function openSecondary(
     // primary's equivalent awaits.
     const conn =
       entry.connectionId && desktop.getConnectionFor
-        ? await withTimeout(
-            desktop.getConnectionFor({
-              connectionId: entry.connectionId,
-              profile: entry.profile,
-              ...(dialOptions(spawnPriority, speculative) ?? {})
-            }),
-            RECONNECT_ATTEMPT_TIMEOUT_MS,
+        ? await withSpawnIpcTimeout(
+            () =>
+              desktop.getConnectionFor!({
+                connectionId: entry.connectionId!,
+                profile: entry.profile,
+                ...(dialOptions(spawnPriority, speculative) ?? {})
+              }),
+            activation,
             `Timed out connecting to profile "${entry.profile}"`
           )
-        : await withTimeout(
-            dialProfile(desktop, entry.profile, spawnPriority, speculative),
-            RECONNECT_ATTEMPT_TIMEOUT_MS,
+        : await withSpawnIpcTimeout(
+            () => dialProfile(desktop, entry.profile, spawnPriority, speculative),
+            activation,
             `Timed out connecting to profile "${entry.profile}"`
           )
 
+    assertActivationLive(activation, `Timed out connecting to profile "${entry.profile}"`)
     entry.connection = conn
 
     const wsDeps =
@@ -670,14 +910,45 @@ async function openSecondary(
           ? {}
           : desktop
 
-    const wsUrl = await withTimeout(
-      resolveGatewayWsUrl(wsDeps, conn),
-      RECONNECT_ATTEMPT_TIMEOUT_MS,
+    const wsUrl = await withShortActivationStepTimeout(
+      () => resolveGatewayWsUrl(wsDeps, conn),
+      activation,
       `Timed out re-minting the gateway WebSocket URL for profile "${entry.profile}"`
     )
 
+    assertActivationLive(activation, `Timed out re-minting the gateway WebSocket URL for profile "${entry.profile}"`)
+
     try {
-      await entry.gateway.connect(wsUrl)
+      if (activation) {
+        const connectAttempt = Symbol('gateway-connect-attempt')
+        entry.connectAttemptOwner = connectAttempt
+
+        try {
+          await withShortActivationStepTimeout(
+            () => entry.gateway.connect(wsUrl),
+            activation,
+            `Timed out connecting the gateway WebSocket for profile "${entry.profile}"`,
+            () => {
+              if (entry.connectAttemptOwner === connectAttempt) {
+                entry.gateway.close()
+              }
+            }
+          )
+          assertActivationLive(activation, `Timed out connecting the gateway WebSocket for profile "${entry.profile}"`)
+        } catch (error) {
+          if (entry.connectAttemptOwner === connectAttempt && isTimeoutError(error) && isOpen(entry.gateway)) {
+            entry.gateway.close()
+          }
+
+          throw error
+        } finally {
+          if (entry.connectAttemptOwner === connectAttempt) {
+            entry.connectAttemptOwner = null
+          }
+        }
+      } else {
+        await entry.gateway.connect(wsUrl)
+      }
     } catch (error) {
       // Log the dial target for support, but RETHROW THE ORIGINAL ERROR —
       // reconnectSecondary classifies failures by message ("No connection
@@ -876,7 +1147,11 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     retained: false,
     relayRetainCount: 0,
     wantOpen: true,
-    activationLeaseUntil: 0
+    activationLeaseUntil: 0,
+    activationLeaseOwner: null,
+    activationLeaseOrder: 0,
+    activationHandoffOwner: null,
+    connectAttemptOwner: null
   }
 
   // Events keep carrying the bare profile — session routing is profile-keyed
@@ -925,7 +1200,8 @@ function createSecondary(profile: string, connectionId: null | string = null): S
 async function sharedPrimaryRoute(
   profile: string,
   spawnPriority: SpawnPriority = 'background',
-  speculative = false
+  speculative = false,
+  activation?: MaySpawnActivation
 ): Promise<boolean> {
   const desktop = window.hermesDesktop
 
@@ -941,9 +1217,9 @@ async function sharedPrimaryRoute(
     // This is the FIRST dial main sees for a user open, so it must already
     // carry the foreground priority — otherwise the spawn it starts queues as
     // background and the click waits out this probe before being promoted.
-    const conn = await withTimeout(
-      dialProfile(desktop, profile, spawnPriority, speculative),
-      RECONNECT_ATTEMPT_TIMEOUT_MS,
+    const conn = await withSpawnIpcTimeout(
+      () => dialProfile(desktop, profile, spawnPriority, speculative),
+      activation,
       `Timed out resolving the shared-primary route for profile "${profile}"`
     )
 
@@ -960,7 +1236,8 @@ async function gatewayForProfile(
   profile: string,
   leaseRequest = false,
   spawnPriority: SpawnPriority = 'background',
-  speculative = false
+  speculative = false,
+  activation?: MaySpawnActivation
 ): Promise<{ gateway: HermesGateway | null; key: string; release: () => void; scopeProfile: boolean }> {
   const key = normKey(profile)
   const noRelease = () => undefined
@@ -969,11 +1246,45 @@ async function gatewayForProfile(
     return { gateway: g.primaryGateway, key, release: noRelease, scopeProfile: false }
   }
 
-  if (await sharedPrimaryRoute(key, spawnPriority, speculative)) {
+  let entry = g.secondaries.get(key)
+
+  if (activation && entry && !holdActivationLease(entry, activation)) {
+    throw new Error(`Gateway activation superseded for profile "${key}"`)
+  }
+
+  const sharedPrimary = await sharedPrimaryRoute(key, spawnPriority, speculative, activation)
+
+  if (activation && remainingActivationMs(activation) <= 0) {
+    if (activation && entry) {
+      releaseActivationLease(entry, activation)
+    }
+
+    throw new TimeoutError(`Timed out connecting to profile "${key}"`)
+  }
+
+  if (sharedPrimary) {
+    if (activation && entry) {
+      releaseActivationLease(entry, activation)
+    }
+
     return { gateway: g.primaryGateway, key, release: noRelease, scopeProfile: true }
   }
 
-  const entry = g.secondaries.get(key) ?? createSecondary(key)
+  const currentEntry = g.secondaries.get(key)
+
+  if (currentEntry !== entry) {
+    if (activation && entry) {
+      releaseActivationLease(entry, activation)
+    }
+
+    entry = currentEntry
+  }
+
+  entry ??= createSecondary(key)
+
+  if (activation && !holdActivationLease(entry, activation)) {
+    throw new Error(`Gateway activation superseded for profile "${key}"`)
+  }
 
   // Existing dev-HMR entries predate the request lease/ownership fields.
   if (!Number.isFinite(entry.activeRequests)) {
@@ -1019,11 +1330,17 @@ async function gatewayForProfile(
 
   try {
     if (!isOpen(entry.gateway)) {
-      await openSecondary(entry, spawnPriority, speculative)
+      await openSecondary(entry, spawnPriority, speculative, activation)
     }
+
+    assertActivationLive(activation, `Timed out connecting to profile "${key}"`)
   } catch (error) {
     release()
     throw error
+  } finally {
+    if (activation) {
+      releaseActivationLease(entry, activation)
+    }
   }
 
   return { gateway: entry.gateway, key, release, scopeProfile: false }
@@ -1483,7 +1800,9 @@ export async function openGatewayForProfile(
   profile: string,
   { spawnPriority = 'background', speculative = false }: { spawnPriority?: SpawnPriority; speculative?: boolean } = {}
 ): Promise<void> {
-  await gatewayForProfile(profile, false, spawnPriority, speculative)
+  const activation = spawnPriority === 'foreground' ? beginMaySpawnActivation() : undefined
+
+  await gatewayForProfile(profile, false, spawnPriority, speculative, activation)
 }
 
 // ── Connection-scoped agents (multi-source roster) ─────────────────────────
@@ -1505,50 +1824,140 @@ export async function openGatewayForAgent(
   profile: string,
   {
     activationLease = false,
+    signal,
     spawnPriority = 'background',
     speculative = false
-  }: { activationLease?: boolean; spawnPriority?: SpawnPriority; speculative?: boolean } = {}
+  }: {
+    activationLease?: boolean
+    signal?: AbortSignal
+    spawnPriority?: SpawnPriority
+    speculative?: boolean
+  } = {}
 ): Promise<void> {
   const scope = registryBackendScopeKey(connectionId, profile)
+
+  if (signal?.aborted) {
+    cancelActivationHandoff(signal)
+
+    return
+  }
+
+  if (signal && activationLease) {
+    // A signal identifies one source-selection transaction. Reuse would be a
+    // caller bug, but clearing its prior record here keeps ownership bounded
+    // and prevents a stale preparation from leaking into this new phase one.
+    cancelActivationHandoff(signal)
+  }
 
   if (scope === normKey(profile) || isPrimaryRegistryRoute(connectionId, profile)) {
     return openGatewayForProfile(profile, { spawnPriority, speculative })
   }
 
-  if (await isAttachedSharedRemote(connectionId, profile, spawnPriority, speculative)) {
+  const activation = activationLease || spawnPriority === 'foreground' ? beginMaySpawnActivation() : undefined
+  let entry = g.secondaries.get(scope)
+
+  if (activation && entry && !holdActivationLease(entry, activation)) {
+    throw new Error(`Gateway activation superseded for profile "${profile}"`)
+  }
+
+  let attachedSharedRemote: boolean
+
+  try {
+    attachedSharedRemote = await isAttachedSharedRemote(connectionId, profile, spawnPriority, speculative, activation)
+  } catch (error) {
+    if (activation && entry) {
+      releaseActivationLease(entry, activation)
+    }
+
+    throw error
+  }
+
+  if (activation && remainingActivationMs(activation) <= 0) {
+    if (entry) {
+      releaseActivationLease(entry, activation)
+    }
+
+    throw new TimeoutError(`Timed out connecting to profile "${profile}"`)
+  }
+
+  if (attachedSharedRemote) {
+    if (activation && entry) {
+      releaseActivationLease(entry, activation)
+    }
+
     if (!isOpen(g.primaryGateway)) {
       throw new Error('Hermes gateway unavailable')
+    }
+
+    if (activation && activationLease) {
+      offerActivationHandoff(scope, undefined, activation, signal)
     }
 
     return
   }
 
   if (!window.hermesDesktop?.getConnectionFor) {
+    if (activation && entry) {
+      releaseActivationLease(entry, activation)
+    }
+
     throw new Error('This Desktop build cannot dial registry connections. Update Hermes Desktop.')
   }
 
-  const entry = g.secondaries.get(scope) ?? createSecondary(profile, connectionId)
+  const currentEntry = g.secondaries.get(scope)
+
+  if (currentEntry !== entry) {
+    if (activation && entry) {
+      releaseActivationLease(entry, activation)
+    }
+
+    entry = currentEntry
+  }
+
+  entry ??= createSecondary(profile, connectionId)
+
+  if (activation && !holdActivationLease(entry, activation)) {
+    throw new Error(`Gateway activation superseded for profile "${profile}"`)
+  }
+
   entry.retained = true
   rearmSecondary(entry)
 
-  if (activationLease) {
-    // Stays held after a successful open: the activation that follows releases
-    // it (applyActive path), and one that never comes lets it expire.
-    entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
-  }
-
   if (isOpen(entry.gateway)) {
+    if (activation) {
+      let handedOff = false
+
+      try {
+        assertActivationLive(activation, `Timed out connecting to profile "${profile}"`)
+
+        if (activationLease) {
+          handedOff = offerActivationHandoff(scope, entry, activation, signal)
+        }
+      } finally {
+        if (!handedOff) {
+          releaseActivationLease(entry, activation)
+        }
+      }
+    }
+
     return
   }
 
-  try {
-    await openSecondary(entry, spawnPriority, speculative)
-  } catch (error) {
-    if (activationLease) {
-      entry.activationLeaseUntil = 0
-    }
+  let handedOff = false
 
-    throw error
+  try {
+    await openSecondary(entry, spawnPriority, speculative, activation)
+    assertActivationLive(activation, `Timed out connecting to profile "${profile}"`)
+
+    if (activation && activationLease) {
+      // Phase one succeeded. Only the ensure carrying this source
+      // transaction's signal may adopt the exact owner/deadline.
+      handedOff = offerActivationHandoff(scope, entry, activation, signal)
+    }
+  } finally {
+    if (activation && !handedOff) {
+      releaseActivationLease(entry, activation)
+    }
   }
 }
 
@@ -1569,69 +1978,118 @@ export async function ensureGatewayForAgent(
     return !signal?.aborted
   }
 
-  if (await isAttachedSharedRemote(connectionId, profile, 'foreground')) {
-    return Boolean(isOpen(g.primaryGateway) && !signal?.aborted)
+  let entry = g.secondaries.get(scope)
+
+  if (signal?.aborted) {
+    cancelActivationHandoff(signal)
+
+    return false
   }
 
-  if (!window.hermesDesktop?.getConnectionFor) {
-    throw new Error('This Desktop build cannot dial registry connections. Update Hermes Desktop.')
+  const activation = claimActivationHandoff(scope, signal) ?? beginMaySpawnActivation()
+
+  // A genuine phase-two continuation keeps phase one's absolute deadline,
+  // even if pruning replaced its entry. Decline it before any probe or socket
+  // creation; an unrelated ensure has no matching signal and gets a new budget.
+  if (remainingActivationMs(activation) <= 0) {
+    if (entry) {
+      releaseActivationLease(entry, activation)
+    }
+
+    return false
   }
 
   const activationEpoch = beginGatewayActivation()
 
-  let entry = g.secondaries.get(scope)
+  if (entry && !holdActivationLease(entry, activation)) {
+    releaseActivationLease(entry, activation)
 
-  if (!entry) {
-    entry = createSecondary(profile, connectionId)
-  }
-
-  entry.retained = true
-  rearmSecondary(entry)
-  // Lease the entry against the live-work pruner for the whole dial: the
-  // switch target is not yet active and has no live sessions, so a prune
-  // recompute firing mid-spawn would otherwise dispose it and this
-  // activation would fail (#89622).
-  entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
-
-  if (!isOpen(entry.gateway)) {
-    clearTimer(entry)
-    entry.reconnectAttempt = 0
-
-    try {
-      await openSecondary(entry, 'foreground')
-    } catch {
-      scheduleReconnect(entry)
-    }
-  }
-
-  // The activation is settling either way — release the prune lease.
-  entry.activationLeaseUntil = 0
-
-  // A timed-out owner may leave the dial running, but it no longer has the
-  // right to move the foreground route when that work eventually settles.
-  if (signal?.aborted) {
     return false
   }
 
-  // A source edit/remove may dispose this entry while its dial is still in
-  // flight. Only the still-registered, still-owned activation may publish --
-  // and only when the WebSocket actually reached open: entry.connection is
-  // set BEFORE the dial completes in openSecondary, so a transient first-dial
-  // failure (caught above, left for scheduleReconnect) must not count as a
-  // successful activation just because a connection descriptor exists
-  // (issue #92265).
-  const activated =
-    entry.wantOpen &&
-    g.secondaries.get(scope) === entry &&
-    Boolean(entry.connection) &&
-    isOpen(entry.gateway) &&
-    applyActive(scope, activationEpoch)
+  try {
+    const attachedSharedRemote = await isAttachedSharedRemote(connectionId, profile, 'foreground', false, activation)
 
-  if (activated && entry.connection) {
-    publishActiveConnection(entry.connection)
+    assertActivationLive(activation, `Timed out connecting to profile "${profile}"`)
+
+    if (attachedSharedRemote) {
+      return Boolean(isOpen(g.primaryGateway) && !signal?.aborted && gatewayActivationEpoch() === activationEpoch)
+    }
+
+    if (signal?.aborted) {
+      return false
+    }
+
+    if (gatewayActivationEpoch() !== activationEpoch) {
+      return false
+    }
+
+    if (!window.hermesDesktop?.getConnectionFor) {
+      throw new Error('This Desktop build cannot dial registry connections. Update Hermes Desktop.')
+    }
+
+    const currentEntry = g.secondaries.get(scope)
+
+    if (currentEntry !== entry) {
+      if (entry) {
+        releaseActivationLease(entry, activation)
+      }
+
+      entry = currentEntry
+    }
+
+    entry ??= createSecondary(profile, connectionId)
+
+    if (!holdActivationLease(entry, activation)) {
+      return false
+    }
+
+    entry.retained = true
+    rearmSecondary(entry)
+
+    if (!isOpen(entry.gateway)) {
+      clearTimer(entry)
+      entry.reconnectAttempt = 0
+
+      try {
+        await openSecondary(entry, 'foreground', false, activation)
+      } catch {
+        scheduleReconnect(entry)
+      }
+    }
+
+    assertActivationLive(activation, `Timed out connecting to profile "${profile}"`)
+
+    // A timed-out owner may leave the dial running, but it no longer has the
+    // right to move the foreground route when that work eventually settles.
+    if (signal?.aborted) {
+      return false
+    }
+
+    // A source edit/remove may dispose this entry while its dial is still in
+    // flight. Only the still-registered, still-owned activation may publish --
+    // and only when the WebSocket actually reached open: entry.connection is
+    // set BEFORE the dial completes in openSecondary, so a transient first-dial
+    // failure (caught above, left for scheduleReconnect) must not count as a
+    // successful activation just because a connection descriptor exists
+    // (issue #92265).
+    const activated =
+      entry.wantOpen &&
+      g.secondaries.get(scope) === entry &&
+      Boolean(entry.connection) &&
+      isOpen(entry.gateway) &&
+      applyActive(scope, activationEpoch)
+
+    if (activated && entry.connection) {
+      publishActiveConnection(entry.connection)
+    }
+
+    return activated
+  } finally {
+    if (entry) {
+      releaseActivationLease(entry, activation)
+    }
   }
-
-  return activated
 }
 
 // Make `profile` the active gateway, lazily opening its socket if needed. The
@@ -1646,36 +2104,65 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
     return
   }
 
-  // Global-remote share (routing case 3): one remote host serves every
-  // profile through the PRIMARY socket, scoped per request. Activate the
-  // primary instead of dialing a doomed duplicate socket at the same
-  // descriptor — $activeGatewayProfile still moves to `key`, so request
-  // scoping and profile-aware surfaces behave identically.
-  if (await sharedPrimaryRoute(key, 'foreground')) {
-    applyActive(g.primaryProfile, activationEpoch)
+  const activation = beginMaySpawnActivation()
+  let entry = g.secondaries.get(key)
 
+  if (entry && !holdActivationLease(entry, activation)) {
     return
   }
 
-  let entry = g.secondaries.get(key)
-
-  if (!entry) {
-    entry = createSecondary(key)
-  }
-
-  entry.retained = true
-  rearmSecondary(entry)
-  // Lease the entry against the live-work pruner for the whole dial — the
-  // profile-door twin of the agent path's lease above (#89622).
-  entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
-
   try {
+    // Global-remote share (routing case 3): one remote host serves every
+    // profile through the PRIMARY socket, scoped per request. Activate the
+    // primary instead of dialing a doomed duplicate socket at the same
+    // descriptor — $activeGatewayProfile still moves to `key`, so request
+    // scoping and profile-aware surfaces behave identically.
+    const sharedPrimary = await sharedPrimaryRoute(key, 'foreground', false, activation)
+
+    // A promise that resolves on the deadline can beat its timeout callback's
+    // timer microtask. Re-check the absolute clock before publishing either
+    // route so an expired activation never moves the current foreground.
+    assertActivationLive(activation, `Timed out connecting to profile "${key}"`)
+
+    if (sharedPrimary) {
+      if (gatewayActivationEpoch() !== activationEpoch) {
+        return
+      }
+
+      applyActive(g.primaryProfile, activationEpoch)
+
+      return
+    }
+
+    if (gatewayActivationEpoch() !== activationEpoch) {
+      return
+    }
+
+    const currentEntry = g.secondaries.get(key)
+
+    if (currentEntry !== entry) {
+      if (entry) {
+        releaseActivationLease(entry, activation)
+      }
+
+      entry = currentEntry
+    }
+
+    entry ??= createSecondary(key)
+
+    if (!holdActivationLease(entry, activation)) {
+      return
+    }
+
+    entry.retained = true
+    rearmSecondary(entry)
+
     if (!isOpen(entry.gateway)) {
       clearTimer(entry)
       entry.reconnectAttempt = 0
 
       try {
-        await openSecondary(entry, 'foreground')
+        await openSecondary(entry, 'foreground', false, activation)
       } catch (error) {
         // #81094: a failed secondary dial must NOT fall through to setActive()
         // with a closed socket — that silently routes the user's messages to the
@@ -1688,10 +2175,24 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
         throw error
       }
     }
+
+    assertActivationLive(activation, `Timed out connecting to profile "${key}"`)
   } finally {
-    // The activation is settling either way — release the prune lease.
-    entry.activationLeaseUntil = 0
+    // Release only this activation's lease. A newer click may already own the
+    // entry and must remain prune-protected until its own settlement.
+    if (entry) {
+      releaseActivationLease(entry, activation)
+    }
   }
+
+  if (!entry) {
+    return
+  }
+
+  // Keep the final publication behind the same absolute deadline too. The
+  // transport may have opened exactly as the budget expired; leaving it warm
+  // is harmless, but this stale operation must not replace the working route.
+  assertActivationLive(activation, `Timed out connecting to profile "${key}"`)
 
   // Only publish when the WebSocket actually reached open -- entry.connection
   // is set before the dial completes, so a transient first-dial failure must
@@ -1834,6 +2335,11 @@ export function touchSecondaryGateways(): void {
 // socket. Caller handles removal from the map.
 function disposeSecondary(entry: Secondary): void {
   entry.wantOpen = false
+  entry.activationLeaseUntil = 0
+  entry.activationLeaseOwner = null
+  entry.activationLeaseOrder = 0
+  entry.activationHandoffOwner = null
+  entry.connectAttemptOwner = null
   clearTimer(entry)
   entry.offEvent()
   entry.offState()

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { RECONNECT_ATTEMPT_TIMEOUT_MS } from '@/lib/with-timeout'
+import { BACKEND_BOOT_WAIT_TIMEOUT_MS, RECONNECT_ATTEMPT_TIMEOUT_MS } from '@/lib/with-timeout'
 
 // Connection lifecycle for registry-scoped secondary gateways:
 //
@@ -51,6 +51,7 @@ const {
   activeGateway,
   closeSecondaryGateways,
   configureGatewayRegistry,
+  ensureGatewayForAgent,
   ensureGatewayForProfile,
   openGatewayForProfile,
   openGatewayForAgent,
@@ -136,17 +137,16 @@ describe('ensureGatewayForProfile — secondary connect failure surfaces (#81094
 
     let failFirst = true
 
-    const getConnection = vi.fn(async (
-      { profile }: { profile: string },
-      _options?: { priority?: 'foreground'; speculative?: boolean }
-    ) => ({
-      authMode: 'token',
-      baseUrl: `https://${profile}.invalid`,
-      mode: 'local',
-      profile,
-      token: 'fake-test-token',
-      wsUrl: `wss://${profile}.invalid/ws`
-    }))
+    const getConnection = vi.fn(
+      async ({ profile }: { profile: string }, _options?: { priority?: 'foreground'; speculative?: boolean }) => ({
+        authMode: 'token',
+        baseUrl: `https://${profile}.invalid`,
+        mode: 'local',
+        profile,
+        token: 'fake-test-token',
+        wsUrl: `wss://${profile}.invalid/ws`
+      })
+    )
 
     installDesktop({ getConnection })
 
@@ -176,17 +176,16 @@ describe('ensureGatewayForProfile — secondary connect failure surfaces (#81094
 
     let failReconnect = false
 
-    const getConnection = vi.fn(async (
-      { profile }: { profile: string },
-      _options?: { priority?: 'foreground'; speculative?: boolean }
-    ) => ({
-      authMode: 'token',
-      baseUrl: `https://${profile}.invalid`,
-      mode: 'local',
-      profile,
-      token: 'fake-test-token',
-      wsUrl: `wss://${profile}.invalid/ws`
-    }))
+    const getConnection = vi.fn(
+      async ({ profile }: { profile: string }, _options?: { priority?: 'foreground'; speculative?: boolean }) => ({
+        authMode: 'token',
+        baseUrl: `https://${profile}.invalid`,
+        mode: 'local',
+        profile,
+        token: 'fake-test-token',
+        wsUrl: `wss://${profile}.invalid/ws`
+      })
+    )
 
     installDesktop({ getConnection })
     await ensureGatewayForProfile('work')
@@ -300,7 +299,19 @@ describe('ensureGatewayForProfile — secondary connect failure surfaces (#81094
     await vi.waitFor(() => expect(getConnection).toHaveBeenCalledTimes(4))
     rejectSpeculative(new Error('local pool is full'))
 
+    let selectionSettled = false
+    void selectingFailure.then(() => {
+      selectionSettled = true
+    })
+
     await vi.advanceTimersByTimeAsync(RECONNECT_ATTEMPT_TIMEOUT_MS)
+
+    // Promotion is part of the explicit may-spawn activation, so the ordinary
+    // reconnect limit must not reject it while main can still be cold-starting
+    // the backend.
+    expect(selectionSettled).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS - RECONNECT_ATTEMPT_TIMEOUT_MS)
 
     await expect(warmingFailure).resolves.toMatchObject({ message: 'local pool is full' })
     await expect(selectingFailure).resolves.toMatchObject({ message: 'local pool is full' })
@@ -500,15 +511,15 @@ describe('secondary connection timeout (#93454)', () => {
 
     installDesktop({ getConnection })
 
-    const pending = expect(ensureGatewayForProfile('work')).rejects.toThrow('Timed out connecting to profile "work"')
+    const pending = expect(openGatewayForProfile('work')).rejects.toThrow('Timed out connecting to profile "work"')
 
-    // Advance past the internal reconnect-attempt timeout (20s) — the stalled
-    // await must reject instead of hanging forever.
-    await vi.advanceTimersByTimeAsync(20_000)
+    // A background/prewarm dial remains an ordinary reconnect-class attempt:
+    // it must reject after 20s instead of inheriting the foreground boot wait.
+    await vi.advanceTimersByTimeAsync(RECONNECT_ATTEMPT_TIMEOUT_MS)
     await pending
   })
 
-  it('does not let a wedged shared-primary-route probe block the secondary dial forever', async () => {
+  it('does not let a wedged background route probe block the secondary dial forever', async () => {
     // Same unbounded-IPC hazard as above, but for sharedPrimaryRoute's own
     // getConnection() probe, which runs BEFORE openSecondary on every route —
     // a wedge there must resolve to "not the shared primary" and fall through
@@ -542,14 +553,419 @@ describe('secondary connection timeout (#93454)', () => {
     // implementations). Restore the default resolving dial for this test.
     gatewayMocks.connect.mockImplementation(async () => undefined)
 
-    const pending = ensureGatewayForProfile('work')
+    const pending = openGatewayForProfile('work')
 
-    await vi.advanceTimersByTimeAsync(20_000)
+    await vi.advanceTimersByTimeAsync(RECONNECT_ATTEMPT_TIMEOUT_MS)
     await pending
 
-    // The probe's own bound (not just openSecondary's) is what let this
-    // resolve after a single 20s timeout instead of two stacked ones.
+    // Background route probing remains reconnect-class: after its 20s bound,
+    // it falls through to the immediately available secondary descriptor.
     expect(callCount).toBe(2)
-    expect(activeGateway()).toBe(gatewayMocks.instances[0])
+    expect(activeGateway()).not.toBe(gatewayMocks.instances[0])
+    expect(gatewayMocks.instances[0].connectionState).toBe('open')
+  })
+
+  it('uses one cold-activation deadline across route fallback, pruning, failure, and retry', async () => {
+    vi.useFakeTimers()
+    gatewayMocks.connect.mockImplementation(async () => undefined)
+
+    const connection = {
+      authMode: 'token',
+      baseUrl: 'https://work.invalid',
+      mode: 'local',
+      profile: 'work',
+      token: 'fake-test-token',
+      wsUrl: 'wss://work.invalid/ws'
+    }
+
+    let callCount = 0
+
+    const getConnection = vi.fn(() => {
+      callCount += 1
+
+      // Establish renderer history, then prune it. A later foreground reopen
+      // may still respawn a dead child and must be treated as may-spawn.
+      if (callCount === 1) {
+        return Promise.resolve({ ...connection, sharedPrimary: false })
+      }
+
+      if (callCount === 2) {
+        return Promise.resolve(connection)
+      }
+
+      // The first reopen succeeds after 45s total: both route resolution and
+      // the secondary's main-process dial exceed the 20s reconnect budget.
+      if (callCount === 3) {
+        return new Promise(resolve => {
+          setTimeout(() => resolve({ ...connection, sharedPrimary: false }), 25_000)
+        })
+      }
+
+      if (callCount === 4) {
+        return new Promise(resolve => {
+          setTimeout(() => resolve(connection), 20_000)
+        })
+      }
+
+      // The next activation proves the route fallback cannot reset the total
+      // budget: it leaves only 1s for the secondary dial.
+      if (callCount === 5) {
+        return new Promise(resolve => {
+          setTimeout(() => resolve({ ...connection, sharedPrimary: false }), BACKEND_BOOT_WAIT_TIMEOUT_MS - 1_000)
+        })
+      }
+
+      if (callCount === 6) {
+        return new Promise(() => undefined)
+      }
+
+      return Promise.resolve(callCount === 7 ? { ...connection, sharedPrimary: false } : connection)
+    })
+
+    installDesktop({ getConnection })
+
+    await openGatewayForProfile('work')
+    pruneSecondaryGateways(new Set())
+    expect(gatewayMocks.instances[0].close).toHaveBeenCalledTimes(1)
+
+    const reopening = ensureGatewayForProfile('work')
+
+    await vi.advanceTimersByTimeAsync(31_000)
+    pruneSecondaryGateways(new Set())
+    expect(gatewayMocks.instances[1].close).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(14_000)
+    await expect(reopening).resolves.toBeUndefined()
+    expect(activeGateway()).toBe(gatewayMocks.instances[1])
+
+    await ensureGatewayForProfile('default')
+    pruneSecondaryGateways(new Set())
+    expect(gatewayMocks.instances[1].close).toHaveBeenCalledTimes(1)
+
+    const timingOut = ensureGatewayForProfile('work')
+    let timedOut = false
+
+    const observedTimeout = timingOut.catch(error => {
+      timedOut = true
+
+      return error
+    })
+
+    await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS - 1)
+    expect(timedOut).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(1)
+    await expect(observedTimeout).resolves.toMatchObject({ message: 'Timed out connecting to profile "work"' })
+    expect(activeGateway()).not.toBe(gatewayMocks.instances[2])
+
+    // Settlement releases this activation's lease, so pruning can reclaim the
+    // failed entry and a fresh explicit attempt gets a fresh bounded budget.
+    pruneSecondaryGateways(new Set())
+    expect(gatewayMocks.instances[2].close).toHaveBeenCalledTimes(1)
+
+    await expect(ensureGatewayForProfile('work')).resolves.toBeUndefined()
+    expect(activeGateway()).toBe(gatewayMocks.instances[3])
+  })
+
+  it('does not start a fallback IPC after the cold-activation deadline expires', async () => {
+    vi.useFakeTimers()
+    gatewayMocks.connect.mockImplementation(async () => undefined)
+
+    const getConnection = vi.fn(
+      ({ profile }: { profile: string }) =>
+        new Promise(resolve => {
+          setTimeout(() => resolve({ profile, sharedPrimary: false }), BACKEND_BOOT_WAIT_TIMEOUT_MS)
+        })
+    )
+
+    installDesktop({ getConnection })
+    const primary = activeGateway()
+    const observed = ensureGatewayForProfile('work').catch(error => error)
+
+    await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS)
+
+    await expect(observed).resolves.toMatchObject({ message: 'Timed out connecting to profile "work"' })
+    expect(getConnection).toHaveBeenCalledTimes(1)
+    expect(gatewayMocks.instances).toHaveLength(0)
+    expect(activeGateway()).toBe(primary)
+  })
+
+  it('does not publish a shared-primary result that resolves at the activation deadline', async () => {
+    vi.useFakeTimers()
+
+    const getConnection = vi.fn(({ profile }: { profile: string }) => {
+      vi.setSystemTime(Date.now() + BACKEND_BOOT_WAIT_TIMEOUT_MS)
+
+      return Promise.resolve({ profile, sharedPrimary: true })
+    })
+
+    installDesktop({ getConnection })
+    const primary = activeGateway()
+
+    await expect(ensureGatewayForProfile('work')).rejects.toThrow('Timed out connecting to profile "work"')
+
+    expect(getConnection).toHaveBeenCalledTimes(1)
+    expect(gatewayMocks.instances).toHaveLength(0)
+    expect(activeGateway()).toBe(primary)
+  })
+
+  it('does not publish a secondary whose WebSocket opens at the activation deadline', async () => {
+    vi.useFakeTimers()
+
+    const connection = {
+      authMode: 'token',
+      baseUrl: 'https://work.invalid',
+      mode: 'local',
+      profile: 'work',
+      token: 'fake-test-token',
+      wsUrl: 'wss://work.invalid/ws'
+    }
+
+    let callCount = 0
+
+    const getConnection = vi.fn(() => {
+      callCount += 1
+
+      return Promise.resolve(callCount === 1 ? { ...connection, sharedPrimary: false } : connection)
+    })
+
+    installDesktop({ getConnection })
+    const primary = activeGateway()
+
+    gatewayMocks.connect.mockImplementation(async () => {
+      vi.setSystemTime(Date.now() + BACKEND_BOOT_WAIT_TIMEOUT_MS)
+    })
+
+    await expect(ensureGatewayForProfile('work')).rejects.toThrow(
+      'Timed out connecting the gateway WebSocket for profile "work"'
+    )
+
+    expect(getConnection).toHaveBeenCalledTimes(2)
+    expect(gatewayMocks.instances).toHaveLength(1)
+    expect(gatewayMocks.instances[0].close).toHaveBeenCalledTimes(1)
+    expect(activeGateway()).toBe(primary)
+  })
+
+  it('does not let an older same-scope foreground open steal a newer activation lease', async () => {
+    vi.useFakeTimers()
+    gatewayMocks.connect.mockImplementation(async () => undefined)
+
+    const connection = {
+      authMode: 'token',
+      baseUrl: 'https://work.invalid',
+      mode: 'local',
+      profile: 'work',
+      token: 'fake-test-token',
+      wsUrl: 'wss://work.invalid/ws'
+    }
+
+    let resolveOlderRoute!: (result: typeof connection & { sharedPrimary?: boolean }) => void
+    let resolveNewerDial!: (result: typeof connection) => void
+    let callCount = 0
+
+    const getConnection = vi.fn(() => {
+      callCount += 1
+
+      if (callCount === 1) {
+        return Promise.resolve({ ...connection, sharedPrimary: false })
+      }
+
+      if (callCount === 2) {
+        return Promise.resolve(connection)
+      }
+
+      if (callCount === 3) {
+        return new Promise<typeof connection>(resolve => {
+          resolveOlderRoute = resolve
+        })
+      }
+
+      if (callCount === 4) {
+        return Promise.resolve({ ...connection, sharedPrimary: false })
+      }
+
+      if (callCount === 5) {
+        return new Promise<typeof connection>(resolve => {
+          resolveNewerDial = resolve
+        })
+      }
+
+      return Promise.resolve(connection)
+    })
+
+    installDesktop({ getConnection })
+    await openGatewayForProfile('work')
+    gatewayMocks.instances[0].connectionState = 'closed'
+
+    const older = openGatewayForProfile('work', { spawnPriority: 'foreground' })
+
+    const olderResult = older.then(
+      () => undefined,
+      error => error
+    )
+
+    await vi.waitFor(() => expect(getConnection).toHaveBeenCalledTimes(3))
+
+    await vi.advanceTimersByTimeAsync(10_000)
+    const newer = openGatewayForProfile('work', { spawnPriority: 'foreground' })
+    await vi.waitFor(() => expect(getConnection).toHaveBeenCalledTimes(5))
+    resolveOlderRoute({ ...connection, sharedPrimary: false })
+
+    // The older deadline has now elapsed, but the newer activation still has
+    // 9s and owns the only in-flight dial. Its lease must survive this prune.
+    await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS - 9_000)
+    pruneSecondaryGateways(new Set())
+    expect(getConnection).toHaveBeenCalledTimes(5)
+    expect(gatewayMocks.instances[0].close).not.toHaveBeenCalled()
+
+    resolveNewerDial(connection)
+    await expect(newer).resolves.toBeUndefined()
+    await expect(olderResult).resolves.toMatchObject({ message: 'Gateway activation superseded for profile "work"' })
+
+    pruneSecondaryGateways(new Set())
+    expect(gatewayMocks.instances[0].close).toHaveBeenCalledTimes(1)
+  })
+
+  it('carries a two-phase agent activation lease through open then ensure', async () => {
+    vi.useFakeTimers()
+    gatewayMocks.connect.mockImplementation(async () => undefined)
+
+    const connection = {
+      authMode: 'token',
+      connectionId: 'homelab',
+      mode: 'local',
+      profile: 'research',
+      token: 'fake-test-token',
+      wsUrl: 'wss://homelab.invalid/ws'
+    }
+
+    const getConnectionFor = vi.fn(
+      () =>
+        new Promise(resolve => {
+          setTimeout(() => resolve({ ...connection, sharedRemote: false }), 45_000)
+        })
+    )
+
+    installDesktop({ getConnectionFor })
+    const activationController = new AbortController()
+
+    const opening = openGatewayForAgent('homelab', 'research', {
+      activationLease: true,
+      signal: activationController.signal,
+      spawnPriority: 'foreground'
+    })
+
+    await vi.advanceTimersByTimeAsync(50_000)
+    pruneSecondaryGateways(new Set())
+    expect(gatewayMocks.instances).toHaveLength(1)
+    expect(gatewayMocks.instances[0].close).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(40_000)
+    await expect(opening).resolves.toBeUndefined()
+
+    // The successful prepare keeps its owned lease for the synchronous commit
+    // phase; ensure consumes that handoff and releases only its own lease.
+    pruneSecondaryGateways(new Set())
+    expect(gatewayMocks.instances[0].close).not.toHaveBeenCalled()
+    await expect(ensureGatewayForAgent('homelab', 'research', { signal: activationController.signal })).resolves.toBe(
+      true
+    )
+
+    await ensureGatewayForProfile('default')
+    pruneSecondaryGateways(new Set())
+    expect(gatewayMocks.instances[0].close).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not reset an expired two-phase activation budget during ensure', async () => {
+    vi.useFakeTimers()
+    gatewayMocks.connect.mockImplementation(async () => undefined)
+
+    const connection = {
+      authMode: 'token',
+      connectionId: 'homelab',
+      mode: 'local',
+      profile: 'research',
+      token: 'fake-test-token',
+      wsUrl: 'wss://homelab.invalid/ws'
+    }
+
+    let callCount = 0
+
+    const getConnectionFor = vi.fn(() => {
+      callCount += 1
+
+      if (callCount > 1) {
+        return Promise.resolve(connection)
+      }
+
+      return new Promise(resolve => {
+        setTimeout(() => resolve(connection), BACKEND_BOOT_WAIT_TIMEOUT_MS - 1)
+      })
+    })
+
+    installDesktop({ getConnectionFor })
+    const activationController = new AbortController()
+
+    const opening = openGatewayForAgent('homelab', 'research', {
+      activationLease: true,
+      signal: activationController.signal,
+      spawnPriority: 'foreground'
+    })
+
+    await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS - 1)
+    await expect(opening).resolves.toBeUndefined()
+    await vi.advanceTimersByTimeAsync(1)
+
+    // The entry may be reclaimed between the two phases. Correlation must
+    // still retain this transaction's expired deadline without redialing.
+    pruneSecondaryGateways(new Set())
+
+    await expect(ensureGatewayForAgent('homelab', 'research', { signal: activationController.signal })).resolves.toBe(
+      false
+    )
+    expect(getConnectionFor).toHaveBeenCalledTimes(1)
+    expect(gatewayMocks.instances).toHaveLength(1)
+  })
+
+  it('gives a fresh standalone ensure its own budget instead of claiming an orphaned handoff', async () => {
+    vi.useFakeTimers()
+    gatewayMocks.connect.mockImplementation(async () => undefined)
+
+    const connection = {
+      authMode: 'token',
+      connectionId: 'homelab',
+      mode: 'local',
+      profile: 'research',
+      token: 'fake-test-token',
+      wsUrl: 'wss://homelab.invalid/ws'
+    }
+
+    const getConnectionFor = vi.fn(
+      () =>
+        new Promise(resolve => {
+          setTimeout(() => resolve(connection), BACKEND_BOOT_WAIT_TIMEOUT_MS - 1)
+        })
+    )
+
+    installDesktop({ getConnectionFor })
+    const abandonedController = new AbortController()
+
+    const opening = openGatewayForAgent('homelab', 'research', {
+      activationLease: true,
+      signal: abandonedController.signal,
+      spawnPriority: 'foreground'
+    })
+
+    await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS - 1)
+    await expect(opening).resolves.toBeUndefined()
+    await vi.advanceTimersByTimeAsync(1)
+
+    // This is an unrelated SDK/profile intent: without the source
+    // transaction's signal it must not inherit that abandoned deadline.
+    await expect(ensureGatewayForAgent('homelab', 'research')).resolves.toBe(true)
+    expect(getConnectionFor).toHaveBeenCalledTimes(1)
+
+    pruneSecondaryGateways(new Set())
+    expect(gatewayMocks.instances[0].close).not.toHaveBeenCalled()
   })
 })

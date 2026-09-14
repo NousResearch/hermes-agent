@@ -725,7 +725,11 @@ async function resolveConnectionForAgent(connectionId: string, profile: string):
 // activates it synchronously, which lets the caller sever the previous
 // backend's session bindings and publish the new source in the same tick
 // (#93937). An already-open target is a no-op.
-export async function openGatewayAgent(connectionId: string, profile: string): Promise<void> {
+export async function openGatewayAgent(
+  connectionId: string,
+  profile: string,
+  { signal }: { signal?: AbortSignal } = {}
+): Promise<void> {
   const connection = connectionId.trim()
 
   if (!connection) {
@@ -734,6 +738,7 @@ export async function openGatewayAgent(connectionId: string, profile: string): P
 
   await openGatewayForAgent(connection, normalizeProfileKey(profile), {
     activationLease: true,
+    ...(signal ? { signal } : {}),
     spawnPriority: 'foreground'
   })
 }
@@ -929,7 +934,8 @@ export function selectProfile(name: string): void {
   // is made on the source the user is looking at (activateOnCurrentSource
   // dials exactly that pair), so the draft's exact owner is that pair — or the
   // legacy profile-only path when that is the door the pick takes.
-  captureNewChatSource(profilePickConnectionId(target))
+  const pickedConnectionId = profilePickConnectionId(target)
+  captureNewChatSource(pickedConnectionId)
 
   if (switching) {
     requestFreshSession()
@@ -948,13 +954,28 @@ export function selectProfile(name: string): void {
   // IPC instead (#79886). Registry-source picks name ANOTHER source's
   // profiles, so only a primary-backend activation updates the startup
   // preference.
-  const onPrimary = activeGatewayConnectionId() == null
+  // A named pick on the explicit local source intentionally uses the legacy
+  // profile door so Electron can honor a per-profile remote override before
+  // falling back to a local backend. Default on that source stays on the
+  // reserved local registry route and is explicitly local; only the legacy
+  // door needs isLocalDesktopProfile to exclude a per-profile remote override.
+  const onPrimary = pickedConnectionId === null || pickedConnectionId === LOCAL_CONNECTION_ID
 
-  const shouldRememberStartupProfile = onPrimary ? isLocalDesktopProfile(target) : Promise.resolve(false)
+  const shouldRememberStartupProfile =
+    pickedConnectionId === LOCAL_CONNECTION_ID
+      ? Promise.resolve(true)
+      : onPrimary
+        ? isLocalDesktopProfile(target)
+        : Promise.resolve(false)
 
   void Promise.all([activateOnCurrentSource(target), shouldRememberStartupProfile])
     .then(([, shouldRemember]) => {
-      if (shouldRemember) {
+      const localDefaultActivationLanded =
+        pickedConnectionId !== LOCAL_CONNECTION_ID ||
+        (activeGatewayConnectionId() === LOCAL_CONNECTION_ID &&
+          normalizeProfileKey($activeGatewayProfile.get()) === target)
+
+      if (shouldRemember && localDefaultActivationLanded) {
         return window.hermesDesktop?.profile?.remember(target)
       }
 

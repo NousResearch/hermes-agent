@@ -4,6 +4,7 @@
     "types": ["node", "@playwright/test"],
     "composite": true
   },
+  "files": ["src/lib/with-timeout.ts"],
   "include": ["e2e", "playwright.config.ts", "../../tests-js/scripts"],
   "exclude": ["src", "electron"]
 }

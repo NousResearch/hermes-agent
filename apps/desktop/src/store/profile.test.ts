@@ -43,6 +43,7 @@ const {
   $profiles,
   ensureGatewayProfile,
   invalidateProfileListFetches,
+  openGatewayAgent,
   prewarmGatewayAgent,
   prewarmProfileBackend,
   refreshProfiles
@@ -158,6 +159,23 @@ describe('profile-scoped cache invalidation', () => {
 
     expect(invalidateProfileScopedQueries).toHaveBeenCalled()
     expect(resetStarmapGraph).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('source preparation correlation', () => {
+  it('forwards the source transaction signal without activating the route', async () => {
+    const controller = new AbortController()
+    const previousConnection = $connection.get()
+
+    await openGatewayAgent('local', 'full', { signal: controller.signal })
+
+    expect(openGatewayForAgent).toHaveBeenCalledWith('local', 'full', {
+      activationLease: true,
+      signal: controller.signal,
+      spawnPriority: 'foreground'
+    })
+    expect($activeGatewayProfile.get()).toBe('default')
+    expect($connection.get()).toBe(previousConnection)
   })
 })
 

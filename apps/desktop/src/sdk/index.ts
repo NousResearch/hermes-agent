@@ -97,7 +97,8 @@ import {
   $sessionTiles,
   dropTilesForProfile,
   focusWorkspaceOwnerSessionTile,
-  sessionTileDelegate
+  sessionTileDelegate,
+  type SplitDir
 } from '@/store/session-states'
 import { runGatewayRestart } from '@/store/system-actions'
 import type { PaginatedSessions, UsageStats } from '@/types/hermes'
@@ -348,6 +349,9 @@ export interface PluginOpenSessionOptions {
   forceResume?: boolean
   hydrationTimeoutMs?: number
   intent?: OpenSessionIntent
+  /** Edge beside the focused chat zone; defaults to right. Only used with
+   *  intent: 'split'. Already-open conversations are focused, not moved. */
+  splitDirection?: SplitDir
   keepAllProfilesScope?: boolean
   profile?: null | string
   route?: PluginProfileRoute
@@ -856,7 +860,7 @@ export const host = {
     const profile = (explicitRoute?.profile ?? options.profile ?? '').trim()
     const targetProfile = normalizeProfileKey(profile || $activeGatewayProfile.get())
 
-    // A local bot open passes only `profile` (no cross-connection route), but
+    // A local bot or split open passes only `profile` (no cross-connection route), but
     // its RPCs STILL have to reach that profile's own local gateway while chrome
     // stays on the launch profile. Synthesize a local owner route from the
     // profile so the persisted tile carries it — the session-request router
@@ -873,7 +877,7 @@ export const host = {
 
     const ownerRoute =
       explicitRoute ??
-      (options.workspaceMode === 'bots' && profile && localConnectionId
+      ((options.workspaceMode === 'bots' || options.intent === 'split') && profile && localConnectionId
         ? { connectionId: localConnectionId, mode: 'local' as const, profile: targetProfile }
         : null)
 
@@ -1003,7 +1007,20 @@ export const host = {
 
           const intent = options.intent ?? 'in-place'
 
-          if (options.workspaceMode === 'bots') {
+          if (intent === 'split') {
+            openSession(
+              storedSessionId,
+              navigate,
+              intent,
+              {
+                ownerRoute: ownerRoute ?? undefined,
+                workspaceMode: options.workspaceMode ?? 'sessions',
+                workspaceOwnerKey: options.workspaceOwnerKey,
+                workspaceTabTitle: options.tabTitle
+              },
+              options.splitDirection
+            )
+          } else if (options.workspaceMode === 'bots') {
             openSession(storedSessionId, navigate, intent, {
               ownerRoute: ownerRoute ?? undefined,
               workspaceMode: 'bots',

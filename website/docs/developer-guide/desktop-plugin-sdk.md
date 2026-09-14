@@ -502,9 +502,10 @@ ctx.os.openExternal(url)                   // OS default handler (browser, mail,
 ctx.os.revealPath(path)                    // reveal in Finder / Explorer → Promise<boolean>
 ctx.os.writeClipboard(text)                // system clipboard → Promise<boolean>
 host.navigate('/route')                    // hash-route navigation
-host.openSession(id, { profile?, intent? }) // open a stored session core-style;
-                                           //   profile: soft-swap to that profile's backend first
-                                           //   intent: 'in-place' (default) | 'stack' | 'tab' | 'window'
+host.openSession(id, { profile?, intent?, splitDirection? }) // Promise<void>; open a stored session
+                                           //   profile: dial its backend; keep chrome's profile by default
+                                           //   intent: 'in-place' (default) | 'main' | 'stack' | 'tab' | 'window' | 'split'
+                                           //   splitDirection: 'right' (default) | 'left' | 'top' | 'bottom'
 host.newChat(profile?)                     // fresh chat draft, optionally in another profile
 host.openWorkspace(id, { render, title?, minWidth?, onClose? })
                                            // dock a plugin-rendered tab into the MAIN
@@ -520,6 +521,38 @@ host.requestProfile<T>(route, method, params?)   // registry-routed RPC; no fore
 host.requestProfile<T>(profile, method, params?) // legacy v1/local overload
 host.request<T>(method, params?)           // active-gateway JSON-RPC — the real power
 ```
+
+### Open an existing session in a native split
+
+```ts
+import { host } from '@hermes/plugin-sdk'
+
+await host.openSession(storedSessionId, { intent: 'split' }) // right-hand split
+await host.openSession(otherStoredSessionId, { intent: 'split', splitDirection: 'bottom' })
+```
+
+`split` uses the built-in session pane, transcript, and composer in the current
+window. It does not create or branch a session, replace the main conversation,
+open a new window, or require a plugin-rendered chat UI. Pass a **stored session
+id**, not a runtime id. A new pane docks against the native session-tab target
+(the hovered chat zone, then focused chat zone, then main workspace).
+
+Like `tab`, `split` focuses a conversation already open in main or a tile
+(including compression-lineage aliases) instead of duplicating or relocating it.
+It does not spend a blank main view or draft tab. `splitDirection` only affects
+`intent: 'split'`; omitting it splits to the right. Default, `main`, `stack`,
+`tab`, and `window` behavior is unchanged, including the `window` fallback to
+`tab` when session windows are unavailable.
+
+Existing `profile` / `route` and workspace ownership options apply to split
+panes too. The owner is retained for session RPC routing and the pane's gateway
+lifetime. `awaitHydration`, `expectHistory`, `forceResume`, and hydration
+timeout/retry options use the same native tile hydration path as tab opens;
+without `awaitHydration`, resolution does not mean the transcript has loaded.
+
+This option requires a Desktop build that supports the `split` intent. Merely
+checking for `host.openSession` is not sufficient on older builds; do not send
+this intent to them, since they may treat it as an in-place open.
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,
 cron, kanban, …). `host.requestProfile` accepts a descriptor from

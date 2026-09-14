@@ -826,6 +826,14 @@ def _rebuild_desktop_after_update(
         return True
 
     print("→ Checking if desktop app needs rebuilding...")
+    # A display-less host cannot launch the result, so the rebuild is pure cost — and it recurs on
+    # every update while the artifacts exist (~1.75 GB of Electron + node_modules on a server).
+    # Not a failure: the app simply is not something this host can use. An explicit
+    # `hermes desktop --force-build` still builds it here.
+    from hermes_cli.main_desktop import desktop_display_available
+    if not desktop_display_available():
+        print("  ✓ No display on this host; skipping the desktop rebuild")
+        return True
     # Check the content-hash stamp IN-PROCESS first (the subprocess spends ~1-3 s importing the
     # CLI to reach the same check). Update never passes --source, so source_mode=False.
     # Any pre-check error falls through to the subprocess.

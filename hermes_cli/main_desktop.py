@@ -7,6 +7,7 @@ are imported lazily inside the functions that use them (avoids an import cycle).
 import logging
 import contextlib
 import argparse
+import glob
 import os
 import re
 import shlex
@@ -1498,6 +1499,34 @@ def _packaged_desktop_launch_command(packaged_executable: Path) -> list[str]:
     return launch_command
 
 
+def desktop_display_available() -> bool:
+    """True when this host can actually show an Electron window.
+
+    A GUI app on a headless server is pure disk cost: ``hermes update`` rebuilds the desktop app
+    whenever its artifacts exist, so one that landed on a display-less host is rebuilt on every
+    update (~1.75 GB of Electron + node_modules) and nobody there can launch it. A headless host
+    still legitimately runs ``hermes serve --isolated`` backends for a Desktop on ANOTHER machine —
+    that split is exactly why the app itself is not needed here.
+
+    macOS and Windows always have a window server. On Linux the signal is a display: an env var, or
+    a live socket — a forwarded display and CI's ``xvfb-run`` both publish ``/tmp/.X11-unix/X*`` and
+    set ``DISPLAY``, so neither is mistaken for headless.
+    """
+    if not sys.platform.startswith("linux"):
+        return True
+    if (os.environ.get("DISPLAY") or "").strip() or (os.environ.get("WAYLAND_DISPLAY") or "").strip():
+        return True
+    try:
+        if glob.glob("/tmp/.X11-unix/X*"):
+            return True
+        runtime_dir = (os.environ.get("XDG_RUNTIME_DIR") or "").strip()
+        if runtime_dir and glob.glob(os.path.join(runtime_dir, "wayland-*")):
+            return True
+    except OSError:  # an unreadable /tmp must not turn into a build refusal
+        return False
+    return False
+
+
 def cmd_gui(args: argparse.Namespace):
     """Build and launch the native Electron desktop GUI."""
     from hermes_cli.main import PROJECT_ROOT
@@ -1506,6 +1535,14 @@ def cmd_gui(args: argparse.Namespace):
     if not (desktop_dir / "package.json").exists():
         print(f"Desktop GUI source not found at: {desktop_dir}")
         sys.exit(1)
+
+    # Headless notice (informational only): a display-less host cannot show the app, so an
+    # automatic rebuild of it is pure disk cost — `_rebuild_desktop_after_update` skips on that
+    # same signal. An explicit `hermes desktop` is a human decision, so this warns and continues
+    # (packaging here for another machine is legitimate; --force-build silences it).
+    if not getattr(args, "force_build", False) and not desktop_display_available():
+        print("⚠ No display on this host (no DISPLAY/WAYLAND_DISPLAY, no X/Wayland socket).")
+        print("  Hermes Desktop is a GUI app — a headless server only needs `hermes serve` backends.")
 
     with contextlib.suppress(Exception):
         from hermes_logging import setup_logging as _setup_logging_gui

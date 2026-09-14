@@ -375,6 +375,10 @@ Side-by-side routing is live: each registered gateway dials its own backends and
 "Remote backend" means a **`hermes serve`** server running on the remote machine — that is the process the desktop app connects to. Nothing in this section works unless that backend is actually up and reachable. The desktop app does not start it for you; you (or a `systemd` service) keep `hermes serve` running on the remote host, and the app attaches to it. If you also use messaging channels (Telegram, Discord, etc.), the **gateway** is a *separate* long-running process you start independently — see the note after the setup steps.
 :::
 
+:::note Headless servers need the backend, not the app
+The Electron app is only useful on a machine that can show a window. A display-less server should have the **backend** (`hermes serve`, or the gateway) and *not* the desktop app: `hermes update` skips rebuilding the app when there is no display (`DISPLAY`/`WAYLAND_DISPLAY` and no X/Wayland socket), and `hermes desktop` warns instead of quietly installing one. Run `hermes desktop --build-only` there deliberately — with `--force-build` to silence the notice — only when packaging for a GUI machine.
+:::
+
 The connection has two halves: on the backend you protect it with an **auth provider**, and in the app you enter the backend's URL and sign in. Binding the backend to a non-loopback address automatically engages its auth gate, and the provider you configure is what lets the desktop app through.
 
 **Pick a provider based on where the backend lives:**

@@ -53,6 +53,11 @@ def desktop_env(tmp_path, monkeypatch):
             return _Result(1, stdout="Error: [stage-native-deps] boom")
 
     monkeypatch.setattr(update_cmd, "_m", lambda: _FakeMain)
+    # The rebuild only runs on a host with a display (headless servers skip it); this fixture pins
+    # the rebuild mechanics, so declare the display present.
+    monkeypatch.setattr(
+        "hermes_cli.main_desktop.desktop_display_available", lambda: True, raising=False
+    )
     monkeypatch.setattr(
         "hermes_constants.with_hermes_node_path", lambda: {}, raising=False
     )

@@ -78,8 +78,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         max_spawn = (
             cli_max if cli_max is not None else kbd._positive_int(_kanban_cfg.get("max_spawn"), None)
         )
+        worker_resource_groups = _kanban_cfg.get("worker_resource_groups")
     except Exception:
         default_assignee = max_in_progress_per_profile = max_in_progress = None
+        worker_resource_groups = None
         max_spawn = getattr(args, "max", None)
     with kbc.connect_closing() as conn:
         res = kbd.dispatch_once(
@@ -90,6 +92,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             failure_limit=getattr(args, "failure_limit", kbd.DEFAULT_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            worker_resource_groups=worker_resource_groups,
         )
     if getattr(args, "json", False):
         _print_json({
@@ -103,6 +106,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "skipped_per_profile_capped": [
                 {"task_id": tid, "assignee": who, "current": current}
                 for (tid, who, current) in res.skipped_per_profile_capped
+            ],
+            "skipped_resource_conflict": [
+                {"task_id": tid, "assignee": who, "groups": list(groups)}
+                for (tid, who, groups) in res.skipped_resource_conflict
             ],
             "auto_assigned_default": res.auto_assigned_default,
         }, ascii=True)
@@ -131,6 +138,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
     for tid, who, current in res.skipped_per_profile_capped:
         print(f"Deferred ({who} at per-profile cap, {current} running): {tid}")
+    for tid, who, groups in res.skipped_resource_conflict:
+        print(f"Deferred ({who} resource conflict: {', '.join(groups)}): {tid}")
     if res.skipped_nonspawnable:
         print(
             f"Skipped (non-spawnable assignee — terminal lane, OK): "

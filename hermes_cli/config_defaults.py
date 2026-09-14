@@ -1768,6 +1768,10 @@ DEFAULT_CONFIG = {
         # fan-out workflows that would otherwise saturate one profile's local model / API quota / browser
         # pool while leaving other profiles idle. See #21582.
         "max_in_progress_per_profile": None,
+        # Named mutually exclusive resources. Profiles listed in the same group never run
+        # concurrently; profiles in disjoint groups retain normal parallel dispatch.
+        # Example: {"gpu-0": ["research", "writer"], "gpu-1": ["dev"]}.
+        "worker_resource_groups": {},
         # Auto-run the decomposer on Triage tasks every tick. False = manual via `hermes kanban
         # decompose <id>` or the dashboard's Decompose button.
         "auto_decompose": True,

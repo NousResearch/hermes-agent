@@ -2209,7 +2209,8 @@ class BasePlatformAdapter(ABC):
     def set_reaction_handler(self, handler: Optional[Callable[[Dict[str, Any]], Awaitable[None]]]) -> None:
         """Set the handler for platform-native emoji-reaction events: a normalised dict
         (``platform``, ``event_name`` "reaction:added"/"reaction:removed", ``reaction``,
-        ``user_id``, ``item_user_id``, ``channel_id``, ``message_ts``, ``event_ts``, ``raw_event``)
+        ``user_id``, ``item_user_id``, ``channel_id``, ``channel_type``, ``is_dm``,
+        ``message_ts``, ``event_ts``, ``raw_event``)
         fanned out via ``HookRegistry.emit``."""
         self._reaction_handler = handler
 

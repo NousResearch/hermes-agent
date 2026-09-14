@@ -774,7 +774,31 @@ class TestSlackReactionForwarding:
         assert hook_events[0]["reaction"] == "thumbsup"
         assert hook_events[0]["user_id"] == "U1"
         assert hook_events[0]["channel_id"] == "C1"
+        assert hook_events[0]["channel_type"] == "channel"
+        assert hook_events[0]["is_dm"] is False
         assert hook_events[0]["message_ts"] == "1000.0"
+
+    @pytest.mark.asyncio
+    async def test_hook_identifies_direct_message_scope(self):
+        """Reaction hooks can distinguish private DMs from shared channels."""
+        adapter = _make_adapter()
+        hook_events: list[dict] = []
+
+        async def _hook(ctx):
+            hook_events.append(ctx)
+
+        adapter.set_reaction_handler(_hook)
+        await adapter._handle_slack_reaction({
+            "type": "reaction_added",
+            "user": "U1",
+            "reaction": "thumbsup",
+            "item": {"type": "message", "channel": "D1", "ts": "2000.0"},
+            "item_user": "U_BOT",
+            "event_ts": "3000.0",
+        })
+
+        assert hook_events[0]["channel_type"] == "im"
+        assert hook_events[0]["is_dm"] is True
 
 
     def test_trigger_config_parsing(self):

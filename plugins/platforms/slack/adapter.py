@@ -3656,6 +3656,11 @@ class SlackAdapter(BasePlatformAdapter):
             team_id = next(iter(self._team_clients))
         client = self._team_clients.get(team_id) if team_id else None
         action = "removed" if removed else "added"
+        # Slack's stable D-prefix identifies a one-to-one IM. Reaction events
+        # do not include ``channel_type``, so expose the scope explicitly for
+        # hooks that should treat private DMs differently from shared surfaces.
+        is_dm = str(channel_id).startswith("D")
+        channel_type = "im" if is_dm else "channel"
         # Hooks fire before the opt-in gate so consumers see every human
         # reaction. getattr: tests build adapters via object.__new__.
         reaction_handler = getattr(self, "_reaction_handler", None)
@@ -3666,6 +3671,7 @@ class SlackAdapter(BasePlatformAdapter):
                     "reaction": reaction_name, "user_id": user_id,
                     "item_user_id": event.get("item_user"), "item_type": item.get("type"),
                     "channel_id": channel_id, "message_ts": msg_ts, "team_id": team_id,
+                    "channel_type": channel_type, "is_dm": is_dm,
                     "event_ts": event.get("event_ts"), "raw_event": event})
             except Exception:  # pragma: no cover - hook contract is non-blocking
                 logger.debug("[Slack] reaction hook forwarding failed", exc_info=True)

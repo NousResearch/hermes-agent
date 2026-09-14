@@ -408,6 +408,12 @@ export const BACKEND_EVENT_NAMES = [
   'clarify.expire',
   'clarify.request',
   'cron.changed',
+  'display.install.done',
+  'display.install.log',
+  'display.install.sudo.expire',
+  'display.install.sudo.request',
+  'display.lease',
+  'display.status',
   'error',
   'gateway.ready',
   'layout.apply',
@@ -505,6 +511,15 @@ export interface BackendGatewayEventMap {
   'clarify.expire': RequestExpirePayload
   'clarify.request': ClarifyRequestPayload
   'cron.changed': Record<string, unknown>
+  // Bot Screen (`tui_gateway/methods_display.py`, `methods_display_watch.py`). Payload shapes are
+  // owned by the hermes-bots desktop plugin (`DisplayStatus` / `DisplayLease`); the contract only
+  // pins the keys every consumer routes on.
+  'display.install.done': { code: number; profile_key: string; status: Record<string, unknown> }
+  'display.install.log': { line: string; profile_key: string }
+  'display.install.sudo.expire': RequestExpirePayload
+  'display.install.sudo.request': { profile_key: string; request_id: string }
+  'display.lease': { lease: Record<string, unknown>; profile_key: string }
+  'display.status': Record<string, unknown> & { profile_key: string }
   error: ErrorPayload
   'gateway.ready': GatewayReadyPayload
   'layout.apply': Record<string, unknown>

@@ -1218,3 +1218,55 @@ class TestResolveProfileEnvSpelling:
         assert Path(resolve_profile_env("default")) == _get_default_hermes_home()
 
 
+
+
+def _live_bot_desktop_launcher(profile_dir: Path):
+    """A synthetic Bot Desktop launcher for ``profile_dir``: its own session (like launcher.sh) with the
+    identity file + env runtime.status() reads, so the profile op sees a running screen."""
+    import subprocess
+    from tools.bot_desktop import runtime
+
+    proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    sd = profile_dir / "bot-desktop"
+    sd.mkdir()
+    (sd / "launcher.pid").write_text(f"{proc.pid} {runtime._create_time(proc.pid)}", encoding="utf-8")
+    (sd / "env").write_text("DISPLAY=:42\n", encoding="utf-8")
+    return proc
+
+
+@pytest.mark.linux_only
+@pytest.mark.parametrize("op", ["delete", "rename"])
+def test_profile_delete_and_rename_stop_the_profiles_bot_desktop(profile_env, op):
+    """Deleting or renaming a profile stops its gateway, and must stop its Bot Desktop launcher too: the
+    Xvnc/Xfce session otherwise keeps running against a directory that no longer exists (or now belongs to
+    another name), holding its display number and an rfb.sock nobody can reach through status()."""
+    profile_dir = create_profile("coder", no_alias=True)
+    proc = _live_bot_desktop_launcher(profile_dir)
+    try:
+        with patch("hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+            if op == "delete":
+                delete_profile("coder", yes=True)
+            else:
+                rename_profile("coder", "hacker")
+        assert proc.wait(timeout=10) != 0, "the launcher was signalled by the profile op"
+    finally:
+        proc.kill()
+
+
+@pytest.mark.parametrize("name", ["coder", "default"])
+def test_export_leaves_the_bot_desktop_browser_profile_out(profile_env, tmp_path, name):
+    """bot-desktop/ holds the screen's persistent Chromium profile (Cookies, Login Data: the bot's live web
+    sessions) plus sockets and X state. None of it belongs in an export archive meant to move a persona."""
+    profile_dir = create_profile(name, no_alias=True) if name != "default" else get_profile_dir("default")
+    (profile_dir / "config.yaml").write_text("model: test")
+    cookies = profile_dir / "bot-desktop" / "browser-profile" / "Default" / "Cookies"
+    cookies.parent.mkdir(parents=True)
+    cookies.write_bytes(b"SQLite format 3\x00")
+    output = tmp_path / "export" / f"{name}.tar.gz"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    export_profile(name, str(output))
+    with tarfile.open(str(output), "r:gz") as tf:
+        names = tf.getnames()
+    assert f"{name}/config.yaml" in names
+    assert not [n for n in names if "bot-desktop" in n], names

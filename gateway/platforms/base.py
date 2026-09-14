@@ -1239,9 +1239,28 @@ MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
     r'''[`"'*_]{0,3}MEDIA:\s*'''
     r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
     r'''(?:~/|/|[A-Za-z]:[/\\])[^\s\n`"']+?)'''
-    r'''(?=[`"'\s,;:)\]}''' + _MEDIA_CJK_TERMINATORS + r''']|MEDIA:|$)'''
+    r'''(?:(?-i:<\|eos\|>)(?=\s*$)|'''
+    r'''(?=[`"'\s,;:)\]}''' + _MEDIA_CJK_TERMINATORS + r''']|MEDIA:|$))'''
     r'''[`"'*_]{0,3}\s*''',
     re.IGNORECASE)
+
+
+def _terminal_eos_bounds(scan_text: str) -> Optional[Tuple[int, int]]:
+    """Return the offsets of one exact terminal EOS token, excluding trailing whitespace."""
+    terminal = scan_text.rstrip()
+    sentinel = "<|eos|>"
+    sentinel_start = len(terminal) - len(sentinel)
+    if terminal.endswith(sentinel):
+        return sentinel_start, len(terminal)
+    return None
+
+
+def _extensionless_media_end(scan_text: str, path_end: int) -> int:
+    """Include one exact terminal EOS token in an extensionless tag span."""
+    bounds = _terminal_eos_bounds(scan_text)
+    if bounds is not None and path_end == bounds[0]:
+        return bounds[1]
+    return path_end
 
 
 def _match_extensionless_path(scan_text: str, match: "re.Match") -> Optional[Tuple[str, int]]:
@@ -1260,9 +1279,13 @@ def _match_extensionless_path(scan_text: str, match: "re.Match") -> Optional[Tup
         return None
     safe = validate_media_delivery_path(path)
     if safe:
-        return safe, match.end("path")
+        return safe, _extensionless_media_end(scan_text, match.end("path"))
     start = match.start("path")
-    segment = scan_text[start:].split("\n", 1)[0]
+    segment = scan_text[start:]
+    terminal_bounds = _terminal_eos_bounds(scan_text)
+    if terminal_bounds is not None and terminal_bounds[0] >= start:
+        segment = segment[:terminal_bounds[0] - start]
+    segment = segment.split("\n", 1)[0]
     nxt = segment.find("MEDIA:", 1)
     if nxt != -1:
         segment = segment[:nxt]
@@ -1274,7 +1297,7 @@ def _match_extensionless_path(scan_text: str, match: "re.Match") -> Optional[Tup
         tok_end = pos + token.end()
         safe = validate_media_delivery_path(_normalize_media_tag_path(segment[:tok_end]))
         if safe:
-            return safe, start + tok_end
+            return safe, _extensionless_media_end(scan_text, start + tok_end)
         pos = tok_end
     return None
 

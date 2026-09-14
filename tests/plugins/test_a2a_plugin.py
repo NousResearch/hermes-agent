@@ -457,7 +457,7 @@ class TestClientTools:
         assert "JSONRPC v1.0" in out
 
     def test_call_sends_v1_message(self, monkeypatch):
-        """Outbound params: contextId inside the message, v1.0 role, no kind."""
+        """Outbound params: v1.0 role, no kind; first contact omits contextId for the peer to issue."""
         monkeypatch.setattr(tools, "_load_config",
                             lambda: {"a2a_agents": {"r": {"url": "http://localhost:9999"}}})
         monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
@@ -466,7 +466,7 @@ class TestClientTools:
 
         def fake_post(url, body, headers, timeout):
             captured["body"] = body
-            ctx = body["params"]["message"].get("contextId", "c1")
+            ctx = body["params"]["message"].get("contextId", "srv-1")  # peer issues one when omitted
             return protocol.jsonrpc_result(
                 body["id"],
                 protocol.build_task("t", ctx, protocol.STATE_COMPLETED, "here is the answer"),
@@ -475,17 +475,37 @@ class TestClientTools:
         monkeypatch.setattr(tools, "_http_post_json", fake_post)
         out = tools.a2a_call({"agent": "r", "message": "my key sk-abcdefghij1234567890ABCD please"})
         assert "here is the answer" in out
+        assert "srv-1" in out  # the peer-issued context id is adopted and surfaced
 
         params = captured["body"]["params"]
         msg = params["message"]
-        assert "contextId" not in params  # v1.0: not top-level
-        assert msg["contextId"]           # v1.0: inside the Message
+        assert "contextId" not in params        # v1.0: not top-level
+        assert "contextId" not in msg           # first contact: omitted, the peer issues one
         assert msg["role"] == "ROLE_USER"
         part = msg["parts"][0]
         assert "kind" not in part
         assert part["mediaType"] == "text/plain"
         # Outbound redaction applied before sending.
         assert "sk-abcdefghij" not in part["text"]
+
+    def test_call_continues_with_explicit_context(self, monkeypatch):
+        """An explicit context_id rides inside the Message and is reused when the peer echoes it."""
+        monkeypatch.setattr(tools, "_load_config",
+                            lambda: {"a2a_agents": {"r": {"url": "http://localhost:9999"}}})
+        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
+        captured = {}
+
+        def fake_post(url, body, headers, timeout):
+            captured["body"] = body
+            return protocol.jsonrpc_result(
+                body["id"],
+                protocol.build_task("t", "ctx-prev", protocol.STATE_COMPLETED, "continued"),
+            )
+
+        monkeypatch.setattr(tools, "_http_post_json", fake_post)
+        out = tools.a2a_call({"agent": "r", "message": "more detail", "context_id": "ctx-prev"})
+        assert captured["body"]["params"]["message"]["contextId"] == "ctx-prev"
+        assert "ctx-prev" in out
 
     def test_call_reports_input_required(self, monkeypatch):
         monkeypatch.setattr(tools, "_load_config",

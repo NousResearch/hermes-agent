@@ -22,7 +22,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # (gateway/platforms/base.py _ROOT_CREDENTIAL_PATHS enumerates the same set) and
 # retired-WAL capture dirs, quick snapshots, the legacy transcript dir, the
 # default kanban board, the cron job store (cron/jobs.py JOBS_FILE) and
-# executions ledger, gateway lock/pid files and the cache/spill directories.
+# executions ledger, gateway lock/pid files, the cache/spill directories and the
+# config/auth/memory/profile/credential/pairing roots.
 FLAT_INSTALL_RUNTIME_STATE = (
     "state.db",
     "state.db-wal",
@@ -42,6 +43,14 @@ FLAT_INSTALL_RUNTIME_STATE = (
     "gateway.pid",
     "hook_outputs/2026-09-14_06-00-00/tool.json",
     "cache/banner_snapshot.json",
+    "config.yaml",
+    "auth.json",
+    "auth.lock",
+    "memories/MEMORY.md",
+    "profiles/work/config.yaml",
+    ".credentials/github_token",
+    "mcp-tokens/server.json",
+    "pairing/telegram.json",
 )
 
 

@@ -54,3 +54,19 @@ def test_every_key_the_renderer_mirrors_is_listed():
     gated = {"display.message_reactions", "display.in_app_tips", "display.in_app_tours"}
 
     assert gated <= server._DISPLAY_TOGGLE_KEYS
+
+
+def test_config_set_error_guarded_against_write_failures(monkeypatch):
+    """Write failures in details_mode, toggles, or word setters must return 5001 instead of crashing."""
+    def boom(*args, **kwargs):
+        raise OSError("Permission denied: read-only filesystem")
+
+    monkeypatch.setattr(server, "_save_cfg", boom)
+    ans = _set("details_mode", "expanded")
+    assert ans.get("error", {}).get("code") == 5001
+    assert "Permission denied" in ans["error"]["message"]
+
+    ans_sec = _set("details_mode.thinking", "expanded")
+    assert ans_sec.get("error", {}).get("code") == 5001
+    assert "Permission denied" in ans_sec["error"]["message"]
+

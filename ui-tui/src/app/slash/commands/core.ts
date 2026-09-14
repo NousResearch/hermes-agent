@@ -241,6 +241,18 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    help: 'recover a disconnected or exited gateway session',
+    name: 'recover',
+    run: (_arg, ctx) => {
+      if (!ctx.session.recoverGateway) {
+        return ctx.transcript.sys('session recovery is not supported in this context')
+      }
+
+      ctx.session.recoverGateway()
+    }
+  },
+
+  {
     help: 'set or show current session title',
     name: 'title',
     run: (arg, ctx) => {
@@ -343,7 +355,7 @@ export const coreCommands: SlashCommand[] = [
         patchUiState({ sections: mode ? { ...rest, [first]: mode } : rest })
         gateway
           .rpc<ConfigSetResponse>('config.set', { key: `details_mode.${first}`, value: mode ?? '' })
-          .catch(() => {})
+          .catch(ctx.guardedErr)
         transcript.sys(`details ${first}: ${mode ?? 'reset'}`)
 
         return
@@ -358,7 +370,9 @@ export const coreCommands: SlashCommand[] = [
       const sections = Object.fromEntries(SECTION_NAMES.map(section => [section, next]))
 
       patchUiState({ detailsMode: next, detailsModeCommandOverride: true, sections })
-      gateway.rpc<ConfigSetResponse>('config.set', { key: 'details_mode', value: next }).catch(() => {})
+      gateway
+        .rpc<ConfigSetResponse>('config.set', { key: 'details_mode', value: next })
+        .catch(ctx.guardedErr)
       transcript.sys(`details: ${next}`)
     }
   },

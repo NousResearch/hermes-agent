@@ -302,6 +302,33 @@ def _format_kanban_event_text(sub: dict, task, ev, board_slug: str) -> Optional[
     return f"{prefix}Kanban {task_id}{fmt(task, getattr(ev, 'payload', None) or {}, title)}"
 
 
+class _KanbanNotificationText(str):
+    """Publicly string-compatible text carrying claimed route provenance."""
+
+    def __new__(cls, text: str, board_slug: str, authorization: dict):
+        value = super().__new__(cls, text)
+        value.board_slug = board_slug
+        value.authorization = authorization
+        return value
+
+
+def _kanban_text_authorized(text) -> bool:
+    """Revalidate captured TUI provenance; ordinary strings remain compatible."""
+    if not isinstance(text, _KanbanNotificationText):
+        return True
+    from hermes_cli import kanban_db_connect as _kbc
+    from hermes_cli import kanban_db_notify as _kbn
+    try:
+        conn = _kbc.connect(board=text.board_slug)
+    except Exception:
+        return False
+    with contextlib.closing(conn):
+        try:
+            return _kbn.subscription_is_authorized(conn, **text.authorization)
+        except Exception:
+            return False
+
+
 def _kb_board_key(_kb, board_meta) -> tuple[str, str]:
     """(slug, resolved DB identity) — multiple slugs can point at one DB when HERMES_KANBAN_DB pins it."""
     slug = (board_meta or {}).get("slug") or _kb.DEFAULT_BOARD
@@ -335,12 +362,26 @@ def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
             if (sub.get("platform") or "").lower() != "tui" or sub.get("chat_id") != session_key:
                 continue
             sub_ident = dict(task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
-                             thread_id=sub.get("thread_id") or "")
+                             thread_id=sub.get("thread_id") or "",
+                             incarnation_id=sub.get("incarnation_id"))
             _old, _new, events = _kbn.claim_unseen_events_for_sub(conn, kinds=_KANBAN_NOTIFY_KINDS, **sub_ident)
             if not events:
                 continue
+            authorization = dict(
+                task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
+                thread_id=sub.get("thread_id") or "", incarnation_id=sub["incarnation_id"],
+                notifier_profile=sub.get("notifier_profile"), delivery_mode=sub.get("delivery_mode") or "notify",
+            )
+            # The cursor claim can invoke code that revokes/replaces this route;
+            # do not even expose stale text to the caller in that case.
+            if not _kbn.subscription_is_authorized(conn, **authorization):
+                continue
             task = _kb.get_task(conn, sub["task_id"])
-            texts.extend(t for t in (_format_kanban_event_text(sub, task, ev, slug) for ev in events) if t)
+            texts.extend(
+                _KanbanNotificationText(text, slug, authorization)
+                for text in (_format_kanban_event_text(sub, task, ev, slug) for ev in events)
+                if text
+            )
             # Unsubscribe only on archive: ``done`` is reversible in review/controller flows, so keeping the sub lets a
             # later reopen notify the same session. The claimed cursor prevents replay.
             if task and getattr(task, "status", "") == "archived":
@@ -385,14 +426,24 @@ def _notif_poll_kanban(sid: str, session: dict) -> None:
     except Exception as exc:
         _notif_log_failure("kanban notification poll failed", exc)
         texts = []
+    emitted_texts = []
     for text in texts:
+        if not _kanban_text_authorized(text):
+            continue
         _emit("status.update", sid, {"kind": "process", "text": text})
-    if texts:
-        session.setdefault("_kanban_pending", []).extend(texts)
+        emitted_texts.append(text)
+    if emitted_texts:
+        session.setdefault("_kanban_pending", []).extend(emitted_texts)
     if not session.get("_kanban_pending") or not _notif_claim_turn(session):
         return
     with session["history_lock"]:
         batch, session["_kanban_pending"] = list(session.get("_kanban_pending") or []), []
+    # Independent turn boundary: a route may be revoked by the emission hook or
+    # another thread after collection. This cannot be atomic with agent I/O.
+    batch = [text for text in batch if _kanban_text_authorized(text)]
+    if not batch:
+        _notif_release_turn(session)
+        return
     with contextlib.suppress(Exception):
         _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, "\n".join(batch), "kanban notification dispatch failed")
 

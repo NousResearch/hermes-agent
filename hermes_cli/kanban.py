@@ -1117,6 +1117,45 @@ def _cmd_notify_unsubscribe(args: argparse.Namespace) -> int:
     return _ok_or_err(ok, "(no such subscription)", f"Unsubscribed from {args.task_id}")
 
 
+def _cmd_delivery_list(args: argparse.Namespace) -> int:
+    state = None if args.state == "all" else args.state
+    with kbc.connect_closing() as conn:
+        rows = kbn.list_delivery_outbox(conn, state=state)
+    if _json_out(args, rows):
+        return 0
+    if not rows:
+        print(f"(no {args.state} deliveries)")
+        return 0
+    for row in rows:
+        thread = f":{row['thread_id']}" if row.get("thread_id") else ""
+        detail = f"  error={row['last_error']}" if row.get("last_error") else ""
+        print(
+            f"  {row['delivery_key']}  {row['state']}  task={row['task_id']}  "
+            f"{row['platform']}:{row['chat_id']}{thread}  attempts={row['attempts']}{detail}"
+        )
+    return 0
+
+
+def _cmd_delivery_reconcile(args: argparse.Namespace) -> int:
+    try:
+        with kbc.connect_closing() as conn:
+            result = kbn.reconcile_delivery_unknown(
+                conn, delivery_key=args.delivery_key, action=args.action, reason=args.reason,
+                operator=_profile_author(),
+                accept_duplicate_risk=bool(getattr(args, "accept_duplicate_risk", False)),
+            )
+    except ValueError as exc:
+        return _err(f"kanban delivery-reconcile: {exc}", 2)
+    if not result["ok"]:
+        if result["state"] is None:
+            return _err(f"no such delivery: {args.delivery_key}")
+        return _err(
+            f"delivery {args.delivery_key} is not in delivery_unknown (state={result['state']})"
+        )
+    print(f"Reconciled {args.delivery_key}: {args.action} -> {result['state']}")
+    return 0
+
+
 def _cmd_log(args: argparse.Namespace) -> int:
     content = kb.read_worker_log(args.task_id, tail_bytes=args.tail)
     if content is None:
@@ -1247,6 +1286,7 @@ _HANDLERS = {
     "log": _cmd_log, "runs": _cmd_runs, "heartbeat": _cmd_heartbeat,
     "assignees": _cmd_assignees, "notify-subscribe": _cmd_notify_subscribe,
     "notify-list": _cmd_notify_list, "notify-unsubscribe": _cmd_notify_unsubscribe,
+    "delivery-list": _cmd_delivery_list, "delivery-reconcile": _cmd_delivery_reconcile,
     "context": _cmd_context, "specify": _cmd_specify, "decompose": _cmd_decompose,
     "gc": _cmd_gc,
 }

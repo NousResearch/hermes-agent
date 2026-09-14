@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+import time
 from pathlib import Path
 
 
@@ -12,6 +13,11 @@ from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
+from gateway.platforms.base import SendResult
+from tests.hermes_cli.test_kanban_legacy_ping_admission import (
+    _insert_required,
+    _legacy_db,
+)
 
 
 class RecordingAdapter:
@@ -21,6 +27,7 @@ class RecordingAdapter:
 
     async def send(self, chat_id, text, metadata=None):
         self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
+        return SendResult(success=True, message_id=f"sent-{len(self.sent)}")
 
     async def handle_message(self, event):
         self.handled.append(event)
@@ -82,6 +89,220 @@ def _unseen_terminal_events(tid):
         return events
     finally:
         conn.close()
+
+
+def test_post_send_checkpoint_failure_does_not_replay_after_runner_restart(tmp_path, monkeypatch, caplog):
+    """Transport acceptance and a local checkpoint cannot commit atomically."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "checkpoint.db"))
+    kb.init_db()
+    _create_completed_subscription()
+    adapter = RecordingAdapter()
+    original_record = kbn.record_notify_ping
+    failures = []
+
+    def fail_record_once(*args, **kwargs):
+        if not failures:
+            failures.append("post-send checkpoint")
+            raise sqlite3.OperationalError("injected receipt checkpoint failure")
+        return original_record(*args, **kwargs)
+
+    monkeypatch.setattr(kbn, "record_notify_ping", fail_record_once)
+    # A fresh runner loses every process-local retry counter; only SQLite survives.
+    for _ in range(2):
+        with monkeypatch.context() as tick_patch:
+            asyncio.run(_run_one_notifier_tick(tick_patch, _make_runner(adapter)))
+
+    assert failures == ["post-send checkpoint"]
+    assert len(adapter.sent) == 1
+    conn = kbc.connect()
+    try:
+        rows = conn.execute(
+            "SELECT state, transport_receipt FROM kanban_delivery_outbox"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["state"] == "delivery_unknown"
+        assert rows[0]["transport_receipt"] == "transport:sent-1"
+    finally:
+        conn.close()
+    warnings = [record.message for record in caplog.records if "delivery outcome unknown" in record.message]
+    assert len(warnings) == 1
+    assert "delivery-list" in warnings[0]
+
+
+def test_recreated_route_is_revoked_between_collection_and_delivery(tmp_path, monkeypatch):
+    """A collected A delivery cannot send after the same route is recreated as B."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "recreate.db"))
+    kb.init_db()
+    task_id = _create_completed_subscription()
+
+    import gateway.kanban_watchers as watchers
+    real_collect = watchers._notifier_collect
+    incarnations = []
+
+    def collect_then_recreate(*args, **kwargs):
+        deliveries = real_collect(*args, **kwargs)
+        assert deliveries
+        conn = kbc.connect()
+        try:
+            old = kbn.list_notify_subs(conn, task_id)[0]
+            incarnations.append(old["incarnation_id"])
+            assert kbn.remove_notify_sub(
+                conn, task_id=task_id, platform="telegram", chat_id="chat-1",
+                incarnation_id=old["incarnation_id"],
+            )
+            kbn.add_notify_sub(conn, task_id=task_id, platform="telegram", chat_id="chat-1")
+            incarnations.append(kbn.list_notify_subs(conn, task_id)[0]["incarnation_id"])
+        finally:
+            conn.close()
+        return deliveries
+
+    monkeypatch.setattr(watchers, "_notifier_collect", collect_then_recreate)
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert adapter.sent == []
+    assert incarnations[0] != incarnations[1]
+    conn = kbc.connect()
+    try:
+        rows = conn.execute(
+            "SELECT revoked_at FROM kanban_delivery_outbox "
+            "WHERE task_id=? AND incarnation_id=?", (task_id, incarnations[0]),
+        ).fetchall()
+        assert rows and all(row["revoked_at"] is not None for row in rows)
+    finally:
+        conn.close()
+
+
+def test_recreated_same_owner_route_is_revoked_after_outbox_claim(tmp_path, monkeypatch):
+    """A claimed incarnation must be re-authorized immediately before send."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "post-claim-recreate.db"))
+    kb.init_db()
+    task_id = _create_completed_subscription()
+    real_claim = kbn.claim_delivery
+    claims = []
+
+    def claim_then_recreate(conn, **kwargs):
+        claimed = real_claim(conn, **kwargs)
+        if claimed is not None and not claims:
+            claims.append(claimed)
+            old = kbn.list_notify_subs(conn, task_id)[0]
+            assert kbn.remove_notify_sub(
+                conn, task_id=task_id, platform="telegram", chat_id="chat-1",
+                incarnation_id=old["incarnation_id"],
+            )
+            kbn.add_notify_sub(
+                conn, task_id=task_id, platform="telegram", chat_id="chat-1",
+                notifier_profile=old["notifier_profile"], delivery_mode=old["delivery_mode"],
+            )
+        return claimed
+
+    monkeypatch.setattr(kbn, "claim_delivery", claim_then_recreate)
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert adapter.sent == []
+    conn = kbc.connect()
+    try:
+        row = conn.execute(
+            "SELECT state,revoked_at,transport_receipt FROM kanban_delivery_outbox WHERE delivery_key=?",
+            (claims[0]["delivery_key"],),
+        ).fetchone()
+        assert row["revoked_at"] is not None
+        assert row["state"] == "delivered"
+        assert row["transport_receipt"].startswith("cancelled:")
+    finally:
+        conn.close()
+
+
+def test_owner_and_mode_mutation_revoke_claim_before_send(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "post-claim-mutation.db"))
+    kb.init_db()
+    task_id = _create_completed_subscription()
+    real_claim = kbn.claim_delivery
+
+    def claim_then_mutate(conn, **kwargs):
+        claimed = real_claim(conn, **kwargs)
+        if claimed is not None:
+            kbn.add_notify_sub(
+                conn, task_id=task_id, platform="telegram", chat_id="chat-1",
+                notifier_profile="replacement-owner", delivery_mode="notify+wake",
+            )
+        return claimed
+
+    monkeypatch.setattr(kbn, "claim_delivery", claim_then_mutate)
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert adapter.sent == []
+    assert adapter.handled == []
+
+
+def test_replacement_after_passive_send_blocks_wake(tmp_path, monkeypatch):
+    """The wake leg has its own authorization boundary after passive I/O."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "pre-wake-recreate.db"))
+    kb.init_db()
+    task_id = _create_completed_subscription()
+    conn = kbc.connect()
+    try:
+        kbn.add_notify_sub(
+            conn, task_id=task_id, platform="telegram", chat_id="chat-1",
+            delivery_mode="notify+wake",
+        )
+    finally:
+        conn.close()
+
+    class ReplacingAdapter(RecordingAdapter):
+        async def send(self, chat_id, text, metadata=None):
+            result = await super().send(chat_id, text, metadata)
+            conn = kbc.connect()
+            try:
+                old = kbn.list_notify_subs(conn, task_id)[0]
+                assert kbn.remove_notify_sub(
+                    conn, task_id=task_id, platform="telegram", chat_id="chat-1",
+                    incarnation_id=old["incarnation_id"],
+                )
+                kbn.add_notify_sub(
+                    conn, task_id=task_id, platform="telegram", chat_id="chat-1",
+                    delivery_mode="notify+wake",
+                )
+            finally:
+                conn.close()
+            return result
+
+    adapter = ReplacingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    assert adapter.handled == []
+
+
+def test_notifier_tick_isolates_each_delivery_exception(monkeypatch):
+    import gateway.kanban_watchers as watchers
+
+    attempted = []
+
+    class FakeNotification:
+        def __init__(self, _runner, delivery, **_kwargs):
+            self.delivery = delivery
+
+        async def deliver(self):
+            attempted.append(self.delivery["id"])
+            if self.delivery["id"] == "first":
+                raise RuntimeError("injected per-delivery failure")
+
+    monkeypatch.setattr(watchers, "_notifier_collect", lambda *_args, **_kwargs: [
+        {"id": "first"}, {"id": "second"},
+    ])
+    monkeypatch.setattr(watchers, "_KanbanNotification", FakeNotification)
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(RecordingAdapter())))
+
+    assert attempted == ["first", "second"]
 
 
 def test_kanban_notifier_replays_telegram_dm_topic_delivery_metadata(tmp_path, monkeypatch):
@@ -461,6 +682,295 @@ def test_notifier_subscription_survives_done_reopen_until_archive(
         conn.close()
 
 
+def _create_owned_completed_subscription():
+    conn = kbc.connect()
+    try:
+        task_id = kb.create_task(conn, title="archive recovery", assignee="worker")
+        kbn.add_notify_sub(
+            conn, task_id=task_id, platform="telegram", chat_id="archive-chat",
+            thread_id="archive-thread", notifier_profile="reviewer", delivery_mode="notify",
+        )
+        sub = kbn.list_notify_subs(conn, task_id)[0]
+        assert kb.complete_task(conn, task_id, summary="completion to preserve")
+        return task_id, sub
+    finally:
+        conn.close()
+
+
+def _reviewer_runner(adapter):
+    runner = _make_runner(adapter)
+    runner._active_profile_name = lambda: "reviewer"
+    return runner
+
+
+def _outbox_rows(task_id):
+    conn = kbc.connect()
+    try:
+        return [
+            dict(row) for row in conn.execute(
+                "SELECT * FROM kanban_delivery_outbox WHERE task_id=? ORDER BY event_id,id",
+                (task_id,),
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+
+
+def test_archived_route_survives_confirmed_no_send_until_ordinary_retry(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "archive-retry.db"))
+    kb.init_db()
+    task_id, captured_sub = _create_owned_completed_subscription()
+
+    class RejectBeforeIoOnce(RecordingAdapter):
+        def __init__(self):
+            super().__init__()
+            self.attempts = 0
+
+        async def send(self, chat_id, text, metadata=None):
+            self.attempts += 1
+            if self.attempts == 1:
+                return SendResult(
+                    success=False, delivery_attempted=False, error="pre-I/O failure",
+                )
+            return await super().send(chat_id, text, metadata=metadata)
+
+    adapter = RejectBeforeIoOnce()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+    first_rows = _outbox_rows(task_id)
+    assert [(row["state"], row["revoked_at"]) for row in first_rows] == [
+        ("retry_wait", None),
+    ]
+
+    conn = kbc.connect()
+    try:
+        assert kb.archive_task(conn, task_id)
+    finally:
+        conn.close()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+
+    archived_rows = _outbox_rows(task_id)
+    assert [(row["state"], row["revoked_at"]) for row in archived_rows] == [
+        ("retry_wait", None), ("delivered", None),
+    ]
+    conn = kbc.connect()
+    try:
+        retained = kbn.list_notify_subs(conn, task_id)
+    finally:
+        conn.close()
+    assert len(retained) == 1
+    assert {
+        key: retained[0][key]
+        for key in ("incarnation_id", "notifier_profile", "delivery_mode")
+    } == {
+        key: captured_sub[key]
+        for key in ("incarnation_id", "notifier_profile", "delivery_mode")
+    }
+
+    conn = kbc.connect()
+    try:
+        conn.execute(
+            "UPDATE kanban_delivery_outbox SET next_attempt_at=0 "
+            "WHERE task_id=? AND state='retry_wait'",
+            (task_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+
+    assert adapter.attempts == 2
+    assert len(adapter.sent) == 1
+    assert all(row["state"] == "delivered" for row in _outbox_rows(task_id))
+    conn = kbc.connect()
+    try:
+        assert kbn.list_notify_subs(conn, task_id) == []
+    finally:
+        conn.close()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+    assert adapter.attempts == 2
+
+
+def test_archived_unknown_remains_discoverable_after_explicit_retry_reconciliation(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "archive-unknown.db"))
+    kb.init_db()
+    task_id, _captured_sub = _create_owned_completed_subscription()
+
+    class AmbiguousOnce(RecordingAdapter):
+        def __init__(self):
+            super().__init__()
+            self.attempts = 0
+
+        async def send(self, chat_id, text, metadata=None):
+            self.attempts += 1
+            if self.attempts == 1:
+                return SendResult(
+                    success=False, delivery_attempted=True, error="transport outcome unknown",
+                )
+            return await super().send(chat_id, text, metadata=metadata)
+
+    adapter = AmbiguousOnce()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+    unknown_key = _outbox_rows(task_id)[0]["delivery_key"]
+    assert _outbox_rows(task_id)[0]["state"] == "delivery_unknown"
+
+    conn = kbc.connect()
+    try:
+        assert kb.archive_task(conn, task_id)
+    finally:
+        conn.close()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+
+    rows = _outbox_rows(task_id)
+    assert [(row["state"], row["revoked_at"]) for row in rows] == [
+        ("delivery_unknown", None), ("delivered", None),
+    ]
+    conn = kbc.connect()
+    try:
+        assert len(kbn.list_notify_subs(conn, task_id)) == 1
+        reconciled = kbn.reconcile_delivery_unknown(
+            conn, delivery_key=unknown_key, action="retry",
+            reason="destination checked; retry authorized", operator="tester",
+            accept_duplicate_risk=True,
+        )
+        assert reconciled == {
+            "ok": True, "delivery_key": unknown_key, "state": "retry_wait", "action": "retry",
+        }
+        audit = [event for event in kb.list_events(conn, task_id) if event.kind == "delivery_reconciled"]
+        assert len(audit) == 1
+        assert audit[0].payload["delivery_key"] == unknown_key
+    finally:
+        conn.close()
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+    assert adapter.attempts == 2
+    assert len(adapter.sent) == 1
+    rows = _outbox_rows(task_id)
+    assert all(row["state"] == "delivered" and row["revoked_at"] is None for row in rows)
+    conn = kbc.connect()
+    try:
+        assert kbn.list_notify_subs(conn, task_id) == []
+        audit = [event for event in kb.list_events(conn, task_id) if event.kind == "delivery_reconciled"]
+        assert len(audit) == 1
+    finally:
+        conn.close()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+    assert adapter.attempts == 2
+
+
+def test_quiet_tick_retires_archived_route_after_unknown_marked_delivered(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "archive-mark-delivered.db"))
+    kb.init_db()
+    task_id, captured_sub = _create_owned_completed_subscription()
+
+    class AmbiguousAdapter(RecordingAdapter):
+        def __init__(self):
+            super().__init__()
+            self.attempts = 0
+
+        async def send(self, chat_id, text, metadata=None):
+            self.attempts += 1
+            return SendResult(
+                success=False, delivery_attempted=True, error="transport outcome unknown",
+            )
+
+    adapter = AmbiguousAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+    unknown_key = _outbox_rows(task_id)[0]["delivery_key"]
+    conn = kbc.connect()
+    try:
+        assert kb.archive_task(conn, task_id)
+    finally:
+        conn.close()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+
+    conn = kbc.connect()
+    try:
+        assert len(kbn.list_notify_subs(conn, task_id)) == 1
+        assert kbn.reconcile_delivery_unknown(
+            conn, delivery_key=unknown_key, action="mark-delivered",
+            reason="verified at destination", operator="tester",
+        ) == {
+            "ok": True, "delivery_key": unknown_key,
+            "state": "delivered", "action": "mark-delivered",
+        }
+        assert kbn.list_due_deliveries_for_sub(
+            conn, task_id=task_id, platform=captured_sub["platform"],
+            chat_id=captured_sub["chat_id"], thread_id=captured_sub["thread_id"],
+            incarnation_id=captured_sub["incarnation_id"],
+        ) == []
+    finally:
+        conn.close()
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+    assert adapter.attempts == 1
+    rows = _outbox_rows(task_id)
+    assert all(row["state"] == "delivered" and row["revoked_at"] is None for row in rows)
+    assert rows[0]["transport_receipt"] == "operator-verified:tester"
+    conn = kbc.connect()
+    try:
+        assert kbn.list_notify_subs(conn, task_id) == []
+        audit = [event for event in kb.list_events(conn, task_id) if event.kind == "delivery_reconciled"]
+        assert len(audit) == 1
+        assert audit[0].payload["action"] == "mark-delivered"
+    finally:
+        conn.close()
+
+
+def test_quiet_tick_retires_all_settled_archived_route_after_missed_teardown(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "archive-missed-teardown.db"))
+    kb.init_db()
+    task_id, _captured_sub = _create_owned_completed_subscription()
+    adapter = RecordingAdapter()
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+    conn = kbc.connect()
+    try:
+        assert kb.archive_task(conn, task_id)
+    finally:
+        conn.close()
+
+    interrupted_runner = _reviewer_runner(adapter)
+    interrupted_runner._kanban_retire_archived = lambda sub, board=None: False
+    asyncio.run(_run_one_notifier_tick(monkeypatch, interrupted_runner))
+    rows_after_ack = _outbox_rows(task_id)
+    assert [row["state"] for row in rows_after_ack] == ["delivered", "delivered"]
+    conn = kbc.connect()
+    try:
+        assert len(kbn.list_notify_subs(conn, task_id)) == 1
+        event_count = len(kb.list_events(conn, task_id))
+    finally:
+        conn.close()
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+    assert len(adapter.sent) == 1
+    conn = kbc.connect()
+    try:
+        assert kbn.list_notify_subs(conn, task_id) == []
+        assert len(kb.list_events(conn, task_id)) == event_count
+        assert [dict(row) for row in conn.execute(
+            "SELECT state,transport_receipt,revoked_at FROM kanban_delivery_outbox "
+            "WHERE task_id=? ORDER BY event_id",
+            (task_id,),
+        ).fetchall()] == [
+            {"state": "delivered", "transport_receipt": "transport:sent-1", "revoked_at": None},
+            {"state": "delivered", "transport_receipt": "no-op-event-acknowledged", "revoked_at": None},
+        ]
+    finally:
+        conn.close()
+
+
 def test_notifier_wakeup_uses_subscription_chat_type(tmp_path, monkeypatch):
     db_path = tmp_path / "chat-type-wakeup.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
@@ -748,3 +1258,367 @@ def test_review_requested_does_not_wake_a_notify_only_subscription(
     assert adapter.handled == [], (
         "notify-only subscriptions must not be woken by a review handoff"
     )
+
+
+def test_out_of_order_retry_does_not_use_subscription_high_water_as_ping_receipt(tmp_path, monkeypatch):
+    """A later success must not suppress an earlier obligation's safe retry."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="ordered retries", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        with kb.write_txn(conn):
+            kb._append_event(conn, tid, "blocked", {"reason": "event two"})
+            kb._append_event(conn, tid, "crashed", {})
+        assert [event.id for event in kb.list_events(conn, tid)] == [1, 2, 3]
+    finally:
+        conn.close()
+
+    class FailEventTwoOnce(RecordingAdapter):
+        def __init__(self):
+            super().__init__()
+            self.attempted = []
+
+        async def send(self, chat_id, text, metadata=None):
+            self.attempted.append(text)
+            if "blocked" in text and self.attempted.count(text) == 1:
+                return SendResult(
+                    success=False, delivery_attempted=False, error="pre-I/O failure",
+                )
+            return await super().send(chat_id, text, metadata=metadata)
+
+    adapter = FailEventTwoOnce()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    conn = kbc.connect()
+    try:
+        sub = kbn.list_notify_subs(conn, tid)[0]
+        assert sub["last_ping_event_id"] == 3
+        rows = {
+            row["event_id"]: dict(row)
+            for row in conn.execute(
+                "SELECT event_id,state,ping_acceptance_provenance,ping_delivered_at "
+                "FROM kanban_delivery_outbox WHERE task_id=?", (tid,)
+            )
+        }
+        assert {event_id: row["state"] for event_id, row in rows.items()} == {
+            2: "retry_wait", 3: "delivered",
+        }
+        assert rows[2]["ping_acceptance_provenance"] is None
+        assert rows[2]["ping_delivered_at"] is None
+        assert rows[3]["ping_acceptance_provenance"] is None
+        assert rows[3]["ping_delivered_at"] is not None
+        conn.execute(
+            "UPDATE kanban_delivery_outbox SET next_attempt_at=0 WHERE task_id=? AND event_id=2",
+            (tid,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert sum("blocked" in text for text in adapter.attempted) == 2
+    assert len(adapter.sent) == 2
+    conn = kbc.connect()
+    try:
+        assert conn.execute(
+            "SELECT state FROM kanban_delivery_outbox WHERE task_id=? AND event_id=2", (tid,)
+        ).fetchone()["state"] == "delivered"
+    finally:
+        conn.close()
+
+
+def test_notify_wake_retry_uses_exact_ping_checkpoint(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+    kb.init_db()
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(
+            conn, title="wake retry", assignee="worker",
+            session_id="agent:main:telegram:dm:chat-1",
+        )
+        kbn.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat-1",
+            chat_type="dm", delivery_mode="notify+wake",
+        )
+        kb.complete_task(conn, tid, summary="done")
+    finally:
+        conn.close()
+
+    class RejectWakeOnce(RecordingAdapter):
+        def __init__(self):
+            super().__init__()
+            self.wake_attempts = 0
+
+        async def handle_message(self, event):
+            from gateway.wake import WakeNotAccepted
+
+            self.wake_attempts += 1
+            if self.wake_attempts == 1:
+                raise WakeNotAccepted("queue full before admission")
+            await super().handle_message(event)
+
+    adapter = RejectWakeOnce()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    assert len(adapter.sent) == 1
+
+    conn = kbc.connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM kanban_delivery_outbox WHERE task_id=?", (tid,)
+        ).fetchone()
+        assert row["state"] == "retry_wait"
+        assert row["ping_delivered_at"] is not None
+        assert row["ping_receipt"] == "transport:sent-1"
+        conn.execute(
+            "UPDATE kanban_delivery_outbox SET next_attempt_at=0 WHERE delivery_key=?",
+            (row["delivery_key"],),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    runner._running = True
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    assert len(adapter.sent) == 1
+    assert adapter.wake_attempts == 2
+    assert len(adapter.handled) == 1
+
+    conn = kbc.connect()
+    try:
+        row = conn.execute(
+            "SELECT state,transport_receipt FROM kanban_delivery_outbox WHERE task_id=?", (tid,)
+        ).fetchone()
+        assert row["state"] == "delivered"
+        assert row["transport_receipt"] == "transport:sent-1+wake-accepted"
+    finally:
+        conn.close()
+
+
+def test_retention_then_unknown_reconciliation_retries_through_notifier(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "retention-retry.db"))
+    kb.init_db()
+    task_id = _create_completed_subscription(summary="retry after operator review")
+
+    conn = kbc.connect()
+    try:
+        sub = kbn.list_notify_subs(conn, task_id)[0]
+        _, _, events = kbn.claim_unseen_events_for_sub(
+            conn, task_id=task_id, platform="telegram", chat_id="chat-1",
+            kinds=["completed"],
+        )
+        assert len(events) == 1
+        outbox = conn.execute(
+            "SELECT * FROM kanban_delivery_outbox WHERE event_id=?", (events[0].id,),
+        ).fetchone()
+        claimed = kbn.claim_delivery(conn, delivery_key=outbox["delivery_key"], now=100)
+        assert claimed is not None
+        assert kbn.mark_delivery_ambiguous(
+            conn, delivery_key=outbox["delivery_key"], lease_token=claimed["lease_token"],
+            error="wake acceptance unknown", now=101,
+        )
+        with kb.write_txn(conn):
+            conn.execute("UPDATE task_events SET created_at=1 WHERE task_id=?", (task_id,))
+            conn.execute(
+                "UPDATE tasks SET created_at=1, completed_at=1 WHERE id=?", (task_id,),
+            )
+
+        kb.gc_events(conn, older_than_seconds=1)
+        kbn.purge_stale_done_notify_subs(conn, max_age_days=1)
+
+        assert conn.execute(
+            "SELECT 1 FROM task_events WHERE id=?", (events[0].id,),
+        ).fetchone() is not None
+        retained_subs = kbn.list_notify_subs(conn, task_id)
+        assert len(retained_subs) == 1
+        assert {
+            key: retained_subs[0][key] for key in ("task_id", "platform", "chat_id", "thread_id")
+        } == {
+            key: sub[key] for key in ("task_id", "platform", "chat_id", "thread_id")
+        }
+        reconciled = kbn.reconcile_delivery_unknown(
+            conn, delivery_key=outbox["delivery_key"], action="retry",
+            reason="destination checked; retry authorized", operator="tester",
+            accept_duplicate_risk=True,
+        )
+        assert reconciled["ok"] is True
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert [sent["chat_id"] for sent in adapter.sent] == ["chat-1"]
+    conn = kbc.connect()
+    try:
+        assert conn.execute(
+            "SELECT state FROM kanban_delivery_outbox WHERE delivery_key=?",
+            (outbox["delivery_key"],),
+        ).fetchone()["state"] == "delivered"
+    finally:
+        conn.close()
+
+
+
+def test_raw_legacy_checkpoint_skips_passive_but_retries_wake_across_restart(
+    tmp_path, monkeypatch,
+):
+    """Upgrade proof is row-local passive acceptance, never wake acceptance."""
+    db_path = tmp_path / "legacy-wake-retry.db"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    _legacy_db(db_path)
+    raw = sqlite3.connect(db_path)
+    try:
+        now = int(time.time())
+        raw.execute(
+            "UPDATE tasks SET session_id=?,created_at=? WHERE id='legacy-task'",
+            ("agent:main:telegram:dm:chat", now),
+        )
+        raw.execute("UPDATE task_events SET created_at=?", (now,))
+        raw.execute("UPDATE kanban_notify_subs SET created_at=?", (now,))
+        raw.commit()
+    finally:
+        raw.close()
+
+    kb.init_db(db_path)
+    conn = kbc.connect(db_path)
+    try:
+        sub = dict(conn.execute("SELECT * FROM kanban_notify_subs").fetchone())
+        assert sub["delivery_mode"] == "notify+wake"
+        assert sub["legacy_ping_admission_kind"] == "legacy_checkpoint_v1"
+        expected_owner = {
+            key: sub[key] for key in ("incarnation_id", "notifier_profile")
+        }
+    finally:
+        conn.close()
+
+    class RejectWakeOnce(RecordingAdapter):
+        def __init__(self):
+            super().__init__()
+            self.wake_attempts = 0
+
+        async def handle_message(self, event):
+            from gateway.wake import WakeNotAccepted
+
+            self.wake_attempts += 1
+            if self.wake_attempts == 1:
+                raise WakeNotAccepted("queue full before admission")
+            await super().handle_message(event)
+
+    adapter = RejectWakeOnce()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert adapter.sent == []
+    assert adapter.wake_attempts == 1
+    assert adapter.handled == []
+    first = _outbox_rows("legacy-task")
+    assert len(first) == 1
+    first_row = first[0]
+    delivery_key = first_row["delivery_key"]
+    assert first_row["event_id"] == 7
+    assert first_row["state"] == "retry_wait"
+    assert first_row["ping_acceptance_provenance"] == "legacy_checkpoint_v1"
+    assert first_row["ping_delivered_at"] is None
+    assert first_row["ping_receipt"] is None
+    assert first_row["transport_receipt"] is None
+    assert {
+        key: first_row[key] for key in ("incarnation_id", "notifier_profile")
+    } == expected_owner
+
+    conn = kbc.connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE kanban_delivery_outbox SET next_attempt_at=0 WHERE delivery_key=?",
+            (delivery_key,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert adapter.sent == []
+    assert adapter.wake_attempts == 2
+    assert len(adapter.handled) == 1
+    delivered = _outbox_rows("legacy-task")
+    assert len(delivered) == 1
+    assert delivered[0]["delivery_key"] == delivery_key
+    assert delivered[0]["state"] == "delivered"
+    assert delivered[0]["ping_acceptance_provenance"] == "legacy_checkpoint_v1"
+    assert delivered[0]["ping_delivered_at"] is None
+    assert delivered[0]["ping_receipt"] is None
+    assert delivered[0]["transport_receipt"] == "wake-accepted"
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    assert adapter.sent == []
+    assert adapter.wake_attempts == 2
+    assert len(adapter.handled) == 1
+
+
+def test_uncertain_legacy_cohort_has_no_automatic_gateway_effect(
+    tmp_path, monkeypatch,
+):
+    """An incomplete pre-outbox audit trail is quarantined without rebinding."""
+    db_path = tmp_path / "legacy-uncertain-gateway.db"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    _legacy_db(db_path)
+    raw = sqlite3.connect(db_path)
+    try:
+        now = int(time.time())
+        raw.execute("UPDATE tasks SET created_at=?", (now,))
+        raw.execute("UPDATE task_events SET created_at=?", (now,))
+        raw.execute("UPDATE kanban_notify_subs SET created_at=?", (now,))
+        raw.executescript(kbc._DELIVERY_OUTBOX_SQL)
+        _insert_required(raw, "task_events", {
+            "id": 8, "task_id": "legacy-task", "kind": "completed",
+            "created_at": 3, "payload": '{"summary":"later"}', "actor": "worker",
+        })
+        raw.execute("UPDATE kanban_notify_subs SET last_ping_event_id=8")
+        _insert_required(raw, "kanban_delivery_outbox", {
+            "delivery_key": "legacy-existing-unknown", "task_id": "legacy-task", "event_id": 7,
+            "platform": "telegram", "chat_id": "chat", "thread_id": "topic",
+            "incarnation_id": None, "notifier_profile": None, "payload_digest": "legacy-digest",
+            "payload_json": '{"legacy":true}', "state": "delivery_unknown",
+            "created_at": 3, "updated_at": 4,
+        })
+        raw.commit()
+    finally:
+        raw.close()
+
+    kb.init_db(db_path)
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert adapter.sent == []
+    assert adapter.handled == []
+    conn = kbc.connect(db_path)
+    try:
+        sub = dict(conn.execute("SELECT * FROM kanban_notify_subs").fetchone())
+        assert sub["last_event_id"] == 8
+        rows = [dict(row) for row in conn.execute(
+            "SELECT * FROM kanban_delivery_outbox ORDER BY event_id",
+        )]
+    finally:
+        conn.close()
+    assert len(rows) == 2
+    assert rows[0]["delivery_key"] == "legacy-existing-unknown"
+    assert rows[0]["incarnation_id"] is None
+    assert rows[0]["payload_json"] == '{"legacy":true}'
+    missing = rows[1]
+    assert missing["event_id"] == 8
+    assert missing["state"] == "delivery_unknown"
+    assert missing["incarnation_id"] is None
+    assert missing["notifier_profile"] is None
+    assert missing["ping_acceptance_provenance"] == "legacy_checkpoint_uncertain_v1"
+    assert missing["ping_delivered_at"] is None
+    assert missing["ping_receipt"] is None
+    assert missing["transport_receipt"] is None

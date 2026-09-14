@@ -21,6 +21,8 @@ from tui_gateway.server import (
     _collect_kanban_notifications,
     _format_kanban_event_text,
 )
+from tui_gateway.session_notifications import _KanbanNotificationText
+import tui_gateway.server as session_notifications
 
 SESSION_KEY = "tui-session-key-1"
 
@@ -193,6 +195,106 @@ class TestCollectKanbanNotifications:
         assert _collect_kanban_notifications({"session_key": None}) == []
         assert len(_sub_rows(tid)) == 1
 
+    def test_recreated_route_after_collection_is_not_emitted_or_submitted(self, monkeypatch):
+        tid = _create_subscribed_task()
+        _complete(tid)
+        session = _session()
+        session["history_lock"] = __import__("threading").Lock()
+        real_collect = session_notifications._collect_kanban_notifications
+
+        def collect_then_recreate(current_session):
+            texts = real_collect(current_session)
+            assert texts
+            conn = kbc.connect()
+            try:
+                old = kbn.list_notify_subs(conn, tid)[0]
+                assert kbn.remove_notify_sub(
+                    conn, task_id=tid, platform="tui", chat_id=SESSION_KEY,
+                    incarnation_id=old["incarnation_id"],
+                )
+                kbn.add_notify_sub(conn, task_id=tid, platform="tui", chat_id=SESSION_KEY)
+            finally:
+                conn.close()
+            return texts
+
+        emitted, submitted = [], []
+        monkeypatch.setattr(session_notifications, "_collect_kanban_notifications", collect_then_recreate)
+        monkeypatch.setattr(session_notifications, "_emit", lambda *args: emitted.append(args))
+        monkeypatch.setattr(session_notifications, "_notif_claim_turn", lambda _session: True)
+        monkeypatch.setattr(session_notifications, "_notif_submit", lambda *args, **kwargs: submitted.append(args))
+
+        session_notifications._notif_poll_kanban("sid", session)
+
+        assert emitted == []
+        assert submitted == []
+
+    def test_revocation_after_emission_blocks_agent_turn(self, monkeypatch):
+        tid = _create_subscribed_task()
+        _complete(tid)
+        session = _session()
+        session["history_lock"] = __import__("threading").Lock()
+        submitted = []
+
+        def emit_then_remove(*_args):
+            conn = kbc.connect()
+            try:
+                old = kbn.list_notify_subs(conn, tid)[0]
+                assert kbn.remove_notify_sub(
+                    conn, task_id=tid, platform="tui", chat_id=SESSION_KEY,
+                    incarnation_id=old["incarnation_id"],
+                )
+            finally:
+                conn.close()
+
+        monkeypatch.setattr(session_notifications, "_emit", emit_then_remove)
+        monkeypatch.setattr(session_notifications, "_notif_claim_turn", lambda _session: True)
+        monkeypatch.setattr(session_notifications, "_notif_submit", lambda *args, **kwargs: submitted.append(args))
+
+        session_notifications._notif_poll_kanban("sid", session)
+
+        assert submitted == []
+
+    def test_revocation_during_first_emission_blocks_second(self, monkeypatch):
+        state = {"authorized": True}
+        authorization = {
+            "task_id": "t_abc123",
+            "platform": "tui",
+            "chat_id": SESSION_KEY,
+            "thread_id": "",
+            "incarnation_id": "incarnation-1",
+            "notifier_profile": None,
+            "delivery_mode": "notify_only",
+        }
+        first = _KanbanNotificationText("first", "default", authorization)
+        second = _KanbanNotificationText("second", "default", authorization)
+        session = {}
+        emitted = []
+
+        monkeypatch.setattr(
+            session_notifications,
+            "_collect_kanban_notifications",
+            lambda _session: [first, second],
+        )
+        monkeypatch.setattr(
+            session_notifications,
+            "_kanban_text_authorized",
+            lambda _text: state["authorized"],
+        )
+
+        def emit_then_revoke(_event, _sid, payload):
+            emitted.append(payload["text"])
+            state["authorized"] = False
+
+        monkeypatch.setattr(session_notifications, "_emit", emit_then_revoke)
+        monkeypatch.setattr(
+            session_notifications, "_notif_claim_turn", lambda _session: False
+        )
+
+        getattr(session_notifications, "_notif_poll_kanban")("sid", session)
+
+        assert emitted == [first]
+        assert session["_kanban_pending"] == [first]
+
     def test_profile_scoped_session_reads_the_shared_board(self, tmp_path):
         """The kanban board is shared across profiles BY DESIGN (see the
         hermes_cli/kanban_db.py module docstring): ``kanban_home()`` anchors on
@@ -362,3 +464,26 @@ class TestNotificationPollerLoopKanbanWiring:
         assert any(tid in text for text in submits), submits
         assert session["_kanban_pending"] == []
         assert session["running"] is True
+
+    def test_revocation_inside_cursor_claim_returns_no_stale_text(self, monkeypatch):
+        tid = _create_subscribed_task()
+        _complete(tid)
+        original = kbn.claim_unseen_events_for_sub
+        revoked = []
+
+        def claim_then_recreate(conn, **kwargs):
+            result = original(conn, **kwargs)
+            if result[2] and not revoked:
+                old = kbn.list_notify_subs(conn, tid)[0]
+                revoked.append(old["incarnation_id"])
+                assert kbn.remove_notify_sub(
+                    conn, task_id=tid, platform="tui", chat_id=SESSION_KEY,
+                    incarnation_id=old["incarnation_id"],
+                )
+                kbn.add_notify_sub(conn, task_id=tid, platform="tui", chat_id=SESSION_KEY)
+            return result
+
+        monkeypatch.setattr(kbn, "claim_unseen_events_for_sub", claim_then_recreate)
+
+        assert _collect_kanban_notifications(_session()) == []
+        assert revoked

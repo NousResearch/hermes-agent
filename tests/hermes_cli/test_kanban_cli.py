@@ -72,6 +72,63 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     assert "Cannot operate on a closed database" not in output
 
 
+def test_delivery_unknown_cli_lists_and_guardedly_reconciles_with_audit(kanban_home):
+    from hermes_cli import kanban_db_notify as kbn
+
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="ambiguous delivery")
+        kbn.add_notify_sub(conn, task_id=task_id, platform="telegram", chat_id="operator-chat")
+        kb.complete_task(conn, task_id, summary="done")
+        sub = kbn.list_notify_subs(conn, task_id)[0]
+        _, _, events = kbn.claim_unseen_events_for_sub(
+            conn, task_id=task_id, platform="telegram", chat_id="operator-chat", kinds=["completed"],
+        )
+        row = kbn.enqueue_delivery(conn, event=events[0], sub=sub)
+        claim = kbn.claim_delivery(conn, delivery_key=row["delivery_key"], now=100)
+        assert claim is not None
+        assert kbn.mark_delivery_ambiguous(
+            conn, delivery_key=row["delivery_key"], lease_token=claim["lease_token"],
+            error="transport timed out", now=101,
+        )
+
+    listed = json.loads(kc.run_slash("delivery-list --json"))
+    assert [(item["delivery_key"], item["state"]) for item in listed] == [
+        (row["delivery_key"], "delivery_unknown")
+    ]
+
+    refused = kc.run_slash(
+        f"delivery-reconcile {row['delivery_key']} --action retry --reason operator-check"
+    )
+    assert "--accept-duplicate-risk" in refused
+    with kbc.connect_closing() as conn:
+        assert conn.execute(
+            "SELECT state FROM kanban_delivery_outbox WHERE delivery_key=?", (row["delivery_key"],)
+        ).fetchone()["state"] == "delivery_unknown"
+
+    accepted = kc.run_slash(
+        f"delivery-reconcile {row['delivery_key']} --action retry --reason operator-check "
+        "--accept-duplicate-risk"
+    )
+    assert "Reconciled" in accepted
+    with kbc.connect_closing() as conn:
+        stored = conn.execute(
+            "SELECT state,next_attempt_at,lease_token FROM kanban_delivery_outbox WHERE delivery_key=?",
+            (row["delivery_key"],),
+        ).fetchone()
+        assert stored["state"] == "retry_wait"
+        assert stored["lease_token"] is None
+        audit = [event for event in kb.list_events(conn, task_id) if event.kind == "delivery_reconciled"]
+        assert len(audit) == 1
+        assert audit[0].payload["action"] == "retry"
+        assert audit[0].payload["duplicate_risk_accepted"] is True
+        assert audit[0].payload["reason"] == "operator-check"
+
+    guarded = kc.run_slash(
+        f"delivery-reconcile {row['delivery_key']} --action retry --reason again --accept-duplicate-risk"
+    )
+    assert "not in delivery_unknown" in guarded
+
+
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
     kb.create_board("alpha")
     kb.create_board("beta")

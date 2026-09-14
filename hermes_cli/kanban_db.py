@@ -1022,6 +1022,7 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     platform      TEXT NOT NULL,
     chat_id       TEXT NOT NULL,
     thread_id     TEXT NOT NULL DEFAULT '',
+    incarnation_id TEXT NOT NULL,
     user_id       TEXT,
     user_id_alt   TEXT,
     chat_type     TEXT,
@@ -1031,6 +1032,9 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
     last_ping_event_id INTEGER NOT NULL DEFAULT 0,
+    legacy_ping_after_event_id INTEGER,
+    legacy_ping_through_event_id INTEGER,
+    legacy_ping_admission_kind TEXT,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
@@ -1439,10 +1443,10 @@ def _inherit_notify_subs(
     conn.execute(
         f"""
         INSERT OR IGNORE INTO kanban_notify_subs
-            (task_id, platform, chat_id, thread_id, user_id, user_id_alt,
+            (task_id, platform, chat_id, thread_id, incarnation_id, user_id, user_id_alt,
              chat_type, notifier_profile, delivery_mode, delivery_metadata,
              created_at, last_event_id)
-        SELECT ?, platform, chat_id, thread_id, user_id, user_id_alt,
+        SELECT ?, platform, chat_id, thread_id, lower(hex(randomblob(16))), user_id, user_id_alt,
                COALESCE(chat_type, 'dm'), notifier_profile,
                COALESCE(delivery_mode, 'notify'), delivery_metadata, ?, ?
           FROM kanban_notify_subs
@@ -3941,7 +3945,12 @@ def gc_events(conn: sqlite3.Connection, *, older_than_seconds: int = 30 * 24 * 3
     cutoff = int(time.time()) - int(older_than_seconds)
     with write_txn(conn):
         cur = conn.execute(
-            "DELETE FROM task_events WHERE created_at < ? AND kind != 'decomposed' AND task_id IN "
+            "DELETE FROM task_events WHERE created_at < ? AND kind != 'decomposed' "
+            "AND NOT EXISTS ("
+            " SELECT 1 FROM kanban_delivery_outbox o"
+            " WHERE o.event_id = task_events.id"
+            " AND o.state IN ('pending','retry_wait','sending','delivery_unknown','dead_letter')"
+            ") AND task_id IN "
             "(SELECT id FROM tasks WHERE status IN ('done', 'archived'))", (cutoff,),
         )
     return int(cur.rowcount or 0)

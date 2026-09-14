@@ -113,22 +113,32 @@ class GatewayKanbanWatchersMixin:
                     notifier_profile=notifier_profile, gc_due=_gc_due, gc_retention_days=_retention,
                 )
                 for d in deliveries:
-                    await _KanbanNotification(
-                        self, d, platform_cls=_Platform, sub_fail_counts=sub_fail_counts,
-                    ).deliver()
+                    try:
+                        await _KanbanNotification(
+                            self, d, platform_cls=_Platform, sub_fail_counts=sub_fail_counts,
+                        ).deliver()
+                    except Exception as delivery_exc:
+                        # Keep later, still-unattempted rows progressing. The failed
+                        # row retains any live lease; expiry then conservatively
+                        # quarantines a possibly completed transport effect.
+                        logger.warning(
+                            "kanban notifier delivery %s failed independently: %s",
+                            d.get("outbox", {}).get("delivery_key", "<unknown>"), delivery_exc,
+                        )
             except Exception as exc:
                 logger.warning("kanban notifier tick failed: %s", exc)
             await self._sleep_between_ticks(interval)
 
-    def _kanban_sub_op(self, board: Optional[str], op: str, sub: dict, **extra: Any) -> None:
+    def _kanban_sub_op(self, board: Optional[str], op: str, sub: dict, **extra: Any) -> Any:
         """Sync helper (runs in to_thread): call ``kanban_db_notify.<op>`` for one subscription on its board."""
         from hermes_cli import kanban_db_connect as _kbc
         from hermes_cli import kanban_db_notify as _kbn
         conn = _kbc.connect(board=board)
         try:
-            getattr(_kbn, op)(
+            return getattr(_kbn, op)(
                 conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
-                thread_id=sub.get("thread_id") or "", **extra,
+                thread_id=sub.get("thread_id") or "",
+                incarnation_id=sub.get("incarnation_id"), **extra,
             )
         finally:
             conn.close()
@@ -138,6 +148,14 @@ class GatewayKanbanWatchersMixin:
 
     def _kanban_unsub(self, sub: dict, board: Optional[str] = None) -> None:
         self._kanban_sub_op(board, "remove_notify_sub", sub)
+
+    def _kanban_retire_archived(self, sub: dict, board: Optional[str] = None) -> bool:
+        """Retire an archived route without cancelling unresolved deliveries."""
+        return bool(self._kanban_sub_op(
+            board, "retire_archived_notify_sub_if_settled", sub,
+            notifier_profile=sub.get("notifier_profile") or None,
+            delivery_mode=sub.get("delivery_mode") or "notify",
+        ))
 
     def _kanban_rewind(self, sub: dict, claimed_cursor: int, old_cursor: int, board: Optional[str] = None) -> None:
         """Undo a claimed notification cursor after send failure."""

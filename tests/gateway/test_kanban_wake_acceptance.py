@@ -123,16 +123,39 @@ async def test_notifier_retries_unaccepted_wake_without_repeating_pings(tmp_path
         finally:
             conn.close()
 
+    def outbox_state(mode):
+        conn = kbc.connect()
+        try:
+            row = conn.execute(
+                "SELECT state,attempts FROM kanban_delivery_outbox WHERE task_id=?",
+                (tids[mode],),
+            ).fetchone()
+            return tuple(row) if row else None
+        finally:
+            conn.close()
+
+    def make_retries_due():
+        conn = kbc.connect()
+        try:
+            conn.execute("UPDATE kanban_delivery_outbox SET next_attempt_at=0 WHERE state='retry_wait'")
+            conn.commit()
+        finally:
+            conn.close()
+
     await adapter.connect()
     await tick()  # send works, but no message handler has been installed yet
     assert len(adapter.wire) == 2
-    assert unseen("notify+wake") and unseen("wake")
-    assert not unseen("notify")
-    # New notifier instances and DB connections replay the durable claim, not the ping.
+    assert not any(unseen(mode) for mode in tids)
+    assert outbox_state("notify+wake") == ("retry_wait", 1)
+    assert outbox_state("wake") == ("retry_wait", 1)
+    assert outbox_state("notify") == ("delivered", 0)
+    # New notifier instances and DB connections preserve durable backoff and do
+    # not replay the already-checkpointed passive ping.
     for _ in range(13):
         await tick()
     assert len(adapter.wire) == 2
-    assert unseen("notify+wake") and unseen("wake")
+    assert outbox_state("notify+wake") == ("retry_wait", 1)
+    assert outbox_state("wake") == ("retry_wait", 1)
     assert failures == {}
     received = []
 
@@ -140,6 +163,7 @@ async def test_notifier_retries_unaccepted_wake_without_repeating_pings(tmp_path
         received.append(event.text)
 
     adapter.set_message_handler(handler)
+    make_retries_due()
     await tick()
     await drain(adapter)
     await tick()
@@ -147,4 +171,5 @@ async def test_notifier_retries_unaccepted_wake_without_repeating_pings(tmp_path
     assert all("handoff" in text for text in received)
     assert len(adapter.wire) == 2
     assert not any(unseen(mode) for mode in tids)
+    assert all(outbox_state(mode) in {("delivered", 0), ("delivered", 1)} for mode in tids)
     await adapter.disconnect()

@@ -38,9 +38,8 @@ def _assert_inherited_notify_sub(subs: list[dict]) -> None:
 
 
 def test_notify_sub_delivery_mode_persists_and_last_write_wins(kanban_home):
-    """delivery_mode persists; an explicit re-subscribe is last-write-wins, a
-    ``None`` re-subscribe leaves the existing mode untouched, an unknown value
-    is ignored, and none of this clobbers the notifier_profile owner."""
+    """Explicit re-subscribe updates route ownership and delivery mode; omitted
+    or unknown modes leave the existing mode untouched."""
     import hermes_cli.kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
     from hermes_cli import kanban_db_notify as kbn
@@ -58,8 +57,8 @@ def test_notify_sub_delivery_mode_persists_and_last_write_wins(kanban_home):
         assert subs[0]["delivery_mode"] == "notify"
         assert subs[0]["notifier_profile"] == "owner-a"
 
-        # Explicit re-subscribe changes the mode (last-write-wins) and must NOT
-        # overwrite the existing owner (owner self-heals only when unset).
+        # Explicit re-subscribe changes both routing ownership and mode
+        # (last-write-wins for the current subscription incarnation).
         kbn.add_notify_sub(
             conn, task_id=tid, platform="telegram", chat_id="chat1",
             notifier_profile="owner-b", delivery_mode="wake",
@@ -67,7 +66,7 @@ def test_notify_sub_delivery_mode_persists_and_last_write_wins(kanban_home):
         subs = kbn.list_notify_subs(conn, tid)
         assert len(subs) == 1
         assert subs[0]["delivery_mode"] == "wake"
-        assert subs[0]["notifier_profile"] == "owner-a"
+        assert subs[0]["notifier_profile"] == "owner-b"
 
         # A None re-subscribe leaves the existing mode untouched.
         kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
@@ -248,6 +247,8 @@ async def test_notifier_notify_plus_wake_sends_and_wakes(kanban_home):
 
     async def _send(chat_id, msg, metadata=None):
         sent_msgs.append(msg)
+        from gateway.platforms.base import SendResult
+        return SendResult(success=True, message_id=f"sent-{len(sent_msgs)}")
 
     fake_adapter.send = AsyncMock(side_effect=_send)
     runner.adapters = {Platform.TELEGRAM: fake_adapter}
@@ -646,6 +647,8 @@ async def test_notifier_wakes_origin_for_review_and_keeps_subscription(kanban_ho
     async def _send(chat_id, message, metadata=None):
         delivered.append(message)
         runner._running = False
+        from gateway.platforms.base import SendResult
+        return SendResult(success=True, message_id=f"sent-{len(delivered)}")
 
     adapter = MagicMock()
     adapter.name = "telegram"
@@ -869,6 +872,8 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
 
     async def _send(chat_id, msg, metadata=None):
         runner._running = False
+        from gateway.platforms.base import SendResult
+        return SendResult(success=True, message_id="sent-1")
 
     async def _send_document(chat_id, file_path, metadata=None, **_kw):
         documents_uploaded.append(file_path)
@@ -990,9 +995,10 @@ def test_migration_backfills_legacy_gateway_subs_to_notify_wake(kanban_home):
 
     with kbc.connect() as conn:
         task_id = kb.create_task(conn, title="legacy sub upgrade")
-        # Simulate a pre-delivery_mode database: drop the column entirely,
+        # Simulate a pre-delivery_mode database: drop newer columns entirely,
         # then insert legacy-shaped rows (one gateway, one tui).
         conn.execute("ALTER TABLE kanban_notify_subs DROP COLUMN delivery_mode")
+        conn.execute("ALTER TABLE kanban_notify_subs DROP COLUMN incarnation_id")
         conn.execute(
             "INSERT INTO kanban_notify_subs "
             "(task_id, platform, chat_id, thread_id, created_at) "

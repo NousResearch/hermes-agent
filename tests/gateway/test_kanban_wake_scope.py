@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from gateway.config import Platform, PlatformConfig
 from gateway.kanban_watchers_notifier import _wake_scope_id
+from gateway.platforms.base import SendResult
 from gateway.run import GatewayRunner
 from gateway.session import build_session_key
 from hermes_cli import kanban_db as kb
@@ -35,6 +36,7 @@ class UnscopedAdapter:
 
     async def send(self, chat_id, text, metadata=None):
         self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
+        return SendResult(success=True, message_id=f"sent-{len(self.sent)}")
 
     async def handle_message(self, event):
         self.handled.append(event)
@@ -47,7 +49,7 @@ def _slack_adapter(channel_team=None):
     adapter._app = MagicMock()
     adapter._app.client = AsyncMock()
     adapter._running = True
-    adapter.send = AsyncMock()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="sent-1"))
     adapter.handle_message = AsyncMock(side_effect=lambda event: setattr(event, "_gateway_accepted", True))
     if channel_team:
         adapter._channel_team.update(channel_team)

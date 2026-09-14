@@ -15,11 +15,11 @@ import ssl
 import time
 from typing import Any, Dict, Optional
 
-from agent.error_classifier import FailoverReason, classify_api_error
+from agent.error_classifier import FailoverReason, classify_api_error, is_encrypted_content_limit_error
 from agent.turn_overflow import recover_from_overflow
 from agent.turn_recovery import (
     _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, interruptible_backoff_sleep,
-    log_api_error_attempt,
+    encrypted_content_limit_result, log_api_error_attempt,
     max_retries_exhausted_result, nonretryable_client_error_result, recover_after_classification,
     recover_before_classification, route_classified_error,
 )
@@ -76,6 +76,11 @@ def handle_api_error(
         thinking_spinner = None
     if agent.thinking_callback:
         agent.thinking_callback("")
+
+    # No stripping, compression, credential rotation, fallback, or request dump can
+    # repair an oversized opaque context carrier without proof of full replacement.
+    if is_encrypted_content_limit_error(api_error):
+        return _verdict("return", encrypted_content_limit_result(agent, messages, api_call_count))
 
     _recovered, active_system_prompt = recover_before_classification(
         agent, api_error, messages=messages, api_messages=api_messages, api_kwargs=api_kwargs,

@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from agent.context_engine import automatic_compaction_status_message
+from agent.encrypted_content import has_oversized_latest_checkpoint
 from agent.conversation_compression import (
     PRE_API_COMPRESSION_STATUS_TEMPLATE, compression_blocked_transiently,
     compression_skipped_due_to_lock, context_compression_timed_out,
@@ -261,6 +262,11 @@ def compress_after_tool_results(
             conversation_history=conversation_history, compression_attempts=compression_attempts,
             final_response=final_response, turn_exit_reason=turn_exit_reason,
         )
+
+    # The next iteration returns the terminal field-limit result. Keep the tool
+    # pair and checkpoint intact until then, even if stale usage requests a prune.
+    if agent.api_mode == "codex_responses" and has_oversized_latest_checkpoint(agent, messages):
+        return _verdict(False)
 
     _compressor = agent.context_compressor
     # Real usage decides: the anchor is the provider's last prompt count plus a rough delta for

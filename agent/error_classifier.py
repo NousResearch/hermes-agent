@@ -10,9 +10,12 @@ from __future__ import annotations
 import enum
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, Optional, Sequence
+
+from agent.encrypted_content import EncryptedContentTooLarge
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +46,7 @@ class FailoverReason(enum.Enum):
     content_policy_blocked = "content_policy_blocked"  # Provider safety filter rejected this prompt — don't retry unchanged
     format_error = "format_error"        # 400 bad request — abort or strip + retry
     invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
+    encrypted_content_too_large = "encrypted_content_too_large"  # Opaque context cannot be safely stripped or compressed
     multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
     reasoning_mandatory = "reasoning_mandatory"  # Route rejects reasoning: {enabled: false} — send the disable no more this session and retry
 
@@ -696,12 +700,38 @@ _STAGES: Sequence[Callable[[_Ctx], Optional[Verdict]]] = (
 )
 
 
+def is_encrypted_content_limit_error(error: Exception) -> bool:
+    """Only a local cap guard or an exact structured Responses input-field rejection.
+
+    Prose can also mention invalid encryption or context length; neither permits the
+    replay-strip or compression recovery when this opaque field exceeds its limit.
+    """
+    if _from_cause_chain(error, lambda exc: True if isinstance(exc, EncryptedContentTooLarge) else None, False):
+        return True
+    if _extract_status_code(error) != 400:
+        return False
+    body = _extract_error_body(error)
+    detail = body.get("error", body)
+    if not isinstance(detail, dict) or detail.get("code") != "string_above_max_length":
+        return False
+    param = detail.get("param")
+    return isinstance(param, str) and re.fullmatch(r"input\[\d+\]\.encrypted_content", param) is not None
+
+
 def classify_api_error(
     error: Exception, *, provider: str = "", model: str = "",
     approx_tokens: int = 0, context_length: int = 200000, num_messages: int = 0,
 ) -> ClassifiedError:
     """Classify an API error into a structured recovery recommendation (see ``_STAGES``)."""
     status_code = _extract_status_code(error)
+    # This invariant must precede plugin/prose heuristics: fallback or replay stripping
+    # cannot establish replacement context for an opaque checkpoint.
+    if is_encrypted_content_limit_error(error):
+        return ClassifiedError(
+            reason=FailoverReason.encrypted_content_too_large, status_code=status_code,
+            provider=provider, model=model, retryable=False,
+            message="Responses encrypted_content exceeds its character limit.",
+        )
     # Copilot/GitHub Models RateLimitError may not set .status_code; force 429.
     if status_code is None and type(error).__name__ == "RateLimitError":
         status_code = 429

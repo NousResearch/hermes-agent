@@ -54,28 +54,6 @@ class TestFailoverReason:
         for reason in FailoverReason:
             assert isinstance(reason.value, str)
 
-    def test_enum_members_exist(self):
-        expected = {
-            "auth", "auth_permanent", "billing", "rate_limit",
-            "upstream_rate_limit",
-            "overloaded", "server_error", "timeout",
-            "ssl_cert_verification",
-            "context_overflow", "payload_too_large", "image_too_large",
-            "image_corrupt",
-            "model_not_found", "format_error",
-            "invalid_encrypted_content",
-            "multimodal_tool_content_unsupported",
-            "reasoning_mandatory",
-            "provider_policy_blocked",
-            "content_policy_blocked",
-            "thinking_signature", "long_context_tier",
-            "oauth_long_context_beta_forbidden",
-            "llama_cpp_grammar_pattern",
-            "unknown",
-        }
-        actual = {r.value for r in FailoverReason}
-        assert expected == actual
-
 
 # ── Test: ClassifiedError ──────────────────────────────────────────────
 

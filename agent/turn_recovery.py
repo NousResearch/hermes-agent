@@ -33,6 +33,26 @@ from utils import base_url_host_matches
 logger = logging.getLogger("agent.conversation_loop")
 
 
+def encrypted_content_limit_result(agent: Any, messages: Any, api_call_count: int) -> Dict[str, Any]:
+    """Stop before any mutating recovery or payload dump; no proven replacement exists."""
+    summary = (
+        "Cannot continue: Responses encrypted_content exceeds the provider's character limit. "
+        "The encrypted checkpoint/reasoning and conversation history have been preserved. "
+        "Hermes cannot safely truncate or remove this context, and will not retry automatically. "
+        "Continuing on a route that replays this context requires a complete replacement from a verified source; "
+        "a plaintext summary alone does not prove that it replaces the checkpoint."
+    )
+    agent._flush_status_buffer()
+    agent._emit_status(f"❌ {summary}")
+    logger.error("%sResponses encrypted_content field limit: stopped without changing history", agent.log_prefix)
+    return {
+        "final_response": summary, "messages": messages, "api_calls": api_call_count,
+        "completed": False, "failed": True, "error": summary,
+        "failure_reason": FailoverReason.encrypted_content_too_large.value,
+        "failure_retryable": False,
+    }
+
+
 def _vlines(agent: Any, *lines: str) -> None:
     """Force-``_vprint`` each line prefixed with ``agent.log_prefix``."""
     for line in lines:

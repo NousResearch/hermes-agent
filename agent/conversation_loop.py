@@ -16,6 +16,7 @@ from dataclasses import dataclass, field, fields
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.encrypted_content import has_oversized_latest_checkpoint
 from agent.fast_mode import begin_turn as begin_fast_mode_turn
 from agent.message_metadata import append_message
 from agent.message_sanitization import _repair_tool_call_arguments, _sanitize_surrogates
@@ -49,6 +50,7 @@ from agent.turn_iteration_prep import (
 )
 from agent.turn_loop_errors import handle_outer_loop_error
 from agent.turn_preflight_gate import run_preflight_gate
+from agent.turn_recovery import encrypted_content_limit_result
 from agent.turn_request_assembly import assemble_api_request
 from agent.turn_response_check import check_api_response
 from agent.turn_response_intake import normalize_model_response
@@ -1441,6 +1443,13 @@ def _run_conversation_turn(
     store when ``user_message`` carries API-only synthetic prefixes; timestamp / platform id are
     stored as metadata (platform id lets restart drain recovery dedup). ``persist_user_display_*``:
     display-only event rendering; the model still receives the message unchanged."""
+    # A replayed checkpoint may be the only retained context. Stop before turn-start
+    # compression can rewrite it, but preserve routes that omit it without pruning.
+    if agent.api_mode == "codex_responses" and has_oversized_latest_checkpoint(agent, conversation_history):
+        result = encrypted_content_limit_result(agent, conversation_history, 0)
+        result["turn_exit_reason"] = "encrypted_content_limit_before_turn"
+        return result
+
     if moa_config is None:
         user_message, moa_config, persist_user_message = _decode_inline_moa_turn(
             user_message, persist_user_message
@@ -1512,6 +1521,10 @@ def _run_conversation_turn(
         )
 
     while (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+        # Capture has already preserved the full assistant response and any executed
+        # tool pair. Fail before another preflight compression or model attempt.
+        if agent.api_mode == "codex_responses" and has_oversized_latest_checkpoint(agent, s.messages):
+            return encrypted_content_limit_result(agent, s.messages, s.api_call_count)
         if _run_phase(begin_iteration, agent, s).action == "break":
             break
         _run_phase(prepare_iteration, agent, s)

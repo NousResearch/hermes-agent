@@ -12,6 +12,7 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, TypeGuard
 
+from agent.encrypted_content import EncryptedContentTooLarge, MAX_ENCRYPTED_CONTENT_CHARS
 from agent.message_sanitization import deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
@@ -646,6 +647,8 @@ def _preflight_encrypted(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> 
     encrypted = item.get("encrypted_content")
     if not _nonempty_str(encrypted):
         return None
+    if len(encrypted) > MAX_ENCRYPTED_CONTENT_CHARS:
+        raise EncryptedContentTooLarge(item_type=item["type"], index=idx, length=len(encrypted))
     if item["type"] == "compaction":
         return {"type": "compaction", "encrypted_content": encrypted}
     # ``id`` is used only for local dedup and NOT forwarded (store=False → server-side 404).
@@ -909,6 +912,15 @@ def _capture_encrypted_item(item: Any, item_type: str, issuer_kind: Optional[str
     encrypted = getattr(item, "encrypted_content", None)
     if not _nonempty_str(encrypted):
         return None
+    if len(encrypted) > MAX_ENCRYPTED_CONTENT_CHARS:
+        # Keep the response's text, tool calls AND opaque context. Throwing here loses
+        # an already-completed response; dropping the sidecar can lose the only context
+        # on a same-turn continuation. Preflight blocks replay without editing history.
+        logger.warning(
+            "Captured %s encrypted_content (%d chars) exceeds the %d-character limit; "
+            "preserving response and checkpoint, but replay is blocked.",
+            item_type, len(encrypted), MAX_ENCRYPTED_CONTENT_CHARS,
+        )
     raw_item: Dict[str, Any] = {"type": item_type, "encrypted_content": encrypted}
     if issuer_kind:
         raw_item["_issuer_kind"] = issuer_kind

@@ -1248,6 +1248,12 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     # into the directory before we remove it.
     _notify_multiplexer(canon)
 
+    # The main serve process survives this deletion. Stop only this profile's MCP
+    # transports and release cached stderr handles, including completed probes.
+    from hermes_constants import hermes_home_key
+    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    shutdown_mcp_servers(scope=hermes_home_key(profile_dir))
+
     # Release this process's holographic memory-store connections into the profile. The
     # Desktop's main serve process opens memory_store.db for every profile and is
     # deliberately not stopped above; on Windows its handles fail rmtree with WinError 32.

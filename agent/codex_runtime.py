@@ -631,6 +631,7 @@ class _CodexResponseAssembler:
                 announced_sequence, announced_index = self.announced_output_order[item_id]
                 self.pending_function_calls[item_id] = {
                     "item": item, "arguments": str(_event_field(item, "arguments", "") or ""),
+                    "arguments_done": False,
                     "output_index": announced_index, "sequence": announced_sequence,
                 }
 
@@ -668,6 +669,7 @@ class _CodexResponseAssembler:
             # missing field keeps the streamed deltas.
             if (done_args := _event_field(event, "arguments", None)) is not None:
                 pending["arguments"] = str(done_args)
+            pending["arguments_done"] = True
 
     def _on_reasoning_delta(self, event: Any, event_type: str) -> None:
         reasoning_text = _event_field(event, "delta", "")
@@ -740,12 +742,13 @@ class _CodexResponseAssembler:
         """Merge .done items with settled pending calls, keeping stream order."""
         indexed = list(zip(self.output_indexes, self.output_sequences, self.output_items))
         for pending in self.pending_function_calls.values():
+            if not pending["arguments"] and not pending["arguments_done"]:
+                continue
             item = pending["item"]
             indexed.append((pending.get("output_index"), pending["sequence"], SimpleNamespace(
                 type="function_call", id=_event_field(item, "id", None), call_id=_event_field(item, "call_id", None),
                 name=_event_field(item, "name", None), status="completed",
-                # Empty/whitespace arguments become "{}" so zero-delta calls stay executable; malformed
-                # non-empty JSON passes through untouched.
+                # Explicitly completed zero-argument calls become "{}"; malformed non-empty JSON passes through.
                 arguments=(pending["arguments"] or "").strip() or "{}",
             )))
         # output_index is optional: protocol order only when every entry has one, else wire order.

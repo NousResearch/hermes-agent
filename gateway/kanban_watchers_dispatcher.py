@@ -316,6 +316,38 @@ def _default_profile_secret_scope():
         reset_secret_scope(token)
 
 
+# Cap on task ids named per failure bucket on the tick line. Naming the failing
+# cards is what makes a crash or an auto-block actionable from gateway.log — the
+# counts alone send the operator hunting through the DB for which card died. The
+# cap keeps one mass-failure tick from emitting an unbounded line.
+_MAX_LOGGED_FAILURE_IDS = 8
+
+
+def _failure_id_suffix(res: Any) -> str:
+    """Name the crashed / timed-out / auto-blocked task ids for one board tick.
+
+    Returns ``""`` when every failure bucket is empty, so a healthy tick's line
+    is byte-identical to what it was before ids were appended. Each non-empty
+    bucket renders ``<label>=<id>,<id>`` and, past ``_MAX_LOGGED_FAILURE_IDS``
+    ids, a trailing ``+N more``.
+    """
+    parts = []
+    for label, attr in (
+        ("crashed_ids", "crashed"),
+        ("timed_out_ids", "timed_out"),
+        ("auto_blocked_ids", "auto_blocked"),
+    ):
+        ids = getattr(res, attr, None)
+        if not hasattr(ids, "__len__") or not ids:
+            continue
+        shown = [str(i) for i in list(ids)[:_MAX_LOGGED_FAILURE_IDS]]
+        extra = len(ids) - len(shown)
+        parts.append(
+            f"{label}={','.join(shown)}" + (f" +{extra} more" if extra > 0 else "")
+        )
+    return f" {' '.join(parts)}" if parts else ""
+
+
 def _log_spawn_results(results: Optional[list]) -> bool:
     """Log per-board spawn summaries; returns whether any board spawned."""
     any_spawned = False
@@ -325,11 +357,12 @@ def _log_spawn_results(results: Optional[list]) -> bool:
             # Quiet by default: an idle gateway stays silent.
             logger.info(
                 "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
-                "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
+                "crashed=%d timed_out=%d promoted=%d auto_blocked=%d%s",
                 slug, len(res.spawned), res.reclaimed,
                 len(res.crashed) if hasattr(res.crashed, "__len__") else 0,
                 len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
                 res.promoted,
                 len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
+                _failure_id_suffix(res),
             )
     return any_spawned

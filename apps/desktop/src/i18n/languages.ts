@@ -2,7 +2,7 @@ import { LOCALE_ENDONYMS } from '@hermes/shared/i18n'
 
 import { normalize } from '@/lib/text'
 
-import type { Locale } from './types'
+export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru'
 
 export const DEFAULT_LOCALE: Locale = 'en'
 

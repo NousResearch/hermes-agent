@@ -182,7 +182,9 @@ const approval: Handler = ctx => {
   void receiveApprovalRequest(null, {
     // false only when a tirith warning forbids it; backend omits the field otherwise.
     allowPermanent: p.allow_permanent !== false,
-    choices: Array.isArray(p.choices) ? p.choices.filter((choice): choice is string => typeof choice === 'string') : undefined,
+    choices: Array.isArray(p.choices)
+      ? p.choices.filter((choice): choice is string => typeof choice === 'string')
+      : undefined,
     command,
     description,
     // The approval queue's own id — `approval.pending` / `approval.received` / `approval.respond` key on it.
@@ -279,7 +281,11 @@ const mcpSetup: Handler = ctx => {
   setMcpSetupRequest({ action, reason, requestId: request.id, server, sessionId: sessionId || null })
 
   if (sessionId) {
-    deps.upsertToolCall(sessionId, { args: { action, reason, server }, name: 'setup_mcp', tool_id: request.id }, 'running')
+    deps.upsertToolCall(
+      sessionId,
+      { args: { action, reason, server }, name: 'setup_mcp', tool_id: request.id },
+      'running'
+    )
   }
 
   markNeedsInput(ctx)

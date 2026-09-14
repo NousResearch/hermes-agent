@@ -1191,3 +1191,29 @@ class TestCuratorConsolidationDeleteGuard:
             assert allowed["success"] is True, allowed
 
         _reset_background_review_read_marks()
+
+    def test_curator_delete_archives_exact_directory_when_frontmatter_differs(self, tmp_path, monkeypatch):
+        """Curator delete must archive the targeted directory even if frontmatter name differs."""
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root:
+            _create_curator_skill("umbrella", VALID_SKILL_CONTENT)
+            probe_dir = skills_root / "probe-dir"
+            probe_dir.mkdir()
+            (probe_dir / "SKILL.md").write_text(
+                "---\nname: probe-name\ndescription: test\n---\nbody\n", encoding="utf-8"
+            )
+
+            result = _delete_skill("probe-dir", absorbed_into="umbrella")
+            assert result["success"] is True, result
+            assert result.get("_archived") is True
+            assert not probe_dir.exists()
+            archive_dir = skills_root / ".archive"
+            assert (archive_dir / "probe-dir").exists() or any(
+                p.name.startswith("probe-dir-") for p in archive_dir.iterdir()
+            )
+
+    def test_archive_skill_rejects_nonexistent_explicit_skill_dir(self, tmp_path):
+        from tools.skill_usage import archive_skill
+        fake_path = tmp_path / "does-not-exist"
+        ok, msg = archive_skill("fake-name", skill_dir=fake_path)
+        assert ok is False
+        assert "does not exist" in msg

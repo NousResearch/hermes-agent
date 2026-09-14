@@ -5,7 +5,7 @@ limit, tracks usage, and may expose tools. ContextCompressor is the default;
 ``context.engine`` selects a plugin (``plugins/context_engine/<name>/``); one is active.
 Lifecycle: on_session_start() -> per API response update_from_response() -> per turn
 should_compress() / compress() -> on_session_end() at real session boundaries only
-(CLI exit, /reset, gateway expiry), never per-turn.
+(CLI exit, /reset, gateway expiry), never per-turn -> shutdown() at agent teardown.
 """
 
 import json
@@ -182,6 +182,13 @@ class ContextEngine(ABC):
 
     def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Real session boundary (CLI exit, /reset, gateway expiry) — never per-turn."""
+
+    def shutdown(self) -> None:
+        """Release process-lifetime resources this instance owns; called at most once per agent.
+
+        Copies made for side-question forks must not close handles shared with the parent engine.
+        """
+        return None
 
     def on_session_reset(self) -> None:
         """/new or /reset: reset per-session state (default: counters and token tracking)."""

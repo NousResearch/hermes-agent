@@ -11,6 +11,7 @@ redirect_host, client_name, client_metadata_url, cimd, user_agent, timeout."""
 import asyncio
 import contextlib
 import contextvars
+import errno
 import html
 import importlib.util as _importlib_util
 import json
@@ -65,6 +66,11 @@ class RefreshFenceTimeout(RuntimeError):
     strictly cheaper -- the next request retries, and by then the peer that
     held the fence has published its replacement.
     """
+
+
+# POSIX flock: EWOULDBLOCK/EAGAIN, EACCES on some NFS; msvcrt.locking: EACCES/EDEADLK.
+# Same set as cron.scheduler._is_lock_contention_errno (not imported: that module is heavy).
+_FENCE_CONTENTION_ERRNOS = frozenset({errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES, errno.EDEADLK})
 
 
 @contextlib.asynccontextmanager
@@ -124,7 +130,14 @@ async def _refresh_fence(path: "Path", *, timeout: float = _REFRESH_FENCE_TIMEOU
                     )
                 acquired = True
                 break
-            except (OSError, IOError):
+            except OSError as exc:
+                if exc.errno not in _FENCE_CONTENTION_ERRNOS:
+                    # Not "a peer holds it" but "this filesystem cannot lock"
+                    # (e.g. some network mounts). Still fail closed, but say so
+                    # now instead of spinning to the deadline and blaming a peer.
+                    raise RefreshFenceTimeout(
+                        f"refresh fence unavailable on this filesystem: {exc}"
+                    ) from exc
                 if time.monotonic() >= deadline:
                     raise RefreshFenceTimeout(
                         f"refresh fence held by a peer for {timeout:.0f}s ({lock_path.name})"

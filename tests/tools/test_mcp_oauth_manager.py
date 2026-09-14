@@ -902,3 +902,26 @@ async def test_refresh_restarts_flow_when_disk_pair_is_from_another_issuer(tmp_p
     assert not provider.context.current_tokens.refresh_token, "foreign refresh token must be stripped"
     assert (await storage.get_tokens()).refresh_token is None, "strip must reach disk"
     assert provider._hermes_fence is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_fence_surfaces_non_contention_lock_errors_immediately(tmp_path, monkeypatch):
+    """A lock syscall failing for a reason other than contention must not spin to the deadline."""
+    import errno
+
+    import tools.mcp_oauth as mcp_oauth
+
+    if mcp_oauth.fcntl is None:
+        pytest.skip("flock-based fence only")
+
+    def broken_flock(fd, op):
+        if op & mcp_oauth.fcntl.LOCK_UN:
+            return None
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(mcp_oauth.fcntl, "flock", broken_flock)
+    started = time.monotonic()
+    with pytest.raises(mcp_oauth.RefreshFenceTimeout, match="unavailable on this filesystem"):
+        async with mcp_oauth._refresh_fence(tmp_path / "srv.json", timeout=5.0):
+            pass
+    assert time.monotonic() - started < 1.0, "must fail fast, not wait out the deadline"

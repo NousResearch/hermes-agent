@@ -401,3 +401,66 @@ def test_an_undeclared_leaf_under_an_agent_is_admin_by_default(api):
 
 def test_reading_an_unknown_agent_s_persona_is_a_404(api):
     assert api.handle("/platform/v1/agents/ghost/soul").status == 404
+
+
+# -- the config read the forms are built on ------------------------------------
+
+
+def test_the_config_read_returns_exactly_what_update_accepts(api):
+    """A form reads this and writes it back. If the two shapes drifted, a form would send
+    keys the write route silently dropped — which is the failure mode that makes a UI feel
+    like it saved something it did not."""
+    from nova.agents import AGENT_FIELDS
+
+    body = api.handle("/platform/v1/agents/operations/config").body
+    assert set(body["fields"]) == set(AGENT_FIELDS) - {"enabled"} | {"enabled"}
+    assert set(body["settable"]) == set(AGENT_FIELDS)
+
+    # Round-trip: every field the read returned is accepted by the write.
+    response = _write(api, "/agents/operations/update", ADMIN, {"fields": body["fields"]})
+    assert response.status == 200, response.body
+
+
+def test_the_config_read_carries_tools_and_permissions(api):
+    """/agents omits both — it is a presentation view — which is why this route exists."""
+    body = api.handle("/platform/v1/agents/operations/config").body
+    assert "toolsets" in body["fields"]["tools"]
+    assert body["fields"]["permissions"], "an agent with permissions reported none"
+
+    listed = api.handle("/platform/v1/agents").body["agents"][0]
+    assert "permissions" not in listed and "tools" not in listed
+
+
+def test_the_option_lists_come_from_what_owns_them(api):
+    """No hard-coded choices: an option that disappears upstream must disappear here rather
+    than linger in a dropdown and fail at save time."""
+    choices = api.handle("/platform/v1/agents/operations/config").body["choices"]
+
+    # Permissions are the tenant's policy, verbatim.
+    assert set(choices["permissions"]) == set(api.bundle.policy.permissions)
+    # Toolsets are the runtime's registry.
+    assert {t["id"] for t in choices["toolsets"]} == {t["id"] for t in api.runtime.toolsets()}
+    assert len(choices["toolsets"]) > 1
+    # Channels are the discovered catalogue, not a subset kept by hand.
+    from nova.channels.providers import catalogue
+
+    assert {c["id"] for c in choices["channels"]} == {p.id for p in catalogue()}
+    # Teammates exclude the agent itself — an agent delegating to itself is not a choice.
+    assert "operations" not in choices["agents"]
+
+
+def test_a_viewer_may_not_read_an_agent_s_configuration(api):
+    """It carries the agent's permissions."""
+    assert VIEWER.may("/agents/operations/config") is False
+    assert ADMIN.may("/agents/operations/config") is True
+
+
+def test_the_toolset_registry_is_the_runtimes_own(api):
+    """Read from toolsets.TOOLSETS rather than listed in NOVA, for the same reason the
+    channel catalogue is read from plugin manifests: a second copy drifts invisibly."""
+    import toolsets as runtime_toolsets
+
+    assert {t["id"] for t in api.runtime.toolsets()} == set(runtime_toolsets.TOOLSETS)
+    web = next(t for t in api.runtime.toolsets() if t["id"] == "web")
+    assert "web_search" in web["tools"]
+    assert web["description"]

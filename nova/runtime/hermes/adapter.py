@@ -541,6 +541,34 @@ class HermesRuntime(AgentRuntime):
             return ()
         return _automations.executions(profile, automation_id, limit=limit)
 
+    def toolsets(self) -> tuple[dict, ...]:
+        """The runtime's own toolset registry, as ``{id, description, tools}``.
+
+        Read from ``toolsets.TOOLSETS`` rather than listed here, for the same reason the
+        channel catalogue is read from plugin manifests: a second copy of a registry that
+        the runtime owns drifts, and the drift is invisible until someone picks an option
+        that no longer exists.
+        """
+        try:
+            import toolsets as _toolsets
+        except Exception:  # pragma: no cover — runtime not importable
+            return ()
+        rows = []
+        for name, entry in sorted(getattr(_toolsets, "TOOLSETS", {}).items()):
+            entry = entry if isinstance(entry, dict) else {}
+            rows.append(
+                {
+                    "id": name,
+                    "description": str(entry.get("description") or ""),
+                    "tools": sorted(str(t) for t in (entry.get("tools") or ())),
+                    # A toolset can be defined by composing others rather than by naming
+                    # tools. Carried through so a form can show why a group looks empty
+                    # instead of implying it grants nothing.
+                    "includes": sorted(str(t) for t in (entry.get("includes") or ())),
+                }
+            )
+        return tuple(rows)
+
     def health(self) -> RuntimeHealth:
         present, detail = _work.store_status(self.paths.home)
         home_exists = self.paths.home.is_dir()

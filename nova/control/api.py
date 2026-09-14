@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
 
 from nova import __version__
+from nova.agents import AGENT_FIELDS
 from nova.audit import AuditLog, new_correlation_id
 from nova.errors import NovaError
 from nova.policy import agent_digest, compile_policy, decide
@@ -291,7 +292,66 @@ class ControlAPI:
             return self.agent_soul(tail[len("/agents/") : -len("/soul")])
         if tail.startswith("/agents/") and tail.endswith("/automations"):
             return self.agent_automations(tail[len("/agents/") : -len("/automations")])
+        if tail.startswith("/agents/") and tail.endswith("/config"):
+            return self.agent_config(tail[len("/agents/") : -len("/config")])
         return _error(404, f"no such route: {path}")
+
+    def agent_config(self, agent_id: str) -> Response:
+        """An agent's editable declaration, plus the options a form can offer.
+
+        Deliberately **not** the same shape as ``/agents``, which is a presentation view
+        carrying display names, digests and sync state. This returns the fields
+        :data:`nova.agents.AGENT_FIELDS` accepts and nothing else, so what a form reads is
+        exactly what it may write back. The alternative — one payload serving both — meant
+        a form having to know which of its keys the write route would silently drop.
+
+        ``choices`` carries option lists rather than making a form guess them: permissions
+        come from the tenant's own policy, toolsets from the runtime's registry, corpora
+        from the knowledge catalogue, channels from the channel catalogue. Every one is
+        read from the thing that owns it, so an option that disappeared upstream disappears
+        here rather than lingering and failing at save time.
+
+        Admin-only, because the declaration carries the agent's permissions.
+        """
+        from nova.channels.providers import catalogue
+
+        spec = next((a for a in self.bundle.agents if a.id == agent_id), None)
+        if spec is None:
+            return _error(404, f"no agent {agent_id!r}")
+
+        policy = self.bundle.policy
+        return Response(
+            200,
+            {
+                "id": spec.id,
+                "fields": {
+                    "name": spec.name,
+                    "role": spec.role,
+                    "description": spec.description,
+                    "enabled": spec.enabled,
+                    "model": spec.model.to_dict(),
+                    "tools": spec.tools.to_dict(),
+                    "knowledge": spec.knowledge.to_dict(),
+                    "permissions": list(spec.permissions),
+                    "approval": spec.approval.to_dict(),
+                    "limits": spec.limits.to_dict(),
+                    "delegation": spec.delegation.to_dict(),
+                },
+                "settable": list(AGENT_FIELDS),
+                "choices": {
+                    "permissions": sorted(policy.permissions) if policy else [],
+                    "actions": sorted(policy.actions) if policy else [],
+                    "toolsets": [dict(t) for t in self.runtime.toolsets()],
+                    "knowledge": sorted(self.bundle.knowledge.ids),
+                    "channels": [
+                        {"id": p.id, "label": p.label} for p in catalogue()
+                    ],
+                    "agents": sorted(
+                        a.id for a in self.bundle.agents if a.id != agent_id
+                    ),
+                },
+            },
+        )
 
     def agent_soul(self, agent_id: str) -> Response:
         """The agent's persona as declared, and where an edit will be written.

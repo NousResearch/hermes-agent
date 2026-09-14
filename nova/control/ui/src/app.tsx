@@ -1,13 +1,13 @@
 import * as React from "react";
 import {
   Activity, Blocks, BookOpen, Boxes, CircleCheck, Gauge, LayoutDashboard,
-  ListChecks, ShieldCheck, Target,
-} from "lucide-react";
+  ListChecks, ShieldCheck, Target, Plus } from "lucide-react";
 import { GlassPanel, SectionHeader, StatusPill } from "@/components/glass";
 import { MetricCard, Panel, PanelBody } from "@/components/panel";
 import { Atmosphere, CommandBar, NAV, Sidebar, TopBar } from "@/components/shell";
 import { TooltipProvider } from "@/components/tooltip";
 import { AgentDetail, AgentsScreen } from "@/screens/agents";
+import { CreateAgent } from "@/screens/agent-create";
 import {
   ActivityScreen, ApprovalsScreen, ChannelsScreen, KnowledgeScreen,
   ObjectivesScreen, PoliciesScreen, UsageScreen, WorkScreen,
@@ -46,9 +46,13 @@ export default function App() {
   const [route, go] = useRoute();
   const [commandOpen, setCommandOpen] = React.useState(false);
 
+  // Bumped after any agent write so the list, the sidebar count and the open profile all
+  // follow without waiting out the poll interval. Declared before the reads that use it:
+  // `const` is not hoisted, and referencing it earlier throws at render.
+  const [agentNonce, setAgentNonce] = React.useState(0);
   const identity = usePanel<Identity>("/identity", 60000);
   const health = usePanel<Health>("/health");
-  const agents = usePanel<{ agents: Agent[] }>("/agents");
+  const agents = usePanel<{ agents: Agent[] }>("/agents", 15000, agentNonce);
   const tasks = usePanel<{ tasks: Task[]; counts?: Record<string, number> }>("/tasks?limit=200");
   const objectives = usePanel<{ objectives: Objective[]; detail?: string }>("/objectives");
   const knowledge = usePanel<{
@@ -117,7 +121,8 @@ export default function App() {
     : item);
 
   const openAgent = route.startsWith("agents/") ? route.slice("agents/".length) : null;
-  const activeAgent = openAgent ? agentRows.find((a) => a.id === openAgent) : null;
+  const creatingAgent = openAgent === "new";
+  const activeAgent = openAgent && !creatingAgent ? agentRows.find((a) => a.id === openAgent) : null;
   const meta = SCREEN_META[route.split("/")[0]] ?? SCREEN_META.overview;
 
   return (
@@ -161,14 +166,34 @@ export default function App() {
           </div>
 
           <main id="main" className="mx-auto w-full max-w-[1400px] flex-1 px-6 py-6">
-            {activeAgent ? (
+            {creatingAgent ? (
+              <CreateAgent
+                existing={agentRows.map((a) => a.id)}
+                onCancel={() => go("agents")}
+                onCreated={(id) => { setAgentNonce((n) => n + 1); go(`agents/${id}`); }}
+              />
+            ) : activeAgent ? (
               <AgentDetail
                 agent={activeAgent} tasks={taskRows} channels={channelRows}
                 knowledge={knowledgeRows}
                 policy={policy.state === "ok" ? policy.data : undefined}
                 budget={budget.state === "ok" ? budget.data : undefined}
                 decisions={decisionRows} onBack={() => go("agents")}
+                onChanged={() => setAgentNonce((n) => n + 1)}
               />
+            ) : openAgent ? (
+              // A URL naming an agent that is not in the list — deleted, renamed, or never
+              // existed. Saying so beats rendering the list as if nothing was asked for.
+              <GlassPanel className="p-5">
+                <p className="text-ink text-[13px] font-medium">No agent “{openAgent}”.</p>
+                <p className="text-ink-muted mt-1 text-[12.5px]">
+                  It may have been deleted, or the link may be stale.
+                </p>
+                <button type="button" onClick={() => go("agents")}
+                  className="glass-solid text-ink mt-3 rounded-lg px-3 py-1.5 text-[12.5px] font-medium">
+                  All agents
+                </button>
+              </GlassPanel>
             ) : route === "overview" ? (
               <div className="space-y-6">
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -255,8 +280,21 @@ export default function App() {
                 </GlassPanel>
               </div>
             ) : route === "agents" ? (
-              <AgentsScreen agents={agents} tasks={taskRows} channels={channelRows}
-                            onOpen={(id) => go(`agents/${id}`)} />
+              <div className="space-y-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-ink-faint text-[12.5px]">
+                    {agentRows.length ? `${agentRows.length} declared` : "None declared yet"}
+                  </p>
+                  <button
+                    type="button" onClick={() => go("agents/new")}
+                    className="glass-solid text-ink inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12.5px] font-medium"
+                  >
+                    <Plus className="size-3.5" /> New agent
+                  </button>
+                </div>
+                <AgentsScreen agents={agents} tasks={taskRows} channels={channelRows}
+                              onOpen={(id) => go(`agents/${id}`)} />
+              </div>
             ) : route === "objectives" ? <ObjectivesScreen objectives={objectives} />
             : route === "work" ? <WorkScreen tasks={tasks} />
             : route === "approvals" ? (

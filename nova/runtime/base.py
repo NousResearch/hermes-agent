@@ -825,6 +825,14 @@ class AgentRuntime(ABC):
         """Recorded executions for one automation, newest first. Empty when none ran."""
         return ()
 
+    def toolsets(self) -> tuple[dict, ...]:
+        """Tool groups this runtime understands, for a form to offer.
+
+        Empty means the runtime does not publish a registry — and an empty list is then
+        rendered as "this runtime does not say", never as "there are no tools".
+        """
+        return ()
+
     def set_automation_enabled(
         self, agent_id: str, automation_id: str, *, enabled: bool, reason: str = "",
     ) -> Optional["AutomationView"]:

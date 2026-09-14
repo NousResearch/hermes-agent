@@ -1,5 +1,8 @@
 import * as React from "react";
 
+import { AgentConfigPanel } from "@/screens/agent-config";
+import { AgentLifecycle } from "@/screens/agent-lifecycle";
+import { AgentSchedules } from "@/screens/agent-schedules";
 import { SoulEditor } from "@/screens/soul";
 import { ArrowLeft, BookOpen, Boxes, ShieldCheck } from "lucide-react";
 import { Chip, EmptyState, GlassCard, GlassPanel, SectionHeader, StatusPill } from "@/components/glass";
@@ -129,13 +132,15 @@ export function AgentsScreen({
 /** Entering an agent should feel like entering its workspace: identity and state at the
  *  top, then only what is true about THIS agent. */
 export function AgentDetail({
-  agent, tasks, channels, knowledge, policy, budget, decisions, onBack,
+  agent, tasks, channels, knowledge, policy, budget, decisions, onBack, onChanged,
 }: {
   agent: Agent; tasks: Task[]; channels: Channel[];
   knowledge: KnowledgeSource[]; policy?: Policy; budget?: Budget;
   decisions: Decision[]; onBack: () => void;
+  /** Re-read the agent list after a write, so the sidebar count and this header follow. */
+  onChanged?: () => void;
 }) {
-  const [tab, setTab] = React.useState("work");
+  const [tab, setTab] = React.useState("overview");
   const mine = tasks.filter((t) => t.agent_id === agent.id);
   const attention = mine.filter((t) => t.needs_attention);
   const running = mine.filter((t) => ["running", "ready"].includes(String(t.runtime_status)));
@@ -149,10 +154,14 @@ export function AgentDetail({
   const mineDecisions = decisions.filter((d) => d.agent_id === agent.id);
 
   const tabs = [
+    { id: "overview", label: "Overview" },
     { id: "work", label: "Work", count: mine.length },
-    // First after Work: this is the tab the agent profile exists for. Everything else on
-    // this screen reports what the agent did; this is where you change what it is.
+    // This is the tab the agent profile exists for. Everything else on this screen reports
+    // what the agent did; these are where you change what it is.
     { id: "soul", label: "Soul" },
+    { id: "model", label: "Model" },
+    { id: "capabilities", label: "Capabilities" },
+    { id: "schedules", label: "Schedules" },
     { id: "knowledge", label: "Knowledge", count: corpora.length },
     { id: "channels", label: "Channels", count: reaching.length },
     { id: "permissions", label: "Permissions" },
@@ -185,10 +194,21 @@ export function AgentDetail({
             ) : null}
           </div>
           <div className="flex flex-col items-end gap-2">
-            <StatusPill state={attention.length ? "waiting" : running.length ? "running" : "neutral"}>
-              {attention.length ? `${attention.length} awaiting a human`
-                : running.length ? `Working · ${plural(running.length, "task")}` : "Idle"}
-            </StatusPill>
+            {/* Only states real data can back. There is no per-agent process heartbeat —
+                Hermes spawns workers and the control plane sees their work rows, not their
+                processes — so "Running" in the sense of "a process is alive right now" is
+                never shown, and an unreachable runtime says so instead of guessing. */}
+            {agent.enabled === false ? (
+              <StatusPill state="neutral">Disabled</StatusPill>
+            ) : agent.materialized === false ? (
+              <StatusPill state="waiting">Not yet applied</StatusPill>
+            ) : attention.length ? (
+              <StatusPill state="waiting">{attention.length} awaiting a human</StatusPill>
+            ) : running.length ? (
+              <StatusPill state="running">Working · {plural(running.length, "task")}</StatusPill>
+            ) : (
+              <StatusPill state="neutral">Idle</StatusPill>
+            )}
             {agent.in_sync === false ? <StatusPill state="blocked">Drifted from bundle</StatusPill> : null}
           </div>
         </div>
@@ -210,9 +230,25 @@ export function AgentDetail({
         ))}
       </div>
 
-      {/* The Soul tab brings its own panel: it is an editor, not a list, and nesting it
-          inside the shared one would double the border and the padding. */}
-      {tab === "soul" ? <SoulEditor agentId={agent.id} /> : (
+      {/* Editors bring their own panels: they are forms, not lists, and nesting them inside
+          the shared one would double the border and the padding. */}
+      {tab === "soul" ? <SoulEditor agentId={agent.id} />
+      : tab === "overview" ? (
+        <div className="space-y-5">
+          <AgentConfigPanel agentId={agent.id} section="identity" onChanged={onChanged} />
+          <AgentLifecycle
+            agentId={agent.id}
+            displayName={agent.display_name ?? agent.id}
+            enabled={agent.enabled !== false}
+            onChanged={() => onChanged?.()}
+            onDeleted={onBack}
+          />
+        </div>
+      )
+      : tab === "model" ? <AgentConfigPanel agentId={agent.id} section="model" onChanged={onChanged} />
+      : tab === "capabilities" ? <AgentConfigPanel agentId={agent.id} section="capabilities" onChanged={onChanged} />
+      : tab === "schedules" ? <AgentSchedules agentId={agent.id} />
+      : (
       <GlassPanel className="p-5">
         {tab === "work" ? (
           mine.length ? (

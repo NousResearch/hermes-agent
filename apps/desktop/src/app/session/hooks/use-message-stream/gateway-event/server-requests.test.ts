@@ -10,14 +10,22 @@ const deps = {} as ServerRequestContext['deps']
 function deliver(method: string, params: Record<string, unknown>, activeSessionId: null | string) {
   const respond = vi.fn()
   const fail = vi.fn()
-  const handled = handleServerRequest({ fail, id: 'srq-1', method, params, profile: 'default', respond }, deps, activeSessionId)
+  const handled = handleServerRequest(
+    { fail, id: 'srq-1', method, params, profile: 'default', respond },
+    deps,
+    activeSessionId
+  )
 
   return { fail, handled, respond }
 }
 
 describe('preview action request routing', () => {
   it('leaves a scoped action request unanswered in a window showing another session', () => {
-    const { handled, respond, fail } = deliver('preview.act', { action: 'elements', session_id: 'session-a' }, 'session-b')
+    const { handled, respond, fail } = deliver(
+      'preview.act',
+      { action: 'elements', session_id: 'session-a' },
+      'session-b'
+    )
 
     expect(handled).toBe(true)
     expect(respond).not.toHaveBeenCalled()

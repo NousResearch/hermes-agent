@@ -3579,6 +3579,8 @@ class GatewayRunner(
                         min_vacuum_interval_days=int(
                             _sess_cfg.get("min_vacuum_interval_days", 30)),
                         vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
+                        tool_payload_retention_days=int(
+                            _sess_cfg.get("tool_payload_retention_days", 0)),
                         sessions_dir=self.config.sessions_dir)
             except Exception as exc:
                 logger.debug("state.db auto-maintenance skipped: %s", exc)

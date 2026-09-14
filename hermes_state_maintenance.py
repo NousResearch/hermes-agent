@@ -105,6 +105,51 @@ class SessionMaintenanceMixin:
             self._remove_session_files(sessions_dir, sid)
         return len(removed_ids)
 
+    def elide_old_tool_payloads(
+        self, retention_days: int = 0, *, now: Optional[float] = None, batch_size: int = 500,
+    ) -> int:
+        """Replace aged tool output with a stable tombstone, returning rows changed.
+
+        Only ``role='tool'`` rows older than *retention_days* are eligible. A non-positive
+        retention window is disabled, and existing tombstones are skipped so rerunning the
+        sweep (or changing its cadence) is idempotent. Each batch is its own short write
+        transaction; this deliberately does not VACUUM.
+        """
+        if retention_days is None or retention_days <= 0:
+            return 0
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+
+        cutoff = (time.time() if now is None else float(now)) - retention_days * 86400
+        tombstone = f"[elided: tool output older than {int(retention_days)}d - retention policy]"
+        tombstone_pattern = "[elided: tool output older than % - retention policy]"
+        total = 0
+
+        while True:
+            def _do(conn):
+                rows = conn.execute(
+                    """SELECT id FROM messages
+                       WHERE role = 'tool'
+                         AND timestamp < ?
+                         AND COALESCE(content, '') NOT LIKE ?
+                       ORDER BY id
+                       LIMIT ?""",
+                    (cutoff, tombstone_pattern, batch_size),
+                ).fetchall()
+                ids = [row[0] for row in rows]
+                if not ids:
+                    return 0
+                cursor = conn.execute(
+                    f"UPDATE messages SET content = ? WHERE id IN ({_placeholders(ids)})",
+                    (tombstone, *ids),
+                )
+                return cursor.rowcount
+
+            changed = self._execute_write(_do)
+            total += changed
+            if changed < batch_size:
+                return total
+
     def _write_guards_reject(self, conn, sid: str, **kwargs) -> bool:
         """True when a live turn lease / compression lock protects ``sid``; expired or
         dead-holder guards are reclaimed and fenced as a side effect."""
@@ -365,17 +410,18 @@ class SessionMaintenanceMixin:
         self, retention_days: int = 90, min_interval_hours: int = 24, vacuum: bool = True,
         sessions_dir: Optional[Path] = None, min_vacuum_interval_days: int = 30,
         min_vacuum_freelist_ratio: float = AUTO_VACUUM_MIN_FREELIST_RATIO,
+        tool_payload_retention_days: int = 0,
     ) -> Dict[str, Any]:
         """Idempotent startup auto-maintenance (never raises): prune inactive sessions, reap stale open
-        state-owned rows, optional VACUUM.  Runs at most once per ``min_interval_hours``; VACUUM has its own
-        ``min_vacuum_interval_days`` throttle and also requires ``freelist_count / page_count`` >
-        ``min_vacuum_freelist_ratio`` so a small prune on a dense multi-GB database never triggers a full
-        rewrite.  Stale-open reconciliation: cron/kanban/subagent/one-shot CLI rows never set ``ended_at``
-        when their process dies and prune only deletes ended rows, so after pruning, open rows from
-        :attr:`_AUTO_PRUNE_STALE_OPEN_SOURCES` older than ``retention_days`` are closed
+        state-owned rows, optionally elide old tool payloads, and optionally VACUUM.  Runs at most once per
+        ``min_interval_hours``; VACUUM has its own ``min_vacuum_interval_days`` throttle and also requires
+        ``freelist_count / page_count`` > ``min_vacuum_freelist_ratio`` so a small prune on a dense multi-GB
+        database never triggers a full rewrite.  Stale-open reconciliation: cron/kanban/subagent/one-shot CLI
+        rows never set ``ended_at`` when their process dies and prune only deletes ended rows, so after pruning,
+        open rows from :attr:`_AUTO_PRUNE_STALE_OPEN_SOURCES` older than ``retention_days`` are closed
         (``startup_orphan_reap``); they stay resumable and age from their close.  Returns ``{"skipped",
-        "pruned", "closed", "vacuumed"}`` plus ``"freelist_ratio"`` when a VACUUM was considered and
-        ``"error"`` on failure.
+        "pruned", "closed", "tool_payloads_elided", "vacuumed"}`` plus ``"freelist_ratio"`` when a VACUUM
+        was considered and ``"error"`` on failure.
 
         Records the last run timestamp in state_meta so subsequent calls within ``min_interval_hours``
         no-op. Designed to be called once at startup from long-lived entrypoints (CLI, gateway, cron
@@ -385,7 +431,10 @@ class SessionMaintenanceMixin:
         Messaging and UI sources are never touched here. See #54189.
         """
         from hermes_state_repair import _release_auto_maintenance_lock, _try_acquire_auto_maintenance_lock
-        result: Dict[str, Any] = {"skipped": False, "pruned": 0, "closed": 0, "vacuumed": False}
+        result: Dict[str, Any] = {
+            "skipped": False, "pruned": 0, "closed": 0,
+            "tool_payloads_elided": 0, "vacuumed": False,
+        }
         maintenance_lock = _try_acquire_auto_maintenance_lock(self.db_path)
         if maintenance_lock is None:
             result["skipped"] = True
@@ -405,6 +454,10 @@ class SessionMaintenanceMixin:
                 respect_gateway_heartbeats=False,  # state-owned lifecycles, not gateway heartbeats
             )
             result["closed"] = len(closed)
+            if tool_payload_retention_days > 0:
+                result["tool_payloads_elided"] = self.elide_old_tool_payloads(
+                    retention_days=tool_payload_retention_days
+                )
             # VACUUM only if rows were freed, the time throttle passed AND the
             # freelist ratio passed — it holds an exclusive lock for a full rewrite.
             since_vacuum = _seconds_since(now, self.get_meta("last_vacuum"))

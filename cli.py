@@ -1118,6 +1118,7 @@ def _run_state_db_auto_maintenance(session_db) -> None:
             min_interval_hours=int(cfg.get("min_interval_hours", 24)),
             min_vacuum_interval_days=int(cfg.get("min_vacuum_interval_days", 30)),
             vacuum=bool(cfg.get("vacuum_after_prune", True)),
+            tool_payload_retention_days=int(cfg.get("tool_payload_retention_days", 0)),
             sessions_dir=_hermes_home_maint / "sessions",
         )
     except Exception as exc:

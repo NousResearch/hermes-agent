@@ -6,6 +6,7 @@ def test_default_config_exposes_vacuum_interval():
     from hermes_cli.config import DEFAULT_CONFIG
 
     assert DEFAULT_CONFIG["sessions"]["min_vacuum_interval_days"] == 30
+    assert DEFAULT_CONFIG["sessions"]["tool_payload_retention_days"] == 0
 
 
 def test_default_config_auto_prune_on_with_90_day_retention():
@@ -43,6 +44,7 @@ def test_fresh_config_runs_auto_prune_at_startup(monkeypatch, tmp_path: Path):
         min_interval_hours=24,
         min_vacuum_interval_days=30,
         vacuum=True,
+        tool_payload_retention_days=0,
         sessions_dir=tmp_path / "sessions",
     )
 
@@ -118,5 +120,6 @@ def test_cli_auto_maintenance_forwards_vacuum_interval(monkeypatch, tmp_path: Pa
         min_interval_hours=24,
         min_vacuum_interval_days=17,
         vacuum=True,
+        tool_payload_retention_days=0,
         sessions_dir=tmp_path / "sessions",
     )

@@ -195,15 +195,14 @@ def ensure_google_chat_deps() -> bool:
     Routes through ``tools.lazy_deps`` so sealed hosted/Docker images write
     ``HERMES_LAZY_INSTALL_TARGET`` instead of the read-only venv. Resets the
     failed-import cache so ``create_adapter()`` can load modules after install.
+    ``FeatureUnavailable`` propagates: the registry logs its ``reason`` (quarantine
+    404, no writable target, network), which is exactly what a hosted operator needs.
     """
     global _google_modules_loaded, GOOGLE_CHAT_AVAILABLE
     if GOOGLE_CHAT_AVAILABLE:
         return True
-    try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("platform.google_chat", prompt=False)
-    except Exception:
-        return False
+    from tools.lazy_deps import ensure as _lazy_ensure
+    _lazy_ensure("platform.google_chat", prompt=False)
     _google_modules_loaded = False
     return _load_google_modules()
 

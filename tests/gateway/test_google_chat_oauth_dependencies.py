@@ -61,3 +61,19 @@ def test_installer_repairs_stale_transitives(monkeypatch):
     assert oauth.install_deps() is True
     assert calls == [("platform.google_chat", False)]
     assert pip_calls == []
+
+
+def test_ensure_deps_surfaces_install_reason(monkeypatch):
+    """A blocked lazy install must reach the registry's log with its reason, not a bare False."""
+    from tools.lazy_deps import FeatureUnavailable
+    import pytest
+    from plugins.platforms.google_chat import adapter
+
+    monkeypatch.setattr(adapter, "GOOGLE_CHAT_AVAILABLE", False)
+
+    def blocked(feature, prompt=False):
+        raise FeatureUnavailable(feature, ("google-cloud-pubsub==2.39.0",), "lazy install target /x is not writable")
+
+    monkeypatch.setattr("tools.lazy_deps.ensure", blocked)
+    with pytest.raises(FeatureUnavailable, match="not writable"):
+        adapter.ensure_google_chat_deps()

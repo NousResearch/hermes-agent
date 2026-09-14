@@ -699,6 +699,74 @@ def test_bootstrap_marker_not_autostashed_by_update(tmp_path):
     assert ".hermes-bootstrap-complete" not in status
 
 
+def test_flat_install_runtime_state_not_autostashed_by_update(tmp_path):
+    """#110648: live runtime state on a flat install (checkout root == HERMES_HOME)
+    must be git-ignored so that ``hermes update``'s
+    ``git stash push --include-untracked`` does not sweep the live session
+    databases into an autostash — silent transcript loss when the post-update
+    restore is declined (the default is No).
+
+    Behavioral + hermetic: build a throwaway repo that adopts the project's real
+    ``.gitignore`` (the contract under test), drop the runtime state files the
+    updater would see on a flat install, and confirm the same stash invocation
+    the updater uses leaves every one of them untouched.
+    """
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+
+    repo_gitignore = Path(hermes_main.__file__).resolve().parents[1] / ".gitignore"
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True
+        )
+
+    git("init", "-q")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / ".gitignore").write_text(repo_gitignore.read_text())
+    (tmp_path / "tracked.txt").write_text("x\n")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+
+    # Live runtime state present on a flat install (HERMES_HOME == checkout root).
+    runtime_paths = [
+        "state.db",
+        "state.db-wal",
+        "state.db-shm",
+        "state-snapshots/2026-pre-update/state.db",
+        "cron/executions.db",
+        "cron/jobs.json",
+    ]
+    for rel in runtime_paths:
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"\x00live-runtime-state")
+
+    # None of it may register as a dirty/untracked change: on a flat install the
+    # updater's stash step is gated on `git status --porcelain` being non-empty,
+    # so ignored runtime state keeps the update on the no-stash path entirely.
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=tmp_path, capture_output=True, text=True
+    ).stdout
+    assert status.strip() == "", (
+        "live runtime state shows up in git status --porcelain and would trigger "
+        f"the update autostash (#110648):\n{status}"
+    )
+
+    # Exact flags used by hermes update (hermes_cli/update_cmd_stash.py).
+    git("stash", "push", "--include-untracked", "-m", "hermes-update-autostash")
+
+    for rel in runtime_paths:
+        assert (tmp_path / rel).exists(), (
+            f"{rel} was swept into the update autostash — live runtime state must "
+            "be listed in .gitignore so `git stash -u` skips it (#110648)."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Permission-denied autostash class: undeletable untracked files (root-owned
 # packaging/ etc.) must not abort the update when the stash entry was created.

@@ -40,6 +40,7 @@ def _make_adapter(
     guest_mode=None,
     observe_unmentioned_group_messages=None,
     bots_require_mention=None,
+    ignore_mentions_of_users=None,
     bot_username="hermes_bot",
 ):
     from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -85,6 +86,13 @@ def _make_adapter(
         extra["observe_unmentioned_group_messages"] = observe_unmentioned_group_messages
     if bots_require_mention is not None:
         extra["bots_require_mention"] = bots_require_mention
+    if ignore_mentions_of_users is not None:
+        extra["ignore_mentions_of_users"] = ignore_mentions_of_users
+    else:
+        # Keep unit tests isolated from TELEGRAM_IGNORE_MENTIONS_OF_USERS in the parent
+        # environment; production adapters without this explicit key still fall back to the
+        # env var.
+        extra["ignore_mentions_of_users"] = []
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -561,7 +569,10 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
         "  group_allowed_chats:\n"
         "    - \"-100\"\n"
         "  allowed_topics:\n"
-        "    - 8\n",
+        "    - 8\n"
+        "  ignore_mentions_of_users:\n"
+        "    - \"@teammate_username\"\n"
+        "    - 123456789\n",
         encoding="utf-8",
     )
 
@@ -581,6 +592,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
         "TELEGRAM_ALLOWED_CHATS",
         "TELEGRAM_GROUP_ALLOWED_CHATS",
         "TELEGRAM_ALLOWED_TOPICS",
+        "TELEGRAM_IGNORE_MENTIONS_OF_USERS",
     ):
         monkeypatch.delenv(_var, raising=False)
 
@@ -604,6 +616,10 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     assert tg_cfg.extra.get("allowed_chats") == ["-100"]
     assert tg_cfg.extra.get("group_allowed_chats") == ["-100"]
     assert tg_cfg.extra.get("allowed_topics") == [8]
+    assert set(map(str, tg_cfg.extra.get("ignore_mentions_of_users") or [])) == {
+        "@teammate_username",
+        "123456789",
+    }
     # free_response_chats is bridged to the env var only (not PlatformConfig.extra).
     # TELEGRAM_FREE_RESPONSE_CHATS is not a key that appears in developer .env
     # files, so asserting it via os.environ stays deterministic.
@@ -956,3 +972,64 @@ def test_human_reply_unaffected_by_bots_require_mention():
         gated._should_process_message(_group_message("replying", reply_to_bot=True))
         is True
     )
+
+
+def _text_mention_entity(text, user_id):
+    """The ``text_mention`` entity Telegram emits when a mention resolves to a user with no
+    public @username — the span carries the user object instead of a handle."""
+    return SimpleNamespace(type="text_mention", offset=0, length=len(text), user=SimpleNamespace(id=user_id))
+
+
+def test_group_message_addressed_to_an_ignored_person_is_dropped():
+    """A group message that @mentions a configured person is not dispatched to the agent."""
+    adapter = _make_adapter(ignore_mentions_of_users=["@teammate_username", "123456789"])
+
+    text = "@teammate_username can you take this one?"
+    assert adapter._should_process_message(
+        _group_message(text, entities=_mention_entities(text, ["@teammate_username"]))
+    ) is False
+
+    resolved = "hey there"
+    assert adapter._should_process_message(
+        _group_message(resolved, entities=[_text_mention_entity(resolved, 123456789)])
+    ) is False
+
+
+def test_ignored_person_filter_never_silences_a_direct_summon():
+    """Explicitly addressing the bot — @mention or a reply to it — wins over the ignore list."""
+    adapter = _make_adapter(ignore_mentions_of_users=["@teammate_username", "123456789"])
+
+    text = "@hermes_bot @teammate_username what do you both think?"
+    assert adapter._should_process_message(
+        _group_message(text, entities=_mention_entities(text, ["@hermes_bot", "@teammate_username"]))
+    ) is True
+
+    reply_text = "@teammate_username and your take?"
+    assert adapter._should_process_message(
+        _group_message(
+            reply_text,
+            reply_to_bot=True,
+            entities=_mention_entities(reply_text, ["@teammate_username"]),
+        )
+    ) is True
+
+
+def test_ignored_person_filter_spares_dms_and_unlisted_mentions():
+    """Only group messages naming a listed person are affected."""
+    adapter = _make_adapter(ignore_mentions_of_users=["@teammate_username"])
+
+    assert adapter._should_process_message(_dm_message("@teammate_username hi")) is True
+
+    other_text = "@someone_else ping"
+    assert adapter._should_process_message(
+        _group_message(other_text, entities=_mention_entities(other_text, ["@someone_else"]))
+    ) is True
+
+
+def test_ignored_person_filter_absent_is_a_noop():
+    adapter = _make_adapter()
+
+    text = "@someone_else ping"
+    assert adapter._should_process_message(
+        _group_message(text, entities=_mention_entities(text, ["@someone_else"]))
+    ) is True

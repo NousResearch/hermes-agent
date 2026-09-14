@@ -2173,7 +2173,10 @@ def _own_policy_open_startup_violation(config) -> Optional[str]:
         ).strip().lower()
         if dm_policy != "open" and group_policy != "open":
             continue
-        gateway_allow_all = _getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+        gateway_allow_all = (
+            getattr(config, "allow_all_users", False)
+            or _getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+        )
         if gateway_allow_all or (
                 allow_all_env and _getenv(allow_all_env, "").lower() in {"true", "1", "yes"}):
             continue

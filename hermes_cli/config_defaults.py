@@ -1941,6 +1941,8 @@ DEFAULT_CONFIG = {
         "loop_watchdog_probe_interval_s": 30.0,
         "loop_watchdog_probe_timeout_s": 10.0,
         "loop_watchdog_max_strikes": 3,
+        # Allow all users without allowlists (security opt-in).
+        "allow_all_users": False,
         # Bot-to-bot loop guard: admitted bot messages per conversation before a cooldown.
         "bot_loop_guard": {"enabled": True, "max_events": 20, "window_seconds": 300, "cooldown_seconds": 600},
         # Startup-liveness watchdog: stdlib-only daemon thread armed at process entry that

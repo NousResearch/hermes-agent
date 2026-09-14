@@ -13,6 +13,7 @@ import pytest
 
 from agent.secret_scope import reset_secret_scope, set_secret_scope
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
+from gateway.config import GatewayConfig
 
 POLICIES = ("open", "allowlist", "disabled", "pairing", "typo")
 SENDERS = ("alice", "stranger", "", "   ", None)
@@ -110,6 +111,16 @@ def test_wildcard_allowlist_admits_strangers_on_every_path(name):
     assert host._is_dm_intake_allowed("stranger") is True
     assert host._is_group_allowed(*group_args) is True
     assert host._is_dm_intake_allowed("   ") is False
+
+
+def test_gateway_config_allow_all_users_unlocks_dm_policy(monkeypatch):
+    """Setting allow_all_users: true in GatewayConfig unlocks dm_policy: open."""
+    host = _hosts()["weixin"]
+    host._dm_policy = "open"
+    host.runner = type("Runner", (), {"config": GatewayConfig(allow_all_users=True)})()
+    for var in ("GATEWAY_ALLOW_ALL_USERS", *PLATFORM_OPT_IN.values()):
+        monkeypatch.delenv(var, raising=False)
+    assert host._is_dm_allowed("stranger") is True
 
 
 def test_mixin_host_without_prefix_is_rejected_at_class_creation():

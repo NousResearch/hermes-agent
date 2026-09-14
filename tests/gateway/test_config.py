@@ -26,6 +26,30 @@ from gateway.config import (
 )
 
 
+class TestGatewayConfigAllowAllUsers:
+    def test_allow_all_users_roundtrip(self):
+        cfg = GatewayConfig(allow_all_users=True)
+        assert cfg.allow_all_users is True
+        d = cfg.to_dict()
+        assert d["allow_all_users"] is True
+        restored = GatewayConfig.from_dict(d)
+        assert restored.allow_all_users is True
+
+    def test_allow_all_users_from_yaml_nested(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text("gateway:\n  allow_all_users: true\n", encoding="utf-8")
+        cfg = load_gateway_config()
+        assert cfg.allow_all_users is True
+
+    def test_allow_all_users_from_yaml_toplevel(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cfg_file = tmp_path / "config.yaml"
+        cfg_file.write_text("allow_all_users: true\n", encoding="utf-8")
+        cfg = load_gateway_config()
+        assert cfg.allow_all_users is True
+
+
 class TestHomeChannelRoundtrip:
     def test_to_dict_from_dict(self):
         hc = HomeChannel(

@@ -516,6 +516,7 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
 _TOPLEVEL_BOOL_DEFAULTS = {
     "write_sessions_json": True, "always_log_local": True, "filter_silence_narration": True,
     "group_sessions_per_user": True, "thread_sessions_per_user": False,
+    "allow_all_users": False,
 }
 
 
@@ -537,6 +538,7 @@ class GatewayConfig:
     filter_silence_narration: bool = True
     stt_enabled: bool = True  # Auto-transcribe inbound voice messages
     stt_echo_transcripts: bool = True  # Echo raw STT transcripts back to the user
+    allow_all_users: bool = False  # Allow all users across platforms without allowlist
     group_sessions_per_user: bool = True  # Isolate group sessions per participant when user IDs exist
     thread_sessions_per_user: bool = False  # False = threads shared across participants
     max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active sessions
@@ -570,7 +572,7 @@ class GatewayConfig:
     # Scalar fields serialized verbatim by ``to_dict`` (in output order).
     _SCALAR_DICT_FIELDS = (
         "write_sessions_json", "always_log_local", "filter_silence_narration", "stt_enabled",
-        "stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user",
+        "stt_echo_transcripts", "allow_all_users", "group_sessions_per_user", "thread_sessions_per_user",
         "max_concurrent_sessions", "multiplex_profiles",
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",

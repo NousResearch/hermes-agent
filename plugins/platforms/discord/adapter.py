@@ -4702,7 +4702,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
     def _gateway_allow_all_users(self) -> bool:
         """Per-profile GATEWAY_ALLOW_ALL_USERS flag."""
-        return self._gate_env("GATEWAY_ALLOW_ALL_USERS").strip().lower() in {"true", "1", "yes"}
+        val = self._gate_env("GATEWAY_ALLOW_ALL_USERS").strip().lower()
+        if val in {"true", "1", "yes"}:
+            return True
+        gw_cfg = getattr(getattr(self, "runner", None), "config", None)
+        if gw_cfg and getattr(gw_cfg, "allow_all_users", False):
+            return True
+        return False
 
     def _get_allow_bots(self) -> str:
         """Per-profile DISCORD_ALLOW_BOTS mode (none|mentions|all)."""

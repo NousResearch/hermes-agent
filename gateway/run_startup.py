@@ -844,7 +844,8 @@ class GatewayStartupMixin:
             entries = platform_registry.plugin_entries()
             allowed_vars += [e.allowed_users_env for e in entries if e.allowed_users_env]
             allow_all_vars += [e.allow_all_env for e in entries if e.allow_all_env]
-        if not any(os.getenv(v) for v in allowed_vars) and not any(
+        has_config_allow_all = bool(getattr(self.config, "allow_all_users", False))
+        if not has_config_allow_all and not any(os.getenv(v) for v in allowed_vars) and not any(
             os.getenv(v, "").lower() in {"true", "1", "yes"} for v in allow_all_vars
         ):
             logger.warning(

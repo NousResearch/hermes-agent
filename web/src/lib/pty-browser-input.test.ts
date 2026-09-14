@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { installPtyBrowserInput } from "./pty-browser-input";
 
@@ -188,7 +188,27 @@ describe("pty browser input", () => {
     host.remove();
   });
 
-  it("keeps ArrowUp/ArrowDown inside the composer and does not send them to the PTY", () => {
+  it("does not refocus the helper on Left/Right so iOS keeps the keyboard open", () => {
+    const { textarea, host, adapter } = fakeTerm();
+    textarea.value = "Hi";
+    textarea.setSelectionRange(2, 2);
+    textarea.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      inputType: "insertText",
+      data: "Hi",
+    }));
+    textarea.focus();
+    const focus = vi.spyOn(textarea, "focus");
+    adapter.nudge("ArrowLeft");
+    adapter.nudge("ArrowLeft");
+    adapter.nudge("ArrowRight");
+    expect(focus).not.toHaveBeenCalled();
+    expect(textarea.selectionStart).toBe(1);
+    adapter.dispose();
+    host.remove();
+  });
+
+  it("lets ArrowUp/ArrowDown through so the TUI can cycle command history", () => {
     const { textarea, host, adapter, inputs } = fakeTerm();
     textarea.value = "Hi";
     textarea.setSelectionRange(2, 2);
@@ -199,13 +219,9 @@ describe("pty browser input", () => {
     }));
     const up = new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true });
     textarea.dispatchEvent(up);
-    expect(up.defaultPrevented).toBe(true);
+    expect(up.defaultPrevented).toBe(false);
+    expect(textarea.value).toBe("Hi");
     expect(inputs.join("")).toBe("Hi");
-    adapter.nudge("ArrowLeft");
-    adapter.nudge("ArrowLeft");
-    adapter.nudge("ArrowLeft");
-    expect(textarea.selectionStart).toBe(0);
-    expect(inputs.join("").split("\x1b[D").length - 1).toBe(2);
     adapter.dispose();
     host.remove();
   });

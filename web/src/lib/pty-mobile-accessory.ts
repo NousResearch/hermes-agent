@@ -1,5 +1,7 @@
 /** Terminus-style keys above the iPhone software keyboard. */
 
+export const PTY_ARROW_UP = "\x1b[A";
+export const PTY_ARROW_DOWN = "\x1b[B";
 export const PTY_ETX = "\x03";
 export const ACCESSORY_BAR_HEIGHT_PX = 56;
 
@@ -59,7 +61,7 @@ export function dispatchPtyArrowKey(
 
 export function mountPtyMobileAccessory(
   _host: HTMLElement,
-  actions: { paste: () => void; interrupt: () => void; caretLeft: () => void; caretRight: () => void },
+  actions: { paste: () => void; interrupt: () => void; caretLeft: () => void; caretRight: () => void; historyUp: () => void; historyDown: () => void },
 ): { setInset: (insetPx: number, coarsePointer: boolean, focused?: boolean) => void; dispose: () => void } {
   const doc = _host.ownerDocument;
   const bar = doc.createElement("div");
@@ -100,6 +102,9 @@ export function mountPtyMobileAccessory(
     btn.addEventListener("pointerdown", (event) => {
       event.preventDefault();
     });
+    btn.addEventListener("touchstart", (event) => {
+      event.preventDefault();
+    }, { passive: false });
     let lastFire = 0;
     const fire = (event: Event) => {
       event.preventDefault();
@@ -115,8 +120,8 @@ export function mountPtyMobileAccessory(
     return btn;
   };
 
-  mk("↑", "Arrow up", () => dispatchPtyArrowKey(_host, "ArrowUp"), true);
-  mk("↓", "Arrow down", () => dispatchPtyArrowKey(_host, "ArrowDown"), true);
+  mk("↑", "Previous command", actions.historyUp, true);
+  mk("↓", "Next command", actions.historyDown, true);
   mk("←", "Arrow left", actions.caretLeft, true);
   mk("→", "Arrow right", actions.caretRight, true);
   mk("Paste", "Paste clipboard", actions.paste);

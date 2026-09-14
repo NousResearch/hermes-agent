@@ -105,3 +105,13 @@ export function keyboardRevealScrollDelta(
   const chrome = Number.isFinite(accessoryPx) && accessoryPx > 0 ? accessoryPx : 0;
   return Math.round(composerBottomPx - (visual.offsetTop + visual.height - chrome));
 }
+
+/** Caret moves also fire visualViewport. Only jump the page when the keyboard
+ * actually opens/closes — not for the ~40px offsetTop nudge from Left/Right. */
+export function shouldJumpViewportForKeyboard(prevReservePx: number, nextReservePx: number): boolean {
+  if (prevReservePx === nextReservePx) return false;
+  const prevOpen = prevReservePx > 0;
+  const nextOpen = nextReservePx > 0;
+  if (prevOpen !== nextOpen) return true;
+  return Math.abs(nextReservePx - prevReservePx) >= KEYBOARD_INSET_MIN_PX;
+}

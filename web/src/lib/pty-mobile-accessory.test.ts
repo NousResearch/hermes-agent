@@ -64,6 +64,8 @@ describe("mobile PTY accessory", () => {
     const lefts: string[] = [];
     const rights: string[] = [];
     const arrows: string[] = [];
+    const ups: string[] = [];
+    const downs: string[] = [];
     textarea.addEventListener("keydown", (event) => arrows.push(event.key));
 
     const bar = mountPtyMobileAccessory(host, {
@@ -71,8 +73,11 @@ describe("mobile PTY accessory", () => {
       interrupt: () => interrupts.push(PTY_ETX),
       caretLeft: () => lefts.push("L"),
       caretRight: () => rights.push("R"),
+      historyUp: () => ups.push("U"),
+      historyDown: () => downs.push("D"),
     });
     bar.setInset(320, true, true);
+    textarea.focus();
 
     const buttons = [...document.querySelectorAll(".pty-mobile-accessory button")].map((b) => b.textContent);
     expect(buttons).toEqual(["↑", "↓", "←", "→", "Paste", "Ctrl+C"]);
@@ -87,7 +92,9 @@ describe("mobile PTY accessory", () => {
     btn("Paste").dispatchEvent(new MouseEvent("click", { bubbles: true }));
     btn("Ctrl+C").dispatchEvent(new MouseEvent("click", { bubbles: true }));
 
-    expect(arrows).toEqual(["ArrowUp", "ArrowDown"]);
+    expect(arrows).toEqual([]);
+    expect(ups).toEqual(["U"]);
+    expect(downs).toEqual(["D"]);
     expect(pastes).toEqual(["ok"]);
     expect(interrupts).toEqual(["\x03"]);
     expect(lefts).toEqual(["L"]);

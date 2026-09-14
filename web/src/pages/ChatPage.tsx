@@ -62,7 +62,7 @@ import {
   shouldFinishResumeHydrationOnChunk,
   shouldShowResumeLoadingOverlay,
 } from "@/lib/pty-resume-loading";
-import { computeKeyboardInset, keyboardRevealScrollDelta, shouldScrollChatIntoView } from "@/lib/keyboard-inset";
+import { computeKeyboardInset, keyboardRevealScrollDelta, shouldJumpViewportForKeyboard, shouldScrollChatIntoView } from "@/lib/keyboard-inset";
 import {
   resolvePtyKeyboardShortcut,
   sendPtyShortcutSequence,
@@ -925,6 +925,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       caretRight: () => {
         browserInput?.nudge("ArrowRight");
       },
+      historyUp: () => {
+        term.input("\x1b[A", true);
+      },
+      historyDown: () => {
+        term.input("\x1b[B", true);
+      },
     });
 
     // WebGL draws from a texture atlas sized with device pixels. On phones and
@@ -1049,12 +1055,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       const showBar = shouldShowMobileAccessory(inset, phoneChrome, focused);
       const barPx = showBar ? ACCESSORY_BAR_HEIGHT_PX : 0;
       const reserve = terminalBottomReservePx(inset, showBar);
-      if (reserve !== appliedKeyboardInset) {
+      const jumpViewport = shouldJumpViewportForKeyboard(appliedKeyboardInset, reserve);
+      if (jumpViewport) {
         appliedKeyboardInset = reserve;
         wrap.style.paddingBottom = reserve > 0 ? `${reserve}px` : "";
         scheduleHostSync();
       }
       accessory.setInset(inset, phoneChrome, focused);
+      if (!jumpViewport) return;
       if (shouldScrollChatIntoView(inset, chatTop, inIframe)) {
         wrap.scrollIntoView({ block: "end", inline: "nearest" });
       }

@@ -3,6 +3,7 @@ import {
   computeKeyboardInset,
   keyboardRevealScrollDelta,
   KEYBOARD_INSET_MIN_PX,
+  shouldJumpViewportForKeyboard,
   shouldPinPageScroll,
   shouldPinScroll,
   shouldScrollChatIntoView,
@@ -129,5 +130,17 @@ describe("keyboardRevealScrollDelta", () => {
     expect(
       keyboardRevealScrollDelta(800, { height: 480, offsetTop: 0 }, 56),
     ).toBe(376);
+  });
+});
+
+describe("shouldJumpViewportForKeyboard", () => {
+  it("jumps when the keyboard opens or closes", () => {
+    expect(shouldJumpViewportForKeyboard(0, 376)).toBe(true);
+    expect(shouldJumpViewportForKeyboard(376, 0)).toBe(true);
+  });
+
+  it("does not jump on caret-sized visualViewport nudges", () => {
+    expect(shouldJumpViewportForKeyboard(376, 336)).toBe(false);
+    expect(shouldJumpViewportForKeyboard(376, 376)).toBe(false);
   });
 });

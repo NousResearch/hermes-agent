@@ -234,15 +234,10 @@ export function installPtyBrowserInput(
       return;
     }
     if (!key.altKey && !key.ctrlKey && !key.metaKey && !helperOwned) {
-      const nav = key.key === "ArrowUp" || key.key === "ArrowDown" || key.key === "ArrowLeft" || key.key === "ArrowRight" || key.key === "Home" || key.key === "End";
+      const nav = key.key === "ArrowLeft" || key.key === "ArrowRight" || key.key === "Home" || key.key === "End";
       if (nav) {
         event.stopImmediatePropagation();
-        if (!syncInkCaret) {
-          if (key.key === "ArrowUp" || key.key === "ArrowDown") event.preventDefault();
-          return;
-        }
         event.preventDefault();
-        if (key.key === "ArrowUp" || key.key === "ArrowDown") return;
         const value = acknowledged || textarea.value;
         const next = moveNativeCaret(value, textarea.selectionStart, textarea.selectionEnd, key.key);
         if (!next) return;
@@ -272,7 +267,7 @@ export function installPtyBrowserInput(
       keys.push(pending);
       compositionTrigger = pending;
       event.stopImmediatePropagation();
-    } else if (!modifiers.has(key.key)) boundary();
+    } else if (!modifiers.has(key.key) && key.key !== "ArrowUp" && key.key !== "ArrowDown") boundary();
   });
   listen('keypress', event => { if (nativeKey(event as KeyboardEvent) || composition) event.stopImmediatePropagation(); });
   listen('keyup', event => {
@@ -431,9 +426,6 @@ export function installPtyBrowserInput(
       }
       if (syncInkCaret) send(caretDeltaSequence(ptyOffset, next.start));
       ptyOffset = next.start;
-      if (textarea.ownerDocument.activeElement !== textarea) {
-        textarea.focus();
-      }
       textarea.setSelectionRange(next.start, next.end);
       nativeCaret.refresh();
     },

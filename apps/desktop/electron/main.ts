@@ -12331,9 +12331,17 @@ function releaseLocalBackendSlot(entry: any) {
   }
 }
 
-function assertPoolEntryStillOwned(poolKey: string, entry: any) {
+// `releaseSlot` must be false once `entry.process` exists: the lease has to
+// stay held until the child has actually exited (pool-spawn-coordinator
+// invariant), and teardownFailedLocalBackend releases it after that exit. A
+// pre-spawn release here would turn that post-exit release into a no-op and
+// let a successor spawn while the superseded child is still alive.
+function assertPoolEntryStillOwned(poolKey: string, entry: any, { releaseSlot = true } = {}) {
   if (localBackendLifecycle.signal.aborted || backendPool.get(poolKey) !== entry) {
-    releaseLocalBackendSlot(entry)
+    if (releaseSlot) {
+      releaseLocalBackendSlot(entry)
+    }
+
     throw new Error(`Profile backend start for "${poolKey}" was cancelled before it became ready.`)
   }
 }
@@ -12577,7 +12585,7 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
   // surface as an unhandled rejection before the Promise.race below attaches.
   portAnnouncement.catch(() => {})
   await claimBackendChild(child, `${backend.command} ${backend.args.join(' ')}`, profile, backendNonce, outputTail)
-  assertPoolEntryStillOwned(poolKey, entry)
+  assertPoolEntryStillOwned(poolKey, entry, { releaseSlot: false })
 
   child.stdout.on('data', rememberLog)
   child.stderr.on('data', rememberLog)
@@ -12618,7 +12626,7 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
 
   // Discover the ephemeral port the child bound to
   const port = await Promise.race([portAnnouncement, startFailed])
-  assertPoolEntryStillOwned(poolKey, entry)
+  assertPoolEntryStillOwned(poolKey, entry, { releaseSlot: false })
 
   if (readyFile) {
     fs.unlink(readyFile, () => {})
@@ -12628,7 +12636,7 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
 
   const baseUrl = `http://127.0.0.1:${port}`
   await Promise.race([waitForHermes(baseUrl, token), startFailed])
-  assertPoolEntryStillOwned(poolKey, entry)
+  assertPoolEntryStillOwned(poolKey, entry, { releaseSlot: false })
   ready = true
 
   const authToken = await adoptServedDashboardToken(baseUrl, token, {
@@ -12637,7 +12645,7 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
     rememberLog
   })
 
-  assertPoolEntryStillOwned(poolKey, entry)
+  assertPoolEntryStillOwned(poolKey, entry, { releaseSlot: false })
 
   entry.token = authToken
 
@@ -12645,7 +12653,7 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
   // HTTP /api/status can pass while WS auth fails (separate transport, separate guards).
   const wsUrl = `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(authToken)}`
   const wsProbe = await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket })
-  assertPoolEntryStillOwned(poolKey, entry)
+  assertPoolEntryStillOwned(poolKey, entry, { releaseSlot: false })
 
   if (!wsProbe.ok) {
     throw new Error(

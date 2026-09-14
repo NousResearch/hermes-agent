@@ -24,6 +24,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { CircleLetterA, Loader2, MessageQuestion } from '@/lib/icons'
+import { isSubmitEnter } from '@/lib/ime'
 import { visibleClarifyCard } from '@/lib/keybinds/composer-focus-keys'
 import { cn } from '@/lib/utils'
 import {
@@ -592,11 +593,7 @@ function ClarifyToolSinglePending({
 
   const handleTextareaKey = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
-      if (event.nativeEvent.isComposing) {
-        return
-      }
-
-      if (event.key === 'Enter' && !event.shiftKey) {
+      if (isSubmitEnter(event) && !event.shiftKey) {
         event.preventDefault()
         submitAnswer()
       }

@@ -1495,6 +1495,24 @@ class TestParseContextLimitFromError:
         )
         assert get_context_length_from_provider_error(msg, 131072) == 32768
 
+    def test_output_cap_message_is_not_a_context_limit(self):
+        """An output-cap error must never be cached as the context window (salvage #106769):
+        the generic "limit ... of N" pattern matched Switchyard's message and clamped a
+        >117K-context model to 16K on every later request."""
+        from agent.model_metadata import (
+            is_output_cap_error,
+            parse_available_output_tokens_from_error,
+        )
+
+        msg = "max_tokens cannot exceed the configured model output limit of 16384"
+        assert parse_context_limit_from_error(msg) is None
+        assert parse_available_output_tokens_from_error(msg) == 16384
+        assert is_output_cap_error(msg)
+        # Genuine context messages still parse.
+        assert parse_context_limit_from_error(
+            "This model's maximum context length is 32768 tokens"
+        ) == 32768
+
 
 
 

@@ -14,47 +14,48 @@ source: https://github.com/sweetrb/apple-mail-mcp
 # auditable); bump the pin via PR after validating a new release.
 #
 # How this pin was validated (catalog policy: "version validated on macOS").
-# On macOS, `npx -y apple-mail-mcp@2.17.10`:
+# On macOS, `npx -y apple-mail-mcp@2.19.6`:
 #   - completes an MCP `initialize` handshake reporting serverInfo.version
-#     2.17.10 — i.e. the bytes npx resolved are the bytes pinned here;
-#   - returns a full `tools/list` of 50 tools, every one carrying a description;
+#     2.19.6 — i.e. the bytes npx resolved are the bytes pinned here;
+#   - returns a full `tools/list` of 51 tools, every one carrying a description;
 #   - resolves all 18 `tools.default_enabled` entries below against that
 #     list, so no allow-listed name went stale across the bump.
 # Tools added since the previous pin are deliberately left OUT of
 # default_enabled — widening the default surface is the maintainers' call.
 # Re-run all three checks before moving this pin.
 #
-# Previous pin 2.17.6 (2026-09-03, fast-uri security fix: 4 high-severity
-# GHSAs reachable via ajv's JSON-schema validation on every tool call,
-# regardless of default_enabled).
+# Earlier pins, both ahead of the >=2-week age policy: 2.17.6 (2026-09-03,
+# fast-uri security fix: 4 high-severity GHSAs reachable via ajv's JSON-schema
+# validation on every tool call) and 2.17.10 (2026-09-10: on a
+# British/Australian/Irish Mac, which says "Not authorised", `doctor` and
+# `health-check` reported `permissions: ok` on a genuine TCC refusal —
+# sweetrb/apple-mail-mcp#218).
 #
-# 2.17.10 is re-pinned ahead of the normal >=2-week age policy for the same
-# class of reason: it fixes a defect in the two tools at the very top of
-# default_enabled. On a British/Australian/Irish Mac macOS says "Not
-# authorised"; the server matched only the American "not authorized", so
-# `doctor` and `health-check` reported `permissions: ok` on a genuine TCC
-# refusal and then blamed missing accounts the user already had. The same
-# constant gates error normalisation, so no tool on those locales ever told
-# the user to grant automation access. It now also matches the
-# locale-independent `(-1743)` OSStatus, covering fully localised (fr/de/es)
-# systems no English pattern can. Reported and root-caused by @jarrah31 as
-# sweetrb/apple-mail-mcp#218.
-#
-# The three intervening releases stay skipped, deliberately: 2.17.7 was
-# docs-only, 2.17.8 fixed reply/forward (absent from default_enabled below),
-# and 2.17.9 was a dependency bump.
-#
-# So do the two published since, which is why the pin stops here rather than
-# at npm-current 2.18.1: 2.18.0 (2026-09-10) adds an SMTP Sent copy and
-# replyTo, 2.18.1 (2026-09-10) verifies ids before a mutation, and both land
-# only on send/mutation tools that are disabled below. Moving the pin would
-# spend pin age for no change to the default surface.
+# 2.19.6 is re-pinned on the same footing. The releases since 2.19.0 fix
+# defects in tools that ARE in default_enabled below, most reported against
+# real migrated mailboxes by @j5pu (sweetrb/apple-mail-mcp#226, #229, #234):
+#   - `get-thread` threw `RangeError: Invalid time value` for any thread with
+#     a member whose date could not be parsed, and `search-messages` /
+#     `list-messages` threw the same for any AppleScript-backed row whose
+#     arrival date Mail.app could not parse (2.19.5). One such message fails
+#     the whole call.
+#   - `get-message` over IMAP returned an empty `rfcMessageId` for every
+#     message (2.19.0).
+#   - IMAP list/search rows reported the `Date:` header as `dateReceived`
+#     (2.19.2); an unparseable AppleScript date was replaced with the current
+#     date (2.19.3); `Date:` headers with non-English month abbreviations did
+#     not parse (2.19.4); `get-message` could report a `dateSent` years after
+#     arrival, and IMAP rows dropped legacy-locale dates the server could not
+#     parse (2.19.6).
+# The one tool added in that range, `get-message-headers` (2.19.0), stays out
+# of default_enabled. 2.18.0 and 2.18.1 land only on send/mutation tools that
+# are disabled below.
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-mail-mcp@2.17.10"
+    - "apple-mail-mcp@2.19.6"
 
 # Drives Apple Mail locally via AppleScript; no credentials.
 auth:

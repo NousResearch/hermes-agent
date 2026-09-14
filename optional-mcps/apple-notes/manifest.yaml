@@ -14,47 +14,46 @@ source: https://github.com/sweetrb/apple-notes-mcp
 # auditable); bump the pin via PR after validating a new release.
 #
 # How this pin was validated (catalog policy: "version validated on macOS").
-# On macOS, `npx -y apple-notes-mcp@2.8.3`:
+# On macOS, `npx -y apple-notes-mcp@2.8.11`:
 #   - completes an MCP `initialize` handshake reporting serverInfo.version
-#     2.8.3 — i.e. the bytes npx resolved are the bytes pinned here;
-#   - returns a full `tools/list` of 36 tools, every one carrying a description;
+#     2.8.11 — i.e. the bytes npx resolved are the bytes pinned here;
+#   - returns a full `tools/list` of 51 tools, every one carrying a description;
 #   - resolves all 20 `tools.default_enabled` entries below against that
 #     list, so no allow-listed name went stale across the bump.
 # Tools added since the previous pin are deliberately left OUT of
 # default_enabled — widening the default surface is the maintainers' call.
 # Re-run all three checks before moving this pin.
 #
-# Jumped straight from 2.7.5 to 2.8.2 (skipping 2.8.0/2.8.1) OUTSIDE this
-# catalog's normal >=2-week pin-age policy: unlike 2.8.0's note-mutation
-# write-safety hardening (correctly declined below for touching no
-# default_enabled tool), 2.8.2 fixes a fast-uri security vulnerability (4
-# GHSAs, high severity) reachable via ajv's JSON-schema validation on every
-# tool call — universal reach, not gated by default_enabled. Per this
-# catalog's own precedent of re-pinning immediately for security releases,
-# the age policy yields to a security fix.
+# Earlier pins, both ahead of the >=2-week age policy: 2.8.2 (fast-uri
+# security fix: 4 high-severity GHSAs reachable via ajv's JSON-schema
+# validation on every tool call) and 2.8.3 (on a British/Australian/Irish Mac
+# `doctor` and `health-check` reported `permissions: ok` on a genuine TCC
+# refusal; found by extension from sweetrb/apple-mail-mcp#218).
 #
-# 2.8.2 -> 2.8.3 on the same footing: it fixes a defect in `doctor` and
-# `health-check`, the two tools at the top of default_enabled below. Notes
-# carried three independent copies of the "is this a permission refusal?"
-# test — an inline regex in the error mappings and two raw substring checks in
-# the manager — all matching only the American "not authorized". On a
-# British/Australian/Irish Mac macOS says "Not authorised", so a genuine TCC
-# refusal reported `permissions: ok`. 2.8.3 unifies all three behind one
-# exported classifier and also matches the locale-independent `(-1743)`
-# OSStatus, covering fully localised systems no English pattern can. Found by
-# extension from sweetrb/apple-mail-mcp#218, which reported the identical
-# defect in the sibling server.
+# 2.8.11 is re-pinned on the same footing: it fixes two defects in
+# default_enabled tools, reported against a real 359-note library as
+# sweetrb/apple-notes-mcp#162:
+#   - `export-notes-json` sent the whole library as ONE JSON-RPC message,
+#     carried twice (95 MB for that library). MCP stdio clients close the
+#     connection on any message over 10 MB, so the caller saw only
+#     `Connection closed` although the server had finished normally.
+#   - `list-notes` spent two Apple Events on every returned note, so large
+#     libraries hit `AppleEvent timed out` (359 notes: 3.3 s -> 0.23 s).
+#     `list-shared-notes` got the same fix (4.2 s -> 0.9 s, same result).
+# ⚠️ One behaviour change in a default_enabled tool: `export-notes-json` now
+# returns PAGES — the first 50 notes by default, with optional `offset`,
+# `limit` (max 500) and `modifiedSince`, and a `page` object (`nextOffset`,
+# `hasMore`). A caller that expects the whole library must follow
+# `page.nextOffset` while `hasMore` is true.
 #
-# The pin stops at 2.8.3 rather than npm-current 2.8.4 (2026-09-10): 2.8.4
-# only fixes `update-note`/`append-to-note` readback, both absent from
-# default_enabled below, so taking it would spend pin age for no change to
-# the default surface.
+# The 15 tools added since 2.8.3 (native objects and tags, attachments,
+# folder rename, Shortcut-bridge setup) all stay out of default_enabled.
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-notes-mcp@2.8.3"
+    - "apple-notes-mcp@2.8.11"
 
 # Drives Apple Notes locally via AppleScript; no credentials.
 auth:

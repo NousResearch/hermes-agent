@@ -1252,8 +1252,11 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
                 MemoryStore, get_builtin_memory_config, get_builtin_memory_store_flags,
             )
             mem_config = get_builtin_memory_config(_agent_cfg)
-            agent._memory_enabled, agent._user_profile_enabled = get_builtin_memory_store_flags(
+            agent._memory_enabled, default_user_profile_enabled = get_builtin_memory_store_flags(
                 _agent_cfg
+            )
+            agent._user_profile_enabled = (
+                user_profile_enabled if user_profile_enabled is not None else default_user_profile_enabled
             )
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
             if agent._memory_enabled or agent._user_profile_enabled:
@@ -2204,7 +2207,7 @@ def init_agent(
     fallback_model: Dict[str, Any] = None, credential_pool=None, checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
-    requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None,
+    requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None, user_profile_enabled: Optional[bool] = None,
 ):
     """Initialize the AI Agent (body of :meth:`AIAgent.__init__`).
 

@@ -1019,7 +1019,7 @@ class TurnRunner:
         )
 
     def _build_fresh_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations,
-                           reasoning_config, pr, skip_context_files):
+                           reasoning_config, pr, skip_context_files, user_profile_enabled=None):
         from gateway.run import _checkpoint_agent_kwargs
         ctx = self._ctx
         runner = self._runner
@@ -1046,6 +1046,7 @@ class TurnRunner:
             skip_context_files=skip_context_files,
             # Keep the persona even with minimal context: soul identity is one small file.
             load_soul_identity=True,
+            user_profile_enabled=user_profile_enabled,
         )
 
     def _resolve_turn_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr):
@@ -1054,12 +1055,20 @@ class TurnRunner:
         ctx = self._ctx
         runner = self._runner
         skip_context_files = self._skip_context_files(platform_key)
+        user_profile_enabled = None
+        if getattr(ctx, "source", None) and runner and hasattr(runner, "should_include_operator_profile"):
+            try:
+                if not runner.should_include_operator_profile(ctx.source):
+                    user_profile_enabled = False
+            except Exception:
+                pass
         sig = runner._agent_config_signature(
             turn_route["model"], turn_route["runtime"], ctx.enabled_toolsets, combined_ephemeral,
             cache_keys=runner._extract_cache_busting_config(ctx.user_config),
             user_id=getattr(ctx.source, "user_id", None),
             user_id_alt=getattr(ctx.source, "user_id_alt", None),
             skip_context_files=skip_context_files,
+            user_profile_enabled=user_profile_enabled,
         )
         cache_lock = getattr(runner, "_agent_cache_lock", None)
         cache = getattr(runner, "_agent_cache", None)
@@ -1077,6 +1086,7 @@ class TurnRunner:
         if agent is None:
             agent = self._build_fresh_agent(
                 turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr, skip_context_files,
+                user_profile_enabled=user_profile_enabled,
             )
             if cache_lock and cache is not None:
                 with cache_lock:

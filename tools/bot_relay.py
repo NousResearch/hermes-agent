@@ -406,11 +406,17 @@ def delivery_turn_author(from_profile: Any, from_handle: Any, from_connection: A
 
 def delivery_env(author: Optional[dict]) -> dict[str, str]:
     """Environment for one delivery turn's ``hermes`` child. The dispatcher's own HERMES_TURN_AUTHOR is
-    dropped first so a delivery without an author never inherits the author of the turn that sent it."""
+    dropped first so a delivery without an author never inherits the author of the turn that sent it.
+    Dispatcher session identity (``HERMES_SESSION_*``, ``HERMES_UI_SESSION_ID``) is dropped too: a
+    nested recipient that ``message_agent``s onward must not stamp that grandchild notify with the
+    grandparent's key, or the live recipient never resumes."""
     from agent.turn_author import TURN_AUTHOR_ENV, turn_author_env
 
     env = dict(os.environ)
     env.pop(TURN_AUTHOR_ENV, None)
+    for key in list(env):
+        if key.startswith("HERMES_SESSION_") or key == "HERMES_UI_SESSION_ID":
+            env.pop(key, None)
     if author:
         env.update(turn_author_env(author))
     return env

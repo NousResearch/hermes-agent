@@ -3789,6 +3789,11 @@ def tick(
             logger.debug("Cron dispatch paused while gateway drains existing work")
             return 0
 
+        from cron.bot_chat_delivery import drain, drain_in_background
+        if sync:
+            drain()
+        else:
+            drain_in_background()
         _maybe_reap_dead_owners()
         # Periodic worktree GC (6h, threaded) — the only sweep gateway-only boxes get.
         try:

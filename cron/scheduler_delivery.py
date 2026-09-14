@@ -653,7 +653,7 @@ def _get_bot_chat_delivery_timeout() -> int:
         return 600
 
 
-def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]:
+def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: bool = False) -> Optional[str]:
     """Hand output to the live Bot Chat owner, or use the legacy unowned CLI lane.
 
     None means completed; a queued/claimed receipt returns an explicit unverified status
@@ -693,6 +693,19 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
         # Read BEFORE discovery: the previous owner may have exited after accepting.
         # No receipt state, including ambiguous/failed, authorizes a CLI replay.
         receipt = read_delivery_result(home, key)
+        if receipt is None and not deferred:
+            from cron.bot_chat_delivery import defer, read_pending
+            from tools.bot_live_delivery import find_canonical_owner
+
+            pending = read_pending(key)
+            if pending is None and find_canonical_live_owner(home) is None and find_canonical_owner(home):
+                pending = defer(key, dict(job), content, profile, home)
+            if pending is not None:
+                status = pending["status"]
+                target = f"bot-chat:{profile_label}"
+                job.setdefault("_bot_chat_delivery_receipts", {})[target] = {
+                    "status": status, "delivery_id": key}
+                return None if status == "settled" else f"{target} {status} (receipt {key}): completion unverified; do not resend"
         if receipt is None:
             owner = find_canonical_live_owner(home)
             if owner is not None:

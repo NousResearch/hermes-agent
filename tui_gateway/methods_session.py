@@ -110,8 +110,11 @@ def _cwd_info(session: dict, cwd: str, branch=None) -> dict:
     """session.info after a cwd change: the full agent view, or the lazy shape."""
     if (agent := session.get("agent")) is not None:
         return _session_info(agent, session)
+    # desktop_contract MUST be present: the desktop treats a missing value as 0 and
+    # fires the sticky backend-contract-skew toast (REQUIRED_BACKEND_CONTRACT).
     return {"cwd": cwd, "branch": git_probe.branch(cwd) if branch is None else branch,
-            "project": _project_info_for_cwd(cwd), "lazy": True}
+            "project": _project_info_for_cwd(cwd), "lazy": True,
+            "desktop_contract": DESKTOP_BACKEND_CONTRACT}
 
 
 def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=None) -> dict:

@@ -282,3 +282,55 @@ def test_wezterm_is_not_placeholder_capable(monkeypatch):
 
     monkeypatch.setenv("WEZTERM_PANE", "1")
     assert render.supports_kitty_placeholders() is False
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# high-resolution atlases — geometry comes from the sheet's own grid
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_cell_size_follows_the_atlas_grid():
+    """A sheet's cell is its own grid, not a fixed 192x208.
+
+    The same pet packed at 2x still describes an 8-col x 9-row grid, so the
+    derived cell has to scale with the image — a fixed native cell crops every
+    frame down to a fragment of the character. A shape that is not an atlas
+    grid keeps the native cell instead of guessing a size.
+    """
+    native = (FRAME_W, FRAME_H)
+    assert constants.infer_frame_size(FRAME_W * 8, FRAME_H * 9) == native
+    assert constants.infer_frame_size(FRAME_W * 16, FRAME_H * 18) == (FRAME_W * 2, FRAME_H * 2)
+    # legacy 9-col x 8-row atlas keeps the same native cell
+    assert constants.infer_frame_size(FRAME_W * 9, FRAME_H * 8) == native
+    # not an atlas grid: fall back to the native cell, never guess
+    assert constants.infer_frame_size(1000, 1000) == native
+
+
+def test_frame_counts_do_not_depend_on_atlas_resolution(tmp_path):
+    """Resolution is not part of the animation contract.
+
+    One pet packed at 1x and at 2x must report the same per-state frame counts.
+    Cropping a 2x sheet on the native cell instead splits every real frame in
+    half and inflates the counted frames — the sliced, twitching render.
+    """
+    from PIL import Image
+
+    def atlas(path, scale):
+        sheet = Image.new("RGBA", (FRAME_W * 8 * scale, FRAME_H * 9 * scale), (0, 0, 0, 0))
+        block = Image.new("RGBA", (FRAME_W * scale, FRAME_H * scale), (200, 80, 80, 255))
+        # row -> real (opaque) frame count; the rest of the row stays transparent
+        real = {0: 6, 3: 4, 4: 5, 5: 8, 7: 6, 8: 5}
+        for r, k in real.items():
+            for c in range(k):
+                sheet.paste(block, (c * FRAME_W * scale, r * FRAME_H * scale))
+        sheet.save(path)
+        return path
+
+    one = atlas(tmp_path / "atlas_1x.webp", 1)
+    two = atlas(tmp_path / "atlas_2x.webp", 2)
+
+    assert render.state_frame_counts(str(two)) == render.state_frame_counts(str(one))
+    # the 2x pet plays the same animation, just at twice the pixel density
+    hires = render.PetRenderer(str(two), mode="unicode", scale=0.5)
+    assert hires.frame_count("idle") == 6
+    assert hires.frame_count("wave") == 4

@@ -1007,8 +1007,39 @@ class GatewayNotificationsMixin:
             await deliver()
             return True
         except Exception as e:
+            if self._is_active_turn_lease_rejection(e):
+                # The session's turn lease legitimately fenced the delivery row (a live turn
+                # owns the transcript). Re-raise as WakeNotAccepted so the durable settlement
+                # takes the "defer" branch (attempt REFUNDED, row stays pending) instead of
+                # "release" — release burned attempts against a lease that outlived the whole
+                # budget and terminally dropped the delivery (2026-09-14, deleg_b1078862:
+                # 8 attempts, 0 delivered). The watcher requeues and retries after the turn.
+                logger.info(
+                    "Delegation delivery for session %s fenced by the active turn lease; "
+                    "deferring (no attempt spent)",
+                    raw_sid,
+                )
+                from gateway.wake import WakeNotAccepted
+
+                raise WakeNotAccepted(
+                    f"session turn lease holds {raw_sid!r}; delivery deferred"
+                ) from e
             logger.warning(fail, raw_sid, e)
             return False
+
+    @staticmethod
+    def _is_active_turn_lease_rejection(exc: BaseException) -> bool:
+        """True when the persist was refused because the session has a live turn lease.
+
+        Distinct from a transient lock error: the fence is correct and will lift when the
+        owning turn ends, so the caller should WAIT (defer, refund) rather than spend the
+        capped delivery-attempt budget spinning against it.
+        """
+        from hermes_state_errors import SessionTurnLeaseLostError
+
+        return isinstance(exc, SessionTurnLeaseLostError) or (
+            "active turn lease" in str(exc)
+        )
 
     def _resolve_injection_adapter(self, platform_name: str, source=None):
         """Adapter for a synthetic-event platform: alias-aware transport resolver first (one
@@ -1224,7 +1255,41 @@ class GatewayNotificationsMixin:
             except Exception:
                 logger.debug("Async-completion delivery DB unavailable", exc_info=True)
                 return False
+            if str(evt.get("type") or "") == "async_delegation":
+                # A live turn lease on the target session fences the delivery-row persist
+                # (reject_active_turn_lease). Wait it out HERE, read-only, before the durable
+                # claim — otherwise every watcher tick spends claim+defer writes against a
+                # lease that may run for the whole turn (2026-09-14: the 2s spin burned 8
+                # attempts, terminally dropping deleg_b1078862). Fail-open on probe errors:
+                # the persist-side fence + defer refund still protect the row.
+                lease_session = parent_session_id or _raw_process_event_session_id(evt) or ""
+                if lease_session and await asyncio.to_thread(
+                    self._session_turn_lease_active, lease_session
+                ):
+                    logger.debug(
+                        "Deferring async delegation pre-flight: session %s holds an active turn lease",
+                        lease_session,
+                    )
+                    return False
         return True
+
+    def _session_turn_lease_active(self, session_id: str) -> bool:
+        """Read-only probe: does the session's conversation hold a live (unexpired) turn lease?
+
+        Never takes the write lock (WAL read). Probe failure fails OPEN — the persist-side
+        fence (SessionTurnLeaseLostError → defer refund) remains the correctness boundary.
+        """
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None or not session_id:
+            return False
+        try:
+            owner = session_db.get_session_turn_lease_owner(session_id)
+        except Exception:
+            return False
+        if owner is None:
+            return False
+        _holder, expires_at = owner
+        return float(expires_at) > time.time()
 
     async def _preflight_completion_delivery(self, evt: dict) -> "_CompletionClaim":
         """Claim the durable row (async delegations) and verify the target before adapter acceptance.

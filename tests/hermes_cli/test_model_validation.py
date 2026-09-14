@@ -134,7 +134,7 @@ class TestProviderModelIds:
             assert provider_model_ids("anthropic") == ["enterprise-claude"]
 
         req = mock_urlopen.call_args[0][0]
-        assert req.full_url == "http://localhost:6655/anthropic/v1/models"
+        assert req.full_url == "http://localhost:6655/anthropic/v1/models?limit=1000"
         assert req.get_header("X-api-key") == "proxy-key"
 
     def test_custom_provider_passes_anthropic_mode_for_versioned_proxy_catalog(self):
@@ -285,7 +285,7 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-zen", "x-preview-f-free") == "chat_completions"
         assert opencode_model_api_mode("opencode-zen", "opencode-zen/x-preview-f-free") == "chat_completions"
         # Other free-tier Zen models are chat/completions too.
-        assert opencode_model_api_mode("opencode-zen", "hy3-free") == "chat_completions"
+        assert opencode_model_api_mode("opencode-zen", "mimo-v2.5-free") == "chat_completions"
         assert opencode_model_api_mode("opencode-zen", "nemotron-3.5-lightning-free") == "chat_completions"
         # Hy3 on Go is chat/completions (Go endpoint table).
         assert opencode_model_api_mode("opencode-go", "hy3") == "chat_completions"

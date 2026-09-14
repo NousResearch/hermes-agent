@@ -1595,6 +1595,13 @@ def _verified_codex_ctx_for_slug(model_bare: str) -> Optional[int]:
 
 _codex_oauth_context_cache: Dict[str, Tuple[Dict[str, int], float]] = {}
 _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
+# The Codex models endpoint reads ``client_version`` as a Codex CLI compatibility version and
+# hides models whose ``minimal_client_version`` is newer, so a made-up version (the old
+# "1.0.0") silently drops future models. "0.0.0" is the backend's ungated sentinel returning
+# the full account catalog; other out-of-sequence values return an empty catalog and omitting
+# the parameter is HTTP 400.
+CODEX_UNGATED_CLIENT_VERSION = "0.0.0"
+CODEX_MODELS_CATALOG_URL = f"https://chatgpt.com/backend-api/codex/models?client_version={CODEX_UNGATED_CLIENT_VERSION}"
 
 
 def _codex_oauth_token_fingerprint(access_token: str) -> str:
@@ -1630,7 +1637,7 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str) -> Tuple[D
         headers["ChatGPT-Account-Id"] = acct_id
     try:
         _ensure_requests()
-        resp = requests.get("https://chatgpt.com/backend-api/codex/models?client_version=1.0.0", headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
+        resp = requests.get(CODEX_MODELS_CATALOG_URL, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
         if resp.status_code != 200:
             logger.debug("Codex /models probe returned HTTP %s; falling back to hardcoded defaults", resp.status_code)
             return {}, False

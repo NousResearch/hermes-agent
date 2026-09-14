@@ -284,7 +284,15 @@ async def test_the_terminal_turn_of_a_chain_is_ledgered_under_its_own_inbound_id
     adapter._send_with_retry = AsyncMock(return_value=SendResult(success=True, message_id="901"))
     event = MessageEvent(text="hi again", source=_source(), message_id="101",
                          ledger_message_id="102")
-    await adapter._send_final_text(event, SESSION_KEY, same_text, {}, False, 0, lambda _r: None)
+    caller_metadata = {"_turn_final": False, "thread_id": "7.7"}
+    await adapter._send_final_text(
+        event, SESSION_KEY, same_text, caller_metadata, False, 0, lambda _r: None)
+    assert adapter._send_with_retry.await_args.kwargs["metadata"] == {
+        "_delivery_obligation_id": dl.compute_obligation_id(SESSION_KEY, "102", same_text),
+        "_turn_final": True,
+        "thread_id": "7.7",
+    }
+    assert caller_metadata == {"_turn_final": False, "thread_id": "7.7"}
 
     rows = {r["obligation_id"]: r for r in _rows()}
     assert len(rows) == 2, "the terminal reply reused the earlier turn's obligation id"

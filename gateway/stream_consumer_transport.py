@@ -85,6 +85,7 @@ class StreamTransportMixin:
         """Draft-frame metadata: same reply_to_message_id as the final send, because the
         relay adapter keys draft/seal state on it (flat DMs have no thread metadata)."""
         md = dict(self.metadata) if self.metadata else {}
+        md.pop("_turn_final", None)
         if self._initial_reply_to_id:
             md.setdefault("reply_to_message_id", self._initial_reply_to_id)
         return md or None
@@ -276,7 +277,9 @@ class StreamTransportMixin:
         stale_ids = self._stale_preview_ids()
         try:
             result = await self.adapter.send(
-                chat_id=self.chat_id, content=text, metadata=self._metadata_for_send(final=True))
+                chat_id=self.chat_id, content=text,
+                metadata=self._metadata_for_send(
+                    final=True, is_turn_final=is_turn_final))
         except Exception as e:
             logger.debug("Fresh-final send failed, falling back to edit: %s", e)
             return False
@@ -344,7 +347,8 @@ class StreamTransportMixin:
         self._last_edit_overflowed = False
         try:
             if self._message_id is None:
-                return await self._first_send(text, finalize=finalize)
+                return await self._first_send(
+                    text, finalize=finalize, is_turn_final=is_turn_final)
             if not self._edit_supported:
                 return False  # edits unsupported; fallback path sends the final
             return await self._edit_existing(text, finalize=finalize, is_turn_final=is_turn_final)
@@ -428,7 +432,9 @@ class StreamTransportMixin:
         # send must still fire so the user gets a real message.
         return True if await self._send_draft_frame(frame_text) else None
 
-    async def _first_send(self, text: str, *, finalize: bool) -> bool:
+    async def _first_send(
+        self, text: str, *, finalize: bool, is_turn_final: bool = False,
+    ) -> bool:
         """First send, threaded to the user's message (correct topic/thread)."""
         if getattr(self, "_egress_declined", False):
             # The connector refused this destination earlier in the run (see
@@ -441,7 +447,9 @@ class StreamTransportMixin:
             return False
         result = await self.adapter.send(
             chat_id=self.chat_id, content=text, reply_to=self._initial_reply_to_id,
-            metadata=self._metadata_for_send(final=finalize, expect_edits=not finalize))
+            metadata=self._metadata_for_send(
+                final=finalize, expect_edits=not finalize,
+                is_turn_final=is_turn_final))
         if not result.success:
             self._edit_supported = False
             return False

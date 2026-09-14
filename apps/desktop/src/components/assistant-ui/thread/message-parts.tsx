@@ -105,6 +105,13 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
   }
 
   if (props.toolName === 'clarify') {
+    // Stopped on this question, never answered: history. ClarifyTool reads
+    // the session's live clarify request, so a later turn's question would
+    // otherwise paint onto this row as a second live card.
+    if (settledWithoutResult(props)) {
+      return <ToolFallback {...props} />
+    }
+
     return (
       <>
         <TimelineTimestamp className="mb-0.5 block" completedAt={props.completedAt} timestamp={props.timestamp} />

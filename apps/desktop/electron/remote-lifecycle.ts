@@ -114,6 +114,29 @@ function isLockfileSkew(lock) {
   return Boolean(lock) && (lock as any).skew === true
 }
 
+/**
+ * True when the lock records a code generation OTHER than the one the remote runs now.
+ *
+ * `hermes --version` embeds the upstream short sha (e.g. `... · upstream afe06f21`), so the
+ * version string a lock was written with identifies the checkout that backend was spawned from.
+ * A backend that predates an in-place `hermes update` keeps the PREVIOUS checkout's modules in
+ * memory (the Desktop reuses it across reconnects) and later dies mid-turn with
+ * `agent init failed: cannot import name ...`. Recycling it here is cheaper than healing it there.
+ *
+ * Unknown on either side returns false: killing a live tunnel on a guess is the wrong-way failure
+ * (#78872 ownership guard / #95532 fail-closed skew have the same rule).
+ */
+export function lockCodeGenerationDiffers(lock: any, currentHermesVersion: string | null | undefined): boolean {
+  const recorded = typeof lock?.hermesVersion === 'string' ? lock.hermesVersion.trim() : ''
+  const current = typeof currentHermesVersion === 'string' ? currentHermesVersion.trim() : ''
+
+  if (!recorded || !current) {
+    return false
+  }
+
+  return recorded !== current
+}
+
 function connectReservationPath(ownershipId) {
   return `${ownershipDirectory(ownershipId)}/.connect.lock`
 }
@@ -1464,7 +1487,11 @@ async function connect(deps) {
       Boolean(reuseToken) &&
       lock.tokenFingerprint === fingerprintToken(reuseToken) &&
       lock.hermesPath === hermesPath &&
-      lock.hermesHome === hermesHome
+      lock.hermesHome === hermesHome &&
+      // A reuse across a source update hands the user a backend that keeps pre-update modules in
+      // memory; treat the generation change like any other non-reusable lock (cleanupStale below
+      // kills it, then this connect spawns a fresh one on current source).
+      !lockCodeGenerationDiffers(lock, hermesVersion)
 
     if (reusable) {
       const creationTime = lock.creationTime || (await remoteProcessCreationTime(ssh, lock.pid))
@@ -1589,6 +1616,9 @@ async function connect(deps) {
     hermesPath,
     hermesHome,
     logPath,
+    // Generation stamp read back on the next connect (lockCodeGenerationDiffers): the version
+    // string carries the upstream short sha of the checkout this backend was spawned from.
+    ...(hermesVersion ? { hermesVersion } : {}),
     tokenFingerprint: fingerprintToken(spawnToken),
     protocolVersion: PROTOCOL_VERSION,
     startedAt: new Date().toISOString(),

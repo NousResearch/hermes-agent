@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 
+import { lockCodeGenerationDiffers } from './remote-lifecycle'
 import { assertBootstrapNotSuperseded, redactSecrets, SSH_ERROR } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
@@ -337,7 +338,7 @@ function validLock(lock, ownershipId) {
   )
 }
 
-function reusableWindowsLock(lock, state, profile, reuseToken, runtime) {
+function reusableWindowsLock(lock, state, profile, reuseToken, runtime, hermesVersion = '') {
   return Boolean(
     state.alive &&
     state.owned &&
@@ -346,7 +347,10 @@ function reusableWindowsLock(lock, state, profile, reuseToken, runtime) {
     reuseToken &&
     lock.tokenFingerprint === fingerprintToken(reuseToken) &&
     lock.hermesPath === runtime.hermesPath &&
-    lock.hermesHome === runtime.hermesHome
+    lock.hermesHome === runtime.hermesHome &&
+    // Same generation rule as the POSIX lifecycle: a backend spawned before an in-place update
+    // keeps pre-update modules in memory, so it is not reusable (the caller reaps it and spawns).
+    !lockCodeGenerationDiffers(lock, hermesVersion)
   )
 }
 
@@ -590,7 +594,7 @@ async function connectWindowsRemote(deps) {
       throw error
     }
 
-    const reusable = reusableWindowsLock(lock, state, profile, reuseToken, runtime)
+    const reusable = reusableWindowsLock(lock, state, profile, reuseToken, runtime, hermesVersion)
 
     if (reusable) {
       await assertWindowsRemoteInstallUpdateClear(ssh, runtime.hermesHome)
@@ -703,6 +707,8 @@ async function connectWindowsRemote(deps) {
     hermesPath: runtime.hermesPath,
     hermesHome: runtime.hermesHome,
     tokenFingerprint,
+    // Generation stamp read back by reusableWindowsLock -> lockCodeGenerationDiffers.
+    ...(hermesVersion ? { hermesVersion } : {}),
     startedAt
   }
 

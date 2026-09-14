@@ -21,6 +21,7 @@ import {
   isLockfileSkew,
   listRemoteHermesProfiles,
   locateHermes,
+  lockCodeGenerationDiffers,
   LOCKFILE_SCHEMA_VERSION,
   lockfilePath,
   openForward,
@@ -43,6 +44,25 @@ import {
 
 const OWNERSHIP_ID = '0123456789abcdef0123456789abcdef'
 const SPAWN_NONCE = '0123456789abcdef'
+
+test('a lock from another code generation is not reusable', () => {
+  // Field failure (2026-09-14): the Desktop REUSED a `serve --isolated` backend started before an
+  // in-place `hermes update`, and the TUI then died every turn with
+  // `ImportError: cannot import name 'profile_from_session_key_namespace' from 'gateway.session'`.
+  // `hermes --version` carries the upstream short sha, so the recorded string IS the generation.
+  const preUpdate = 'Hermes Agent v0.21.2 (2026.9.11) · upstream 11111111'
+  const postUpdate = 'Hermes Agent v0.21.2 (2026.9.11) · upstream afe06f21'
+
+  assert.equal(lockCodeGenerationDiffers({ hermesVersion: preUpdate }, postUpdate), true)
+  assert.equal(lockCodeGenerationDiffers({ hermesVersion: postUpdate }, postUpdate), false)
+  // Unknown on either side must NOT recycle: killing a live tunnel on a guess is the wrong-way failure.
+  assert.equal(lockCodeGenerationDiffers({}, postUpdate), false)
+  assert.equal(lockCodeGenerationDiffers({ hermesVersion: preUpdate }, ''), false)
+  assert.equal(lockCodeGenerationDiffers({ hermesVersion: preUpdate }, null), false)
+  assert.equal(lockCodeGenerationDiffers(null, postUpdate), false)
+  // Padding differences are not generation differences.
+  assert.equal(lockCodeGenerationDiffers({ hermesVersion: ` ${postUpdate} ` }, postUpdate), false)
+})
 const exec = promisify(execCallback)
 
 test('SSH reuse proof rejects a backend whose runtime was replaced', () => {

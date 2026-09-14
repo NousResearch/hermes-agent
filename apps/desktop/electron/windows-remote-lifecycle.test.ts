@@ -285,6 +285,34 @@ test('Windows SSH reuse requires the requested remote profile to match the lock'
   assert.equal(reusableWindowsLock({ ...lock, profile: '' }, state, '', token, runtime), true)
 })
 
+test('Windows SSH reuse refuses a backend spawned on an older checkout', () => {
+  const token = 'stored-token'
+
+  const lock = {
+    schemaVersion: 2,
+    protocolVersion: 1,
+    ownershipId,
+    spawnNonce: '0123456789abcdef',
+    pid: 10,
+    creationTimeNs: '1784219690452757504',
+    port: 1234,
+    profile: 'default',
+    tokenFingerprint: crypto.createHash('sha256').update(token).digest('hex').slice(0, 32),
+    hermesPath: 'C:\\h\\hermes.exe',
+    hermesHome: 'C:\\h',
+    hermesVersion: 'Hermes Agent v0.21.2 (2026.9.11) · upstream 11111111'
+  }
+
+  const state = { alive: true, owned: true }
+  const runtime = { hermesPath: lock.hermesPath, hermesHome: lock.hermesHome }
+  const current = 'Hermes Agent v0.21.2 (2026.9.11) · upstream afe06f21'
+
+  assert.equal(reusableWindowsLock(lock, state, 'default', token, runtime, current), false)
+  assert.equal(reusableWindowsLock(lock, state, 'default', token, runtime, lock.hermesVersion), true)
+  // No recorded/current version (pre-guard locks): keep the historical reuse decision.
+  assert.equal(reusableWindowsLock({ ...lock, hermesVersion: undefined }, state, 'default', token, runtime, current), true)
+})
+
 test('Windows integrated terminal uses encoded PowerShell and preserves cwd as literal data', () => {
   const command = buildWindowsInteractiveCommand("C:\\Users\\O'Brien\\repo")
   const script = Buffer.from(command.split(' ').pop()!, 'base64').toString('utf16le')

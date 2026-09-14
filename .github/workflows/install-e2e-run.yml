@@ -56,6 +56,22 @@ jobs:
         with:
           fetch-depth: 0
 
+      # A fork's tags and branch refs are not authoritative for upstream releases.
+      # Use a token-authenticated upstream checkout for the requested ref, then
+      # drop the credential and move the checkout outside the source tree before
+      # installer code receives its path.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: NousResearch/hermes-agent
+          ref: ${{ inputs.install-ref }}
+          fetch-depth: 0
+          path: .install-upstream
+          persist-credentials: false
+      - name: Move upstream checkout outside source
+        env:
+          UPSTREAM_CHECKOUT: ${{ runner.temp }}/install-upstream
+        run: mv .install-upstream "$UPSTREAM_CHECKOUT"
+
       # bubblewrap + slirp4netns are what the sandbox is built on; util-linux
       # supplies the `unshare` that builds the multi-uid userns for the
       # user-level (non-root) install.
@@ -88,6 +104,10 @@ jobs:
             --route '${{ inputs.route }}' \
             --install-ref '${{ inputs.install-ref }}'
         env:
+          # Resolve against the authenticated upstream checkout. The installer
+          # fetches this local repository into its own temporary repo, preserving
+          # the real branch/tag/SHA resolution path without another network call.
+          HERMES_DEV_SANDBOX_UPSTREAM: ${{ runner.temp }}/install-upstream
           # Outside the workspace on purpose: the script creates this directory
           # up front, and an untracked dir inside the repo makes the worktree
           # dirty -- which dev-sandbox reacts to by snapshotting the working

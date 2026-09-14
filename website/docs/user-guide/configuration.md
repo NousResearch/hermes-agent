@@ -2587,6 +2587,7 @@ Pre-execution security scanning and secret redaction:
 ```yaml
 security:
   redact_secrets: true           # Redact API key patterns in tool output and logs (on by default)
+  secret_name_pattern: null      # Optional regex override for env-var names treated as secrets (exact-value redaction)
   tirith_enabled: true           # Enable Tirith security scanning for terminal commands
   tirith_path: "tirith"          # Path to tirith binary (default: "tirith" in $PATH)
   tirith_timeout: 5              # Seconds to wait for tirith scan before timing out
@@ -2598,6 +2599,7 @@ security:
 ```
 
 - `redact_secrets` — when `true`, automatically detects and redacts patterns that look like API keys, tokens, and passwords in tool output before it enters the conversation context and logs. **On by default**. Set to `false` explicitly only when you need raw credential-like strings for debugging or redactor development.
+- `secret_name_pattern` — optional regex that marks an environment-variable NAME as a secret in the exact-value redaction pass. Any `.env` variable whose name matches this pattern (case-insensitive) has its exact value masked in every redacted surface, even when the value has no recognizable vendor prefix. Defaults to a built-in pattern (`TOKEN`, `PASSWORD`, `SECRET`, `KEY`, `CREDENTIAL`, `AUTH`, and variants). An invalid pattern, a non-string value, or an empty string falls back to the built-in default with a warning.
 - `tirith_enabled` — when `true`, terminal commands are scanned by [Tirith](https://github.com/sheeki03/tirith) before execution to detect potentially dangerous operations.
 - `tirith_path` — path to the tirith binary. Set this if tirith is installed in a non-standard location.
 - `tirith_timeout` — maximum seconds to wait for a tirith scan. Commands proceed if the scan times out.

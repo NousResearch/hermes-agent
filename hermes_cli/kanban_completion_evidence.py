@@ -16,8 +16,10 @@ class CompletionEvidenceError(ValueError):
     """Completion evidence is missing, malformed, or cannot be resolved."""
 
 
-def prepare_completion_evidence(conn, task, proof: Iterable[str] | None, *,
-                                accept_unproven: bool = False) -> tuple[list[str], list[dict], bool]:
+def prepare_completion_evidence(
+    conn, task, proof: Iterable[str] | None, *, accept_unproven: bool = False,
+    max_path_bytes: int,
+) -> tuple[list[str], list[dict], bool, int]:
     """Capture typed proof for mandatory revalidation at settlement.
 
     Relative ``path:`` values resolve against the task's persisted workspace.
@@ -36,23 +38,25 @@ def prepare_completion_evidence(conn, task, proof: Iterable[str] | None, *,
                 "completion requires proof; pass one or more typed values "
                 f"({_EVIDENCE_TYPES}) or explicitly accept an unproven completion"
             )
-        return values, [], accept_unproven
+        return values, [], accept_unproven, max_path_bytes
 
-    return values, _validate_values(conn, task, values), False
+    return values, _validate_values(conn, task, values, max_path_bytes), False, max_path_bytes
 
 
-def settle_completion_evidence(conn, task, prepared: tuple[list[str], list[dict], bool]) -> tuple[list[dict], bool]:
+def settle_completion_evidence(
+    conn, task, prepared: tuple[list[str], list[dict], bool, int],
+) -> tuple[list[dict], bool]:
     """Revalidate a prepared receipt under the terminal write transaction."""
-    values, prior_records, accept_unproven = prepared
-    _, records, settled_override = prepare_completion_evidence(
-        conn, task, values, accept_unproven=accept_unproven,
+    values, prior_records, accept_unproven, max_path_bytes = prepared
+    _, records, settled_override, _ = prepare_completion_evidence(
+        conn, task, values, accept_unproven=accept_unproven, max_path_bytes=max_path_bytes,
     )
     if records != prior_records or settled_override != accept_unproven:
         raise CompletionEvidenceError("completion evidence changed before settlement")
     return records, settled_override
 
 
-def _validate_values(conn, task, values: list[str]) -> list[dict]:
+def _validate_values(conn, task, values: list[str], max_path_bytes: int) -> list[dict]:
     normalized: list[dict] = []
     seen: set[tuple[str, str]] = set()
     for raw in values:
@@ -66,7 +70,7 @@ def _validate_values(conn, task, values: list[str]) -> list[dict]:
             raise CompletionEvidenceError(
                 f"invalid proof {raw!r}; expected TYPE:VALUE where TYPE is one of {_EVIDENCE_TYPES}"
             )
-        record = _validate_one(conn, task, kind, value)
+        record = _validate_one(conn, task, kind, value, max_path_bytes)
         key = (record["type"], str(record["resolved"]))
         if key not in seen:
             normalized.append(record)
@@ -74,7 +78,7 @@ def _validate_values(conn, task, values: list[str]) -> list[dict]:
     return normalized
 
 
-def _validate_one(conn, task, kind: str, value: str) -> dict:
+def _validate_one(conn, task, kind: str, value: str, max_path_bytes: int) -> dict:
     if kind == "path":
         candidate = Path(value)
         if not candidate.is_absolute():
@@ -87,7 +91,7 @@ def _validate_one(conn, task, kind: str, value: str) -> dict:
             resolved = candidate.resolve(strict=True)
             if not resolved.is_file():
                 raise CompletionEvidenceError(f"proof path must identify a file: {value}")
-            digest, size = _digest_stable_file(resolved)
+            digest, size = _digest_stable_file(resolved, max_path_bytes)
         except CompletionEvidenceError:
             raise
         except (OSError, RuntimeError) as exc:
@@ -141,12 +145,22 @@ def _validate_one(conn, task, kind: str, value: str) -> dict:
     return {"type": kind, "value": attachment_id, "resolved": attachment_id}
 
 
-def _digest_stable_file(path: Path) -> tuple[str, int]:
+def _digest_stable_file(path: Path, max_bytes: int) -> tuple[str, int]:
     """Hash one stable file identity so the durable receipt binds observed bytes."""
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         before = os.fstat(handle.fileno())
+        if before.st_size > max_bytes:
+            raise CompletionEvidenceError(
+                f"proof path exceeds the {max_bytes}-byte evidence limit: {path}"
+            )
+        read_bytes = 0
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            read_bytes += len(chunk)
+            if read_bytes > max_bytes:
+                raise CompletionEvidenceError(
+                    f"proof path exceeds the {max_bytes}-byte evidence limit: {path}"
+                )
             digest.update(chunk)
         after = os.fstat(handle.fileno())
     identity = lambda stat: (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)

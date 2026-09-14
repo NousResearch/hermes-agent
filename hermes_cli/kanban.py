@@ -872,6 +872,8 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     raw_meta = getattr(args, "metadata", None)
     proof = getattr(args, "proof", None)
     accept_unproven = bool(getattr(args, "accept_unproven", False))
+    if accept_unproven and os.environ.get("HERMES_KANBAN_TASK"):
+        return _err("kanban: --accept-unproven is restricted to human completion outside a worker run", 2)
     # Handoff fields are per-run; refuse to copy them across N runs.
     if len(ids) > 1 and (summary or raw_meta or proof or accept_unproven):
         return _err("kanban: --summary / --metadata / --proof / --accept-unproven are per-task "

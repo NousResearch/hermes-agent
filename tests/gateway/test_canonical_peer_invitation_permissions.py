@@ -75,6 +75,29 @@ async def test_refresh_preserves_existing_explicit_rights_and_hard_horizon(targe
             peer.decode_room_grant(target.adapter._room_grant_secret(), json.loads(response.text)['grant'], permission='attachment.stage')
 
 
+@pytest.mark.asyncio
+async def test_manifest_metadata_cannot_activate_files_or_silently_admit_text(target, monkeypatch):
+    from gateway.platforms import api_server_runs
+    from tests.gateway.test_canonical_peer_text_admission import dispatch
+    issued = await invite(target)
+    value = dispatch(issued).as_mapping() | {'attachment_manifest_digest': 'a' * 64}
+    assert issued['catalog']['attachments'] is False
+    executed = []
+
+    async def inert(*args, **kwargs):
+        executed.append(True)
+
+    monkeypatch.setattr(api_server_runs, '_execute_run', inert)
+    response = await target.adapter._handle_runs(request(
+        {'hosted_room_dispatch': value}, token=issued['grant'], key='room:task-one:1'))
+    await asyncio.sleep(0)
+    assert response.status == 403, response.text
+    assert json.loads(response.text)['error']['code'] == 'invalid_room_dispatch'
+    assert not executed
+    assert target.db._conn.execute('SELECT count(*) FROM sessions').fetchone()[0] == 0
+    assert target.db._conn.execute('SELECT count(*) FROM session_admissions').fetchone()[0] == 0
+
+
 def change_endpoint(monkeypatch):
     # The YAML endpoint is restart-cached. Change the actual live override in
     # this test's private process, not a fake Files-ready catalog or a no-op edit.

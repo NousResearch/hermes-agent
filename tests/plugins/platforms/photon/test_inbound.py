@@ -16,7 +16,7 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent, MessageType
-from plugins.platforms.photon.adapter import PhotonAdapter
+from plugins.platforms.photon.adapter import PhotonAdapter, _aiter_ndjson_lines
 
 
 def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
@@ -148,6 +148,30 @@ async def test_on_inbound_line_dispatches_and_dedups(
 
     assert len(captured) == 1
     assert captured[0].text == "ping"
+
+
+@pytest.mark.asyncio
+async def test_ndjson_stream_preserves_unicode_line_separators(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture(adapter, monkeypatch)
+    separated = "first\u2028second\u2029third\u0085fourth"
+    payloads = [
+        json.dumps(_dm_event(separated, msg_id="unicode-lines"), ensure_ascii=False),
+        json.dumps(_dm_event("ordinary", msg_id="ordinary-line")),
+    ]
+
+    class ChunkedResponse:
+        async def aiter_text(self):
+            stream = "\n".join(payloads) + "\n"
+            for chunk in (stream[:17], stream[17:43], stream[43:]):
+                yield chunk
+
+    async for line in _aiter_ndjson_lines(ChunkedResponse()):
+        await adapter._on_inbound_line(line)
+
+    assert [event.text for event in captured] == [separated, "ordinary"]
 
 
 def test_is_duplicate_window(monkeypatch: pytest.MonkeyPatch) -> None:

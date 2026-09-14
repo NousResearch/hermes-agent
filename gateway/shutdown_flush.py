@@ -204,9 +204,24 @@ def recover_pending_to_db(session_db=None) -> int:
     ``session_db=None`` opens (and afterwards releases) the shared default ``state.db``.
     Returns the number of messages recovered.
     """
-    flush_files = sorted(_get_flush_dir().glob("*.json"))
+    flush_files = list(_get_flush_dir().glob("*.json"))
     if not flush_files:
         return 0
+    # UUID filenames are intentionally opaque.  Order queue payloads by their recorded
+    # arrival sequence instead; a slot payload has no seq and precedes its overflow tail.
+    def _replay_order(path: Path) -> tuple:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            return (
+                payload.get("ts", 0),
+                str(payload.get("session_key", "")),
+                payload.get("seq", -1),
+                path.name,
+            )
+        except Exception:
+            return (0, "", -1, path.name)
+
+    flush_files.sort(key=_replay_order)
     own_db = session_db is None
     if own_db:
         from hermes_state_registry import acquire

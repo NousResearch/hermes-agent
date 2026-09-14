@@ -103,15 +103,22 @@ async def test_fragmented_inbound_line_logs_warning(
 ) -> None:
     """What a splitlines()-semantics reader hands the adapter when the sidecar
     emits a raw U+2028: half a JSON document. Dropping it silently is an
-    invisible loss of a user message — it must log at WARNING with a prefix."""
+    invisible loss of a user message — it must log at WARNING, and the log
+    must carry the payload's shape (length + digest), never its content:
+    inbound lines are user messages (SMS/iMessage), and a 120-char prefix
+    would usually be the whole message."""
     adapter = _make_adapter(monkeypatch)
     fragment = '{"text": "line one'
     with caplog.at_level(logging.WARNING, logger="plugins.platforms.photon.adapter"):
         await adapter._on_inbound_line(fragment)
-    assert any(
-        "skipping non-JSON inbound line" in r.message and r.levelno == logging.WARNING
-        for r in caplog.records
-    )
+    warnings = [
+        r for r in caplog.records
+        if "skipping non-JSON inbound line" in r.message and r.levelno == logging.WARNING
+    ]
+    assert warnings
+    logged = warnings[0].getMessage()
+    assert "len=" in logged and "sha256=" in logged
+    assert "line one" not in logged, "user content leaked into logs"
 
 
 @pytest.mark.asyncio

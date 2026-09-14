@@ -212,7 +212,7 @@ def _build_payload(model_id, prompt, aspect_ratio, seed, overrides, image_urls=N
     spec + overrides, filtered to the model whitelist.
 
     Edit endpoints mostly auto-infer size, so the size key is sent only when ``edit_supports``
-    lists it. ``prompt`` (and ``image_urls`` on edits) survive a whitelist gap: every FAL
+    lists it. ``prompt`` (and the source-image key on edits) survive a whitelist gap: every FAL
     endpoint requires them, so a catalog mistake can't send a broken request.
     """
     meta = FAL_MODELS[model_id]
@@ -225,9 +225,10 @@ def _build_payload(model_id, prompt, aspect_ratio, seed, overrides, image_urls=N
     payload: Dict[str, Any] = dict(meta.get("defaults", {}))
     payload["prompt"] = (prompt or "").strip()
     required = {"prompt"}
-    if edit:
-        payload["image_urls"] = list(image_urls)
-        required.add("image_urls")
+    if edit:  # a few edit endpoints (Kling Image v3) take a singular `image_url` string instead of the list
+        image_param = meta.get("edit_image_param") or "image_urls"
+        payload[image_param] = list(image_urls)[0] if image_param != "image_urls" else list(image_urls)
+        required.add(image_param)
     size_key = _SIZE_KEY_BY_STYLE.get(meta["size_style"])
     if size_key is None and not edit:
         raise ValueError(f"Unknown size_style: {meta['size_style']!r}")
@@ -540,11 +541,8 @@ def check_image_generation_requirements() -> bool:
     if configured is None:
         return False
     # Probe only the selected plugin: a cloud key alone must not opt a user into a paid backend.
-    try:
-        provider = _get_plugin_provider(configured)
-        return bool(provider and provider.is_available())
-    except Exception:
-        return False
+    provider = _get_plugin_provider(configured)
+    return bool(provider and provider.is_available())
 
 
 # --- Registry ---

@@ -714,6 +714,8 @@ from hermes_cli.main_provider_setup import (
     _clear_stale_openai_base_url,
     _is_profile_api_key_provider,
     _named_custom_provider_map,
+    _offer_reasoning_after_pick,
+    _prompt_main_reasoning_effort,
     _prompt_provider_choice,
     _remove_custom_provider,
 )
@@ -1155,14 +1157,16 @@ def _resolve_workspace_key() -> Optional[str]:
 
 @contextlib.contextmanager
 def _session_db():
-    """Yield a ``SessionDB`` (lazy import, so test patches on ``hermes_state``
-    intercept). Open failures yield None and any error raised by the ``with``
-    body is swallowed — callers fall through to their ``return None``."""
+    """Yield a read-only ``SessionDB`` (lazy import, so test patches on ``hermes_state``
+    intercept). Every caller is a lookup (last session, title → id, recorded cwd), so it
+    never opens a writer beside the one the CLI acquires from the registry a moment later.
+    Open failures yield None and any error raised by the ``with`` body is swallowed —
+    callers fall through to their ``return None``."""
     db = None
     try:
         from hermes_state import SessionDB
 
-        db = SessionDB()
+        db = SessionDB(read_only=True)
     except Exception:
         pass
     try:
@@ -1334,11 +1338,13 @@ def _create_titled_session(title: str) -> Optional[str]:
     """
     db = None
     try:
-        from hermes_state import SessionDB
         from hermes_state_ids import new_session_id as mint_session_id
+        from hermes_state_registry import acquire
 
         new_session_id = mint_session_id()
-        db = SessionDB()
+        # The CLI acquires the registry handle for this same path moments later; share it
+        # instead of minting a second writer for one INSERT (close() releases the refcount).
+        db = acquire()
         db.create_session(new_session_id, source="cli")
         db.set_session_title(new_session_id, title)
         return new_session_id
@@ -1997,6 +2003,10 @@ def select_provider_and_model(args=None):
     if selected_provider == "aux-config":
         _aux_config_menu()
         return
+    if selected_provider == "reasoning":
+        # Effort for the CURRENT default model, no model change.
+        _prompt_main_reasoning_effort(current_model, active or "")
+        return
 
     # Provider-specific setup + model selection. Flows resolve the
     # _model_flow_* names at call time so test monkeypatches on
@@ -2023,6 +2033,10 @@ def select_provider_and_model(args=None):
         or _is_profile_api_key_provider(selected_provider)
     ):
         _model_flow_api_key_provider(config, selected_provider, current_model)
+
+    # Every flow persists through _save_model_choice; a changed model.default means a pick
+    # landed, so offer its reasoning effort here once instead of inside each flow.
+    _offer_reasoning_after_pick(current_model)
 
     # Post-switch cleanup: switching to a named provider (anything except
     # "custom") leaves a stale OPENAI_BASE_URL in ~/.hermes/.env that poisons

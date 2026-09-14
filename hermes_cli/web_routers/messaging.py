@@ -195,6 +195,27 @@ def _platform_enablement(
     return enabled, configured, home_channel
 
 
+def _enrich_live_health(health: dict | None) -> dict | None:
+    """Annotate a live_health record with ``age_seconds`` so API consumers do not have to
+    re-implement freshness math on ``checked_at``. Returns *health* unchanged when it is not
+    a dict or ``checked_at`` is not a parseable ISO timestamp. A future-dated
+    ``checked_at`` (writer's clock ahead of the reader's) clamps to ``0.0`` rather
+    than publishing a negative age, because consumers render it."""
+    if not isinstance(health, dict):
+        return health
+    checked_at = health.get("checked_at")
+    if not isinstance(checked_at, str):
+        return health
+    try:
+        checked = datetime.fromisoformat(checked_at)
+        age = max(0.0, (datetime.now(timezone.utc) - checked).total_seconds())
+        return {**health, "age_seconds": round(age, 1)}
+    except (ValueError, TypeError):
+        # Unparseable, or naive (subtracting a naive datetime from an aware one raises
+        # TypeError): surface the raw record rather than raising into the HTTP handler.
+        return health
+
+
 def _messaging_platform_payload(
     entry: dict[str, Any], env_on_disk: dict[str, str], runtime: dict | None,
     scoped: bool = False, profile_home: Optional[Path] = None,
@@ -259,6 +280,9 @@ def _messaging_platform_payload(
         "docs_url": entry["docs_url"], "enabled": enabled, "configured": configured,
         "gateway_running": gateway_running, "state": state, "error_code": error_code,
         "error_message": error_message, "updated_at": runtime_platform.get("updated_at"),
+        # Live adapter health (PR #92616's gateway_state.json record) with a server-computed
+        # age so the dashboard never re-implements freshness math on checked_at.
+        "live_health": _enrich_live_health(runtime_platform.get("live_health")),
         "home_channel": home_channel, "env_vars": env_vars,
         # Multiplex secondary served on the default's shared listener: the vendor callback URL.
         "ingress_url": runtime_platform.get("ingress_url") if gateway_running else None,

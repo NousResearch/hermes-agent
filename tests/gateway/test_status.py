@@ -412,6 +412,78 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["discord"]["error_code"] is None
         assert payload["platforms"]["discord"]["error_message"] is None
 
+    # ``live_health`` invariants: probe-sampled transport/heartbeat data (Discord ws
+    # latency, heartbeat ACK age) written by the adapter's liveness loop.  These
+    # tests pin the CONTRACT — orthogonal from lifecycle fields, never cleared by
+    # lifecycle writes, replaced whole, per-platform-key — not the field names a
+    # future probe happens to emit.
+
+    def test_live_health_only_write_preserves_lifecycle_fields(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        status.write_runtime_status(
+            platform="discord", platform_state="connected", error_code="rate_limited"
+        )
+
+        status.write_runtime_status(
+            platform="discord",
+            platform_live_health={"ws_latency_ms": 42, "heartbeat_ack_age_s": 1.5},
+        )
+
+        entry = status.read_runtime_status()["platforms"]["discord"]
+        assert entry["live_health"] == {"ws_latency_ms": 42, "heartbeat_ack_age_s": 1.5}
+        assert entry["state"] == "connected"
+        assert entry["error_code"] == "rate_limited"
+
+    def test_lifecycle_write_without_live_health_param_preserves_it(self, tmp_path, monkeypatch):
+        # A lifecycle write that omits the parameter must not clear the probe record —
+        # the reconnect loop and the liveness loop write on independent cadences.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        health = {"ws_latency_ms": 42}
+        status.write_runtime_status(platform="discord", platform_live_health=health)
+
+        status.write_runtime_status(platform="discord", platform_state="connected")
+
+        entry = status.read_runtime_status()["platforms"]["discord"]
+        assert entry["live_health"] == health
+        assert entry["state"] == "connected"
+
+    def test_live_health_write_replaces_previous_record(self, tmp_path, monkeypatch):
+        # Replacement, not merge: a stale key (e.g. a probe that stopped reporting
+        # heartbeat age) must not survive inside a newer sample.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        status.write_runtime_status(
+            platform="discord",
+            platform_live_health={"ws_latency_ms": 42, "heartbeat_ack_age_s": 3.0},
+        )
+
+        status.write_runtime_status(platform="discord", platform_live_health={"ws_latency_ms": 90})
+
+        entry = status.read_runtime_status()["platforms"]["discord"]
+        assert entry["live_health"] == {"ws_latency_ms": 90}
+
+    def test_live_health_is_per_platform_key_across_multiplex_grammar(self, tmp_path, monkeypatch):
+        # ``discord`` (default profile) and ``work:discord`` (``<profile>:<platform>``
+        # multiplex key) are distinct records; writing one never disturbs the other.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        status.write_runtime_status(
+            platform="discord", platform_live_health={"ws_latency_ms": 10}
+        )
+        status.write_runtime_status(
+            platform="work:discord", platform_live_health={"ws_latency_ms": 20}
+        )
+
+        platforms = status.read_runtime_status()["platforms"]
+        assert platforms["discord"]["live_health"] == {"ws_latency_ms": 10}
+        assert platforms["work:discord"]["live_health"] == {"ws_latency_ms": 20}
+
+        status.write_runtime_status(
+            platform="work:discord", platform_live_health={"ws_latency_ms": 30}
+        )
+
+        platforms = status.read_runtime_status()["platforms"]
+        assert platforms["discord"]["live_health"] == {"ws_latency_ms": 10}
+        assert platforms["work:discord"]["live_health"] == {"ws_latency_ms": 30}
+
 
 class TestGetProcessStartTime:
     """Start-time fingerprint backing the PID-reuse guard (#43846 / #50468).

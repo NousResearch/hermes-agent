@@ -251,6 +251,175 @@ async def _wait_until(predicate, message: str, timeout: float = 2.0) -> None:
         await asyncio.sleep(0.01)
 
 
+def _capture_live_health(monkeypatch) -> list:
+    """Record ``write_runtime_status`` kwargs carrying ``platform_live_health``.
+
+    ``_write_runtime_status_safe`` resolves the symbol off ``gateway.status`` at call time,
+    so patching the module attribute is what the call site sees; unrelated status writes
+    (connected/fatal) are filtered out to keep assertions about the live-health funnel exact.
+    """
+    import gateway.status as gateway_status
+
+    recorder: list = []
+
+    def _record(**kwargs):
+        if "platform_live_health" in kwargs:
+            recorder.append(kwargs)
+
+    monkeypatch.setattr(gateway_status, "write_runtime_status", _record)
+    return recorder
+
+
+def _live_records(recorder: list) -> list:
+    return [call["platform_live_health"] for call in recorder]
+
+
+def _healthy_bot_factory():
+    bots: list = []
+
+    def factory(**kwargs):
+        bot = _LiveBot(intents=kwargs["intents"], allowed_mentions=kwargs.get("allowed_mentions"))
+        bot.fetch_user = AsyncMock()
+        bots.append(bot)
+        return bot
+
+    return factory, bots
+
+
+# The fake keep-alive freezes its ACK timestamp at construction, so wall time
+# alone ages the stub into ``ack_stale``. Tests that intend a stable healthy
+# verdict keep ``max_ack_age`` above any plausible run duration; tests that
+# intend a flip push the ACK age far past that bound instead of racing the clock.
+@pytest.mark.asyncio
+async def test_healthy_probe_persists_live_health_record(monkeypatch):
+    """A healthy probe must publish its verdict through the runtime-status funnel."""
+    recorder = _capture_live_health(monkeypatch)
+    adapter = _make_adapter(monkeypatch, interval=0.005, threshold=3, max_ack_age=3600.0)
+    factory, _bots = _healthy_bot_factory()
+
+    await _connect(adapter, monkeypatch, factory)
+    await _wait_until(lambda: bool(recorder), "healthy probe never persisted a live_health record")
+
+    record = _live_records(recorder)[0]
+    assert record["websocket_state"] == "healthy"
+    assert record["healthy"] is True
+    assert isinstance(record["checked_at"], str)
+    assert isinstance(record["latency"], (int, float))
+    assert recorder[0]["platform"] == Platform.DISCORD.value
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_stale_ack_persists_unhealthy_record_before_forced_reconnect(monkeypatch):
+    """The unhealthy verdict must reach the record even when the same probe trips fatal."""
+    recorder = _capture_live_health(monkeypatch)
+    adapter = _make_adapter(monkeypatch, interval=0.005, threshold=1, max_ack_age=0.01)
+
+    def factory(**kwargs):
+        bot = _LiveBot(intents=kwargs["intents"], allowed_mentions=kwargs.get("allowed_mentions"))
+        bot.fetch_user = AsyncMock()
+        _set_websocket_health(bot, ack_age=3600.0)
+        return bot
+
+    await _connect(adapter, monkeypatch, factory)
+    await _wait_until(
+        lambda: any(not r["healthy"] for r in _live_records(recorder)),
+        "stale-ack probe never persisted an unhealthy live_health record",
+    )
+
+    record = next(r for r in _live_records(recorder) if not r["healthy"])
+    assert record["websocket_state"] == "ack_stale"
+    assert record["healthy"] is False
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_persists_terminal_live_health_record(monkeypatch):
+    """``disconnect()`` must force the terminal record despite the persist cadence."""
+    recorder = _capture_live_health(monkeypatch)
+    adapter = _make_adapter(monkeypatch, interval=0.005, threshold=3, max_ack_age=3600.0)
+    factory, _bots = _healthy_bot_factory()
+
+    await _connect(adapter, monkeypatch, factory)
+    await _wait_until(lambda: bool(recorder), "healthy probe never persisted a live_health record")
+
+    await adapter.disconnect()
+
+    assert len(recorder) == 2  # terminal write is immediate, not cadence-suppressed
+    terminal = _live_records(recorder)[-1]
+    assert terminal["websocket_state"] == "disconnected"
+    assert terminal["healthy"] is False
+
+
+@pytest.mark.asyncio
+async def test_live_health_persist_is_suppressed_until_verdict_changes(monkeypatch):
+    """Unchanged verdicts ride the 60s cadence; a verdict change persists at once."""
+    recorder = _capture_live_health(monkeypatch)
+    adapter = _make_adapter(monkeypatch, interval=0.005, threshold=3, max_ack_age=3600.0)
+    factory, bots = _healthy_bot_factory()
+
+    await _connect(adapter, monkeypatch, factory)
+    await _wait_until(lambda: bool(recorder), "first healthy probe never persisted")
+
+    await asyncio.sleep(0.1)  # ~20 more healthy probe cycles
+    assert len(recorder) == 1  # write-amplification invariant: nothing re-written
+
+    _set_websocket_health(bots[0], ack_age=7200)
+    await _wait_until(
+        lambda: len(recorder) > 1,
+        "verdict change did not trigger an immediate persist",
+    )
+    assert _live_records(recorder)[-1]["websocket_state"] == "ack_stale"
+    assert _live_records(recorder)[-1]["healthy"] is False
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_live_health_restamps_when_interval_elapses_with_stable_verdict(monkeypatch):
+    """The 60s cadence must re-publish readings even while the verdict holds steady."""
+    recorder = _capture_live_health(monkeypatch)
+    adapter = _make_adapter(monkeypatch, interval=0.005, threshold=3, max_ack_age=3600.0)
+    factory, _bots = _healthy_bot_factory()
+
+    await _connect(adapter, monkeypatch, factory)
+    await _wait_until(lambda: bool(recorder), "first healthy probe never persisted")
+
+    await asyncio.sleep(0.05)  # verdict unchanged, 60s cadence not yet elapsed
+    assert len(recorder) == 1  # baseline: the suppression invariant still holds
+
+    adapter._last_live_health_persist_at = time.monotonic() - 61.0  # back-date the cadence clock
+    await _wait_until(
+        lambda: len(recorder) > 1,
+        "elapsed persist interval did not trigger a re-stamp",
+    )
+    assert _live_records(recorder)[-1]["websocket_state"] == "healthy"
+    assert _live_records(recorder)[-1]["healthy"] is True
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_live_health_records_land_under_multiplex_platform_key(monkeypatch):
+    """Multiplexed profiles must key their health under ``<profile>:<platform>``, not ``discord``."""
+    recorder = _capture_live_health(monkeypatch)
+    adapter = _make_adapter(monkeypatch, interval=0.005, threshold=3, max_ack_age=3600.0)
+    adapter._runtime_status_platform_key = "work:discord"
+    factory, _bots = _healthy_bot_factory()
+
+    await _connect(adapter, monkeypatch, factory)
+    await _wait_until(
+        lambda: bool(recorder),
+        "liveness probe never persisted under the multiplex platform key",
+    )
+    await adapter.disconnect()
+
+    assert [call["platform"] for call in recorder] == ["work:discord"] * len(recorder)
+    assert _live_records(recorder)[-1]["websocket_state"] == "disconnected"
+
+
 @pytest.mark.asyncio
 async def test_liveness_close_timeout_aborts_aiohttp_transport_before_fatal_notification(
     monkeypatch,

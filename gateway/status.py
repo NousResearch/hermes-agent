@@ -804,7 +804,8 @@ def _coerce_session_store(session_store: Any) -> dict[str, str]:
 def write_runtime_status(
     *, gateway_state: Any = _UNSET, exit_reason: Any = _UNSET, restart_requested: Any = _UNSET,
     active_agents: Any = _UNSET, active_work: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
-    error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
+    platform_live_health: Any = _UNSET, error_code: Any = _UNSET,
+    error_message: Any = _UNSET, needs_attention: Any = _UNSET,
     retrying_since: Any = _UNSET, served_profiles: Any = _UNSET, session_store: Any = _UNSET,
     ingress_url: Any = _UNSET, listener_base: Any = _UNSET, clear_profile_platforms: bool = False,
     drop_profile_platforms: Optional[str] = None,
@@ -843,7 +844,15 @@ def write_runtime_status(
     if platform is not _UNSET:
         platform_payload = payload["platforms"].get(platform, {})
         _apply_set_fields(platform_payload, (
-            ("state", platform_state, None), ("error_code", error_code, None),
+            ("state", platform_state, None),
+            # Probe-sampled transport/heartbeat data (e.g. Discord websocket latency,
+            # heartbeat ACK age) emitted by the adapter's liveness loop on its own
+            # cadence. Deliberately separate from the lifecycle fields: lifecycle
+            # writes omit the param and therefore never clear it, and a healthy
+            # live_health is NOT proof inbound events reach dispatch — only that
+            # the transport link looks alive.
+            ("live_health", platform_live_health, None),
+            ("error_code", error_code, None),
             ("error_message", error_message, None),
             # Reconnect-loop escalation past the attention threshold: a signal for owners/fleet
             # monitoring, not a circuit breaker (retry never stops). Cleared on reconnect.

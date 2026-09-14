@@ -955,6 +955,16 @@ _DISCORD_PROMPT_TIMEOUT_DEFAULT = 300
 _DISCORD_PROMPT_TIMEOUT_MIN = 30
 _DISCORD_PROMPT_TIMEOUT_MAX = 900
 
+# The probe runs every ~15s, but gateway_state.json is an atomic read-modify-write: naive
+# persistence is ~5,760 rewrites/day for data that mostly does not change. Persist at once
+# when the probe's verdict changes, otherwise at most this often.
+_LIVE_HEALTH_MIN_PERSIST_INTERVAL_SECONDS = 60.0
+# Fields whose change is worth an immediate persist. ``latency``/``ack_age`` are re-sampled on
+# every probe and jitter, so they would defeat the check; they ride the interval instead.
+# A verdict that flaps healthy↔unhealthy on every probe therefore writes on every probe, and
+# that is intended — each flip is a real transition, not steady state.
+_LIVE_HEALTH_CHANGE_FIELDS = ("websocket_state", "healthy")
+
 
 def _env_bool(name: str, default: bool = False) -> bool:
     raw = _scoped_gate_env(name).lower()
@@ -1073,6 +1083,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         )
         self._liveness_task: Optional[asyncio.Task] = None
         self._liveness_notification_task: Optional[asyncio.Task] = None
+        self._last_persisted_health: Optional[dict] = None
+        self._last_live_health_persist_at: Optional[float] = None
         # True while disconnect() intentionally closes discord.py (done callback: shutdown vs crash).
         self._disconnecting = False
         self._missed_message_backfill_task: Optional[asyncio.Task] = None
@@ -1617,40 +1629,83 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return
         self._liveness_task = asyncio.create_task(self._liveness_loop())
 
-    def _read_websocket_health(self, client: Any) -> tuple[bool, str]:
-        """Return current Discord Gateway health without making a REST request."""
+    def _read_websocket_health(self, client: Any) -> tuple[bool, str, dict]:
+        """Return current Discord Gateway health without making a REST request.
+
+        Returns ``(healthy, reason, details)``; ``details`` carries ``latency``/``ack_age``
+        when they were successfully sampled, and the caller persists it as live health.
+        """
+        details: dict = {"latency": None, "ack_age": None}
         try:
             ready = bool(client.is_ready())
         except Exception:
-            return False, "not_ready"
+            return False, "not_ready", details
         if not ready:
-            return False, "not_ready"
+            return False, "not_ready", details
         try:
             if client.is_closed():
-                return False, "client_closed"
+                return False, "client_closed", details
         except Exception:
-            return False, "client_closed"
+            return False, "client_closed", details
         websocket = getattr(client, "ws", None)
         try:
             socket_open = bool(websocket is not None and getattr(websocket, "open", False))
         except Exception:
             # A transport that can't report open state isn't a usable event stream: treat as unhealthy.
-            return False, "socket_state_unavailable"
+            return False, "socket_state_unavailable", details
         if not socket_open:
-            return False, "socket_closed"
+            return False, "socket_closed", details
         keep_alive = getattr(websocket, "_keep_alive", None)
         last_ack = getattr(keep_alive, "_last_ack", None)
         if not isinstance(last_ack, (int, float)):
-            return False, "ack_unavailable"
+            return False, "ack_unavailable", details
         ack_age = time.perf_counter() - last_ack
+        details["ack_age"] = round(ack_age, 3)
         if not math.isfinite(ack_age) or ack_age > self._heartbeat_ack_max_age_seconds:
-            return False, "ack_stale"
+            return False, "ack_stale", details
         latency = getattr(client, "latency", None)
         if not isinstance(latency, (int, float)) or not math.isfinite(latency):
-            return False, "latency_non_finite"
+            return False, "latency_non_finite", details
+        details["latency"] = round(latency, 3)
         if latency > self._max_latency_seconds:
-            return False, "latency_exceeded"
-        return True, "healthy"
+            return False, "latency_exceeded", details
+        return True, "healthy", details
+
+    def _build_live_health_record(self, healthy: bool, reason: str, details: dict) -> dict:
+        record: dict = {
+            "websocket_state": reason,
+            "healthy": healthy,
+            "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        }
+        for field in ("latency", "ack_age"):
+            value = details.get(field)
+            if value is not None:
+                record[field] = value
+        return record
+
+    def _persist_live_health(self, *, healthy: bool, reason: str, details: dict, force: bool = False) -> None:
+        """Publish the latest probe verdict to gateway_state.json.
+
+        Goes through ``_write_runtime_status_safe`` so multiplexed profiles land under their own
+        ``<profile>:<platform>`` key and a failed write degrades to a log line instead of killing
+        the watchdog. Skipped when nothing changed and the interval below has not elapsed.
+        """
+        record = self._build_live_health_record(healthy, reason, details)
+        now = time.monotonic()
+        # Tests build adapters via ``object.__new__`` and never run ``__init__``; read the
+        # bookkeeping defensively, as ``_write_runtime_status_safe`` does for its own state.
+        last = getattr(self, "_last_persisted_health", None)
+        changed = last is None or any(record.get(f) != last.get(f) for f in _LIVE_HEALTH_CHANGE_FIELDS)
+        persisted_at = getattr(self, "_last_live_health_persist_at", None)
+        due = (
+            persisted_at is None
+            or now - persisted_at >= _LIVE_HEALTH_MIN_PERSIST_INTERVAL_SECONDS
+        )
+        if not (force or changed or due):
+            return
+        self._write_runtime_status_safe("live_health", platform_live_health=record)
+        self._last_persisted_health = record
+        self._last_live_health_persist_at = now
 
     async def _liveness_loop(self) -> None:
         """Force a reconnect after repeated unhealthy Discord Gateway samples."""
@@ -1666,11 +1721,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if not self._running or client is None or self._disconnecting:
                 return
             try:
-                healthy, reason = self._read_websocket_health(client)
+                healthy, reason, details = self._read_websocket_health(client)
             except Exception:
                 # Fail closed: a discord.py attribute change must not kill this watchdog silently.
                 healthy = False
                 reason = "health_check_error"
+                details = {}
+            self._persist_live_health(healthy=healthy, reason=reason, details=details)
             if healthy:
                 failures = 0
                 continue
@@ -1803,6 +1860,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._disconnecting = True
         # Cancel the liveness probe first so it can't fire a spurious fatal/reconnect mid-teardown.
         await self._cancel_liveness_task()
+        # Terminal record so monitoring never keeps seeing stale-healthy after teardown.
+        self._persist_live_health(healthy=False, reason="disconnected", details={}, force=True)
+        self._last_persisted_health = None
+        self._last_live_health_persist_at = None
         # Leave voice *before* cancelling the bot task: VoiceClient.disconnect() needs the main
         # gateway WS (run by the bot task) or it blocks until the timeout.
         for guild_id in list(self._voice_clients.keys()):

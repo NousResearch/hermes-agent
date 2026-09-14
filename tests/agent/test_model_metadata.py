@@ -1308,9 +1308,10 @@ class TestBedrockContextCachePersistence:
             assert mock_probe.call_count == 1
             assert not cache_file.exists()  # memoised in memory only
             # Age the entry past the failure TTL (as tests/agent/test_probe_cache_followups.py does).
-            mm._BEDROCK_PROBE_FAILURE_CACHE[(model, "us-east-1")] = (
-                time.monotonic() - mm._BEDROCK_PROBE_FAILURE_TTL_SECONDS - 1
-            )
+            for key in mm._BEDROCK_PROBE_FAILURE_CACHE:
+                mm._BEDROCK_PROBE_FAILURE_CACHE[key] = (
+                    time.monotonic() - mm._BEDROCK_PROBE_FAILURE_TTL_SECONDS - 1
+                )
             assert get_model_context_length(model, provider="bedrock") == 1_000_000
             assert get_cached_context_length(model, "bedrock://") == 1_000_000
         assert mock_probe.call_count == 2

@@ -1054,23 +1054,37 @@ def _get_context_cache_path() -> Path:
     return get_hermes_home() / "context_length_cache.yaml"
 
 
-def _load_context_cache() -> Dict[str, int]:
-    """Load the model+provider -> context_length cache from disk."""
+def _load_context_cache_document() -> dict:
+    """Read scalar lengths and their provenance from the same atomic document."""
     path = _get_context_cache_path()
     if not path.exists():
         return {}
     try:
         with open(path, encoding="utf-8") as f:
-            return (yaml.safe_load(f) or {}).get("context_lengths") or {}
+            data = yaml.safe_load(f)
+            if not isinstance(data, dict):
+                return {}
+            for section in ("context_lengths", "bedrock_confirmed_v1"):
+                if not isinstance(data.get(section), dict):
+                    data[section] = {}
+            return data
     except Exception as e:
         logger.debug("Failed to load context length cache: %s", e)
         return {}
 
 
-def _write_context_cache(cache: Dict[str, int]) -> None:
+def _load_context_cache() -> Dict[str, int]:
+    """Load scalar lengths, preserving the legacy reader contract."""
+    return _load_context_cache_document().get("context_lengths") or {}
+
+
+def _write_context_cache(cache: Dict[str, int], bedrock_confirmed: dict | None = None) -> None:
     """Atomic write (a truncating write killed mid-dump leaves a partial file that
     _load_context_cache() swallows as {}, wiping EVERY cached length). Raises on failure."""
-    atomic_yaml_write(_get_context_cache_path(), {"context_lengths": cache})
+    document = {"context_lengths": cache}
+    if bedrock_confirmed:
+        document["bedrock_confirmed_v1"] = bedrock_confirmed
+    atomic_yaml_write(_get_context_cache_path(), document)
 
 
 def _context_cache_key(model: str, base_url: str) -> str:
@@ -1078,53 +1092,88 @@ def _context_cache_key(model: str, base_url: str) -> str:
     return f"{model}@{(base_url or '').rstrip('/')}"
 
 
-def save_context_length(model: str, base_url: str, length: int) -> None:
+def save_context_length(model: str, base_url: str, length: int, *, source: str = "") -> None:
     """Persist a discovered context length under ``model@base_url`` (same model, different providers, different limits)."""
     # 0/negative is always a bug and would make get_model_context_length() return 0 (`0 is not None`).
     if length <= 0:
         logger.warning("Refusing to cache non-positive context length %s -> %s tokens", f"{model}@{base_url}", length)
         return
     key = _context_cache_key(model, base_url)
-    cache = _load_context_cache()
-    if cache.get(key) == length:
+    document = _load_context_cache_document()
+    cache = document.get("context_lengths") or {}
+    confirmed = document.get("bedrock_confirmed_v1") or {}
+    confirmed = confirmed if isinstance(confirmed, dict) else {}
+    old_confirmed = confirmed.copy()
+    # Generic writes revoke provenance even for the same number. The marker
+    # binds to the value, so an older writer cannot leave mismatched evidence.
+    for alias in (key, f"{model}@{base_url}", f"{key}/"):
+        confirmed.pop(alias, None)
+    if source == "bedrock-confirmed-v1":
+        confirmed[key] = length
+    if cache.get(key) == length and confirmed == old_confirmed:
         return  # already stored
     cache[key] = length
     try:
-        _write_context_cache(cache)
+        _write_context_cache(cache, confirmed)
         logger.info("Cached context length %s -> %s tokens", key, f"{length:,}")
     except Exception as e:
         logger.debug("Failed to save context length cache: %s", e)
 
 
-def get_cached_context_length(model: str, base_url: str) -> Optional[int]:
+def save_provider_context_length(model: str, base_url: str, length: int, provider: str = "") -> None:
+    """Persist a provider-confirmed window, distinguishing it from legacy Bedrock fallbacks."""
+    if _is_bedrock_context(base_url, provider):
+        save_context_length(model, base_url or "bedrock://", length, source="bedrock-confirmed-v1")
+    else:
+        save_context_length(model, base_url, length)
+
+
+def get_cached_context_length(model: str, base_url: str, *, bedrock_confirmed: bool = False) -> Optional[int]:
     """Look up a previously discovered context length for model+provider."""
     key = _context_cache_key(model, base_url)
-    cache = _load_context_cache()
+    document = _load_context_cache_document()
+    cache = document.get("context_lengths") or {}
+    if not isinstance(cache, dict):
+        return None
     # Legacy rows may carry a trailing slash, so probe the canonical key, the literal form and the slashed canonical form.
-    return next((hit for hit in map(cache.get, (key, f"{model}@{base_url}", f"{key}/")) if hit is not None), None)
+    matched_key = next((k for k in (key, f"{model}@{base_url}", f"{key}/") if cache.get(k) is not None), None)
+    length = cache.get(matched_key)
+    if type(length) is not int:
+        return None
+    if bedrock_confirmed:
+        confirmed = document.get("bedrock_confirmed_v1")
+        marker = confirmed.get(matched_key) if isinstance(confirmed, dict) else None
+        if type(marker) is not int or marker != length:
+            return None
+    return length
 
 
 def _invalidate_cached_context_length(model: str, base_url: str) -> None:
     """Drop a stale cache entry so it gets re-resolved on the next lookup."""
     key = _context_cache_key(model, base_url)
-    cache = _load_context_cache()
+    document = _load_context_cache_document()
+    cache = document.get("context_lengths") or {}
+    confirmed = document.get("bedrock_confirmed_v1") or {}
+    confirmed = confirmed if isinstance(confirmed, dict) else {}
     # Also drop the in-memory TTL probe entries, or the next resolution inside the TTL window reuses the stale value.
     bare, stripped = _strip_provider_prefix(model), (base_url or "").rstrip("/")
     _LOCAL_CTX_PROBE_CACHE.pop((bare, stripped), None)
     _LOCAL_CTX_PROBE_CACHE.pop(("ollama_show", bare, stripped), None)
     # Same for a memoised Bedrock probe failure (keyed by region, which the caller does not know):
     # the entry being dropped is the reason to ask the probe again, not to wait out its TTL.
+    from hermes_constants import hermes_home_key
     for memo_key in list(_BEDROCK_PROBE_FAILURE_CACHE):  # snapshot: another thread may be memoising
-        if memo_key[0] in (model, bare):
+        if memo_key[:2] == (hermes_home_key(), stripped) and memo_key[2] in (model, bare):
             _BEDROCK_PROBE_FAILURE_CACHE.pop(memo_key, None)
     # Every key shape get_cached_context_length consults.
     stale_keys = {key, f"{model}@{base_url}", f"{key}/"}
-    if not any(k in cache for k in stale_keys):
+    if not any(k in cache or k in confirmed for k in stale_keys):
         return
     for k in stale_keys:
         cache.pop(k, None)
+        confirmed.pop(k, None)
     try:
-        _write_context_cache(cache)
+        _write_context_cache(cache, confirmed)
     except Exception as e:
         logger.debug("Failed to invalidate context length cache entry %s: %s", key, e)
 
@@ -1736,7 +1785,7 @@ def _resolve_nous_context_length(model: str, base_url: str = "", api_key: str = 
     return None, ""
 
 
-def _validate_cached_context_length(model: str, base_url: str, cached: int, is_bedrock_context: bool, *, api_key: str = "") -> Optional[int]:
+def _validate_cached_context_length(model: str, base_url: str, cached: int, *, api_key: str = "") -> Optional[int]:
     """Step 1 of get_model_context_length: accept, repair, or drop a persisted entry. Returns the
     value to use, or None to fall through to live resolution. Order matters: a value must be
     rejected as bogus before any provider-specific handling."""
@@ -1760,18 +1809,7 @@ def _validate_cached_context_length(model: str, base_url: str, cached: int, is_b
     if _infer_provider_from_url(base_url) == "nous":
         logger.debug("Bypassing persistent cache for %s@%s (Nous portal authoritative)", model, base_url)
         return None
-    if is_bedrock_context:
-        # Bedrock: the static table is a FLOOR — probe-derived entries may legitimately exceed it.
-        try:
-            from agent.bedrock_adapter import get_bedrock_context_length
-            bedrock_ctx = get_bedrock_context_length(model)
-        except ImportError:
-            return cached
-        if cached < bedrock_ctx:
-            logger.info("Dropping stale Bedrock cache entry %s@%s -> %s; using static Bedrock table value %s", model, base_url, f"{cached:,}", f"{bedrock_ctx:,}")
-            _invalidate_cached_context_length(model, base_url)
-            return bedrock_ctx
-        return cached
+
     # For local endpoints, run the probe that respects configured Modelfile context values first.
     # _query_local_context_length prefers num_ctx from Modelfile, while _query_ollama_api_show returns the
     # GGUF training max first which can be larger and would create a false-safe window for compression
@@ -1781,42 +1819,56 @@ def _validate_cached_context_length(model: str, base_url: str, cached: int, is_b
     return cached
 
 
-def _bedrock_probe_failed_recently(model: str, region: str) -> bool:
-    """True while a failed Bedrock context probe for *model* in *region* is still memoised
-    (see _BEDROCK_PROBE_FAILURE_CACHE): answer from the static table without re-probing."""
-    failed_at = _BEDROCK_PROBE_FAILURE_CACHE.get((model, region))
-    return failed_at is not None and (time.monotonic() - failed_at) < _BEDROCK_PROBE_FAILURE_TTL_SECONDS
+def _bedrock_probe_failed_recently(key: tuple) -> bool:
+    """Prune expired failures and check this home/endpoint/model/region's cooldown."""
+    now = time.monotonic()
+    for memo_key, failed_at in list(_BEDROCK_PROBE_FAILURE_CACHE.items()):
+        if now - failed_at >= _BEDROCK_PROBE_FAILURE_TTL_SECONDS:
+            _BEDROCK_PROBE_FAILURE_CACHE.pop(memo_key, None)
+    return key in _BEDROCK_PROBE_FAILURE_CACHE
+
+
+def _is_bedrock_context(base_url: str, provider: str = "") -> bool:
+    return provider == "bedrock" or bool(
+        base_url and base_url_hostname(base_url).startswith("bedrock-runtime.")
+        and base_url_host_matches(base_url, "amazonaws.com")
+    )
 
 
 def _resolve_bedrock_context_length(model: str, base_url: str) -> Optional[int]:
     """Step 1b: Bedrock static table + one cached live probe (Bedrock exposes no context window via
-    metadata APIs); None when boto3 is absent. Only a PROBED window is cached (the table answers a
-    call, never the cache), per model under base_url, else a synthetic bedrock:// key so
-    display/offline paths share it."""
+    metadata APIs); None when boto3 is absent. Only provider-confirmed windows from a probe
+    or runtime error are reused. The table answers a call, never the cache. Keys use base_url,
+    or synthetic bedrock:// when absent, consistently with provider-error writers."""
     try:
         from agent.bedrock_adapter import get_bedrock_context_length, probe_bedrock_context_length, resolve_bedrock_region
     except ImportError:
         return None  # boto3 not installed — fall through to generic resolution
     cache_key_url = base_url or "bedrock://"
-    cached = get_cached_context_length(model, cache_key_url)
-    if cached is not None:
+    cached = get_cached_context_length(model, cache_key_url, bedrock_confirmed=True)
+    if cached is not None and cached > 0:
         return cached
+    # Legacy scalars have no trustworthy source. Ignore them until a successful
+    # probe replaces them; deleting here could erase a concurrent confirmed write
+    # or reset the failure cooldown repeatedly when the cache is read-only.
     # Region from the base_url host first, then the standard AWS chain. An empty region disables probing (table only).
     _m = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url) if base_url else None
     region = _m.group(1) if _m else ""
     if not region:
         with contextlib.suppress(Exception):
             region = resolve_bedrock_region()
-    if region and not _bedrock_probe_failed_recently(model, region):
+    from hermes_constants import hermes_home_key
+    memo_key = (hermes_home_key(), cache_key_url.rstrip('/'), model, region)
+    if region and not _bedrock_probe_failed_recently(memo_key):
         probed = probe_bedrock_context_length(model, region)
         if probed:
             # The probe is the only authoritative source, so it is the only thing worth persisting:
             # a table fallback written here would be served forever (this branch runs before it),
             # and the probe would never be consulted for the model again.
-            save_context_length(model, cache_key_url, probed)
-            _BEDROCK_PROBE_FAILURE_CACHE.pop((model, region), None)  # success ends the failure window
+            save_provider_context_length(model, cache_key_url, probed, provider="bedrock")
+            _BEDROCK_PROBE_FAILURE_CACHE.pop(memo_key, None)  # success ends the failure window
             return probed
-        _BEDROCK_PROBE_FAILURE_CACHE[(model, region)] = time.monotonic()
+        _BEDROCK_PROBE_FAILURE_CACHE[memo_key] = time.monotonic()
     return get_bedrock_context_length(model, probe=False)  # static table / default: answers this call only
 
 
@@ -2003,12 +2055,10 @@ def get_model_context_length(
     endpoint_context = _endpoint_scoped_context_length(model, base_url)
     if endpoint_context is not None:
         return endpoint_context
-    is_bedrock_context = provider == "bedrock" or (
-        base_url and base_url_hostname(base_url).startswith("bedrock-runtime.") and base_url_host_matches(base_url, "amazonaws.com")
-    )
+    is_bedrock_context = _is_bedrock_context(base_url, provider)
     # 1. Persistent cache (LM Studio / Codex OAuth excluded — see _skip_persistent_context_cache).
-    cached = get_cached_context_length(model, base_url) if base_url and not _skip_persistent_context_cache(base_url, provider) else None
-    validated = _validate_cached_context_length(model, base_url, cached, is_bedrock_context, api_key=api_key) if cached is not None else None
+    cached = get_cached_context_length(model, base_url) if base_url and not is_bedrock_context and not _skip_persistent_context_cache(base_url, provider) else None
+    validated = _validate_cached_context_length(model, base_url, cached, api_key=api_key) if cached is not None else None
     if validated is not None:
         return validated
     # 1b. AWS Bedrock. Must run BEFORE the custom-endpoint step: bedrock-runtime.* is not in

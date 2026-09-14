@@ -1045,6 +1045,8 @@ def _extract_provider_from_arn(arn: str) -> str:
 # substring, so versioned entries win over the generic "anthropic.claude-opus-4".
 
 BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
+    # https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-xai-grok-4-6.html
+    "xai.grok-4.6": 500_000,
     # Anthropic Claude: 1M GA vs 200K. The 1M entries must match agent/model_metadata.py
     # DEFAULT_CONTEXT_LENGTHS or context compresses early.
     **dict.fromkeys((

@@ -315,7 +315,7 @@ def _adopt_provider_context_limit(st: _Recovery, error_msg: str, old_ctx: int) -
     """Shrink context_length only when the provider reports the real limit; else keep
     the window and compress. Guessed probe tiers can turn a configured 1M window into
     256K/128K/64K. Returns the provider-reported limit, or ``None``."""
-    from agent.model_metadata import save_context_length
+    from agent.model_metadata import save_provider_context_length
 
     agent = st.agent
     compressor = agent.context_compressor
@@ -329,7 +329,7 @@ def _adopt_provider_context_limit(st: _Recovery, error_msg: str, old_ctx: int) -
         # Persist the provider-reported limit BEFORE compression/retry: rate limit,
         # missing usage, or restart must not lose confirmed metadata. Probe flags
         # remain a fallback if this write fails.
-        save_context_length(agent.model, agent.base_url, new_ctx)
+        save_provider_context_length(agent.model, agent.base_url, new_ctx, agent.provider)
         # Probe flags only on the built-in compressor (plugin engines manage their
         # own); provider-sourced value, so safe to cache.
         if hasattr(compressor, "_context_probed"):

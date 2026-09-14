@@ -1062,6 +1062,25 @@ class TestSkillViewCollisionDetection:
         assert "REAL SKETCH SKILL" in result["content"]
 
 
+    def test_package_owned_markdown_does_not_collide_with_real_skill(self, tmp_path):
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+        _make_skill(local_dir, "research", body="REAL RESEARCH SKILL")
+        _make_skill(local_dir, "example", category="character")
+        prompt = local_dir / "character" / "example" / "prompts" / "research.md"
+        prompt.parent.mkdir()
+        prompt.write_text("# Internal research prompt\n", encoding="utf-8")
+
+        p1, p2 = self._patch_dirs(local_dir, [])
+        with p1, p2:
+            raw = skill_view("research")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["path"] == "research/SKILL.md"
+        assert "REAL RESEARCH SKILL" in result["content"]
+
+
     def test_two_externals_same_name_also_refuse(self, tmp_path):
         """Collision detection is symmetric — two external dirs with
         same-name skills also trigger the refusal."""

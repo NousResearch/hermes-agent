@@ -33,6 +33,7 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     "_thinking_prefill",
     "_verification_stop_synthetic",  # verify-on-stop nudge; the assistant candidate itself is NOT synthetic
     "_pre_verify_synthetic",
+    "_pre_finish_synthetic",
     "_kanban_stop_synthetic",  # kanban worker stop-guard
     "_dropped_toolcall_nudge",  # internal retry instruction; must not replay as user context
 )

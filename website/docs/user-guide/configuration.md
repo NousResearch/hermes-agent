@@ -1187,6 +1187,7 @@ agent:
   verify_on_stop: false        # true | false | "auto" (surface-aware: on for CLI/TUI/desktop, off for messaging)
   verify_guidance: true        # Append creative-UI / clean-diff guidance to the missing-evidence nudge
   max_verify_nudges: 3         # Cap on consecutive continue nudges per turn (built-in + pre_verify hooks)
+  max_finish_nudges: 3         # Cap on consecutive pre_finish continue nudges per turn (separate budget)
   coding_instructions: ""      # Standing project-wide coding rules appended to the coding brief
 ```
 
@@ -1194,7 +1195,7 @@ agent:
 
 The evidence that feeds this guard (which test/lint/build commands ran, which files were edited since) lives in `~/.hermes/verification_evidence.db`. That ledger is only written or created while the guard is enabled; with `verify_on_stop: false` nothing is recorded and an existing file can be deleted freely.
 
-For a user/plugin policy gate at the same point — keep the agent going with your own checks — see the [`pre_verify` hook](/user-guide/features/hooks#pre_verify).
+For a user/plugin policy gate at the same point — keep the agent going with your own checks after code edits — see the [`pre_verify` hook](/user-guide/features/hooks#pre_verify). For a finish gate on every ordinary text turn, including turns that only changed a remote system, see [`pre_finish`](/user-guide/features/hooks#pre_finish).
 
 ## Standing Goals (`/goal`)
 

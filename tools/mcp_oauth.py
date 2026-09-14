@@ -11,6 +11,7 @@ redirect_host, client_name, client_metadata_url, cimd, user_agent, timeout."""
 import asyncio
 import contextlib
 import contextvars
+import html
 import importlib.util as _importlib_util
 import json
 import logging
@@ -274,6 +275,11 @@ class HermesTokenStorage:
     def __init__(self, server_name: str, *, hermes_home: str | Path | None = None):
         self._server_name = _safe_filename(server_name)
         self._hermes_home = Path(hermes_home) if hermes_home is not None else None
+        # Issuer binding: ``loaded_issuer`` is what the token file on disk recorded (the authorization
+        # server that granted the stored refresh token); ``_bound_issuer`` is stamped onto the next
+        # ``set_tokens`` write. See ``tools.mcp_oauth_provider.enforce_refresh_token_issuer``.
+        self.loaded_issuer: str | None = None
+        self._bound_issuer: str | None = None
 
     def _path(self, suffix: str) -> Path:
         return _get_token_dir(self._hermes_home) / f"{self._server_name}{suffix}"
@@ -325,8 +331,14 @@ class HermesTokenStorage:
                 implied_expiry = self._tokens_path().stat().st_mtime + int(data["expires_in"])
                 data["expires_in"] = int(max(implied_expiry - time.time(), 0))
 
+    def _fixup_loaded_tokens(self, data: dict) -> None:
+        # ``hermes_issuer`` is Hermes bookkeeping, not an SDK OAuthToken field: pop before validation.
+        self.loaded_issuer = data.pop("hermes_issuer", None)
+        self._rebase_expires_in(data)
+
     async def get_tokens(self) -> "OAuthToken | None":
-        return self._load_model(self._tokens_path(), "OAuthToken", "tokens", self._rebase_expires_in)
+        self.loaded_issuer = None
+        return self._load_model(self._tokens_path(), "OAuthToken", "tokens", self._fixup_loaded_tokens)
 
     async def set_tokens(self, tokens: "OAuthToken") -> None:
         payload = _model_json(tokens)
@@ -334,8 +346,47 @@ class HermesTokenStorage:
         if payload.get("expires_in") is not None:
             with contextlib.suppress(TypeError, ValueError):  # mock tokens / odd shapes: skip, don't fail persistence
                 payload["expires_at"] = time.time() + int(payload["expires_in"])
+        if self._bound_issuer:  # which authorization server granted these tokens (never sent on the wire)
+            payload["hermes_issuer"] = self._bound_issuer
+            self.loaded_issuer = self._bound_issuer
         _write_json(self._tokens_path(), payload)
         logger.debug("OAuth tokens saved for %s", self._server_name)
+
+    def bind_issuer(self, issuer: str | None) -> None:
+        """Set the authorization-server issuer stamped on future token writes."""
+        self._bound_issuer = str(issuer) if issuer else None
+
+    def stamp_issuer(self, issuer: str) -> None:
+        """Backfill ``hermes_issuer`` onto a pre-binding token file: adopt the currently discovered
+        issuer once instead of forcing a re-login, so the *next* read is protected."""
+        data = _read_json(self._tokens_path())
+        if data is None or data.get("hermes_issuer"):
+            return
+        data["hermes_issuer"] = str(issuer)
+        try:
+            _write_json(self._tokens_path(), data)
+        except OSError as exc:  # non-fatal — worst case we stamp next time
+            logger.debug("Could not stamp issuer on tokens for %s: %s", self._server_name, exc)
+            return
+        self.loaded_issuer = str(issuer)
+
+    def strip_refresh_token(self) -> None:
+        """Drop the refresh token (and its issuer record) from disk, keeping the access token: the
+        unexpired access token may still be used, but a refresh token must never go to a different
+        issuer than the one that granted it."""
+        data = _read_json(self._tokens_path())
+        if data is None or not data.get("refresh_token"):
+            return
+        data.pop("refresh_token", None)
+        data.pop("hermes_issuer", None)
+        self.loaded_issuer = None
+        try:
+            _write_json(self._tokens_path(), data)
+        except OSError as exc:
+            logger.warning("Could not strip refresh token for %s: %s", self._server_name, exc)
+            return
+        logger.info("Removed issuer-mismatched refresh token for %s (re-authorization will be required "
+                    "when the access token expires)", self._server_name)
 
     @staticmethod
     def _coerce_secret_auth_method(data: dict) -> bool:
@@ -473,7 +524,7 @@ def _make_callback_handler() -> tuple[type, dict]:
             parsed = _parse_redirect_query(urlparse(self.path).query)
             result.update(auth_code=parsed["code"], state=parsed["state"], error=parsed["error"], iss=parsed["iss"])
             body = ("<h2>Authorization Successful</h2><p>You can close this tab and return to Hermes.</p>" if parsed["code"]
-                    else f"<h2>Authorization Failed</h2><p>Error: {parsed['error'] or 'unknown'}</p>")
+                    else f"<h2>Authorization Failed</h2><p>Error: {html.escape(parsed['error'] or 'unknown')}</p>")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()

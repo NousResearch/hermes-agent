@@ -93,6 +93,64 @@ def test_room_binding_exact_retry_terminal_history_and_unknown(owner):
     assert seen and all(t != threading.get_ident() for t in seen)
 
 
+@pytest.mark.parametrize('revoke', [False, True])
+def test_submit_rechecks_authorization_after_preparation(owner, monkeypatch, revoke):
+    """Preparation cannot carry a revoked tuple across canonical admission (#99107)."""
+    from dataclasses import asdict
+    import json
+    from gateway import session_hosted_attachments
+    from gateway.session_contract import AdmissionReceipt
+    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from gateway.hosted_room_driver import TaskIdentity
+    from hermes_state_runtime import RuntimeStoreError, list_session_admissions
+
+    authority, loop, principal, _ = owner
+    allowed, calls = [True], []
+    rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member',
+        profile='default', principal=principal, authorize=lambda *args: allowed[0])
+    sid = rpc.create(profile='default', source='bot_room', title='Group: room')['session_id']
+    identity = TaskIdentity('room', 'task', 'thread', 'turn')
+    entered, release = threading.Event(), threading.Event()
+    original = session_hosted_attachments.submission_payload
+
+    def prepare(*args):
+        payload = original(*args)
+        entered.set()
+        assert release.wait(5), 'preparation was not released'
+        return payload
+
+    async def record(actor, submission):
+        calls.append((actor, submission))
+        return AdmissionReceipt('recorded', submission.ref, 1, 'queued', None, 1, None)
+
+    monkeypatch.setattr(session_hosted_attachments, 'submission_payload', prepare)
+    monkeypatch.setattr(authority, 'submit', record)
+    pending = asyncio.run_coroutine_threadsafe(rpc._dispatch('submit', dict(
+        profile='default', source='bot_room', session_id=sid, prompt='input',
+        task=identity, execution_generation=17, on_terminal=lambda receipt: None)), loop)
+    try:
+        assert entered.wait(5), 'preparation was not reached'
+        allowed[0] = not revoke
+    finally:
+        release.set()
+    if revoke:
+        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+            pending.result(5)
+        assert calls == []
+        assert rpc.callbacks == {}
+        assert authority.waiters == {}
+    else:
+        assert pending.result(5)['admission_id'] == 'recorded'
+        actor, submission = calls.pop()
+        assert calls == []
+        assert actor is principal
+        assert submission.ref == rpc.ref
+        assert json.loads(submission.request_id[7:]) == [asdict(identity), 17]
+        assert submission.payload == {'text': 'input'}
+        assert submission.intent == 'queue'
+    assert list_session_admissions(authority.db, session_id=sid, pending_only=False) == []
+
+
 def test_controls_are_exact_current_admission_and_loop_safe(owner):
     from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
     from gateway.hosted_room_driver import TaskIdentity

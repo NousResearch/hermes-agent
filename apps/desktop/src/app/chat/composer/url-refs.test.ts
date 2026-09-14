@@ -2,7 +2,13 @@ import type { KeyboardEvent } from 'react'
 import { describe, expect, it } from 'vitest'
 
 import { composerPlainText, refChipElement, RICH_INPUT_SLOT } from './rich-editor'
-import { chipTypedUrlOnSpace, linkifyUrls, markdownLinkFor, resolveExactLinkPaste, selectionLinkLabel } from './url-refs'
+import {
+  chipTypedUrlOnSpace,
+  linkifyUrls,
+  markdownLinkFor,
+  resolveExactLinkPaste,
+  selectionLinkLabel
+} from './url-refs'
 
 /** An editor holding `text` with a collapsed caret at `caret`, plus the space
  *  keydown the composer would hand `chipTypedUrlOnSpace`. */

@@ -80,14 +80,14 @@ class TestWrapPcmAsWav:
 
 class TestGenerateGeminiTts:
     def test_missing_api_key_raises_value_error(self, tmp_path):
-        from tools.tts_tool import _generate_gemini_tts
+        from tools.tts_tool_providers import _generate_gemini_tts
 
         output_path = str(tmp_path / "test.wav")
         with pytest.raises(ValueError, match="GEMINI_API_KEY"):
             _generate_gemini_tts("Hello", output_path, {})
 
     def test_google_api_key_fallback(self, tmp_path, monkeypatch, mock_gemini_response):
-        from tools.tts_tool import _generate_gemini_tts
+        from tools.tts_tool_providers import _generate_gemini_tts
 
         monkeypatch.setenv("GOOGLE_API_KEY", "from-google-env")
         output_path = str(tmp_path / "test.wav")
@@ -95,12 +95,29 @@ class TestGenerateGeminiTts:
         with patch("requests.post", return_value=mock_gemini_response) as mock_post:
             _generate_gemini_tts("Hi", output_path, {})
 
-        # Confirm it used the GOOGLE_API_KEY as the query parameter
+        # Confirm it used the GOOGLE_API_KEY, sent via the auth header
         _, kwargs = mock_post.call_args
-        assert kwargs["params"]["key"] == "from-google-env"
+        assert kwargs["headers"]["x-goog-api-key"] == "from-google-env"
+
+    def test_api_key_rides_in_header_not_url(self, tmp_path, monkeypatch, mock_gemini_response):
+        """The key must not be a query parameter: ``requests`` echoes the
+        full prepared URL (query string included) into HTTPError messages,
+        so a ``key=`` param would land in logs on any 4xx/5xx."""
+        from tools.tts_tool_providers import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        output_path = str(tmp_path / "test.wav")
+
+        with patch("requests.post", return_value=mock_gemini_response) as mock_post:
+            _generate_gemini_tts("Hi", output_path, {})
+
+        _, kwargs = mock_post.call_args
+        assert kwargs["headers"]["x-goog-api-key"] == "test-key"
+        assert "key" not in (kwargs.get("params") or {})
+        assert "test-key" not in mock_post.call_args[0][0]
 
     def test_wav_output_fast_path(self, tmp_path, monkeypatch, mock_gemini_response, fake_pcm_bytes):
-        from tools.tts_tool import _generate_gemini_tts
+        from tools.tts_tool_providers import _generate_gemini_tts
 
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         output_path = str(tmp_path / "test.wav")
@@ -118,7 +135,7 @@ class TestGenerateGeminiTts:
     def test_x_goog_api_client_header_is_set(self, tmp_path, monkeypatch, mock_gemini_response):
         """Gemini TTS requests should include Hermes client context."""
         from hermes_cli import __version__
-        from tools.tts_tool import _generate_gemini_tts
+        from tools.tts_tool_providers import _generate_gemini_tts
 
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
 
@@ -129,7 +146,7 @@ class TestGenerateGeminiTts:
         assert headers["X-Goog-Api-Client"] == f"hermes-agent/{__version__}"
 
     def test_default_voice_and_model(self, tmp_path, monkeypatch, mock_gemini_response):
-        from tools.tts_tool import _generate_gemini_tts
+        from tools.tts_tool_providers import _generate_gemini_tts
         from tools.tts_tool_providers import DEFAULT_GEMINI_TTS_MODEL, DEFAULT_GEMINI_TTS_VOICE
 
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
@@ -147,7 +164,7 @@ class TestGenerateGeminiTts:
         assert voice == DEFAULT_GEMINI_TTS_VOICE
 
     def test_custom_voice(self, tmp_path, monkeypatch, mock_gemini_response):
-        from tools.tts_tool import _generate_gemini_tts
+        from tools.tts_tool_providers import _generate_gemini_tts
 
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
         config = {"gemini": {"voice": "Puck"}}
@@ -166,7 +183,7 @@ class TestGenerateGeminiTts:
     def test_audio_tag_rewrite_failure_falls_back_to_original_text(
         self, tmp_path, monkeypatch, mock_gemini_response, caplog
     ):
-        from tools.tts_tool import _generate_gemini_tts
+        from tools.tts_tool_providers import _generate_gemini_tts
 
         config = {
             "gemini": {

@@ -1263,8 +1263,29 @@ def evict_stale_outbound_tool_images(
     return _retire_stale_tool_result_images(api_messages, keep_newest=keep_newest)
 
 
+# Tool-call argument leaves whose text IS the outbound message. Compressor passes must
+# never snip these in history: the model pattern-matches its (apparently) own prior
+# wording when composing the next send and reproduces the cut (2026-09-14 incident:
+# two Google Chat DMs delivered ~120 chars, receipts green). Matched on the full name
+# and on the short name after the last '__' (covers mcp__gmail_selfhosted__send_message
+# etc.). Add future outbound-effect tools here.
+_OUTBOUND_ARG_EXEMPT_TOOLS = frozenset({
+    "send_message", "send_draft", "create_draft", "update_draft",
+    "plane_comment_add", "sendemail", "reply", "forward",
+    "meet_say",
+})
+
+
 def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
-    """Shrink long string leaves in a tool-call arguments JSON blob, keeping it valid (providers 400 on malformed args)."""
+    """Shrink long string leaves in a tool-call arguments JSON blob, keeping it valid (providers 400 on malformed args).
+
+    The snip marker is DELIBERATELY unlike prose: a historical tool-call argument
+    that reads `...[truncated]` looks like text the model itself wrote, and a later
+    turn composing a similar outbound call can pattern-match the mutated history
+    and emit a pre-truncated argument (observed 2026-09-14: two Google Chat sends
+    delivered ~120 chars with the literal marker — receipts green, message cut).
+    `⟪ctx-snipped⟫` cannot be typed casually and breaks the mimicry loop.
+    """
     try:
         parsed = json.loads(args)
     except (ValueError, TypeError):
@@ -1272,7 +1293,7 @@ def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
 
     def _shrink(obj: Any) -> Any:
         if isinstance(obj, str):
-            return obj[:head_chars] + "...[truncated]" if len(obj) > head_chars else obj
+            return obj[:head_chars] + "⟪ctx-snipped⟫" if len(obj) > head_chars else obj
         if isinstance(obj, dict):
             return {k: _shrink(v) for k, v in obj.items()}
         if isinstance(obj, list):
@@ -2657,15 +2678,27 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
 
     @staticmethod
     def _truncate_tool_call_args_at(result: List[Dict[str, Any]], idx: int) -> bool:
-        """Shrink large tool_call argument payloads at ``idx`` (inside the parsed JSON, so it stays valid)."""
+        """Shrink large tool_call argument payloads at ``idx`` (inside the parsed JSON, so it stays valid).
+
+        OUTBOUND tools are exempt: their argument text is the message itself. Once
+        snipped in history, a later turn composing the same kind of send sees the
+        cut text as its own prior wording and reproduces it (2026-09-14 Google Chat
+        incident). The receipts are short, so the token cost of exemption is small
+        compared to a silently corrupted outbound message."""
         msg = result[idx]
         if msg.get("role") != "assistant" or not msg.get("tool_calls"):
             return False
         new_tcs = []
         for tc in msg["tool_calls"]:
-            args = tc.get("function", {}).get("arguments", "") if isinstance(tc, dict) else ""
+            fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+            args = fn.get("arguments", "")
+            _name = str(fn.get("name") or "")
+            _short_name = _name.rsplit("__", 1)[-1]
+            if _name in _OUTBOUND_ARG_EXEMPT_TOOLS or _short_name in _OUTBOUND_ARG_EXEMPT_TOOLS:
+                new_tcs.append(tc)
+                continue
             new_args = _truncate_tool_call_args_json(args) if len(args) > 500 else args
-            new_tcs.append(tc if new_args == args else {**tc, "function": {**tc["function"], "arguments": new_args}})
+            new_tcs.append(tc if new_args == args else {**tc, "function": {**fn, "arguments": new_args}})
         modified = any(new is not old for new, old in zip(new_tcs, msg["tool_calls"]))
         if modified:
             result[idx] = {**msg, "tool_calls": new_tcs}

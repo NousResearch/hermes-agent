@@ -301,7 +301,7 @@ def _bind_value_may_be_host_path(value: str) -> bool:
     value = value.strip()
     if not value:
         return False
-    if len(value) >= 3 and value[1] == ":" and value[2] in ("/", "\\"):
+    if re.match(r"^[A-Za-z]:[/\\]", value):
         return ":" in value[2:]
     if ":" not in value:
         return False

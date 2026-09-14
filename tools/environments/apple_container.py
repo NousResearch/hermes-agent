@@ -384,6 +384,23 @@ def _validate_extra_arg_boundaries(executable: str, extra_args: list[str]) -> No
                     )
 
 
+def extra_args_may_bind_host_path(extra_args: list) -> bool:
+    """Treat Apple raw mount/volume options as potential host access.
+
+    This is deliberately not Docker mount-value parsing. Any raw --mount or
+    --volume counts, including uncertain/named forms. Dedicated --tmpfs and
+    unrelated options do not. Startup validation still owns accepted syntax.
+    """
+    for arg in extra_args or []:
+        if not isinstance(arg, str):
+            continue
+        if arg in {"--mount", "--volume"} or arg.startswith(("--mount=", "--volume=")):
+            return True
+        if re.match(r"^-[A-Za-z]*v(?:=|$)", arg):
+            return True
+    return False
+
+
 class AppleContainerEnvironment(BaseEnvironment):
     """Apple Container execution with VM-level isolation.
 

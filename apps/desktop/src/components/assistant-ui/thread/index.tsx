@@ -43,6 +43,7 @@ interface ThreadProps {
   onCancel?: () => Promise<void> | void
   onDismissError?: (messageId: string) => void
   onRestoreToMessage?: (messageId: string, target?: RestoreMessageTarget) => Promise<void> | void
+  onStageInMain?: (text: string) => void
   sessionId?: string | null
   sessionKey?: string | null
 }
@@ -64,6 +65,7 @@ export const Thread = memo(function Thread({
   onCancel,
   onDismissError,
   onRestoreToMessage,
+  onStageInMain,
   sessionId = null,
   sessionKey
 }: ThreadProps) {
@@ -110,8 +112,8 @@ export const Thread = memo(function Thread({
   // transcript — thousands of renders of a thread that was about to be
   // replaced, all of it before the resume RPC had even been sent. They
   // reach the edit composer through ThreadEditContext instead (see above).
-  const callbacksRef = useRef({ onBranchInNewChat, onCancel, onDismissError, onRestoreToMessage })
-  callbacksRef.current = { onBranchInNewChat, onCancel, onDismissError, onRestoreToMessage }
+  const callbacksRef = useRef({ onBranchInNewChat, onCancel, onDismissError, onRestoreToMessage, onStageInMain })
+  callbacksRef.current = { onBranchInNewChat, onCancel, onDismissError, onRestoreToMessage, onStageInMain }
 
   // Only changes identity when one of the three values does, so Thread
   // re-renders for unrelated reasons never re-render the composer.
@@ -121,6 +123,7 @@ export const Thread = memo(function Thread({
   const hasCancel = Boolean(onCancel)
   const hasDismissError = Boolean(onDismissError)
   const hasRestoreToMessage = Boolean(onRestoreToMessage)
+  const hasStageInMain = Boolean(onStageInMain)
 
   const messageComponents = useMemo(
     () => ({
@@ -130,6 +133,7 @@ export const Thread = memo(function Thread({
             hasBranchInNewChat ? messageId => callbacksRef.current.onBranchInNewChat?.(messageId) : undefined
           }
           onDismissError={hasDismissError ? messageId => callbacksRef.current.onDismissError?.(messageId) : undefined}
+          onStageInMain={hasStageInMain ? text => callbacksRef.current.onStageInMain?.(text) : undefined}
         />
       ),
       SystemMessage,
@@ -145,7 +149,7 @@ export const Thread = memo(function Thread({
         />
       )
     }),
-    [hasBranchInNewChat, hasCancel, hasDismissError, hasRestoreToMessage, requestRestoreConfirm]
+    [hasBranchInNewChat, hasCancel, hasDismissError, hasRestoreToMessage, hasStageInMain, requestRestoreConfirm]
   )
 
   // Core's splash belongs to a fresh draft; a session that exists but has

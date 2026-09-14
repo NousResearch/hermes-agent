@@ -75,11 +75,16 @@ interface MessageActionProps {
    *  was a large slice of per-token script time on long transcripts. */
   getMessageText: () => string
   onBranchInNewChat?: (messageId: string) => void
+  /** Side chats only: hand this reply back to the main chat's composer. The text
+   *  alone is enough — the main thread never learns which side chat it came from
+   *  through this channel, it just receives what the user chose to carry over. */
+  onStageInMain?: (text: string) => void
 }
 
 interface AssistantMessageProps {
   onBranchInNewChat?: (messageId: string) => void
   onDismissError?: (messageId: string) => void
+  onStageInMain?: (text: string) => void
 }
 
 export const AssistantMessage: FC<AssistantMessageProps> = props => {
@@ -176,7 +181,8 @@ const InterAgentAssistantMessage: FC<AssistantMessageProps & { sender: string }>
 const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null | ReactNode }> = ({
   collapsedNotice = null,
   onBranchInNewChat,
-  onDismissError
+  onDismissError,
+  onStageInMain
 }) => {
   const messageId = useAuiState(s => s.message.id)
   const messageRuntime = useMessageRuntime()
@@ -221,6 +227,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
         'group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden',
         collapsedNotice && 'pb-(--conversation-turn-gap)'
       )}
+      data-message-id={messageId}
       data-role="assistant"
       data-slot="aui_assistant-message-root"
       // Collapsed inter-agent rows never carried the tapback listener; keeping
@@ -271,6 +278,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
               getMessageText={getMessageText}
               messageId={messageId}
               onBranchInNewChat={onBranchInNewChat}
+              onStageInMain={onStageInMain}
             />
           )}
           {/* Last thing in the turn — under the action bar, the way Cursor ends a
@@ -632,7 +640,8 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
   durationS,
   messageId,
   getMessageText,
-  onBranchInNewChat
+  onBranchInNewChat,
+  onStageInMain
 }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
@@ -681,6 +690,17 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
             tooltip={copy.branchNewChat}
           >
             <GitForkIcon className="size-3.5" />
+          </TooltipIconButton>
+        )}
+        {onStageInMain && (
+          <TooltipIconButton
+            onClick={() => {
+              triggerHaptic('selection')
+              onStageInMain(getMessageText())
+            }}
+            tooltip={t.desktop.sideChat.stageInMain}
+          >
+            <Codicon name="reply" size="0.875rem" />
           </TooltipIconButton>
         )}
         <CopyButton appearance="icon" buttonSize="icon" label={copy.copy} text={getMessageText} />

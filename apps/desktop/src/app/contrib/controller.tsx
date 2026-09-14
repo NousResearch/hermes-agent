@@ -43,7 +43,7 @@ import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { translateNow } from '@/i18n'
 import { NEW_SESSION_TITLE, sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
-import { Download, FileText, LayoutDashboard, PanelBottom, PanelTop, Terminal, Upload, Zap } from '@/lib/icons'
+import { Download, FileText, LayoutDashboard, MessageSquareText, PanelBottom, PanelTop, Terminal, Upload, Zap } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from '@/lib/transcript-directives'
@@ -72,8 +72,9 @@ import {
 } from '@/store/review'
 import { $currentCwd, $selectedStoredSessionId, $sessions, $yoloActive, sessionMatchesStoredId } from '@/store/session'
 import { watchSessionPins } from '@/store/session-pin-sync'
-import { $botChatScopes } from '@/store/session-states'
+import { $botChatScopes, openSessionTileIds, sessionTilePaneId } from '@/store/session-states'
 import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
+import { mostRecentSideChatId } from '@/store/side-chat'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
 import { isBrowserWindow, isHudWindow } from '@/store/windows'
 
@@ -363,6 +364,29 @@ registry.registerMany([
     // this does to what I can see".
     get: () => Boolean(targetZoneTabStripVisible()),
     set: () => void toggleTargetZoneTabStrip()
+  }),
+  // A side chat's pane is HIDDEN, never closed, from here: the conversation is
+  // worth keeping, and "visibility is not lifecycle". Acts on the newest side
+  // chat because that is the one the user just opened; the pane may not be
+  // adopted yet, in which case the toggle is a no-op until it lands.
+  paletteToggle({
+    id: 'view.toggleSideChat',
+    label: translateNow('desktop.sideChat.togglePanel'),
+    action: 'view.toggleSideChat',
+    icon: MessageSquareText,
+    keywords: ['side chat', 'selection', 'chat about', 'panel', 'panes', 'hide', 'show'],
+    get: () => {
+      const sideChatId = mostRecentSideChatId(openSessionTileIds())
+
+      return sideChatId ? isPaneVisible(sessionTilePaneId(sideChatId)) : false
+    },
+    set: () => {
+      const sideChatId = mostRecentSideChatId(openSessionTileIds())
+
+      if (sideChatId) {
+        togglePaneVisible(sessionTilePaneId(sideChatId))
+      }
+    }
   }),
   // The keybind panel's non-titlebar door (the keyboard icon is gone).
   {

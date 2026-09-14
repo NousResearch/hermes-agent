@@ -32,6 +32,10 @@ class ProcessingOutcome(Enum):
     CANCELLED = "cancelled"
 
 
+# Per-event override for the adapter's processing-complete lifecycle hook.
+PROCESSING_OUTCOME_METADATA_KEY = "_hermes_processing_outcome"
+
+
 @dataclass
 class MessageEvent:
     """Incoming message from a platform — the normalized shape all adapters produce."""

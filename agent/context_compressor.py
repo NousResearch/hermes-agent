@@ -360,6 +360,10 @@ _SUMMARY_END_MARKER = "--- END OF CONTEXT SUMMARY — respond to the message bel
 _MERGED_PRIOR_CONTEXT_HEADER = "[PRIOR CONTEXT — for reference only; not a new message]"
 _MERGED_SUMMARY_DELIMITER = "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]"
 
+# hermes-lcm keeps the real current request before this summary envelope.
+_LCM_OBJECTIVE_HEADER = "[Current user objective preserved from compacted history]"
+_LCM_SUMMARY_DELIMITER = "\n\n---\n\n[Recent Summary ("
+
 # Prefixes the copy of a still-running user task that compaction re-states after
 # the handoff boundary (#100818). A cron run's only user turn is the job prompt
 # in the protected head, so compaction leaves it BEFORE the summary — and
@@ -3585,6 +3589,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         Returns ``"standalone"`` (whole message is a handoff), ``"merged"`` (preserved content +
         delimiter + summary body), or None."""
         text = _content_text_for_contains(content).lstrip()
+        if text.startswith(_LCM_OBJECTIVE_HEADER) and _LCM_SUMMARY_DELIMITER in text:
+            return "merged"
         # Merged summaries carry the handoff prefix after the delimiter; detect it there too.
         if _MERGED_SUMMARY_DELIMITER in text:
             after = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].lstrip()
@@ -3800,7 +3806,11 @@ Write only the summary body. Do not include any preamble or prefix."""
             return unwrapped
 
         if isinstance(content, str):
-            if _MERGED_SUMMARY_DELIMITER in content:
+            text = content.lstrip()
+            if text.startswith(_LCM_OBJECTIVE_HEADER) and _LCM_SUMMARY_DELIMITER in text:
+                prior = text.split(_LCM_SUMMARY_DELIMITER, 1)[0]
+                prior = prior[len(_LCM_OBJECTIVE_HEADER):].lstrip()
+            elif _MERGED_SUMMARY_DELIMITER in content:
                 prior = content.split(_MERGED_SUMMARY_DELIMITER, 1)[0].strip()
                 if prior.startswith(_MERGED_PRIOR_CONTEXT_HEADER):
                     prior = prior[len(_MERGED_PRIOR_CONTEXT_HEADER):].lstrip()

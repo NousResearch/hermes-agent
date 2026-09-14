@@ -1401,7 +1401,7 @@ class TestMattermostStandaloneAcknowledgements:
                 self.response(201, {"id": "tail"}),
             ]
             return json.loads(tool.send_message_tool({
-                "action": "send", "target": "mattermost:123456", "message": message,
+                "action": "send", "target": "mattermost:aaaaaaaaaaaaaaaaaaaaaaaaaa", "message": message,
             }))
 
         return send, session, message
@@ -1443,7 +1443,7 @@ class TestMattermostStandaloneAcknowledgements:
         assert result["error"] == _POST_DELIVERY_UNCERTAIN
         assert result["_delivery_uncertain"] is True
         assert result["message_ids"] == ["prefix"] and result["message_id"] == "prefix"
-        assert result["platform"] == "mattermost" and result["chat_id"] == "123456"
+        assert result["platform"] == "mattermost" and result["chat_id"] == "aaaaaaaaaaaaaaaaaaaaaaaaaa"
         assert [call.kwargs["json"]["message"] for call in session.post.call_args_list] == [
             message[:500], message[500:1000]]
         assert all(call.args[0] == "https://mattermost.example/api/v4/posts"

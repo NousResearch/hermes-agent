@@ -125,6 +125,18 @@ describe('AppContextMenu', () => {
     await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/docs'))
   })
 
+  it('hides open-in-app inside a modal surface where the preview paints underneath', async () => {
+    installBridge()
+    mountMenu()
+    const host = attach('<div data-slot="onboarding-overlay"><a href="https://example.com/docs">Docs</a></div>')
+
+    fireEvent.contextMenu(host.querySelector('a')!)
+
+    expect(await screen.findByText('Open in external browser')).toBeTruthy()
+    expect(screen.getByText('Copy URL')).toBeTruthy()
+    expect(screen.queryByText('Open in in-app browser')).toBeNull()
+  })
+
   it('skips Open in in-app browser on the HUD — that window has no browser pane', async () => {
     const originalLocation = window.location
 

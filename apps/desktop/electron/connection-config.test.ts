@@ -71,6 +71,7 @@ test('resolveRemoteSshDashboardProfile never sends a conn: pool key to the remot
   assert.equal(resolveRemoteSshDashboardProfile('', 'conn:mac-mini::dixie'), 'dixie')
   assert.equal(resolveRemoteSshDashboardProfile('', 'bob'), 'bob')
   assert.equal(resolveRemoteSshDashboardProfile('', 'default'), '')
+  assert.equal(resolveRemoteSshDashboardProfile('default', 'mac-mini'), '')
   assert.equal(resolveRemoteSshDashboardProfile('writer', 'conn:mac-mini::default'), 'writer')
 })
 

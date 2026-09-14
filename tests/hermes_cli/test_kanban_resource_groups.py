@@ -1,6 +1,9 @@
 """Worker resource-group scheduling contracts for Kanban."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
+
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
@@ -58,3 +61,55 @@ def test_resource_groups_include_running_workers_on_other_boards(
 
     assert not result.spawned
     assert result.skipped_resource_conflict == [(blocked, "beta", ("gpu-0",))]
+
+
+def test_resource_admission_is_serialized_across_boards(all_assignees_spawnable):
+    groups = {"gpu-0": ["alpha", "beta"]}
+    kb.create_board("second", name="Second")
+    with kbc.connect_closing() as conn:
+        alpha = kb.create_task(conn, title="research", assignee="alpha")
+    with kbc.connect_closing(board="second") as conn:
+        beta = kb.create_task(conn, title="writer", assignee="beta")
+
+    spawn_entered = Event()
+    release_spawn = Event()
+
+    def dispatch_first():
+        def blocking_spawn(*_args, **_kwargs):
+            spawn_entered.set()
+            assert release_spawn.wait(5)
+            return 12345
+
+        with kbc.connect_closing() as conn:
+            return kbd.dispatch_once(
+                conn,
+                spawn_fn=blocking_spawn,
+                worker_resource_groups=groups,
+            )
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first = pool.submit(dispatch_first)
+        assert spawn_entered.wait(5)
+        with kbc.connect_closing(board="second") as conn:
+            contended = kbd.dispatch_once(
+                conn,
+                spawn_fn=_spawn,
+                worker_resource_groups=groups,
+            )
+        release_spawn.set()
+        admitted = first.result(timeout=5)
+
+    assert [item[0] for item in admitted.spawned] == [alpha]
+    assert contended.skipped_locked is True
+    assert contended.spawned == []
+    with kbc.connect_closing(board="second") as conn:
+        assert kb.get_task(conn, beta).status == "ready"
+
+        # Once admission completes, a disjoint resource remains dispatchable
+        # even while the first board's worker is running.
+        disjoint = kbd.dispatch_once(
+            conn,
+            spawn_fn=_spawn,
+            worker_resource_groups={"gpu-0": ["alpha"], "gpu-1": ["beta"]},
+        )
+    assert [item[0] for item in disjoint.spawned] == [beta]

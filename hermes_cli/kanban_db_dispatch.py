@@ -1445,13 +1445,14 @@ def dispatch_once(
     worker_resource_groups: Optional[Mapping[str, Any]] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
-    """Run one dispatcher tick under the board's single-writer lock.
+    """Run one dispatcher tick under the applicable admission locks.
 
     Wraps :func:`_dispatch_once_locked` in the non-blocking :func:`_dispatch_tick_lock`
     so two dispatchers on one ``kanban.db`` never race a write tick on WAL
     frames. The loser returns an empty ``DispatchResult`` with
-    ``skipped_locked=True`` and writes nothing; the lock is keyed on the
-    resolved DB path so unrelated boards tick in parallel.
+    ``skipped_locked=True`` and writes nothing. Resource-aware ticks first take
+    a host-wide lock so sibling boards cannot race their occupancy snapshots;
+    ticks without resource rules remain board-independent.
     """
     def _locked_tick() -> DispatchResult:
         return _dispatch_once_locked(
@@ -1477,13 +1478,25 @@ def dispatch_once(
         result = _locked_tick()
         _kb._fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
         return result
-    with _kbc._dispatch_tick_lock(db_path) as held:
-        if not held:
+    resource_groups = normalize_worker_resource_groups(worker_resource_groups)
+    resource_lock = (
+        _kbc._resource_dispatch_lock(_kb.kanban_home())
+        if resource_groups else contextlib.nullcontext(True)
+    )
+    # Lock order is host resource admission first, then the board writer lock.
+    # Every dispatcher follows this order, so sibling-board ticks cannot both
+    # snapshot an unoccupied resource and then claim conflicting workers.
+    with resource_lock as resource_held:
+        if not resource_held:
             result = DispatchResult(skipped_locked=True)
         else:
-            result = _locked_tick()
-            # Still under the dispatch lock: periodic PASSIVE WAL checkpoint.
-            _kbc._maybe_checkpoint_wal(conn, db_path)
+            with _kbc._dispatch_tick_lock(db_path) as held:
+                if not held:
+                    result = DispatchResult(skipped_locked=True)
+                else:
+                    result = _locked_tick()
+                    # Still under the dispatch lock: periodic PASSIVE WAL checkpoint.
+                    _kbc._maybe_checkpoint_wal(conn, db_path)
     # Lock released. Fire the tick observer strictly OUTSIDE the critical
     # section: a slow subscriber must never stall a sibling dispatcher's tick.
     _kb._fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)

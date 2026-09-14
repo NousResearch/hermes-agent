@@ -114,6 +114,25 @@ def _finalize(
     )
 
 
+@pytest.mark.parametrize("final_response", [None, "", "   "])
+def test_blank_response_at_iteration_limit_requests_summary(
+    monkeypatch, final_response
+):
+    """A tool-only tail may leave ``final_response`` absent or blank."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent()
+
+    result = _finalize(
+        agent,
+        final_response=final_response,
+        exit_reason="unknown",
+    )
+
+    assert result["final_response"] == "summary from extra call"
+    assert result["turn_exit_reason"] == "max_iterations_reached(60/60)"
+    assert agent._handle_max_iterations_called is True
+
+
 
 
 
@@ -371,5 +390,4 @@ def test_bounded_fallback_does_not_fire_when_budget_not_exhausted(monkeypatch):
     )
 
     record.assert_not_called()
-
 

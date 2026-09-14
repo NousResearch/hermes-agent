@@ -720,6 +720,24 @@ class TestInstallUvInternals:
         if sys.platform != "win32":
             assert call_env["UV_UNMANAGED_INSTALL"] == str(tmp_path / "bin")
 
+    def test_windows_installer_ignores_the_user_profile(self):
+        """A blocking $PROFILE must not be able to wedge the uv install (#108735).
+
+        Behaviour contract for the argv: without -NoProfile the user's Windows
+        PowerShell profile runs before the installer, and one that waits on stdin
+        hangs this child for good — silently, because stdout/stderr are captured.
+        """
+        import hermes_cli.managed_uv as managed_uv
+
+        with patch("subprocess.run") as mock_run:
+            managed_uv._install_uv_windows({"UV_INSTALL_DIR": "C:\\fake\\bin"})
+
+        argv = mock_run.call_args[0][0]
+        assert argv[0] == "powershell"
+        assert "-NoProfile" in argv
+        assert "-NonInteractive" in argv
+        assert "https://astral.sh/uv/install.ps1" in " ".join(argv)
+
 
 class TestRuntimeRequestMinorLine:
     """The repair must request the CPython minor line, not the exact patch.

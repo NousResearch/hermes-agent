@@ -85,7 +85,7 @@ class TestThinkingPrefillTrailingTurn:
         ]
 
         with (
-            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_persist_session", return_value=True),
             patch.object(loop_agent, "_save_trajectory"),
             patch.object(loop_agent, "_cleanup_task_resources"),
         ):
@@ -111,7 +111,7 @@ class TestThinkingPrefillTrailingTurn:
         ]
 
         with (
-            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_persist_session", return_value=True),
             patch.object(loop_agent, "_save_trajectory"),
             patch.object(loop_agent, "_cleanup_task_resources"),
         ):
@@ -135,7 +135,7 @@ class TestThinkingPrefillTrailingTurn:
         ]
 
         with (
-            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_persist_session", return_value=True),
             patch.object(loop_agent, "_save_trajectory"),
             patch.object(loop_agent, "_cleanup_task_resources"),
         ):

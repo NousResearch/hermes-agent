@@ -443,7 +443,7 @@ class TestConversationLoopPartialStreamContinuation:
         ]
 
         with (
-            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_persist_session", return_value=True),
             patch.object(loop_agent, "_save_trajectory"),
             patch.object(loop_agent, "_cleanup_task_resources"),
         ):
@@ -569,7 +569,7 @@ class TestContentFilterStallActivatesFallback:
             return True
 
         with (
-            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_persist_session", return_value=True),
             patch.object(loop_agent, "_save_trajectory"),
             patch.object(loop_agent, "_cleanup_task_resources"),
             patch.object(loop_agent, "_try_activate_fallback",
@@ -628,7 +628,7 @@ class TestEmptyPartialStreamStubNotPersisted:
         ]
 
         with (
-            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_persist_session", return_value=True),
             patch.object(loop_agent, "_save_trajectory"),
             patch.object(loop_agent, "_cleanup_task_resources"),
         ):
@@ -742,7 +742,7 @@ class TestSendTimeEmptyAssistantPad:
             content="ok", finish_reason="stop",
         )
         with (
-            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_persist_session", return_value=True),
             patch.object(loop_agent, "_save_trajectory"),
             patch.object(loop_agent, "_cleanup_task_resources"),
         ):
@@ -835,7 +835,7 @@ class TestSendTimePadMultimodalSafety:
             content="ok", finish_reason="stop",
         )
         with (
-            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_persist_session", return_value=True),
             patch.object(loop_agent, "_save_trajectory"),
             patch.object(loop_agent, "_cleanup_task_resources"),
         ):

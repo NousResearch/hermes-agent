@@ -105,7 +105,7 @@ def test_substantive_tool_only_turn_invalidates_older_housekeeping_fallback():
 
     with (
         patch("model_tools.handle_function_call", return_value="ok"),
-        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_persist_session", return_value=True),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
     ):
@@ -188,7 +188,7 @@ def test_bare_tool_marker_is_not_reused_as_final_response():
 
     with (
         patch("model_tools.handle_function_call", return_value="ok"),
-        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_persist_session", return_value=True),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
     ):

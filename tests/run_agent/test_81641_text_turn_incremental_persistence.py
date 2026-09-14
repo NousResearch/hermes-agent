@@ -90,6 +90,7 @@ def _run_text_turn(agent, answer: str, *, flush_side_effect=None):
 
     def _record_persist(messages, conversation_history=None):
         events.append(("persist_session", None))
+        return True
 
     with (
         patch.object(

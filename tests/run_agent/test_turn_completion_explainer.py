@@ -395,7 +395,7 @@ def test_run_conversation_empty_exhausted_surfaces_explanation():
     ]
 
     with (
-        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_persist_session", return_value=True),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
     ):
@@ -427,7 +427,7 @@ def test_run_conversation_partial_stream_recovery_surfaces_explanation():
 
     with (
         patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
-        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_persist_session", return_value=True),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
     ):

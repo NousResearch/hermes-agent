@@ -54,6 +54,7 @@ from agent.turn_request_assembly import assemble_api_request
 from agent.turn_response_check import check_api_response
 from agent.turn_response_intake import normalize_model_response
 from agent.turn_tool_round import run_tool_round
+from agent.state_answer_gate import StateAnswerGateResult, evaluate_answer_gate
 from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches
@@ -1274,10 +1275,14 @@ class _LoopState:
     active_system_prompt: Any
     current_turn_user_idx: Any
     _preflight_compression_blocked: Any
+    state_candidate_result: Any
     # Compression attempt cap shared by the pre-API gate, 413 handlers and post-tool compaction:
     # a consecutive-ineffective-attempt backstop, rearmed only after a provider response
     # reports a prompt below threshold.
     max_compression_attempts: Any
+    state_answer_gate_result: Any = None
+    _state_gate_blocked: bool = False
+    blocked: bool = False
     api_call_count: int = 0
     final_response: Any = None
     interrupted: bool = False
@@ -1332,6 +1337,7 @@ _CTX_FIELDS = frozenset({
     "user_message", "original_user_message", "conversation_history", "effective_task_id", "turn_id",
     "_should_review_memory", "_plugin_user_context", "_ext_prefetch_cache", "messages",
     "active_system_prompt", "current_turn_user_idx", "_preflight_compression_blocked",
+    "state_candidate_result",
 })
 # Keyword names each phase helper takes (minus ``agent``), cached per function object.
 _PHASE_PARAMS: Dict[Any, tuple] = {}
@@ -1359,6 +1365,38 @@ def _run_phase(fn, agent, state: _LoopState, **extra):
         elif value:
             setattr(state, f.name, True)
     return verdict
+
+
+def _apply_state_answer_gate(agent: Any, state: Any) -> bool:
+    """Apply an opt-in pre-model state gate while preserving normal finalization.
+
+    The host must explicitly provide answer keys and scope. Without those inputs,
+    this is a no-op. A blocked turn exits through ``finalize_turn`` rather than
+    returning early, preserving the existing history/delivery lifecycle.
+    """
+    requested_keys = getattr(agent, "_state_answer_keys_for_turn", None)
+    answer_scope = getattr(agent, "_state_answer_scope", None)
+    if requested_keys is None or not isinstance(answer_scope, str) or not answer_scope:
+        return False
+    gate: StateAnswerGateResult = evaluate_answer_gate(
+        state.state_candidate_result,
+        requested_state_keys=requested_keys,
+        answer_scope=answer_scope,
+    )
+    state.state_answer_gate_result = gate
+    if gate.model_call_allowed:
+        return False
+    if gate.decision.response_policy.value == "conflict_stop":
+        state.final_response = "現在の状態と新しい情報が矛盾しているため、確認が必要です。"
+    elif gate.decision.response_policy.value == "ask_confirmation":
+        state.final_response = "この情報を現在の状態として扱ってよいか確認してください。"
+    else:
+        state.final_response = "この情報は確認できていないため、回答を保留します。"
+    state.failed = False
+    state._turn_exit_reason = f"state_gate_{gate.decision.response_policy.value}"
+    state._state_gate_blocked = True
+    state.blocked = True
+    return True
 
 
 def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
@@ -1473,9 +1511,10 @@ def run_conversation(
         max_compression_attempts=getattr(agent, "max_compression_attempts", 3),
         **{f.name: getattr(_ctx, f.name.lstrip("_")) for f in fields(_LoopState) if f.name in _CTX_FIELDS},
     )
+    _apply_state_answer_gate(agent, s)
     # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
     # app-server subprocess (see agent/transports/codex_app_server_session.py).
-    if agent.api_mode == "codex_app_server":
+    if agent.api_mode == "codex_app_server" and not s._state_gate_blocked:
         return agent._run_codex_app_server_turn(
             user_message=s.user_message, original_user_message=s.original_user_message,
             messages=s.messages, effective_task_id=s.effective_task_id,
@@ -1485,7 +1524,7 @@ def run_conversation(
     # Explicitly injected Runtime Shadow only. The provider currently reports
     # input_unavailable because authoritative state/evidence SSOT is not wired.
     _shadow_event_id = start_runtime_shadow(agent)
-    while (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+    while not s._state_gate_blocked and ((s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call):
         if _run_phase(begin_iteration, agent, s).action == "break":
             break
         _run_phase(prepare_iteration, agent, s)

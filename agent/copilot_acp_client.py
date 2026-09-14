@@ -31,6 +31,7 @@ from agent.redact import redact_sensitive_text
 from tools.environments.local import hermes_subprocess_env
 
 ACP_MARKER_BASE_URL = "acp://copilot"
+CLAUDE_CODE_ACP_MARKER_BASE_URL = "acp://claude-code"
 logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT_SECONDS = 900.0
 # Stderr fingerprint of the deprecated `gh copilot` extension. Require BOTH the product name
@@ -75,6 +76,15 @@ def _resolve_command() -> str:
 
 def _resolve_args() -> list[str]:
     return shlex.split(os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()) or ["--acp", "--stdio"]
+
+
+def _resolve_claude_code_command() -> str:
+    return os.getenv("HERMES_CLAUDE_CODE_ACP_COMMAND", "").strip() or "claude-agent-acp"
+
+
+def _resolve_claude_code_args() -> list[str]:
+    # Unlike `copilot`, `claude-agent-acp` is an ACP-only binary — no flags needed to opt in.
+    return shlex.split(os.getenv("HERMES_CLAUDE_CODE_ACP_ARGS", "").strip())
 
 
 def _acp_supported(command: str, args: list[str]) -> bool | None:
@@ -253,8 +263,11 @@ class CopilotACPClient:
     ):
         self.api_key, self.base_url = api_key or "copilot-acp", base_url or ACP_MARKER_BASE_URL
         self._default_headers = dict(default_headers or {})
-        self._acp_command = acp_command or command or _resolve_command()
-        self._acp_args = list(acp_args or args or _resolve_args())
+        _is_claude_code = self.base_url == CLAUDE_CODE_ACP_MARKER_BASE_URL
+        _default_command = _resolve_claude_code_command if _is_claude_code else _resolve_command
+        _default_args = _resolve_claude_code_args if _is_claude_code else _resolve_args
+        self._acp_command = acp_command or command or _default_command()
+        self._acp_args = list(acp_args or args or _default_args())
         self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat_completion))
         self.is_closed, self._active_process = False, None

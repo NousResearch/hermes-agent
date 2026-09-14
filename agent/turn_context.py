@@ -343,6 +343,25 @@ class TurnContext:
     plugin_user_context: str = ""  # ``pre_llm_call`` context (appended to user message)
     ext_prefetch_cache: str = ""  # external-memory prefetch, reused across iterations
     preflight_compression_blocked: bool = False  # immediate retry proved ineffective
+    state_candidate_result: Any = None  # optional side-effect-free state evaluation result
+
+
+def _evaluate_state_candidate(agent: Any, original_user_message: Any) -> Any:
+    """Invoke an explicitly registered state evaluator without creating a persistence path.
+
+    The callback is an integration seam only: it may return structured decision metadata,
+    but it must not be assumed to authorize persistence or an answer-time block. Failures
+    are fail-open so existing turn behavior is unchanged until a decision-style host gate
+    is deliberately introduced.
+    """
+    evaluator = getattr(agent, "_state_candidate_evaluator", None)
+    if not callable(evaluator):
+        return None
+    try:
+        return evaluator(agent, original_user_message)
+    except Exception:
+        logger.warning("state candidate evaluator failed; continuing without decision metadata", exc_info=True)
+        return None
 
 
 def _persist_under_lock(agent: Any, fn, failure_msg: str, pending_cli_message: Any) -> None:
@@ -866,6 +885,7 @@ def build_turn_context(
 
     _bind_interrupt_scope(agent, ra)
     ext_prefetch_cache = _memory_turn_start_and_prefetch(agent, original_user_message)
+    state_candidate_result = _evaluate_state_candidate(agent, original_user_message)
 
     # Sidecar skipped for codex_app_server/MoA.
     if (
@@ -892,6 +912,7 @@ def build_turn_context(
         current_turn_user_idx=current_turn_user_idx, should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context, ext_prefetch_cache=ext_prefetch_cache,
         preflight_compression_blocked=compaction.blocked,
+        state_candidate_result=state_candidate_result,
     )
 
 

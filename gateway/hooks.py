@@ -123,3 +123,18 @@ class HookRegistry:
             except Exception as e:
                 print(f"[hooks] Error in handler for '{event_type}': {e}", flush=True)
         return results
+
+    async def emit_collect_strict(self, event_type: str, context: Optional[Dict[str, Any]] = None) -> List[Any]:
+        """Like ``emit_collect``, but a failing handler's exception propagates to the caller
+        instead of being logged and swallowed. For fail-closed decision gates (e.g.
+        ``agent:before``) where a broken hook must block dispatch rather than silently
+        degrade to allow."""
+        if context is None:
+            context = {}
+        results: List[Any] = []
+        for fn in self._resolve_handlers(event_type):
+            result = fn(event_type, context)
+            result = await result if asyncio.iscoroutine(result) else result  # sync or async handlers
+            if result is not None:
+                results.append(result)
+        return results

@@ -52,7 +52,7 @@ def _build_agent(monkeypatch):
         skip_memory=True,
     )
     agent._cleanup_task_resources = lambda task_id: None
-    agent._persist_session = lambda messages, history=None: None
+    agent._persist_session = lambda messages, history=None: True
     agent._save_trajectory = lambda messages, user_message, completed: None
     return agent
 
@@ -72,7 +72,7 @@ def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):
         skip_memory=True,
     )
     agent._cleanup_task_resources = lambda task_id: None
-    agent._persist_session = lambda messages, history=None: None
+    agent._persist_session = lambda messages, history=None: True
     agent._save_trajectory = lambda messages, user_message, completed: None
     return agent
 
@@ -97,7 +97,7 @@ def _build_azure_foundry_agent(monkeypatch, *, model="gpt-5.4"):
         skip_memory=True,
     )
     agent._cleanup_task_resources = lambda task_id: None
-    agent._persist_session = lambda messages, history=None: None
+    agent._persist_session = lambda messages, history=None: True
     agent._save_trajectory = lambda messages, user_message, completed: None
     return agent
 
@@ -526,7 +526,7 @@ def _build_xai_agent_with_slash_enum_tool(monkeypatch):
         skip_memory=True,
     )
     agent._cleanup_task_resources = lambda task_id: None
-    agent._persist_session = lambda messages, history=None: None
+    agent._persist_session = lambda messages, history=None: True
     agent._save_trajectory = lambda messages, user_message, completed: None
     return agent
 
@@ -1273,7 +1273,7 @@ def _build_xai_oauth_agent(monkeypatch):
         skip_memory=True,
     )
     agent._cleanup_task_resources = lambda task_id: None
-    agent._persist_session = lambda messages, history=None: None
+    agent._persist_session = lambda messages, history=None: True
     agent._save_trajectory = lambda messages, user_message, completed: None
     return agent
 

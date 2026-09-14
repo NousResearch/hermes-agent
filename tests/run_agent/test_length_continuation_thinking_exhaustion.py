@@ -141,7 +141,7 @@ def _truncated_text_response(content):
 
 def _run(agent, message, history=None):
     with (
-        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_persist_session", return_value=True),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
     ):

@@ -100,7 +100,7 @@ def test_overflow_recovery_timeout_ends_turn_without_provider_reentry():
         {"role": "assistant", "content": "old response"},
     ]
     with (
-        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_persist_session", return_value=True),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
     ):
@@ -156,7 +156,7 @@ def test_pre_api_compression_timeout_is_typed_terminal():
         {"role": "assistant", "content": "old response"},
     ]
     with (
-        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_persist_session", return_value=True),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
     ):

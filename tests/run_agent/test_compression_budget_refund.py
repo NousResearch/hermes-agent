@@ -225,7 +225,7 @@ def _run_marathon_turn(
 
     with (
         patch.object(agent, "_compress_context", side_effect=_fake_compress),
-        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_persist_session", return_value=True),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
         patch(

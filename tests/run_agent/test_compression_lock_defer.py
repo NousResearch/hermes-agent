@@ -188,7 +188,7 @@ class TestLockContended413Defer:
                 agent, "_compress_context",
                 side_effect=_lock_skipping_compress(agent),
             ) as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -214,7 +214,7 @@ class TestLockContended413Defer:
                 agent, "_compress_context",
                 side_effect=_lock_skipping_compress(agent, holder=True),
             ),
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -295,7 +295,7 @@ class TestPreApiLockDeferDoesNotBurnBudget:
                 return_value=500_000,
             ),
             patch.object(agent, "_compress_context", side_effect=_lock_then_success),
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):

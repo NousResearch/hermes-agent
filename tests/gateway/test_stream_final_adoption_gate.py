@@ -71,9 +71,14 @@ class TestAdoptionGate:
 
 class TestGateWiring:
     def test_run_py_gate_matches_contract(self):
-        """The gate in gateway/run.py must contain the interrupted and
-        completed checks — a source-level pin so the contract test above
-        cannot drift green while the call site regresses."""
+        """The gate must contain the interrupted and completed checks — a
+        source-level pin so the contract test above cannot drift green while
+        the call site regresses.
+
+        The gate now lives in ``gateway/run_turn.py``'s
+        ``_run_agent_release_stream_consumer`` (moved from
+        ``gateway/run_turn_runner.py`` so it runs after the pre-delivery
+        policy gate, not before it — see that method's docstring)."""
         import inspect
         import gateway.run_turn as run_mod
 

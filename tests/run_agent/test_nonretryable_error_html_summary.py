@@ -105,7 +105,7 @@ def test_non_retryable_failure_error_is_summarized_not_raw_html():
     agent.client.chat.completions.create.side_effect = _make_403_html_error()
 
     with (
-        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_persist_session", return_value=True),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
     ):

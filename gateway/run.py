@@ -3649,6 +3649,28 @@ class GatewayRunner(
         self._scale_to_zero_cooldown_until: float = 0.0
         self._scale_to_zero_no_suspend_logged: bool = False
 
+    async def _evaluate_agent_before_gate(self, context: Dict[str, Any]) -> Optional[str]:
+        """Fail-closed pre-agent decision gate: fires ``agent:before`` hooks before an agent
+        turn is allowed to start. Returns the deny message (a non-empty string) to block the
+        turn, or ``None`` to allow it.
+
+        Unlike the ``command:*`` interceptors in ``_hm_resolve_command`` (which fail OPEN —
+        a broken hook there just means "no interception"), a hook exception here fails
+        CLOSED: this gate exists to catch state conflicts, and a broken hook must not be
+        able to silently downgrade that into an allow."""
+        try:
+            results = await self.hooks.emit_collect_strict("agent:before", context)
+        except Exception as exc:
+            logger.warning("agent:before hook failed — failing closed: %s", exc)
+            return "状態検証に失敗しました。しばらくしてからもう一度お試しください。"
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            if str(result.get("decision", "")).strip().lower() == "deny":
+                message = result.get("message")
+                return message if isinstance(message, str) and message else "このターンはフックによりブロックされました。"
+        return None
+
     def _open_session_db_for_active_scope(self, raise_on_error: bool = False) -> Any:
         """AsyncSessionDB for the active profile scope, resolved per access (not in ``__init__``) since
         ``SessionDB()`` reads the context-local HERMES_HOME; one handle cached per path. Construction

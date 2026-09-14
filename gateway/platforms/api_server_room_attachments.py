@@ -12,7 +12,7 @@ import sqlite3
 import stat
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator, Mapping
@@ -395,9 +395,9 @@ class RoomAttachmentSpool:
         now = float(self.clock())
         self.prune(now=now)
         retired: list[tuple[str, str]] = []
-        with self._lock, self._transaction(immediate=True) as conn:
+        with self._lock, ExitStack() as grant_locks, self._transaction(immediate=True) as conn:
             if authorize_write is not None:
-                authorize_write(conn)
+                grant_locks.enter_context(authorize_write(conn))
             scope = _attempt_scope(dispatch)
             existing = conn.execute(
                 "SELECT * FROM roomlink_attachment_batches WHERE batch_key=?",
@@ -560,9 +560,9 @@ class RoomAttachmentSpool:
             )
         now = float(self.clock())
         self.prune(now=now)
-        with self._lock, self._transaction(immediate=True) as conn:
+        with self._lock, ExitStack() as grant_locks, self._transaction(immediate=True) as conn:
             if authorize_write is not None:
-                authorize_write(conn)
+                grant_locks.enter_context(authorize_write(conn))
             batch = conn.execute(
                 """SELECT * FROM roomlink_attachment_batches
                     WHERE room_id=? AND home_install_id=?
@@ -821,9 +821,9 @@ class RoomAttachmentSpool:
         """Delete one exact terminal run's private attachment batch idempotently."""
 
         removed: list[tuple[str, str]] = []
-        with self._lock, self._transaction(immediate=True) as conn:
+        with self._lock, ExitStack() as grant_locks, self._transaction(immediate=True) as conn:
             if authorize_write is not None:
-                authorize_write(conn)
+                grant_locks.enter_context(authorize_write(conn))
             rows = conn.execute(
                 """SELECT batch_key FROM roomlink_attachment_batches
                     WHERE room_id=? AND home_install_id=?
@@ -1003,21 +1003,32 @@ def _validate_target_scope(claims: Mapping[str, Any], profile: str) -> None:
 
 
 def _write_guard(adapter, request, expected, permission):
+    @contextmanager
     def authorize(conn):
         from gateway import hosted_rooms
+        from gateway.hosted_room_grant_state import grant_state_db_paths
         from gateway.platforms.api_server import _api_request_profile
         from gateway.platforms.api_server_room_grants import _decode_request_grant
-        claims = _decode_request_grant(adapter, request, permission=permission)
-        _validate_target_scope(claims, _effective_room_profile(_api_request_profile))
-        if claims != expected:
-            raise HostedRoomGrantError('room grant changed')
-        from gateway.hosted_room_grant_state import grant_state_db_paths
-        # The shared spool transaction fences grant writers; use the route owner's
-        # public readers rather than assuming an obsolete connection keyword.
-        for db_path in grant_state_db_paths():
-            if (hosted_rooms.room_grant_is_revoked(db_path, claims=claims)
-                    or not hosted_rooms.peer_room_grant_is_current(db_path, claims=claims)):
-                raise RoomGrantReauthorizationRequired('room grant is no longer current')
+        from hermes_cli.sqlite_util import transaction
+        paths = tuple(dict.fromkeys(Path(path).resolve() for path in grant_state_db_paths()))
+        main_path = next(path for _, name, path in conn.execute('PRAGMA database_list') if name == 'main')
+        if not conn.in_transaction or Path(main_path).resolve() != paths[0]:
+            raise RoomGrantReauthorizationRequired('shared spool write fence is unavailable')
+        # All operations lock shared first, then each distinct profile store in
+        # path order. Their caller keeps this context open through spool COMMIT:
+        # a failed shared revocation leg must not bypass us via a profile deny.
+        with ExitStack() as locks:
+            for path in sorted(paths[1:]):
+                locks.enter_context(transaction(hosted_rooms._connect(path), immediate=True))
+            claims = _decode_request_grant(adapter, request, permission=permission)
+            _validate_target_scope(claims, _effective_room_profile(_api_request_profile))
+            if claims != expected:
+                raise HostedRoomGrantError('room grant changed')
+            for path in paths:
+                if (hosted_rooms.room_grant_is_revoked(path, claims=claims)
+                        or not hosted_rooms.peer_room_grant_is_current(path, claims=claims)):
+                    raise RoomGrantReauthorizationRequired('room grant is no longer current')
+            yield
     return authorize
 
 

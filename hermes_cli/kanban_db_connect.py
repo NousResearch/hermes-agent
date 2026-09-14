@@ -205,6 +205,45 @@ def _dispatch_tick_lock(db_path: Path):
                 handle.close()
 
 
+@contextlib.contextmanager
+def _resource_dispatch_lock(kanban_root: Path):
+    """Serialize resource-aware admission across every board on this host.
+
+    The caller acquires this lock before the board-scoped dispatch lock and
+    holds both through the occupancy snapshot and spawn bookkeeping.  This
+    closes the cross-board check-then-claim race while leaving dispatchers
+    without resource rules board-independent.
+    """
+    lock_path = kanban_root / "kanban" / ".resource-dispatch.lock"
+    handle = None
+    acquired = False
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+b")
+        try:
+            acquired = _try_lock_nb(handle)
+        except (OSError, AttributeError):
+            acquired = False
+    except OSError as exc:
+        # Unlike the board-local writer lock, this lock is the only admission
+        # boundary shared by sibling boards.  Failing open would let both
+        # boards observe the resource as free and start conflicting workers.
+        _kb._log.warning("kanban resource dispatch lock unavailable at %s: %s", lock_path, exc)
+        acquired = False
+        handle = None
+    try:
+        yield acquired
+    finally:
+        if handle is not None:
+            try:
+                if acquired:
+                    _unlock(handle)
+            except (OSError, AttributeError):
+                pass
+            finally:
+                handle.close()
+
+
 # Periodic explicit WAL checkpoint from the dispatcher tick: a passive
 # autocheckpoint can be starved on a busy multi-process board (any open reader
 # snapshot blocks the WAL reset), letting -wal grow between gateway restarts.

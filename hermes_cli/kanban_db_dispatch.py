@@ -110,6 +110,9 @@ class DispatchResult:
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
+    skipped_resource_conflict: list[tuple[str, str, tuple[str, ...]]] = field(default_factory=list)
+    """``(task_id, assignee, resource_groups)`` deferred because a running
+    worker occupies at least one configured exclusive resource group."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -1342,6 +1345,17 @@ def configured_max_in_progress() -> Optional[int]:
     return ival if ival >= 1 else None
 
 
+def configured_worker_resource_groups() -> Mapping[str, Any]:
+    """Read worker resource rules for the standalone dispatcher."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        raw = (load_config_readonly() or {}).get("kanban", {}).get("worker_resource_groups")
+    except Exception:
+        return {}
+    return raw if isinstance(raw, Mapping) else {}
+
+
 def count_running_tasks(conn: sqlite3.Connection) -> int:
     """Number of tasks in ``status='running'``.
 
@@ -1428,15 +1442,17 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    worker_resource_groups: Optional[Mapping[str, Any]] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
-    """Run one dispatcher tick under the board's single-writer lock.
+    """Run one dispatcher tick under the applicable admission locks.
 
     Wraps :func:`_dispatch_once_locked` in the non-blocking :func:`_dispatch_tick_lock`
     so two dispatchers on one ``kanban.db`` never race a write tick on WAL
     frames. The loser returns an empty ``DispatchResult`` with
-    ``skipped_locked=True`` and writes nothing; the lock is keyed on the
-    resolved DB path so unrelated boards tick in parallel.
+    ``skipped_locked=True`` and writes nothing. Resource-aware ticks first take
+    a host-wide lock so sibling boards cannot race their occupancy snapshots;
+    ticks without resource rules remain board-independent.
     """
     def _locked_tick() -> DispatchResult:
         return _dispatch_once_locked(
@@ -1451,6 +1467,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            worker_resource_groups=worker_resource_groups,
             reconcile_orphans=reconcile_orphans,
         )
 
@@ -1461,13 +1478,25 @@ def dispatch_once(
         result = _locked_tick()
         _kb._fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
         return result
-    with _kbc._dispatch_tick_lock(db_path) as held:
-        if not held:
+    resource_groups = normalize_worker_resource_groups(worker_resource_groups)
+    resource_lock = (
+        _kbc._resource_dispatch_lock(_kb.kanban_home())
+        if resource_groups else contextlib.nullcontext(True)
+    )
+    # Lock order is host resource admission first, then the board writer lock.
+    # Every dispatcher follows this order, so sibling-board ticks cannot both
+    # snapshot an unoccupied resource and then claim conflicting workers.
+    with resource_lock as resource_held:
+        if not resource_held:
             result = DispatchResult(skipped_locked=True)
         else:
-            result = _locked_tick()
-            # Still under the dispatch lock: periodic PASSIVE WAL checkpoint.
-            _kbc._maybe_checkpoint_wal(conn, db_path)
+            with _kbc._dispatch_tick_lock(db_path) as held:
+                if not held:
+                    result = DispatchResult(skipped_locked=True)
+                else:
+                    result = _locked_tick()
+                    # Still under the dispatch lock: periodic PASSIVE WAL checkpoint.
+                    _kbc._maybe_checkpoint_wal(conn, db_path)
     # Lock released. Fire the tick observer strictly OUTSIDE the critical
     # section: a slow subscriber must never stall a sibling dispatcher's tick.
     _kb._fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
@@ -1501,6 +1530,8 @@ def _dispatch_lane_task(
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    resource_groups_by_profile: Mapping[str, frozenset[str]],
+    occupied_resource_groups: set[str],
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
@@ -1522,6 +1553,11 @@ def _dispatch_lane_task(
         if current >= per_profile_cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
             return False
+    worker_groups = resource_groups_by_profile.get(assignee, frozenset())
+    conflicts = tuple(sorted(worker_groups & occupied_resource_groups))
+    if conflicts:
+        result.skipped_resource_conflict.append((task_id, assignee, conflicts))
+        return False
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
@@ -1542,6 +1578,7 @@ def _dispatch_lane_task(
         # ticks re-query from the DB.
         if per_profile_cap is not None and name:
             per_profile_running[name] = per_profile_running.get(name, 0) + 1
+        occupied_resource_groups.update(resource_groups_by_profile.get(name, ()))
 
     if dry_run:
         result.spawned.append((task_id, assignee, ""))
@@ -1744,6 +1781,66 @@ def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
     return name
 
 
+def normalize_worker_resource_groups(value: Any) -> dict[str, frozenset[str]]:
+    """Convert ``group -> profiles`` config into ``profile -> groups``.
+
+    Malformed groups are ignored independently so one bad optional rule cannot
+    disable dispatch or discard otherwise valid resource constraints.
+    """
+    if not isinstance(value, Mapping):
+        return {}
+    by_profile: dict[str, set[str]] = {}
+    for raw_group, raw_profiles in value.items():
+        if not isinstance(raw_group, str) or not raw_group.strip():
+            continue
+        if not isinstance(raw_profiles, (list, tuple, set)):
+            continue
+        group = raw_group.strip()
+        for raw_profile in raw_profiles:
+            if not isinstance(raw_profile, str) or not raw_profile.strip():
+                continue
+            by_profile.setdefault(raw_profile.strip(), set()).add(group)
+    return {profile: frozenset(groups) for profile, groups in by_profile.items()}
+
+
+def _running_assignees(conn: sqlite3.Connection, board: Optional[str]) -> set[str]:
+    """Profiles running on this host, across the current and sibling boards."""
+    assignees: set[str] = set()
+
+    def _collect(other: sqlite3.Connection) -> None:
+        for row in other.execute(
+            "SELECT DISTINCT assignee FROM tasks "
+            "WHERE status = 'running' AND assignee IS NOT NULL AND assignee != ''"
+        ):
+            assignees.add(str(row["assignee"]))
+
+    try:
+        _collect(conn)
+    except Exception:
+        pass
+    try:
+        current_path = str(_kb.kanban_db_path(board=board).expanduser().resolve())
+        boards = _kb.list_boards(include_archived=False)
+    except Exception:
+        return assignees
+    for meta in boards:
+        slug = meta.get("slug") or _kb.DEFAULT_BOARD
+        other = None
+        try:
+            path = _kb.kanban_db_path(board=slug).expanduser()
+            if str(path.resolve()) == current_path or not path.exists():
+                continue
+            other = _kbc.connect(board=slug)
+            _collect(other)
+        except Exception:
+            continue
+        finally:
+            if other is not None:
+                with contextlib.suppress(Exception):
+                    other.close()
+    return assignees
+
+
 # The dispatch lock has been released here. Fire the tick observer strictly OUTSIDE the single-writer
 # critical section (#56066 sweeper finding / #64231 disposition): a slow subscriber must never extend the
 # lock hold and stall a sibling dispatcher's tick.
@@ -1760,6 +1857,7 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    worker_resource_groups: Optional[Mapping[str, Any]] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
@@ -1807,10 +1905,16 @@ def _dispatch_once_locked(
             "GROUP BY assignee"
         ):
             per_profile_running[prow["assignee"]] = int(prow["n"])
+    resource_groups_by_profile = normalize_worker_resource_groups(worker_resource_groups)
+    occupied_resource_groups: set[str] = set()
+    for running_assignee in _running_assignees(conn, board):
+        occupied_resource_groups.update(resource_groups_by_profile.get(running_assignee, ()))
     lane_kwargs: dict[str, Any] = dict(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        resource_groups_by_profile=resource_groups_by_profile,
+        occupied_resource_groups=occupied_resource_groups,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0
@@ -2338,7 +2442,7 @@ def run_daemon(
     SIGINT / SIGTERM so it is systemd-friendly. ``stop_event`` and ``on_tick``
     are test hooks. Each tick resolves ``kanban.max_in_progress`` exactly like
     the gateway dispatcher and ``hermes kanban dispatch`` — the standalone
-    daemon must not be the one uncapped entry point.
+    daemon must not be an unconstrained entry point.
     """
     import threading
 
@@ -2362,11 +2466,13 @@ def run_daemon(
             # Re-resolved every tick (config load is mtime-cached) so operator
             # edits apply without a restart.
             max_in_progress = resolve_max_in_progress(configured_max_in_progress())
+            worker_resource_groups = configured_worker_resource_groups()
             with contextlib.closing(_kbc.connect()) as conn:
                 res = dispatch_once(
                     conn,
                     max_spawn=max_spawn,
                     max_in_progress=max_in_progress,
+                    worker_resource_groups=worker_resource_groups,
                     failure_limit=failure_limit,
                 )
             if on_tick is not None:

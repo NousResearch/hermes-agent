@@ -16,7 +16,17 @@ from gateway.kanban_watchers_common import _to_thread_process_service
 
 
 def _dispatcher():
-    settings = kwd._DispatcherSettings(60.0, None, None, 2, 0, True, None, None)
+    settings = kwd._DispatcherSettings(
+        interval=60.0,
+        max_spawn=None,
+        max_in_progress=None,
+        failure_limit=2,
+        stale_timeout_seconds=0,
+        reconcile_orphans=True,
+        default_assignee=None,
+        max_in_progress_per_profile=None,
+        worker_resource_groups=None,
+    )
     return kwd._KanbanDispatcher(SimpleNamespace(DEFAULT_BOARD="default"), settings)
 
 

@@ -89,7 +89,14 @@ describe('resolveDomTarget', () => {
     const host = attach('<div data-slot="dialog-content"><a href="https://example.com">link</a></div>')
     const dialog = host.firstElementChild
 
-    expect(resolveDomTarget(host.querySelector('a')).dialogPortalContainer).toBe(dialog)
+    expect(resolveDomTarget(host.querySelector('a')).portalContainer).toBe(dialog)
+  })
+
+  it('resolves the enclosing onboarding overlay as the menu portal container', () => {
+    const host = attach('<div data-slot="onboarding-overlay"><a href="https://example.com">link</a></div>')
+    const overlay = host.firstElementChild
+
+    expect(resolveDomTarget(host.querySelector('a')).portalContainer).toBe(overlay)
   })
 })
 

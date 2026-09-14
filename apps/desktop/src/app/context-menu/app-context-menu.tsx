@@ -696,7 +696,7 @@ export function AppContextMenu() {
         align="start"
         className="w-56"
         onCloseAutoFocus={event => event.preventDefault()}
-        portalContainer={open.kind === 'dom' ? open.target.dialogPortalContainer : undefined}
+        portalContainer={open.kind === 'dom' ? open.target.portalContainer : undefined}
         side="bottom"
       >
         {sections.map((section, index) => (

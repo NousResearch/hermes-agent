@@ -371,10 +371,13 @@ export function DesktopOnboardingOverlay({
         bare && leaving ? '[transition-delay:660ms]' : '',
         leaving ? 'pointer-events-none opacity-0' : 'opacity-100'
       )}
+      // Painted above the menu rung: the context-menu coordinator portals
+      // link menus into this surface so they stay visible over the overlay.
       // Masks the whole app until onboarding finishes — must stay filled under
       // window glass or the shell shows through. Contract:
       // `[data-glass-opaque]` in styles.css.
       data-glass-opaque=""
+      data-slot="onboarding-overlay"
     >
       <div
         className={cn(

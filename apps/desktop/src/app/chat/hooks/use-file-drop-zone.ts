@@ -1,6 +1,6 @@
 import { type DragEvent as ReactDragEvent, useCallback, useEffect, useRef, useState } from 'react'
 
-import { dragHasAttachments } from '@/app/chat/composer/inline-refs'
+import { createDragLifecycleGate, type DragLifecycleGate } from '@/app/chat/composer/inline-refs'
 import { ESCAPE_PRIORITY, pushEscapeLayer } from '@/lib/escape-layers'
 
 import { type DroppedFile, extractDroppedFiles, HERMES_PATHS_MIME } from './use-composer-actions'
@@ -9,9 +9,6 @@ import { type DroppedFile, extractDroppedFiles, HERMES_PATHS_MIME } from './use-
  *  native drags only ever resolve to `'files'` here (sessions left native
  *  DnD; see session-drag.ts). */
 export type DragKind = 'files' | 'session' | null
-
-const dragKindOf = (event: ReactDragEvent): DragKind =>
-  dragHasAttachments(event.dataTransfer, HERMES_PATHS_MIME) ? 'files' : null
 
 interface FileDropZoneOptions {
   /** When false the zone ignores drags entirely. */
@@ -34,11 +31,18 @@ export function useFileDropZone({ enabled = true, onDropFiles }: FileDropZoneOpt
   const [dragKind, setDragKind] = useState<DragKind>(null)
   const depth = useRef(0)
   const aborted = useRef(false)
+  // One stateful gate per zone; stable across re-renders. The gate's enter/
+  // over/leave semantics are the Windows sparse-drag fix (#97702) — a single
+  // boolean would either blank-accept every empty transfer or fail to keep
+  // the drag alive across the dragover→drop handoff.
+  const gateRef = useRef<DragLifecycleGate | null>(null)
+  const gate = gateRef.current ?? (gateRef.current = createDragLifecycleGate(HERMES_PATHS_MIME))
 
   const reset = useCallback(() => {
     depth.current = 0
+    gate.reset()
     setDragKind(null)
-  }, [])
+  }, [gate])
 
   // Esc aborts a file drag — the same "never mind" a session drag gets. Native
   // DnD can't be cancelled at the OS level, so we drop the overlay and arm a
@@ -73,9 +77,13 @@ export function useFileDropZone({ enabled = true, onDropFiles }: FileDropZoneOpt
 
   const onDragEnter = useCallback(
     (event: ReactDragEvent) => {
-      const kind = enabled ? dragKindOf(event) : null
+      // A genuinely new drag (not a nested-child re-enter) must reset
+      // any unrecovered gate state before evaluating the new drag.
+      if (depth.current === 0) {
+        gate.reset()
+      }
 
-      if (!kind) {
+      if (!enabled || !gate.onEnter(event.dataTransfer)) {
         return
       }
 
@@ -87,34 +95,35 @@ export function useFileDropZone({ enabled = true, onDropFiles }: FileDropZoneOpt
       }
 
       depth.current += 1
-      setDragKind(kind)
+      setDragKind('files')
     },
-    [enabled]
+    [enabled, gate]
   )
 
   const onDragOver = useCallback(
     (event: ReactDragEvent) => {
-      if (!enabled || !dragKindOf(event)) {
+      if (!enabled || !gate.onOver(event.dataTransfer)) {
         return
       }
 
       event.preventDefault()
       event.dataTransfer.dropEffect = 'copy'
     },
-    [enabled]
+    [enabled, gate]
   )
 
   const onDragLeave = useCallback(() => {
     if (enabled && --depth.current <= 0) {
+      gate.onLeave(true)
       reset()
+    } else {
+      gate.onLeave(false)
     }
-  }, [enabled, reset])
+  }, [enabled, gate, reset])
 
   const onDrop = useCallback(
     (event: ReactDragEvent) => {
-      const kind = enabled ? dragKindOf(event) : null
-
-      if (!kind) {
+      if (!enabled || !gate.onOver(event.dataTransfer)) {
         return
       }
 
@@ -138,7 +147,7 @@ export function useFileDropZone({ enabled = true, onDropFiles }: FileDropZoneOpt
         onDropFiles(files)
       }
     },
-    [enabled, onDropFiles, reset]
+    [enabled, gate, onDropFiles, reset]
   )
 
   return {

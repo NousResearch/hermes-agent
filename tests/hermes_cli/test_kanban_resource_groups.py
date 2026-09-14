@@ -10,7 +10,7 @@ def _spawn(*_args, **_kwargs):
     return 12345
 
 
-def test_shared_resource_defers_but_disjoint_resource_runs(isolated_kanban_home_with_profiles):
+def test_shared_resource_defers_but_disjoint_resource_runs(all_assignees_spawnable):
     conn = kbc.connect()
     try:
         running = kb.create_task(conn, title="research", assignee="alpha")
@@ -35,7 +35,7 @@ def test_shared_resource_defers_but_disjoint_resource_runs(isolated_kanban_home_
 
 
 def test_resource_groups_include_running_workers_on_other_boards(
-    isolated_kanban_home_with_profiles,
+    all_assignees_spawnable,
 ):
     from gateway.kanban_watchers_dispatcher import _resolve_dispatcher_settings
 

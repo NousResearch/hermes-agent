@@ -146,11 +146,24 @@ class HolographicMemoryProvider(MemoryProvider):
             total = self._store._conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
         except Exception:
             total = 0
+        # Check HRR availability for accurate capability description
+        try:
+            from . import holographic as _hrr_check
+            _has_hrr = _hrr_check._HAS_NUMPY
+        except Exception:
+            _has_hrr = False
+        _capabilities = (
+            "probe entities (algebraic), reason across entities (compositional), "
+            "related (structural adjacency), contradict (conflict detection)"
+            if _has_hrr else
+            "search (keyword), probe/related/reason/contradict (keyword fallback — "
+            "install numpy for full algebraic retrieval)"
+        )
         body = ("Active. Empty fact store — proactively add facts the user would expect you to remember.\n"
                 "Use fact_store(action='add') to store durable structured facts about people, projects, preferences, decisions.\n"
                 if total == 0 else
                 f"Active. {total} facts stored with entity resolution and trust scoring.\n"
-                "Use fact_store to search, probe entities, reason across entities, or add facts.\n")
+                f"Use fact_store to search, {_capabilities}, or add facts.\n")
         return "# Holographic Memory\n" + body + "Use fact_feedback to rate facts after using them (trains trust scores)."
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:

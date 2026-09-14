@@ -3,6 +3,7 @@ Jaccard similarity and HRR vector similarity, trust-weighted (ported from KIK me
 
 from __future__ import annotations
 
+import logging
 import math
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -12,6 +13,8 @@ if TYPE_CHECKING:
     from .store import MemoryStore
 
 from . import holographic as hrr
+
+logger = logging.getLogger(__name__)
 
 _FACT_COLUMNS = "fact_id, content, category, tags, trust_score, retrieval_count, helpful_count, created_at, updated_at"
 _ROLE_ENTITY, _ROLE_CONTENT = hrr.ROLE_ENTITY, hrr.ROLE_CONTENT
@@ -40,6 +43,11 @@ class FactRetriever:
                  fts_weight: float = 0.4, jaccard_weight: float = 0.3, hrr_weight: float = 0.3, hrr_dim: int = 1024):
         self.store, self.half_life, self.hrr_dim = store, temporal_decay_half_life, hrr_dim
         if hrr_weight > 0 and not hrr._HAS_NUMPY:  # redistribute weights without numpy
+            logger.warning(
+                "numpy not installed — holographic memory (HRR) disabled. "
+                "probe/related/reason/contradict will fall back to keyword search. "
+                "Install numpy for full algebraic retrieval: pip install numpy"
+            )
             fts_weight, jaccard_weight, hrr_weight = 0.6, 0.4, 0.0
         self.fts_weight, self.jaccard_weight, self.hrr_weight = fts_weight, jaccard_weight, hrr_weight
 

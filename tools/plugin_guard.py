@@ -37,6 +37,19 @@ TEST_TREE_DIRS = {"tests", "test", "testing", "spec", "specs", "fixtures"}
 # Code files, where "reads an env secret" / "HTTP call with a key" is normal (requires_env).
 CODE_FILE_EXTENSIONS = {".py", ".js", ".ts", ".sh", ".bash", ".rb", ".pl", ".php"}
 
+# Line-comment marker per code extension. Whole-line comments explain intent; hardening
+# notes like "# a symlink could point at /etc/passwd" are prose *about* a defense.
+COMMENT_PREFIXES_BY_EXTENSION = {
+    ".py": "#", ".sh": "#", ".bash": "#", ".rb": "#", ".pl": "#", ".r": "#", ".jl": "#",
+    ".js": "//", ".ts": "//", ".php": "//", ".css": "//"}
+
+# One severity step down from the pattern's default.
+_COMMENT_SEVERITY_CAP = {"critical": "high", "high": "medium"}
+
+# History, not an agent-facing instruction surface: a hardening entry mentioning the threat
+# it fixed ("A symlink could point at /etc/passwd, so ...") is documentation, not the attack.
+CHANGELOG_FILENAMES = {"changelog.md"}
+
 # Pattern ids exempt on code files (every legitimate provider plugin trips them); still
 # applied in full to docs/config files.
 CODE_EXEMPT_PATTERN_IDS = {
@@ -96,8 +109,32 @@ def _filter_findings(findings: List[Finding], rel_path: str) -> List[Finding]:
         )
         if in_test_tree and f.severity == "critical":
             f.severity = "high"
+        if (
+            _is_defensive_documentation(f, rel_path)
+            and f.severity in _COMMENT_SEVERITY_CAP
+        ):
+            f.severity = _COMMENT_SEVERITY_CAP[f.severity]
         out.append(f)
     return out
+
+
+def _is_defensive_documentation(finding: Finding, rel_path: str) -> bool:
+    """A whole-line code comment or a changelog entry *describes* threats (the attack a
+    defense rejects, the hardening a release shipped) instead of executing them, so its
+    findings cap one severity step lower — visible and reviewable, never un-overridable
+    ``dangerous`` from prose alone. Runtime code and agent-facing docs keep full severity.
+    """
+    if Path(rel_path).name.lower() in CHANGELOG_FILENAMES:
+        return True
+    prefix = COMMENT_PREFIXES_BY_EXTENSION.get(Path(rel_path).suffix.lower())
+    if prefix is None or not finding.match:
+        return False
+    stripped = finding.match.lstrip()
+    if not stripped.startswith(prefix):
+        return False
+    if prefix == "#" and stripped.startswith(("#!", "#:")):
+        return False
+    return True
 
 
 def _dangerous_findings_summary(findings: List[Finding]) -> str:

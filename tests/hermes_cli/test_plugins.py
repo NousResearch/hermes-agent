@@ -1222,10 +1222,11 @@ class TestForceReloadSymmetry:
         assert len(starts) == 2
 
     def test_repeated_same_call_identity_still_deduplicated(self, monkeypatch):
-        """Negative control: the same call identity stays a duplicate, so a hung
-        worker is never restarted by a repeat of the very same call."""
+        """Negative control: the same call identity stays a duplicate while its worker
+        is still running, so the running gate (not timeout suppression) dedupes it."""
+        import time
         monkeypatch.setattr(
-            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0
         )
 
         hold = threading.Event()
@@ -1239,8 +1240,41 @@ class TestForceReloadSymmetry:
         mgr = PluginManager()
         mgr._hooks["post_tool_call"] = [blocker]
 
-        assert mgr.invoke_hook("post_tool_call", tool_name="read_file", tool_call_id="same-call") == []
-        assert mgr.invoke_hook("post_tool_call", tool_name="read_file", tool_call_id="same-call") == []
+        def fire():
+            mgr.invoke_hook("post_tool_call", tool_name="read_file", tool_call_id="same-call")
+
+        first = threading.Thread(target=fire, daemon=True)
+        first.start()
+        time.sleep(0.1)  # the first worker now holds the gate for this call identity
+        second = threading.Thread(target=fire, daemon=True)
+        second.start()
+        second.join(5.0)
+
+        assert len(starts) == 1
+        hold.set()
+        first.join(5.0)
+
+    def test_hung_worker_blocks_new_call_identity_after_suppression(self, monkeypatch):
+        """A worker abandoned on timeout still occupies its callback: a later call with a
+        fresh id must be skipped, not given a second thread (one leak, not one per call)."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
+        )
+
+        hold = threading.Event()
+        starts = []
+
+        def blocker(**_kwargs):
+            starts.append(1)
+            hold.wait(timeout=10.0)
+            return "late"
+
+        mgr = PluginManager()
+        mgr._hook_timeout_suppression_seconds = 0.0  # isolate the gate from suppression
+        mgr._hooks["post_tool_call"] = [blocker]
+
+        assert mgr.invoke_hook("post_tool_call", tool_name="read_file", tool_call_id="call-a") == []
+        assert mgr.invoke_hook("post_tool_call", tool_name="read_file", tool_call_id="call-b") == []
 
         assert len(starts) == 1
         hold.set()

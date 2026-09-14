@@ -136,7 +136,7 @@ def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
     # which would then be collected as its own descendant. Never return parents.
     # A delegation marker chain can loop back onto a parent — a cycle, or a parent that is also another
     # parent's delegate child when several ids are deleted at once — and without this guard that parent
-    # would then be collected as its own descendant and cascade-deleted along with all of its messages.
+    # would be collected as one of its own descendants and cascade-deleted along with all of its messages.
     # Callers delete the parents separately, so parents must never appear in the returned child set.
     # (#49148)
     found: set[str] = set(seeds)

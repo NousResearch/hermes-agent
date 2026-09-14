@@ -32,10 +32,9 @@ sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
     SendResult,
 )
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
 
 
@@ -113,6 +112,63 @@ def _make_adapter() -> BasePlatformAdapter:
 
 def _debounced_event(adapter: BasePlatformAdapter, session_key: str) -> MessageEvent:
     return adapter._text_debounce[session_key].event
+
+
+@pytest.mark.asyncio
+async def test_non_dm_message_does_not_wait_for_topic_recovery_executor(monkeypatch):
+    """Group messages must not queue behind the shared thread pool.
+
+    Topic recovery only applies to Telegram DM topic mode. Offloading that
+    no-op check for every group message makes ingress wait behind unrelated
+    blocking jobs when the default executor is saturated.
+    """
+    adapter = _make_adapter()
+    recovery = MagicMock(return_value=None)
+    adapter.set_topic_recovery_fn(recovery)
+    executor_called = False
+    never_release = asyncio.Event()
+
+    async def _blocked_to_thread(*args, **kwargs):
+        nonlocal executor_called
+        executor_called = True
+        await never_release.wait()
+
+    monkeypatch.setattr(asyncio, "to_thread", _blocked_to_thread)
+
+    await asyncio.wait_for(
+        adapter.handle_message(_make_event("/status", chat_type="group")),
+        timeout=1.0,
+    )
+    await asyncio.sleep(0)
+
+    assert executor_called is False
+    recovery.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dm_topic_recovery_stays_offloaded(monkeypatch):
+    """Real Telegram DM topic recovery must still run outside the event loop."""
+    adapter = _make_adapter()
+    recovery = MagicMock(return_value="topic-222")
+    adapter.set_topic_recovery_fn(recovery)
+    offloaded = False
+
+    async def _inline_to_thread(func, *args, **kwargs):
+        nonlocal offloaded
+        offloaded = True
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", _inline_to_thread)
+    event = _make_event("hello", chat_type="dm", thread_id="1")
+    original_source = event.source
+
+    await adapter.handle_message(event)
+    await asyncio.sleep(0)
+
+    assert offloaded is True
+    assert recovery.call_count == 1
+    assert recovery.call_args.args[0] is original_source
+    assert event.source.thread_id == "topic-222"
 
 
 @pytest.mark.asyncio

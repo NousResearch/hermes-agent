@@ -43,6 +43,7 @@ import pytest
 
 @pytest.mark.parametrize("model,expected", [
     # NVIDIA Nemotron reasoning family (longest keys first).
+    ("nvidia/nemotron-3.5-lightning-30b-a3b", 300.0),
     ("nvidia/nemotron-3-ultra-550b-a55b", 600.0),
     ("nvidia/nemotron-3-super-120b-a12b", 600.0),
     ("nvidia/nemotron-3-nano-30b-a3b", 300.0),
@@ -55,6 +56,10 @@ import pytest
     ("deepseek/deepseek-v4-flash", 600.0),
     ("deepseek/deepseek-v4-pro", 600.0),
     ("deepseek-v4-flash-free", 600.0),   # catalog -free variant inherits via separator anchor
+    # Version-less canonical Flash id from the 2026-09 Flash refresh —
+    # ``deepseek-v4-flash`` still aliases onto it server-side.
+    ("deepseek/deepseek-flash", 600.0),
+    ("deepseek-flash", 600.0),
     # Qwen QwQ + Qwen3 thinking variants (qwen3 family entry matches all).
     ("qwen/qwq-32b-preview", 300.0),
     ("qwen/qwen3-235b-a22b-thinking", 180.0),
@@ -82,7 +87,14 @@ import pytest
     ("x-ai/grok-4-fast-reasoning", 300.0),
     ("x-ai/grok-4.20-reasoning", 300.0),
     ("x-ai/grok-4.5", 300.0),
+    ("x-ai/grok-4.6", 300.0),
     ("x-ai/grok-4-fast-non-reasoning", 180.0),
+    # Thinking Machines Inkling — family entry covers -small and the
+    # OpenRouter :free / :batch SKU suffixes (":" is a slug separator
+    # in the right anchor, same as "-").
+    ("thinkingmachines/inkling", 300.0),
+    ("thinkingmachines/inkling:free", 300.0),
+    ("thinkingmachines/inkling-small:free", 300.0),
 ])
 def test_reasoning_stale_timeout_floor_positive_cases(model, expected):
     from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
@@ -202,7 +214,3 @@ def test_stream_stale_timeout_floor_for_nemotron_3_ultra():
         est_tokens=10_000,
     )
     assert timeout == 600.0
-
-
-
-

@@ -16,6 +16,9 @@ These tests pin:
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 import pytest
 
 import model_tools
@@ -80,3 +83,28 @@ class TestQuietModeCacheIsolation:
         explains why the bug only hit Gateway."""
         model_tools.get_tool_definitions(quiet_mode=False)
         assert len(model_tools._tool_defs_cache) == 0
+
+    def test_concurrent_capacity_misses_evict_atomically(self, monkeypatch):
+        """Two profile/toolset misses at capacity cannot race on eviction."""
+        barrier = Barrier(2)
+
+        def compute(*args, **kwargs):
+            barrier.wait(timeout=2)
+            return []
+
+        monkeypatch.setattr(model_tools, "_compute_tool_definitions", compute)
+        for index in range(model_tools._TOOL_DEFS_CACHE_MAX):
+            model_tools._tool_defs_cache[("old", index)] = []
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(
+                    model_tools.get_tool_definitions,
+                    enabled_toolsets=[f"concurrent_{index}"],
+                    quiet_mode=True,
+                )
+                for index in range(2)
+            ]
+            assert [future.result(timeout=2) for future in futures] == [[], []]
+
+        assert len(model_tools._tool_defs_cache) == model_tools._TOOL_DEFS_CACHE_MAX

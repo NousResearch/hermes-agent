@@ -15,7 +15,7 @@ Humanize text: strip AI-isms and add real voice.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/creative/humanizer` |
+| Path | `skills/creative\humanizer` |
 | Version | `2.5.1` |
 | Author | Siqi Chen (@blader, https://github.com/blader/humanizer), ported by Hermes Agent |
 | License | MIT |

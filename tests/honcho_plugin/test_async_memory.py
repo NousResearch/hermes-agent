@@ -10,7 +10,9 @@ Covers:
 """
 
 import json
+import logging
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -21,6 +23,7 @@ from plugins.memory.honcho.session import (
     HonchoSession,
     HonchoSessionManager,
 )
+from plugins.memory.honcho.session_peers import HonchoPeerUnresolvedError
 
 
 # ---------------------------------------------------------------------------
@@ -54,13 +57,23 @@ def make_manager(monkeypatch):
     monkeypatch.setattr(session_module, "get_honcho_client", lambda *a, **k: client)
     created = []
 
-    def _make(write_frequency="turn") -> HonchoSessionManager:
+    def _make(
+        write_frequency="turn",
+        *,
+        runtime_user_peer_name=None,
+        **cfg_kwargs,
+    ) -> HonchoSessionManager:
         cfg = HonchoClientConfig(
             write_frequency=write_frequency,
             api_key="test-key",
             enabled=True,
+            **cfg_kwargs,
         )
-        mgr = HonchoSessionManager(honcho=client, config=cfg)
+        mgr = HonchoSessionManager(
+            honcho=client,
+            config=cfg,
+            runtime_user_peer_name=runtime_user_peer_name,
+        )
         created.append(mgr)
         return mgr
 
@@ -276,14 +289,14 @@ class TestAsyncWriterThread:
 
     def test_shutdown_joins_thread(self, make_manager):
         mgr = make_manager(write_frequency="async")
-        mgr._ensure_async_writer()
+        mgr._ensure_async_writer_locked()
         assert mgr._async_thread.is_alive()
         mgr.shutdown()
         assert not mgr._async_thread.is_alive()
 
     def test_async_writer_calls_flush(self, make_manager):
         mgr = make_manager(write_frequency="async")
-        mgr._ensure_async_writer()
+        mgr._ensure_async_writer_locked()
         sess = _make_session()
         sess.add_message("user", "async msg")
 
@@ -305,7 +318,7 @@ class TestAsyncWriterThread:
 
     def test_shutdown_sentinel_stops_loop(self, make_manager):
         mgr = make_manager(write_frequency="async")
-        mgr._ensure_async_writer()
+        mgr._ensure_async_writer_locked()
         thread = mgr._async_thread
         mgr.shutdown()
         thread.join(timeout=10)
@@ -316,15 +329,110 @@ class TestAsyncWriterThread:
         mgr.shutdown()
         assert mgr._async_thread is None
 
+    def test_stop_async_writer_joins_thread_without_flushing(self, make_manager):
+        mgr = make_manager(write_frequency="async")
+        mgr._ensure_async_writer_locked()
+        sess = _make_session()
+        sess.add_message("user", "must not be written")
+        with mgr._cache_lock:
+            mgr._cache[sess.key] = sess
+
+        flushed = []
+        mgr._flush_session = lambda session: flushed.append(session) or True
+
+        thread = mgr._async_thread
+        mgr.stop_async_writer()
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+        assert flushed == []
+
+    def test_stop_async_writer_without_started_thread_is_noop(self, make_manager):
+        mgr = make_manager(write_frequency="async")
+        mgr.stop_async_writer()
+        assert mgr._async_thread is None
+
 
 # ---------------------------------------------------------------------------
 # async retry on failure
 # ---------------------------------------------------------------------------
 
+class TestStopAsyncWriterDrain:
+    def test_items_queued_before_the_join_are_flushed(self, make_manager):
+        mgr = make_manager("async")
+        flushed = []
+        mgr._flush_session = lambda s: flushed.append(s.key) or True
+        mgr._async_queue.put(_make_session(key="late"))
+
+        mgr.stop_async_writer()
+
+        assert flushed == ["late"]
+        assert mgr._async_queue.empty()
+
+    def test_save_after_the_writer_stopped_flushes_inline(self, make_manager):
+        mgr = make_manager("async")
+        flushed = []
+        mgr._flush_session = lambda s: flushed.append(s.key) or True
+        mgr.stop_async_writer()
+
+        mgr.save(_make_session(key="after"))
+
+        assert flushed == ["after"]
+        assert mgr._async_queue.empty()
+
+    def test_shutdown_gives_the_writer_join_what_the_flush_left_of_the_timeout(self, make_manager, monkeypatch):
+        mgr = make_manager("async")
+        seen = {}
+        monkeypatch.setattr(mgr, "_stop_async_writer_before",
+                            lambda deadline: seen.setdefault("remaining", deadline - time.monotonic()) and [])
+
+        mgr.shutdown(timeout=2.5)
+
+        assert 2.0 < seen["remaining"] <= 2.5
+
+    def _pending_session(self, mgr, uploads):
+        session = _make_session(key="pending")
+        session.add_message("user", "pending")
+        mgr._cache["pending"] = session
+        mgr._async_queue.put(session)
+        mgr._flush_session = lambda s: uploads.append(s.key) or True
+        mgr._flush_session_locked = lambda s: uploads.append(s.key) or True
+        return session
+
+    def test_shutdown_with_the_budget_spent_starts_no_upload_and_warns_once(self, make_manager, caplog):
+        """The SDK has no per-call timeout, so the budget can only stop uploads from starting. With no time left,
+        shutdown must not open one and must say what stayed behind."""
+        mgr = make_manager("async")
+        uploads = []
+        session = self._pending_session(mgr, uploads)
+
+        started = time.monotonic()
+        with caplog.at_level(logging.WARNING, logger="plugins.memory.honcho"):
+            mgr.shutdown(timeout=0)
+
+        assert uploads == []
+        assert time.monotonic() - started < 2.0
+        assert mgr._async_queue.empty()
+        assert session.messages[0].get("_synced") is None
+        assert caplog.text.count("still unsynced") == 1
+        assert "1 message(s) in 1 session(s) still unsynced" in caplog.text
+
+    def test_stop_async_writer_drains_only_within_its_timeout(self, make_manager, caplog):
+        mgr = make_manager("async")
+        uploads = []
+        self._pending_session(mgr, uploads)
+
+        with caplog.at_level(logging.WARNING, logger="plugins.memory.honcho"):
+            mgr.stop_async_writer(timeout=0)
+
+        assert uploads == []
+        assert mgr._async_queue.empty()
+        assert "1 message(s) in 1 session(s) still unsynced" in caplog.text
+
+
 class TestAsyncWriterRetry:
     def test_retries_once_on_failure(self, make_manager):
         mgr = make_manager(write_frequency="async")
-        mgr._ensure_async_writer()
+        mgr._ensure_async_writer_locked()
         sess = _make_session()
         sess.add_message("user", "msg")
 
@@ -347,9 +455,35 @@ class TestAsyncWriterRetry:
         mgr.shutdown()
         assert call_count[0] == 2
 
+    def test_does_not_retry_once_shutdown_began(self, make_manager):
+        """The shutdown flush already attempts the session within its budget; a 2s sleep and a second upload from
+        the writer would run past it."""
+        mgr = make_manager(write_frequency="async")
+        mgr._ensure_async_writer_locked()
+        sess = _make_session()
+        sess.add_message("user", "msg")
+        calls = []
+        failed = threading.Event()
+
+        def failing_flush(session):
+            calls.append(session)
+            failed.set()
+            return False
+
+        mgr._flush_session = failing_flush
+        mgr._shutting_down = True
+        mgr._async_queue.put(sess)
+        assert failed.wait(timeout=5), "async writer never picked up the batch"
+
+        started = time.monotonic()
+        mgr.stop_async_writer(timeout=5)
+
+        assert time.monotonic() - started < 2.0
+        assert len(calls) == 1
+
     def test_drops_after_two_failures(self, make_manager):
         mgr = make_manager(write_frequency="async")
-        mgr._ensure_async_writer()
+        mgr._ensure_async_writer_locked()
         sess = _make_session()
         sess.add_message("user", "msg")
 
@@ -375,7 +509,7 @@ class TestAsyncWriterRetry:
 
     def test_retries_when_flush_reports_failure(self, make_manager):
         mgr = make_manager(write_frequency="async")
-        mgr._ensure_async_writer()
+        mgr._ensure_async_writer_locked()
         sess = _make_session()
         sess.add_message("user", "msg")
 
@@ -398,24 +532,34 @@ class TestAsyncWriterRetry:
         assert call_count[0] == 2
 
 
+def _prime_migration_session(mgr, key, honcho_session_id, ai_peer_id="custom-ai"):
+    """Cache a session whose user peer is what the REAL resolver returns for
+    this manager — exactly what get_or_create stores — so the owner gate is
+    tested against reachable states, not hand-picked peer ids."""
+    session = _make_session(
+        key=key,
+        user_peer_id=mgr._resolve_user_peer_id(key),
+        assistant_peer_id=ai_peer_id,
+        honcho_session_id=honcho_session_id,
+    )
+    mgr._cache[session.key] = session
+    honcho_session = MagicMock()
+    mgr._sessions_cache[session.honcho_session_id] = honcho_session
+    return session, honcho_session
+
+
 class TestMemoryFileMigrationTargets:
     def test_soul_upload_targets_ai_peer(self, tmp_path, make_manager):
-        mgr = make_manager(write_frequency="turn")
-        session = _make_session(
-            key="cli:test",
-            user_peer_id="custom-user",
-            assistant_peer_id="custom-ai",
-            honcho_session_id="cli-test",
-        )
-        mgr._cache[session.key] = session
+        # peerName declares the owner; no runtime identity, so the session
+        # resolves to the owner peer and migration proceeds.
+        mgr = make_manager(write_frequency="turn", peer_name="custom-user")
+        session, honcho_session = _prime_migration_session(mgr, "cli:test", "cli-test")
+        assert session.user_peer_id == "custom-user"
 
         user_peer = MagicMock(name="user-peer")
         ai_peer = MagicMock(name="ai-peer")
         mgr._peers_cache[session.user_peer_id] = user_peer
         mgr._peers_cache[session.assistant_peer_id] = ai_peer
-
-        honcho_session = MagicMock()
-        mgr._sessions_cache[session.honcho_session_id] = honcho_session
 
         (tmp_path / "MEMORY.md").write_text("memory facts", encoding="utf-8")
         (tmp_path / "USER.md").write_text("user profile", encoding="utf-8")
@@ -434,6 +578,106 @@ class TestMemoryFileMigrationTargets:
         assert peer_by_upload_name["consolidated_memory.md"] is user_peer
         assert peer_by_upload_name["user_profile.md"] is user_peer
         assert peer_by_upload_name["agent_soul.md"] is ai_peer
+
+
+class TestMemoryFileMigrationOwnerGate:
+    def test_non_owner_gateway_user_is_skipped(self, tmp_path, make_manager):
+        """The shared-channel scenario: a declared owner exists, but the
+        session was triggered by someone else's platform identity. The old
+        gate (re-resolving the session's own peer) passed here."""
+        mgr = make_manager(
+            write_frequency="turn",
+            peer_name="owner-user",
+            runtime_user_peer_name="some-other-human",
+        )
+        session, honcho_session = _prime_migration_session(
+            mgr, "discord:shared", "shared-chan"
+        )
+        assert session.user_peer_id == "some-other-human"
+
+        (tmp_path / "MEMORY.md").write_text("owner facts", encoding="utf-8")
+
+        uploaded = mgr.migrate_memory_files(session.key, str(tmp_path))
+
+        assert uploaded is False
+        assert honcho_session.upload_file.call_count == 0
+
+    def test_no_declared_owner_with_gateway_identity_is_skipped(
+            self, tmp_path, make_manager):
+        """Without peerName nobody messaging through a gateway can be proven
+        to be the owner — migration must not run."""
+        mgr = make_manager(
+            write_frequency="turn",
+            runtime_user_peer_name="discord-123",
+        )
+        session, honcho_session = _prime_migration_session(
+            mgr, "discord:shared", "shared-chan"
+        )
+
+        (tmp_path / "MEMORY.md").write_text("owner facts", encoding="utf-8")
+
+        uploaded = mgr.migrate_memory_files(session.key, str(tmp_path))
+
+        assert uploaded is False
+        assert honcho_session.upload_file.call_count == 0
+
+    def test_no_declared_owner_without_identity_has_no_session_to_migrate(self, tmp_path, make_manager):
+        """No peerName and no runtime identity: the resolver refuses to name a peer
+        (#93326), so no session exists for the owner gate and nothing is uploaded."""
+        mgr = make_manager(write_frequency="turn")
+        (tmp_path / "MEMORY.md").write_text("memory facts", encoding="utf-8")
+
+        with pytest.raises(HonchoPeerUnresolvedError):
+            _prime_migration_session(mgr, "cli:test", "cli-test")
+
+        assert mgr.migrate_memory_files("cli:test", str(tmp_path)) is False
+        assert make_manager.client.session.return_value.upload_file.call_count == 0
+
+    def test_aliased_owner_identity_migrates(self, tmp_path, make_manager):
+        """An alias mapping the owner's platform ID onto peerName makes that
+        gateway identity the owner."""
+        mgr = make_manager(
+            write_frequency="turn",
+            peer_name="owner-user",
+            user_peer_aliases={"discord-999": "owner-user"},
+            runtime_user_peer_name="discord-999",
+        )
+        session, honcho_session = _prime_migration_session(
+            mgr, "discord:dm", "discord-dm"
+        )
+        assert session.user_peer_id == "owner-user"
+        mgr._peers_cache[session.user_peer_id] = MagicMock()
+        mgr._peers_cache[session.assistant_peer_id] = MagicMock()
+
+        (tmp_path / "USER.md").write_text("user profile", encoding="utf-8")
+
+        uploaded = mgr.migrate_memory_files(session.key, str(tmp_path))
+
+        assert uploaded is True
+        assert honcho_session.upload_file.call_count == 1
+
+    def test_pinned_peer_name_migrates(self, tmp_path, make_manager):
+        """pinPeerName collapses every identity onto the owner peer by
+        explicit config, so the files land on the peer they describe."""
+        mgr = make_manager(
+            write_frequency="turn",
+            peer_name="owner-user",
+            pin_peer_name=True,
+            runtime_user_peer_name="anyone-at-all",
+        )
+        session, honcho_session = _prime_migration_session(
+            mgr, "discord:shared", "shared-chan"
+        )
+        assert session.user_peer_id == "owner-user"
+        mgr._peers_cache[session.user_peer_id] = MagicMock()
+        mgr._peers_cache[session.assistant_peer_id] = MagicMock()
+
+        (tmp_path / "MEMORY.md").write_text("memory facts", encoding="utf-8")
+
+        uploaded = mgr.migrate_memory_files(session.key, str(tmp_path))
+
+        assert uploaded is True
+        assert honcho_session.upload_file.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -456,3 +700,100 @@ class TestPrefetchCacheAccessors:
         assert mgr.pop_context_result("cli:test") == payload
         assert mgr.pop_context_result("cli:test") == {}
 
+
+
+# ---------------------------------------------------------------------------
+# concurrent flushes of one session send each batch once (#92458)
+# ---------------------------------------------------------------------------
+
+class TestConcurrentFlushSession:
+    def _wire_remote(self, mgr, session, add_messages):
+        mgr._peers_cache[session.user_peer_id] = MagicMock()
+        mgr._peers_cache[session.assistant_peer_id] = MagicMock()
+        remote = MagicMock()
+        remote.add_messages.side_effect = add_messages
+        mgr._sessions_cache[session.honcho_session_id] = remote
+        return remote
+
+    def _blocking_remote(self, mgr, session):
+        """Remote whose add_messages blocks until the returned release event is set."""
+        upload_started, release_upload = threading.Event(), threading.Event()
+
+        def blocking_add_messages(_messages):
+            upload_started.set()
+            release_upload.wait(timeout=2)
+
+        return self._wire_remote(mgr, session, blocking_add_messages), upload_started, release_upload
+
+    def test_racing_flushes_send_the_batch_once(self, make_manager):
+        mgr = make_manager(write_frequency="turn")
+        session = _make_session(key="race")
+        session.add_message("user", "only once")
+        remote, upload_started, release_upload = self._blocking_remote(mgr, session)
+        results = []
+        first = threading.Thread(target=lambda: results.append(mgr._flush_session(session)), daemon=True)
+        second = threading.Thread(target=lambda: results.append(mgr._flush_session(session)), daemon=True)
+        first.start()
+        assert upload_started.wait(timeout=1)
+        second.start()
+        # The second flusher must be parked on the lock, not inside add_messages.
+        second.join(timeout=0.2)
+        assert second.is_alive()
+        release_upload.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+
+        assert results == [True, True]
+        assert remote.add_messages.call_count == 1
+        assert all(m["_synced"] for m in session.messages)
+
+    def test_async_writer_and_exit_flush_send_the_batch_once(self, make_manager):
+        mgr = make_manager(write_frequency="async")
+        session = _make_session(key="oneshot")
+        session.add_message("user", "hello")
+        session.add_message("assistant", "hi")
+        with mgr._cache_lock:
+            mgr._cache[session.key] = session
+        remote, upload_started, release_upload = self._blocking_remote(mgr, session)
+        mgr.save(session)
+        assert upload_started.wait(timeout=2), "async writer never started the upload"
+        exit_flush = threading.Thread(target=mgr.flush_all, daemon=True)
+        exit_flush.start()
+        exit_flush.join(timeout=0.2)
+        assert exit_flush.is_alive()
+        release_upload.set()
+        exit_flush.join(timeout=2)
+        mgr.shutdown()
+
+        assert remote.add_messages.call_count == 1
+        assert all(m["_synced"] for m in session.messages)
+
+    def test_independent_sessions_flush_in_parallel(self, make_manager):
+        mgr = make_manager(write_frequency="turn")
+        sessions = [_make_session(key="a", honcho_session_id="a"), _make_session(key="b", honcho_session_id="b")]
+        barrier = threading.Barrier(2)
+        results = []
+        for session in sessions:
+            session.add_message("user", session.key)
+            self._wire_remote(mgr, session, lambda _messages: barrier.wait(timeout=1))
+        threads = [threading.Thread(target=lambda s=s: results.append(mgr._flush_session(s)), daemon=True) for s in sessions]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=2)
+
+        assert not any(t.is_alive() for t in threads)
+        assert results == [True, True]
+
+    def test_same_session_flush_is_reentrant(self, make_manager):
+        mgr = make_manager(write_frequency="turn")
+        session = _make_session()
+        calls = []
+
+        def nested(current):
+            calls.append(current)
+            return mgr._flush_session(current) if len(calls) == 1 else True
+
+        mgr._flush_session_locked = nested
+        assert mgr._flush_session(session) is True
+        assert len(calls) == 2

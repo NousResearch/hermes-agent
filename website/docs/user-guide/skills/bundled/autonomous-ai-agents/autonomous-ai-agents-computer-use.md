@@ -1,26 +1,24 @@
 ---
-title: "Computer Use"
+title: "Computer Use — Drive the desktop background-first; escalate on signal"
 sidebar_label: "Computer Use"
-description: "Drive the user's desktop in the background — clicking, typing, scrolling, dragging — without stealing the cursor, keyboard focus, or switching virtual deskto..."
+description: "Drive the desktop background-first; escalate on signal"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Computer Use
 
-Drive the user's desktop in the background — clicking, typing,
-scrolling, dragging — without stealing the cursor, keyboard focus,
-or switching virtual desktops / Spaces. Cross-platform: macOS,
-Windows, Linux. Works with any tool-capable model. Load this skill
-whenever the `computer_use` tool is available.
+Drive the desktop background-first; escalate on signal.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/autonomous-ai-agents/computer-use` |
+| Path | `skills/autonomous-ai-agents\computer-use` |
 | Version | `2.0.0` |
+| Author | Francesco Bonacci (f-trycua), Hermes Agent |
+| License | MIT |
 | Platforms | macos, windows, linux |
 | Tags | `computer-use`, `desktop`, `automation`, `gui`, `cross-platform` |
 
@@ -42,11 +40,13 @@ Everything here works with any tool-capable model — Claude, GPT, Gemini,
 or an open model on a local OpenAI-compatible endpoint. There is no
 Anthropic-native schema to learn.
 
-Hermes drives [cua-driver](https://github.com/trycua/cua) under the hood
-for the platform plumbing. The Hermes-side `computer_use` tool exposed
-in this skill is a higher-level Hermes vocabulary; the raw cua-driver
-MCP tools (which a different agent harness would see) are NOT what you
-call — call the `computer_use` actions documented below.
+Hermes drives [cua-driver](https://github.com/trycua/cua) under the hood.
+This wrapper skill teaches the Hermes `computer_use` workflow and action
+vocabulary. Call the actions documented below instead of raw cua-driver MCP
+tools. For driver internals and platform-specific behavior, follow the Cua
+skill installed by `cua-driver skills install`. Hermes autodetection is a
+planned cua-driver follow-up, so currently point Hermes at the resulting
+`~/.cua-driver/skills/cua-driver` directory or symlink it into your skill space.
 
 ## The canonical workflow
 
@@ -117,8 +117,9 @@ screenshot in the same tool call. All actions that target an element
 accept `modifiers=[…]` for held keys.
 
 The input actions (`click`, `double_click`, `right_click`, `middle_click`,
-`drag`, `scroll`, `type`, `key`) also accept `delivery_mode` and
-`bring_to_front` — see "The verify → escalate ladder" below.
+`drag`, `scroll`, `type`, `key`) also accept `delivery_mode`. The optional
+`bring_to_front=True` request invokes a separately approved standalone focus
+tool before foreground input; it is never an input-action property.
 
 ## The verify → escalate ladder (background-first)
 
@@ -130,7 +131,7 @@ Returned fields (present when the driver supports them):
 - `effect`: `"confirmed"` (driver read the result back — done), `"unverifiable"`
   (delivered, but confirm it yourself by re-capturing), or `"suspected_noop"`
   (ran but almost certainly did nothing).
-- `escalation`: `{recommended: "px" | "foreground" | "page", reason}` — present
+- `escalation`: `{recommended: "px" | "foreground", reason}` — present
   only when there's a next rung to try.
 - `code`: a structured refusal like `"background_unavailable"` or
   `"foreground_unsupported"`.
@@ -140,17 +141,31 @@ Walk it in order:
 
 1. **Element, background (default).** `click(element=N)`. If `effect:"confirmed"`,
    you're done.
-2. **Pixel, background.** On `escalation.recommended == "px"` (or a `degraded`
-   capture with an empty element list), click by `coordinate=[x,y]` read off the
-   screenshot instead of `element`.
-3. **Foreground.** On `escalation.recommended == "foreground"`,
-   `code:"background_unavailable"`, or a pixel click that still didn't land,
+2. **Fresh verification.** `effect:"unverifiable"` means inspect a fresh
+   capture/state before any retry. Do this even when `escalation.recommended`
+   is present; it is advisory, not proof that successful input should repeat.
+3. **Pixel, background.** After `effect:"suspected_noop"` or a structured
+   refusal recommends `"px"` (or a `degraded` capture has no elements), click
+   by `coordinate=[x,y]` instead of `element`.
+4. **Foreground.** After `effect:"suspected_noop"`,
+   `code:"background_unavailable"`, or a verified pixel no-op,
    re-issue the SAME action with `delivery_mode="foreground"`. This briefly
    raises the window and restores focus after; pair with `bring_to_front=True`
    for a short sequence to avoid per-call flashes. It needs its own approval
    (it's a visible focus change) and is only appropriate when the user isn't
    actively working. Classic cases: Electron/Chromium consent dialogs (e.g.
    tldraw offline's "Run Script"), DirectInput games, raw-input canvases.
+5. **Keystrokes verified-lost on a KDE/Qt editor → use the app's own I/O.**
+   Some Qt text components (KTextEditor: Kate, KWrite, KDevelop) discard
+   SYNTHETIC X keystrokes entirely — foreground `type` reports ok
+   ("Typed N characters into the focused widget", `effect:"unverifiable"`)
+   but a fresh AX capture shows the text never arrived, and raw XTest fails
+   identically (proven live, Aug 2026 — it is the toolkit, not the driver;
+   the same foreground route works on kcalc/Chrome). After ONE such
+   verified-lost round trip, stop retrying input rungs: write the file with
+   terminal/file tools and let the editor reload it, or drive the app's
+   DBus/CLI interface. Never loop the ladder against a surface that
+   verifiably swallows synthetic input.
 
 ```
 computer_use(action="click", element=7)
@@ -160,11 +175,24 @@ computer_use(action="click", element=7, delivery_mode="foreground")
 ```
 
 **Escalate to foreground as a REACTION to a returned signal, never as a
-prediction** from the app being Electron/Chromium/GTK. Different controls in
+prediction** from the app being Electron/Chromium/GTK. A confirmed effect is
+done and must not be duplicated. Different controls in
 the same app behave differently. Do NOT silently retry the same rung, and do
 NOT conclude "cua-driver can't drive this app" — climb the ladder. If
-`delivery_mode="foreground"` returns `code:"foreground_unsupported"`, the
-driver is too old; tell the user to update cua-driver.
+`delivery_mode="foreground"` returns `code:"foreground_unsupported"`, the live
+action schema lacks that property; choose another verified rung without
+inferring support from the executable's reported version.
+
+## Page content is a separate toolset
+
+`computer_use` is desktop-only: it does not expose a typed route for browser
+page content (no `cua_browser_*` actions). For reading or acting on a page's
+DOM — navigation, clicking a link by text, typed input into a form field —
+use the separate `browser_navigate`/`browser_click`/`browser_type`/`browser_snapshot`
+tools (or `browser_exec` when the Browser Use CLI backend is active); their
+own schemas document the current contract. Reserve `computer_use` for browser
+*chrome* (the address bar, permission prompts, extension popups, native
+dialogs) and anything else on screen that isn't page content.
 
 ### Key shortcuts vary per platform
 
@@ -270,14 +298,14 @@ in your conversation context.
 | `cua-driver not installed` | Run `hermes computer-use install`, or `hermes tools` and enable Computer Use |
 | Captures consistently return empty / "no on-screen window" | On Linux: DISPLAY may not be set (X11) or you're on pure Wayland — ask the user to run `hermes computer-use doctor`. On Windows: you may be in Session 0 (SSH session) instead of the interactive desktop — see the cua-driver `WINDOWS.md` deep-dive |
 | Element index stale ("Element N not in cache") | SOM indices are only valid until the next `capture`. Re-capture before clicking. The wrapper carries opaque `element_token`s for stale-detection; you'll see an explicit error rather than a wrong click |
-| Click had no effect | Read the structured verdict, don't just recapture. `effect:"unverifiable"` → re-capture and confirm yourself. `effect:"suspected_noop"` / `code:"background_unavailable"` / `escalation.recommended` → climb the ladder: try `coordinate=[x,y]` (px), then `delivery_mode="foreground"`. A modal (e.g. an Electron consent dialog) may be blocking input — foreground delivery is how you dismiss it. Don't conclude the app is undrivable |
+| Click had no effect | Read the structured verdict. `effect:"unverifiable"` → fresh capture/state before retry, even with an escalation hint. `effect:"suspected_noop"` or a structured refusal → climb the recommended ladder: coordinate (px), then foreground. Browser chrome/native prompts remain native; page content is a separate toolset. Don't conclude the app is undrivable |
 | Type text disappears into a terminal emulator | cua-driver detects terminals (Ghostty, iTerm2, Terminal.app, Windows Terminal, mintty, etc.) and routes through key-event synthesis — should "just work" on a recent cua-driver. If it doesn't, ask the user to run `hermes computer-use doctor` |
 | `blocked pattern in type text` | You tried to `type` a shell command matching the dangerous-pattern block list (`curl ... \| bash`, `sudo rm -rf`, etc.). Break the command up or reconsider |
 | Anything else weird | **First action: ask the user to run `hermes computer-use doctor`.** It runs the cua-driver `health_report` MCP tool and prints a structured per-check matrix. Their output tells you (and them) exactly what's wrong |
 
 ## When NOT to use `computer_use`
 
-- **Web automation you can do via `browser_*` tools** — those use a
+- **Web automation you can do via separate headless `browser_*` tools** — those use a
   real headless Chromium and are more reliable than driving the user's
   GUI browser. Reach for `computer_use` specifically when the task
   needs the user's actual native apps (Finder/Explorer/Files, Mail/
@@ -322,7 +350,6 @@ These are platform deep dives, not duplicates — when the user reports
 `WINDOWS.md` for the UIA / UWP context that explains why and what to
 do differently.
 
-When `cua-driver skills install` autodetects Hermes (planned follow-up
-in trycua/cua), this happens automatically on install. Until then, ask
-the user to run the command and the pack lands in their agent skill
-space alongside this skill.
+Hermes autodetection is a planned follow-up in trycua/cua. For now, the command
+installs the pack under `~/.cua-driver/skills/cua-driver`; point Hermes at that
+directory or symlink it into the user's skill space.

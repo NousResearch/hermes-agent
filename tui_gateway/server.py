@@ -769,7 +769,7 @@ def _err(rid, code: int, msg: str, data=None) -> dict:
 
 def register_method(name: str, fn) -> None:
     """The ONE registration seam (``@method`` here and ``HandlerRegistry.install`` for the split
-    modules). ``tests/contracts/test_generated.py::test_every_method_has_a_contract`` and the
+    modules). ``tests/tui_gateway/contracts/test_generated.py::test_every_method_has_a_contract`` and the
     generator's ``assert_complete`` fail when a registered name has no contract."""
     _methods[name] = fn
 

@@ -6,7 +6,7 @@
  * `./gateway-contract.generated.ts` carries `RpcMethods` (client→server method → params/result),
  * `ServerRequestMap` (server→client request → params/result), `GatewayEventMap` (notification
  * type → payload) and every value shape. `scripts/gen_gateway_contracts.py` regenerates it and
- * `tests/contracts/test_generated.py` fails when the committed file is stale, so a field the
+ * `tests/tui_gateway/contracts/test_generated.py` fails when the committed file is stale, so a field the
  * backend stops sending fails `tsc` here instead of drifting.
  *
  * This module adds only what the wire does not carry: the client-local synthetic events the TUI

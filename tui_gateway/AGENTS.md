@@ -38,7 +38,7 @@ has a `Params` + `Result` model, every server→client request a `Params` + `Res
 result or an emitted payload does not match its model (production only logs). `apps/shared/src/
 gateway-contract.generated.ts` (`RpcMethods`, `ServerRequestMap`, `BackendGatewayEventMap` + every value
 shape) and `gateway-contract.openrpc.json` are rendered by `scripts/gen_gateway_contracts.py`;
-`tests/contracts/test_generated.py` fails when they are stale, so the loop is: change the model →
+`tests/tui_gateway/contracts/test_generated.py` fails when they are stale, so the loop is: change the model →
 regenerate → `tsc` shows every consumer the field moved. `apps/shared/src/gateway-events.ts` only adds
 the client-local synthetic events and the `GatewayEvent` envelope on top.
 New question for the user = `_ask("<method>", sid, params, timeout)` in the emitter, a handler in

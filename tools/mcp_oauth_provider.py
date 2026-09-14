@@ -16,6 +16,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+
+class _RefreshCompletedByPeer(Exception):
+    """Restart the SDK auth flow: a peer rotated the grant we were about to present."""
+
 class HermesProviderMixin:
     """Token-endpoint fixes layered over the SDK's ``OAuthClientProvider`` (must precede it in
     the MRO; subclasses set ``_hermes_logger`` to keep their own logger name).
@@ -84,32 +88,41 @@ class HermesProviderMixin:
         ``_handle_refresh_response`` never runs. Without this wrapper the fence
         file would stay locked for the life of the process and every later
         refresh would fail closed -- trading a race for a deadlock.
+
+        When a peer already rotated the grant while we waited for the fence,
+        ``_refresh_token`` adopts it and raises ``_RefreshCompletedByPeer``;
+        the SDK flow is then restarted so it re-evaluates validity and sends
+        the original request with the winner's access token, never POSTing
+        the burned refresh token.
         """
-        inner = super().async_auth_flow(request)
-        try:
-            sent, thrown = None, None
-            while True:
-                try:
-                    if thrown is not None:
-                        exc, thrown = thrown, None
-                        out = await inner.athrow(exc)
-                    else:
-                        out = await inner.asend(sent)
-                except StopAsyncIteration:
-                    return
-                # Full bidirectional delegation: the SDK drives this flow with
-                # asend(response), so `async for` would swallow the response and
-                # feed the inner generator None. Async generators have no
-                # `yield from`, hence the manual pump.
-                try:
-                    sent = yield out
-                except GeneratorExit:
-                    await inner.aclose()
-                    raise
-                except BaseException as exc:
-                    sent, thrown = None, exc
-        finally:
-            self._hermes_release_refresh_fence()
+        while True:
+            inner = super().async_auth_flow(request)
+            try:
+                sent, thrown = None, None
+                while True:
+                    try:
+                        if thrown is not None:
+                            exc, thrown = thrown, None
+                            out = await inner.athrow(exc)
+                        else:
+                            out = await inner.asend(sent)
+                    except StopAsyncIteration:
+                        return
+                    except _RefreshCompletedByPeer:
+                        break
+                    # Full bidirectional delegation: the SDK drives this flow with
+                    # asend(response), so `async for` would swallow the response and
+                    # feed the inner generator None. Async generators have no
+                    # `yield from`, hence the manual pump.
+                    try:
+                        sent = yield out
+                    except GeneratorExit:
+                        await inner.aclose()
+                        raise
+                    except BaseException as exc:
+                        sent, thrown = None, exc
+            finally:
+                await self._hermes_release_refresh_fence()
 
     async def _refresh_token(self):
         """Take the refresh fence, then build the request from the token we own.
@@ -127,18 +140,23 @@ class HermesProviderMixin:
         refreshes inside one process.
         """
         self._coerce_client_secret_post()
-        self._hermes_acquire_refresh_fence()
+        await self._hermes_acquire_refresh_fence()
         try:
             # Re-read under the fence: a peer may have rotated while we waited
             # for it, in which case the token we were about to POST is dead.
-            await self._hermes_adopt_tokens_from_disk()
+            adopted = await self._hermes_adopt_tokens_from_disk()
+            if adopted and self.context.is_token_valid():
+                # The peer's access token is live: presenting our copy of the
+                # refresh token would only burn a generation on a single-use
+                # provider. Skip the POST and let the flow restart.
+                raise _RefreshCompletedByPeer
             return self._prepare_token_request(await super()._refresh_token())
         except BaseException:
             # Never hold the fence when no POST will follow.
-            self._hermes_release_refresh_fence()
+            await self._hermes_release_refresh_fence()
             raise
 
-    def _hermes_acquire_refresh_fence(self) -> None:
+    async def _hermes_acquire_refresh_fence(self) -> None:
         """Enter the fence, or let RefreshFenceTimeout abort this attempt.
 
         Fails closed on purpose: a refresh we are not certain we own must not
@@ -147,43 +165,45 @@ class HermesProviderMixin:
         """
         from tools.mcp_oauth import _refresh_fence
 
-        self._hermes_release_refresh_fence()
+        await self._hermes_release_refresh_fence()
         storage = self.context.storage
         tokens_path = getattr(storage, "_tokens_path", None)
         if tokens_path is None:  # pragma: no cover - non-Hermes storage
             return
         fence = _refresh_fence(tokens_path())
-        fence.__enter__()
+        await fence.__aenter__()
         self._hermes_fence = fence
 
-    def _hermes_release_refresh_fence(self) -> None:
+    async def _hermes_release_refresh_fence(self) -> None:
         """Release the fence if held. Idempotent and never raises."""
         fence, self._hermes_fence = self._hermes_fence, None
         if fence is None:
             return
         try:
-            fence.__exit__(None, None, None)
+            await fence.__aexit__(None, None, None)
         except Exception:  # pragma: no cover - release must never mask the outcome
             self._hermes_logger.debug("Refresh fence release failed", exc_info=True)
 
-    async def _hermes_adopt_tokens_from_disk(self) -> None:
+    async def _hermes_adopt_tokens_from_disk(self) -> bool:
         """Adopt a peer's newer tokens before POSTing our own copy.
 
         Called under the fence. If disk already holds a different token, the
         peer that held the fence before us won this generation; its value is
-        the only one the provider will still accept.
+        the only one the provider will still accept. Returns True when the
+        in-memory pair was replaced.
         """
         try:
             stored = await self.context.storage.get_tokens()
         except Exception:  # pragma: no cover - unreadable store: keep what we have
-            return
+            return False
         if stored is None:
-            return
+            return False
         current = self.context.current_tokens
         if current is not None and getattr(stored, "refresh_token", None) == getattr(current, "refresh_token", None):
-            return
+            return False
         self.context.current_tokens = stored
         self.context.update_token_expiry(stored)
+        return True
 
     async def _initialize(self) -> None:
         """Load stored state, restore persisted server metadata when the SDK has none (so the issuer
@@ -226,7 +246,7 @@ class HermesProviderMixin:
         try:
             return await self._hermes_handle_refresh_response(response)
         finally:
-            self._hermes_release_refresh_fence()
+            await self._hermes_release_refresh_fence()
 
     async def _hermes_handle_refresh_response(self, response) -> bool:
         if not (200 <= response.status_code < 300):

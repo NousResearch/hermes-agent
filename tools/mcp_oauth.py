@@ -153,8 +153,8 @@ class RefreshFenceTimeout(RuntimeError):
     """
 
 
-@_contextmanager
-def _refresh_fence(path: "Path", *, timeout: float = _REFRESH_FENCE_TIMEOUT_SECONDS):
+@contextlib.asynccontextmanager
+async def _refresh_fence(path: "Path", *, timeout: float = _REFRESH_FENCE_TIMEOUT_SECONDS):
     """Own one refresh generation across read -> POST -> persist.
 
     ``_token_store_lock`` is deliberately narrow: it makes a single file
@@ -176,75 +176,66 @@ def _refresh_fence(path: "Path", *, timeout: float = _REFRESH_FENCE_TIMEOUT_SECO
     A separate ``.refresh.lock`` sibling keeps the two scopes independent:
     the fence holder can still call get_tokens()/set_tokens() normally.
 
+    Entered from the SDK's coroutine-driven auth flow, so the wait is an
+    ``asyncio.sleep`` poll on a non-blocking lock: a peer's slow network
+    round trip must not freeze every other task on this event loop. No
+    in-process lock layer is needed: an advisory lock on a fresh descriptor
+    already excludes sibling tasks and threads of the same process.
+
     Unlike ``_token_store_lock``, acquisition failure RAISES. Degrading to
     "proceed unlocked" here would reintroduce the exact race.
     """
     lock_path = path.with_suffix(path.suffix + ".refresh.lock")
-    key = str(lock_path)
-
-    with _token_locks_guard:
-        local_lock = _token_locks.setdefault(key, threading.RLock())
-
-    # Bound the in-process wait too: a sibling thread holding the fence is
-    # just as capable of stranding us as a sibling process.
-    if not local_lock.acquire(timeout=timeout):
-        raise RefreshFenceTimeout(
-            f"refresh fence busy in this process after {timeout:.0f}s ({lock_path.name})"
-        )
     try:
-        lock_fd = None
-        acquired = False
-        try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        secure_parent_dir(lock_path)
+        lock_fd = open(lock_path, "a+", encoding="utf-8")
+    except OSError as exc:
+        # No lock file means no ownership proof. Fail closed: see the
+        # class docstring for why proceeding is worse than aborting.
+        raise RefreshFenceTimeout(
+            f"refresh fence unavailable ({lock_path.name}): {exc}"
+        ) from exc
+
+    acquired = False
+    try:
+        lock_fd.seek(0)
+        deadline = time.monotonic() + timeout
+        while True:
             try:
-                secure_parent_dir(lock_path)
-                lock_fd = open(lock_path, "a+", encoding="utf-8")
-                lock_fd.seek(0)
-            except OSError as exc:
-                # No lock file means no ownership proof. Fail closed: see the
-                # class docstring for why proceeding is worse than aborting.
-                raise RefreshFenceTimeout(
-                    f"refresh fence unavailable ({lock_path.name}): {exc}"
-                ) from exc
+                if fcntl is not None:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                elif msvcrt is not None:
+                    getattr(msvcrt, "locking")(
+                        lock_fd.fileno(), getattr(msvcrt, "LK_NBLCK"), 1
+                    )
+                else:  # pragma: no cover - no advisory locking primitive
+                    raise RefreshFenceTimeout(
+                        "refresh fence unsupported: no flock/msvcrt on this platform"
+                    )
+                acquired = True
+                break
+            except (OSError, IOError):
+                if time.monotonic() >= deadline:
+                    raise RefreshFenceTimeout(
+                        f"refresh fence held by a peer for {timeout:.0f}s ({lock_path.name})"
+                    ) from None
+                await asyncio.sleep(0.05)
 
-            deadline = time.monotonic() + timeout
-            while True:
-                try:
-                    if fcntl is not None:
-                        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    elif msvcrt is not None:
-                        getattr(msvcrt, "locking")(
-                            lock_fd.fileno(), getattr(msvcrt, "LK_NBLCK"), 1
-                        )
-                    else:  # pragma: no cover - no advisory locking primitive
-                        raise RefreshFenceTimeout(
-                            "refresh fence unsupported: no flock/msvcrt on this platform"
-                        )
-                    acquired = True
-                    break
-                except (OSError, IOError):
-                    if time.monotonic() >= deadline:
-                        raise RefreshFenceTimeout(
-                            f"refresh fence held by a peer for {timeout:.0f}s ({lock_path.name})"
-                        ) from None
-                    time.sleep(0.05)
-
-            yield
-        finally:
-            if lock_fd is not None:
-                try:
-                    if acquired:
-                        if fcntl is not None:
-                            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                        elif msvcrt is not None:
-                            getattr(msvcrt, "locking")(
-                                lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1
-                            )
-                except (OSError, IOError):
-                    pass
-                finally:
-                    lock_fd.close()
+        yield
     finally:
-        local_lock.release()
+        try:
+            if acquired:
+                if fcntl is not None:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                elif msvcrt is not None:
+                    getattr(msvcrt, "locking")(
+                        lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1
+                    )
+        except (OSError, IOError):
+            pass
+        finally:
+            lock_fd.close()
 
 
 # ---------------------------------------------------------------------------

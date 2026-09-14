@@ -1,10 +1,12 @@
-"""Tests for auth-aware retry in Mattermost WS and Matrix sync loops.
+"""Tests for auth-aware retry in the Mattermost WS loop.
 
-Both Mattermost's _ws_loop and Matrix's _sync_loop previously caught all
-exceptions with a broad ``except Exception`` and retried forever. Permanent
-auth failures (401, 403, M_UNKNOWN_TOKEN) would loop indefinitely instead
-of stopping. These tests verify that auth errors now stop the reconnect.
+Mattermost's _ws_loop previously caught all exceptions with a broad
+``except Exception`` and retried forever, so permanent auth failures (401,
+403) looped indefinitely instead of stopping. These tests verify that auth
+errors now stop the reconnect. The Matrix sync-loop counterpart lives in
+tests/gateway/test_matrix.py::TestMatrixSyncLoop.
 """
+
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch

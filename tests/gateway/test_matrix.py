@@ -1266,8 +1266,15 @@ class TestMatrixDeviceIdConfig:
         assert mc.extra.get("device_id") == "HERMES_BOT"
 
 
-class TestMatrixSyncLoop:
+def _sync_error(message, **attrs):
+    """Shape of mautrix's MatrixRequestError: message text + structured attrs."""
+    exc = Exception(message)
+    for k, v in attrs.items():
+        setattr(exc, k, v)
+    return exc
 
+
+class TestMatrixSyncLoop:
 
     @pytest.mark.asyncio
     async def test_dispatch_sync_accepts_async_handle_sync(self):
@@ -1340,14 +1347,6 @@ class TestMatrixSyncLoop:
         assert captured[0].text == "hello"
         assert captured[0].source.chat_type == "dm"
 
-    @staticmethod
-    def _sync_error(message, **attrs):
-        """Shape of mautrix's MatrixRequestError: message text + structured attrs."""
-        exc = Exception(message)
-        for k, v in attrs.items():
-            setattr(exc, k, v)
-        return exc
-
     async def _run_sync_loop_with_first_error(self, exc):
         """Drive _sync_loop: sync() raises exc once, then returns a clean dict and closes."""
         adapter = _make_adapter()
@@ -1373,34 +1372,46 @@ class TestMatrixSyncLoop:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "exc",
+        ("exc", "expected_sync_calls"),
         [
             # Umbrel app-proxy 502: an SVG path coordinate embeds "403".
-            _sync_error.__func__(
-                '502: <!DOCTYPE html><svg><path d="M17.4517 1403.2C12.7214 1403.2"/></svg>',
-                http_status=502,
+            (
+                _sync_error(
+                    '502: <!DOCTYPE html><svg><path d="M17.4517 1403.2C12.7214 1403.2"/></svg>',
+                    http_status=502,
+                ),
+                2,
             ),
             # Plain timeout echoing the pagination token, which embeds "401".
-            asyncio.TimeoutError(
-                "Connection timeout to host https://matrix.example.org/_matrix/"
-                "client/v3/sync?timeout=30000&since=s72802_401975_486_12943_11759"
+            (
+                asyncio.TimeoutError(
+                    "Connection timeout to host https://matrix.example.org/_matrix/"
+                    "client/v3/sync?timeout=30000&since=s72802_401975_486_12943_11759"
+                ),
+                2,
             ),
+            # Rate limiting is a non-auth errcode on a non-auth status: retried.
+            (_sync_error("rate limited", errcode="M_LIMIT_EXCEEDED", http_status=429), 2),
+            # Structured 401 with an auth errcode: permanent, loop returns.
+            (_sync_error("Invalid access token", errcode="M_UNKNOWN_TOKEN", http_status=401), 1),
+            # Reverse proxy rewrote the body to HTML and dropped the errcode; the
+            # 401 status alone must still stop the loop.
+            (_sync_error("401: <html>proxy</html>", errcode=None, http_status=401), 1),
         ],
-        ids=["502-html-body-with-403-digits", "timeout-since-token-with-401-digits"],
+        ids=[
+            "502-html-body-with-403-digits",
+            "timeout-since-token-with-401-digits",
+            "429-rate-limited",
+            "401-unknown-token",
+            "401-html-body-no-errcode",
+        ],
     )
-    async def test_sync_loop_retries_transient_error_whose_text_embeds_auth_digits(self, exc):
-        """Both production repros: the old substring check stopped the loop forever on these."""
+    async def test_sync_loop_retries_only_non_auth_errors(self, exc, expected_sync_calls):
+        """Transient errors (even when their text embeds auth digits) are retried once
+        with the 5s backoff; structured auth failures return without retrying."""
         sync_calls, sleeps = await self._run_sync_loop_with_first_error(exc)
-        assert sync_calls == 2
-        assert 5 in sleeps  # the retry backoff, not the 0s dispatch-yield
-
-    @pytest.mark.asyncio
-    async def test_sync_loop_stops_on_structured_auth_error(self):
-        """A 401 with errcode M_UNKNOWN_TOKEN is permanent: no retry, loop returns."""
-        exc = self._sync_error("Invalid access token", errcode="M_UNKNOWN_TOKEN", http_status=401)
-        sync_calls, sleeps = await self._run_sync_loop_with_first_error(exc)
-        assert sync_calls == 1
-        assert 5 not in sleeps
+        assert sync_calls == expected_sync_calls
+        assert (5 in sleeps) is (expected_sync_calls == 2)  # the retry backoff, not the 0s dispatch-yield
 
     @pytest.mark.asyncio
     async def test_connect_receives_dm_from_initial_sync_dispatch(self):

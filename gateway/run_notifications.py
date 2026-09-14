@@ -31,6 +31,37 @@ _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
 _WATCHER_ROUTE_FIELDS = ("session_key", "platform", "chat_type", "chat_id", "thread_id", "user_id", "user_name")
 _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
+
+def _media_send_failed(result: Any) -> bool:
+    """True only for an explicit ``SendResult(success=False)``. Media senders report most
+    platform-side failures this way WITHOUT raising (Telegram "Not connected" / missing file,
+    Discord accepted-but-nothing-attached, a capped FloodWait), so an exception guard alone
+    treats them as delivered. ``None`` (legacy adapters without the typed contract) and objects
+    without ``success`` stay "unknown" — the same lenience ``_record_delivery`` in
+    ``gateway/platforms/base.py`` and the cron media sender apply."""
+    return result is not None and not getattr(result, "success", True)
+
+
+async def _report_media_send_failure(
+    adapter, chat_id: str, media_path: str, result: Any, *, is_voice: bool = False,
+    metadata: Optional[Dict[str, Any]] = None, lane: str = "Post-stream",
+) -> None:
+    """A media sender returned ``success=False`` without raising, after the ``MEDIA:`` tag was
+    already stripped from delivered text: log the adapter's reason and run the same user-visible
+    failure notice the non-streaming loop uses (``_notify_media_delivery_failure``, #66797), so
+    the user learns the attachment never arrived instead of a silent drop. Adapters without the
+    base notifier only get the log line. Never raises."""
+    name = getattr(adapter, "name", "?")
+    logger.warning("[%s] %s media delivery failed for %s: %s", name, lane, media_path,
+                   getattr(result, "error", None) or "no error detail")
+    notify = getattr(adapter, "_notify_media_delivery_failure", None)
+    if not callable(notify):
+        return
+    try:
+        await notify(chat_id, media_path, is_voice=is_voice, metadata=metadata)
+    except Exception as notify_err:
+        logger.debug("[%s] Could not send media-delivery-failure notice: %s", name, notify_err)
+
 # Durable async-delegation claim transitions: kind -> (tools.async_delegation function, failure log).
 _DURABLE_CLAIM_OPS = {
     "drop": ("drop_completion_delivery", "Could not drop durable completion claim"),
@@ -301,25 +332,42 @@ class GatewayNotificationsMixin:
 
             image_paths = [p for p, v in media_files if _is_photo(p, v)]
             non_image_media = [(p, v) for p, v in media_files if not _is_photo(p, v)]
+            # A sender fails by raising OR by returning ``SendResult(success=False)`` (legacy
+            # adapters may still return ``None``, which stays "unknown"). The text (and the
+            # stripped tag) is already on screen, so a returned failure must run the same
+            # user-visible failure path as the non-streaming loop, not pass as delivered.
             if image_paths:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
-                    await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
+                    result = await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
+                else:
+                    if _media_send_failed(result):
+                        # One adapter call carried the whole batch: one logical failure, ONE
+                        # notice (it names the first image; the log lists the whole batch).
+                        if len(image_paths) > 1:
+                            logger.warning("[%s] Post-stream image batch of %d failed: %s",
+                                           adapter.name, len(image_paths), image_paths)
+                        await _report_media_send_failure(
+                            adapter, chat_id, image_paths[0], result, metadata=_thread_meta)
             for media_path, is_voice in non_image_media:
                 try:
                     ext = Path(media_path).suffix.lower()
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
+                        result = await adapter.send_voice(
                             chat_id=chat_id, audio_path=media_path, metadata=_thread_meta, is_voice=is_voice,
                         )
                     elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=_thread_meta)
+                        result = await adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=_thread_meta)
                     else:
-                        await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
+                        result = await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
+                else:
+                    if _media_send_failed(result):
+                        await _report_media_send_failure(
+                            adapter, chat_id, media_path, result, is_voice=is_voice, metadata=_thread_meta)
 
 
     async def _deliver_queued_first_response(

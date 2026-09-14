@@ -2286,12 +2286,14 @@ class GatewayTurnMixin:
             # Route each media file by type (voice bubble / video / image / document), as the
             # streaming + kanban paths do.
             from gateway.platforms.base import should_send_media_as_audio as _should_send_media_as_audio
-            from gateway.run_notifications import _IMAGE_EXTS, _VIDEO_EXTS
+            from gateway.run_notifications import (
+                _IMAGE_EXTS, _VIDEO_EXTS, _media_send_failed, _report_media_send_failure,
+            )
             for media_path, _is_voice in (media_files or []):
                 _ext = os.path.splitext(media_path)[1].lower()
                 with suppress(Exception):
                     if _should_send_media_as_audio(source.platform, _ext, _is_voice):
-                        await adapter.send_voice(
+                        _media_result = await adapter.send_voice(
                             chat_id=source.chat_id, audio_path=media_path, metadata=_thread_metadata,
                             is_voice=_is_voice,
                         )
@@ -2301,7 +2303,13 @@ class GatewayTurnMixin:
                             else (adapter.send_image_file, "image_path") if _ext in _IMAGE_EXTS
                             else (adapter.send_document, "file_path")
                         )
-                        await sender(chat_id=source.chat_id, metadata=_thread_metadata, **{key: media_path})
+                        _media_result = await sender(chat_id=source.chat_id, metadata=_thread_metadata, **{key: media_path})
+                    # A returned ``success=False`` is a failed delivery too (same contract as the
+                    # post-stream and non-streaming loops); the header text already went out.
+                    if _media_send_failed(_media_result):
+                        await _report_media_send_failure(
+                            adapter, source.chat_id, media_path, _media_result, is_voice=_is_voice,
+                            metadata=_thread_metadata, lane="Background task")
 
         except Exception as e:
             logger.exception("Background task %s failed", task_id)

@@ -107,7 +107,7 @@ def cmd_insights(args):
     try:
         from hermes_state import SessionDB
         from agent.insights import InsightsEngine
-        db = SessionDB()
+        db = SessionDB(read_only=True)
         engine = InsightsEngine(db)
         report = engine.generate(days=args.days, source=args.source)
         print(engine.format_terminal(report))

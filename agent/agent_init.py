@@ -1885,11 +1885,11 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
 
 
 def _enforce_minimum_context(agent):
-    # Reject windows below the 64K floor needed for reliable tool-calling; an explicit
-    # positive model.context_length on LM Studio is allowed below the floor.
+    if str(agent.provider or "").strip().lower() in ("ollama", "custom", ""):
+        return
     _ctx = getattr(agent.context_compressor, "context_length", 0)
     _allow_lmstudio_explicit_below_floor = (
-        str(agent.provider or "").strip().lower() == "lmstudio"
+        str(agent.provider or "").strip().lower() in ("lmstudio", "ollama")
         and isinstance(agent._config_context_length, int)
         and not isinstance(agent._config_context_length, bool)
         and agent._config_context_length > 0

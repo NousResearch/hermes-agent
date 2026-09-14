@@ -36,6 +36,21 @@ def _is_micro_marker(entry: Any) -> bool:
 class MicroCompactionMixin:
     """Rolling micro-compaction; host must be a ``ContextCompressor``."""
 
+    def _micro_summary_token_budget(self, exchange_text: str) -> int:
+        """Return an elastic output budget for a lossless rolling-summary merge.
+
+        A fixed 1,500-token ceiling repeatedly truncated mature rolling summaries.
+        The partial output was then discarded, leaving the exchange unabsorbed and
+        allowing live sessions to grow beyond their context window.  Reserve enough
+        room to reproduce the existing summary plus a bounded contribution from the
+        next exchange, while still respecting the compressor's global summary cap.
+        """
+        cap = max(1500, int(getattr(self, "max_summary_tokens", 4000) or 4000))
+        existing_tokens = estimate_tokens_rough(self._micro_compact_rolling_summary)
+        exchange_tokens = estimate_tokens_rough(exchange_text)
+        requested = existing_tokens + min(exchange_tokens, 1000) + 512
+        return min(cap, max(1500, requested))
+
     def _resolve_compact_cursor(self, messages: List[Dict[str, Any]], head_end: int, tail_start: int) -> int:
         """Index of the first message not yet absorbed into the rolling summary: the in-memory
         cursor when valid, else just past the last summary marker."""
@@ -120,7 +135,7 @@ class MicroCompactionMixin:
         call_kwargs = {
             "task": "compression",
             "messages": self._build_micro_summary_prompt(self._micro_compact_rolling_summary, exchange_text),
-            "max_tokens": min(1500, self.max_summary_tokens or 1500),
+            "max_tokens": self._micro_summary_token_budget(exchange_text),
             "temperature": 0.1,
         }
         if self.summary_model:

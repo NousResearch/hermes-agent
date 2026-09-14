@@ -566,7 +566,10 @@ class SessionMessagesMixin:
 
     def archive_and_compact(self, session_id: str, compacted_messages: List[Dict[str, Any]],
         model_config_patch: Optional[Dict[str, Any]] = None, watermark: Optional[int] = None,
-        lock_holder: Optional[str] = None, tail_count: int = 0) -> int:
+        lock_holder: Optional[str] = None, tail_count: int = 0,
+        searchable_original_positions: Optional[List[int]] = None,
+        expected_active_count: Optional[int] = None,
+        rewrite_active_roles: Optional[Tuple[str, ...]] = None) -> int:
         """Non-destructive in-place compaction under ONE session id: soft-archive the active rows (``active=0,
         compacted=1``: summarized away, still searchable) and insert *compacted_messages* as fresh active
         rows, atomically; returns the new ACTIVE count (= ``message_count``). *watermark* (compression
@@ -584,8 +587,29 @@ class SessionMessagesMixin:
         platform_message_id, token counts, reasoning sidecars all survive byte-exact, and the FTS triggers
         index the clones naturally), and the originals are archived. NOTE: re-sequencing assigns the tail
         rows fresh ids; consumers that reference durable row ids re-resolve by content (see 3e8ab0610).
+
+        *searchable_original_positions* is the deterministic-prune mode: zero-based positions in the
+        current active transcript whose original full bodies were changed and must stay searchable.
+        Every unchanged original is a superseded duplicate and is archived with ``compacted=0``.
+        *expected_active_count* fences the positional mapping; a concurrent or stale transcript
+        mismatch aborts the transaction. *rewrite_active_roles* limits that fence and rewrite to the
+        listed conversational roles, so active metadata/control rows outside the model-fed transcript
+        stay untouched instead of permanently offsetting the fence. Incompatible with watermark/tail.
         """
         from hermes_state import SessionCompressionInProgressError
+        if searchable_original_positions is not None and (watermark is not None or tail_count):
+            raise ValueError("searchable_original_positions cannot be combined with watermark or tail_count")
+        if rewrite_active_roles is not None and searchable_original_positions is None:
+            raise ValueError("rewrite_active_roles requires searchable_original_positions")
+        prune_roles = tuple(dict.fromkeys(
+            role for role in (rewrite_active_roles or ()) if isinstance(role, str) and role))
+        if rewrite_active_roles is not None and (
+                not prune_roles or len(prune_roles) != len(rewrite_active_roles)
+                or any(role not in {"user", "assistant", "tool"} for role in prune_roles)):
+            raise ValueError("rewrite_active_roles must contain unique conversational roles")
+        prune_role_clause = f" AND role IN ({_placeholders(prune_roles)})" if prune_roles else ""
+        prune_role_params = list(prune_roles)
+
         def _do(conn):
             if lock_holder is not None:
                 lock_row = conn.execute(_COMPRESSION_LOCK_ROW_SQL, (session_id,)).fetchone()
@@ -609,18 +633,56 @@ class SessionMessagesMixin:
                     "ORDER BY id DESC LIMIT ?",
                     (session_id, *((int(watermark),) if bound else ()), int(tail_count))).fetchall()]
             rewind_ids += tail_ids
-            if rewind_ids:
+            prune_searchable_ids: Optional[list[int]] = None
+            if searchable_original_positions is not None:
+                active_ids = [int(row["id"]) for row in conn.execute(
+                    "SELECT id FROM messages WHERE session_id = ? AND active = 1" + prune_role_clause
+                    + " ORDER BY id", [session_id, *prune_role_params]).fetchall()]
+                if expected_active_count is not None and len(active_ids) != int(expected_active_count):
+                    raise RuntimeError("active transcript changed before deterministic prune commit")
+                positions = sorted(set(int(value) for value in searchable_original_positions))
+                if any(value < 0 or value >= len(active_ids) for value in positions):
+                    raise ValueError("searchable original position is outside active transcript")
+                prune_searchable_ids = [active_ids[value] for value in positions]
+            if prune_searchable_ids is not None:
+                conn.execute("UPDATE messages SET active = 0, compacted = 0 "
+                             "WHERE session_id = ? AND active = 1" + prune_role_clause,
+                             [session_id, *prune_role_params])
+                if prune_searchable_ids:
+                    conn.execute("UPDATE messages SET compacted = 1 "
+                                 f"WHERE session_id = ? AND id IN ({_placeholders(prune_searchable_ids)})",
+                                 [session_id, *prune_searchable_ids])
+            elif rewind_ids:
                 placeholders = _placeholders(rewind_ids)
                 conn.execute("UPDATE messages SET active = 0, compacted = 0 "
                     f"WHERE session_id = ? AND id IN ({placeholders})", [session_id, *rewind_ids])
                 conn.execute(f"{_ARCHIVE_ACTIVE_SQL} AND id NOT IN ({placeholders})", [session_id, *rewind_ids])
             else:
                 conn.execute(_ARCHIVE_ACTIVE_SQL, (session_id,))
-            inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
+            messages_to_insert = compacted_messages
+            if prune_searchable_ids is not None and prune_roles:
+                messages_to_insert = [m for m in compacted_messages if m.get("role") in prune_roles]
+            inserted, tool_calls_total = self._insert_message_rows(conn, session_id, messages_to_insert)
             if tail_ids:
                 self._clone_message_rows(conn, tail_ids)
                 inserted += len(tail_ids)
                 tool_calls_total += tail_tool_calls
+            if prune_searchable_ids is not None and prune_roles:
+                # Metadata/control rows were deliberately left active; recount the complete live set
+                # so sessions.* stays truthful while the rewrite touches only model-visible rows.
+                active_rows = conn.execute(
+                    "SELECT tool_calls FROM messages WHERE session_id = ? AND active = 1", (session_id,)).fetchall()
+                inserted, tool_calls_total = len(active_rows), 0
+                for row in active_rows:
+                    raw = row["tool_calls"]
+                    if not raw:
+                        continue
+                    try:
+                        parsed = json.loads(raw) if isinstance(raw, str) else raw
+                        if isinstance(parsed, list):
+                            tool_calls_total += len(parsed)
+                    except (TypeError, ValueError):
+                        pass
             conn.execute(f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
                 (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
             return inserted

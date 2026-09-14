@@ -247,6 +247,7 @@ _DB_PERSISTED_MARKER = "_db_persisted"
 # they don't duplicate live copies in recall; never persisted (unknown column).
 _COMPACTION_TAIL_MARKER = "_compaction_tail"
 PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY = "_proactive_prune_rearm_tokens"
+_DETERMINISTIC_PRUNE_ROLES = ("user", "assistant", "tool")
 
 _NO_USER_TASK_SENTINEL = "None. This session contains no user-authored turns."
 COMPRESSION_CONTINUATION_USER_CONTENT = (
@@ -2797,6 +2798,28 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         """
         self._proactive_prune_rearm_tokens = 0
         self._last_reclaim_block_warn = None
+        self._proactive_prune_failed_turn_key = None
+
+    @staticmethod
+    def _proactive_prune_turn_key(messages: List[Dict[str, Any]]) -> tuple:
+        """Stable, content-free identity for the newest user turn.
+
+        A failed compare-and-swap is safe but cannot become useful by retrying after every tool
+        call in the same turn. Prefer durable external/row identities, then the stamped
+        timestamp, and use object identity only for legacy unstamped callers.
+        """
+        for message in reversed(messages):
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            platform_id = message.get("platform_message_id") or message.get("message_id")
+            if platform_id not in (None, ""):
+                return "platform", str(platform_id)
+            if message.get("_row_id") is not None:
+                return "row", message.get("_row_id")
+            if message.get("timestamp") is not None:
+                return "timestamp", message.get("timestamp")
+            return "object", id(message)
+        return "message-list", id(messages)
 
     def _billed_basis_over_threshold(self, current_tokens: "int | None") -> bool:
         """Whether a provider-billed reading says the session is over threshold.
@@ -2881,6 +2904,12 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             current_tokens is not None and current_tokens < self.proactive_prune_tokens
         ):
             return messages, 0
+        turn_key = self._proactive_prune_turn_key(messages)
+        failed_turn_key = getattr(self, "_proactive_prune_failed_turn_key", None)
+        if failed_turn_key == turn_key:
+            return messages, 0
+        if failed_turn_key is not None:
+            self._proactive_prune_failed_turn_key = None
         if len(messages) <= self.protect_last_n + self._protect_head_size(messages) + 1:
             self._warn_reclamation_no_op("prune:tail_only", current_tokens)
             return messages, 0
@@ -2912,16 +2941,33 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         next_rearm_tokens = after + runway
         if session_db and session_id:
             try:
+                # Only originals whose bodies the prune changed stay searchable; unchanged
+                # originals are superseded duplicates of their live copies.
+                persisted_position = 0
+                searchable_original_positions: list[int] = []
+                for original, replacement in zip(messages, pruned_msgs):
+                    if (original.get("role") not in _DETERMINISTIC_PRUNE_ROLES
+                            or not original.get(_DB_PERSISTED_MARKER)):
+                        continue
+                    ignored = {_DB_PERSISTED_MARKER, "_row_id"}
+                    if ({k: v for k, v in original.items() if k not in ignored}
+                            != {k: v for k, v in replacement.items() if k not in ignored}):
+                        searchable_original_positions.append(persisted_position)
+                    persisted_position += 1
                 session_db.archive_and_compact(
                     session_id, pruned_msgs,
                     model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: next_rearm_tokens},
+                    searchable_original_positions=searchable_original_positions,
+                    expected_active_count=persisted_position,
+                    rewrite_active_roles=_DETERMINISTIC_PRUNE_ROLES,
                 )
             except Exception as exc:
+                self._proactive_prune_failed_turn_key = turn_key
                 logger.warning("Proactive tool-result prune DB commit failed; keeping the original transcript: %s", exc)
                 return messages, 0
             # Shared post-commit stamp site with the in-place commit and micro-compaction sync.
             # See #98450.
-            stamp_db_persisted_markers(pruned_msgs)
+            stamp_db_persisted_markers([m for m in pruned_msgs if m.get("role") in _DETERMINISTIC_PRUNE_ROLES])
         self._proactive_prune_rearm_tokens = next_rearm_tokens
         # Reclamation just ran: let a future lockout warn again.
         self._last_reclaim_block_warn = None

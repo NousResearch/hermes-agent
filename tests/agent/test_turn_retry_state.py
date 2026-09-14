@@ -33,6 +33,10 @@ EXPECTED_FIELDS = {
     "llama_cpp_grammar_retry_attempted",
     "primary_recovery_attempted",
     "has_retried_429",
+    # Machine-level outage ledger (agent/local_network.py): seconds spent waiting for
+    # connectivity, and the seconds this attempt reserved to sleep.
+    "network_outage_waited",
+    "network_outage_sleep",
     "auth_failover_attempted",
     "restart_with_compressed_messages",
     "restart_with_length_continuation",

@@ -95,9 +95,9 @@ async def test_failed_replay_detaches_session():
 
     s = PtySession("k", FakeBridge([b""]), buffer_cap=1024, read_timeout=0.01)
     s.buffer.append(b"replay")
+    ws = FailingWS()
 
-    with pytest.raises(RuntimeError, match="socket closed"):
-        await s.attach(FailingWS())
+    assert await s.attach(ws) is False
 
     assert s.attached is False
     assert s.last_detached_at is not None

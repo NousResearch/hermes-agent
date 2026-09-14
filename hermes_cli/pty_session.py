@@ -113,7 +113,7 @@ class PtySession:
                 await ws.send_bytes(snap)
             except Exception:
                 self.detach(ws)
-                raise
+                return False
         if force_redraw:
             return await self.write(ws, TUI_FORCE_REDRAW)
         return True

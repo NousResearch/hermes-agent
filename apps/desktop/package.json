@@ -154,7 +154,7 @@
     "web-haptics": "0.0.6"
   },
   "optionalDependencies": {
-    "get-windows": "9.3.0"
+    "get-windows": "^9.3.0"
   },
   "devDependencies": {
     "@babel/core": "8.0.1",

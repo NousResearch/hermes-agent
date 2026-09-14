@@ -419,6 +419,19 @@ function resolveGetWindowsRoot() {
     })
     return dirname(entryPath)
   } catch {
+    // [hermes-zh patch 2026-08-22] npm ci may drop this optional dependency
+    // entirely when its node-pre-gyp install script cannot fetch the GitHub
+    // prebuilt (GitHub is blocked on this network). Fall back to a vendored
+    // copy so the desktop build stays reproducible offline.
+    const fallbacks = [
+      process.env.HERMES_GET_WINDOWS_VENDOR,
+      join(projectRoot, 'vendor/get-windows')
+    ].filter(Boolean)
+    for (const candidate of fallbacks) {
+      if (existsSync(join(candidate, 'package.json'))) {
+        return candidate
+      }
+    }
     return null
   }
 }
@@ -504,6 +517,33 @@ export function stageGetWindowsInto(
         '[stage-native-deps] get-windows has no win32-arm64 prebuilt binding; ' +
           'staging the fail-soft JS surface without native window enumeration.'
       )
+    } else if (
+      bindingDirs.length === 0 &&
+      arch !== 'arm64' &&
+      !installAttempted
+    ) {
+      // [hermes-zh patch 2026-08-22] The node-pre-gyp install script fetches
+      // the win32 prebuilt from GitHub, which is blocked on this network, so
+      // npm ci can install the package without its Windows binding. Copy the
+      // vendored binding in before falling back to the native installer.
+      const fallbacks = [
+        process.env.HERMES_GET_WINDOWS_VENDOR,
+        join(projectRoot, 'vendor/get-windows')
+      ].filter(Boolean)
+      for (const candidate of fallbacks) {
+        if (candidate === srcRoot) continue
+        const vendored = join(
+          candidate,
+          'lib/binding/napi-9-win32-unknown-x64/node-get-windows.node'
+        )
+        if (existsSync(vendored)) {
+          const dstDir = join(bindingRoot, 'napi-9-win32-unknown-x64')
+          mkdirSync(dstDir, { recursive: true })
+          cpSync(vendored, join(dstDir, 'node-get-windows.node'))
+          bindingDirs = scanBindingDirs()
+          break
+        }
+      }
     } else if (bindingDirs.length === 0 && typeof install === 'function') {
       // A plain `npm install` won't re-run an install script for a package
       // that is already on disk, so every checkout that installed while

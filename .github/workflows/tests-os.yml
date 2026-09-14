@@ -60,9 +60,11 @@ jobs:
           - name: macOS-only tests
             runner: macos-latest
             marker: macos_only
-          - name: Windows-only tests
-            runner: windows-latest-32-core
-            marker: windows_only
+          # Windows-only tests entry dropped: windows-latest-32-core is a
+          # paid GitHub-hosted runner the personal fork does not have, so it
+          # queues until GitHub's 24h job ceiling cancels it, and CANCELLED
+          # is in the upstream-pr-ci-gate's FAIL_CONCLUSIONS. Zero coverage
+          # either way today; this makes the absence fast and explicit.
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

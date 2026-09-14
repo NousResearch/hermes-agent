@@ -14,6 +14,11 @@ concurrency:
 jobs:
   test:
     name: Run tests
+    # Needs a 96-core GitHub-hosted runner, which only the upstream org has;
+    # a personal fork queues forever and either times out inside the CI
+    # gate's 30-min window or hits GitHub's 24h job ceiling. Skip on the
+    # fork so it concludes fast to a conclusion the gate accepts.
+    if: github.repository == 'NousResearch/hermes-agent'
     # One 96-core runner for the whole suite. There is no slicing. Slicing
     # existed to spread the suite over 4-core runners. It cost a matrix job, a
     # duration cache, a per-slice artifact and a merge job to do it.

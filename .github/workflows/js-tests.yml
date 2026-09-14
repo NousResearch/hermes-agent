@@ -7,6 +7,11 @@ on:
 jobs:
   check:
     name: JS & TS checks
+    # 32-core GitHub-hosted runner the personal fork does not have; it
+    # queues until GitHub's 24h job ceiling cancels it, and CANCELLED is
+    # in the upstream-pr-ci-gate's FAIL_CONCLUSIONS. Skip on the fork so
+    # it concludes fast to a conclusion the gate accepts.
+    if: github.repository == 'NousResearch/hermes-agent'
     # One 32-core job replaces a 14-leg matrix. The matrix spread about 612s
     # of check payload over 4-core runners. It paid about 371s of repeated
     # setup to do it: 14 checkouts, 14 node installs, 14 node_modules

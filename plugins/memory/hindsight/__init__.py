@@ -364,7 +364,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._api_url, self._llm_base_url, self._mode = _DEFAULT_API_URL, "", "cloud"
         self._timeout, self._idle_timeout = _DEFAULT_TIMEOUT, _DEFAULT_IDLE_TIMEOUT
         self._bank_id, self._budget, self._bank_id_template = "hermes", "mid", ""
-        self._bank_mission, self._bank_retain_mission = "", None
+        self._bank_mission, self._bank_retain_mission, self._bank_observations_mission = "", None, None
         self._mission_synced_banks: set[str] = set()
         self._memory_mode = "hybrid"  # "context", "tools", or "hybrid"
         self._prefetch_method = "recall"  # "recall" or "reflect"
@@ -464,6 +464,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "bank_id_template", "description": "Optional template to derive bank_id dynamically. Placeholders: {profile}, {workspace}, {platform}, {user}, {session}. Example: hermes-{profile}", "default": ""},
             {"key": "bank_mission", "description": "Mission/purpose description for the memory bank"},
             {"key": "bank_retain_mission", "description": "Custom extraction prompt for memory retention"},
+            {"key": "bank_observations_mission", "description": "Controls what gets synthesised into observations during consolidation (replaces built-in rules)"},
             {"key": "recall_budget", "description": "Recall thoroughness", "default": "mid", "choices": ["low", "mid", "high"]},
             {"key": "memory_mode", "description": "Memory integration mode", "default": "hybrid", "choices": ["hybrid", "context", "tools"]},
             {"key": "recall_prefetch_method", "description": "Auto-recall method", "default": "recall", "choices": ["recall", "reflect"]},
@@ -542,12 +543,15 @@ class HindsightMemoryProvider(MemoryProvider):
         return _run_sync(coro, timeout=self._timeout)
 
     def _ensure_bank_mission(self) -> None:
-        """Push configured ``bank_mission`` / ``bank_retain_mission`` to the bank once per
-        process per bank (config was previously read but never sent). Re-applied on every
-        start so config edits take effect; fail-open — a bank-config error never blocks memory."""
+        """Push configured ``bank_mission`` / ``bank_retain_mission`` / ``bank_observations_mission``
+        to the bank once per process per bank (config was previously read but never sent).
+        Re-applied on every start so config edits take effect; fail-open — a bank-config error
+        never blocks memory."""
         bank_id = self._bank_id
         updates = {k: v.strip() for k, v in (("reflect_mission", self._bank_mission),
-                                            ("retain_mission", self._bank_retain_mission)) if v and v.strip()}
+                                            ("retain_mission", self._bank_retain_mission),
+                                            ("observations_mission", self._bank_observations_mission))
+                   if v and v.strip()}
         if not updates or not bank_id or bank_id in self._mission_synced_banks:
             return
         self._mission_synced_banks.add(bank_id)  # before the call: one attempt, no retry storm
@@ -796,6 +800,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_method = prefetch_method if prefetch_method in {"recall", "reflect"} else "recall"
         self._bank_mission = cfg.get("bank_mission", "")
         self._bank_retain_mission = cfg.get("bank_retain_mission") or None
+        self._bank_observations_mission = cfg.get("bank_observations_mission") or None
 
     def _apply_retain_settings(self, cfg: dict) -> None:
         def _cfg_or_env(key: str, env_var: str, default: str = "") -> Any:

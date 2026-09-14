@@ -461,6 +461,7 @@ The setup wizard installs dependencies automatically and only installs what's ne
 | `bank_id` | `hermes` | Memory bank identifier |
 | `bank_mission` | — | Reflect mission for the bank; applied to the bank on session start |
 | `bank_retain_mission` | — | Retain mission (steers what gets extracted); applied to the bank on session start |
+| `bank_observations_mission` | — | Observations mission (what gets synthesised into observations; replaces built-in rules); applied to the bank on session start |
 | `recall_budget` | `mid` | Recall thoroughness: `low` / `mid` / `high` |
 | `memory_mode` | `hybrid` | `hybrid` (context + tools), `context` (auto-inject only), `tools` (tools only) |
 | `auto_retain` | `true` | Automatically retain conversation turns |

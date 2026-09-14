@@ -356,6 +356,7 @@ echo "HINDSIGHT_API_KEY=your-key" >> ~/.hermes/.env
 | `bank_id` | `hermes` | 记忆库标识符 |
 | `bank_mission` | — | 记忆库的 reflect 使命；会话启动时应用到记忆库 |
 | `bank_retain_mission` | — | 保留使命（引导提取内容）；会话启动时应用到记忆库 |
+| `bank_observations_mission` | — | 观察使命（决定哪些内容被合成为观察；替换内置规则）；会话启动时应用到记忆库 |
 | `recall_budget` | `mid` | 召回彻底程度：`low` / `mid` / `high` |
 | `memory_mode` | `hybrid` | `hybrid`（上下文 + 工具）、`context`（仅自动注入）、`tools`（仅工具） |
 | `auto_retain` | `true` | 自动保留对话轮次 |

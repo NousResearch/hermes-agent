@@ -324,12 +324,14 @@ class TestConfig:
         assert p._bank_mission == "Test agent mission"
 
     def test_bank_missions_pushed_once_per_bank(self, provider_with_config):
-        p = provider_with_config(bank_mission="Reflect mission", bank_retain_mission="Extract key facts")
+        p = provider_with_config(bank_mission="Reflect mission", bank_retain_mission="Extract key facts",
+                                 bank_observations_mission="Synthesise preferences")
         p._client.aupdate_bank_config = AsyncMock(return_value={})
         p.handle_tool_call("hindsight_retain", {"content": "a"})
         p.handle_tool_call("hindsight_retain", {"content": "b"})
         p._client.aupdate_bank_config.assert_awaited_once_with(
-            "test-bank", reflect_mission="Reflect mission", retain_mission="Extract key facts")
+            "test-bank", reflect_mission="Reflect mission", retain_mission="Extract key facts",
+            observations_mission="Synthesise preferences")
 
     def test_bank_mission_only_sends_configured_fields(self, provider_with_config):
         p = provider_with_config(bank_retain_mission="Extract key facts")

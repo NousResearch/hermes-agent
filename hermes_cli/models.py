@@ -2050,7 +2050,12 @@ def normalize_copilot_model_id(
             return candidate
 
     if "/" in raw:
-        return raw.split("/", 1)[1].strip()
+        stripped = raw.split("/", 1)[1].strip()
+        # Enterprise BYOK custom models expose ``owner/sub/model`` ids (two
+        # slashes). A strip guess that still contains "/" cannot be a Copilot
+        # id, so pass the input through untouched instead of corrupting it.
+        if stripped and "/" not in stripped:
+            return stripped
     return raw
 
 

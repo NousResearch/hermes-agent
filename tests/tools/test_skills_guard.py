@@ -191,7 +191,6 @@ class TestScanFile:
         assert {"sys_prompt_override", "fake_policy", "invisible_unicode"} <= ids
         assert any(fi.category == "injection" for fi in findings)
 
-
     def test_sudo_event_names_are_not_sudo_usage(self, tmp_path):
         """`sudo.request` / `sudo.respond` are the gateway's secure-prompt wire events (the masked sudo
         password ask). A client plugin that relays those prompts must spell them out, and they are not
@@ -205,8 +204,8 @@ class TestScanFile:
         assert not any(fi.pattern_id == "sudo_usage" for fi in scan_file(events, "events.py"))
 
         setup = tmp_path / "setup.sh"
-        setup.write_text("sudo apt-get install -y jq\nsudo ./install.sh\n", encoding="utf-8")
-        assert [fi.line for fi in scan_file(setup, "setup.sh") if fi.pattern_id == "sudo_usage"] == [1, 2]
+        setup.write_text("sudo apt-get install -y jq\nsudo ./install.sh\necho x | sudo -S rm -rf /\n", encoding="utf-8")
+        assert [fi.line for fi in scan_file(setup, "setup.sh") if fi.pattern_id == "sudo_usage"] == [1, 2, 3]
 
     def test_deduplication_per_pattern_per_line(self, tmp_path):
         f = tmp_path / "dup.sh"
@@ -505,6 +504,7 @@ class TestFalsePositiveReductions:
             "self.profile = load_plugin()\n"
             "assert self.profile.name == 'x'\n"
             "return user.profile\n"
+            "const p = data?.profile ?? load().profile ?? cfg['x'].profile\n"
         )
         assert not [
             fi for fi in scan_file(code, "provider.py")
@@ -518,12 +518,13 @@ class TestFalsePositiveReductions:
             'cp "$HOME/.profile" /tmp/p\n'
             "source ./.profile\n"
             "cat ~/.zshrc ~/.bash_profile\n"
+            ".profile\n"
         )
         flagged = {
             fi.line for fi in scan_file(sh, "setup.sh")
             if fi.pattern_id == "shell_rc_mod"
         }
-        assert flagged == {1, 2, 3, 4}
+        assert flagged == {1, 2, 3, 4, 5}
 
 
 # ---------------------------------------------------------------------------

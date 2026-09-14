@@ -225,3 +225,50 @@ def test_severity_at_or_above_uses_threshold_semantics():
     assert kd.severity_at_or_above("error", "critical") is False
     assert kd.severity_at_or_above("mystery", "warning") is False
     assert kd.severity_at_or_above("warning", None) is True
+
+# ---------------------------------------------------------------------------
+# prose_phantom_refs: a citation that resolves on ANOTHER board is not a phantom
+# ---------------------------------------------------------------------------
+
+
+def _phantom_events(*ids):
+    """Events carrying a post-completion phantom-reference marker."""
+    return [_event("completed", ts=100), _event("suspected_hallucinated_references",
+                                               ts=200, phantom_refs=list(ids))]
+
+
+def test_prose_phantom_refs_reported_when_no_resolver_given():
+    """Baseline: with no cross-board information, the warning is unchanged."""
+    diags = kd.compute_task_diagnostics(_task(), _phantom_events("t_aaaa1111"), [])
+    assert [d.kind for d in diags] == ["prose_phantom_refs"]
+    assert diags[0].data["phantom_refs"] == ["t_aaaa1111"]
+
+
+def test_prose_phantom_refs_suppressed_when_id_resolves_on_another_board():
+    """The whole point: a cross-board citation must not warn."""
+    diags = kd.compute_task_diagnostics(
+        _task(), _phantom_events("t_aaaa1111"), [], resolved_elsewhere={"t_aaaa1111"},
+    )
+    assert diags == []
+
+
+def test_prose_phantom_refs_reports_only_ids_missing_everywhere():
+    """Mixed payload: drop the cross-board id, keep the genuinely unknown one."""
+    diags = kd.compute_task_diagnostics(
+        _task(), _phantom_events("t_aaaa1111", "t_bbbb2222"), [],
+        resolved_elsewhere={"t_aaaa1111"},
+    )
+    assert [d.kind for d in diags] == ["prose_phantom_refs"]
+    assert diags[0].data["phantom_refs"] == ["t_bbbb2222"]
+
+
+def test_other_board_task_ids_finds_a_task_on_a_sibling_board(kanban_home):
+    """``kanban_db.other_board_task_ids`` is the resolver the callers pass."""
+    kb.create_board("sibling")
+    with kbc.connect_closing(board="sibling") as other:
+        remote = kb.create_task(other, title="lives on sibling", assignee="w")
+    with kbc.connect_closing() as conn:
+        mine = kb.create_task(conn, title="local", assignee="w")
+        elsewhere = kb.other_board_task_ids(conn)
+        assert remote in elsewhere
+        assert mine not in elsewhere  # this board's own ids are not "elsewhere"

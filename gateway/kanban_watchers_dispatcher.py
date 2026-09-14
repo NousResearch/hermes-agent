@@ -225,7 +225,11 @@ class _KanbanDispatcher:
             conn = None
             try:
                 conn = _kbc().connect(board=slug)
-                if kbd.has_spawnable_ready(conn) or (_review_probe and kbd.has_spawnable_review(conn)):
+                # Board-aware: an install-relative assignee (``default``) on a
+                # board this install does not own is another install's queue, so
+                # it must not count as spawnable work here (nor as "stuck").
+                if (kbd.has_spawnable_ready(conn, board=slug)
+                        or (_review_probe and kbd.has_spawnable_review(conn, board=slug))):
                     return True
             except Exception:
                 continue

@@ -331,10 +331,21 @@ def _rule_triage_aux_unavailable(task, events, runs, now, cfg) -> list[Diagnosti
 
 def _rule_prose_phantom_refs(task, events, runs, now, cfg) -> list[Diagnostic]:
     """Advisory: the completion summary mentions ``t_<hex>`` ids that don't
-    resolve. Warning only; clears on a later clean completion."""
+    resolve. Warning only; clears on a later clean completion.
+
+    Ids that resolve on ANOTHER board (``cfg["_resolved_elsewhere"]``) are
+    cross-board citations, not phantoms, and are dropped before reporting — a
+    multi-board install legitimately cites tasks that live on a shared or
+    sibling board, and the scan can only see this board's DB."""
     hits = _active_hallucination_events(events, "suspected_hallucinated_references")
     if not hits:
         return []
+    phantom_refs = _unique_payload_ids(hits, "phantom_refs")
+    elsewhere = cfg.get("_resolved_elsewhere")
+    if elsewhere:
+        phantom_refs = [pid for pid in phantom_refs if pid not in elsewhere]
+        if not phantom_refs:
+            return []
     return [Diagnostic(
         kind="prose_phantom_refs", severity="warning",
         title="Completion summary references unknown task ids",
@@ -343,7 +354,7 @@ def _rule_prose_phantom_refs(task, events, runs, now, cfg) -> list[Diagnostic]:
                "pointed at cards that never existed.",
         actions=_generic_recovery_actions(task, running=_is_running(task)),
         first_seen_at=_event_ts(hits[0]), last_seen_at=_event_ts(hits[-1]), count=len(hits),
-        data={"phantom_refs": _unique_payload_ids(hits, "phantom_refs")},
+        data={"phantom_refs": phantom_refs},
     )]
 
 
@@ -751,14 +762,22 @@ def compute_task_diagnostics(
     now: Optional[int] = None,
     config: Optional[dict] = None,
     graph: Optional[dict] = None,
+    resolved_elsewhere: Optional[Iterable[str]] = None,
 ) -> list[Diagnostic]:
     """Run every rule for one task; critical first, then error, warning; ties
-    broken by most-recent ``last_seen_at``."""
+    broken by most-recent ``last_seen_at``.
+
+    ``resolved_elsewhere``: ids that exist on ANOTHER board (see
+    ``kanban_db.other_board_task_ids``). Callers that can see the whole install
+    pass it so a cross-board citation is not reported as a phantom reference;
+    omitted, behaviour is unchanged (this board only)."""
     now_ts = int(now if now is not None else time.time())
     config = config or {}
     cfg = {**DEFAULT_CONFIG, **config}
     if graph is not None:
         cfg["_graph"] = graph
+    if resolved_elsewhere:
+        cfg["_resolved_elsewhere"] = set(resolved_elsewhere)
     if not _has_explicit_threshold(config) and "failure_limit" in config:
         cfg["failure_threshold"] = _positive_int(
             config.get("failure_limit"), DEFAULT_CONFIG["failure_threshold"],

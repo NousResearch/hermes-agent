@@ -177,6 +177,69 @@ def test_max_in_progress_partial_budget_across_boards(
     assert len(res.spawned) == 1
 
 
+def test_count_running_tasks_other_boards_ignores_pinned_db_env(
+    kanban_home, monkeypatch,
+):
+    """A pinned ``HERMES_KANBAN_DB`` must not blind the cross-board count.
+
+    Every dispatched worker carries ``HERMES_KANBAN_DB`` pinned to its own
+    board, and the sibling scan resolves each board through that override — so
+    before the fix a pinned caller resolved every sibling to its own file
+    (skipped as "the current board") and reported 0 other-board workers, which
+    silently lifted the host-level ``max_in_progress`` cap.
+
+    Mirrors ``test_pinned_db_env_resolves_cross_board_reference``.
+    """
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    kb.create_board("second")
+
+    # Two workers running on the sibling board...
+    with kbc.connect(board="second") as conn:
+        for title in ("busy-1", "busy-2"):
+            tid = kb.create_task(conn, title=title, assignee="alice")
+            assert kb.claim_task(conn, tid) is not None
+    # ...plus one on our own board, which must stay excluded (never counted as
+    # a sibling just because the pin made it resolve to the same file).
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="own", assignee="alice")
+        assert kb.claim_task(conn, tid) is not None
+
+    assert kbd.count_running_tasks_other_boards("default") == 2
+
+    # Same accounting with the worker-shape pin in place.
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(kb.kanban_db_path(board="default")))
+    assert kbd.count_running_tasks_other_boards("default") == 2
+
+    # Exclusion is by FILE, not by slug: the caller's tick already counted the
+    # file it is pinned to (``count_running_tasks(conn)``), so a pin outside the
+    # boards root makes every canonical board DB a distinct unaccounted file —
+    # including ``default``'s own 1 running task → 2 siblings + 1 = 3.
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(kanban_home / "elsewhere" / "pinned.db"))
+    assert kbd.count_running_tasks_other_boards("default") == 3
+
+
+def test_max_in_progress_still_caps_when_pinned(kanban_home, all_assignees_spawnable, monkeypatch):
+    """End-to-end: the host cap must bite across boards through a pin."""
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    kb.create_board("second")
+    with kbc.connect(board="second") as conn:
+        for title in ("busy-1", "busy-2"):
+            tid = kb.create_task(conn, title=title, assignee="alice")
+            assert kb.claim_task(conn, tid) is not None
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(kb.kanban_db_path(board="default")))
+    spawns: list = []
+    with kbc.connect() as conn:
+        kb.create_task(conn, title="wants-to-run", assignee="alice")
+        res = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=2,
+        )
+    assert not spawns
+    assert not res.spawned
+
+
 def test_count_running_tasks_other_boards_fails_open(
     kanban_home, monkeypatch,
 ):

@@ -95,6 +95,11 @@ _BOARD_SPECS = [
         _arg("--color", help="Optional hex color (e.g. '#8b5cf6') for the dashboard"),
         _arg("--switch", action="store_true", help="Switch to the new board after creating it"),
         _arg("--default-workdir", help="Default workspace path for tasks created on this board"),
+        _arg("--namespace",
+             help="Namespace (install) that BARE assignees on this board refer to, "
+                  "e.g. 'em' or 'yummi'. Declare it on a board shared between "
+                  "installs; without it a bare install-relative assignee like "
+                  "'default' is ambiguous and is skipped, visibly."),
     ], aliases=["new"], help="Create a new board"),
     _cmd("rm", [
         _SLUG,
@@ -110,6 +115,12 @@ _BOARD_SPECS = [
         _SLUG,
         _arg("path", nargs="?", help="Absolute path to use as default workdir. Omit to clear."),
     ], help="Set the default workspace path for tasks on a board"),
+    _cmd("set-namespace", [
+        _SLUG,
+        _arg("owner", nargs="?",
+             help="Namespace (install) that bare assignees on this board refer to "
+                  "(e.g. 'em' or 'yummi'). Omit to clear."),
+    ], help="Declare which install's profiles a bare assignee on this board means"),
     _cmd("export", [
         _arg("slug", nargs="?", help="Board to export (default: the current board)"),
         _arg("-o", "--output", help="Archive path (default: ./<slug>.tar.gz)"),

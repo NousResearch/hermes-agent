@@ -173,6 +173,16 @@ def kanban_command(args: argparse.Namespace) -> int:
         if normed != kb.DEFAULT_BOARD and not kb.board_exists(normed):
             return _err(f"kanban: board {normed!r} does not exist. "
                         f"Create it with `hermes kanban boards create {normed}`.")
+        # A process pinned to ITS OWN board (a dispatcher worker or a descendant) may not route
+        # a CLI call at a sibling board: HERMES_KANBAN_DB outranks `--board` in the resolver, so
+        # this used to answer `--board <sibling>` from the pin and write the card to the WRONG
+        # board while printing "Created t_…". Refuse up front so the operator sees the scope
+        # conflict itself — the resolution layer raises the same error, but wrapped in init_db's
+        # generic "could not initialize database" message.
+        try:
+            kb.connection_db_path(normed)
+        except kb.BoardPinConflict as exc:
+            return _err(f"kanban: {exc}")
         board_scope = kb.scoped_current_board(normed)
 
     with board_scope:
@@ -222,7 +232,7 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
 
 _DELEGATED_CHILD_DENIED_BOARD_ACTIONS: frozenset[str] = frozenset({
     "create", "new", "rm", "remove", "delete", "switch", "use", "rename",
-    "set-default-workdir", "import",
+    "set-default-workdir", "set-namespace", "import",
 })
 
 
@@ -489,6 +499,10 @@ def _cmd_show(args: argparse.Namespace) -> int:
         latest_summary = kb.latest_summary(conn, args.task_id)
         if not want_json:
             graph = kb.task_graph_context(conn, task.id)
+        # Cross-board citations resolve on another board — not phantoms.
+        resolved_elsewhere = kb.other_board_task_ids(conn) if any(
+            getattr(e, "kind", None) == "suspected_hallucinated_references" for e in events
+        ) else set()
 
     if want_json:
         _print_json({
@@ -528,7 +542,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
     # Diagnostics up top so CLI users see distress signals before scrolling.
     from hermes_cli import kanban_diagnostics as kd
-    diags = kd.compute_task_diagnostics(task, events, runs, graph=graph)
+    diags = kd.compute_task_diagnostics(
+        task, events, runs, graph=graph, resolved_elsewhere=resolved_elsewhere)
     if diags:
         print(f"\n  Diagnostics ({len(diags)}):")
         _print_diagnostics(diags, "    ", with_kind=False)
@@ -625,6 +640,22 @@ def _rows_by_task(conn, table: str, ids: list[str]) -> dict[str, list]:
     return by
 
 
+def _elsewhere(conn, task_ids: list[str]) -> set[str]:
+    """Task ids that exist on ANOTHER board, but only when one of ``task_ids``
+    actually carries a phantom event — otherwise the scan is pure overhead.
+    Feeds ``compute_task_diagnostics(resolved_elsewhere=...)`` so a cross-board
+    citation is not reported as a phantom reference."""
+    if not task_ids:
+        return set()
+    placeholders = ",".join("?" for _ in task_ids)
+    row = conn.execute(
+        f"SELECT 1 FROM task_events WHERE task_id IN ({placeholders}) "
+        "AND kind = 'suspected_hallucinated_references' LIMIT 1",
+        tuple(task_ids),
+    ).fetchone()
+    return kb.other_board_task_ids(conn) if row else set()
+
+
 def _cmd_diagnostics(args: argparse.Namespace) -> int:
     """List active diagnostics on the board via the same rule engine the dashboard uses."""
     from hermes_cli import kanban_diagnostics as kd
@@ -645,7 +676,8 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                 return _err(f"no such task: {args.task}")
             diags_by_task = {args.task: kd.compute_task_diagnostics(
                 task, kb.list_events(conn, args.task), kb.list_runs(conn, args.task),
-                graph=kb.task_graph_context(conn, args.task), config=diag_config)}
+                graph=kb.task_graph_context(conn, args.task), config=diag_config,
+                resolved_elsewhere=_elsewhere(conn, [args.task]))}
         else:
             # Fleet mode: pull all non-archived tasks + their events/runs.
             rows = list(conn.execute("SELECT * FROM tasks WHERE status != 'archived'").fetchall())
@@ -655,10 +687,12 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                 ev_by = _rows_by_task(conn, "task_events", ids)
                 run_by = _rows_by_task(conn, "task_runs", ids)
                 graph_by = kb.task_graph_contexts(conn, ids)
+                elsewhere = _elsewhere(conn, ids)
                 for r in rows:
                     tid = r["id"]
                     dl = kd.compute_task_diagnostics(r, ev_by.get(tid, []), run_by.get(tid, []),
-                                                     graph=graph_by.get(tid), config=diag_config)
+                                                     graph=graph_by.get(tid), config=diag_config,
+                                                     resolved_elsewhere=elsewhere)
                     if dl:
                         diags_by_task[tid] = dl
 

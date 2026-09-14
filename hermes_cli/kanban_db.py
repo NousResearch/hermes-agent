@@ -220,7 +220,7 @@ _TICK_ACTIVITY_FIELDS = (
     "spawned", "reclaimed", "promoted", "reconciled_orphans", "crashed", "stale",
     "timed_out", "auto_blocked", "rate_limited", "auto_assigned_default",
     "respawn_guarded", "skipped_per_profile_capped", "skipped_unassigned",
-    "skipped_nonspawnable",
+    "skipped_nonspawnable", "skipped_namespace",
 )
 
 
@@ -470,16 +470,113 @@ def _dir_holds_board(d: Path) -> bool:
     return (d / "board.json").exists() or (d / "kanban.db").exists()
 
 
+def _pin_answers_for(slug: str, pinned: Path, canonical: Path) -> bool:
+    """Whether the caller's pin may answer a request for ``slug``.
+
+    True when ``slug`` IS the caller's own board: ``HERMES_KANBAN_BOARD`` — injected
+    next to the pin by the dispatcher — says so, or (absent that declaration) the
+    pinned path already IS ``slug``'s canonical file. The declaration matters
+    because the pinned path cannot always be compared to a derived one: the pin
+    exists precisely to survive ``hermes -p`` rewriting ``HERMES_HOME`` (symlink /
+    Docker layouts — see the spawn path), where the two differ for the SAME board.
+    """
+    if _pinned_board_slug() == slug:
+        return True
+    return _same_db_file(pinned, canonical)
+
+
+def _override_board_request() -> Optional[str]:
+    """The board a call's ``scoped_current_board`` override names — or ``None``.
+
+    This is the CLI ``--board <slug>`` / dashboard per-request board: an EXPLICIT
+    board request made by the caller for ONE call, unlike the ``board`` argument
+    of the internal API (which callers pass for the board they are already bound
+    to — the dispatcher spawn path, for instance, runs pinned to its own DB and
+    passes that same board).
+
+    ``None`` means no override, so the legacy chain (``HERMES_KANBAN_DB`` ->
+    ``HERMES_KANBAN_BOARD`` -> ``<root>/kanban/current`` -> ``default``) decides.
+    An override naming a board that does not exist falls through, mirroring
+    :func:`get_current_board`: a stale/malformed override must not invent a board.
+    """
+    raw = (_CURRENT_BOARD_OVERRIDE.get() or "").strip()
+    if not raw:
+        return None
+    try:
+        normed = _normalize_board_slug(raw)
+    except ValueError:
+        return None
+    return normed if normed and board_exists(normed) else None
+
+
+def _pinned_board_slug() -> Optional[str]:
+    """The board the caller's pins identify, per the environment — or ``None``.
+
+    The dispatcher injects ``HERMES_KANBAN_BOARD`` next to ``HERMES_KANBAN_DB``,
+    and it is what makes the pin authoritative for the caller's OWN board even
+    when the pinned path cannot be compared to a derived one (``hermes -p``
+    rewriting ``HERMES_HOME``, Docker / symlink layouts — see the spawn path).
+    """
+    raw = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
+    if not raw:
+        return None
+    try:
+        return _normalize_board_slug(raw)
+    except ValueError:
+        return None
+
+
+def _canonical_pinned_path(slug: str, default_parts: tuple[str, ...], leaf: str) -> Path:
+    """Where ``_board_path`` points for ``slug`` with NO env pin set.
+
+    ``default`` keeps the legacy layout (``<root>/kanban.db``, ``<root>/kanban/
+    workspaces``); every other board lives under its own directory.
+    """
+    if slug == DEFAULT_BOARD:
+        return kanban_home().joinpath(*default_parts)
+    return board_dir(slug) / leaf
+
+
 def _board_path(
     env_var: Optional[str], board: Optional[str], default_parts: tuple[str, ...], leaf: str,
+    *, identity: bool = False,
 ) -> Path:
     """Shared resolver: ``env_var`` override, else legacy ``<root>/<default_parts>``
-    for the ``default`` board, else ``board_dir(slug)/leaf``."""
+    for the ``default`` board, else ``board_dir(slug)/leaf``.
+
+    The env override is a PIN: the dispatcher injects it into every worker and it
+    identifies that worker's OWN board, so a per-call board request must not be
+    answered through it unless it names that same board. The request that matters
+    here is the ``scoped_current_board`` override — the CLI ``--board <slug>`` and
+    the dashboard's per-request board — because that is the one users make for
+    ANOTHER board; the ``board`` argument keeps the legacy chain (its callers pass
+    the board they are already bound to, pin included). This collapse is why
+    ``hermes kanban --board <sibling> create`` printed ``Created t_…`` while the
+    row landed in the caller's own board (fourth site of the ``HERMES_KANBAN_DB``
+    pin collapse behind 6fdaa43d0). So an override naming another board ignores
+    the pin and derives that board's canonical path, and for the DB file itself
+    (``identity=True`` — the trust boundary) a board-scoped caller (dispatcher
+    worker / delegate child) is refused loudly instead of silently mis-delivered.
+    :func:`connection_db_path` applies the same rule to an explicit ``board=``
+    request on the connector side.
+    """
+    requested = _override_board_request()
     if env_var:
         override = os.environ.get(env_var, "").strip()
         if override:
-            return Path(override).expanduser()
-    slug = _normalize_board_slug(board)
+            pinned = Path(override).expanduser()
+            if requested is None:
+                return pinned
+            canonical = _canonical_pinned_path(requested, default_parts, leaf)
+            if _pin_answers_for(requested, pinned, canonical):
+                # The caller's OWN board (or the pinned path already IS this
+                # board's): the pin is the authority — it survives a rewritten
+                # HERMES_HOME, where the derived path differs for the SAME board.
+                return pinned
+            if identity and _is_board_scoped_process():
+                raise _board_pin_conflict(env_var, requested, pinned)
+            return canonical
+    slug = _normalize_board_slug(board) or requested
     if slug is None:
         slug = get_current_board()
     if slug == DEFAULT_BOARD:
@@ -489,8 +586,118 @@ def _board_path(
 
 def kanban_db_path(board: Optional[str] = None) -> Path:
     """``kanban.db`` path: ``HERMES_KANBAN_DB`` pins it (injected into workers);
-    ``default`` -> ``<root>/kanban.db`` (back-compat), else the board dir."""
-    return _board_path("HERMES_KANBAN_DB", board, ("kanban.db",), "kanban.db")
+    ``default`` -> ``<root>/kanban.db`` (back-compat), else the board dir. The pin
+    answers only for the board it names — see :func:`_board_path`."""
+    return _board_path("HERMES_KANBAN_DB", board, ("kanban.db",), "kanban.db", identity=True)
+
+
+def board_db_path_unpinned(board: Optional[str] = None) -> Path:
+    """``kanban.db`` path for a *named* board, ignoring ``HERMES_KANBAN_DB``.
+
+    ``HERMES_KANBAN_DB`` is pinned into every dispatched worker and is only
+    authoritative for the caller's OWN board (:func:`kanban_db_path`). Resolving
+    a sibling board through it would collapse every slug onto the pinned file,
+    so cross-board lookups (:func:`_other_board_db_paths`) must use this helper:
+    pure path derivation, ``default`` -> ``<root>/kanban.db`` (back-compat),
+    else ``board_dir(slug)/kanban.db``.
+
+    Also ignores ``HERMES_KANBAN_WORKSPACES_ROOT`` / ``HERMES_KANBAN_ATTACHMENTS_ROOT``
+    (unrelated pins) — only the boards root and the slug feed the path.
+    """
+    slug = _normalize_board_slug(board)
+    if slug is None:
+        slug = get_current_board()
+    if slug == DEFAULT_BOARD:
+        return kanban_home() / "kanban.db"
+    return board_dir(slug) / "kanban.db"
+
+
+class BoardPinConflict(ValueError):
+    """An explicit ``board=`` that contradicts the caller's own board pin.
+
+    Raised instead of silently resolving the pinned ``HERMES_KANBAN_DB`` when a
+    board-scoped process (dispatcher worker / delegate child) asks for a
+    DIFFERENT board: resolving through the pin would create or read the task on
+    the caller's own board — a silent mis-delivery that reports success.
+    """
+
+
+def _board_pin_conflict(env_var: str, slug: str, pinned: Path) -> BoardPinConflict:
+    """The one refusal message every site of the pin collapse raises."""
+    return BoardPinConflict(
+        f"board {slug!r} is out of scope for this process: {env_var} pins it "
+        f"to {pinned}, which is the caller's own board, not {slug!r}. A dispatcher "
+        f"worker (or a descendant of one) cannot read or write another board — route "
+        f"cross-board work from a non-pinned context (dashboard or interactive "
+        f"session) instead."
+    )
+
+
+def _pinned_db_override() -> Optional[Path]:
+    """``HERMES_KANBAN_DB`` as a path — the caller's OWN board — or ``None``."""
+    raw = os.environ.get("HERMES_KANBAN_DB", "").strip()
+    return Path(raw).expanduser() if raw else None
+
+
+def _is_board_scoped_process() -> bool:
+    """True when this process acts for ONE board, not as a board-agnostic owner.
+
+    Dispatcher-spawned workers (``HERMES_KANBAN_TASK``), ``delegate_task``
+    children and cron jobs fired in-process from a worker are all scoped: the
+    pin the dispatcher injects identifies THEIR board, so it can never be used
+    to reach a sibling board. Gateways, the dashboard, an interactive session
+    and top-level cron runs are owners and may route across boards.
+    """
+    try:
+        from agent.delegation_context import is_dispatcher_owned_worker_context
+
+        owned = is_dispatcher_owned_worker_context()
+    except Exception:
+        owned = not os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT")
+    return (not owned) or bool(os.environ.get("HERMES_KANBAN_TASK"))
+
+
+def _same_db_file(a: Path, b: Path) -> bool:
+    """Whether two DB paths name the same file (symlinks/relative paths resolved)."""
+    try:
+        return a.resolve() == b.resolve()
+    except OSError:
+        return a == b
+
+
+def connection_db_path(board: Optional[str] = None, db_path: Optional[Path] = None) -> Path:
+    """DB path for a connection opened with an OPTIONAL explicit board.
+
+    ``db_path`` wins outright; ``board=None`` keeps the whole legacy chain
+    (:func:`kanban_db_path`). An explicit ``board`` is a request for THAT board,
+    so the caller's ``HERMES_KANBAN_DB`` pin is honoured only while that board IS
+    the caller's own (:func:`_pin_answers_for`: ``HERMES_KANBAN_BOARD`` says so,
+    or the pinned file already is that board's canonical file). When the pin names
+    something else:
+
+    * a board-scoped process (:func:`_is_board_scoped_process`) raises
+      :class:`BoardPinConflict` — resolving through the pin would create or read
+      the task on the WRONG board while reporting success;
+    * any other caller (gateway, dashboard, interactive session, top-level cron)
+      gets the board's canonical file, which is what ``board=`` promises.
+
+    Connector-side counterpart of ``_other_board_db_paths()``: both must ignore
+    the pin for any board that is not the caller's own.
+    """
+    if db_path is not None:
+        return Path(db_path)
+    slug = _normalize_board_slug(board)
+    if slug is None:
+        return kanban_db_path(None)
+    pinned = _pinned_db_override()
+    if pinned is None:
+        return kanban_db_path(slug)
+    canonical = board_db_path_unpinned(slug)
+    if _pin_answers_for(slug, pinned, canonical):
+        return pinned
+    if _is_board_scoped_process():
+        raise _board_pin_conflict("HERMES_KANBAN_DB", slug, pinned)
+    return canonical
 
 
 def workspaces_root(board: Optional[str] = None) -> Path:
@@ -516,6 +723,20 @@ def worker_logs_dir(board: Optional[str] = None) -> Path:
     return _board_path(None, board, ("kanban", "logs"), "logs")
 
 
+def _caller_effective_db_path(board: Optional[str] = None) -> Path:
+    """The DB file THIS process reads and writes for a board — pin included.
+
+    Distinct from :func:`kanban_db_path`, which honours an EXPLICIT board request
+    over a contradictory pin (an explicit request is not "the caller's board"):
+    with ``HERMES_KANBAN_DB`` set this returns the pinned file for EVERY slug.
+    Board metadata reports this value (see :func:`read_board_metadata`).
+    """
+    pinned = _pinned_db_override()
+    if pinned is not None:
+        return pinned
+    return _board_path("HERMES_KANBAN_DB", board, ("kanban.db",), "kanban.db")
+
+
 def board_metadata_path(board: Optional[str] = None) -> Path:
     """``board.json`` path — display metadata only; the directory slug is the identity."""
     return board_dir(_slug_or_default(board)) / "board.json"
@@ -528,7 +749,22 @@ def _default_board_display_name(slug: str) -> str:
 
 def read_board_metadata(board: Optional[str] = None) -> dict:
     """``board.json`` merged over defaults, plus ``slug`` and ``db_path``. Never
-    raises — a missing/malformed file yields the synthesized entry."""
+    raises — a missing/malformed file yields the synthesized entry.
+
+    ``db_path`` is the CALLER-EFFECTIVE path (:func:`_caller_effective_db_path`),
+    not a board's canonical file: every path-taking API in this process resolves
+    through ``HERMES_KANBAN_DB``, so with that pin set the entry reports the
+    pinned file for EVERY slug. That is deliberate and load-bearing — the two
+    consumers of this field (``gateway.kanban_watchers_notifier`` and
+    ``tui_gateway.session_notifications``) key a seen-DB set on it so a pinned
+    DB is polled once instead of once per aliased slug. (It is NOT
+    :func:`kanban_db_path` any more: that honours an explicit board request over a
+    contradictory pin — a CLI ``--board <sibling>`` — so it can no longer stand in
+    for "this process's board".)
+    A caller that needs a board's CANONICAL file (cross-board reads from a
+    pinned worker, e.g. :func:`_other_board_db_paths`) must use
+    :func:`board_db_path_unpinned` instead of this field.
+    """
     slug = _slug_or_default(board)
     meta: dict[str, Any] = {
         "slug": slug,
@@ -539,6 +775,16 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "default_workdir": None,
         # Project scope: new tasks inherit it (deterministic worktree + branch).
         "project_id": None,
+        # Assignee NAMESPACE for this board: the install whose profiles a bare
+        # assignee on this board refers to (e.g. ``"elise"`` on a board shared
+        # with that install). ``None`` (the default) means the board declares no
+        # namespace: bare unique profile names keep partitioning by name exactly
+        # as today, while an install-relative bare name (``default``) is refused
+        # with a VISIBLE record instead of being raced by whichever dispatcher
+        # ticks first. The ``default`` board itself needs no declaration — its DB
+        # is ``<this install root>/kanban.db`` by construction. See
+        # ``kanban_db_dispatch.resolve_assignee``.
+        "namespace": None,
         "created_at": None,
         "archived": False,
     }
@@ -553,7 +799,7 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
                 meta.update(raw)
     except (OSError, json.JSONDecodeError):
         pass
-    meta["db_path"] = str(kanban_db_path(slug))
+    meta["db_path"] = str(_caller_effective_db_path(slug))
     return meta
 
 
@@ -561,14 +807,17 @@ def write_board_metadata(
     board: Optional[str], *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,
     default_workdir: Optional[str] = None, project_id: Optional[str] = None,
+    namespace: Optional[str] = None,
 ) -> dict:
     """Create/update ``board.json``; unmentioned fields are preserved, ``created_at``
-    set on first write. ``project_id``/``default_workdir``: ``None`` = unchanged,
-    "" = clear (``project_id`` is not validated here)."""
+    set on first write. ``project_id``/``default_workdir``/``namespace``:
+    ``None`` = unchanged, ``""`` = clear (``project_id`` is not validated here)."""
     _assert_not_delegated_child_mutation()
     slug = _slug_or_default(board)
     meta = read_board_metadata(slug)
     # db_path is derived on every read; never persist it into board.json.
+    # (Caller-effective — pinned when HERMES_KANBAN_DB is set; see
+    # read_board_metadata for the watcher dedupe that depends on it.)
     meta.pop("db_path", None)
     if name is not None:
         meta["name"] = str(name).strip() or _default_board_display_name(slug)
@@ -580,6 +829,11 @@ def write_board_metadata(
     for key, value in (("default_workdir", default_workdir), ("project_id", project_id)):
         if value is not None:
             meta[key] = str(value) if value else None
+    if namespace is not None:
+        # Assignee namespace for bare names on this board; "" clears it (back to
+        # "undeclared" -> install-relative bare names are refused, visibly).
+        cleaned = str(namespace).strip()
+        meta["namespace"] = cleaned or None
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -587,20 +841,20 @@ def write_board_metadata(
     path.write_text(
         json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8",
     )
-    meta["db_path"] = str(kanban_db_path(slug))
+    meta["db_path"] = str(_caller_effective_db_path(slug))
     return meta
 
 
 def create_board(
     slug: str, *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, default_workdir: Optional[str] = None,
-    project_id: Optional[str] = None,
+    project_id: Optional[str] = None, namespace: Optional[str] = None,
 ) -> dict:
     """Create board dir + DB + metadata (``mkdir -p`` semantics: existing board returns its metadata)."""
     normed = _require_slug(slug)
     meta = write_board_metadata(
         normed, name=name, description=description, icon=icon, color=color,
-        default_workdir=default_workdir, project_id=project_id,
+        default_workdir=default_workdir, project_id=project_id, namespace=namespace,
     )
     # Touch the DB so list_boards() sees it immediately.
     init_db(board=normed)
@@ -2089,10 +2343,16 @@ def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
 
 def _claim_and_open_run(
     conn: sqlite3.Connection, task_id: str, source_status: str, lock: str, expires: int, now: int,
-    *, event_extra: Optional[dict] = None,
+    *, event_extra: Optional[dict] = None, profile: Optional[str] = None,
 ) -> Optional[int]:
     """CAS ``source_status -> running``, open a run row, emit ``claimed``; None
-    when the CAS lost. Caller holds the txn."""
+    when the CAS lost. Caller holds the txn.
+
+    ``profile`` overrides the run's recorded profile: an assignee may carry a
+    namespace (``yummi:default``) or be claimed by an explicit ``ama:<profile>``
+    override, and the run row must name the profile that actually ran — not the
+    routing string. Defaults to the raw assignee for every pre-existing caller.
+    """
     cur = conn.execute(
         f"""
         UPDATE tasks
@@ -2121,7 +2381,9 @@ def _claim_and_open_run(
         ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
         """,
         (
-            task_id, trow["assignee"] if trow else None, trow["current_step_key"] if trow else None,
+            task_id,
+            profile or (trow["assignee"] if trow else None),
+            trow["current_step_key"] if trow else None,
             lock, expires, trow["max_runtime_seconds"] if trow else None, now,
         ),
     )
@@ -2136,12 +2398,13 @@ def _claim_and_open_run(
 
 def claim_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, profile: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
     Returns the claimed ``Task`` on success, ``None`` if the task was
-    already claimed (or is not in ``ready`` status).
+    already claimed (or is not in ``ready`` status). ``profile`` is recorded on
+    the run row instead of the raw assignee (see :func:`_claim_and_open_run`).
     """
     now = int(time.time())
     lock = claimer or _claimer_id()
@@ -2161,7 +2424,7 @@ def claim_task(
         _reclaim_dangling_run(
             conn, task_id, statuses=("ready",), now=now, note="invariant recovery on re-claim",
         )
-        run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now)
+        run_id = _claim_and_open_run(conn, task_id, "ready", lock, expires, now, profile=profile)
         if run_id is None:
             return None
         claimed = get_task(conn, task_id)
@@ -2171,11 +2434,11 @@ def claim_task(
 
 def claim_review_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
-    claimer: Optional[str] = None,
+    claimer: Optional[str] = None, profile: Optional[str] = None,
 ) -> Optional[Task]:
     """Atomic ``review -> running`` (None when lost). Parents are re-checked
     (one may have reopened meanwhile) and a NEW run tracks the reviewer
-    separately from the implementer."""
+    separately from the implementer. ``profile`` as in :func:`claim_task`."""
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
@@ -2192,7 +2455,8 @@ def claim_review_task(
                 )
             return None
         run_id = _claim_and_open_run(
-            conn, task_id, "review", lock, expires, now, event_extra={"source_status": "review"},
+            conn, task_id, "review", lock, expires, now,
+            event_extra={"source_status": "review"}, profile=profile,
         )
         if run_id is None:
             return None
@@ -2701,23 +2965,159 @@ def _completed_event_payload(
     return payload
 
 
+def _other_board_db_paths(conn: sqlite3.Connection) -> list[tuple[str, Path]]:
+    """``(slug, kanban.db path)`` for every board EXCEPT the one ``conn`` is on.
+
+    A worker legitimately cites tasks that live on another board (e.g. a shared
+    cross-tenant board), so a ``t_<hex>`` id absent from THIS board's DB must be
+    resolved against the others before it is called hallucinated.
+
+    Paths come from :func:`board_db_path_unpinned` — NOT :func:`kanban_db_path` —
+    because dispatched workers carry ``HERMES_KANBAN_DB`` pinned to their own
+    board; through that override every slug resolves to the pinned file, is
+    skipped as "the current board", and the caller sees no other boards at all."""
+    current: Optional[Path] = None
+    try:
+        current = Path(conn.execute("PRAGMA database_list").fetchone()[2]).resolve()
+    except Exception:
+        current = None
+    out: list[tuple[str, Path]] = []
+    try:
+        boards = list_boards()
+    except Exception:
+        return out
+    for meta in boards:
+        slug = meta.get("slug")
+        if not slug:
+            continue
+        try:
+            path = board_db_path_unpinned(slug)
+        except Exception:
+            continue
+        try:
+            if current is not None and path.resolve() == current:
+                continue
+        except Exception:
+            pass
+        if path.is_file():
+            out.append((slug, path))
+    return out
+
+
+def _resolve_refs_across_boards(
+    conn: sqlite3.Connection, missing: list[str],
+) -> tuple[list[str], dict[str, str]]:
+    """Split ``missing`` (ids absent from this board) into
+    ``(truly_phantom, {id: board_slug})`` by looking each id up on every other
+    board's DB (read-only). Never creates a board or writes anything."""
+    if not missing:
+        return [], {}
+    remaining = list(missing)
+    cross_board: dict[str, str] = {}
+    for slug, path in _other_board_db_paths(conn):
+        if not remaining:
+            break
+        other: Optional[sqlite3.Connection] = None
+        try:
+            other = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+            other.row_factory = sqlite3.Row
+            still_missing = set(_missing_task_ids(other, remaining))
+        except Exception:
+            continue
+        finally:
+            if other is not None:
+                with contextlib.suppress(Exception):
+                    other.close()
+        for rid in remaining:
+            if rid not in still_missing:
+                cross_board[rid] = slug
+        remaining = [rid for rid in remaining if rid in still_missing]
+    return remaining, cross_board
+
+
+def other_board_task_ids(conn: sqlite3.Connection) -> set[str]:
+    """Every task id that exists on ANOTHER board (not the one ``conn`` is on).
+
+    One read-only ``SELECT id`` per other board. The diagnostics layer uses it so
+    a citation to a task on a shared/sibling board is not reported as a phantom
+    reference. Returns an empty set when there are no other boards or none is
+    readable — callers then fall back to this board only."""
+    ids: set[str] = set()
+    for _slug, path in _other_board_db_paths(conn):
+        other: Optional[sqlite3.Connection] = None
+        try:
+            other = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+            ids.update(str(r[0]) for r in other.execute("SELECT id FROM tasks"))
+        except Exception:
+            continue
+        finally:
+            if other is not None:
+                with contextlib.suppress(Exception):
+                    other.close()
+    return ids
+
+
 def _flag_phantom_prose_refs(
     conn: sqlite3.Connection, task_id: str, run_id: Optional[int],
     summary: Optional[str], result: Optional[str], verified_cards: list[str],
 ) -> None:
     """Advisory post-commit scan of summary+result for unresolvable ``t_<hex>``
     references; emits ``suspected_hallucinated_references`` in its own txn so
-    the completion is already durable. Never blocks."""
+    the completion is already durable. Never blocks.
+
+    An id absent from THIS board is first looked up on every OTHER board
+    (``_resolve_refs_across_boards``). One that resolves there is recorded as
+    ``cross_board_references`` (informational — the citation was real, just not
+    local) and is NOT treated as a hallucination. Only ids that resolve nowhere
+    count as phantoms, and only those spawn a ``verify:`` child task so the
+    hallucinated claim is independently re-checked."""
     scan_text = " ".join(filter(None, [summary, result]))
     if not scan_text:
         return
-    phantom_refs = [p for p in _scan_prose_for_phantom_ids(conn, scan_text) if p not in set(verified_cards)]
-    if phantom_refs:
+    missing = [p for p in _scan_prose_for_phantom_ids(conn, scan_text) if p not in set(verified_cards)]
+    if not missing:
+        return
+    phantom_refs, cross_board = _resolve_refs_across_boards(conn, missing)
+    if cross_board:
         with write_txn(conn):
             _append_event(
-                conn, task_id, "suspected_hallucinated_references",
-                {"phantom_refs": phantom_refs, "source": "completion_summary"}, run_id=run_id,
+                conn, task_id, "cross_board_references",
+                {"refs": cross_board, "source": "completion_summary",
+                 "note": "cited task ids exist on another board — legitimate, not hallucinated"},
+                run_id=run_id,
             )
+    if not phantom_refs:
+        return
+    with write_txn(conn):
+        _append_event(
+            conn, task_id, "suspected_hallucinated_references",
+            {"phantom_refs": phantom_refs, "source": "completion_summary"}, run_id=run_id,
+        )
+    # Auto-create a re-verification child task so the phantom claim gets
+    # independently checked by the same profile.
+    try:
+        task = get_task(conn, task_id)
+        if task and task.assignee:
+            phantoms_str = ", ".join(phantom_refs)
+            create_task(
+                conn,
+                title=f"verify: {task.title}",
+                assignee=task.assignee,
+                parents=[task_id],
+                body=(
+                    f"The completion summary of parent task {task_id} referenced "
+                    f"task ids that exist on NO board: {phantoms_str}. "
+                    "The worker likely hallucinated a test/verification step.\n\n"
+                    "Re-check the specific claim(s) involving these ids "
+                    "and confirm whether the parent task's actual work is complete "
+                    "and correct. If the phantom claim was the only evidence of a "
+                    "verification step, re-run that verification now. "
+                    "Complete this task with the outcome."
+                ),
+                created_by="system",
+            )
+    except Exception:
+        _log.warning("Failed to create verify child for phantom refs on %s", task_id, exc_info=True)
 
 
 def _merge_completion_prose_artifacts(

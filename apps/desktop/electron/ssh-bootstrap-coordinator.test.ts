@@ -270,3 +270,36 @@ test('a generation started during cancelAndWait cannot run before the drain comp
   assert.equal(await next, 'new')
   assert.deepEqual(events, ['old-start', 'new-start'])
 })
+
+test('a second cancelAndWait on the same scope composes with the teardown still in flight', async () => {
+  // Pool stop is blocked in SSH teardown; a connection apply cancels the same
+  // scope with no bootstrap left to drain. The apply's drain must not replace
+  // and clear the barrier, or start() runs before the first teardown finishes.
+  const coordinator = createBootstrapCoordinator()
+  const events: string[] = []
+  const teardownGate = deferred()
+  const teardownStarted = deferred()
+
+  const poolStop = coordinator.cancelAndWait('scope', async () => {
+    events.push('teardown-start')
+    teardownStarted.resolve()
+    await teardownGate.promise
+    events.push('teardown-done')
+  })
+
+  await teardownStarted.promise
+  await coordinator.cancelAndWait('scope')
+  const next = coordinator.start('scope', 'new', async () => {
+    events.push('new-start')
+
+    return 'new'
+  })
+
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.deepEqual(events, ['teardown-start'])
+  teardownGate.resolve()
+  await poolStop
+  assert.equal(await next, 'new')
+  assert.deepEqual(events, ['teardown-start', 'teardown-done', 'new-start'])
+})

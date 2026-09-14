@@ -126,6 +126,8 @@ VALID_HOOKS: Set[str] = {
     "transform_api_error_classification", "on_session_start", "on_session_end",
     "on_session_finalize", "on_session_reset",
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
+    # subagent_start/stop additionally carry additive parent_tool_call_id and
+    # task_index fields so parallel same-goal children remain uniquely correlated.
     "on_skill_lifecycle", "subagent_start", "subagent_stop",
     # pre_gateway_dispatch: once per incoming MessageEvent, after the internal-event guard, BEFORE
     # auth/pairing and dispatch. Kwargs: event, gateway, session_store. Return {"action": "skip",

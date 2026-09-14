@@ -15,6 +15,7 @@ from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
 from .common import OpenModel, ProfileParams, SessionParams, SubagentStatus
+from .config_free_tier_control import ModelOptionProvider
 from .registry import method
 
 # ── completions / paste / model keys (methods_complete) ───────────────────────────────────────
@@ -75,23 +76,6 @@ method("paste.collapse", params=PasteCollapseParams, result=PasteCollapseResult,
        doc="Spill a large paste to a file and hand back the inline placeholder.")
 
 
-class ModelProviderRow(OpenModel):
-    """One provider row of the shared inventory builder (``hermes_cli.inventory``); the closed
-    set of keys is owned there."""
-
-    # TODO(common): same shape as the ``model.options`` provider rows — consolidate.
-    slug: str
-    name: str = ""
-    is_current: bool = False
-    is_user_defined: bool | None = None
-    models: list[JsonValue] = Field(default_factory=list)
-    total_models: int | None = None
-    authenticated: bool | None = None
-    auth_type: str | None = None
-    key_env: str | None = None
-    warning: str | None = None
-
-
 class ModelSaveKeyParams(Params):
     slug: str
     api_key: str
@@ -99,7 +83,7 @@ class ModelSaveKeyParams(Params):
 
 
 class ModelSaveKeyResult(Result):
-    provider: ModelProviderRow
+    provider: ModelOptionProvider
 
 
 method("model.save_key", params=ModelSaveKeyParams, result=ModelSaveKeyResult,

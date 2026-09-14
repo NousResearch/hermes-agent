@@ -12,6 +12,7 @@ from __future__ import annotations
 from .base import JsonValue, Params, Result, WireEnum
 from .common import OkResult, OpenModel, ProfileParams
 from .registry import method
+from .server_requests import ApprovalChoice
 
 # ── shared room shapes ────────────────────────────────────────────────────────────────────────
 
@@ -309,11 +310,6 @@ class GroupsStopResult(Result):
 
 method("groups.stop", params=GroupsStopParams, result=GroupsStopResult,
        doc="Durably cancel queued or running work for one hosted room.")
-
-
-class ApprovalChoice(WireEnum):
-    once = "once"
-    deny = "deny"
 
 
 class GroupsApproveParams(RoomParams):

@@ -18,7 +18,8 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Payload, WireEnum
-from .common import SessionLiveInfo, SubagentStatus, Usage
+from .common import MessageReaction, SessionLiveInfo, SubagentStatus, Usage
+from .config_free_tier_control import SessionControlSnapshot
 from .registry import event
 
 
@@ -371,17 +372,6 @@ class SessionReclaimedPayload(Payload):
 event("session.reclaimed", SessionReclaimedPayload, doc="The backend reclaimed a live session out from under its clients.")
 
 
-class SessionControlSnapshot(OpenPayload):
-    """``methods_session_control._snapshot_control``; goal / loop / heartbeat sub-objects are the
-    allow-listed state-file projections (owned by hermes_cli.goals / loops / heartbeat)."""
-
-    goal: dict[str, JsonValue] | None = None
-    loop: dict[str, JsonValue] | None = None
-    heartbeat: dict[str, JsonValue] | None = None
-    revision: str = ""
-    updated_at: float = 0
-
-
 class SessionControlUpdatePayload(Payload):
     control: SessionControlSnapshot
 
@@ -548,15 +538,6 @@ class PaneRevealPayload(OpenPayload):
 
 event("layout.apply", LayoutApplyPayload, doc="Apply a named desktop layout preset.")
 event("pane.reveal", PaneRevealPayload, doc="Focus / reveal a named desktop pane.")
-
-
-class MessageReaction(Payload):
-    """``hermes_state_messages.set_message_reaction`` row."""
-
-    emoji: str
-    author: str
-    at: float | None = None
-    model_config = Payload.model_config | {"extra": "allow"}
 
 
 class MessageReactionPayload(Payload):

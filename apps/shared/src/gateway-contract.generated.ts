@@ -363,10 +363,10 @@ export interface MessageReactParams {
 export type ReactionAuthor = 'user' | 'agent'
 export interface MessageReactResult {
   row_id: number
-  reactions: tui_gateway_contracts_billing_delegation_pets_MessageReaction[]
+  reactions: MessageReaction[]
 }
-/** One persisted reaction (``hermes_state_messages.py``); ``seen`` is stamped once announced. */
-export interface tui_gateway_contracts_billing_delegation_pets_MessageReaction {
+/** One persisted reaction row (``hermes_state_messages.set_message_reaction``); ``seen`` is stamped once announced. */
+export interface MessageReaction {
   emoji: string
   author: string
   at?: number | null
@@ -751,10 +751,10 @@ export interface SessionControlReadParams {
   session_id: string
 }
 export interface SessionControlReadResult {
-  control: tui_gateway_contracts_config_free_tier_control_SessionControlSnapshot
+  control: SessionControlSnapshot
 }
 /** ``_snapshot_control`` — ``revision`` is a hash of the visible state (``""`` when empty); ``updated_at`` is the newest persisted timestamp (``0`` when none). */
-export interface tui_gateway_contracts_config_free_tier_control_SessionControlSnapshot {
+export interface SessionControlSnapshot {
   goal: GoalSnapshot | null
   loop: LoopSnapshot | null
   heartbeat: HeartbeatSnapshot | null
@@ -842,7 +842,7 @@ export interface SessionControlArgs {
   index?: number | null
 }
 export interface SessionControlResult {
-  control: tui_gateway_contracts_config_free_tier_control_SessionControlSnapshot
+  control: SessionControlSnapshot
   dispatch: SessionControlDispatch
 }
 /** ``_dispatch_envelope`` — the command result's user-visible envelope, every key always present. */
@@ -1099,10 +1099,10 @@ export interface GroupsApproveParams {
   member_id: string
   task_id: string
   execution_generation: number
-  choice: tui_gateway_contracts_groups_bot_relay_ApprovalChoice
+  choice: ApprovalChoice
   request_id: string
 }
-export type tui_gateway_contracts_groups_bot_relay_ApprovalChoice = 'once' | 'deny'
+export type ApprovalChoice = 'once' | 'session' | 'always' | 'deny'
 /** ``result`` is the local ``approval.respond`` answer or the peer's run-action receipt. */
 export interface GroupsApproveResult {
   approved?: boolean
@@ -1363,21 +1363,7 @@ export interface ModelSaveKeyParams {
   session_id?: string | null
 }
 export interface ModelSaveKeyResult {
-  provider: ModelProviderRow
-}
-/** One provider row of the shared inventory builder (``hermes_cli.inventory``); the closed set of keys is owned there. */
-export interface ModelProviderRow {
-  slug: string
-  name?: string
-  is_current?: boolean
-  is_user_defined?: boolean | null
-  models?: unknown[]
-  total_models?: number | null
-  authenticated?: boolean | null
-  auth_type?: string | null
-  key_env?: string | null
-  warning?: string | null
-  [key: string]: unknown
+  provider: ModelOptionProvider
 }
 export interface ModelDisconnectParams {
   slug: string
@@ -2243,10 +2229,10 @@ export interface ApprovalPendingParams {
   profile?: string | null
 }
 export interface ApprovalPendingResult {
-  approvals: tui_gateway_contracts_prompt_voice_PendingApproval[]
+  approvals: PendingApproval[]
 }
-/** One unresolved ``tools/approval.py`` gateway queue entry (snapshot of its ``data``); the key set is owned by the approval tool, so it stays open. */
-export interface tui_gateway_contracts_prompt_voice_PendingApproval {
+/** One unresolved ``tools/approval.py`` gateway queue entry as ``server._approval_request_payload`` renders it (command redacted; ``choices`` precomputed). The key set is owned by the approval tool. */
+export interface PendingApproval {
   request_id?: string | null
   command?: string | null
   description?: string | null
@@ -2471,7 +2457,7 @@ export interface SessionResumeResult {
   status?: string | null
   inflight?: InflightTurn | null
   queued?: QueuedPrompt | null
-  pending_approval?: tui_gateway_contracts_sessions_PendingApproval | null
+  pending_approval?: PendingApproval | null
   open_requests?: OpenRequestEntry[] | null
   todo_state?: TodoState | null
   auto_continue?: AutoContinue | null
@@ -2490,18 +2476,6 @@ export interface InflightTurn {
 }
 export interface QueuedPrompt {
   user: string
-}
-/** ``server._approval_request_payload`` for the oldest unresolved approval (command redacted). */
-export interface tui_gateway_contracts_sessions_PendingApproval {
-  request_id?: string | null
-  command?: string | null
-  description?: string | null
-  choices?: string[] | null
-  allow_permanent?: boolean | null
-  allow_session?: boolean | null
-  smart_denied?: boolean | null
-  tool_name?: string | null
-  [key: string]: unknown
 }
 /** One unanswered server→client request (``server_requests.Request.snapshot``); the reconnecting client re-delivers it to its request handlers. */
 export interface OpenRequestEntry {
@@ -2541,7 +2515,7 @@ export interface SessionActivateResult {
   status?: string | null
   inflight?: InflightTurn | null
   queued?: QueuedPrompt | null
-  pending_approval?: tui_gateway_contracts_sessions_PendingApproval | null
+  pending_approval?: PendingApproval | null
   open_requests?: OpenRequestEntry[] | null
   todo_state?: TodoState | null
   auto_continue?: AutoContinue | null
@@ -3660,7 +3634,7 @@ export interface ApprovalRequestParams {
   request_id: string
   command?: string
   description?: string
-  choices?: tui_gateway_contracts_server_requests_ApprovalChoice[]
+  choices?: ApprovalChoice[]
   allow_permanent?: boolean | null
   allow_session?: boolean | null
   smart_denied?: boolean | null
@@ -3668,9 +3642,8 @@ export interface ApprovalRequestParams {
   gateway_session_id?: string | null
   [key: string]: unknown
 }
-export type tui_gateway_contracts_server_requests_ApprovalChoice = 'once' | 'session' | 'always' | 'deny'
 export interface ApprovalResult {
-  choice: tui_gateway_contracts_server_requests_ApprovalChoice
+  choice: ApprovalChoice
   all?: boolean | null
 }
 export interface EmptyRequestParams {
@@ -3927,16 +3900,7 @@ export interface SessionReclaimedPayload {
   reason: string
 }
 export interface SessionControlUpdatePayload {
-  control: tui_gateway_contracts_events_SessionControlSnapshot
-}
-/** ``methods_session_control._snapshot_control``; goal / loop / heartbeat sub-objects are the allow-listed state-file projections (owned by hermes_cli.goals / loops / heartbeat). */
-export interface tui_gateway_contracts_events_SessionControlSnapshot {
-  goal?: Record<string, unknown> | null
-  loop?: Record<string, unknown> | null
-  heartbeat?: Record<string, unknown> | null
-  revision?: string
-  updated_at?: number
-  [key: string]: unknown
+  control: SessionControlSnapshot
 }
 /** ``methods_session`` billing.step_up on_verification. */
 export interface BillingStepUpVerificationPayload {
@@ -4031,15 +3995,8 @@ export interface PaneRevealPayload {
 /** ``tools/react_to_message_tool.py``. */
 export interface MessageReactionPayload {
   row_id: number
-  reactions: tui_gateway_contracts_events_MessageReaction[]
+  reactions: MessageReaction[]
   role: string
-}
-/** ``hermes_state_messages.set_message_reaction`` row. */
-export interface tui_gateway_contracts_events_MessageReaction {
-  emoji: string
-  author: string
-  at?: number | null
-  [key: string]: unknown
 }
 /** ``session_notifications`` process_registry.on_output. */
 export interface TerminalOutputPayload {

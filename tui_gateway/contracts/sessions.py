@@ -8,7 +8,8 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
-from .common import OpenModel, ProfileParams, SessionLiveInfo, SessionParams, TranscriptMessage, Usage
+from .common import (OpenModel, PendingApproval, ProfileParams, SessionLiveInfo, SessionParams, TranscriptMessage,
+                     Usage)
 from .registry import method
 
 
@@ -55,19 +56,6 @@ class AutoContinue(Result):
 
     attempt: int
     interrupted_at: float
-
-
-class PendingApproval(OpenModel):  # TODO(common): twin of server_requests.ApprovalRequestParams minus session_id
-    """``server._approval_request_payload`` for the oldest unresolved approval (command redacted)."""
-
-    request_id: str | None = None
-    command: str | None = None
-    description: str | None = None
-    choices: list[str] | None = None
-    allow_permanent: bool | None = None
-    allow_session: bool | None = None
-    smart_denied: bool | None = None
-    tool_name: str | None = None
 
 
 class LiveSessionStatus(WireEnum):

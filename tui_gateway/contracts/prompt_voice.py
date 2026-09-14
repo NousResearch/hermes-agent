@@ -10,7 +10,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
-from .common import OpenModel, SessionParams
+from .common import OpenModel, PendingApproval, SessionParams
 from .registry import method
 
 # ── prompt.submit ─────────────────────────────────────────────────────────────────────────────
@@ -282,22 +282,6 @@ method("request.answer", params=RequestAnswerParams, result=RequestAnswerResult,
 
 
 # ── approvals ─────────────────────────────────────────────────────────────────────────────────
-
-
-class PendingApproval(OpenModel):
-    """One unresolved ``tools/approval.py`` gateway queue entry (snapshot of its ``data``); the key
-    set is owned by the approval tool, so it stays open."""
-
-    request_id: str | None = None
-    command: str | None = None
-    description: str | None = None
-    pattern_key: str | None = None
-    pattern_keys: list[str] | None = None
-    allow_permanent: bool | None = None
-    allow_session: bool | None = None
-    smart_denied: bool | None = None
-    choices: list[str] | None = None
-    tool_name: str | None = None
 
 
 class ApprovalPendingParams(SessionParams):

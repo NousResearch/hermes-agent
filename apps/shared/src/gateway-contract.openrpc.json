@@ -4210,6 +4210,16 @@
         "title": "AgentsListResult",
         "type": "object"
       },
+      "ApprovalChoice": {
+        "enum": [
+          "once",
+          "session",
+          "always",
+          "deny"
+        ],
+        "title": "ApprovalChoice",
+        "type": "string"
+      },
       "ApprovalPendingParams": {
         "additionalProperties": false,
         "properties": {
@@ -4241,7 +4251,7 @@
         "properties": {
           "approvals": {
             "items": {
-              "$ref": "#/components/schemas/tui_gateway_contracts_prompt_voice_PendingApproval"
+              "$ref": "#/components/schemas/PendingApproval"
             },
             "title": "Approvals",
             "type": "array"
@@ -4322,7 +4332,7 @@
           },
           "choices": {
             "items": {
-              "$ref": "#/components/schemas/tui_gateway_contracts_server_requests_ApprovalChoice"
+              "$ref": "#/components/schemas/ApprovalChoice"
             },
             "title": "Choices",
             "type": "array"
@@ -4476,7 +4486,7 @@
         "additionalProperties": false,
         "properties": {
           "choice": {
-            "$ref": "#/components/schemas/tui_gateway_contracts_server_requests_ApprovalChoice"
+            "$ref": "#/components/schemas/ApprovalChoice"
           },
           "all": {
             "anyOf": [
@@ -10284,7 +10294,7 @@
             "type": "integer"
           },
           "choice": {
-            "$ref": "#/components/schemas/tui_gateway_contracts_groups_bot_relay_ApprovalChoice"
+            "$ref": "#/components/schemas/ApprovalChoice"
           },
           "request_id": {
             "title": "Request Id",
@@ -14366,7 +14376,7 @@
           },
           "reactions": {
             "items": {
-              "$ref": "#/components/schemas/tui_gateway_contracts_billing_delegation_pets_MessageReaction"
+              "$ref": "#/components/schemas/MessageReaction"
             },
             "title": "Reactions",
             "type": "array"
@@ -14379,6 +14389,50 @@
         "title": "MessageReactResult",
         "type": "object"
       },
+      "MessageReaction": {
+        "additionalProperties": true,
+        "description": "One persisted reaction row (``hermes_state_messages.set_message_reaction``); ``seen`` is\nstamped once announced.",
+        "properties": {
+          "emoji": {
+            "title": "Emoji",
+            "type": "string"
+          },
+          "author": {
+            "title": "Author",
+            "type": "string"
+          },
+          "at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "At"
+          },
+          "seen": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Seen"
+          }
+        },
+        "required": [
+          "emoji",
+          "author"
+        ],
+        "title": "MessageReaction",
+        "type": "object"
+      },
       "MessageReactionPayload": {
         "additionalProperties": false,
         "description": "``tools/react_to_message_tool.py``.",
@@ -14389,7 +14443,7 @@
           },
           "reactions": {
             "items": {
-              "$ref": "#/components/schemas/tui_gateway_contracts_events_MessageReaction"
+              "$ref": "#/components/schemas/MessageReaction"
             },
             "title": "Reactions",
             "type": "array"
@@ -15025,108 +15079,6 @@
         "title": "ModelPricing",
         "type": "object"
       },
-      "ModelProviderRow": {
-        "additionalProperties": true,
-        "description": "One provider row of the shared inventory builder (``hermes_cli.inventory``); the closed\nset of keys is owned there.",
-        "properties": {
-          "slug": {
-            "title": "Slug",
-            "type": "string"
-          },
-          "name": {
-            "default": "",
-            "title": "Name",
-            "type": "string"
-          },
-          "is_current": {
-            "default": false,
-            "title": "Is Current",
-            "type": "boolean"
-          },
-          "is_user_defined": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Is User Defined"
-          },
-          "models": {
-            "items": {},
-            "title": "Models",
-            "type": "array"
-          },
-          "total_models": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Total Models"
-          },
-          "authenticated": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Authenticated"
-          },
-          "auth_type": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Auth Type"
-          },
-          "key_env": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Key Env"
-          },
-          "warning": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Warning"
-          }
-        },
-        "required": [
-          "slug"
-        ],
-        "title": "ModelProviderRow",
-        "type": "object"
-      },
       "ModelSaveKeyParams": {
         "additionalProperties": false,
         "properties": {
@@ -15162,7 +15114,7 @@
         "additionalProperties": false,
         "properties": {
           "provider": {
-            "$ref": "#/components/schemas/ModelProviderRow"
+            "$ref": "#/components/schemas/ModelOptionProvider"
           }
         },
         "required": [
@@ -15712,6 +15664,140 @@
           "status"
         ],
         "title": "PeerRouteStatus",
+        "type": "object"
+      },
+      "PendingApproval": {
+        "additionalProperties": true,
+        "description": "One unresolved ``tools/approval.py`` gateway queue entry as ``server._approval_request_payload``\nrenders it (command redacted; ``choices`` precomputed). The key set is owned by the approval tool.",
+        "properties": {
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Request Id"
+          },
+          "command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Command"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "pattern_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pattern Key"
+          },
+          "pattern_keys": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pattern Keys"
+          },
+          "allow_permanent": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Allow Permanent"
+          },
+          "allow_session": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Allow Session"
+          },
+          "smart_denied": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Smart Denied"
+          },
+          "choices": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Choices"
+          },
+          "tool_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tool Name"
+          }
+        },
+        "title": "PendingApproval",
         "type": "object"
       },
       "PetCancelParams": {
@@ -23263,7 +23349,7 @@
           "pending_approval": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/tui_gateway_contracts_sessions_PendingApproval"
+                "$ref": "#/components/schemas/PendingApproval"
               },
               {
                 "type": "null"
@@ -24042,7 +24128,7 @@
         "additionalProperties": false,
         "properties": {
           "control": {
-            "$ref": "#/components/schemas/tui_gateway_contracts_config_free_tier_control_SessionControlSnapshot"
+            "$ref": "#/components/schemas/SessionControlSnapshot"
           }
         },
         "required": [
@@ -24055,7 +24141,7 @@
         "additionalProperties": false,
         "properties": {
           "control": {
-            "$ref": "#/components/schemas/tui_gateway_contracts_config_free_tier_control_SessionControlSnapshot"
+            "$ref": "#/components/schemas/SessionControlSnapshot"
           },
           "dispatch": {
             "$ref": "#/components/schemas/SessionControlDispatch"
@@ -24068,11 +24154,64 @@
         "title": "SessionControlResult",
         "type": "object"
       },
+      "SessionControlSnapshot": {
+        "additionalProperties": false,
+        "description": "``_snapshot_control`` \u2014 ``revision`` is a hash of the visible state (``\"\"`` when empty);\n``updated_at`` is the newest persisted timestamp (``0`` when none).",
+        "properties": {
+          "goal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GoalSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "loop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LoopSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "heartbeat": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeartbeatSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "number"
+          }
+        },
+        "required": [
+          "goal",
+          "loop",
+          "heartbeat",
+          "revision",
+          "updated_at"
+        ],
+        "title": "SessionControlSnapshot",
+        "type": "object"
+      },
       "SessionControlUpdatePayload": {
         "additionalProperties": false,
         "properties": {
           "control": {
-            "$ref": "#/components/schemas/tui_gateway_contracts_events_SessionControlSnapshot"
+            "$ref": "#/components/schemas/SessionControlSnapshot"
           }
         },
         "required": [
@@ -25834,7 +25973,7 @@
           "pending_approval": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/tui_gateway_contracts_sessions_PendingApproval"
+                "$ref": "#/components/schemas/PendingApproval"
               },
               {
                 "type": "null"
@@ -32712,451 +32851,6 @@
           }
         },
         "title": "_SessionScoped",
-        "type": "object"
-      },
-      "tui_gateway_contracts_billing_delegation_pets_MessageReaction": {
-        "additionalProperties": true,
-        "description": "One persisted reaction (``hermes_state_messages.py``); ``seen`` is stamped once announced.",
-        "properties": {
-          "emoji": {
-            "title": "Emoji",
-            "type": "string"
-          },
-          "author": {
-            "title": "Author",
-            "type": "string"
-          },
-          "at": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "At"
-          },
-          "seen": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Seen"
-          }
-        },
-        "required": [
-          "emoji",
-          "author"
-        ],
-        "title": "MessageReaction",
-        "type": "object"
-      },
-      "tui_gateway_contracts_config_free_tier_control_SessionControlSnapshot": {
-        "additionalProperties": false,
-        "description": "``_snapshot_control`` \u2014 ``revision`` is a hash of the visible state (``\"\"`` when empty);\n``updated_at`` is the newest persisted timestamp (``0`` when none).",
-        "properties": {
-          "goal": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/GoalSnapshot"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "loop": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/LoopSnapshot"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "heartbeat": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/HeartbeatSnapshot"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "revision": {
-            "title": "Revision",
-            "type": "string"
-          },
-          "updated_at": {
-            "title": "Updated At",
-            "type": "number"
-          }
-        },
-        "required": [
-          "goal",
-          "loop",
-          "heartbeat",
-          "revision",
-          "updated_at"
-        ],
-        "title": "SessionControlSnapshot",
-        "type": "object"
-      },
-      "tui_gateway_contracts_events_MessageReaction": {
-        "additionalProperties": true,
-        "description": "``hermes_state_messages.set_message_reaction`` row.",
-        "properties": {
-          "emoji": {
-            "title": "Emoji",
-            "type": "string"
-          },
-          "author": {
-            "title": "Author",
-            "type": "string"
-          },
-          "at": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "At"
-          }
-        },
-        "required": [
-          "emoji",
-          "author"
-        ],
-        "title": "MessageReaction",
-        "type": "object"
-      },
-      "tui_gateway_contracts_events_SessionControlSnapshot": {
-        "additionalProperties": true,
-        "description": "``methods_session_control._snapshot_control``; goal / loop / heartbeat sub-objects are the\nallow-listed state-file projections (owned by hermes_cli.goals / loops / heartbeat).",
-        "properties": {
-          "goal": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Goal"
-          },
-          "loop": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Loop"
-          },
-          "heartbeat": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Heartbeat"
-          },
-          "revision": {
-            "default": "",
-            "title": "Revision",
-            "type": "string"
-          },
-          "updated_at": {
-            "default": 0,
-            "title": "Updated At",
-            "type": "number"
-          }
-        },
-        "title": "SessionControlSnapshot",
-        "type": "object"
-      },
-      "tui_gateway_contracts_groups_bot_relay_ApprovalChoice": {
-        "enum": [
-          "once",
-          "deny"
-        ],
-        "title": "ApprovalChoice",
-        "type": "string"
-      },
-      "tui_gateway_contracts_prompt_voice_PendingApproval": {
-        "additionalProperties": true,
-        "description": "One unresolved ``tools/approval.py`` gateway queue entry (snapshot of its ``data``); the key\nset is owned by the approval tool, so it stays open.",
-        "properties": {
-          "request_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Request Id"
-          },
-          "command": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Command"
-          },
-          "description": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Description"
-          },
-          "pattern_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Pattern Key"
-          },
-          "pattern_keys": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Pattern Keys"
-          },
-          "allow_permanent": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Allow Permanent"
-          },
-          "allow_session": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Allow Session"
-          },
-          "smart_denied": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Smart Denied"
-          },
-          "choices": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Choices"
-          },
-          "tool_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Tool Name"
-          }
-        },
-        "title": "PendingApproval",
-        "type": "object"
-      },
-      "tui_gateway_contracts_server_requests_ApprovalChoice": {
-        "enum": [
-          "once",
-          "session",
-          "always",
-          "deny"
-        ],
-        "title": "ApprovalChoice",
-        "type": "string"
-      },
-      "tui_gateway_contracts_sessions_PendingApproval": {
-        "additionalProperties": true,
-        "description": "``server._approval_request_payload`` for the oldest unresolved approval (command redacted).",
-        "properties": {
-          "request_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Request Id"
-          },
-          "command": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Command"
-          },
-          "description": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Description"
-          },
-          "choices": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Choices"
-          },
-          "allow_permanent": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Allow Permanent"
-          },
-          "allow_session": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Allow Session"
-          },
-          "smart_denied": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Smart Denied"
-          },
-          "tool_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Tool Name"
-          }
-        },
-        "title": "PendingApproval",
         "type": "object"
       }
     }

@@ -158,6 +158,32 @@ TERMINAL_SUBAGENT_STATUSES = frozenset({
 })
 
 
+class PendingApproval(OpenModel):
+    """One unresolved ``tools/approval.py`` gateway queue entry as ``server._approval_request_payload``
+    renders it (command redacted; ``choices`` precomputed). The key set is owned by the approval tool."""
+
+    request_id: str | None = None
+    command: str | None = None
+    description: str | None = None
+    pattern_key: str | None = None
+    pattern_keys: list[str] | None = None
+    allow_permanent: bool | None = None
+    allow_session: bool | None = None
+    smart_denied: bool | None = None
+    choices: list[str] | None = None
+    tool_name: str | None = None
+
+
+class MessageReaction(OpenModel):
+    """One persisted reaction row (``hermes_state_messages.set_message_reaction``); ``seen`` is
+    stamped once announced."""
+
+    emoji: str
+    author: str
+    at: float | None = None
+    seen: bool | None = None
+
+
 class SessionParams(Params):
     """Any method addressed at one live session."""
 
@@ -188,7 +214,7 @@ class EmptyPayload(Payload):
 
 
 __all__ = [
-    "TERMINAL_SUBAGENT_STATUSES", "EmptyPayload", "EmptyResult", "McpServerStatus", "OkResult", "OpenModel",
+    "TERMINAL_SUBAGENT_STATUSES", "EmptyPayload", "EmptyResult", "McpServerStatus", "MessageReaction", "OkResult", "OpenModel", "PendingApproval",
     "ProfileParams", "ProjectRef", "SessionLiveInfo", "SessionParams", "StatusResult", "StoredSessionRow",
     "SubagentStatus", "TranscriptMessage", "Usage",
 ]

@@ -11,7 +11,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
-from .common import OpenModel, ProfileParams, SessionParams
+from .common import MessageReaction, OpenModel, ProfileParams, SessionParams
 from .registry import method
 
 # ── billing envelope ──────────────────────────────────────────────────────────────────────────
@@ -480,15 +480,6 @@ class MessageReactParams(SessionParams):
     newest_role: str | None = None
     emoji: str | None = None
     author: ReactionAuthor | None = None
-
-
-class MessageReaction(OpenModel):
-    """One persisted reaction (``hermes_state_messages.py``); ``seen`` is stamped once announced."""
-
-    emoji: str
-    author: str
-    at: float | None = None
-    seen: bool | None = None
 
 
 class MessageReactResult(Result):

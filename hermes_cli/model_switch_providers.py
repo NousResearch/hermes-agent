@@ -196,9 +196,9 @@ def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
     fingerprint-mismatched, or hard-expired entries. TTL-expired non-empty rows are served
     inside the stale-serve window while revalidating off-thread, and an empty local-ollama
     catalog is authoritative inside its own short native TTL, so prefetching either trades a
-    non-blocking serial read for a parallel fetch the picker waits on. Each worker re-persists
-    through the thread-safe ``update_provider_cache_entry`` so concurrent writes cannot
-    clobber each other."""
+    non-blocking serial read for a parallel fetch the picker waits on. Each worker lets
+    :func:`cached_provider_model_ids` persist its own result, which it does under the shared
+    cache write lock, so concurrent writes cannot clobber each other."""
     from hermes_cli.models import (
         _OLLAMA_LOCAL_MODELS_CACHE_TTL, _PROVIDER_MODELS_CACHE_TTL,
         _PROVIDER_MODELS_STALE_SERVE_MAX, _cache_entry_valid, _credential_fingerprint,
@@ -242,12 +242,10 @@ def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
     import concurrent.futures
     def _fetch_one(slug: str) -> None:
         try:
-            models = cached_provider_model_ids(slug, force_refresh=True)
-            # cached_provider_model_ids persists via a non-locked read-modify-write; re-persist
-            # through the locked path so no write is lost under concurrency.
-            if models:
-                from hermes_cli.models import update_provider_cache_entry
-                update_provider_cache_entry(slug, models)
+            # cached_provider_model_ids persists its own result under the shared cache write
+            # lock; re-persisting here would stamp a stale entry as fresh when the forced
+            # fetch came back empty.
+            cached_provider_model_ids(slug, force_refresh=True)
         except Exception:
             pass  # best-effort; picker falls back to curated list
 

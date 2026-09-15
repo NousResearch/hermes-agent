@@ -1,5 +1,6 @@
 """Tests for gateway service management helpers."""
 
+import json
 import os
 import plistlib
 import subprocess
@@ -419,7 +420,7 @@ class TestGeneratedSystemdUnits:
 
 
 class TestGatewayStopCleanup:
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_stop_only_kills_current_profile_by_default(self, tmp_path, monkeypatch):
         """Without --all, stop uses systemd (if available) and does NOT call
         the global kill_gateway_processes().
@@ -432,7 +433,6 @@ class TestGatewayStopCleanup:
         unit_path.write_text("unit\n", encoding="utf-8")
 
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
-        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
 
         service_calls = []
@@ -819,14 +819,12 @@ class TestLaunchdDomainDetection:
 class TestGatewayServiceDetection:
     def test_supports_systemd_services_requires_systemctl_binary(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
-        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
         monkeypatch.setattr(gateway_cli.shutil, "which", lambda name: None)
 
         assert gateway_cli.supports_systemd_services() is False
 
     def test_supports_systemd_services_returns_true_when_systemctl_present(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
-        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
         monkeypatch.setattr(gateway_cli, "is_wsl", lambda: False)
         monkeypatch.setattr(gateway_cli.shutil, "which", lambda name: "/usr/bin/systemctl")
 
@@ -837,7 +835,6 @@ class TestGatewayServiceDetection:
         system_unit = SimpleNamespace(exists=lambda: True)
 
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
-        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
         monkeypatch.setattr(
             gateway_cli,
@@ -1177,7 +1174,7 @@ class TestGatewaySystemServiceRouting:
         assert "did not revive" in out
         assert "✓ Service restarted" in out
 
-    @pytest.mark.macos_only
+    @pytest.mark.platforms("macos")
     def test_gateway_restart_does_not_fallback_to_foreground_when_launchd_restart_fails(self, tmp_path, monkeypatch):
         """macOS-gated: the branch under test is ``elif is_macos() and
         get_launchd_plist_path().exists()``. Faking the platform flags on Linux
@@ -1211,49 +1208,92 @@ class TestGatewaySystemServiceRouting:
         assert run_calls == []
 
 
-class TestDetectVenvDir:
-    """Tests for _detect_venv_dir() virtualenv detection."""
+def _seed_pm_environment(tmp_path, monkeypatch, with_venv_fact=True):
+    """Commit a pm environment the way ``pm sync`` records it: an install-keyed
+    facts.json whose venv fact names a committed environment generation under
+    the install state (pyvenv.cfg included). Returns
+    ``(project_root, environment_dir)``."""
+    from hermes_cli.runtime_paths import install_state_dir
 
-    def test_detects_active_virtualenv_via_sys_prefix(self, tmp_path, monkeypatch):
-        venv_path = tmp_path / "my-custom-venv"
-        venv_path.mkdir()
-        monkeypatch.setattr("sys.prefix", str(venv_path))
-        monkeypatch.setattr("sys.base_prefix", "/usr")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))  # installs_root() under the test root
+    project_root = tmp_path / "payload" / "hermes-agent"
+    project_root.mkdir(parents=True)
+    state = install_state_dir(project_root)
+    environment = state / "environments" / "gen-1"
+    environment.mkdir(parents=True)
+    (environment / "pyvenv.cfg").write_text("", encoding="utf-8")
+    packages = (
+        {"venv": {"stamp": "abc", "extras": [], "environment": str(environment)}}
+        if with_venv_fact
+        else {}
+    )
+    (state / "facts.json").write_text(
+        json.dumps({"schema": 1, "packages": packages}), encoding="utf-8"
+    )
+    return project_root, environment
 
-        result = gateway_cli._detect_venv_dir()
-        assert result == venv_path
 
-    def test_falls_back_to_dot_venv_directory(self, tmp_path, monkeypatch):
-        # Not inside a virtualenv
+class TestServicePathDirsPmVenv:
+    """Service PATH cannot retain a garbage-collectable dependency generation."""
+
+    def test_does_not_persist_disposable_generation_bin(self, tmp_path, monkeypatch):
         monkeypatch.setattr("sys.prefix", "/usr")
         monkeypatch.setattr("sys.base_prefix", "/usr")
         monkeypatch.delenv("VIRTUAL_ENV", raising=False)
-        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
+        monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
 
-        dot_venv = tmp_path / ".venv"
-        dot_venv.mkdir()
+        project_root, environment = _seed_pm_environment(tmp_path, monkeypatch)
+        venv_bin = environment / "bin"
+        venv_bin.mkdir()
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", project_root)
 
-        result = gateway_cli._detect_venv_dir()
-        assert result == dot_venv
+        dirs = gateway_cli._build_service_path_dirs(project_root=project_root)
 
-    def test_returns_none_when_no_virtualenv(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("sys.prefix", "/usr")
-        monkeypatch.setattr("sys.base_prefix", "/usr")
-        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
-        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
+        assert str(venv_bin) not in dirs
 
-        result = gateway_cli._detect_venv_dir()
-        assert result is None
+
+def _seed_pm_node_facts(hermes_root):
+    """Write a pm installed-state file recording node/npm store entries.
+
+    _append_node_dir_for_service() resolves managed Node through pm's
+    installed-state (facts.json env PATH entries with ``{{store}}`` templates
+    resolved against the target home's store), so tests seed the record the
+    way a real `pm install` writes it — via the same Facts schema, read back
+    through Facts.env_for().
+    """
+    store_root = hermes_root / "tools"
+    node_dir = store_root / "node-v22.0.0"
+    npm_dir = store_root / "npm-9.0.0" / "bin"
+    node_dir.mkdir(parents=True)
+    npm_dir.mkdir(parents=True)
+    facts = {
+        "schema": 1,
+        "packages": {
+            "node": {
+                "entry": "node-v22.0.0",
+                "version": "22.0.0",
+                "env": {"PATH": ["{{store}}/node-v22.0.0"]},
+            },
+            "npm": {
+                "entry": "npm-9.0.0",
+                "version": "9.0.0",
+                "env": {"PATH": ["{{store}}/npm-9.0.0/bin"]},
+            },
+        },
+    }
+    import json as _json
+
+    (store_root / "facts.json").write_text(_json.dumps(facts), encoding="utf-8")
+    return [str(npm_dir), str(node_dir)]
 
 
 class TestSystemUnitHermesHome:
     """HERMES_HOME in system units must reference the target user, not root."""
 
-    def test_empty_managed_node_dir_uses_only_ambient_fallback(
+    def test_no_pm_node_facts_uses_only_ambient_fallback(
         self, monkeypatch, tmp_path
     ):
-        managed_bin = tmp_path / ".hermes" / "node" / "bin"
-        managed_bin.mkdir(parents=True)
+        (tmp_path / ".hermes" / "tools").mkdir(parents=True)
         monkeypatch.setattr(
             gateway_cli.shutil, "which", lambda name: "/opt/external-node/bin/node"
         )
@@ -1263,20 +1303,21 @@ class TestSystemUnitHermesHome:
 
         assert entries == ["/opt/external-node/bin"]
 
-    def test_non_executable_managed_node_uses_only_ambient_fallback(
+    def test_stale_pm_facts_without_dirs_use_only_ambient_fallback(
         self, monkeypatch, tmp_path
     ):
-        managed_bin = tmp_path / ".hermes" / "node" / "bin"
-        managed_bin.mkdir(parents=True)
-        node = managed_bin / "node"
-        node.write_text("#!/bin/sh\n")
-        node.chmod(0o644)
+        """Recorded entries whose store dirs are gone contribute nothing."""
+        import shutil as _shutil
+
+        hermes_root = tmp_path / ".hermes"
+        for entry in _seed_pm_node_facts(hermes_root):
+            _shutil.rmtree(entry)
         monkeypatch.setattr(
             gateway_cli.shutil, "which", lambda name: "/opt/external-node/bin/node"
         )
         entries: list[str] = []
 
-        gateway_cli._append_node_dir_for_service(entries, tmp_path / ".hermes")
+        gateway_cli._append_node_dir_for_service(entries, hermes_root)
 
         assert entries == ["/opt/external-node/bin"]
 
@@ -1288,11 +1329,7 @@ class TestSystemUnitHermesHome:
         target_hermes = target_home / ".hermes"
         root_home = tmp_path / "root"
         root_hermes = root_home / ".hermes"
-        managed_bin = target_hermes / "node" / "bin"
-        managed_bin.mkdir(parents=True)
-        node = managed_bin / "node"
-        node.write_text("#!/bin/sh\n")
-        node.chmod(0o755)
+        managed_dirs = _seed_pm_node_facts(target_hermes)
         root_hermes.mkdir(parents=True)
 
         monkeypatch.setattr(Path, "home", staticmethod(lambda: root_home))
@@ -1312,20 +1349,14 @@ class TestSystemUnitHermesHome:
         user_unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
 
         assert root_unit == user_unit
-        assert str(managed_bin) in root_unit
+        for managed_dir in managed_dirs:
+            assert managed_dir in root_unit
         assert "/root/bin" not in root_unit
 
     def test_node_path_lookup_remains_fallback_without_managed_node(
         self, monkeypatch, tmp_path
     ):
-        """External Node installs still work when the managed tree is absent."""
-        monkeypatch.setattr(
-            "hermes_constants.iter_hermes_node_dirs", lambda root=None: []
-        )
-        monkeypatch.setattr(
-            "hermes_constants.hermes_managed_node_tree_present",
-            lambda root=None: False,
-        )
+        """External Node installs still work when pm has no node installed."""
         monkeypatch.setattr(
             gateway_cli.shutil, "which", lambda name: "/opt/external-node/bin/node"
         )
@@ -1353,13 +1384,16 @@ class TestSystemUnitHermesHome:
         assert "Wants=user@1001.service" in unit_section
         assert "user@" not in user_unit
 
-    def test_system_unit_uses_target_user_home_not_calling_user(self, monkeypatch):
-        # Simulate sudo: Path.home() returns /root, target user is alice
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
-        monkeypatch.delenv("HERMES_HOME", raising=False)
+    def test_system_unit_uses_target_user_home_not_calling_user(self, monkeypatch, tmp_path):
+        caller_home = tmp_path / "root"
+        target_home = tmp_path / "alice"
+        caller_home.mkdir()
+        target_home.mkdir()
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: caller_home))
+        monkeypatch.setenv("HERMES_HOME", str(caller_home / ".hermes"))
         monkeypatch.setattr(
             gateway_cli, "_system_service_identity",
-            lambda run_as_user=None: ("alice", "alice", "/home/alice", 1001),
+            lambda run_as_user=None: ("alice", "alice", str(target_home), 1001),
         )
         monkeypatch.setattr(
             gateway_cli, "_build_user_local_paths",
@@ -1368,8 +1402,8 @@ class TestSystemUnitHermesHome:
 
         unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
 
-        assert 'HERMES_HOME=/home/alice/.hermes' in unit
-        assert '/root/.hermes' not in unit
+        assert f'HERMES_HOME={target_home / ".hermes"}' in unit
+        assert str(caller_home / ".hermes") not in unit
 
     def test_user_unit_unaffected_by_change(self):
         # User-scope units should still use the calling user's HERMES_HOME
@@ -1521,27 +1555,12 @@ class TestHermesHomeForTargetUser:
         assert result == "/home/alice/.hermes"
 
 
-class TestGeneratedUnitUsesDetectedVenv:
-    def test_systemd_unit_uses_dot_venv_when_detected(self, tmp_path, monkeypatch):
-        dot_venv = tmp_path / ".venv"
-        dot_venv.mkdir()
-        (dot_venv / "bin").mkdir()
-
-        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: dot_venv)
-        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(dot_venv / "bin" / "python"))
-
-        unit = gateway_cli.generate_systemd_unit(system=False)
-
-        assert f"VIRTUAL_ENV={dot_venv}" in unit
-        assert f"{dot_venv}/bin" in unit
-        # Must NOT contain a hardcoded /venv/ path
-        assert "/venv/" not in unit or "/.venv/" in unit
-
-
 class TestGeneratedUnitIncludesLocalBin:
     """~/.local/bin must be in PATH so uvx/pipx tools are discoverable."""
 
-    def test_system_unit_includes_local_bin_in_path(self, monkeypatch):
+    def test_system_unit_includes_local_bin_in_path(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(gateway_cli, "_system_service_identity",
+                            lambda run_as_user=None: ("alice", "alice", str(tmp_path), 1001))
         monkeypatch.setattr(
             gateway_cli,
             "_build_user_local_paths",
@@ -1712,7 +1731,10 @@ class TestProfileArg:
         unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
 
         assert "ExecStart=" in unit
-        assert "--profile mybot gateway run" in unit
+        import shlex
+        command = shlex.split(next(line.split("=", 1)[1] for line in unit.splitlines()
+                                   if line.startswith("ExecStart=")))
+        assert command[-4:] == ["--profile", "mybot", "gateway", "run"]
         assert f'HERMES_HOME={target_home / ".hermes" / "profiles" / "mybot"}' in unit
 
     def test_launchd_plist_wraps_gateway_stderr_with_timestamps(self, tmp_path, monkeypatch):
@@ -1726,22 +1748,11 @@ class TestProfileArg:
         plist = gateway_cli.generate_launchd_plist()
         program_args = plistlib.loads(plist.encode("utf-8"))["ProgramArguments"]
 
-        assert program_args == [
-            "/usr/bin/python3",
-            "-m",
-            "hermes_cli.stderr_timestamp",
-            "--error-log",
-            str(profile_dir / "logs" / "gateway.error.log"),
-            "--",
-            "/usr/bin/python3",
-            "-m",
-            "hermes_cli.main",
-            "--profile",
-            "mybot",
-            "gateway",
-            "run",
-            "--external-supervisor",
-        ]
+        assert program_args[0] == "/usr/bin/python3"
+        assert program_args[-5:] == ["--profile", "mybot", "gateway", "run", "--external-supervisor"]
+        separator = program_args.index("--")
+        assert program_args[separator - 2:separator] == ["--error-log", str(profile_dir / "logs" / "gateway.error.log")]
+        assert "--replace" not in program_args
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
@@ -1792,7 +1803,7 @@ class TestSystemUnitPathRemapping:
         monkeypatch.setenv("HERMES_HOME", str(root_home / ".hermes"))
         monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: root_home / ".hermes")
         monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", project)
-        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: project / "venv")
+
         monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(venv_bin / "python"))
         monkeypatch.setattr(
             gateway_cli, "_system_service_identity",
@@ -1848,7 +1859,6 @@ class TestDockerAwareGateway:
         import pytest
 
         monkeypatch.setattr(gateway_cli, "is_managed", lambda: False)
-        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
         monkeypatch.setattr(gateway_cli, "is_wsl", lambda: False)
@@ -2335,7 +2345,6 @@ class TestGatewayCommandCatchesSystemScopeError:
         )
         monkeypatch.setattr(gateway_cli.os, "geteuid", lambda: 1000)
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
-        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
         monkeypatch.setattr(gateway_cli, "kill_gateway_processes", lambda **kw: 0)
 
         args = SimpleNamespace(gateway_command="start", system=True, all=False)

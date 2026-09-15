@@ -95,7 +95,7 @@ _CONFIG_SPEC: Dict[str, tuple] = {
 
 
 def _read_json_dict(path: Path) -> dict:
-    raw = _quietly(lambda: json.loads(path.read_text(encoding="utf-8")), "Failed to parse %s", path) if path.exists() else None
+    raw = _quietly(lambda: json.loads(path.read_text(encoding="utf-8-sig")), "Failed to parse %s", path) if path.exists() else None
     return raw if isinstance(raw, dict) else {}
 
 
@@ -174,9 +174,18 @@ def _memory_fields(item: Any, *keys: str) -> dict:
 class _SupermemoryClient:
     def __init__(self, api_key: str, timeout: float, container_tag: str,
                  search_mode: str = "hybrid", base_url: str = ""):
-        # Lazy-install the SDK on demand (honors security.allow_lazy_installs and sealed Docker
-        # venvs). On failure fall through so the raw import produces the canonical ImportError.
-        _quietly(lambda: importlib.import_module("tools.lazy_deps").ensure("memory.supermemory", prompt=False))
+        # Lazy-install the supermemory SDK on demand. ensure() honors
+        # security.allow_lazy_installs (default true) and, on a sealed Docker
+        # venv, redirects the install to the durable target. On failure we
+        # fall through so the raw import below produces the canonical
+        # ImportError message.
+        try:
+            from pm import ensure_import as _lazy_ensure
+            _lazy_ensure("supermemory")
+        except ImportError:
+            pass
+        except Exception:
+            pass
         from supermemory import Supermemory
         self._api_key, self._container_tag, self._timeout = api_key, container_tag, timeout
         self._search_mode = search_mode if search_mode in _VALID_SEARCH_MODES else "hybrid"

@@ -47,7 +47,7 @@ AI-native cross-session user modeling with dialectic reasoning, session-scoped c
 | | |
 |---|---|
 | **Best for** | Multi-agent systems with cross-session context, user-agent alignment |
-| **Requires** | `pip install honcho-ai` + [API key](https://app.honcho.dev) or self-hosted instance |
+| **Requires** | `hermes memory setup` prepares the Honcho SDK through PM; [API key](https://app.honcho.dev) or self-hosted instance |
 | **Data storage** | Honcho Cloud or self-hosted |
 | **Cost** | Honcho pricing (cloud) / free (self-hosted) |
 
@@ -356,9 +356,13 @@ Server-side LLM fact extraction with semantic search, reranking, and automatic d
 | | |
 |---|---|
 | **Best for** | Hands-off memory management — Mem0 handles extraction automatically |
-| **Requires** | `pip install mem0ai` + API key (platform), a running Mem0 server (self-hosted dashboard), or an LLM + vector store (OSS) |
+| **Requires** | `hermes memory setup` prepares the Mem0 SDK through PM; API key (platform), a running Mem0 server (self-hosted dashboard), or an LLM + vector store (OSS) |
 | **Data storage** | Mem0 Cloud (platform), your own Mem0 server (self-hosted dashboard), or in-process (OSS) |
 | **Cost** | Mem0 pricing (platform) / free (self-hosted or OSS) |
+
+The `mem0` SDK extra is excluded on native Windows ARM64. An external Mem0
+server over HTTP is a separate mode; a remote service does not imply that the
+in-process SDK runs on that target.
 
 **Tools (4):** `mem0_search` (semantic search; optional reranking in platform mode, off by default), `mem0_add` (store verbatim facts), `mem0_update` (update by ID), `mem0_delete` (delete by ID)
 
@@ -449,15 +453,22 @@ hermes config set memory.provider hindsight
 echo "HINDSIGHT_API_KEY=your-key" >> ~/.hermes/.env
 ```
 
-The setup wizard installs dependencies automatically and only installs what's needed for the selected mode (`hindsight-client` for cloud, `hindsight-all` for local). Requires `hindsight-client >= 0.4.22` (auto-upgraded on session start if outdated).
+The client uses the locked `hindsight` extra through PM. Local Embedded adds
+a separately resolved runtime for `hindsight-embed` and `hindsight-api-slim`,
+outside Hermes' shared Python environment. Its generations and `active.json`
+selection live under `$HERMES_HOME/profiles/Hindsight/env/`. The daemon uses that
+interpreter, and Hermes connects through the HTTP client. Re-run
+`hermes memory setup` to install or repair the local runtime. A client dependency
+change can require restarting Hermes.
 
-**Local mode UI:** `hindsight-embed -p hermes ui start`
+The local Hindsight CLI belongs to the selected side environment, not the
+global PATH. Its environment is independent of the Hermes application payload.
 
 **Config:** `$HERMES_HOME/hindsight/config.json`
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `mode` | `cloud` | `cloud` or `local` |
+| `mode` | `cloud` | `cloud`, `local_embedded`, or `local_external` |
 | `bank_id` | `hermes` | Memory bank identifier |
 | `recall_budget` | `mid` | Recall thoroughness: `low` / `mid` / `high` |
 | `memory_mode` | `hybrid` | `hybrid` (context + tools), `context` (auto-inject only), `tools` (tools only) |
@@ -572,7 +583,7 @@ Semantic long-term memory with profile recall, semantic search, explicit memory 
 | | |
 |---|---|
 | **Best for** | Semantic recall with user profiling and session-level graph building |
-| **Requires** | `pip install supermemory` + [cloud API key](http://app.supermemory.ai/integrations?connect=hermes), or a [self-hosted server](https://supermemory.ai/docs/self-hosting/overview) |
+| **Requires** | `hermes memory setup` prepares the Supermemory SDK through PM; [cloud API key](http://app.supermemory.ai/integrations?connect=hermes), or a [self-hosted server](https://supermemory.ai/docs/self-hosting/overview) |
 | **Data storage** | Supermemory Cloud or self-hosted |
 | **Cost** | Supermemory pricing (cloud) / free (self-hosted) |
 
@@ -655,19 +666,32 @@ Structured long-term memory using Memori Cloud, with background completed-turn c
 | | |
 |---|---|
 | **Best for** | Agent-controlled recall with structured project and session attribution |
-| **Requires** | `pip install hermes-memori` + `hermes-memori install` + [Memori API key](https://app.memorilabs.ai/signup) |
+| **Requires** | Externally supplied `hermes-memori` CLI and provider integration + [Memori API key](https://app.memorilabs.ai/signup) |
 | **Data storage** | Memori Cloud |
 | **Cost** | Memori pricing |
 
 **Tools:** `memori_recall` (search long-term memory), `memori_recall_summary` (summarized context), `memori_quota` (usage/quota), `memori_signup` (request signup email), `memori_feedback` (send integration feedback)
 
 **Setup:**
+
+`hermes-memori` is an external integration, not a managed PM tool name. Follow
+its publisher's instructions to install the CLI in an independent environment.
+Before running its installer, confirm that it targets the intended Hermes home
+and supplies a provider with declared Python dependencies. Do not let an external
+installer pip-install into Hermes's selected environment. CLI availability alone
+does not make the Python provider available inside Hermes; an entry-point-only
+distribution needs an owner-managed build that includes it.
+
 ```bash
-pip install hermes-memori
+# Run only after confirming the external installer's integration contract above.
 hermes-memori install
 hermes config set memory.provider memori
 hermes memory setup
 ```
+
+If the installer does not support PM-managed directory-provider admission, ask
+the publisher for that integration rather than inventing a `hermes pm install`
+package command. Restart Hermes after successful dependency preparation.
 
 ---
 

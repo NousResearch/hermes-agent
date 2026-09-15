@@ -118,9 +118,13 @@ it guards. `plan → snapshot → apply → restart-per-kind → verify → repo
   (exit 1) — automation must never treat a mixed-version fleet as healthy.
 - **Report**: every run writes a machine-readable receipt to `~/.hermes/logs/update_receipts/`
   (`latest.json` pointer; steps, skips WITH reasons, restart outcome, plan, fleet snapshot).
-  Finalization is owned by the `cmd_update` command boundary — early `sys.exit` paths (preflight
-  refusals, fetch failures) still persist a receipt with the real exit code. A begun-but-unwritten
-  receipt is a bug: refused/failed runs are the ones receipts exist for.
+  Before a source swap, the parent captures plan/snapshots/receipt and its Windows pause token.
+  `update_completion.py` runs new-code PM preparation with site initialization disabled, then
+  selected-Python builds, maintenance, scans/restarts and verification. Git/current/ZIP share
+  this owner; never reload or purge modules to continue in the old interpreter. The parent keeps
+  the lock, waits, and accepts only a correlated terminal result. `cmd_update` still finalizes
+  early failures and missing/killed-child outcomes; PM refusal data survives the handoff.
+  See `docs/source-update-completion.md`. A begun-but-unwritten receipt is a bug.
 
 Process-scan coordination between updater, serve/dashboard, and gateway is being replaced by a
 gateway-owned control socket (#92091); scans are the fallback layer for old/crashed processes — read

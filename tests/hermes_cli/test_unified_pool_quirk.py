@@ -189,7 +189,7 @@ def test_smi_resolver_caches_and_survives_empty_path(monkeypatch):
     assert len(calls) == 1
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_smi_resolver_uses_wsl_driver_path_when_path_is_empty(monkeypatch):
     """WSL exposes nvidia-smi through the Windows driver directory even
     when a service PATH cannot resolve it."""

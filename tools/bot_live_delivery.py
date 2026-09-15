@@ -93,7 +93,7 @@ def _locked(home: Path | str):
 
 def _read(path: Path) -> dict[str, Any] | None:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return None
 

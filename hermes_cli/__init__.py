@@ -29,7 +29,7 @@ def _ensure_utf8():
                 reconfigure(encoding="utf-8", errors="replace")
             else:
                 # No reconfigure(): reopen the fd as UTF-8 (closefd=False keeps the original fd open).
-                new_stream = open(stream.fileno(), "w", encoding="utf-8", errors="replace",
+                new_stream = open(stream.fileno(), "w", encoding="utf-8", errors="replace",  # windows-footgun: ok (stdout re-open for write, not a read)
                                   buffering=1, closefd=False)
                 setattr(sys, stream_name, new_stream)
             repaired = True

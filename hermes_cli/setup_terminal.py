@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import shutil
-import sys
 from pathlib import Path
 from tools import tool_backend_helpers
 from hermes_cli import nous_subscription
@@ -72,7 +71,7 @@ def _read_nearest_vercel_project(start: Path | None = None) -> dict[str, str]:
         if not project_file.exists():
             continue
         try:
-            data = json.loads(project_file.read_text(encoding="utf-8"))
+            data = json.loads(project_file.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError):
             return {}
         if not isinstance(data, dict):
@@ -99,33 +98,21 @@ def _existing_secret_keeps(env_var: str, label: str, question: str) -> bool:
     return not _setup.prompt_yes_no(question, False)
 
 
-def _pip_install_vercel(package):
-    """uv when Hermes has one ($HERMES_HOME/bin is never on PATH, so which() misses it and
-    bootstrapping mid-wizard is fine), else pip — a `uv venv` venv may not even have pip."""
-    import subprocess
-    from hermes_cli.managed_uv import ensure_uv
-    uv_bin = ensure_uv()
-    cmd = ([uv_bin, "pip", "install", "--python", sys.executable, package] if uv_bin
-           else [sys.executable, "-m", "pip", "install", package])
-    return subprocess.run(cmd, **_RUN_KW)
+def _ensure_sdk(extra: str) -> None:
+    """Enable a declared SDK extra without mutating the running interpreter."""
+    import pm
 
-
-def _ensure_sdk(package: str, manual_hint: str, *, show_stderr: bool = False, install=None) -> None:
-    """Import *package*; if missing, install it (default: the venv pip ladder)."""
     try:
-        __import__(package)
+        __import__(extra)
     except ImportError:
-        _setup.print_info(f"Installing {package} SDK...")
-        if install is None:
-            from hermes_cli.tools_config import _pip_install
-            install = lambda pkg: _pip_install([pkg])  # noqa: E731
-        result = install(package)
-        if result.returncode == 0:
-            _setup.print_success(f"{package} SDK installed")
+        _setup.print_info(f"Installing {extra} SDK...")
+        try:
+            pm.sync_venv([extra], explicit=True)
+        except (pm.InstallError, OSError, ValueError) as exc:
+            _setup.print_warning(f"Install failed: {exc}")
+            _setup.print_info("Retry with: hermes setup terminal")
         else:
-            _setup.print_warning(f"Install failed — run manually: {manual_hint}")
-            if show_stderr and result.stderr:
-                _setup.print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+            _setup.print_success(f"{extra} SDK installed. Restart Hermes to use it.")
 
 
 def _report_binary(found: str | None, missing: str, install_hint: str, found_prefix: str = "Found: ") -> None:
@@ -198,7 +185,7 @@ def _setup_backend_modal(config: dict) -> None:
         return
     config["terminal"]["modal_mode"] = "direct"
     _setup.print_info("Requires a Modal account: https://modal.com")
-    _ensure_sdk("modal", "uv pip install modal")
+    _ensure_sdk("modal")
     _setup._info(None, "Modal authentication:", "  Get your token at: https://modal.com/settings")
     if _existing_secret_keeps("MODAL_TOKEN_ID", "Modal token", "  Update Modal credentials?"):
         return
@@ -211,7 +198,7 @@ def _setup_backend_daytona(config: dict) -> None:
     _setup._info("Persistent cloud development environments.",
                  "Each session gets a dedicated sandbox with filesystem persistence.",
                  "Sign up at: https://daytona.io")
-    _ensure_sdk("daytona", "uv pip install daytona", show_stderr=True)
+    _ensure_sdk("daytona")
     print()
     had_key = bool(_setup.get_env_value("DAYTONA_API_KEY"))
     if not _existing_secret_keeps("DAYTONA_API_KEY", "Daytona API key", "  Update API key?"):
@@ -223,8 +210,8 @@ def _setup_backend_daytona(config: dict) -> None:
 def _setup_backend_vercel(config: dict) -> None:
     _setup.print_success("Terminal backend: Vercel Sandbox")
     _setup._info("Cloud microVM sandboxes with snapshot-backed filesystem persistence.",
-                 "Requires the optional SDK: pip install 'hermes-agent[vercel]'")
-    _ensure_sdk("vercel", "pip install 'hermes-agent[vercel]'", show_stderr=True, install=_pip_install_vercel)
+                 "Requires the optional Vercel SDK (installed through Hermes PM).")
+    _ensure_sdk("vercel")
     _prompt_vercel_sandbox_settings(config)
 
 

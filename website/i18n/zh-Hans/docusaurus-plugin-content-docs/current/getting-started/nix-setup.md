@@ -22,6 +22,17 @@ Hermes Agent 提供了一个 Nix flake，支持三个层级的集成：
 **对于 NixOS 模块用户**，整个生命周期有所不同：配置存放在 `configuration.nix` 中，密钥通过 sops-nix/agenix 管理，服务是一个 systemd 单元，CLI 配置命令被屏蔽。管理 hermes 的方式与管理其他 NixOS 服务相同。
 :::
 
+## PM 固定版本
+
+`nix/npm-pinned.nix` 和 `nix/pm-packages.nix` 读取 PM 锁文件。
+`nix build .#pm-ripgrep` 等输出解包对应的固定归档，不等于完整应用或所有平台的运行证明。
+应用仍由 uv2nix 环境和 Nix 包装器组成。
+
+`nix/pythonLock.nix` 从 `pm/lock.json` 读取 Python 主/次版本。
+uv2nix 环境、覆盖包、插件依赖和开发 shell 使用同一个解释器系列。
+如果固定的 nixpkgs 不提供该系列，求值直接失败，不回退到其他 Python。
+原生 Nix 求值和构建仍由 CI 验证。通过 Nix 更新，不要向 Nix store 执行 pip 安装。
+
 ## 前提条件
 
 - **已启用 flakes 的 Nix** — 推荐使用 [Determinate Nix](https://install.determinate.systems)（默认启用 flakes）
@@ -107,7 +118,7 @@ nix build
 就这些。`nixos-rebuild switch` 会创建 `hermes` 用户、生成 `config.yaml`、连接密钥并启动 gateway——这是一个长期运行的服务，将 Agent 连接到消息平台（Telegram、Discord 等）并监听传入消息。
 
 :::warning 密钥是必需的
-上面的 `environmentFiles` 行假设你已配置 [sops-nix](https://github.com/Mic92/sops-nix) 或 [agenix](https://github.com/ryantm/agenix)。该文件至少应包含一个 LLM 提供商密钥（例如 `OPENROUTER_API_KEY=sk-or-...`）。完整设置请参阅[密钥管理](#secrets-management)。如果你还没有密钥管理器，可以先使用普通文件——只需确保它不是全局可读的：
+上面的 `environmentFiles` 行假设你已配置 [sops-nix](https://github.com/Mic92/sops-nix) 或 [agenix](https://github.com/ryantm/agenix)。该文件至少应包含一个 LLM 提供商密钥（例如 `OPENROUTER_API_KEY=sk-or-...`）。完整设置请参阅[密钥管理](#密钥管理)。如果你还没有密钥管理器，可以先使用普通文件——只需确保它不是全局可读的：
 
 ```bash
 echo "OPENROUTER_API_KEY=sk-or-your-key" | sudo install -m 0600 -o hermes /dev/stdin /var/lib/hermes/env
@@ -318,7 +329,7 @@ Nix 用户最常见自定义需求的快速参考：
 | 使用不同的提供商端点 | `settings.model.base_url` | `"https://openrouter.ai/api/v1"` |
 | 添加 API 密钥 | `environmentFiles` | `[ config.sops.secrets."hermes-env".path ]` |
 | 给 Agent 设置个性 | `${services.hermes-agent.stateDir}/.hermes/SOUL.md` | 直接管理该文件 |
-| 添加 MCP 工具服务器 | `mcpServers.<name>` | 参见 [MCP 服务器](#mcp-servers) |
+| 添加 MCP 工具服务器 | `mcpServers.<name>` | 参见 [MCP 服务器](#mcp-服务器) |
 | 将主机目录挂载到容器 | `container.extraVolumes` | `[ "/data:/data:rw" ]` |
 | 为容器传入 GPU 访问 | `container.extraOptions` | `[ "--gpus" "all" ]` |
 | 使用 Podman 替代 Docker | `container.backend` | `"podman"` |
@@ -628,7 +639,7 @@ services.hermes-agent.extraPlugins = [
 
 ```nix
 services.hermes-agent.extraPythonPackages = [
-  (pkgs.python312Packages.buildPythonPackage {
+  (config.services.hermes-agent.package.python.pkgs.buildPythonPackage {
     pname = "rtk-hermes";
     version = "1.0.0";
     src = pkgs.fetchFromGitHub {
@@ -638,7 +649,7 @@ services.hermes-agent.extraPythonPackages = [
       hash = "sha256-...";
     };
     format = "pyproject";
-    build-system = [ pkgs.python312Packages.setuptools ];
+    build-system = [ config.services.hermes-agent.package.python.pkgs.setuptools ];
   })
 ];
 ```
@@ -674,7 +685,7 @@ services.hermes-agent = {
 ```nix
 services.hermes-agent = {
   extraPlugins = [ my-plugin-src ];          # 插件源码
-  extraPythonPackages = [ pkgs.python312Packages.redis ];  # 其 Python 依赖
+  extraPythonPackages = [ config.services.hermes-agent.package.python.pkgs.redis ];  # 其 Python 依赖
   extraPackages = [ pkgs.redis ];            # 其需要的系统二进制文件
 };
 ```
@@ -716,17 +727,14 @@ services.hermes-agent.settings.plugins.enabled = [
 
 ### 开发 Shell
 
-该 flake 提供了一个包含 Python 3.12、uv、Node.js 和所有运行时工具的开发 shell：
+该 flake 提供包含 `dev` extra 的可编辑 Python 环境，解释器主/次版本来自 PM 锁文件。
+`HERMES_PYTHON` 指向该解释器，不会把 Python 依赖安装到仓库内的 `.venv`。
+shell 还提供 Node.js 和运行时工具。npm hook 根据输入变更刷新 JS workspaces。
 
 ```bash
 cd hermes-agent
 nix develop
-
-# Shell 提供：
-#   - Python 3.12 + uv（首次进入时将依赖安装到 .venv）
-#   - Node.js 22、ripgrep、git、openssh、ffmpeg 在 PATH 上
-#   - 戳记文件优化：依赖未变更时重新进入几乎即时
-
+"$HERMES_PYTHON" -c "import sys; print(sys.executable); print(sys.version)"
 hermes setup
 hermes chat
 ```
@@ -738,7 +746,7 @@ hermes chat
 ```bash
 cd hermes-agent
 direnv allow    # 仅需一次
-# 后续进入几乎即时（戳记文件跳过依赖安装）
+# Nix 复用已构建的 Python 环境，npm hook 检查 JS 输入。
 ```
 
 ### Flake 检查
@@ -835,7 +843,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # 合并脚本保留用户�
 | `extraArgs` | `listOf str` | `[]` | `hermes gateway` 的额外参数 |
 | `extraPackages` | `listOf package` | `[]` | Agent 可用的额外包。添加到 hermes 用户的每用户 profile，终端命令、skills 和 cron 任务均可见 |
 | `extraPlugins` | `listOf package` | `[]` | 以符号链接方式安装到 `$HERMES_HOME/plugins/` 的目录插件包。每个包必须包含 `plugin.yaml` |
-| `extraPythonPackages` | `listOf package` | `[]` | 添加到 PYTHONPATH 用于入口点插件发现的 Python 包。使用 `python312Packages` 构建 |
+| `extraPythonPackages` | `listOf package` | `[]` | 添加到 PYTHONPATH 用于入口点插件发现的 Python 包。使用所选包的 `python.pkgs` 构建 |
 | `extraDependencyGroups` | `listOf str` | `[]` | 包含到封闭 venv 中的 pyproject.toml 可选 extras（例如 `["hindsight"]`）。由 uv 解析——无冲突 |
 | `restart` | `str` | `"always"` | systemd `Restart=` 策略 |
 | `restartSec` | `int` | `5` | systemd `RestartSec=` 值 |
@@ -970,6 +978,6 @@ nix-store --query --roots $(docker exec hermes-agent readlink /data/current-pack
 | `hermes --version` 显示旧版本 | 容器未重启 | `systemctl restart hermes-agent` |
 | `/var/lib/hermes` 权限拒绝 | 状态目录为 `0750 hermes:hermes` | 使用 `docker exec` 或 `sudo -u hermes` |
 | `nix-collect-garbage` 删除了 hermes | GC root 缺失 | 重启服务（preStart 会重新创建 GC root） |
-| `no container with name or ID "hermes-agent"`（Podman） | Podman rootful 容器对普通用户不可见 | 为 podman 添加免密 sudo（参见[容器模式](#container-mode)章节） |
+| `no container with name or ID "hermes-agent"`（Podman） | Podman rootful 容器对普通用户不可见 | 为 podman 添加免密 sudo（参见[容器模式](#容器架构)章节） |
 | `unable to find user hermes` | 容器仍在启动中（入口点尚未创建用户） | 等待几秒后重试——CLI 会自动重试 |
 | 通过 `extraPackages` 添加的工具在终端中找不到 | 需要 `nixos-rebuild switch` 更新每用户 profile | 重建并重启：`nixos-rebuild switch && systemctl restart hermes-agent` |

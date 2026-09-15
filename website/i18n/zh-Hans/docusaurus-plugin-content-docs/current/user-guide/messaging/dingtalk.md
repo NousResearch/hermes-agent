@@ -6,6 +6,9 @@ description: "将 Hermes Agent 设置为钉钉聊天机器人"
 
 # 钉钉设置
 
+本页的 Python 依赖命令使用 [PM 准备的源码环境](/reference/package-management#developer-workflow)。
+依赖变更后，请重新激活该 checkout 并重启 Hermes。
+
 Hermes Agent 可作为聊天机器人集成到钉钉（DingTalk），让你通过单聊或群聊与 AI 助手对话。机器人通过钉钉的 Stream Mode（流模式）连接——一种长连接 WebSocket，无需公网 URL 或 webhook 服务器——并通过钉钉的 session webhook API 以 markdown 格式回复消息。
 
 在开始设置之前，先了解大多数人最关心的内容：Hermes 进入你的钉钉工作空间后的行为方式。
@@ -44,13 +47,13 @@ group_sessions_per_user: false
 安装所需的 Python 包：
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e ".[dingtalk]"
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['dingtalk'], explicit=True)"
 ```
 
 或单独安装：
 
 ```bash
-pip install dingtalk-stream httpx alibabacloud-dingtalk
+python -c "import pm; pm.sync_venv(['dingtalk'], explicit=True)"
 ```
 
 - `dingtalk-stream` — 钉钉官方 Stream Mode SDK（基于 WebSocket 的实时消息）
@@ -236,7 +239,7 @@ display:
 **解决方法**：安装它：
 
 ```bash
-pip install dingtalk-stream httpx
+python -c "import pm; pm.sync_venv(['dingtalk'], explicit=True)"
 ```
 
 ### "DINGTALK_CLIENT_ID and DINGTALK_CLIENT_SECRET required"

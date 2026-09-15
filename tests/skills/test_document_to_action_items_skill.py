@@ -2,7 +2,7 @@
 import re
 from pathlib import Path
 
-import yaml
+import hermes_yaml as yaml
 
 SKILL_PATH = (
     Path(__file__).resolve().parents[2]

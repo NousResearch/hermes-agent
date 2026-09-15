@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 SKILL_DIR = (
     Path(__file__).resolve().parents[2]

@@ -40,10 +40,6 @@ function isWindowsBinaryPathInWsl(
   )
 }
 
-function bundledRuntimeImportCheck(platform = process.platform) {
-  return platform === 'win32' ? 'import fastapi, uvicorn, winpty' : 'import fastapi, uvicorn, ptyprocess'
-}
-
 const GPU_OVERRIDE_ON = new Set(['1', 'true', 'yes', 'on'])
 const GPU_OVERRIDE_OFF = new Set(['0', 'false', 'no', 'off'])
 
@@ -142,7 +138,6 @@ function resolveLinuxPasswordStore(options: { env?: NodeJS.ProcessEnv; platform?
 }
 
 export {
-  bundledRuntimeImportCheck,
   detectRemoteDisplay,
   isWindowsBinaryPathInWsl,
   isWslEnvironment,

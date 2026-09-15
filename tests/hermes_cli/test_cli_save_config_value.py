@@ -3,7 +3,7 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import yaml
+import hermes_yaml as yaml
 
 import pytest
 
@@ -17,7 +17,7 @@ class TestSaveConfigValueAtomic:
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         config_path = hermes_home / "config.yaml"
-        config_path.write_text(yaml.dump({
+        config_path.write_text(yaml.safe_dump({
             "model": {"default": "test-model", "provider": "openrouter"},
             "display": {"skin": "default"},
         }))

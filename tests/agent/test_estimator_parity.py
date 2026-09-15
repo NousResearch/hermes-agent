@@ -328,3 +328,7 @@ class TestNoProgressDeadLoopBreaker:
                 "no_progress must arm the per-session backoff — otherwise "
                 "the dead loop re-fires a full aux summarization every turn"
             )
+            # Release the sqlite handle BEFORE the TemporaryDirectory cleanup:
+            # on a real Windows host an open sqlite file cannot be unlinked
+            # (WinError 32), which would fail teardown even for a green body.
+            db.close()

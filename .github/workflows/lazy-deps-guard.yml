@@ -1,0 +1,36 @@
+name: Lazy-deps import guard
+
+# Rejects any tracked production code that imports tools/lazy_deps.py,
+# which was deleted by the pm migration (pm.extras — available /
+# ensure_import / ensure_and_bind — is the only lazy-install surface). A
+# remaining import is an ImportError at call time.
+#
+# Runs unconditionally (no change-classifier gate): the deleted module
+# must stay unimported on every change, in any kind of PR — the same
+# "passive rule that cannot enforce a policy" reasoning as the
+# case-collision check. Not folded into lint.yml because the lint lane is
+# language-gated by the orchestrator's detect outputs.
+#
+# The checker builds the tracked inventory (git ls-files), does AST import
+# analysis (comments/prose ignored by construction), and FAILS on
+# inventory errors — it can never pass by scanning nothing. Exit 1 lists
+# the exact offender sites; their migration is owned by the lazy-deps
+# owner, not this gate. Contract tests (fixture repos prove red/green):
+# tests/pm/test_no_lazy_deps.py.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  lazy-deps-guard:
+    name: No imports of deleted tools.lazy_deps
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Check tools.lazy_deps imports in tracked production code
+        run: python3 scripts/ci/check_lazy_deps_imports.py

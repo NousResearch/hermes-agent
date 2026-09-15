@@ -198,15 +198,13 @@ def _engine_device_pool() -> "tuple[int, bool | None] | None":
     fallback when the driver API is unreachable: asks the exact binary that will do the
     allocating. Carries no integrated verdict — callers must gate it."""
     with suppress(Exception):  # a probe miss must never block budgeting
-        from hermes_cli.local_runtime.binaries import installed_tags, runtimes_root, server_binary
+        from hermes_cli.config import get_config_value
+        from hermes_cli.local_runtime.binaries import installed_engine
 
-        tags = installed_tags()
-        if not tags:
+        engine = installed_engine(get_config_value("local_runtime.backend", "auto"))
+        if engine is None:
             return None
-        backend_dirs = [d for d in (runtimes_root() / tags[0]).iterdir() if d.is_dir()]
-        if not backend_dirs:
-            return None
-        exe = server_binary(backend_dirs[0])
+        exe = engine.binary
         out = subprocess.run([str(exe), "--list-devices"], capture_output=True,
                              text=True, timeout=30, cwd=str(exe.parent))
         if out.returncode != 0:

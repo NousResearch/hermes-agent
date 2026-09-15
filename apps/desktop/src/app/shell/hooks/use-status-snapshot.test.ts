@@ -1,8 +1,12 @@
-import { act, cleanup, renderHook } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, renderHook, screen } from '@testing-library/react'
+import { createElement, type ReactElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { NotificationStack } from '@/components/notifications'
 import { getStatus } from '@/hermes'
+import { I18nProvider, type Locale, TRANSLATIONS, type Translations } from '@/i18n'
 import { $setupReadyTick, notifySetupReady } from '@/store/live-sync'
+import { clearNotifications } from '@/store/notifications'
 
 import { deferred } from '../../../test/deferred'
 
@@ -27,6 +31,7 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue({} as never)
   $setupReadyTick.set(0)
+  clearNotifications()
 })
 
 afterEach(() => {
@@ -36,6 +41,59 @@ afterEach(() => {
 })
 
 describe('useStatusSnapshot', () => {
+  it.each(Object.entries(TRANSLATIONS) as [Locale, Translations][])(
+    'localizes and deduplicates shared-profile warnings in %s',
+    async (locale: Locale, copy: Translations): Promise<void> => {
+      const warning: string = copy.notifications.sharedProfileWarning
+
+      expect(warning).toBeTypeOf('string')
+
+      const wrapper: (props: { children: ReactNode }) => ReactElement = ({ children }: { children: ReactNode }): ReactElement =>
+        createElement(I18nProvider, { configClient: null, initialLocale: locale, children })
+
+      const requestGateway: GatewayRequester = vi.fn().mockResolvedValue({}) as unknown as GatewayRequester
+
+      render(createElement(NotificationStack), { wrapper })
+
+      const { rerender }: { rerender: (props: { scope: string }) => void } = renderHook(
+        ({ scope }: { scope: string }): ReturnType<typeof useStatusSnapshot> =>
+          useStatusSnapshot('open', requestGateway, scope),
+        {
+          initialProps: { scope: 'local-default' },
+          wrapper
+        }
+      )
+
+      await flushAsync()
+      expect(screen.queryByText(warning)).toBeNull()
+      vi.mocked(getStatus).mockResolvedValue({ shared_profile_warning: true } as never)
+      await act(async (): Promise<void> => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
+      expect(screen.getByText(warning)).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: copy.notifications.dismiss }))
+      expect(screen.queryByText(warning)).toBeNull()
+      await act(async (): Promise<void> => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
+      expect(screen.queryByText(warning)).toBeNull()
+
+      vi.mocked(getStatus).mockResolvedValue({ shared_profile_warning: false } as never)
+      await act(async (): Promise<void> => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
+      vi.mocked(getStatus).mockResolvedValue({ shared_profile_warning: true } as never)
+      await act(async (): Promise<void> => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
+      expect(screen.getByText(warning)).toBeTruthy()
+      vi.mocked(getStatus).mockResolvedValue({ shared_profile_warning: false } as never)
+      rerender({ scope: 'local-work' })
+      await flushAsync()
+      expect(screen.queryByText(warning)).toBeNull()
+    }
+  )
+
   it('pauses status RPCs while visible but unfocused, then catches up on focus', async () => {
     vi.mocked(document.hasFocus).mockReturnValue(false)
     const requestGateway = vi.fn().mockResolvedValue({}) as unknown as GatewayRequester

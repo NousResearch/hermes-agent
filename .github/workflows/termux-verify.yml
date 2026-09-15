@@ -1,0 +1,127 @@
+name: Termux verification
+
+on:
+  push:
+    branches: [ethie/cli-bundles]
+    paths:
+      - 'scripts/termux/**'
+      - 'pm/**'
+      - 'tests/test_termux*'
+      - '.github/workflows/termux-verify.yml'
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      release:
+        description: 'Stable-release candidate run (ignored by the jobs; uniform callable surface).'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+# A workflow_call run (stable release) is never cancelled: its group uses
+# github.run_id so a parent rerun cannot kill this child mid-flight.
+concurrency:
+  group: termux-verify-${{ inputs.release == true && github.run_id || github.ref }}
+  cancel-in-progress: ${{ inputs.release != true }}
+
+jobs:
+  contracts:
+    name: Termux packaging contracts on Linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # github.sha is the exact candidate commit on a stable tag-dispatched
+          # caller and the head SHA on every other event.
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install the native linker test prerequisite
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y patchelf
+      - uses: ./.github/actions/setup-pm
+        with:
+          extras: '["dev"]'
+          cache-python: false
+      - name: Run the native linker and wheel contracts
+        run: |
+          bash scripts/run_tests.sh -j 2 \
+            tests/test_termux_python_linkage.py tests/test_termux_retag_wheel.py \
+            tests/test_termux_build_wheels.py \
+            tests/test_termux_wheelhouse_cache.py tests/test_termux_runtime_libs.py \
+            tests/scripts/test_archive_inputs.py \
+            tests/test_termux_launchers.py tests/test_pm_bionic.py \
+            tests/pm/test_stage_only.py tests/pm/test_deb_safety.py tests/test_stage_apt_repo.py \
+            tests/test_run_tests_shell.py
+
+  tui:
+    name: Prebuilt TUI checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # github.sha is the exact candidate commit on a stable tag-dispatched
+          # caller and the head SHA on every other event.
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-pm
+        with:
+          toolchain: node
+          cache-node: false
+      - name: Install the locked JS workspace
+        run: npm ci --workspace ui-tui --workspace tests-js --include-workspace-root --include=dev --no-fund --no-audit
+      - name: Check and bundle the TUI
+        run: |
+          npm run check --workspace tests-js
+          npm run check --workspace ui-tui
+          npm run build --workspace ui-tui
+
+  native-runtime:
+    name: Verify bionic runtime tools
+    if: github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
+    runs-on: ubuntu-24.04-arm
+    environment: release-signing
+    timeout-minutes: 45
+    env:
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # github.sha is the exact candidate commit on a stable tag-dispatched
+          # caller and the head SHA on every other event.
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-pm
+        with:
+          archive-inputs: true
+          cache-python: false
+      - name: Preserve and retrieve pinned inputs
+        run: python -m scripts.ci.archive_inputs --target linux-arm64-bionic --payload termux-build/payload --store "$HERMES_RUNTIME_DIR"
+      - name: Stage the pinned bionic runtimes
+        run: |
+          bash scripts/termux/build_cpython.sh termux-build/payload
+          bash scripts/termux/build_uv.sh termux-build/payload
+          bash scripts/termux/termux_pkg_build.sh ffmpeg ffmpeg termux-build/payload
+          python3 scripts/termux/stage_runtime_libs.py termux-build/payload
+      - name: Verify ffmpeg on the bare bionic runtime
+        run: |
+          digest=$(python3 -c 'from pm.lock import termux_docker_digest; print(termux_docker_digest())')
+          docker run --rm --platform linux/arm64 --user 1000:1000 --network none \
+            -v "$PWD/termux-build/payload:/payload:ro" \
+            "termux/termux-docker@$digest" bash -c '
+              set -euo pipefail
+              export PREFIX=/data/data/com.termux/files/usr
+              export LD_LIBRARY_PATH="/payload/ffmpeg$PREFIX/lib:/payload/runtime-libs/lib:$PREFIX/lib"
+              "/payload/ffmpeg$PREFIX/bin/ffmpeg" -hide_banner \
+                -f lavfi -i anullsrc=r=16000:cl=mono -t 0.1 -f wav "$PREFIX/tmp/ffmpeg-proof.wav"
+              test -s "$PREFIX/tmp/ffmpeg-proof.wav"
+              printf "FFMPEG_BARE_RUNTIME_OK\n"
+            '

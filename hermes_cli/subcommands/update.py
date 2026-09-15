@@ -7,6 +7,7 @@ from typing import Callable
 
 def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     """Attach the ``update`` subcommand to ``subparsers``."""
+    from hermes_cli.release_channels import validate_name
     update_parser = subparsers.add_parser(
         "update", help="Update Hermes Agent to the latest version",
         description="Pull the latest changes from git and reinstall dependencies")
@@ -65,5 +66,38 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     update_parser.add_argument(
         "--force-venv", action="store_true", default=False,
         help="Windows: mutate the venv even while other processes are running from its interpreter (desktop backend, gateway, terminals). Those processes keep native .pyd files locked, so the dependency sync will likely fail partway and strand the install half-updated. Use only if you know the detected holders are false positives.",
+    )
+    update_parser.add_argument(
+        "--set-channel",
+        default=None,
+        type=validate_name,
+        metavar="CHANNEL",
+        help=(
+            "Persist the update channel for THIS install (recorded per "
+            "install in config.yaml under update.installs). Names are resolved "
+            "from the release archive, not a built-in list. Source installs "
+            "check out the published build's exact commit; main follows the "
+            "source branch. Package channels are baked into their identities."
+        ),
+    )
+    update_parser.add_argument(
+        "--install-id",
+        action="store_true",
+        default=False,
+        help=(
+            "Print this install's id and path (the id keys its per-install "
+            "channel record in config.yaml) and exit."
+        ),
+    )
+    update_parser.add_argument(
+        "--channel",
+        default=None,
+        type=validate_name,
+        metavar="CHANNEL",
+        help=(
+            "Track CHANNEL for this run only (transient override; "
+            "--set-channel persists). 'stable' and 'canary' select published "
+            "releases, 'main' the branch tip. Source installs only."
+        ),
     )
     update_parser.set_defaults(func=cmd_update)

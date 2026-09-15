@@ -201,7 +201,7 @@ def _prune_old(keep: int, protect: Optional[Set[str]] = None) -> List[str]:
 # --- List + rollback ---
 def _read_manifest(snap_dir: Path) -> Dict[str, Any]:
     try:
-        return json.loads((snap_dir / "manifest.json").read_text(encoding="utf-8"))
+        return json.loads((snap_dir / "manifest.json").read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -248,7 +248,7 @@ def _restore_cron_skill_links(snapshot_dir: Path) -> Dict[str, Any]:
     if not backup_file.exists():
         return {**report, "error": f"snapshot has no {CRON_JOBS_FILENAME}"}
     try:
-        backup_jobs = _jobs_list(json.loads(backup_file.read_text(encoding="utf-8")))
+        backup_jobs = _jobs_list(json.loads(backup_file.read_text(encoding="utf-8-sig")))
     except (OSError, json.JSONDecodeError) as e:
         return {**report, "error": f"failed to load backed-up jobs: {e}"}
     if backup_jobs is None:

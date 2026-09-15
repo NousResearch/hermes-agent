@@ -4,6 +4,7 @@ import {
   applyConnectionChange,
   commitConnectionFailure,
   resolveTerminalConnection,
+  sshQuitShouldBlock,
   teardownSshState
 } from './connection-apply'
 
@@ -18,8 +19,8 @@ function deferred() {
 }
 
 describe('applyConnectionChange', () => {
-  it.each([['SSH A to SSH B'], ['SSH to Cloud'], ['Cloud to SSH']])(
-    'serializes %s behind bootstrap rollback before teardown and apply',
+  it(
+    'serializes connection changes behind bootstrap rollback before teardown and apply',
     async () => {
       const gate = deferred()
       const events: string[] = []
@@ -90,6 +91,17 @@ describe('resolveTerminalConnection', () => {
     ).rejects.toThrow('not ready')
   })
 })
+
+it.each([
+  [false, 1, 0, false, true],
+  [false, 0, 1, false, true],
+  [false, 0, 0, true, true],
+  [true, 1, 1, true, false],
+  [false, 0, 0, false, false]
+] as const)('quit guard: done=%s connections=%s bootstrap=%s stopping=%s → %s',
+  (teardownDone: boolean, connectionCount: number, bootstrapPending: number, stopping: boolean, expected: boolean): void => {
+    expect(sshQuitShouldBlock({ teardownDone, connectionCount, bootstrapPending, inFlight: stopping ? Promise.resolve() : null })).toBe(expected)
+  })
 
 describe('teardownSshState', () => {
   it('terminates the owned remote backend before closing its tunnel and SSH transport', async () => {

@@ -6,11 +6,12 @@ import pytest
 
 import hermes_cli.gateway as gateway
 
+pytestmark = pytest.mark.platforms("linux")
+
 
 class TestEnsureLingerEnabled:
     def test_linger_already_enabled_via_file(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
-        monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr("getpass.getuser", lambda: "testuser")
         monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: True))
 
@@ -26,7 +27,6 @@ class TestEnsureLingerEnabled:
 
     def test_loginctl_success_enables_linger(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
-        monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr("getpass.getuser", lambda: "testuser")
         monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: False))
         monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda username=None: (False, ""))
@@ -50,7 +50,6 @@ class TestEnsureLingerEnabled:
 
     def test_loginctl_failure_shows_manual_guidance(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
-        monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr("getpass.getuser", lambda: "testuser")
         monkeypatch.setattr(gateway, "Path", lambda _path: SimpleNamespace(exists=lambda: False))
         monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda username=None: (False, ""))
@@ -180,6 +179,7 @@ def test_systemd_install_targets_linger_at_system_service_user(monkeypatch, tmp_
     monkeypatch.setattr(gateway, "_require_root_for_system_service", lambda action: None)
     monkeypatch.setattr(gateway, "has_legacy_hermes_units", lambda: False)
     monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
+    monkeypatch.setattr(gateway, "_prepare_service_launcher", lambda **kwargs: None)
     monkeypatch.setattr(
         gateway,
         "generate_systemd_unit",

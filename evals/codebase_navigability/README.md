@@ -30,7 +30,9 @@ numbers. Everything here is offline and deterministic; no model calls.
 ## Usage
 
 ```bash
-# deps: tiktoken + radon (bench venv or the project venv)
+# Independent benchmark environment only — never Hermes's selected environment.
+uv venv /tmp/hermes-navigability-bench
+source /tmp/hermes-navigability-bench/bin/activate
 uv pip install tiktoken radon
 
 # 1 + 2: pass two checkouts (git worktree add is the easy way to get the baseline)
@@ -45,6 +47,12 @@ NAV_OUT=out/ python evals/codebase_navigability/static_metrics.py .        head
 NAV_OUT=out/ python evals/codebase_navigability/runtime_bench.py  /tmp/base base 9
 NAV_OUT=out/ python evals/codebase_navigability/runtime_bench.py  .        head 9
 ```
+
+Use a fresh benchmark path; do not replace an existing environment. Runtime and
+pytest-collection measurements also require the target tree's application/test
+dependencies. Prepare those in a separate caller-owned output with
+`python -m pm.build_env --source <tree> --out <fresh-output> --extra dev --group test`
+from a PM-prepared checkout, rather than injecting benchmark packages into Hermes.
 
 `bench.py` and `static_metrics.py` take ~2 min each on a 1M-line tree; `lookup_sim.py` ~10 min for
 4,000 symbols (it tokenizes every window it "reads"); `runtime_bench.py` ~4 min per tree at 9 reps.

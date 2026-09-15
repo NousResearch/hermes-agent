@@ -107,9 +107,16 @@ hermes plugins enable snyk
 
 `hermes plugins update <name>` never runs `git pull` for catalog installs —
 it compares your installed pin against the current catalog pin and, when the
-catalog moved (via a reviewed PR), force-reinstalls at the new SHA. Your
+catalog moved (via a reviewed PR), prepares the new SHA before publication. Your
 enabled/disabled state is preserved. `hermes plugins list` shows catalog
 installs as `catalog:<tier>@<sha>` so you can see provenance at a glance.
+
+PM validates the dependencies of an active plugin before its new code replaces
+the installed version. A version, scan, dependency, or publication failure keeps
+the working code and dependency selection. Disabled plugins stay disabled.
+Catalog membership, installed revision, and source share the profile's
+`plugins/.install-metadata.json` record. Custom Git plugins retain their recorded
+Git/feed update policy but use the same PM validation and publication path.
 
 ### Names not in the catalog
 

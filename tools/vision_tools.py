@@ -301,11 +301,13 @@ def _import_pillow_for_resize():
         from PIL import Image
     except ImportError:
         try:
-            from tools.lazy_deps import ensure as _ensure_dep
-            # prompt=False: never raise a blocking input() prompt mid-session. Under the interactive CLI
-            # prompt_toolkit owns stdin, so a bare input() deadlocks the terminal (#40490). The install is
-            # already gated by security.allow_lazy_installs, so reaching here is opt-in.
-            _ensure_dep("tool.vision", prompt=False)
+            # pm-era wiring: never raise a blocking input() prompt mid-session. Under the
+            # interactive CLI prompt_toolkit owns stdin, so a bare input() deadlocks the
+            # terminal (#40490). The install is already gated by security.allow_lazy_installs,
+            # so reaching here is opt-in.
+            from pm import ensure_import
+
+            ensure_import("vision")
             from PIL import Image
         except Exception:
             return None
@@ -567,8 +569,8 @@ async def _prepare_image(
 def _too_large_message(image_data_url: str) -> str:
     return (
         f"Image too large for vision API: base64 payload is {len(image_data_url) / (1024 * 1024):.1f} MB "
-        f"(limit {_MAX_BASE64_BYTES / (1024 * 1024):.0f} MB) even after resizing. Install Pillow "
-        f"(`pip install Pillow`) for better auto-resize, or compress the image manually.")
+        f"(limit {_MAX_BASE64_BYTES / (1024 * 1024):.0f} MB) even after resizing. Run `hermes pm repair` "
+        f"to restore Pillow for auto-resize, or compress the image manually.")
 
 
 async def _resize_prepared(prepared: _PreparedImage, scale_info: dict, **kwargs) -> str:

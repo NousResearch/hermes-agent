@@ -174,7 +174,7 @@ def _transcribe_mistral(
     if not api_key:
         return _error_result("MISTRAL_API_KEY not set")
     try:
-        _lazy_ensure_quietly("stt.mistral")
+        _lazy_ensure_quietly("mistral")
         from mistralai.client import Mistral
         with Mistral(api_key=api_key) as client, open(file_path, "rb") as audio_file:
             # Language: hook override > stt.mistral.language > stt.language > env > auto.

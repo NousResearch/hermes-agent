@@ -464,7 +464,7 @@ class TestContentBearingProgress:
 
         assert touches == [1, 1]
 
-    def test_keepalive_chunks_do_not_reset_the_compression_fence(self):
+    def test_keepalive_chunks_do_not_reset_the_compression_fence(self, monkeypatch):
         """End-to-end bug pin (#96707): content-free frames must not refresh
         CompressionCommitFence._last_progress.
 
@@ -472,7 +472,10 @@ class TestContentBearingProgress:
         seconds_since_progress(); before the fix, every keepalive chunk fed
         through _ChatStreamAccumulator ticked the fence, so a stalled
         summary stream never hit the inactivity timeout."""
+        now = [10.0]
+        monkeypatch.setattr("agent.conversation_compression.time.monotonic", lambda: now[0])
         fence = CompressionCommitFence()
+        now[0] = 20.0
         accumulator = _ChatStreamAccumulator()
         keepalive = SimpleNamespace(id=None, model=None, choices=[], usage=None)
         empty_role_chunk = _chunk(content="", reasoning="")

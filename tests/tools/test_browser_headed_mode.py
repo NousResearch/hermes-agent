@@ -20,7 +20,12 @@ def _reset_headed_cache():
 
 
 @pytest.fixture(autouse=True)
-def _clean_headed_cache():
+def _clean_headed_cache(monkeypatch, tmp_path):
+    from pathlib import Path
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "tools"))
     _reset_headed_cache()
     yield
     _reset_headed_cache()

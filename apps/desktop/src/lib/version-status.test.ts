@@ -94,4 +94,22 @@ describe('resolveVersionStatus', () => {
   it('hides a backend row that has no version at all', () => {
     expect(backend().unknown).toBe(true)
   })
+
+  it('stable channel: releases use the update word, never a commit count', () => {
+    const label = client({ behind: 4, updateAvailable: true, channel: 'stable', version: '0.4.2' }).label
+    expect(label).toBe('v0.4.2 (update)')
+  })
+
+  it('stable channel tooltip names the release tag', () => {
+    const tooltip = client({ behind: 1, channel: 'stable', latestTag: 'v0.18.0', version: '0.4.2' }).tooltip
+    expect(tooltip).toContain(`${copy.releaseAvailable('v0.18.0')}`)
+  })
+
+  it('stable channel never names a branch (a stable checkout sits on a tag)', () => {
+    const tooltip = client({ behind: 1, branch: 'main', channel: 'stable', latestTag: 'v0.18.0', version: '0.4.2' })
+      .tooltip
+
+    expect(tooltip).not.toContain('main')
+    expect(tooltip).toContain(`${copy.releaseAvailable('v0.18.0')}`)
+  })
 })

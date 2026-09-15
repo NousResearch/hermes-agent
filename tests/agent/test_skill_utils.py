@@ -242,55 +242,26 @@ def test_skill_support_path_uses_explicit_discovery_root_not_cwd(tmp_path, monke
     assert is_excluded_skill_path(relative, root=discovery_root) is True
 
 
-# ── skill_matches_platform on Termux ──────────────────────────────────────
+# ── skill_matches_platform─────────────────────────────────────────────────
 
 
-class TestSkillMatchesPlatformTermux:
-    """Termux is Linux userland on Android. Skills tagged platforms:[linux]
-    must load there regardless of whether Python reports sys.platform as
-    "linux" (pre-3.13) or "android" (3.13+). Reported by user @LikiusInik
-    in May 2026 — only 3 built-in skills appeared on Termux because every
-    github/productivity/mlops skill is tagged platforms:[linux,macos,windows]
-    and sys.platform=="android" did not start with "linux".
-    """
-
+class TestSkillMatchesPlatform:
+    @pytest.mark.platforms("any")
     def test_no_platforms_field_matches_everywhere(self):
         # Backward-compat default — skills without a platforms tag load
-        # on any OS, Termux included.
-        with patch("agent.skill_utils.sys.platform", "android"), patch(
-            "agent.skill_utils.is_termux", return_value=True
-        ):
-            assert skill_matches_platform({}) is True
-            assert skill_matches_platform({"name": "foo"}) is True
+        # on any OS.
+        assert skill_matches_platform({}) is True
+        assert skill_matches_platform({"name": "foo"}) is True
 
-
-
-
-
-
-
-    def test_non_termux_android_does_not_widen(self):
-        # If we're somehow on a plain Android Python (not Termux), don't
-        # silently load Linux skills — Termux is the supported environment.
+    @pytest.mark.platforms("any")
+    def test_linux_skill_matches_only_linux(self):
         fm = {"platforms": ["linux"]}
-        with patch("agent.skill_utils.sys.platform", "android"), patch(
-            "agent.skill_utils.is_termux", return_value=False
-        ):
-            assert skill_matches_platform(fm) is False
-            assert skill_matches_platform_list(fm["platforms"]) is False
+        import sys
 
-    def test_linux_skill_on_real_linux_unaffected(self):
-        # The non-Termux Linux path must not change.
-        fm = {"platforms": ["linux"]}
-        with patch("agent.skill_utils.sys.platform", "linux"), patch(
-            "agent.skill_utils.is_termux", return_value=False
-        ):
-            assert skill_matches_platform(fm) is True
-            assert skill_matches_platform_list(fm["platforms"]) is True
+        assert skill_matches_platform(fm) is sys.platform.startswith("linux")
+        assert skill_matches_platform_list(fm["platforms"]) is sys.platform.startswith("linux")
 
 
-
-class TestNormalizeSkillLookupName:
     def test_relative_path_unchanged(self, tmp_path, monkeypatch):
         from agent.skill_utils import normalize_skill_lookup_name
 
@@ -365,11 +336,10 @@ class TestParseFrontmatterBOM:
         import sys
 
         expected = sys.platform == "darwin"
-        with patch("agent.skill_utils.is_termux", return_value=False):
-            plain_fm, _ = parse_frontmatter(self.SKILL)
-            bom_fm, _ = parse_frontmatter("\ufeff" + self.SKILL)
-            assert skill_matches_platform(plain_fm) is expected
-            assert skill_matches_platform(bom_fm) is expected
+        plain_fm, _ = parse_frontmatter(self.SKILL)
+        bom_fm, _ = parse_frontmatter("\ufeff" + self.SKILL)
+        assert skill_matches_platform(plain_fm) is expected
+        assert skill_matches_platform(bom_fm) is expected
 
 
     def test_real_file_read_path(self, tmp_path):

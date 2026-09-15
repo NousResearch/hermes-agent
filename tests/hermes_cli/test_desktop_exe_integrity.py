@@ -8,8 +8,8 @@ non-PE file, or a wrong-architecture tree shipped as the new app — Windows
 then refuses to launch it with "This app can't run on your computer"
 (此应用无法在你的电脑上运行) and the user has no working install left.
 
-These tests exercise the behavior contract only: synthetic PE files go in,
-verdicts/rollbacks come out.
+These tests exercise PE validation and rejection before publication. Windows
+host/architecture probes stay native; the Linux callback witness checks staging.
 """
 
 from __future__ import annotations
@@ -139,13 +139,13 @@ def _fake_windll(
     return _windll
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_native_machine_reports_os_arch_not_process_arch():
     """The #69179 WoA regression: x64 Python under ARM64 emulation must report
     ARM64 (the OS), not AMD64 (the process) — otherwise the integrity gate
     rejects the correct ARM64 rebuild.
 
-    ``windows_only``: the probe under test is a ``ctypes.WinDLL("kernel32")``
+    ``platforms("windows")``: the probe under test is a ``ctypes.WinDLL("kernel32")``
     call to ``IsWow64Process2``. A patched ``sys.platform`` only got the branch
     entered — there is no kernel32 to bind on Linux, so nothing below the
     branch (the HANDLE typing that #71218 was about) was ever executed.
@@ -158,13 +158,13 @@ def test_native_machine_reports_os_arch_not_process_arch():
         assert main_desktop._windows_native_machine() == "ARM64"
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_expected_machines_prefers_user_runnable_api_over_arch_name(monkeypatch):
     """GetMachineTypeAttributes answers "can this host load PE machine X?"
     directly, so a WoA host that reports AMD64 everywhere else still accepts an
     ARM64 exe.
 
-    ``windows_only``: ``GetMachineTypeAttributes`` is a real kernel32 export
+    ``platforms("windows")``: ``GetMachineTypeAttributes`` is a real kernel32 export
     the fake host could not provide.
     """
     import ctypes
@@ -200,61 +200,80 @@ def test_expected_machines_prefers_user_runnable_api_over_arch_name(monkeypatch)
 
 
 
-# ─── rollback ───────────────────────────────────────────────────────────────
+# ─── staged integrity gate ─────────────────────────────────────────────────
 
 
-def _win_tree(tmp_path: Path) -> tuple[Path, Path]:
+@pytest.mark.platforms("linux")
+def test_corrupt_staged_app_keeps_live_bytes_without_backup_recovery(tmp_path, monkeypatch, capsys):
+    """Exercise publication and PE parsing, not Windows host/architecture discovery."""
     desktop_dir = tmp_path / "apps" / "desktop"
-    exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
-    return desktop_dir, exe
+    live_exe = desktop_dir / "release" / "linux-unpacked" / "hermes"
+    make_pe(live_exe)
+    live_bytes = live_exe.read_bytes()
+    assert main_desktop._parse_pe_machine(live_exe) == PE_AMD64
+    # The host-native layout makes discovery/swap real; PE is just fixture data.
+    staging = main_desktop._desktop_staging_dir(desktop_dir)
+    staged_exe = make_pe(staging / "linux-unpacked" / "hermes", truncate_to=0x300)
+    staged_bytes = staged_exe.read_bytes()
+    backup_exe = make_pe(staging / "linux-unpacked.bak" / "hermes")
+    old_diagnostic = staging / "linux-unpacked.corrupt" / "diagnostic"
+    old_diagnostic.parent.mkdir()
+    old_diagnostic.write_bytes(b"previous diagnostic")
+    # Raw in-place pack recovery material is not owned by this transaction.
+    live_backup = make_pe(live_exe.parent.with_name("linux-unpacked.bak") / "hermes")
 
+    checked = []
 
-def test_rollback_restores_backup_and_keeps_corrupt_copy(tmp_path):
-    desktop_dir, exe = _win_tree(tmp_path)
-    make_pe(exe, PE_AMD64, truncate_to=0x300)  # corrupt new build
-    backup_exe = desktop_dir / "release" / "win-unpacked.bak" / "Hermes.exe"
-    make_pe(backup_exe, PE_AMD64)  # valid old build
+    def check_pe(path):
+        checked.append(path)
+        try:
+            main_desktop._parse_pe_machine(path)
+        except ValueError as exc:
+            return str(exc)
+        return None
 
-    with patch("hermes_cli.main_desktop._windows_native_machine", return_value="AMD64"):
-        restored = main_desktop._rollback_desktop_from_backup(exe)
+    discard = main_desktop._discard_desktop_staging
 
-    assert restored == exe
-    # The restored exe is the old, valid build.
-    assert main_desktop._parse_pe_machine(exe) == PE_AMD64
-    assert exe.stat().st_size == 0x400
-    # Corrupt tree preserved for diagnostics; backup consumed.
-    assert (desktop_dir / "release" / "win-unpacked.corrupt" / "Hermes.exe").exists()
-    assert not backup_exe.exists()
+    def check_before_discard(path):
+        assert path == staging
+        assert staged_exe.read_bytes() == staged_bytes
+        assert backup_exe.read_bytes() == live_bytes
+        assert old_diagnostic.read_bytes() == b"previous diagnostic"
+        discard(path)
 
+    monkeypatch.setattr(main_desktop, "_discard_desktop_staging", check_before_discard)
+    with patch.object(main_desktop.os, "rename", wraps=main_desktop.os.rename) as rename:
+        with pytest.raises(RuntimeError, match="previous desktop app was left untouched"):
+            main_desktop._promote_staged_desktop_app(desktop_dir, staging, integrity_check=check_pe)
+        rename.assert_not_called()
 
-
-
-# ─── _ensure_desktop_exe_launchable (the gate) ──────────────────────────────
-
-
-
-
-
-
-@pytest.mark.windows_only
-def test_gate_fails_clearly_without_backup(tmp_path, capsys):
-    """``windows_only``: ``_ensure_desktop_exe_launchable`` is a documented
-    no-op off Windows, so the fake was the only reason the gate ran at all.
-    """
-    desktop_dir, exe = _win_tree(tmp_path)
-    fake = exe
-    fake.parent.mkdir(parents=True)
-    fake.write_bytes(b"<html>proxy error</html>" + b" " * 600)
-
-    with patch("hermes_cli.main_desktop._purge_electron_build_cache", return_value=[]), \
-         patch("hermes_cli.main_desktop._desktop_stamp_path", return_value=tmp_path / "stamp.json"):
-        verified, rolled_back = main_desktop._ensure_desktop_exe_launchable(desktop_dir, exe)
-
-    assert verified is None
-    assert rolled_back is False
+    assert checked == [staged_exe]
+    assert live_exe.read_bytes() == live_bytes
+    assert live_backup.read_bytes() == live_bytes
+    assert not staging.exists()
+    assert not list((desktop_dir / "release").glob("*.previous"))
     out = capsys.readouterr().out
     assert "integrity check" in out
-    assert "No usable backup" in out
+    assert "truncated executable" in out
+
+
+@pytest.mark.platforms("windows")
+def test_gate_fails_clearly_without_backup(tmp_path, capsys):
+    """Exercise the default Windows PE check, without injecting a validator."""
+    desktop_dir = tmp_path / "apps" / "desktop"
+    staging = main_desktop._desktop_staging_dir(desktop_dir)
+    exe = staging / "win-unpacked" / "Hermes.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"<html>proxy error</html>" + b" " * 600)
+
+    with pytest.raises(RuntimeError, match="produced no launchable app"):
+        main_desktop._promote_staged_desktop_app(desktop_dir, staging)
+
+    assert not staging.exists()
+    assert not (desktop_dir / "release").exists()
+    out = capsys.readouterr().out
+    assert "integrity check" in out
+    assert "missing MZ header" in out
 
 
 # ─── end-to-end: `hermes desktop --build-only` exits nonzero on corrupt exe ─
@@ -275,7 +294,7 @@ def _ns(**kw):
     return argparse.Namespace(**defaults)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, capsys):
     """The updater chain's contract: a rebuild whose Hermes.exe cannot launch
     must exit nonzero (so hermes-setup's retry-once kicks in) and must leave
@@ -285,7 +304,7 @@ def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, 
     gate runs on the STAGED exe and a failure discards staging without ever
     touching the live ``win-unpacked`` tree.
 
-    ``windows_only``: the whole chain is Windows-gated — ``win-unpacked``
+    ``platforms("windows")``: the whole chain is Windows-gated — ``win-unpacked``
     candidate discovery in ``_desktop_packaged_executable`` and the integrity
     gate itself both short-circuit off Windows.
     """
@@ -302,6 +321,8 @@ def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, 
     install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
 
     def pack_into_staging(cmd, *args, **kwargs):
+        if cmd[1:3] != ["run", "builder"]:
+            return subprocess.CompletedProcess(list(cmd), 0)
         # electron-builder honours -c.directories.output=<staging>; emulate a
         # pack that "succeeds" but writes a truncated exe there.
         out_flag = next((a for a in cmd if str(a).startswith("-c.directories.output=")), None)
@@ -311,13 +332,10 @@ def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, 
         return subprocess.CompletedProcess(list(cmd), 0)
 
     with patch("hermes_cli.main_desktop.shutil.which", return_value="/usr/bin/npm"), \
-         patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="npm.cmd"), \
-         patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=install_ok), \
+         patch("hermes_cli.source_build.source_build_env", return_value={"PATH": "/usr/bin"}), \
+         patch("hermes_cli.source_build.prepare_source_dependencies"), \
          patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main_desktop._stop_desktop_processes_locking_build", return_value=[]), \
-         patch("hermes_cli.main_desktop._purge_electron_build_cache", return_value=[]), \
-         patch("hermes_cli.main_desktop._desktop_stamp_path", return_value=tmp_path / "stamp.json"), \
-         patch("hermes_cli.main_desktop._write_desktop_build_stamp") as mock_stamp, \
          patch("hermes_cli.main_desktop._windows_native_machine", return_value="AMD64"), \
          patch("hermes_cli.main_desktop.subprocess.run", side_effect=pack_into_staging), \
          pytest.raises(SystemExit) as exc:
@@ -328,8 +346,7 @@ def test_build_only_fails_when_pack_produces_corrupt_exe(tmp_path, monkeypatch, 
     assert live_exe.read_bytes() == live_bytes
     assert main_desktop._parse_pe_machine(live_exe) == PE_AMD64
     # ...the staged corrupt tree was discarded...
-    assert not list((desktop_dir / "release").glob(".staging-*"))
-    # ...and the poisoned build was never stamped as good.
-    mock_stamp.assert_not_called()
+    assert not list(desktop_dir.glob(".staging-*"))
+
     out = capsys.readouterr().out
     assert "integrity check" in out

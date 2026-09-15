@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
 
 import { getStatus } from '@/hermes'
+import { type I18nContextValue, useI18n } from '@/i18n'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
 import { $setupReadyTick } from '@/store/live-sync'
+import { dismissNotification, notify } from '@/store/notifications'
 import type { StatusResponse } from '@/types/hermes'
 
 // Statusbar health is ambient chrome, not live data — nothing the user acts on
@@ -16,14 +18,18 @@ type GatewayRequester = <T = unknown>(method: string, params?: Record<string, un
 export function useStatusSnapshot(
   gatewayState: string | undefined,
   requestGateway: GatewayRequester,
-  gatewayScope = ''
-) {
+  gatewayScope: string = ''
+): { inferenceStatus: RuntimeReadinessResult | null; statusSnapshot: StatusResponse | null } {
+  const { t }: I18nContextValue = useI18n()
+  const warningMessage: string = t.notifications.sharedProfileWarning
   const [statusSnapshot, setStatusSnapshot] = useState<StatusResponse | null>(null)
   const [inferenceStatus, setInferenceStatus] = useState<RuntimeReadinessResult | null>(null)
 
   useEffect(() => {
     let cancelled = false
     let timer: number | undefined
+    let sharedProfileWarning: boolean = false
+    let sharedProfileNoticeId: string | undefined
 
     // Status and inference readiness belong to one backend. A source switch
     // can keep gatewayState="open" throughout, so clear the previous source's
@@ -107,6 +113,17 @@ export function useStatusSnapshot(
 
         if (statusResult.status === 'fulfilled') {
           setStatusSnapshot(statusResult.value)
+          const warning: boolean = Boolean(statusResult.value.shared_profile_warning)
+
+          // Keep dismissal until the conflict clears. A new overlap can warn again.
+          if (warning !== sharedProfileWarning) {
+            if (sharedProfileNoticeId) {
+              dismissNotification(sharedProfileNoticeId)
+            }
+
+            sharedProfileWarning = warning
+            sharedProfileNoticeId = warning ? notify({ kind: 'warning', message: warningMessage }) : undefined
+          }
         }
       } finally {
         scheduleRefresh()
@@ -139,11 +156,15 @@ export function useStatusSnapshot(
       document.removeEventListener('visibilitychange', onReturn)
       window.removeEventListener('focus', onReturn)
 
+      if (sharedProfileNoticeId) {
+        dismissNotification(sharedProfileNoticeId)
+      }
+
       if (timer !== undefined) {
         window.clearTimeout(timer)
       }
     }
-  }, [gatewayScope, gatewayState, requestGateway])
+  }, [gatewayScope, gatewayState, requestGateway, warningMessage])
 
   return { inferenceStatus, statusSnapshot }
 }

@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 import gateway.status as _gw_status
 import hermes_cli.config as _cfg_mod
 import hermes_cli.web_server_chat as _web_server_chat

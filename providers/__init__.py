@@ -134,7 +134,7 @@ def _declares_model_provider_kind(plugin_dir: Path) -> bool:
 
     Only that kind is imported from the flat install directory — every other
     plugin there belongs to ``PluginManager``, which owns its lifecycle and
-    consent flow. Parsed with PyYAML when available, falling back to a line
+    consent flow. Parsed with ruamel.yaml when available, falling back to a line
     scan so provider discovery never hard-depends on it.
     """
     for filename in ("plugin.yaml", "plugin.yml"):
@@ -146,7 +146,7 @@ def _declares_model_provider_kind(plugin_dir: Path) -> bool:
         except Exception:
             return False
         try:
-            import yaml
+            import hermes_yaml as yaml
 
             data = yaml.safe_load(text)
             if isinstance(data, dict):

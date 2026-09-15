@@ -21,7 +21,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from tools.wake_word_engines import _Engine, _OpenWakeWordEngine, _PorcupineEngine, _SherpaKwsEngine, _sub
+from tools.wake_word_engines import (
+    _Engine,
+    _OpenWakeWordEngine,
+    _PorcupineEngine,
+    _SherpaKwsEngine,
+    _sub,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,13 +48,14 @@ _DEFAULT_CONFIRMATION_FRAMES = 3
 _SILENCE_PEAK = 10
 _SILENCE_ALERT_SECONDS = 10
 
-# provider alias -> (engine class name on this module, lazy_deps feature).
+# provider alias -> (engine class name on this module, pm extra).
 # Unknown providers probe as openwakeword but fail to build.
 _PROVIDERS: Dict[str, tuple[str, str]] = {
-    "porcupine": ("_PorcupineEngine", "wake.porcupine"),
-    **{k: ("_SherpaKwsEngine", "wake.sherpa") for k in ("sherpa", "sherpa-onnx", "kws", "open")},
-    **{k: ("_OpenWakeWordEngine", "wake.openwakeword") for k in ("openwakeword", "oww", "local")},
+    "porcupine": ("_PorcupineEngine", "wake-porcupine"),
+    **{k: ("_SherpaKwsEngine", "wake-sherpa") for k in ("sherpa", "sherpa-onnx", "kws", "open")},
+    **{k: ("_OpenWakeWordEngine", "wake-openwakeword") for k in ("openwakeword", "oww", "local")},
 }
+_PROVIDER_PREFERENCE = ("openwakeword", "sherpa", "porcupine")
 
 
 class WakeWordInUse(RuntimeError):
@@ -61,7 +68,7 @@ class WakeWordInUse(RuntimeError):
 # frames via wake.feed), or "auto" (local when a device exists, else client).
 _DEFAULTS: Dict[str, Any] = {
     "enabled": False, "surface": "auto", "input_device": None, "capture": "auto",
-    "provider": "openwakeword", "phrase": "hey hermes", "sensitivity": 0.6,
+    "provider": "auto", "phrase": "hey hermes", "sensitivity": 0.6,
     "confirmation_frames": _DEFAULT_CONFIRMATION_FRAMES, "start_new_session": True,
 }
 
@@ -71,66 +78,9 @@ _BUNDLED_MODEL_NAME = "hey_hermes"
 _BUNDLED_MODEL_ALIASES = frozenset({"", "hey_hermes", "hey hermes", "hermes"})
 
 
-def _bundled_wakeword_path(framework: str = "onnx") -> str:
-    """Path to the shipped hey_hermes model (.onnx/.tflite) for ``framework``."""
-    ext = "tflite" if str(framework).strip().lower() == "tflite" else "onnx"
-    return os.path.join(os.path.dirname(__file__), "wakewords", f"{_BUNDLED_MODEL_NAME}.{ext}")
-
-
-def _is_macos_arm64() -> bool:
-    import platform
-    return sys.platform == "darwin" and platform.machine() == "arm64"
-
-
-def default_inference_framework() -> str:
-    """tflite on macOS ARM64, onnx elsewhere: openWakeWord's ONNX embedding model
-    scores near-zero on Apple Silicon — the detector arms but never fires."""
-    return "tflite" if _is_macos_arm64() else "onnx"
-
-
-_warned_onnx_coerced = False
-
-
-def resolve_inference_framework(cfg: Dict[str, Any]) -> str:
-    """Effective openWakeWord backend: explicit ``openwakeword.inference_framework`` or
-    the platform default. Explicit ``onnx`` on macOS ARM64 is provably dead, so it is
-    coerced to tflite with a one-time warning (a pre-fix pin must not stay deaf)."""
-    global _warned_onnx_coerced
-
-    framework = str(_sub(cfg, "openwakeword").get("inference_framework") or "").strip().lower()
-    if not framework:
-        return default_inference_framework()
-    if framework == "onnx" and _is_macos_arm64():
-        if not _warned_onnx_coerced:
-            _warned_onnx_coerced = True
-            logger.warning("wake: openwakeword.inference_framework='onnx' is set but ONNX's "
-                           "embedding model never fires on macOS ARM64 (openWakeWord #336) — "
-                           "using tflite instead. Set inference_framework to '' (auto) or "
-                           "'tflite' in config.yaml to silence this.")
-        return "tflite"
-    return framework
-
-
-def ensure_tflite_runtime() -> bool:
-    """Make ``import tflite_runtime.interpreter`` resolve, returning success. openWakeWord hardcodes
-    that import but only declares ``tflite-runtime`` on Linux; on macOS the wheel is ``ai-edge-litert``,
-    so alias it in-process (site-packages untouched)."""
-    try:
-        import tflite_runtime.interpreter  # noqa: F401
-        return True
-    except ImportError:
-        pass
-    try:
-        from ai_edge_litert import interpreter as _litert  # type: ignore[import-not-found]
-    except ImportError:
-        return False
-    import types
-    pkg = types.ModuleType("tflite_runtime")
-    pkg.__path__ = []  # type: ignore[attr-defined]  # mark as package
-    sys.modules.setdefault("tflite_runtime", pkg)
-    sys.modules["tflite_runtime.interpreter"] = _litert
-    logger.debug("wake word: bridged tflite_runtime -> ai_edge_litert")
-    return True
+def _bundled_wakeword_path() -> str:
+    """Path to the shipped hey_hermes.tflite — pyopen-wakeword runs TFLite only."""
+    return os.path.join(os.path.dirname(__file__), "wakewords", f"{_BUNDLED_MODEL_NAME}.tflite")
 
 
 def load_wake_word_config() -> Dict[str, Any]:
@@ -156,8 +106,14 @@ def _clamped(cfg: Dict[str, Any], key: str, cast, lo, hi):
     return min(max(n, lo), hi)
 
 
-def _provider(cfg: Dict[str, Any]) -> str:
-    return str(_get(cfg, "provider")).strip().lower() or "openwakeword"
+def _provider(cfg: Dict[str, Any], *, supported: Callable[[str], bool] | None = None) -> str:
+    provider = str(_get(cfg, "provider")).strip().lower() or "auto"
+    if provider != "auto":
+        return provider
+    if supported is None:
+        from pm.extras import extra_supported
+        supported = extra_supported
+    return next((name for name in _PROVIDER_PREFERENCE if supported(_PROVIDERS[name][1])), "porcupine")
 
 
 def _input_device(cfg: Dict[str, Any]) -> int | str | None:
@@ -325,8 +281,6 @@ def silent_audio_hint(details: Dict[str, Any]) -> str:
     return f"Microphone delivers only silence from {label}. {fix}, then toggle the wake word."
 
 
-# ── Engines (implementations live in tools.wake_word_engines) ──
-
 def _build_engine(cfg: Dict[str, Any]) -> _Engine:
     provider = _provider(cfg)
     if provider not in _PROVIDERS:
@@ -347,57 +301,105 @@ def _stt_ready() -> bool:
 
 
 def _tts_ready() -> bool:
-    """Can the configured TTS provider run (or install at first use)? PROBE, not an installer:
-    ``check_tts_requirements`` lazily pip-installs the SDK, which froze wake.status polls for a whole
-    pip run. Uninstalled deps count as ready iff lazy installs are allowed; pip is never touched here."""
+    """Can the configured text-to-speech provider run (or install at first use)?
+
+    The wake flow is fully hands-free (wake → speak → hear the reply); without
+    TTS the reply is silent and the loop is pointless.
+
+    PROBE, not an installer: ``check_tts_requirements`` lazily pip-installs the
+    provider SDK via ``_import_*`` → ``pm.ensure_import`` — running that inside
+    a status poll froze wake.status for the length of a pip install (and a
+    failed install marked the wake word unavailable, unmounting the desktop
+    ear). When the provider's deps aren't installed yet, "installable at first
+    use" counts as ready and we never touch pip from here.
+    """
     try:
         from tools.tts_tool import _get_provider, _load_tts_config, check_tts_requirements
         provider = _get_provider(_load_tts_config())
-        feature = f"tts.{provider}" if provider in ("edge", "elevenlabs", "mistral") else None
-        if feature is not None:
-            from tools import lazy_deps
-            if not lazy_deps.is_available(feature):
-                return lazy_deps._allow_lazy_installs()
+    except Exception:
+        return False
+
+    _LAZY_TTS_FEATURES = {
+        "edge": "edge-tts",
+        "elevenlabs": "tts-premium",
+        "mistral": "mistral",
+    }
+    feature = _LAZY_TTS_FEATURES.get(provider)
+    if feature is not None:
+        try:
+            import pm
+            from pm.ensure import lazy_installs_allowed
+
+            if not pm.available(feature):
+                # Not installed: ready iff it can install at first speak.
+                return lazy_installs_allowed()
+        except Exception:
+            return False
+
+    try:
+        from tools.tts_tool import check_tts_requirements
+
         return bool(check_tts_requirements())
     except Exception:
         return False
 
 
-def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None, *,
+                                 supported: Callable[[str], bool] | None = None) -> Dict[str, Any]:
     """Report whether wake-word detection can run, with a remediation hint."""
     cfg = cfg if cfg is not None else load_wake_word_config()
-    provider = _provider(cfg)
-    from tools import lazy_deps
-    feature = _PROVIDERS.get(provider, ("", "wake.openwakeword"))[1]
-    deps_ok = lazy_deps.is_available(feature)
-    lazy_ok = lazy_deps._allow_lazy_installs()
-    # The audio probe imports sounddevice + numpy — packages the lazy installer would
-    # fetch — so only trust it once deps are installed; on a fresh install the engine
-    # constructors' ``lazy_deps.ensure()`` + stream-open surface any real audio problem.
-    audio_ok = _audio_available() if deps_ok else False
-    # Loop is wake → record → STT → agent → TTS; without either end the mic hears you
-    # and nothing perceptible happens — refuse with a hint.
-    stt_ok, tts_ok = _stt_ready(), _tts_ready()
-    # tflite needs a runtime openWakeWord doesn't declare off Linux; report it as a
-    # remediation instead of arming a detector that can't fire.
-    tflite_ok = (feature != "wake.openwakeword" or resolve_inference_framework(cfg) != "tflite"
-                 or ensure_tflite_runtime() or lazy_deps.is_available("wake.openwakeword.tflite") or lazy_ok)
-    key_ok = provider != "porcupine" or bool((os.getenv("PORCUPINE_ACCESS_KEY") or "").strip())
-    capture_mode = resolve_capture_mode(cfg)
-    missing = " and ".join(n for n, ok in (("speech-to-text", stt_ok), ("text-to-speech", tts_ok)) if not ok)
+    import pm
+    from pm.ensure import lazy_installs_allowed
+    from pm.extras import extra_supported
 
-    # Ordered remediation ladder: first true predicate wins.
-    ladder = (
-        (not key_ok, lambda: "Set PORCUPINE_ACCESS_KEY (free key at https://console.picovoice.ai)."),
-        (not deps_ok and not lazy_ok, lambda: lazy_deps.feature_install_command(feature) or ""),
-        (not tflite_ok,
-         lambda: "The wake word needs the tflite runtime on this Mac: pip install ai-edge-litert"),
-        (deps_ok and not audio_ok and capture_mode == "local",
-         lambda: "Microphone capture needs sounddevice + numpy and a working audio device."),
-        (bool(missing), lambda: (f"Wake word needs {missing} configured — run `hermes tools` "
-                                 f"(Voice section) or see the voice-mode docs.")),
-    )
-    hint = next((make() for cond, make in ladder if cond), "")
+    supported = supported or extra_supported
+    provider = _provider(cfg, supported=supported)
+    if provider == "porcupine":
+        feature = "wake-porcupine"
+    elif provider in ("sherpa", "sherpa-onnx", "kws", "open"):
+        feature = "wake-sherpa"
+    else:
+        feature = "wake-openwakeword"
+    deps_ok = pm.available(feature)
+    platform_ok = deps_ok or supported(feature)
+    lazy_ok = lazy_installs_allowed()
+    # The audio probe imports sounddevice + numpy — two of the very packages
+    # the lazy installer would fetch — so it can only be trusted once the
+    # feature's deps are installed. On a fresh install (deps missing, lazy
+    # installs allowed) we defer the mic check: the engine constructors call
+    # ``pm.ensure_import()`` and the stream-open surfaces any real audio
+    # problem. Gating ``available`` on the probe here made the lazy-install
+    # path unreachable (the probe always failed before ensure() could run).
+    audio_ok = _audio_available() if deps_ok else False
+    key_ok = True
+    # The full wake loop is wake → record → STT → agent → TTS. Arming without
+    # either end configured gives a mic that hears you and then does nothing
+    # the user can perceive — refuse with a pointer instead.
+    stt_ok = _stt_ready()
+    tts_ok = _tts_ready()
+    hint = ""
+
+    if not platform_ok:
+        alternatives = [name for name in ("sherpa", "porcupine")
+                        if supported(_PROVIDERS[name][1])]
+        hint = f"The {provider} wake engine is not supported on this platform."
+        if alternatives:
+            hint += f" Set wake_word.provider to {' or '.join(alternatives)}."
+    elif provider == "porcupine" and not (os.getenv("PORCUPINE_ACCESS_KEY") or "").strip():
+        key_ok = False
+        hint = "Set PORCUPINE_ACCESS_KEY (free key at https://console.picovoice.ai)."
+    elif not deps_ok and not lazy_ok:
+        hint = f"python -c \"from pm import sync_venv; sync_venv(['{feature}'], explicit=True)\""
+    elif deps_ok and not audio_ok and resolve_capture_mode(cfg) == "local":
+        hint = "Microphone capture needs sounddevice + numpy and a working audio device."
+    elif not stt_ok or not tts_ok:
+        missing = " and ".join(
+            name for name, ok in (("speech-to-text", stt_ok), ("text-to-speech", tts_ok)) if not ok
+        )
+        hint = (f"Wake word needs {missing} configured — run `hermes tools` "
+                f"(Voice section) or see the voice-mode docs.")
+
+    capture_mode = resolve_capture_mode(cfg)
 
     # Client capture needs deps (engine) but not a server-side PortAudio device.
     if capture_mode == "client":
@@ -410,7 +412,7 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
                     "build with client-capture wake support.")
 
     return {
-        "available": key_ok and stt_ok and tts_ok and tflite_ok and mic_ok, "provider": provider,
+        "available": platform_ok and key_ok and stt_ok and tts_ok and mic_ok, "provider": provider,
         "deps_available": deps_ok, "audio_available": audio_ok,
         "local_input_available": _local_input_device_ready() if deps_ok else False,
         "capture": capture_mode, "access_key_set": key_ok, "stt_available": stt_ok, "tts_available": tts_ok,
@@ -752,7 +754,8 @@ def start_listening(on_wake: Callable[[], None], *, owner: object, config: Optio
         _detector_file_lock = _acquire_machine_lock()
         try:
             cfg = config if config is not None else load_wake_word_config()
-            _detector = WakeWordDetector(_build_engine(cfg), on_wake, on_failure=_detector_failed,
+            engine_cfg = {**cfg, "capture": "client" if external_audio else "local"}
+            _detector = WakeWordDetector(_build_engine(engine_cfg), on_wake, on_failure=_detector_failed,
                                          input_device=_input_device(cfg), external_audio=external_audio)
             _detector_owner = owner
             _detector.start()

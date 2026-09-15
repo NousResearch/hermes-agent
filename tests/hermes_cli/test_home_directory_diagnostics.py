@@ -6,7 +6,7 @@ import pytest
 from hermes_cli import config
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("subdir", (".", *config._HERMES_HOME_SUBDIRS))
 def test_unavailable_directory_links_are_diagnosed_without_creating_targets(tmp_path, monkeypatch, subdir):
     home = tmp_path / "hermes"
@@ -34,7 +34,7 @@ def test_unavailable_directory_links_are_diagnosed_without_creating_targets(tmp_
     assert str(home) in config._HERMES_HOME_ENSURED
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("linked", ("plain", "logs", "home"))
 def test_initialization_preserves_external_directory_modes(tmp_path, monkeypatch, linked):
     home = tmp_path / "hermes"

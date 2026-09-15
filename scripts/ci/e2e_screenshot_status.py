@@ -37,7 +37,7 @@ def _base_screenshot_names(path: Path | None) -> set[str] | None:
     if path is None or not path.is_file():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError:
         return None
     names = data.get("screenshot_names", []) if isinstance(data, dict) else []

@@ -124,6 +124,7 @@ def test_token_file_rejects_symlink(tmp_path, monkeypatch):
         reset_hermes_home_override(override)
 
 
+@pytest.mark.platforms("linux")
 def test_token_file_rejects_parent_escape(tmp_path, monkeypatch):
     home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(home))

@@ -8,7 +8,6 @@ from __future__ import annotations
 import argparse
 import getpass
 import os
-import shutil
 import subprocess
 import sys
 from typing import Optional
@@ -17,6 +16,7 @@ from hermes_cli.colors import Colors, color
 
 from . import auth as photon_auth
 from .adapter import sidecar_deps_installed
+from hermes_constants import find_node_executable, with_hermes_node_path
 from .sidecar_paths import _NPM_ERROR_LOG_MAX_CHARS, _npm_error_log, _sidecar_dir
 import contextlib
 
@@ -255,7 +255,8 @@ def _cmd_status(_args: argparse.Namespace) -> int:
     # auth.print_credential_summary's emit callback is the only sink that sees
     # credential-derived strings (keeps cli.py taint-free for CodeQL).
     photon_auth.print_credential_summary(print)
-    node_bin = os.getenv("PHOTON_NODE_BIN") or shutil.which("node")
+    node_bin = find_node_executable("node")
+    sidecar_installed = sidecar_deps_installed()
     print(f"  node binary         : {node_bin or '✗ missing (install Node 18+)'}")
     print(f"  sidecar deps        : {'✓ installed' if sidecar_deps_installed() else '✗ run `hermes photon install-sidecar`'}")
     print(f"  telemetry           : {'on' if _telemetry_enabled() else 'off'} (`hermes photon telemetry on|off`)")
@@ -290,9 +291,18 @@ def _cmd_telemetry(args: argparse.Namespace) -> int:
 
 
 def _install_sidecar() -> int:
-    npm = shutil.which("npm") or "npm"
-    if not shutil.which(npm):
-        print("npm is not on PATH. Install Node.js 18+ (https://nodejs.org/) and re-run.", file=sys.stderr)
+    import pm
+
+    try:
+        npm = find_node_executable("npm")
+        env = with_hermes_node_path()
+        if npm is None:
+            env = pm.ensure("npm", explicit=True).env
+            installed = pm.installed_package("npm")
+            assert installed is not None and installed.binary is not None
+            npm = str(installed.binary)
+    except pm.InstallError as exc:
+        print(f"Could not prepare Photon dependencies: {exc}", file=sys.stderr)
         return 1
     # spectrum-ts is pinned exactly (the SDK ships breaking majors); upgrades are deliberate —
     # never `@latest` (see README "Upgrading spectrum-ts"). `npm ci` installs the lockfile
@@ -303,7 +313,7 @@ def _install_sidecar() -> int:
         # stdout streams to the terminal; stderr is captured so the failure reason can be
         # persisted for check_requirements() to surface later.
         proc = subprocess.run(  # noqa: S603
-            [npm, verb], cwd=str(_sidecar_dir()), check=False, stderr=subprocess.PIPE, text=True)
+            [npm, verb], cwd=str(_sidecar_dir()), check=False, stderr=subprocess.PIPE, text=True, env=env)
         if proc.stderr:
             print(proc.stderr, end="", file=sys.stderr)
         return proc

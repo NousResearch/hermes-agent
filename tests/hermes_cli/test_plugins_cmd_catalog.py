@@ -40,8 +40,10 @@ def world(tmp_path, monkeypatch):
     (repo / "__init__.py").write_text("def register(ctx):\n    pass  # v2\n")
     sha2 = _commit(repo, "v2")
 
-    plugins_dir = tmp_path / "plugins"
-    plugins_dir.mkdir()
+    home = tmp_path / "home"
+    plugins_dir = home / "plugins"
+    plugins_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
     monkeypatch.setattr(pc, "_scan_on_install_enabled", lambda: False)
     monkeypatch.setattr(pc, "_console", lambda: type("C", (), {"print": lambda *a, **k: None})())
@@ -70,7 +72,7 @@ def test_catalog_name_installs_pinned_sha_with_sidecar_then_update_repins(world,
     target, _m, name = cat.install_catalog_entry(entry, force=False)
     assert name == "cat-plugin"
     assert _head(target) == world["sha1"] != world["sha2"]  # pinned, not HEAD
-    sidecar = json.loads((target / cat.CATALOG_SIDECAR).read_text())
+    sidecar = cat.catalog_install_record(target)
     assert (sidecar["catalog_name"], sidecar["sha"]) == ("cat-plugin", world["sha1"])
     assert cat.catalog_annotation(target) == f"catalog:community@{world['sha1'][:8]}"
 
@@ -94,5 +96,5 @@ def test_kill_list_blocks_cli_dashboard_and_tui_paths(world, monkeypatch):
     with pytest.raises(SystemExit):
         pc.cmd_install("cat-plugin", enable=False)
     pc.cmd_install("cat-plugin", enable=False, allow_removed=True)
-    assert (world["plugins_dir"] / "cat-plugin" / cat.CATALOG_SIDECAR).exists()
+    assert cat.catalog_install_record(world["plugins_dir"] / "cat-plugin") is not None
     assert cat.removed_annotation("cat-plugin", world["plugins_dir"] / "cat-plugin") == "malware"

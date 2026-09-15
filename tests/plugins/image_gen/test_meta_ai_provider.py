@@ -290,7 +290,7 @@ class TestGenerate:
             result = provider.generate("a cat")
 
         assert result["success"] is True
-        assert result["image"].startswith("/")
+        assert Path(result["image"]) == mock_save_url.return_value
         assert "example.com" not in result["image"]
         mock_save_url.assert_called_once()
 

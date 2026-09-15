@@ -220,11 +220,13 @@ def _setup_note(loaded_skill: dict[str, Any]) -> Optional[str]:
 def _supporting_files(loaded_skill: dict[str, Any], skill_dir: Path | None) -> list[str]:
     """Skill-relative support file paths: from ``linked_files`` or a disk walk."""
     linked = (loaded_skill.get("linked_files") or {}).values()
-    supporting = [entry for entries in linked if isinstance(entries, list) for entry in entries]
+    supporting = [Path(entry).as_posix() for entries in linked if isinstance(entries, list) for entry in entries]
     if not supporting and skill_dir:
         for subdir in ("references", "templates", "scripts", "assets"):
             files = sorted((skill_dir / subdir).rglob("*"))
-            supporting += [str(f.relative_to(skill_dir)) for f in files if f.is_file() and not f.is_symlink()]
+            # as_posix so listed paths match the footer's examples (scripts/foo.js)
+            # on every OS — str(relative_to) emits backslashes on Windows.
+            supporting += [f.relative_to(skill_dir).as_posix() for f in files if f.is_file() and not f.is_symlink()]
     return supporting
 
 
@@ -331,7 +333,7 @@ def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dic
     from tools.skills_tool import _parse_frontmatter, skill_matches_platform, skill_matches_environment
     if any(part in _SCAN_SKIP_PARTS for part in skill_md.parts):
         return
-    frontmatter, body = _parse_frontmatter(skill_md.read_text(encoding='utf-8'))
+    frontmatter, body = _parse_frontmatter(skill_md.read_text(encoding='utf-8-sig'))
     # OS gate is hard; environment gate (kanban/docker/s6) is offer-time only.
     if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter):
         return

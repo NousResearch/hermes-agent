@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import ssl
 import subprocess
 import sys
 from pathlib import Path
@@ -17,8 +18,17 @@ from hermes_cli.doctor_report import (
 from hermes_constants import is_termux as _is_termux
 
 
-def _python_install_cmd() -> str:
-    return "python -m pip install" if _is_termux() else "uv pip install"
+def _python_repair_hint() -> str:
+    from hermes_cli.config import detect_install_method
+    from hermes_cli.doctor import PROJECT_ROOT
+
+    method = detect_install_method(PROJECT_ROOT)
+    if is_nix_install_method(method):
+        return recommended_update_command_for_method(method)
+    if method in ("docker", "apt"):
+        command = recommended_update_command_for_method(method)
+        return f"Run `{command}`" + (", then recreate the Hermes container" if method == "docker" else "")
+    return "Run `hermes pm repair`, then restart Hermes"
 
 
 def _system_package_install_cmd(pkg: str) -> str:
@@ -125,7 +135,7 @@ def _read_pyproject_version() -> str | None:
     """Read the ``[project]`` version from pyproject.toml; None for installed wheels (no pyproject) or unreadable files."""
     from hermes_cli.doctor import PROJECT_ROOT
     try:
-        text = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        text = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8-sig")
     except OSError:
         return None
     in_project = False
@@ -176,51 +186,33 @@ def _check_s6_supervision(issues: list[str]) -> None:
 
 
 def check_certificates(should_fix: bool = False, issues: "list | None" = None) -> None:
-    """Verify the certifi CA bundle is loadable before the first HTTPS call tracebacks.
+    """Verify the actual TLS policy is usable before the first HTTPS call tracebacks.
 
-    ``--fix`` repairs a broken bundle (e.g. a brew Python upgrade rebuilt the venv) by force-reinstalling
-    certifi into THIS interpreter's environment and re-verifying.
+    The policy is ``agent.ssl_verify``: the platform verifier (truststore) is
+    installed process-wide and every stack builds SSL contexts through it. There
+    is no certifi bundle to validate anymore; the check is that the platform
+    store is in force and a default context constructs.
     """
     try:
-        from agent.ssl_guard import verify_ca_bundle
-        from agent.errors import SSLConfigurationError
+        from agent.ssl_verify import install_truststore
     except Exception as e:
-        return check_warn("SSL certificate check skipped", str(e))
+        return check_warn("TLS trust check skipped", str(e))
     if issues is None:
         issues = []
+    platform_store = install_truststore()
+    if not platform_store:
+        check_warn("TLS platform trust store unavailable",
+                   "OpenSSL default trust paths are in use; certificates trusted only by the OS store (a corporate root) will not verify")
     try:
-        verify_ca_bundle()
-        return check_ok("SSL CA certificate bundle is valid")
-    except SSLConfigurationError as e:
-        first_error = str(e)
+        ssl.create_default_context()
     except Exception as e:
-        return check_warn("SSL certificate check skipped", str(e))
-    check_fail("SSL CA certificate bundle is broken", first_error)
-    pip_cmd = f"{sys.executable} -m pip install --force-reinstall certifi"
-    if not should_fix:
-        issues.append(f"Repair the CA bundle: run `hermes doctor --fix`, or `{pip_cmd}`")
+        _fail_and_issue("TLS default SSL context cannot be constructed", str(e),
+                        _python_repair_hint() + "; if TLS still fails, repair Python through the installation owner.", issues)
         return
-    print("    → Repairing: force-reinstalling certifi...")
-    try:
-        result = subprocess.run([sys.executable, "-m", "pip", "install", "--force-reinstall", "certifi"],
-                                capture_output=True, text=True, timeout=300)
-        failure = ("certifi reinstall failed", (result.stderr or result.stdout or "")[-500:]) if result.returncode != 0 else None
-    except Exception as exc:
-        failure = ("certifi repair could not run pip", str(exc))
-    if failure:
-        return _fail_and_issue(*failure, f"Reinstall certifi manually: {pip_cmd}", issues)
-    # Drop cached certifi modules so where() resolves the fresh install without a restart.
-    import importlib
-    for mod_name in [m for m in sys.modules if m == "certifi" or m.startswith("certifi.")]:
-        sys.modules.pop(mod_name, None)
-    importlib.invalidate_caches()
-    try:
-        verify_ca_bundle()
-        check_ok("SSL CA certificate bundle repaired (certifi reinstalled)")
-    except SSLConfigurationError as e:
-        _fail_and_issue("SSL CA certificate bundle still broken after reinstall", str(e),
-                        "certifi reinstall did not restore the CA bundle — check for a custom CA env var "
-                        "(SSL_CERT_FILE/REQUESTS_CA_BUNDLE) pointing at a missing file, or recreate the venv.", issues)
+    if platform_store:
+        check_ok("TLS platform trust store configured; default SSL context available")
+    else:
+        check_ok("TLS default SSL context available (OpenSSL trust paths)")
 
 
 def _check_gateway_service_linger(issues: list[str]) -> None:
@@ -367,6 +359,28 @@ def _check_security_advisories(should_fix: bool, f: Finding) -> None:
             check_warn(f"{h.package}=={h.installed_version} still installed (advisory {h.advisory.id} acknowledged)")
 
 
+def _staged_venv_dir() -> "Path | None":
+    """pm's provisioned runtime venv, or None when nothing is staged.
+
+    ``pm.packages.Venv().venv_dir()`` is pm's public authority for where
+    the runtime venv lives, including an external selected generation or
+    the original source/payload environment before first sync. A resolved
+    path without a venv marker is not a provisioned venv — pm also returns
+    the intended location before first sync, and
+    doctor must not read an empty directory as staged dependencies.
+    """
+    try:
+        import pm  # noqa: F401 — imports pm.packages, registering the definitions
+        from pm.packages import Venv
+
+        venv_dir = Venv().venv_dir()
+    except Exception:
+        return None
+    if venv_dir is not None and (Path(venv_dir) / "pyvenv.cfg").is_file():
+        return Path(venv_dir)
+    return None
+
+
 @doctor_check()
 def _check_python_environment(should_fix: bool, f: Finding) -> None:
     """Interpreter, linked SQLite, venv, macOS TCC anchors/FDA/grants, version-file drift."""
@@ -387,7 +401,19 @@ def _check_python_environment(should_fix: bool, f: Finding) -> None:
         if src:
             check_info(f"SQLite source id: {(src[:48] + '…') if len(src) > 48 else src}")
         _report_database_journal_modes()
-    check_bool(sys.prefix != sys.base_prefix, "Virtual environment active", ("Not in virtual environment", "(recommended)"))
+    # PM launchers run base Python with the selected dependency tree on
+    # sys.path. Neither sys.prefix nor a stale PYTHONPATH proves activation.
+    staged = _staged_venv_dir()
+    if staged is not None:
+        from hermes_cli.runtime_paths import site_packages
+
+        selected_site = site_packages(staged).resolve()
+        running_here = selected_site.is_dir() and any(Path(entry).resolve() == selected_site for entry in sys.path)
+        check_ok(f"Runtime venv staged ({staged})",
+                 "(active in this process)" if running_here else "(this process runs outside it)")
+    else:
+        check_bool(sys.prefix != sys.base_prefix, "Virtual environment active",
+                   ("Not in virtual environment", "(recommended)"))
     # macOS TCC interpreter anchor (#95596): dylib-complete re-land of the mechanism reverted in #95563.
     # Silent on non-macOS.
     check_macos_tcc_anchor(should_fix=should_fix)
@@ -409,7 +435,7 @@ def _check_certificates(should_fix: bool, f: Finding) -> None:
 # (import name, display name, optional)
 _PACKAGES = (
     ("openai", "OpenAI SDK", False), ("rich", "Rich (terminal UI)", False), ("dotenv", "python-dotenv", False),
-    ("yaml", "PyYAML", False), ("httpx", "HTTPX", False),
+    ("ruamel.yaml", "ruamel.yaml", False), ("httpx", "HTTPX", False),
     ("croniter", "Croniter (cron expressions)", True), ("telegram", "python-telegram-bot", True), ("discord", "discord.py", True),
 )
 
@@ -424,7 +450,7 @@ def _check_required_packages(should_fix: bool, f: Finding) -> None:
             if optional:
                 check_warn(name, "(optional, not installed)")
             else:
-                _fail_and_issue(name, "(missing)", f"Install {name}: {_python_install_cmd()} {module}", f.issues)
+                _fail_and_issue(name, "(missing)", f"Repair {name}: {_python_repair_hint()}", f.issues)
 
 
 @doctor_check()
@@ -435,16 +461,36 @@ def _check_gateway_supervision(should_fix: bool, f: Finding) -> None:
 
 @doctor_check()
 def _check_command_installation(should_fix: bool, f: Finding) -> None:
-    """Venv entry point and the ~/.local/bin (or $PREFIX/bin) symlink; skipped on Windows."""
+    """Check the install-owned launch contract without replacing custom commands."""
     from hermes_cli.doctor import PROJECT_ROOT
     if sys.platform == "win32":
         return
     _section("Command Installation")
-    venv_bin = next((c for c in (PROJECT_ROOT / n / "bin" / "hermes" for n in ("venv", ".venv")) if c.exists()), None)
-    if venv_bin is None:
-        check_warn("Venv entry point not found", "(hermes not in venv/bin/ or .venv/bin/ — reinstall with pip install -e '.[all]')")
-        return f.manual_issues.append(f"Reinstall entry point: cd {PROJECT_ROOT} && source venv/bin/activate && pip install -e '.[all]'")
-    check_ok(f"Venv entry point exists ({venv_bin.relative_to(PROJECT_ROOT)})")
+    from hermes_cli.config import detect_install_method
+
+    method = detect_install_method(PROJECT_ROOT)
+    if is_nix_install_method(method) or method in ("docker", "apt"):
+        command = shutil.which("hermes")
+        if command:
+            check_ok(f"Hermes command managed by {method} ({command})")
+        else:
+            check_warn(f"Hermes command not on PATH ({method}-managed)")
+            f.manual_issues.append(_python_repair_hint())
+        return
+    from hermes_cli._launchers import resolve_store_python
+    from hermes_cli.runtime_paths import base_venv, selected_venv
+
+    try:
+        selected = selected_venv(PROJECT_ROOT)
+    except (OSError, ValueError, RuntimeError) as exc:
+        check_fail("Cannot resolve selected dependencies", str(exc))
+        return f.manual_issues.append(_python_repair_hint())
+    pm_launcher = selected != base_venv(PROJECT_ROOT) or resolve_store_python(PROJECT_ROOT) is not None
+    venv_bin = PROJECT_ROOT / "hermes" if pm_launcher else selected / "bin" / "hermes"
+    if not venv_bin.is_file():
+        check_warn("Hermes entry point not found", f"({venv_bin})")
+        return f.manual_issues.append("Repair or reinstall the Hermes launcher through the installation owner")
+    check_ok(f"Hermes entry point exists ({venv_bin})")
     # Expected command link directory (mirrors install.sh logic).
     prefix = os.environ.get("PREFIX", "")
     termux = prefix and (os.environ.get("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
@@ -455,9 +501,11 @@ def _check_command_installation(should_fix: bool, f: Finding) -> None:
         if target == expected:
             return check_ok(f"{display}/hermes → correct target")
         check_warn(f"{display}/hermes points to wrong target", f"(→ {target}, expected → {expected})")
+        owned_targets = {(PROJECT_ROOT / name / "bin" / "hermes").resolve() for name in ("venv", ".venv")}
+        if target not in owned_targets:
+            return f.manual_issues.append(f"Review {display}/hermes manually; its target is user-managed and was not changed")
         if not should_fix:
             return f.issues.append(f"Broken symlink at {display}/hermes — run 'hermes doctor --fix'")
-        link.unlink()
         verb = "Fixed"
     elif link.exists():  # regular file (wrapper script), not a symlink
         return check_ok(f"{display}/hermes exists (non-symlink)")
@@ -467,8 +515,18 @@ def _check_command_installation(should_fix: bool, f: Finding) -> None:
             return f.issues.append(f"Missing {display}/hermes symlink — run 'hermes doctor --fix'")
         link_dir.mkdir(parents=True, exist_ok=True)
         verb = "Created"
-    link.symlink_to(venv_bin)
-    check_ok(f"{verb} symlink: {display}/hermes → {venv_bin}")
+    if pm_launcher:
+        from hermes_cli._launchers import stage_launcher
+
+        if stage_launcher("hermes", PROJECT_ROOT, link_dir) is None:
+            check_fail("Could not publish Hermes launcher")
+            return f.manual_issues.append("Repair the PM store interpreter through the installation owner, then rerun 'hermes doctor --fix'")
+        check_ok(f"{verb} PM launcher: {display}/hermes")
+    else:
+        if link.is_symlink():
+            link.unlink()
+        link.symlink_to(venv_bin)
+        check_ok(f"{verb} symlink: {display}/hermes → {venv_bin}")
     f.fixed += 1
     if verb == "Created" and str(link_dir) not in os.environ.get("PATH", "").split(os.pathsep):
         check_warn(f"{display} is not on your PATH", "(add it to your shell config: export PATH=\"$HOME/.local/bin:$PATH\")")

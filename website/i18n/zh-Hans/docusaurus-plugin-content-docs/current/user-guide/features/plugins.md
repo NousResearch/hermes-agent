@@ -101,7 +101,7 @@ def register(ctx):
 | 添加斜杠命令 | `ctx.register_command(name, handler, description)` — 在 CLI 和 gateway 会话中添加 `/name` |
 | 从命令中调度工具 | `ctx.dispatch_tool(name, args)` — 调用已注册的工具，自动注入父 agent 上下文 |
 | 添加 CLI 命令 | `ctx.register_cli_command(name, help, setup_fn, handler_fn)` — 添加 `hermes <plugin> <subcommand>` |
-| 注入消息 | `ctx.inject_message(content, role="user")` — 参见 [注入消息](#injecting-messages) |
+| 注入消息 | `ctx.inject_message(content, role="user")` — 参见 [注入消息](#注入消息) |
 | 附带数据文件 | `Path(__file__).parent / "data" / "file.yaml"` |
 | 打包 skill | `ctx.register_skill(name, path)` — 命名空间为 `plugin:skill`，通过 `skill_view("plugin:skill")` 加载 |
 | 按环境变量控制 | 在 plugin.yaml 中设置 `requires_env: [API_KEY]` — 在 `hermes plugins install` 时提示输入 |
@@ -122,7 +122,7 @@ def register(ctx):
 | 用户 | `~/.hermes/plugins/` | 个人插件 |
 | 项目 | `.hermes/plugins/` | 项目专属插件（需要 `HERMES_ENABLE_PROJECT_PLUGINS=true`） |
 | pip | `hermes_agent.plugins` entry_points | 分发包 |
-| Nix | `services.hermes-agent.extraPlugins` / `extraPythonPackages` | NixOS 声明式安装 — 参见 [Nix Setup](/getting-started/nix-setup#plugins) |
+| Nix | `services.hermes-agent.extraPlugins` / `extraPythonPackages` | NixOS 声明式安装 — 参见 [Nix Setup](/getting-started/nix-setup#插件) |
 
 名称冲突时，后面的来源会覆盖前面的，因此与内置插件同名的用户插件会替换它。
 
@@ -228,10 +228,10 @@ Memory provider 和 context engine 是 **provider 插件** — 每种类型同�
 | **上下文压缩策略** | Context-engine 插件 — `ctx.register_context_engine()` | [Context Engine Plugins](/developer-guide/context-engine-plugin) |
 | **图像生成后端**（DALL·E、SDXL 等） | 后端插件 — `ctx.register_image_gen_provider()` | [Image Generation Provider Plugins](/developer-guide/image-gen-provider-plugin) |
 | **视频生成后端**（Veo、Kling、Pixverse、Grok-Imagine、Runway 等） | 后端插件 — `ctx.register_video_gen_provider()` | [Video Generation Provider Plugins](/developer-guide/video-gen-provider-plugin) |
-| **TTS 后端**（任意 CLI — Piper、VoxCPM、Kokoro、xtts、语音克隆脚本等） | 配置驱动（推荐）— 在 `config.yaml` 的 `tts.providers.<name>` 下以 `type: command` 声明。或 Python 后端插件 — 对需要超出 shell 模板的 Python SDK / 流式引擎使用 `ctx.register_tts_provider()`。 | [TTS Setup](/user-guide/features/tts#custom-command-providers) · [Python plugin guide](/user-guide/features/tts#python-plugin-providers) |
-| **STT 后端**（自定义 whisper 二进制、本地 ASR CLI） | 配置驱动 — 将 `HERMES_LOCAL_STT_COMMAND` 环境变量设置为 shell 模板 | [Voice Message Transcription (STT)](/user-guide/features/tts#voice-message-transcription-stt) |
+| **TTS 后端**（任意 CLI — Piper、VoxCPM、Kokoro、xtts、语音克隆脚本等） | 配置驱动（推荐）— 在 `config.yaml` 的 `tts.providers.<name>` 下以 `type: command` 声明。或 Python 后端插件 — 对需要超出 shell 模板的 Python SDK / 流式引擎使用 `ctx.register_tts_provider()`。 | [TTS Setup](/user-guide/features/tts#自定义命令提供商) · [Python plugin guide](/user-guide/features/tts#python-插件提供商) |
+| **STT 后端**（自定义 whisper 二进制、本地 ASR CLI） | 配置驱动 — 将 `HERMES_LOCAL_STT_COMMAND` 环境变量设置为 shell 模板 | [Voice Message Transcription (STT)](/user-guide/features/tts#语音消息转录stt) |
 | **通过 MCP 使用外部工具**（文件系统、GitHub、Linear、Notion、任意 MCP 服务器） | 配置驱动 — 在 `config.yaml` 中以 `command:` / `url:` 声明 `mcp_servers.<name>`。Hermes 自动发现服务器的工具并与内置工具一同注册。 | [MCP](/user-guide/features/mcp) |
-| **额外 skill 来源**（自定义 GitHub 仓库、私有 skill 索引） | CLI — `hermes skills tap add <repo>` | [Skills Hub](/user-guide/features/skills#skills-hub) · [发布自定义 tap](/user-guide/features/skills#publishing-a-custom-skill-tap) |
+| **额外 skill 来源**（自定义 GitHub 仓库、私有 skill 索引） | CLI — `hermes skills tap add <repo>` | [Skills Hub](/user-guide/features/skills#skills-hub) · [发布自定义 tap](/user-guide/features/skills#发布自定义-skill-tap) |
 | **Gateway 事件 hook**（在 `gateway:startup`、`session:start`、`agent:end`、`command:*` 时触发） | 将 `HOOK.yaml` + `handler.py` 放入 `~/.hermes/hooks/<name>/` | [Event Hooks](/user-guide/features/hooks#gateway-event-hooks) |
 | **Shell hook**（在事件时运行 shell 命令 — 通知、审计日志、桌面提醒） | 配置驱动 — 在 `config.yaml` 的 `hooks:` 下声明 | [Shell Hooks](/user-guide/features/hooks#shell-hooks) |
 
@@ -241,14 +241,14 @@ Memory provider 和 context engine 是 **provider 插件** — 每种类型同�
 
 ## NixOS 声明式插件
 
-在 NixOS 上，插件可通过模块选项声明式安装 — 无需 `hermes plugins install`。完整详情请参见 **[Nix Setup 指南](/getting-started/nix-setup#plugins)**。
+在 NixOS 上，插件可通过模块选项声明式安装 — 无需 `hermes plugins install`。完整详情请参见 **[Nix Setup 指南](/getting-started/nix-setup#插件)**。
 
 ```nix
 services.hermes-agent = {
   # 目录插件（包含 plugin.yaml 的源码树）
   extraPlugins = [ (pkgs.fetchFromGitHub { ... }) ];
   # 入口点插件（pip 包）
-  extraPythonPackages = [ (pkgs.python312Packages.buildPythonPackage { ... }) ];
+  extraPythonPackages = [ (config.services.hermes-agent.package.python.pkgs.buildPythonPackage { ... }) ];
   # 在 config 中启用
   settings.plugins.enabled = [ "my-plugin" ];
 };
@@ -262,7 +262,7 @@ services.hermes-agent = {
 hermes plugins                                       # 统一交互式 UI
 hermes plugins list                                  # 表格：已启用 / 已禁用 / 未启用
 hermes plugins install user/repo                     # 从 Git 安装，然后提示 Enable? [y/N]
-hermes plugins install user/repo --enable            # 安装并启用（无提示）
+hermes plugins install user/repo --enable            # 请求启用；依赖安装仍需单独同意
 hermes plugins install user/repo --no-enable         # 安装但保持禁用（无提示）
 hermes plugins update my-plugin                      # 拉取最新版本
 hermes plugins remove my-plugin                      # 卸载
@@ -272,6 +272,31 @@ hermes plugins disable my-plugin                     # 从允许列表移除并�
 ```
 
 对于子分类目录下的插件（例如 `plugins/observability/langfuse/`、`plugins/image_gen/openai/`），使用完整的 `<category>/<plugin>` key — 这正是 `hermes plugins list` 在 **Name** 列中显示的内容。
+
+### 更新检查、来源与依赖
+
+```bash
+hermes plugins check-updates
+hermes plugins adopt my-plugin
+hermes plugins trust-update-url my-plugin
+```
+
+Git 安装的来源和版本记录在 `.install-metadata.json`。
+未固定版本的已跟踪插件比较保存的远程来源；固定版本保持固定。
+自行克隆的目录需先 `adopt` 才纳入管理，手动复制或来源漂移的目录仅得到诊断提示。
+pip 入口点插件可报告发行包版本，但不会因此转为 Git 管理。
+
+Gateway 按 `plugins.auto_update_check_hours` 检查更新，默认 24 小时，`0` 关闭。
+`check-updates` 不改写插件文件。检查记录可通过 `hermes pm status` 和桌面同步状态查看。
+默认通过 `hermes plugins update NAME` 手动应用；`plugins.auto_apply: true` 才允许跟踪的 Git 插件自动更新。
+固定版本、手动目录、来源漂移和 pip 发行包不参与自动应用。
+新引入或变更的 `update_url` 需通过 `trust-update-url` 审阅确认。
+
+Python 依赖安装有独立同意和准入步骤，`--enable` 不绕过它。
+拒绝或非交互式依赖安装可使插件保留为已安装但未启用状态。
+PM 统一准备核心和插件依赖，失败保留旧选择。新环境尚未进入当前进程时需重启。
+普通应用更新保留插件目录，显式插件更新或删除可以改动这些文件。
+详见[包管理](/reference/package-management)。
 
 ### 交互式 UI
 

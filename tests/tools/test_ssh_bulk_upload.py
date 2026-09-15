@@ -136,6 +136,7 @@ class TestSSHBulkUpload:
         assert len(staging_paths) == 1, "tar command should have been called"
 
 
+    @pytest.mark.require_symlinks
     def test_bulk_upload_never_stages_remote_home_prefix(self, mock_env, tmp_path):
         """Regression: do not archive /home/<user> path components."""
         f1 = tmp_path / "nested.txt"

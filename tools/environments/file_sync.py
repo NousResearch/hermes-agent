@@ -31,7 +31,8 @@ logger = logging.getLogger(__name__)
 
 # Tests patch these module-level aliases instead of ``time.sleep`` /
 # ``time.monotonic``: patching attributes on the shared ``time`` module object
-# leaks into unrelated threads under xdist and inflates retry call counts.
+# leaks into unrelated threads when tests share a process and inflates retry
+# call counts.
 _sleep = time.sleep
 _monotonic = time.monotonic
 

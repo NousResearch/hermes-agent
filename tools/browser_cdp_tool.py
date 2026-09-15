@@ -275,7 +275,7 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
         return tool_error("'method' is required (e.g. 'Target.getTargets')", cdp_docs=CDP_DOCS_URL)
     if not _WS_AVAILABLE:
         return tool_error("The 'websockets' Python package is required but not installed. "
-                          "Install it with: pip install websockets")
+                          "Run: hermes pm repair")
     endpoint = _resolve_cdp_endpoint()
     if not endpoint:
         return tool_error("No CDP endpoint is available. Run '/browser connect' to attach to a running Chrome, "

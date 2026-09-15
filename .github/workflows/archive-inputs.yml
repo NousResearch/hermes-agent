@@ -1,0 +1,42 @@
+name: Archive pinned PM inputs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'pm/lock.json'
+      - 'pm/artifact-mirror.json'
+      - 'scripts/termux/runtime_libs.json'
+      - 'scripts/ci/archive_inputs.py'
+      - '.github/workflows/archive-inputs.yml'
+  workflow_call:
+    inputs:
+      sha:
+        description: 'The admitted commit whose pins are archived.'
+        required: true
+        type: string
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  archive-inputs:
+    name: Preserve every pinned HTTP input
+    if: github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
+    runs-on: ubuntu-24.04
+    environment: release-signing
+    timeout-minutes: 60
+    env:
+      CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+      CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+      CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+          persist-credentials: false
+      # Runner Python is intentional: the toolchain's upstream may be gone.
+      - name: Verify and archive every pinned input
+        run: python3 -m scripts.ci.archive_inputs

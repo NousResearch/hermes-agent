@@ -58,11 +58,10 @@ def _normalize_local_model(model_name: Optional[str]) -> str:
 def _try_lazy_install_stt() -> bool:
     """Lazy-install faster-whisper and re-check dynamically so it's usable without a restart."""
     try:
-        from tools.lazy_deps import ensure
-        # prompt=False: a bare input() deadlocks under the interactive CLI where prompt_toolkit
-        # owns stdin; the install is already gated by security.allow_lazy_installs.
-        # prompt=False: never raise a blocking input() prompt mid-session. See #40490.
-        ensure("stt.faster_whisper", prompt=False)
+        # pm installs are gated by security.allow_lazy_installs; never a blocking
+        # prompt mid-session. See #40490.
+        import pm
+        pm.ensure_import("voice")
         if _ilu.find_spec("faster_whisper"):
             return True
         logger.warning("faster-whisper was installed but importlib still cannot find it (may require Python restart)")
@@ -70,10 +69,8 @@ def _try_lazy_install_stt() -> bool:
         logger.warning(
             "Lazy install of faster-whisper failed: %s. "
             "This is often a permission issue: the Hermes process user cannot "
-            "write to the virtual environment. Try running manually as the "
-            "venv owner: `stat -c '%%u' '$(dirname $(dirname $(which python3)))'` "
-            "then `su - <owner> -c 'VIRTUAL_ENV=/opt/hermes/.venv "
-            "uv pip install faster-whisper==1.2.1'`",
+            "write to the dependency environment. Run `hermes tools` as the "
+            "Hermes installation owner and select Local Whisper under Speech-to-Text.",
             exc)
     return False
 
@@ -248,7 +245,7 @@ def _transcribe_local_command(
             txt_files = sorted(Path(output_dir).glob("*.txt"))
             if not txt_files:
                 return _error_result("Local STT command completed but did not produce a .txt transcript")
-            transcript_text = txt_files[0].read_text(encoding="utf-8").strip()
+            transcript_text = txt_files[0].read_text(encoding="utf-8-sig").strip()
             logger.info("Transcribed %s via local STT command (%s, %d chars)",
                         Path(file_path).name, normalized_model, len(transcript_text))
             return _ok_result(transcript_text, "local_command")

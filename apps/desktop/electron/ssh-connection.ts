@@ -36,6 +36,8 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 
+import { platformDefaultHermesHome } from './data-paths'
+
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 const DEFAULT_EXEC_TIMEOUT_MS = 20_000
 const DEFAULT_FORWARD_TIMEOUT_MS = 15_000
@@ -189,14 +191,14 @@ function controlSocketPath(user, host, port, baseDir?, identity: any = {}) {
   return path.join(dir, `${id}.sock`)
 }
 
-function defaultControlDir() {
+function defaultControlDir(): string {
   // POSIX: a SHORT, PER-USER base stays under the socket limit AND avoids a
   // world-shared /tmp dir (no symlink-hijack surface). Created 0700 in open().
   if (process.platform === 'win32') {
     return path.join(os.tmpdir(), 'hermes-desktop-ssh')
   }
 
-  return path.join(os.homedir(), '.hermes', 'desktop-ssh')
+  return path.join(platformDefaultHermesHome(os.homedir()), 'desktop-ssh')
 }
 
 // Command construction (pure — the unit tests exercise these directly)

@@ -124,6 +124,7 @@ class TestUninstallPathTraversal:
         assert ok is False
         assert victim.exists()
 
+    @pytest.mark.require_symlinks
     def test_symlink_escape_rejected(self, tmp_path, hub_setup):
         """Symlinks inside SKILLS_DIR that point outside must be refused
         after realpath resolution."""

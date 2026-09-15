@@ -288,7 +288,7 @@ def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
 
 
 def test_model_flow_nous_does_not_restore_stale_custom_api_key(tmp_path, monkeypatch):
-    import yaml
+    import hermes_yaml as yaml
 
     config_home = tmp_path / "hermes"
     config_home.mkdir()
@@ -358,7 +358,7 @@ def test_model_flow_nous_does_not_restore_stale_custom_api_key(tmp_path, monkeyp
 
 
 def _seed_stale_custom_model(tmp_path, monkeypatch):
-    import yaml
+    import hermes_yaml as yaml
 
     config_home = tmp_path / "hermes"
     config_home.mkdir()
@@ -619,11 +619,11 @@ def test_auto_provider_name_localhost():
 
 def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
     """When a display name is passed, it should appear in the saved entry."""
-    import yaml
+    import hermes_yaml as yaml
     from hermes_cli.main_provider_setup import _save_custom_provider
 
     cfg_path = tmp_path / "config.yaml"
-    cfg_path.write_text(yaml.dump({}))
+    cfg_path.write_text(yaml.safe_dump({}))
 
     monkeypatch.setattr(
         "hermes_cli.config.load_config", lambda: yaml.safe_load(cfg_path.read_text()) or {},
@@ -641,11 +641,11 @@ def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
 
 def test_save_custom_provider_references_the_key_instead_of_inlining_it(monkeypatch, tmp_path):
     """With key_env set the entry must not carry the secret (#69449)."""
-    import yaml
+    import hermes_yaml as yaml
     from hermes_cli.main_provider_setup import _save_custom_provider
 
     cfg_path = tmp_path / "config.yaml"
-    cfg_path.write_text(yaml.dump({}))
+    cfg_path.write_text(yaml.safe_dump({}))
     monkeypatch.setattr(
         "hermes_cli.config.load_config", lambda: yaml.safe_load(cfg_path.read_text()) or {},
     )

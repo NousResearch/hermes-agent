@@ -6,6 +6,9 @@ description: "将 Hermes Agent 与 Microsoft Foundry 配合使用——OpenAI �
 
 # Microsoft Foundry
 
+本页的 Python 依赖命令使用 [PM 准备的源码环境](/reference/package-management#developer-workflow)。
+依赖变更后，请重新激活该 checkout 并重启 Hermes。
+
 Hermes Agent 的 `azure-foundry` provider 支持 Microsoft Foundry（原 Azure AI Foundry）和 Azure OpenAI。单个 Foundry 资源可以托管两种不同传输格式的模型：
 
 - **OpenAI 风格** — 在 `https://<resource>.openai.azure.com/openai/v1` 等端点上执行 `POST /v1/chat/completions`。用于 GPT-4.x、GPT-5.x、Llama、Mistral 及大多数开放权重模型。
@@ -101,7 +104,7 @@ hermes model
 `azure-identity` 在首次使用时通过 Hermes 的懒加载安装路径自动安装。如需预先安装：
 
 ```bash
-pip install azure-identity
+python -c "import pm; pm.sync_venv(['azure-identity'], explicit=True)"
 ```
 
 ### 写入 `config.yaml` 的配置

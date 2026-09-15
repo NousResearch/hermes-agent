@@ -300,7 +300,7 @@ def setup_isolated_home(enabled: bool, listing: str = "off",
 
 def _yaml_dump(obj: Any) -> str:
     try:
-        import yaml
+        import hermes_yaml as yaml
         return yaml.safe_dump(obj, sort_keys=False)
     except ImportError:
         return json.dumps(obj, indent=2)

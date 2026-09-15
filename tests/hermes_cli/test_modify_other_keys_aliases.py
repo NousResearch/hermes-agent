@@ -20,6 +20,7 @@ import pytest
 from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
 from prompt_toolkit.input.vt100_parser import Vt100Parser
 from prompt_toolkit.keys import Keys
+from prompt_toolkit.output import DummyOutput
 
 from hermes_cli.pt_input_extras import install_modify_other_keys_aliases
 
@@ -460,7 +461,7 @@ def test_buffer_level_shift_space_no_raw_csi():
         buf = Buffer()
         with create_pipe_input() as inp:
             app = Application(
-                layout=Layout(HSplit([Window(BufferControl(buf))])), input=inp
+                layout=Layout(HSplit([Window(BufferControl(buf))])), input=inp, output=DummyOutput()
             )
             run_task = asyncio.ensure_future(app.run_async())
             await asyncio.sleep(0.05)
@@ -512,7 +513,7 @@ def test_buffer_level_shift_letter_no_raw_csi():
         buf = Buffer()
         with create_pipe_input() as inp:
             app = Application(
-                layout=Layout(HSplit([Window(BufferControl(buf))])), input=inp
+                layout=Layout(HSplit([Window(BufferControl(buf))])), input=inp, output=DummyOutput()
             )
             run_task = asyncio.ensure_future(app.run_async())
             await asyncio.sleep(0.05)

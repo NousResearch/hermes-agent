@@ -1,30 +1,18 @@
-"""Local-embedded Hindsight runtime: import probe, install hint, the per-profile env
-file the standalone ``hindsight-embed`` daemon consumes, and the health-grace export."""
+"""Local-embedded Hindsight runtime seam: side-env runtime probe, install hint, and
+the per-profile env file the standalone ``hindsight-embed`` daemon consumes. The
+heavy stack itself lives in the isolated side env owned by ``embedded_runtime`` —
+nothing here imports it in-process."""
 
 from __future__ import annotations
 
 import contextlib
-import importlib
-import logging
 import os
-import sys
 from pathlib import Path
 from typing import Any
 
 from agent.secret_scope import UnscopedSecretError, get_secret
 
 from .settings import _DEFAULT_IDLE_TIMEOUT, _daemon_llm_provider, _parse_int_setting
-
-logger = logging.getLogger(__name__.rpartition(".")[0])
-
-# Read by hindsight_embed.daemon_embed_manager AT IMPORT TIME: how long to wait
-# for a slow /health before killing the daemon as stale. Busy hosts exceed the
-# upstream 2s check and get needlessly restarted, so it's plugin config.
-# Env var the embedded daemon manager reads (at import time, as a module-level constant) to size the grace
-# window it waits for a slow /health before declaring a daemon stale and killing it. We surface it as plugin
-# config so users can raise it without hand-setting an env var, consistent with "config.json, not raw env
-# vars". See #13125.
-_PORT_HEALTH_GRACE_ENV = "HINDSIGHT_EMBED_PORT_HEALTH_GRACE_TIMEOUT"
 
 # Stale embedded-daemon connection markers (client recreated, operation retried once).
 _RETRIABLE_CONNECTION_MARKERS = (
@@ -46,53 +34,23 @@ _RETRIABLE_CONNECTION_MARKERS = (
 )
 
 
-def _export_port_health_grace_timeout(config: dict[str, Any]) -> None:
-    """Export the daemon health grace timeout BEFORE ``daemon_embed_manager`` is
-    imported. Only when configured; ``setdefault`` so an explicit env override wins."""
-    raw = config.get("port_health_grace_timeout")
-    if raw is None or raw == "":
-        return
-    try:
-        seconds = float(raw)
-    except (TypeError, ValueError):
-        return logger.warning("Invalid Hindsight port_health_grace_timeout %r; ignoring.", raw)
-    if seconds < 0:
-        return logger.warning("Negative Hindsight port_health_grace_timeout %r; ignoring.", raw)
-    os.environ.setdefault(_PORT_HEALTH_GRACE_ENV, repr(seconds))
-
-
 def _check_local_runtime() -> tuple[bool, str | None]:
-    """Whether the local embedded stack imports cleanly (older CPUs: NumPy can raise
-    at import, so Hermes degrades instead of retrying a broken backend).
-    ``sentence_transformers`` is probed too: ``hindsight`` imports fine with a broken
-    embedding stack, and the daemon would then abort on every retain/recall."""
-    try:
-        for module in ("hindsight", "hindsight_embed.daemon_embed_manager", "sentence_transformers"):
-            importlib.import_module(module)
-        return True, None
-    except Exception as exc:
-        return False, str(exc)
+    """Whether the isolated side-env runtime imports cleanly (probed in the side
+    interpreter — older CPUs: NumPy can raise at import, so Hermes degrades
+    instead of retrying a broken backend; ``sentence_transformers`` is probed
+    too: ``hindsight`` imports fine with a broken embedding stack, and the
+    daemon would then abort on every retain/recall)."""
+    from .embedded_runtime import check_local_runtime
+
+    return check_local_runtime()
 
 
 def _local_runtime_hint(reason: str | None) -> str:
-    """Install guidance when the local_embedded runtime is missing: ``plugin.yaml``
-    declares only ``hindsight-client``, so a hand-written config, the legacy
-    ``"mode": "local"`` alias or a restored backup hits ``No module named 'hindsight'``.
+    """Install/reinstall guidance when the local_embedded side runtime is missing
+    or broken (probe reason appended when present)."""
+    from .embedded_runtime import _local_runtime_hint as _hint
 
-    ``local_embedded`` imports ``from hindsight import HindsightEmbedded``, which is provided only by the
-    ``hindsight-all`` package (its wheel ships the top-level ``hindsight`` module).
-    NousResearch/hermes-agent#7718.
-    """
-    text = (reason or "").lower()
-    if "no module named" in text and any(m in text for m in ("hindsight'", 'hindsight"', "hindsight_embed")):
-        return (
-            f" Install the embedded runtime with: uv pip install --python "
-            f"{sys.executable} hindsight-all — or run 'hermes memory setup'. "
-            "(local_embedded needs the 'hindsight-all' package, which provides the "
-            "top-level 'hindsight' module; 'hindsight-client' alone only covers "
-            "cloud / local_external.)"
-        )
-    return ""
+    return _hint(reason)
 
 
 def _load_simple_env(path) -> dict[str, str]:

@@ -32,13 +32,19 @@ Hermes spins up a local Hindsight daemon with built-in PostgreSQL. Requires an L
 
 Supports any OpenAI-compatible LLM endpoint (llama.cpp, vLLM, LM Studio, etc.) — pick `openai_compatible` as the provider and enter the base URL.
 
-Daemon startup logs: `~/.hermes/logs/hindsight-embed.log`
-Daemon runtime logs: `~/.hindsight/profiles/<profile>.log`
+The embedded runtime lives in separately resolved generations under
+`$HERMES_HOME/profiles/Hindsight/env/`. `active.json` selects the current
+generation. Its own interpreter runs `hindsight-embed` and `hindsight-api-slim`;
+Hermes uses the HTTP client instead of importing that server into its main environment.
 
-To open the Hindsight web UI (local embedded mode only):
-```bash
-hindsight-embed -p hermes ui start
-```
+A failed runtime build preserves the previous generation. Re-run
+`hermes memory setup` and select Local Embedded to repair it. Initial model
+loading can require network access and several minutes.
+
+Hermes records side-environment preparation and daemon-bridge errors in its
+normal logs. The sidecar manager owns its separate daemon logs. The
+`hindsight-embed` CLI is inside the selected generation, not automatically on
+the host PATH.
 
 ### Local External
 
@@ -154,4 +160,7 @@ Available in `hybrid` and `tools` memory modes:
 
 ## Client Version
 
-Requires `hindsight-client >= 0.6.1`. The plugin auto-upgrades on session start if an older version is detected.
+The client version comes from the `hindsight` extra in `pyproject.toml` and
+`uv.lock`. PM prepares client dependency changes without replacing libraries
+already imported by Hermes. Restart Hermes when the dependency operation
+reports that the new environment is selected.

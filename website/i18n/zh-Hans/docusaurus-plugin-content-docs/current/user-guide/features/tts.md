@@ -6,6 +6,9 @@ description: "跨所有平台的文字转语音与语音消息转录"
 
 # 语音与 TTS
 
+本页的 Python 依赖命令使用 [PM 准备的源码环境](/reference/package-management#developer-workflow)。
+依赖变更后，请重新激活该 checkout 并重启 Hermes。
+
 Hermes Agent 支持跨所有消息平台的文字转语音（TTS）输出和语音消息转录（STT）。
 
 :::tip Nous 订阅用户
@@ -181,7 +184,7 @@ tts:
 
 Piper 是来自 Open Home Foundation（Home Assistant 维护者）的快速本地神经网络 TTS 引擎。它完全在 CPU 上运行，支持 **44 种语言**的预训练声音，无需 API 密钥。
 
-**通过 `hermes tools` 安装** → Voice & TTS → Piper — Hermes 会自动为你运行 `pip install piper-tts`。或手动安装：`pip install piper-tts`。
+**通过 `hermes tools` 安装** → Voice & TTS → Piper。Hermes 通过 PM 请求 `piper` extra，平台限制仍然适用。
 
 **切换至 Piper：**
 
@@ -238,6 +241,9 @@ tts:
 #### 示例：Doubao（中文 seed-tts-2.0）
 
 如需通过字节跳动的 [seed-tts-2.0](https://www.volcengine.com/docs/6561/1257544) 双向流式 API 实现高质量中文 TTS，请安装 [`doubao-speech`](https://pypi.org/project/doubao-speech/) PyPI 包并将其作为命令提供商接入：
+
+请在独立的工具环境中安装此外部命令提供商，不要修改 Hermes 的 Python 环境。
+确保其可执行文件可通过 `PATH` 访问。
 
 ```bash
 pip install doubao-speech
@@ -422,7 +428,7 @@ stt:
 
 **OpenAI API** — 优先使用 `VOICE_TOOLS_OPENAI_KEY`，回退至 `OPENAI_API_KEY`。支持 `whisper-1`、`gpt-4o-mini-transcribe`、`gpt-4o-transcribe` 和 `gpt-transcribe`。
 
-**Mistral API（Voxtral Transcribe）** — 需要 `MISTRAL_API_KEY`。使用 Mistral 的 [Voxtral Transcribe](https://docs.mistral.ai/capabilities/audio/speech_to_text/) 模型。支持 13 种语言、说话人分离和词级时间戳。通过 `cd ~/.hermes/hermes-agent && uv pip install -e ".[mistral]"` 安装。
+**Mistral API（Voxtral Transcribe）** — 需要 `MISTRAL_API_KEY`。使用 Mistral 的 [Voxtral Transcribe](https://docs.mistral.ai/capabilities/audio/speech_to_text/) 模型。支持 13 种语言、说话人分离和词级时间戳。通过 `cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['mistral'], explicit=True)"` 安装。
 
 **xAI Grok STT** — 需要 `XAI_API_KEY`。以 multipart/form-data 格式发送至 `https://api.x.ai/v1/stt`。如果你已在使用 xAI 进行聊天或 TTS 并希望一个 API 密钥搞定一切，这是个好选择。自动检测顺序将其排在 Groq 之后——显式设置 `stt.provider: xai` 可强制使用。
 
@@ -431,6 +437,9 @@ stt:
 #### 示例：Doubao / Volcengine ASR
 
 如果你使用 [`doubao-speech`](https://pypi.org/project/doubao-speech/) 进行 Doubao TTS（见[上文](#example-doubao-chinese-seed-tts-20)），同一个包也可通过本地命令 STT 接口处理语音转文字：
+
+请在独立的工具环境中安装此外部命令提供商，不要修改 Hermes 的 Python 环境。
+确保其可执行文件可通过 `PATH` 访问。
 
 ```bash
 pip install doubao-speech

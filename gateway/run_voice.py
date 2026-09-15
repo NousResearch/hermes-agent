@@ -56,7 +56,7 @@ class GatewayVoiceMixin:
 
     def _load_voice_modes(self) -> Dict[str, str]:
         try:
-            data = json.loads(self._VOICE_MODE_PATH.read_text(encoding="utf-8"))
+            data = json.loads(self._VOICE_MODE_PATH.read_text(encoding="utf-8-sig"))
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             return {}
         if not isinstance(data, dict):
@@ -164,7 +164,7 @@ class GatewayVoiceMixin:
             if not any(tok in str(e).lower() for tok in ("pynacl", "nacl", "davey")):
                 return f"Failed to join voice channel: {e}"
             return ("Voice dependencies are missing (PyNaCl / davey). "
-                    f"Install with: `{sys.executable} -m pip install PyNaCl`")
+                    "Run: `python -c \"from pm import sync_venv; sync_venv(['discord'], explicit=True)\"`")
         if not success:
             adapter._voice_input_callback = None
             return "Failed to join voice channel. Check bot permissions (Connect + Speak)."

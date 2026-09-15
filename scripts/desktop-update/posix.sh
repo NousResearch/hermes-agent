@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # posix.sh -- repo-owned macOS/Linux Desktop update hand-off.
 #
 # The whole job: wait for the Desktop to exit, run `hermes update`, tell the
@@ -11,7 +11,7 @@
 # CONTRACT (keep in sync with apps/desktop/electron/main.ts):
 #   bash scripts/desktop-update/posix.sh
 #     --install-root <path>    repo checkout (HERMES_HOME/hermes-agent)
-#     --branch <ref>           branch to update against
+#     [--branch <ref> | --channel stable|canary|main]  default: branch main
 #     --desktop-pid <pid>      the Electron main process to wait out
 #     [--relaunch-target <p>]  mac: running .app to swap+reopen;
 #                              linux: running binary (omit = no relaunch)
@@ -36,7 +36,8 @@
 set -u
 
 ORIGINAL_ARGS=("$@")
-INSTALL_ROOT="" BRANCH="main" DESKTOP_PID=0 RELAUNCH_TARGET=""
+INSTALL_ROOT="" BRANCH="main" CHANNEL="" DESKTOP_PID=0 RELAUNCH_TARGET=""
+BRANCH_EXPLICIT=0
 RELAUNCH_CWD="" SANDBOX_FALLBACK=0 RELAUNCH_ARGS=()
 NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
 SELF_TEST_TCC_HEAL=0
@@ -44,7 +45,13 @@ HANDOFF_DAEMONIZED=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --install-root) INSTALL_ROOT="$2"; shift 2 ;;
-    --branch) BRANCH="$2"; shift 2 ;;
+    --branch) BRANCH="$2"; BRANCH_EXPLICIT=1; shift 2 ;;
+    --channel)
+      case "${2:-}" in
+        stable|canary|main) CHANNEL="$2" ;;
+        *) echo "--channel must be stable, canary, or main" >&2; exit 64 ;;
+      esac
+      shift 2 ;;
     --desktop-pid) DESKTOP_PID="$2"; shift 2 ;;
     --relaunch-target) RELAUNCH_TARGET="$2"; shift 2 ;;
     --relaunch-cwd) RELAUNCH_CWD="$2"; shift 2 ;;
@@ -61,10 +68,14 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ "$SELF_TEST_UI" -eq 1 ] || [ -n "$INSTALL_ROOT" ] || { echo "--install-root is required" >&2; exit 64; }
+[ "$BRANCH_EXPLICIT" -eq 0 ] || [ -z "$CHANNEL" ] || { echo "--branch and --channel are mutually exclusive" >&2; exit 64; }
+TARGET_ARGS=(--branch "$BRANCH")
+[ -z "$CHANNEL" ] || TARGET_ARGS=(--channel "$CHANNEL")
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HERMES_HOME="${INSTALL_ROOT:+$(dirname "$INSTALL_ROOT")}"
+HERMES_HOME="${HERMES_HOME:-${INSTALL_ROOT:+$(dirname "$INSTALL_ROOT")}}"
 HERMES_HOME="${HERMES_HOME:-${TMPDIR:-/tmp}}"
+export HERMES_HOME
 MARKER="$HERMES_HOME/.hermes-update-in-progress"
 LOG_DIR="$HERMES_HOME/logs"; mkdir -p "$LOG_DIR" 2>/dev/null || true
 LOG="$LOG_DIR/desktop-update-handoff.log"
@@ -432,10 +443,10 @@ launch_app() { # attempted BEFORE the terminal event (launch acceptance is
 MANUAL=0  # 1 = update landed but the user must act (result protocol field)
 
 write_result() {
-  printf '{"ok":%s,"exit_code":%s,"manual":%s,"message":"%s","branch":"%s","finished_at":%s}' \
+  printf '{"ok":%s,"exit_code":%s,"manual":%s,"message":"%s","branch":"%s","channel":"%s","finished_at":%s}' \
     "$([ "$FINAL_CODE" -eq 0 ] && echo true || echo false)" "$FINAL_CODE" \
     "$([ "$MANUAL" -eq 1 ] && echo true || echo false)" \
-    "$(json_escape "$FINAL_MSG")" "$(json_escape "$BRANCH")" "$(date +%s)" \
+    "$(json_escape "$FINAL_MSG")" "$(json_escape "$BRANCH")" "$(json_escape "$CHANNEL")" "$(date +%s)" \
     > "$RESULT.tmp" 2>/dev/null && mv -f "$RESULT.tmp" "$RESULT" 2>/dev/null || true
 }
 
@@ -691,7 +702,7 @@ fi
 # command has returned; the already-running server keeps the inherited setting
 # until normal cleanup closes it.
 trap '' TERM
-log "hand-off start: root=$INSTALL_ROOT branch=$BRANCH desktopPid=$DESKTOP_PID pid=$$"
+log "hand-off start: root=$INSTALL_ROOT branch=$BRANCH channel=$CHANNEL desktopPid=$DESKTOP_PID pid=$$"
 rm -f "$RESULT" 2>/dev/null || true
 
 # Marker claim: same cross-process lock contract as windows.ps1 /
@@ -730,25 +741,42 @@ fi
 sleep 1
 start_ui
 
-HERMES_BIN="$INSTALL_ROOT/venv/bin/hermes"
-[ -x "$HERMES_BIN" ] || { FINAL_CODE=3 FINAL_MSG="Update aborted: $HERMES_BIN is missing. The install needs repair (run the Hermes installer or hermes doctor)."; log "$FINAL_MSG"; exit 3; }
-
-# Heal a venv the reverted TCC anchor left bricked BEFORE invoking the CLI:
-# venv/bin/hermes execs venv/bin/python3, so a dead alias kills every attempt
-# and its retry identically (#95759). macOS-only artifact; probe is cheap.
-if [ "$(uname)" = "Darwin" ]; then
-  if tcc_anchor_heal "$INSTALL_ROOT/venv/bin"; then
-    case "$TCC_HEAL_STATE" in
-      healed-*) log "TCC anchor self-heal repaired the venv interpreter ($TCC_HEAL_STATE)" ;;
-    esac
-  else
-    log "TCC anchor self-heal could not repair the venv ($TCC_HEAL_STATE)"
+# Current installs publish an installation-bound launcher. Only pre-PM
+# checkouts use the old shim/TCC rescue; a damaged PM install must not retarget.
+LEGACY_INSTALL=0
+[ -d "$INSTALL_ROOT/pm" ] || LEGACY_INSTALL=1
+select_update_invoke() {
+  HERMES_BIN="$INSTALL_ROOT/.hermes/bin/hermes"
+  if [ -x "$HERMES_BIN" ]; then
+    UPDATE_INVOKE=("$HERMES_BIN")
+    return 0
   fi
-fi
-tcc_pick_update_invoke "$INSTALL_ROOT/venv/bin"
-if [ "${UPDATE_INVOKE[0]}" != "$HERMES_BIN" ]; then
-  log "venv/bin/python3 still unbootable; invoking the update via ${UPDATE_INVOKE[*]}"
-fi
+  if [ -f "$INSTALL_ROOT/hermes_cli/_launchers.py" ]; then
+    local candidate version reported expected
+    expected="$(cd "$INSTALL_ROOT" && pwd -P)" || return 1
+    for candidate in "$HOME/.local/bin/hermes" "$HERMES_HOME/bin/hermes"; do
+      [ -x "$candidate" ] || continue
+      version="$("$candidate" --version 2>/dev/null)" || continue
+      reported="$(printf '%s\n' "$version" | sed -n 's/^Install directory: //p')"
+      [ -d "$reported" ] || continue
+      [ "$(cd "$reported" && pwd -P)" = "$expected" ] || continue
+      HERMES_BIN="$candidate"
+      UPDATE_INVOKE=("$candidate")
+      return 0
+    done
+  fi
+  if [ "$LEGACY_INSTALL" -eq 1 ] && [ ! -d "$INSTALL_ROOT/pm" ]; then
+    HERMES_BIN="$INSTALL_ROOT/venv/bin/hermes"
+    [ -x "$HERMES_BIN" ] || return 1
+    if [ "$(uname)" = Darwin ]; then
+      tcc_anchor_heal "$INSTALL_ROOT/venv/bin" || log "TCC anchor rescue failed ($TCC_HEAL_STATE)"
+    fi
+    tcc_pick_update_invoke "$INSTALL_ROOT/venv/bin"
+    return 0
+  fi
+  return 1
+}
+select_update_invoke || { FINAL_CODE=3 FINAL_MSG="Update aborted: the installation launcher at $HERMES_BIN is missing. Repair this installation."; log "$FINAL_MSG"; exit 3; }
 
 # Run FROM the install root: `hermes update` resolves the tree it mutates
 # from the working directory, and we inherit the Desktop's cwd (which can be
@@ -771,13 +799,13 @@ if "${UPDATE_INVOKE[@]}" update --help 2>/dev/null | grep -q -- '--keep-stash'; 
 else
   log "installed hermes predates --keep-stash; running without it"
 fi
-log "running: ${UPDATE_INVOKE[*]} update --yes --gateway $KEEP_STASH --branch $BRANCH"
+log "running: ${UPDATE_INVOKE[*]} update --yes --gateway $KEEP_STASH ${TARGET_ARGS[*]}"
 publish_stage "Updating code and dependencies"
-OUT="$("${UPDATE_INVOKE[@]}" update --yes --gateway $KEEP_STASH --branch "$BRANCH" 2>&1)"; CODE=$?
+OUT="$("${UPDATE_INVOKE[@]}" update --yes --gateway $KEEP_STASH "${TARGET_ARGS[@]}" 2>&1)"; CODE=$?
 printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
 log "hermes update exit code: $CODE"
 
-if [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
+if [ "$LEGACY_INSTALL" -eq 1 ] && [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
   # Retry once: update-boundary class (fresh code on disk, stale in memory).
   # Exit 2 ("close all Hermes windows") is not retryable.
   #
@@ -795,16 +823,16 @@ if [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
   fi
   log "retrying once (freshly pulled fix loads on the second run)"
   publish_stage "Retrying update"
-  OUT="$("${UPDATE_INVOKE[@]}" update --yes --gateway $KEEP_STASH --branch "$BRANCH" 2>&1)"; CODE=$?
+  select_update_invoke || { FINAL_CODE=3 FINAL_MSG="Updated installation launcher is missing; repair this installation."; exit 3; }
+  OUT="$("${UPDATE_INVOKE[@]}" update --yes --gateway $KEEP_STASH "${TARGET_ARGS[@]}" 2>&1)"; CODE=$?
   printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
   log "retry exit code: $CODE"
 fi
 trap 'on_signal TERM' TERM
 
-# Truthful completion: `hermes update` calls a GUI build failure non-fatal
-# (exit 0). For a Desktop-driven update that would relaunch the OLD build
-# and call it success -- retry the build once, propagate honestly.
-if [ "$CODE" -eq 0 ] && printf '%s' "$OUT" | grep -q "Desktop build failed"; then
+# Pre-PM update code could report a failed desktop build with exit zero.
+# Current composition propagates failure and never enters this legacy repair.
+if [ "$LEGACY_INSTALL" -eq 1 ] && [ "$CODE" -eq 0 ] && printf '%s' "$OUT" | grep -q "Desktop build failed"; then
   log "desktop build failed inside hermes update; retrying build"
   publish_stage "Rebuilding Desktop"
   "${UPDATE_INVOKE[@]}" desktop --force-build --build-only >> "$LOG" 2>&1 || {
@@ -819,7 +847,7 @@ else
   # The bricked-venv class is fixable and must not read as a generic exit 1:
   # a dead interpreter with a failed/impossible heal means retrying can never
   # succeed — tell the user what is actually wrong (#95759).
-  if ! tcc_probe_python "$INSTALL_ROOT/venv/bin/python3" \
+  if [ "$LEGACY_INSTALL" -eq 1 ] && ! tcc_probe_python "$INSTALL_ROOT/venv/bin/python3" \
       && ! tcc_probe_python "$INSTALL_ROOT/venv/bin/python"; then
     FINAL_MSG="Update failed: the Python interpreter inside $INSTALL_ROOT/venv cannot start (heal state: $TCC_HEAL_STATE). Reinstall the runtime with the Hermes installer, or run hermes doctor --fix from a terminal if any hermes command still works."
   fi

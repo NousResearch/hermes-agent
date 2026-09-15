@@ -25,13 +25,11 @@ def receipt_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME for receipt writes."""
     home = tmp_path / ".hermes"
     home.mkdir()
-    monkeypatch.setattr(
-        "hermes_cli.config.get_hermes_home", lambda: home, raising=False
-    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
     # ensure no receipt bleeds between tests
-    ur._current = None
+    ur._current.set(None)
     yield home
-    ur._current = None
+    ur._current.set(None)
 
 
 def _finalize(outcome="success", fleet=None):
@@ -132,11 +130,33 @@ class TestReceiptLifecycle:
         ur.record_gateway_restart(restarted_services=[])
         assert _finalize("success") is None
 
+    def test_copied_context_records_do_not_leak_into_the_parent(self, receipt_home):
+        """Invariant: a copied context (copy_context / asyncio.to_thread)
+        inherits the SAME receipt object — record_* must copy-on-write, so
+        a child's records land in the child's copy only and the parent's
+        receipt is untouched (mirrors pm.receipt's isolation rule)."""
+        import contextvars
+
+        ur.begin_update_receipt()
+        ur.record_step("parent", True)
+        before = json.loads(json.dumps(ur._current.get().data))
+
+        def child():
+            ur.record_step("child", False)
+            return [s["name"] for s in ur._current.get().data["steps"]]
+
+        child_steps = contextvars.copy_context().run(child)
+        assert child_steps == ["parent", "child"]  # child saw ambient receipt...
+        current = ur._current.get().data
+        assert [s["name"] for s in current["steps"]] == ["parent"]  # ...in ITS copy only
+        assert current == before
+
     def test_finalize_clears_current(self, receipt_home):
         ur.begin_update_receipt()
-        assert ur._current is not None
+        assert ur._current.get() is not None
         _finalize("success")
-        assert ur._current is None
+        assert ur._current.get() is None
+        assert ur.current_correlation_id() is None
 
     def test_pruning_keeps_recent(self, receipt_home, monkeypatch):
         monkeypatch.setattr(ur, "_RECEIPT_KEEP", 3)
@@ -179,7 +199,7 @@ class TestCommandBoundaryFinalization:
         assert payload["exit_code"] == 2
         assert payload["stop_reason"] == "sys.exit(2)"
         assert payload["finished_at"] is not None
-        assert ur._current is None
+        assert ur._current.get() is None
 
     def test_pending_receipt_persisted_on_exit_1_failure(self, receipt_home):
         ur.begin_update_receipt()
@@ -259,7 +279,7 @@ class TestCommandBoundaryFinalization:
         assert latest["exit_code"] == 2
         assert latest["stop_reason"] == "sys.exit(2)"
         assert latest["steps"][0]["name"] == "windows_preflight"
-        assert ur._current is None
+        assert ur._current.get() is None
         # exactly-once: exactly one receipt file
         directory = receipt_home / "logs" / "update_receipts"
         assert len(list(directory.glob("update_*.json"))) == 1
@@ -274,7 +294,7 @@ class TestFleetClassification:
             json.dumps(record), encoding="utf-8"
         )
         monkeypatch.setattr(
-            "hermes_cli.build_info.get_code_identity",
+            "hermes_cli.version_info.get_code_identity",
             lambda refresh=False: {"sha": expected_sha, "short_sha": expected_sha[:8],
                                    "version": "1.0", "source": "git"},
         )
@@ -360,7 +380,7 @@ class TestGatewayStatusStamping:
         import gateway.status as gs
 
         monkeypatch.setattr(
-            "hermes_cli.build_info.get_code_identity",
+            "hermes_cli.version_info.get_code_identity",
             lambda refresh=False: {"sha": "c" * 40, "short_sha": "c" * 8,
                                    "version": "2.0", "source": "git"},
         )
@@ -374,7 +394,7 @@ class TestGatewayStatusStamping:
         def _boom(refresh=False):
             raise RuntimeError("no build info")
 
-        monkeypatch.setattr("hermes_cli.build_info.get_code_identity", _boom)
+        monkeypatch.setattr("hermes_cli.version_info.get_code_identity", _boom)
         record = gs._build_runtime_status_record()
         # Must not raise, and must not stamp bogus values.
         assert "code_sha" not in record
@@ -383,17 +403,19 @@ class TestGatewayStatusStamping:
 
 class TestCodeIdentity:
     def test_get_code_identity_shape(self):
-        from hermes_cli.build_info import get_code_identity
+        from hermes_cli.version_info import get_code_identity
 
         identity = get_code_identity(refresh=True)
         assert set(identity) == {"sha", "short_sha", "version", "source"}
         # Running from a git checkout in CI/dev: sha resolves via git.
         if identity["sha"]:
             assert identity["short_sha"] == identity["sha"][:8]
-            assert identity["source"] in ("git", "build-file")
+            # Running from a git checkout in CI/dev: git provenance; packaged
+            # installs would report their stamp source instead.
+            assert identity["source"] != "unknown"
 
     def test_get_code_identity_cached(self):
-        from hermes_cli.build_info import get_code_identity
+        from hermes_cli.version_info import get_code_identity
 
         first = get_code_identity(refresh=True)
         second = get_code_identity()

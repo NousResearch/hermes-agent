@@ -144,7 +144,7 @@ def _run_chrome_fallback_command(task_id: str, command: str, args: List[str], ti
                     "pull the latest image: docker pull ghcr.io/nousresearch/hermes-agent:latest")
         else:
             hint = ("Chrome fallback requires Chromium, but it is missing. Install it with: "
-                    "npx agent-browser install --with-deps (or: npx playwright install --with-deps chromium)")
+                    "hermes pm install chromium")
         return {"success": False, "error": hint}
 
     base_args = _session._agent_browser_argv(browser_cmd) + ["--engine", "chrome", "--session", tmp_session, "--json"]
@@ -164,7 +164,7 @@ def _run_chrome_fallback_command(task_id: str, command: str, args: List[str], ti
             proc.wait()
             return {"success": False, "error": f"Chrome fallback '{cmd}' timed out"}
         try:
-            with open(stdout_path, encoding="utf-8") as f:
+            with open(stdout_path, encoding="utf-8-sig") as f:
                 stdout = f.read().strip()
             if stdout:
                 return json.loads(stdout.split("\n")[-1])

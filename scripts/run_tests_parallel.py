@@ -146,8 +146,8 @@ def _split_pathspec(value: str) -> List[str]:
 # behaviour, and names the CI lane where those tests actually execute.
 _OS_MARKERS = {
     "linux_only": ("linux", "the main Linux CI lane"),
-    "macos_only": ("darwin", "the tests-os CI lane (macos-latest)"),
-    "windows_only": ("win32", "the tests-os CI lane (windows-latest)"),
+    "macos_only": ("darwin", "the macOS Python-tests lane"),
+    "windows_only": ("win32", "the Windows Python-tests lane"),
 }
 
 
@@ -166,7 +166,7 @@ def _off_host_marker_files(files: List[Path]) -> dict[str, int]:
     counts = {marker: 0 for marker in off_host}
     for path in files:
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
+            text = path.read_text(encoding="utf-8-sig", errors="replace")
         except OSError:
             continue
         for marker, pattern in off_host.items():
@@ -191,7 +191,7 @@ def _approximately_count_tests(
     results = {}
 
     for path in files:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             contents = f.read()
         results[path] = contents.count("def test_")
 
@@ -460,6 +460,9 @@ def _run_one_file_once(
         # runner over one suite.
         shutil.rmtree(temproot, ignore_errors=True)
 
+    if rc not in (0, 5) and not output.strip():
+        output = f"pytest child exited {rc} (0x{rc & 0xffffffff:08x}) with no output: {file}\n"
+
     if rc == 5:
         # No tests collected in THIS file — legitimate per-file: a
         # platform-gated or fully-marker-filtered file (e.g. a win32-only
@@ -634,7 +637,7 @@ def _load_durations(repo_root: Path) -> dict[str, float]:
     if not path.is_file():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except (json.JSONDecodeError, OSError) as e:
         print("[ERROR] Failed to load json durations file! {e}")
         return {}
@@ -781,8 +784,8 @@ def main() -> int:
         "-j",
         "--jobs",
         type=int,
-        default=int(os.environ.get("HERMES_TEST_WORKERS") or (os.cpu_count() or 4) * 2),
-        help="Parallel worker count (default: $HERMES_TEST_WORKERS or cpu_count*2)",
+        default=int(os.environ.get("HERMES_TEST_WORKERS") or (os.cpu_count() or 4)),
+        help="Parallel worker count (default: $HERMES_TEST_WORKERS or cpu_count)",
     )
     parser.add_argument(
         "--paths",

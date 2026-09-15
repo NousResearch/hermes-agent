@@ -313,6 +313,12 @@ class TestPtyBridgeUnavailable:
     """Platform fallback semantics — PtyUnavailableError is importable and
     carries a user-readable message."""
 
-    def test_error_carries_user_message(self):
-        err = PtyUnavailableError("platform not supported")
-        assert "platform" in str(err)
+    @pytest.mark.platforms("posix")
+    def test_missing_dependency_points_to_pm_repair(self, monkeypatch):
+        from hermes_cli import pty_bridge
+
+        monkeypatch.setattr(pty_bridge, "_PTY_AVAILABLE", False)
+        with pytest.raises(PtyUnavailableError, match="hermes pm repair") as exc:
+            PtyBridge.spawn(["true"])
+        assert "ptyprocess" in str(exc.value)
+        assert "pip install" not in str(exc.value)

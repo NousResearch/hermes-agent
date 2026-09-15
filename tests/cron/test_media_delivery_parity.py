@@ -25,6 +25,7 @@ Three defects, each pinned here:
    MEDIA paths under different policy than the gateway's scheduled tick.
 """
 
+import json
 import os
 from pathlib import Path
 
@@ -232,7 +233,7 @@ class TestMediaPolicyEnvBridge:
         (home / "config.yaml").write_text(
             "gateway:\n"
             "  strict: true\n"
-            f"  media_delivery_allow_dirs: [{str(allow_dir)!r}]\n"
+            f"  media_delivery_allow_dirs: [{json.dumps(str(allow_dir))}]\n"
             "  trust_recent_files: false\n"
         )
         monkeypatch.setenv("HERMES_HOME", str(home))

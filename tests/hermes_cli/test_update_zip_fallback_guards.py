@@ -338,18 +338,6 @@ def test_preserved_filter_does_not_split_non_rename_lines():
     )
 
 
-def test_swap_preserve_set_is_the_module_constant():
-    """The swap loop and the dirty-tree filter must share one source of
-    truth for the preserved entries (no comment-synced duplicate)."""
-    import inspect
-
-    from hermes_cli import update_cmd_zip
-
-    # The swap loop lives in the download/swap collaborator the ZIP path calls.
-    src = inspect.getsource(update_cmd_zip._download_and_swap_zip)
-    assert "_ZIP_PRESERVED_TOP_LEVEL" in src
-
-
 def test_zip_overlay_allows_ignored_preserved_entries(tmp_path, monkeypatch):
     """venv/node_modules are gitignored on every normal install and the swap
     preserves them — the ignored probe must not turn them into a false

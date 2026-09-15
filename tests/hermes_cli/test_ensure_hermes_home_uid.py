@@ -27,6 +27,7 @@ import pytest
 
 
 class TestResolveHermesUidGid:
+    @pytest.mark.platforms("linux")
     def test_returns_parsed_values_when_both_set(self, monkeypatch):
         monkeypatch.setenv("HERMES_UID", "1000")
         monkeypatch.setenv("HERMES_GID", "911")
@@ -36,11 +37,11 @@ class TestResolveHermesUidGid:
         assert gid == 911
 
 
-    # ``windows_only`` rather than ``skipif(sys.platform != "win32")``: the
-    # Windows CI job selects ``-m windows_only``, so a bare skipif would leave
+    # ``platforms("windows")`` rather than ``skipif(sys.platform != "win32")``: the
+    # Windows CI job selects ``-m platforms("windows")``, so a bare skipif would leave
     # this test skipped on Linux AND unselected on the Windows lane — dead on
     # every host.
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_returns_none_none(self, monkeypatch):
         monkeypatch.setenv("HERMES_UID", "1000")
         monkeypatch.setenv("HERMES_GID", "911")
@@ -55,6 +56,7 @@ class TestResolveHermesUidGid:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.platforms("linux")
 class TestChownToHermesUid:
     def test_calls_os_chown_when_both_set(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_UID", "1000")

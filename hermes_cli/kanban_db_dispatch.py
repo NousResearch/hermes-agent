@@ -226,7 +226,7 @@ def _pid_alive(pid: Optional[int]) -> bool:
         return False
     if sys.platform == "linux":
         try:
-            with open(f"/proc/{int(pid)}/status", "r", encoding="utf-8") as f:
+            with open(f"/proc/{int(pid)}/status", "r", encoding="utf-8-sig") as f:
                 for line in f:
                     if line.startswith("State:"):
                         # "State:\tZ (zombie)" → dead

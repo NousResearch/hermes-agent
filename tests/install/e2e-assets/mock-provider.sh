@@ -41,25 +41,10 @@ mock_start() {
   fi
   local url
   url="$(cat "$MOCK_URLFILE")"
+  export HERMES_E2E_MOCK_URL="$url"
   ok "mock inference server: $url"
 
-  # The provider config, byte-compatible with writeMockConfig() in
-  # tests-js/scripts/mock-server.ts.
-  cat > "$HERMES_HOME/config.yaml" <<EOF
-model:
-  default: mock-model
-  provider: mock
-providers:
-  mock:
-    api: $url/v1
-    name: Mock
-    api_mode: chat_completions
-    key_env: MOCK_API_KEY
-    models:
-      mock-model: {}
-    context_length: 64000
-EOF
-  printf 'MOCK_API_KEY=e2e-mock-key\n' >> "$HERMES_HOME/.env"
+  node "$ASSETS/../../../tests-js/scripts/mock-provider-config.ts" "$HERMES_HOME" "$url" || fail "mock provider config failed"
   ok "provider 'mock' configured in $HERMES_HOME (api $url/v1)"
 }
 

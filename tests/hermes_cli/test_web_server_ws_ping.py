@@ -148,7 +148,7 @@ def test_start_server_enables_ws_ping_for_half_open_detection(monkeypatch):
     assert captured["ws_ping_timeout"] >= captured["ws_ping_interval"]
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_start_server_runs_on_uvicorns_loop_factory(monkeypatch):
     """The dashboard/desktop backend must serve uvicorn on the loop *uvicorn*
     selects, not the interpreter default.
@@ -207,6 +207,7 @@ def test_start_server_runs_on_uvicorns_loop_factory(monkeypatch):
     )
 
 
+@pytest.mark.platforms("linux")
 def test_start_server_keeps_bare_asyncio_run_on_posix(monkeypatch):
     """POSIX continues to serve via the plain ``asyncio.run(_serve())`` path,
     never the Windows loop-factory branch.
@@ -273,7 +274,7 @@ def test_start_server_treats_posix_keyboardinterrupt_as_clean_shutdown(monkeypat
         )
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_start_server_treats_windows_keyboardinterrupt_as_clean_shutdown(monkeypatch):
     """Console Ctrl+C on the Windows loop-factory branch is a clean exit too.
 
@@ -306,7 +307,7 @@ def test_start_server_treats_windows_keyboardinterrupt_as_clean_shutdown(monkeyp
         )
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_start_server_treats_windows_fallback_keyboardinterrupt_as_clean_shutdown(
     monkeypatch,
 ):

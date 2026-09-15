@@ -232,22 +232,27 @@ class TestSafeRootDenialMessageIntegration:
 class TestCheckSensitivePathMacOSBypass:
     """Verify _check_sensitive_path blocks /private/etc paths (issue #8734)."""
 
+    @pytest.mark.platforms("linux")
     def test_etc_hosts_blocked(self):
         from tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/etc/hosts") is not None
 
+    @pytest.mark.platforms("linux")
     def test_private_etc_hosts_blocked(self):
         from tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/private/etc/hosts") is not None
 
+    @pytest.mark.platforms("linux")
     def test_private_etc_ssh_config_blocked(self):
         from tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/private/etc/ssh/sshd_config") is not None
 
+    @pytest.mark.platforms("linux")
     def test_private_var_blocked(self):
         from tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/private/var/db/something") is not None
 
+    @pytest.mark.platforms("linux")
     def test_boot_still_blocked(self):
         from tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/boot/grub/grub.cfg") is not None
@@ -291,6 +296,7 @@ class TestAtomicWrite:
         assert [p for p in os.listdir(tmp_path) if ".hermes-tmp" in p] == []
 
 
+    @pytest.mark.platforms("linux")
     def test_patch_routes_through_atomic_write(self, ops, tmp_path: Path):
         target = tmp_path / "edit.py"
         target.write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
@@ -509,6 +515,7 @@ class TestProtectedInstructionFiles:
 
     # ---- adversarial path shapes ----------------------------------------
 
+    @pytest.mark.require_symlinks
     def test_symlink_to_protected_file_is_gated(self, tmp_path, approvals):
         """#41351 lesson: realpath first — innocent name, protected target."""
         real = tmp_path / "AGENTS.md"

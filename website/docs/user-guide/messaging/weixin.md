@@ -6,6 +6,10 @@ description: "Connect Hermes Agent to personal WeChat accounts via the iLink Bot
 
 # Weixin (WeChat)
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](/reference/package-management#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 Connect Hermes to [WeChat](https://weixin.qq.com/) (微信), Tencent's personal messaging platform. The adapter uses Tencent's **iLink Bot API** for personal WeChat accounts — this is distinct from WeCom (Enterprise WeChat). Messages are delivered via long-polling, so no public endpoint or webhook is required.
 
 :::info
@@ -32,9 +36,8 @@ In practice, most deployments only get DMs to the iLink bot working reliably. If
 Install the required dependencies:
 
 ```bash
-pip install aiohttp cryptography
-# Optional: for terminal QR code display
-cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"
+# Includes aiohttp and terminal QR code support
+python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"
 ```
 
 ## Setup
@@ -317,7 +320,7 @@ Only one Weixin gateway instance can use a given token at a time. The adapter ac
 
 | Problem | Fix |
 |---------|-----|
-| `Weixin startup failed: aiohttp and cryptography are required` | Install both: `pip install aiohttp cryptography` |
+| `Weixin startup failed: aiohttp and cryptography are required` | Install both: `python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"` |
 | `Weixin startup failed: WEIXIN_TOKEN is required` | Run `hermes gateway setup` to complete QR login, or set `WEIXIN_TOKEN` manually |
 | `Weixin startup failed: WEIXIN_ACCOUNT_ID is required` | Set `WEIXIN_ACCOUNT_ID` in your `.env` or run `hermes gateway setup` |
 | `Another local Hermes gateway is already using this Weixin token` | Stop the other gateway instance first — only one poller per token is allowed |
@@ -330,4 +333,4 @@ Only one Weixin gateway instance can use a given token at a time. The adapter ac
 | Voice messages show as text | If WeChat provides a transcription, the adapter uses the text. This is expected behavior |
 | Messages appear duplicated | The adapter deduplicates by message ID. If you see duplicates, check if multiple gateway instances are running |
 | `iLink POST ... HTTP 4xx/5xx` | API error from the iLink service. Check your token validity and network connectivity |
-| Terminal QR code doesn't render | Reinstall with the messaging extra: `cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"`. Alternatively, open the URL printed above the QR |
+| Terminal QR code doesn't render | Reinstall with the messaging extra: `cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"`. Alternatively, open the URL printed above the QR |

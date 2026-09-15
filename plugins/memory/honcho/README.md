@@ -6,7 +6,7 @@ AI-native cross-session user modeling with multi-pass dialectic reasoning, sessi
 
 ## Requirements
 
-- `pip install honcho-ai`
+- The `honcho-ai` SDK, prepared through PM by `hermes memory setup` when you select Honcho. Restart Hermes after preparation; do not install into its selected environment with pip.
 - A Honcho Cloud account — connect via OAuth sign-in or an API key from
   [app.honcho.dev](https://app.honcho.dev) — or a self-hosted instance
 

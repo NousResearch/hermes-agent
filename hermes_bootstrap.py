@@ -96,24 +96,46 @@ def harden_import_path(src_root: str | None = None) -> None:
     sys.path.insert(0, root)
 
 
-def activate_durable_lazy_target() -> None:
-    """Put the durable lazy-install dir (``HERMES_LAZY_INSTALL_TARGET``) on ``sys.path``.
-
-    Immutable Docker images seal the venv and redirect lazy installs to the data volume;
-    packages installed there on a previous run must be importable before any backend
-    imports its SDK. Appends to the END of ``sys.path`` so the core venv always wins name
-    collisions (see ``tools.lazy_deps``). Never raises; unset target is a no-op.
-    """
-    if not os.environ.get("HERMES_LAZY_INSTALL_TARGET", "").strip():
-        return
-    try:
-        from tools import lazy_deps
-        lazy_deps.activate_durable_lazy_target()
-    except Exception:
-        pass  # a failed activation just leaves the backend reporting itself unavailable
-
-
-# Apply on import — entry points only need ``import hermes_bootstrap`` first.
+# Apply on import — entry points just need ``import hermes_bootstrap``
+# (or ``from hermes_bootstrap import apply_windows_utf8_bootstrap``) at
+# the very top of their module, before importing anything else.  The
+# import side effect does the right thing.
 apply_windows_utf8_bootstrap()
 suppress_platform_ver_console()
-activate_durable_lazy_target()
+
+# Every entry point imports this module before its dependency graph.
+from pathlib import Path
+from hermes_cli.runtime_paths import activate_dependencies
+from hermes_cli._early_recovery import recover_if_needed
+
+from hermes_cli._parser import command_argv
+
+_root = Path(__file__).resolve().parent
+# Repair needs only stdlib. Do not activate the damaged tree to reach it.
+_pm_repair = command_argv(sys.argv[1:])[:2] == ["pm", "repair"]
+if not _pm_repair:
+    from hermes_cli.venv_sync import prepare_launch, relaunch_command
+
+    try:
+        _launch_python = prepare_launch(_root, sys.argv[1:])
+        if _launch_python is not None:
+            _main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
+            _command = relaunch_command(
+                _launch_python, _root, sys.argv, sys.orig_argv,
+                getattr(_main_spec, "name", None),
+            )
+            if os.name == "nt":
+                import subprocess
+
+                raise SystemExit(subprocess.call(_command))
+            os.execv(str(_launch_python), _command)
+    except Exception as exc:
+        print(f"hermes: source-update completion failed: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
+    recover_if_needed(_root)
+    try:
+        activate_dependencies(_root)
+    except (RuntimeError, OSError) as exc:
+        if command_argv(sys.argv[1:])[:1] != ["pm"]:
+            print(f"hermes: {exc}; run `hermes pm repair`", file=sys.stderr)
+            raise SystemExit(1) from None

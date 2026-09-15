@@ -6,6 +6,10 @@ description: "Use Hermes Agent with Microsoft Foundry — OpenAI-style and Anthr
 
 # Microsoft Foundry
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](/reference/package-management#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 Hermes Agent's `azure-foundry` provider supports Microsoft Foundry (formerly Azure AI Foundry) and Azure OpenAI. A single Foundry resource can host models with two different wire formats:
 
 - **OpenAI-style** — `POST /v1/chat/completions` on endpoints like `https://<resource>.openai.azure.com/openai/v1`. Used for GPT-4.x, GPT-5.x, Llama, Mistral, and most open-weight models.
@@ -101,7 +105,7 @@ The wizard runs a bounded preflight probe (10 s timeout). On failure it offers t
 `azure-identity` is installed automatically on first use via Hermes' lazy-install path. To pre-install:
 
 ```bash
-pip install azure-identity
+python -c "import pm; pm.sync_venv(['azure-identity'], explicit=True)"
 ```
 
 ### Configuration written to `config.yaml`

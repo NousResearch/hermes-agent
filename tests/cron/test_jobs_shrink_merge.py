@@ -20,7 +20,7 @@ def hermes_env(tmp_path, monkeypatch):
     home.mkdir()
     (home / "scripts").mkdir()
     (home / "cron").mkdir()
-    (home / "scripts" / "watch.sh").write_text("#!/bin/bash\necho alert\n")
+    (home / "scripts" / "watch.sh").write_text("#!/usr/bin/env bash\necho alert\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     import importlib

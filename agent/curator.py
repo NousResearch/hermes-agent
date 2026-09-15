@@ -45,7 +45,7 @@ def load_state() -> Dict[str, Any]:
     }
     path = _state_file()
     try:
-        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        data = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
     except (OSError, json.JSONDecodeError) as e:
         logger.debug("Failed to read curator state: %s", e)
         return base
@@ -532,7 +532,7 @@ def _parse_structured_summary(llm_final: str) -> Dict[str, List[Dict[str, str]]]
     data = None
     if match:
         try:
-            import yaml  # type: ignore
+            import hermes_yaml as yaml
             data = yaml.safe_load(match.group(1))
         except Exception:
             pass

@@ -73,7 +73,7 @@ def _thumb_path(slug: str) -> Path:
 def _read_pet_json(directory: Path) -> dict:
     pet_json = directory / "pet.json"
     try:
-        return json.loads(pet_json.read_text(encoding="utf-8")) if pet_json.is_file() else {}
+        return json.loads(pet_json.read_text(encoding="utf-8-sig")) if pet_json.is_file() else {}
     except (OSError, ValueError) as exc:
         logger.debug("unreadable pet.json in %s: %s", directory, exc)
         return {}

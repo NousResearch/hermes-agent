@@ -379,7 +379,7 @@ class TestRunJobKanbanIsolation:
         assert after == before, "worker identity must survive concurrent cron jobs"
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_dispatcher_grants_only_the_assigned_worker_scope(tmp_path, monkeypatch):
     import json
     from pathlib import Path

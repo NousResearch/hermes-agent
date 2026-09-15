@@ -172,15 +172,31 @@ def _resolve_hf_token() -> Optional[str]:
     return next((val for var in _TOKEN_ENV_VARS if (val := (os.getenv(var) or "").strip())), None)
 
 
-def _do_upload(jsonl: str, *, token: str, session_id: str, dataset_name: str = DEFAULT_DATASET_NAME, private: bool = True) -> str:
-    """Create the dataset (idempotent) and push the trace file; user-facing status string, never raises."""
-    with suppress(Exception):  # lazy-install unavailable/declined — the import below surfaces the hint
-        from tools import lazy_deps
-        lazy_deps.ensure("tool.trace_upload", prompt=False)
+
+def _do_upload(
+    jsonl: str,
+    *,
+    token: str,
+    session_id: str,
+    dataset_name: str = DEFAULT_DATASET_NAME,
+    private: bool = True,
+) -> str:
+    """Create (idempotently) the private dataset and push the trace file.
+
+    Returns a user-facing status string. Never raises.
+    """
+    try:
+        import pm
+        pm.ensure_import("trace-upload")
+    except Exception:
+        # lazy-install unavailable — fall through to the import, which
+        # surfaces the install hint below if the package is missing.
+        pass
     try:
         from huggingface_hub import HfApi
     except ImportError:
-        return "Hugging Face upload needs the `huggingface_hub` package (`pip install huggingface_hub`)."
+        return ("Hugging Face upload needs the `huggingface_hub` package. Run: "
+                "python -c \"from pm import sync_venv; sync_venv(['trace-upload'], explicit=True)\"")
     api = HfApi(token=token)
     try:
         who = api.whoami()

@@ -38,30 +38,20 @@ Hermes Agent 支持在 CLI 和消息平台上进行完整的语音交互。通�
 
 ### Python 包
 
-```bash
-# CLI 语音模式（麦克风 + 音频播放）
-cd ~/.hermes/hermes-agent && uv pip install -e ".[voice]"
+通过 `hermes tools` 配置语音提供商。缺失的内置功能依赖由 PM 按策略和目标平台支持准备。
+如果选择的环境改变，请按提示重启 Hermes。
+桌面包预装其支持的引擎；Docker 使用较小集合并关闭按需安装。
+不要修改签名载荷或系统 Python。手动开发环境参见[开发配置](/developer-guide/contributing)。
 
-# Discord + Telegram 消息（包含 discord.py[voice] 以支持语音频道）
-cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"
+| Extra | 包 | 用途 |
+|---|---|---|
+| `voice` | `sounddevice`、`numpy`，以及支持平台上的 Faster-Whisper | CLI 音频和本地 STT |
+| `audio-io` | `sounddevice`、`numpy` | 不包含本地 STT 的麦克风和播放支持 |
+| `messaging` | `discord.py[voice]`、`python-telegram-bot`、`aiohttp` | Discord 和 Telegram |
+| `tts-premium` | `elevenlabs` | ElevenLabs TTS |
 
-# 高级 TTS（ElevenLabs）
-cd ~/.hermes/hermes-agent && uv pip install -e ".[tts-premium]"
-
-# 本地 TTS（NeuTTS，可选）
-python -m pip install -U neutts[all]
-
-# 一次性安装所有内容
-cd ~/.hermes/hermes-agent && uv pip install -e ".[all]"
-```
-
-| 扩展包 | 包含的包 | 用途 |
-|-------|----------|-------------|
-| `voice` | `sounddevice`、`numpy` | CLI 语音模式 |
-| `messaging` | `discord.py[voice]`、`python-telegram-bot`、`aiohttp` | Discord 和 Telegram 机器人 |
-| `tts-premium` | `elevenlabs` | ElevenLabs TTS 提供商 |
-
-可选本地 TTS 提供商：使用 `python -m pip install -U neutts[all]` 单独安装 `neutts`。首次使用时会自动下载模型。
+原生 Windows ARM64 和 Intel macOS 不包含 Faster-Whisper，请使用云端或命令式 STT。
+`all` 不代表所有语音或唤醒引擎。NeuTTS 是单独的可选运行时，首次使用会下载模型。
 
 :::info
 `discord.py[voice]` 会自动安装 **PyNaCl**（用于语音加密）和 **opus 绑定**。这是 Discord 语音频道支持的必要条件。
@@ -92,7 +82,7 @@ sudo apt install espeak-ng   # for NeuTTS
 
 ```bash
 # 语音转文字（STT）— 本地提供商完全不需要密钥
-# pip install faster-whisper          # 免费，本地运行，推荐
+# 本地 Faster-Whisper 由 PM 在支持的目标上准备，无需 STT API key。
 GROQ_API_KEY=your-key                 # Groq Whisper — 速度快，有免费额度（云端）
 VOICE_TOOLS_OPENAI_KEY=your-key       # OpenAI Whisper — 付费（云端）
 
@@ -315,7 +305,7 @@ Bot 会从以下路径自动加载编解码器：
 DISCORD_BOT_TOKEN=your-bot-token
 DISCORD_ALLOWED_USERS=your-user-id
 
-# STT — 本地提供商无需密钥（pip install faster-whisper）
+# 本地 Faster-Whisper 由 PM 在支持的目标上准备，无需 STT API key。
 # GROQ_API_KEY=your-key            # 替代方案：云端，速度快，有免费额度
 
 # TTS — 可选。Edge TTS 和 NeuTTS 无需密钥。
@@ -428,7 +418,7 @@ tts:
 
 ```bash
 # 语音转文字提供商（本地无需密钥）
-# pip install faster-whisper        # 免费本地 STT — 无需 API 密钥
+# 本地 Faster-Whisper 由 PM 在支持的目标上准备，无需 STT API key。
 GROQ_API_KEY=...                    # Groq Whisper（速度快，有免费额度）
 VOICE_TOOLS_OPENAI_KEY=...         # OpenAI Whisper（付费）
 

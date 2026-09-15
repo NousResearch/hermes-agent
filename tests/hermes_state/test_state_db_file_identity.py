@@ -33,6 +33,7 @@ def _require_identity(db: SessionDB) -> None:
         pytest.skip("filesystem does not expose st_dev/st_ino for identity checks")
 
 
+@pytest.mark.platforms("posix")
 def test_replace_with_new_inode_fails_loudly_without_fts_repair(tmp_path):
     live = tmp_path / "state.db"
     other = tmp_path / "other.db"
@@ -56,6 +57,7 @@ def test_replace_with_new_inode_fails_loudly_without_fts_repair(tmp_path):
     db.close()
 
 
+@pytest.mark.platforms("posix")
 def test_second_write_after_halt_does_not_attempt_repair(tmp_path):
     live = tmp_path / "state.db"
     other = tmp_path / "other.db"
@@ -125,6 +127,7 @@ def test_new_sessiondb_on_replaced_path_records_new_identity(tmp_path):
         reopened.close()
 
 
+@pytest.mark.platforms("posix")
 def test_fts_scoped_error_on_replaced_file_skips_fts_fail_open(tmp_path):
     """Even FTS-provenance corruption must not authorize surgery on a
     replaced file. (A generic malformed error never reaches fail-open at

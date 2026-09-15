@@ -16,7 +16,7 @@ import json
 from unittest.mock import patch
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from model_tools import get_tool_definitions
 

@@ -16,13 +16,24 @@ on:
   push:
     branches:
       - "wine2e/**"
+  workflow_call:
+    inputs:
+      release:
+        description: 'Stable-release candidate run. Unused by the jobs; the caller passes it for a uniform callable surface.'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
+# A workflow_call run (stable release) shares the caller's commit; its group
+# includes github.run_id so a rerun of the parent gets a fresh group instead
+# of cancelling this child mid-flight. wine2e push runs keep ref-scoped
+# collapse as before.
 concurrency:
-  group: windows-venv-e2e-${{ github.ref }}
-  cancel-in-progress: true
+  group: windows-venv-e2e-${{ inputs.release == true && github.run_id || github.ref }}
+  cancel-in-progress: ${{ inputs.release != true }}
 
 jobs:
   venv-holder-e2e:
@@ -32,49 +43,39 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
         with:
-          version: "0.9.28"
-          enable-cache: true
-          cache-dependency-glob: |
-            pyproject.toml
-            uv.lock
+          # The stable caller dispatches on the candidate tag; github.sha is
+          # the exact candidate commit there and the head SHA everywhere else.
+          ref: ${{ github.sha }}
 
-      - name: Set up Python 3.11
-        uses: ./.github/actions/retry
+      - name: Set up locked Python and test dependencies
+        uses: ./.github/actions/setup-pm
         with:
-          command: uv python install 3.11
-
-      - name: Install dependencies
-        uses: ./.github/actions/retry
-        with:
-          command: uv sync --locked --python 3.11 --extra dev --extra messaging
+          extras: '["dev", "messaging"]'
+          prune-python-cache: true
 
       - name: Run venv-holder live E2E
+        # Canonical runner (scripts/run_tests.sh) — never bare pytest: it
+        # enforces credential hygiene, TZ, temp HERMES_HOME and subprocess
+        # isolation. The live files are host-marked windows-only, so the
+        # runner collects them on this runner instead of skipping them.
         shell: bash
         run: |
           set -uo pipefail
-          uv run --no-sync python -m pytest \
+          bash scripts/run_tests.sh \
             tests/hermes_cli/test_venv_holder_windows_live.py \
             tests/hermes_cli/test_taskkill_identity_windows_live.py \
             tests/hermes_cli/test_git_trampoline_windows_live.py \
-            "tests/hermes_cli/test_managed_uv.py::TestWindowsRuntimeSelfLock" \
-            -o addopts= -v -p no:cacheprovider
+            tests/hermes_cli/test_runtime_repair.py::TestWindowsRuntimeSelfLock
 
       - name: Run Telegram CLOSE-WAIT reconnect live E2E (#87057)
         shell: bash
         run: |
           set -uo pipefail
-          uv run --no-sync python -m pytest \
-            tests/gateway/test_telegram_closewait_windows_live.py \
-            -o addopts= -v -p no:cacheprovider
+          bash scripts/run_tests.sh tests/gateway/test_telegram_closewait_windows_live.py
 
       - name: Run background-executor spawn parity live E2E (#70716)
         shell: bash
         run: |
           set -uo pipefail
-          uv run --no-sync python -m pytest \
-            tests/tools/test_process_registry_windows_live.py \
-            -o addopts= -v -p no:cacheprovider
+          bash scripts/run_tests.sh tests/tools/test_process_registry_windows_live.py

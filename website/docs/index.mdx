@@ -83,7 +83,9 @@ To easily install the command-line and desktop applications, [download the Herme
 
 For a command-line only install without Hermes Desktop, run:
 
-#### Linux / macOS / WSL2 / Android (Termux)
+For aarch64 Android devices, use the separate [Termux APT guide](./getting-started/termux.md).
+
+#### Linux / macOS / WSL2
 
 ```bash
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
@@ -97,7 +99,7 @@ Run in powershell:
 iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 ```
 
-See the full **[Installation Guide](/getting-started/installation)** for what the installer does, the per-user vs root layout, and Windows-specific notes. For the complete platform support matrix, see **[Platform Support](/getting-started/platform-support)**.
+See the full **[Installation Guide](/getting-started/installation)** for what the installer does, installation ownership and data locations, and Windows-specific notes. For the complete platform support matrix, see **[Platform Support](/getting-started/platform-support)**.
 
 :::tip Fastest path to a working agent
 After installing, run `hermes setup --portal` — one OAuth covers a model plus all four Tool Gateway tools (web search, image generation, TTS, browser). See [Nous Portal](/integrations/nous-portal).

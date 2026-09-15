@@ -151,16 +151,24 @@ The plugin is fail-open: no SDK installed, no credentials, or a transient Langfu
 hermes tools          # → Langfuse Observability → Cloud or Self-Hosted
 ```
 
-The wizard collects your keys, `pip install`s the `langfuse` SDK, and adds `observability/langfuse` to `plugins.enabled` for you. Restart Hermes and the next turn ships a trace.
+The wizard collects your keys, prepares the declared `langfuse` extra through PM
+when needed, and enables `observability/langfuse`. Restart Hermes and the next
+turn ships a trace. If preparation fails, retry through `hermes tools`; do not
+install the SDK into the selected environment with pip.
 
 **Setup (manual):**
 
+For a source checkout, first follow the [PM developer workflow](/reference/package-management#developer-workflow)
+with the intended Hermes home. Use the checkout's prepared Python:
+
 ```bash
-pip install langfuse
-hermes plugins enable observability/langfuse
+python -c "import pm; pm.sync_venv(['langfuse'], explicit=True)"
+source ./activate
+python hermes plugins enable observability/langfuse
 ```
 
-Then put the credentials in `~/.hermes/.env`:
+Use `. .\activate.ps1` for PowerShell activation. Then put the credentials in
+the active home's `.env` (`$HERMES_HOME/.env`, normally `~/.hermes/.env`):
 
 ```bash
 HERMES_LANGFUSE_PUBLIC_KEY=pk-lf-...
@@ -321,7 +329,7 @@ Bundled plugins are written exactly like any other Hermes plugin — see [Build 
 
 A plugin is a good candidate for bundling when:
 
-- It has no optional dependencies (or they're already `pip install .[all]` deps)
+- It has no optional dependencies (or they are already in the declared `all` extra)
 - The behaviour benefits most users and is opt-out rather than opt-in
 - The logic ties into lifecycle hooks that the agent would otherwise have to remember to invoke
 - It complements a core capability without expanding the model-visible tool surface

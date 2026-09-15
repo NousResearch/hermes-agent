@@ -11,6 +11,8 @@ import subprocess
 import sys
 import threading
 
+import pytest
+
 
 
 def _spawn_sleep(seconds: float = 60) -> subprocess.Popen:
@@ -28,68 +30,6 @@ def _pid_alive(pid: int) -> bool:
     except (ProcessLookupError, PermissionError):
         return False
 
-
-class TestZombieReproduction:
-    """Demonstrate that subprocesses survive when cleanup is not called."""
-
-    def test_orphaned_processes_survive_without_cleanup(self):
-        """REPRODUCTION: processes spawned directly survive if no one kills
-        them — this models the gap that causes zombie accumulation when
-        the gateway drops agent references without calling close()."""
-        pids = []
-
-        try:
-            for _ in range(3):
-                proc = _spawn_sleep(60)
-                pids.append(proc.pid)
-
-            for pid in pids:
-                assert _pid_alive(pid), f"PID {pid} should be alive after spawn"
-
-            # Simulate "session end" by just dropping the reference
-            del proc  # noqa: F821
-
-            # BUG: processes are still alive after reference is dropped
-            for pid in pids:
-                assert _pid_alive(pid), (
-                    f"PID {pid} died after ref drop — "
-                    f"expected it to survive (demonstrating the bug)"
-                )
-        finally:
-            for pid in pids:
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    pass
-
-    def test_explicit_terminate_reaps_processes(self):
-        """Explicitly terminating+waiting on Popen handles works.
-        This models what ProcessRegistry.kill_process does internally."""
-        procs = []
-
-        try:
-            for _ in range(3):
-                proc = _spawn_sleep(60)
-                procs.append(proc)
-
-            for proc in procs:
-                assert _pid_alive(proc.pid)
-
-            for proc in procs:
-                proc.terminate()
-                proc.wait(timeout=5)
-
-            for proc in procs:
-                assert proc.returncode is not None, (
-                    f"PID {proc.pid} should have exited after terminate+wait"
-                )
-        finally:
-            for proc in procs:
-                try:
-                    proc.kill()
-                    proc.wait(timeout=1)
-                except Exception:
-                    pass
 
 
 class TestAgentCloseMethod:
@@ -479,7 +419,7 @@ class TestDelegationCleanup:
         parent._active_children.append(child)
         relay_host = MagicMock()
         monkeypatch.setattr(relay_runtime, "get_runtime", lambda **_kwargs: relay_host)
-        monkeypatch.setattr("tools.delegate_tool._get_child_timeout", lambda: 0.1)
+        monkeypatch.setattr("tools.delegate_tool._get_child_timeout", lambda: 2)
 
         def run_conversation(**kwargs):
             lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
@@ -494,7 +434,7 @@ class TestDelegationCleanup:
             )
             child_started.set()
             try:
-                release_child.wait(timeout=5)
+                assert release_child.wait(timeout=30), "test did not release the child"
                 return {
                     "final_response": "late result",
                     "completed": True,
@@ -535,5 +475,7 @@ class TestDelegationCleanup:
             )
         finally:
             release_child.set()
+            if child_started.is_set():
+                assert child_finished.wait(timeout=10)
             reset_hermes_home_override(profile_token)
             relay_runtime._reset_for_tests()

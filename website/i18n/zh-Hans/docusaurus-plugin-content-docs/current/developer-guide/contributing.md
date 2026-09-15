@@ -27,89 +27,79 @@ description: "如何为 Hermes Agent 做贡献 — 开发环境配置、代码�
 - 构建新的 skill？从 [创建 Skill](./creating-skills.md) 开始
 - 构建新的推理提供商？从 [添加提供商](./adding-providers.md) 开始
 
-## 开发环境配置
+## 开发环境配置 {#development-setup}
 
 ### 前置要求
 
-| 要求 | 说明 |
-|-------------|-------|
-| **Git** | 需安装 `git-lfs` 扩展 |
-| **Python 3.11–3.13** | 若未安装，uv 会自动安装 |
-| **uv** | 高速 Python 包管理器（[安装](https://docs.astral.sh/uv/)） |
-| **Node.js 20+** | 可选 — 浏览器工具和 WhatsApp bridge 需要（与根目录 `package.json` engines 字段一致） |
+项目要求 Python 3.14（`>=3.14,<3.15`）。PM 提供固定版本的解释器和工具。
+准备 Git 和 git-lfs。JS 构建使用 PM 的 Node/npm，或满足相应 `package.json` engines 的版本。
 
-### 使用标准安装器
+### PM 开发环境
 
-对大多数贡献者来说，最好的开发启动方式和用户安装方式相同：运行标准安装器，然后在它克隆出的仓库里开发。安装器会创建 Hermes venv、配置 `hermes` 命令、为 `hermes update` 写入安装方式标记，并把完整 git 项目克隆到 `$HERMES_HOME/hermes-agent`（通常是 `~/.hermes/hermes-agent`）。这样你的开发环境会和 CLI、updater、lazy dependency installer、gateway、docs 默认假设的布局一致。
+[PM 开发工作流](/reference/package-management#developer-workflow) 包含首次准备、激活、日常使用、依赖更新和当前 bootstrap 限制。
+请在准备环境前选择独立的开发 `HERMES_HOME`，避免实验代码迁移生产数据。
 
-```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
-cd "${HERMES_HOME:-$HOME/.hermes}/hermes-agent"
+成功准备后，每次在仓库根目录的新 shell 中激活已有环境。
 
-# 在标准安装基础上添加开发/测试 extras。
-uv pip install -e ".[all,dev]"
-
-# 可选：浏览器工具 / docs site dependencies。
-npm install
-```
-
-之后从这个 checkout 创建分支并运行测试：
+Bash：
 
 ```bash
-git checkout -b fix/description
-scripts/run_tests.sh
+source ./activate
+python hermes --version
 ```
 
-### 手动克隆备用路径
+PowerShell：
 
-只有在你明确不想使用 Hermes managed install layout 时才使用这种方式（例如容器或 CI job 里的临时 clone）。如果这样安装，请确保运行的是这个 venv 里的 `hermes` entrypoint；运行系统 `python3 -m hermes_cli.main` 可能会加载无关的系统 Python 包。
+```powershell
+. .\activate.ps1
+python hermes --version
+```
+
+PowerShell 开头的点和空格用于 dot-source，不能省略。
+激活通过 PM 准备工具并同步依赖，但不创建 JS workspaces，也不设置常规 venv 提示符。
+使用 `python hermes` 明确运行当前 checkout，避免命中全局命令或 MSIX 别名。
+`deactivate` 恢复激活前的环境，不卸载依赖或停止已启动的进程。
+
+### 独立开发和测试环境 {#manual-development-and-test-environment}
+
+先按 [PM 开发工作流](/reference/package-management#developer-workflow) 准备 Python 3.14。
+在该 checkout 中使用准备好的 Python，并保持相同的开发 `HERMES_HOME`。
+PM 必须能够启动，才能构建独立测试环境：
 
 ```bash
-git clone https://github.com/NousResearch/hermes-agent.git
-cd hermes-agent
-
-# 使用 Python 3.11 创建虚拟环境
-uv venv venv --python 3.11
-export VIRTUAL_ENV="$(pwd)/venv"
-
-# 安装所有扩展（messaging、cron、CLI 菜单、开发工具）
-uv pip install -e ".[all,dev]"
-
-# 可选：浏览器工具
-npm install
+python -m pm.build_env --source . --out .venv --extra dev --group test
 ```
 
-### 配置开发环境
+此命令使用提交的锁文件，创建新环境并检查依赖一致性。输出路径必须不存在。
+如需重新生成，请先停止使用该环境的进程，再明确删除该可丢弃的环境。
+PM 不会自动删除已有目录。不要通过原始 pip 或 uv 命令修改 Hermes 环境。
+
+测试 runner 自动发现仓库的 `.venv`。它会清除 `PYTHONPATH`，因此 pytest 必须安装在解释器自身的环境中。
+也可将 `--out` 指向仓库外的新路径，再将 `HERMES_PYTHON` 设为该环境的解释器。
+Windows 上通过 Bash 运行 `scripts/run_tests.sh`，并预先准备本机 C++ 编译环境。
+
+独立测试环境不替代 PM 工具存储或应用的依赖选择。不要修改签名应用的载荷。
+运行开发实例前，选择临时的 `HERMES_HOME`，再使用 `python hermes setup` 配置它。
+不要把生产凭据复制到 checkout。
+
+从仓库根目录运行 `npm ci` 安装 JS workspaces。网站单独使用：
 
 ```bash
-mkdir -p ~/.hermes/{cron,sessions,logs,memories,skills}
-cp cli-config.yaml.example ~/.hermes/config.yaml
-touch ~/.hermes/.env
-
-# 至少添加一个 LLM 提供商密钥：
-echo 'OPENROUTER_API_KEY=sk-or-v1-your-key' >> ~/.hermes/.env
+npm ci --prefix website
+npm run build:fast --prefix website
 ```
 
-### 运行
-
-```bash
-# 标准安装器已经把 `hermes` 放到了 PATH 上。
-hermes doctor
-hermes chat -q "Hello"
-```
-
-如果你使用了手动克隆备用路径，可以在 checkout 中运行 `./hermes`，或显式把这个 clone 的 venv 链接到 PATH：
-
-```bash
-mkdir -p ~/.local/bin
-ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
-```
+图标从 `assets/nous-girl-*.svg` 和 `assets/backgrounds/` 生成。
+`node scripts/generate-icons.mjs` 使用隔离的 `icon-build` 依赖组，不应将这些构建依赖加入生产包。
 
 ### 运行测试
 
 ```bash
 scripts/run_tests.sh
 ```
+
+该脚本清除凭据环境、设置 UTC 和临时 `HERMES_HOME`，并使用独立子进程运行各测试文件。
+不同文件可并行，单个文件内的测试串行执行。不要绕过脚本直接运行 pytest。
 
 ## 代码风格
 
@@ -121,12 +111,12 @@ scripts/run_tests.sh
 
 ## 跨平台兼容性
 
-Hermes 官方支持 **Linux、macOS、WSL2 以及原生 Windows（通过 PowerShell 安装）**。原生 Windows 使用 [Git for Windows](https://git-scm.com/download/win) 提供的 Git Bash 执行 shell 命令。部分功能依赖 POSIX 内核原语，已做条件限制：dashboard 内嵌的 PTY 终端面板（`/chat` 标签页）仅支持 WSL2。如果您主要在 Windows 上开发，推送前请运行 Windows 陷阱（footgun）lint（`scripts/check-windows-footguns.py`）。
+Hermes 支持 Linux、macOS、WSL2 和原生 Windows。Windows shell 由 PM 解析 Git Bash。Dashboard 聊天通过 pywinpty/ConPTY 支持原生 Windows，并非仅限 WSL2。平台和依赖限制见[平台支持](/getting-started/platform-support)。
 
 贡献代码时，请遵守以下规则：
 
 - **不得添加未加保护的 `signal.SIGKILL` 引用。** Windows 上未定义该信号。请通过 `gateway.status.terminate_pid(pid, force=True)`（集中式原语，Windows 上执行 `taskkill /T /F`，POSIX 上发送 SIGKILL）路由，或使用 `getattr(signal, "SIGKILL", signal.SIGTERM)` 回退。
-- **在 `os.kill(pid, 0)` 探测时同时捕获 `OSError` 和 `ProcessLookupError`。** Windows 对已消失的 PID 抛出 `OSError`（WinError 87，"参数不正确"），而非 `ProcessLookupError`。
+- **不要在 Windows 上用 `os.kill(pid, 0)` 检查存活。** 使用 `psutil.pid_exists()`；信号调用不是安全的只读检查。
 - **不得强制终端使用 POSIX 语义。** `os.setsid`、`os.killpg`、`os.getpgid`、`os.fork` 在 Windows 上均会抛出异常 — 使用 `if sys.platform != "win32":` 或 `if os.name != "nt":` 进行条件判断。
 - **打开文件时显式指定 `encoding="utf-8"`。** Windows 上 Python 默认使用系统区域设置（通常为 cp1252），处理非拉丁字符时会出现乱码或崩溃。
 - **使用 `pathlib.Path` / `os.path.join`，不得手动用 `/` 拼接路径。** 这对我们构造后传给子进程的字符串尤为重要，而非 OS 返回给我们的字符串。

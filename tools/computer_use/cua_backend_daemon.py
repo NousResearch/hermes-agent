@@ -159,10 +159,12 @@ class _EmbeddedCuaDaemon:
     def start(self) -> None:
         if self._running:
             return
-        self._driver_cmd = self._driver_cmd or _driver.resolve_cua_driver_cmd() or ""
-        if not self._driver_cmd:
+        # Keep an explicit command fixed, but reselect managed drivers on every
+        # launch: PM may have acquired a new pin since construction or last stop.
+        driver_cmd = self._driver_cmd or _driver.resolve_cua_driver_cmd()
+        if not driver_cmd:
             raise RuntimeError(_driver.cua_driver_install_hint())
-        self._command, self._mcp_args = _driver._resolve_mcp_invocation(self._driver_cmd)
+        self._command, self._mcp_args = _driver._resolve_mcp_invocation(driver_cmd)
         env = self._sanitized_env()
         command = _embedded_daemon_spawn_command(self._command, self._serve_args(), platform=sys.platform)
         self._process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,

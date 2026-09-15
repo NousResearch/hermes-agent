@@ -48,7 +48,7 @@ Hermes supports **client capture** for that case:
 
 1. The desktop arms wake with `capture: client` (automatic for the GUI when the
    backend has no local input device, or set explicitly below).
-2. openWakeWord still runs **on the backend** (same engines, same models).
+2. The selected wake engine still runs **on the backend** (same engines, same models).
 3. The desktop opens the **local Mac/PC microphone**, resamples to 16 kHz mono
    int16, and streams short frames via the `wake.feed` RPC.
 4. On detection the backend emits `wake.detected` as usual; the desktop starts
@@ -76,21 +76,49 @@ backend process.
 
 | Engine | Cost | API key | Notes |
 |--------|------|---------|-------|
-| **openWakeWord** (default) | Free | None | Local ONNX models. Ships a bundled **"hey hermes"** model (default); also supports `hey_jarvis`, `alexa`, `hey_mycroft`, … and custom models |
-| **sherpa** | Free | None | **Open vocabulary** — detects ANY typed phrase with zero training. Small English model auto-downloads on first use (~13 MB) |
+| **openWakeWord** | Free | None | TFLite through `pyopen-wakeword`. Includes the **"hey hermes"** model. Custom models require a `.tflite` file. Not available on Intel macOS or native Windows ARM64. |
+| **sherpa** | Free | None | Open-vocabulary detection for typed phrases. Downloads an English model on first use. Supports native Windows ARM64. |
 | **Porcupine** | Free tier / paid | `PORCUPINE_ACCESS_KEY` | Picovoice engine; built-in keywords + custom `.ppn` files |
 
-By default the phrase is **"hey hermes"** — a model for it ships with Hermes, so
-it works out of the box with no training. (On first use, openWakeWord downloads
-its shared feature-extraction models — a small one-time fetch.)
+The default provider is **`auto`**. It selects the first platform-supported
+engine in this order: **openWakeWord → sherpa → Porcupine**. The platform is
+that of the Python backend, not a remote desktop client:
 
-Both are lazy-installed the first time you enable the wake word (desktop
-installs made with `--include-desktop` pre-install them, so the ear works
-instantly). To install ahead of time:
+- **Native Windows ARM64 and Intel macOS:** sherpa (free, no key).
+- **Windows x64, Apple Silicon, and supported Linux targets:** openWakeWord
+  (free, no key).
 
-```bash
-cd ~/.hermes/hermes-agent && uv pip install -e ".[wake]"
-```
+An explicit provider stays selected, even if this platform does not support it.
+Hermes reports the requirement error instead of silently switching engines.
+Existing explicit settings are not migrated. To opt into automatic selection,
+run `hermes config set wake_word.provider auto`. Wake detection stays **off**
+until you enable it.
+
+The default phrase label is **"hey hermes"**. For openWakeWord, Hermes includes
+its trained TFLite model.
+The `pyopen-wakeword` package includes the shared feature-extraction models, so
+this engine does not download models when it starts.
+
+If the selected engine is missing, Hermes requests its PM extra when you enable
+wake-word detection. `security.allow_lazy_installs` controls this installation.
+A new dependency environment can require a Hermes restart before the engine loads.
+Packaged builds include the engine dependencies supported by their target.
+
+The `pyopen-wakeword` macOS
+wheel contains an ARM64-only library despite its `universal2` label. Hermes
+excludes that engine on Intel Macs and native Windows ARM64. Sherpa provides
+keyless detection on both targets.
+
+Porcupine's default keyword is **"jarvis"**, not "hey hermes". Its `phrase`
+setting is only a display label; choose a built-in keyword or supply a custom
+`.ppn` model to change what it detects. Get an access key at
+[console.picovoice.ai](https://console.picovoice.ai) and store
+`PORCUPINE_ACCESS_KEY` in your profile's `.env`, not `config.yaml`.
+
+The supported `pyopen-wakeword` wheels target Apple Silicon with macOS 15 or
+later, glibc Linux 2.35 or later, and Windows x64. These requirements apply to
+that engine, not every Hermes feature. Termux's core/ACP package does not
+include this wake stack.
 
 ## Quick start
 
@@ -120,20 +148,20 @@ wake_word:
   surface: auto               # eligible surface: "auto" | "cli" | "tui" | "gui"
   input_device: null           # PortAudio input index or device-name substring; null = process default
   capture: auto               # auto | local | client — where PCM is captured (see Remote desktop)
-  provider: openwakeword      # "openwakeword" (free, local) | "sherpa" (free, any phrase) | "porcupine"
+  provider: auto              # auto | openwakeword | sherpa | porcupine (requires an access key)
   phrase: "hey hermes"        # cosmetic label only — detection is keyed by the model/keyword below
   sensitivity: 0.6            # 0.0-1.0 — higher = stricter (fewer false triggers), consistent across all engines
   confirmation_frames: 3      # openWakeWord only — consecutive over-threshold frames required to fire
   start_new_session: true     # start a fresh session on wake vs. continue the current one
   openwakeword:
-    model: hey_hermes         # bundled default; OR a built-in name OR a path to a custom .onnx/.tflite
-    inference_framework: ""   # "" (auto) | "onnx" | "tflite"
+    model: hey_hermes         # bundled default, or an absolute path to a custom .tflite
   porcupine:
     keyword: jarvis           # built-in keyword OR path to a custom .ppn
 ```
 
-`sensitivity`, `phrase`, and `start_new_session` apply to both engines. The
-`openwakeword` and `porcupine` blocks select the actual detection model.
+`sensitivity` and `start_new_session` apply to all three engines. For sherpa,
+`phrase` selects the detection phrase. For openWakeWord and Porcupine, `phrase`
+is a display label; their model or keyword selects the detection phrase.
 
 `input_device` is passed directly to the wake listener's PortAudio
 (`sounddevice`) stream. Use either a numeric device index or an unambiguous
@@ -165,13 +193,11 @@ The `sherpa` and `porcupine` engines decode the whole phrase internally, so they
 don't have the single-frame-spike problem and ignore `confirmation_frames`
 (but they still honor `sensitivity`).
 
-`inference_framework` picks the openWakeWord backend. Leave it empty (the
-default) to let Hermes choose per platform: **tflite on Apple Silicon**, onnx
-everywhere else. openWakeWord's onnx backend returns near-zero scores on macOS
-ARM64 ([openWakeWord#336](https://github.com/dscripka/openWakeWord/issues/336)),
-so a listener pinned to `onnx` there will arm, show as listening, and never
-fire. The tflite backend needs `ai-edge-litert` on macOS, which Hermes installs
-on demand alongside the other wake-word deps.
+The `openwakeword` provider name now selects
+[pyopen-wakeword](https://github.com/rhasspy/pyopen-wakeword). Its wheel includes
+the TFLite library and shared feature models. Hermes uses the bundled
+`hey_hermes.tflite` model by default. ONNX wake models and the
+`inference_framework` setting are no longer supported.
 
 ### Surfaces (CLI, TUI, GUI)
 
@@ -196,9 +222,10 @@ command records.
 
 ## Using a different phrase
 
-"Hey Hermes" works out of the box — the bundled openWakeWord model
-(`model: hey_hermes`) is the default. To wake on something else, the easiest
-path is the open-vocabulary engine:
+"Hey Hermes" is the default detection phrase with openWakeWord and sherpa.
+Porcupine uses its configured keyword instead ("jarvis" by default).
+To wake on something else, the easiest path on supported platforms is the
+open-vocabulary engine:
 
 ### Option A — sherpa (any phrase, zero training)
 
@@ -239,9 +266,9 @@ degrade accuracy — tune per-profile `sensitivity` if needed.
 
 ### Option B — openWakeWord (free, trained model)
 
-Name a built-in model (`hey_jarvis`, `alexa`, `hey_mycroft`, …), or train a
-custom model (≈75–90 min on a free/Colab GPU) for maximum robustness, drop
-the `.onnx` file somewhere, and reference it:
+For a different phrase, obtain or train a compatible openWakeWord TFLite model.
+Set its absolute path in the configuration. Hermes does not resolve built-in
+names such as `hey_jarvis` or download their models for you.
 
 ```yaml
 wake_word:
@@ -249,7 +276,7 @@ wake_word:
   provider: openwakeword
   phrase: "computer"
   openwakeword:
-    model: ~/.hermes/wakewords/computer.onnx   # or a built-in name like hey_jarvis
+    model: /absolute/path/to/computer.tflite
 ```
 
 Training references:

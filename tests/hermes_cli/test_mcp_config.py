@@ -61,7 +61,7 @@ def _make_args(**kwargs):
 
 def _seed_config(tmp_path: Path, mcp_servers: dict):
     """Write a config.yaml with the given mcp_servers."""
-    import yaml
+    import hermes_yaml as yaml
 
     config = {"mcp_servers": mcp_servers, "_config_version": 9}
     config_path = tmp_path / "config.yaml"
@@ -855,4 +855,3 @@ def test_tool_filters_keeps_explicit_empty_include():
     assert _tool_filters({"tools": {"include": []}}) == ([], None)
     assert _tool_filters({"tools": {"include": "bad", "exclude": ["x"]}}) == (None, ["x"])
     assert _tool_filters({}) == (None, None)
-

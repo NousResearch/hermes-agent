@@ -511,7 +511,7 @@ def test_backup_fill_does_not_clobber_disk_hash(ledger_env):
     skill_dir.mkdir()
     skill_md = skill_dir / "SKILL.md"
     live = VALID_SKILL_CONTENT.replace("Original body.", "Live body.")
-    skill_md.write_text(live, encoding="utf-8")
+    skill_md.write_text(live, encoding="utf-8", newline="\n")
     _write_skills_tarball(
         ledger_env["home"],
         {
@@ -553,7 +553,7 @@ def test_backup_fill_ignores_tar_path_traversal(ledger_env):
     captured = skill_ledger.snapshot_paths(skill_dir, complete_package=True)
     paths = [i["path"] for i in captured]
     # The legitimate missing file WAS filled — proof the fill is live.
-    assert any(p.endswith("references/legit.md") for p in paths), (
+    assert any(Path(p).as_posix().endswith("references/legit.md") for p in paths), (
         "package fill did not restore the missing support file"
     )
     # Malicious members are not.

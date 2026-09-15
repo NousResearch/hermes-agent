@@ -38,8 +38,8 @@ def _local_tts_warmers() -> Dict[str, Callable[[Dict[str, Any]], Any]]:
         "kittentts": lambda cfg: _load_kittentts_model_for_config(cfg)[0]}
 
 
-# tools.lazy_deps feature key for providers whose SDK installs on first use.
-_LAZY_SDK_FEATURES = {"edge": "tts.edge", "elevenlabs": "tts.elevenlabs", "mistral": "tts.mistral"}
+# pm extra for providers whose SDK installs on first use.
+_LAZY_SDK_FEATURES = {"edge": "edge-tts", "elevenlabs": "tts-premium", "mistral": "mistral"}
 
 
 def _signal_user_tts_provider(name: str, tts_config: Dict[str, Any], hook: str) -> Optional[str]:
@@ -111,11 +111,11 @@ def warm_tts_provider(tts_config: Optional[Dict[str, Any]] = None, provider: Opt
     feature = _LAZY_SDK_FEATURES.get(name)
     if feature is not None:
         try:
-            from tools.lazy_deps import ensure, is_available
-            if is_available(feature):
+            import pm
+            if pm.available(feature):
                 result.update(warmed=True, action="cached")
             else:
-                ensure(feature, prompt=False)
+                pm.ensure_import(feature)
                 result.update(warmed=True, action="installed")
         except Exception as exc:
             logger.debug("[TTS] SDK warm-up for %s skipped: %s", name, exc)

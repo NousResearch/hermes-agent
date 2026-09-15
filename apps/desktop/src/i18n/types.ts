@@ -51,6 +51,12 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
+  externalOpenFailed: {
+    title: string
+    message: string
+    copyUrl: string
+    close: string
+  };
   connectors: {
     title: string
     connect: string
@@ -210,6 +216,8 @@ export interface Translations {
       back: string
       openLogs: string
       repairHint: string
+      bundledReinstallHint: string
+      reinstallApp: string
       remoteSignInHint: (signInLabel: string) => string
       signOutAndSignIn: string
       remoteFailureHint: string
@@ -232,6 +240,7 @@ export interface Translations {
   }
 
   notifications: {
+    sharedProfileWarning: string
     region: string
     hide: string
     show: string
@@ -248,6 +257,7 @@ export interface Translations {
     updateReadyTitle: string
     updateReadyMessage: (count: number) => string
     updateReadyMessageUnknown: string
+    updateReadyMessageAppInstaller: string
     seeWhatsNew: string
     mcp: {
       needsAuthTitle: string
@@ -739,38 +749,7 @@ export interface Translations {
       driverHealth: string
     }
     about: {
-      heading: string
-      version: (value: string) => string
-      versionUnavailable: string
-      bundleOutOfSync: string
-      bundleOutOfSyncDesc: string
-      bundleOutOfSyncAction: string
-      bundleSwapPending: string
-      bundleSwapPendingDesc: string
-      bundleSwapPendingAction: string
       updates: string
-      checkNow: string
-      checking: string
-      seeWhatsNew: string
-      updateNow: string
-      releaseNotes: string
-      onLatest: string
-      installing: string
-      cantUpdate: string
-      cantReach: string
-      tapCheck: string
-      updateReady: (count: number) => string
-      updateReadyUnknown: string
-      lastChecked: (age: string) => string
-      justNowSuffix: string
-      automaticUpdates: string
-      automaticUpdatesDesc: string
-      branchCommit: (branch: string, commit: string) => string
-      never: string
-      justNow: string
-      minAgo: (count: number) => string
-      hoursAgo: (count: number) => string
-      daysAgo: (count: number) => string
     }
     config: {
       none: string
@@ -1192,6 +1171,9 @@ export interface Translations {
       downloaded: string
       downloadAction: (size: string) => string
       downloadProgress: (done: string, total: string) => string
+      downloadPausedLabel: string
+      downloadPauseAction: string
+      downloadResumeAction: string
       downloadDoneToast: (model: string) => string
       installDoneToast: string
       quickstartTitle: string
@@ -2712,6 +2694,12 @@ export interface Translations {
   }
 
   updates: {
+    discontinuedTitle: string
+    discontinuedBody: string
+    channels: { stable: string; canary: string }
+    bundleSwapPending: string
+    bundleSwapPendingDesc: string
+    bundleSwapPendingAction: string
     stages: Record<string, string>
     checking: string
     checkFailedTitle: string
@@ -2727,6 +2715,7 @@ export interface Translations {
     availableTitleBackend: string
     availableBodyBackend: string
     availableBodyNoChangelog: string
+    availableBodyAppInstaller: string
     updateNow: string
     maybeLater: string
     moreChanges: (count: number) => string
@@ -2743,6 +2732,10 @@ export interface Translations {
     applyingBody: string
     applyingBodyBackend: string
     applyingClose: string
+    applyingBodyAppInstaller: string
+    applyingCloseAppInstaller: string
+    checkUnknownTitleAppInstaller: string
+    checkUnknownBodyAppInstaller: string
     errorTitle: string
     errorBody: string
     blockerTitle: string
@@ -2774,6 +2767,46 @@ export interface Translations {
       failed: string
       noReturn: string
     }
+    /** Update-status overlay + version-details (mechanism-aware update UI):
+     * the overlay reads these off t.updates directly. */
+    appName: string
+    version: (value: string) => string
+    versionUnavailable: string
+    checkNow: string
+    seeWhatsNew: string
+    releaseNotes: string
+    onLatest: string
+    installing: string
+    cantReach: string
+    tapCheck: string
+    updateReady: (count: number) => string
+    updateReadyUnknown: string
+    availableBodyRelease: (tag: string) => string
+    lastChecked: (age: string) => string
+    never: string
+    justNow: string
+    minAgo: (count: number) => string
+    hoursAgo: (count: number) => string
+    daysAgo: (count: number) => string
+    justNowSuffix: string
+    bundleOutOfSync: string
+    bundleOutOfSyncDesc: string
+    bundleOutOfSyncAction: string
+    checkingShort: string
+    releaseAvailable: (tag: string) => string
+    versionDetailsTitle: string
+    versionDetailsBody: string
+    versionDetailsVersion: string
+    versionDetailsCommit: string
+    versionDetailsBuildOrigin: string
+    versionDetailsDistribution: string
+    versionDetailsDistributionDesktop: string
+    versionDetailsDistributionStore: string
+    versionDetailsRuntime: string
+    versionDetailsRuntimeEmbedded: string
+    versionDetailsRuntimeExternal: string
+    versionDetailsInstallId: string
+    versionDetailsUncommittedChanges: string
   }
 
   /** The guided first run's pre-written opening line — banked, not generated,
@@ -2804,11 +2837,15 @@ export interface Translations {
     retryAfterRun: string
     setupChoiceTitle: string
     setupChoiceDesc: string
+    setupChoiceDescLocal: string
     connectExistingTitle: string
     connectExistingShort: string
     connectExistingDesc: string
     installLocalTitle: string
     installLocalDesc: string
+    useLocalTitle: string
+    useLocalDesc: string
+    bundledLocalDesc: string
     localStartUnavailable: string
     remoteSetupTitle: string
     remoteSetupDesc: string
@@ -3049,6 +3086,7 @@ export interface Translations {
       update: string
       updateInProgress: string
       commitsBehind: (count: number, branch: string) => string
+      releaseAvailable: (tag: string) => string
       desktopVersion: (version: string) => string
       backendVersion: (version: string) => string
       clientLabel: (version: string) => string

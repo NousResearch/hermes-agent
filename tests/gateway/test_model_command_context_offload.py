@@ -43,7 +43,7 @@ def _event(text: str) -> MessageEvent:
 
 def _runner_with_store(tmp_path, monkeypatch):
     """Minimal GatewayRunner harness driving the real /model handler."""
-    import yaml as _yaml
+    import hermes_yaml as _yaml
 
     import gateway.run as gateway_run
     from gateway.run import GatewayRunner

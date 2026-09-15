@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $desktopBoot } from '@/store/boot'
+import { $notifications } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
 
 import { BootFailureOverlay } from './boot-failure-overlay'
@@ -29,7 +30,23 @@ function stubDesktop(config: Record<string, unknown>, overrides: Record<string, 
   const original = window.hermesDesktop
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
-    value: { getRecentLogs: async () => ({ lines: [] }), getConnectionConfig: async () => config, ...overrides }
+    value: {
+      getRecentLogs: async () => ({ lines: [] }),
+      getConnectionConfig: async () => config,
+      getBootstrapState: async () => ({
+        active: false,
+        manifest: null,
+        stages: {},
+        error: null,
+        log: [],
+        startedAt: null,
+        completedAt: null,
+        setupChoice: null,
+        unsupportedPlatform: null,
+        bundled: false
+      }),
+      ...overrides
+    }
   })
 
   return () => Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: original })
@@ -226,6 +243,110 @@ describe('BootFailureOverlay', () => {
       expect(screen.getByText(/ares-3009\.agents\.nousresearch\.com/i)).toBeTruthy()
     } finally {
       restore()
+    }
+  })
+
+  it('swaps Repair for "Reinstall the app" on a bundled install', async () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+
+    const restore = stubDesktop(
+      { mode: 'local' },
+      {
+        getBootstrapState: async () => ({
+          active: false,
+          manifest: null,
+          stages: {},
+          error: null,
+          log: [],
+          startedAt: null,
+          completedAt: null,
+          setupChoice: null,
+          unsupportedPlatform: null,
+          bundled: true
+        }),
+        openExternal
+      }
+    )
+
+    try {
+      render(<BootFailureOverlay />)
+
+      // The bundled artifact has no installer to repair with — the action is
+      // a docs link, and the hint says reinstall instead of re-run installer.
+      expect(await screen.findByRole('button', { name: /reinstall the app/i })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: /repair install/i })).toBeNull()
+      expect(screen.getByText(/reinstall the app to restore/i)).toBeTruthy()
+
+      fireEvent.click(screen.getByRole('button', { name: /reinstall the app/i }))
+      await waitFor(() => expect(openExternal).toHaveBeenCalledWith('https://hermes-agent.nousresearch.com/docs/user-guide/desktop'))
+    } finally {
+      restore()
+    }
+  })
+
+  it.each(['refused', 'thrown', 'unavailable'])('preserves a %s repair failure without reloading', async failure => {
+    const reload = vi.fn()
+    const originalLocation = Object.getOwnPropertyDescriptor(window, 'location')!
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...window.location, reload }
+    })
+
+    const repair = failure === 'unavailable' ? undefined : vi.fn(async () => {
+      if (failure === 'thrown') {
+        throw new Error('installer permission denied')
+      }
+
+      return { ok: false, error: 'bundled-immutable' }
+    })
+
+    const restore = stubDesktop(
+      { mode: 'local' },
+      { repairBootstrap: repair }
+    )
+
+    try {
+      render(<BootFailureOverlay />)
+      fireEvent.click(await screen.findByRole('button', { name: /repair install/i }))
+
+      const message = failure === 'thrown' ? 'installer permission denied'
+        : failure === 'refused' ? 'bundled-immutable' : 'Desktop IPC bridge is unavailable.'
+
+      await waitFor(() => expect($notifications.get()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'error', message })
+      ])))
+      expect(reload).not.toHaveBeenCalled()
+      expect(screen.getByRole('button', { name: /repair install/i }).hasAttribute('disabled')).toBe(false)
+    } finally {
+      restore()
+      Object.defineProperty(window, 'location', originalLocation)
+      $notifications.set([])
+    }
+  })
+
+  it('reloads after an accepted repair', async () => {
+    const reload = vi.fn()
+    const originalLocation = Object.getOwnPropertyDescriptor(window, 'location')!
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...window.location, reload }
+    })
+
+    const restore = stubDesktop(
+      { mode: 'local' },
+      { repairBootstrap: vi.fn().mockResolvedValue({ ok: true }) }
+    )
+
+    try {
+      render(<BootFailureOverlay />)
+      fireEvent.click(await screen.findByRole('button', { name: /repair install/i }))
+
+      await waitFor(() => expect(reload).toHaveBeenCalled())
+      expect($notifications.get().some(n => n.kind === 'error')).toBe(false)
+    } finally {
+      restore()
+      Object.defineProperty(window, 'location', originalLocation)
+      $notifications.set([])
     }
   })
 })

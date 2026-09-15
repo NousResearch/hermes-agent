@@ -1025,7 +1025,7 @@ enabled = true
 
 [[components.config.atof.sinks]]
 type = "file"
-output_directory = "{atof_dir}"
+output_directory = "{atof_dir.as_posix()}"
 filename = "events.jsonl"
 mode = "overwrite"
 """.strip(),
@@ -1082,7 +1082,7 @@ enabled = true
 
 [[components.config.atof.sinks]]
 type = "file"
-output_directory = "{project_atof_dir}"
+output_directory = "{project_atof_dir.as_posix()}"
 filename = "events.jsonl"
 mode = "overwrite"
 """.strip(),
@@ -1105,7 +1105,7 @@ enabled = true
 
 [[components.config.atof.sinks]]
 type = "file"
-output_directory = "{selected_atof_dir}"
+output_directory = "{selected_atof_dir.as_posix()}"
 filename = "events.jsonl"
 mode = "overwrite"
 """.strip(),
@@ -1165,13 +1165,13 @@ enabled = true
 
 [[components.config.atof.sinks]]
 type = "file"
-output_directory = "{atof_dir}"
+output_directory = "{atof_dir.as_posix()}"
 filename = "events.jsonl"
 mode = "overwrite"
 
 [components.config.atif]
 enabled = true
-output_directory = "{atif_dir}"
+output_directory = "{atif_dir.as_posix()}"
 filename_template = "trajectory-{{session_id}}.json"
 agent_name = "Hermes Native Test"
 agent_version = "test"

@@ -237,7 +237,7 @@ def collect_runtime_inventory() -> UpdatePlan:
     plan = UpdatePlan()
     _collect_install_shape(plan)
     with _probe("Code-identity probe"):
-        from hermes_cli.build_info import get_code_identity
+        from hermes_cli.version_info import get_code_identity
 
         identity = get_code_identity(refresh=True)
         plan.expected_sha = identity.get("sha")
@@ -397,8 +397,9 @@ def record_plan_in_receipt(plan: UpdatePlan) -> None:
     try:
         import hermes_cli.update_receipt as ur
 
-        if ur._current is not None:
-            ur._current.data["plan"] = plan.to_dict()
+        current = ur._current.get()
+        if current is not None:
+            current.data["plan"] = plan.to_dict()
     except Exception as exc:
         logger.debug("Could not record plan in receipt: %s", exc)
 

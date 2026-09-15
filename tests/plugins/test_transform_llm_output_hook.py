@@ -17,7 +17,7 @@ contract for the generic tool-result seam.
 
 from pathlib import Path
 
-import yaml
+import hermes_yaml as yaml
 
 import hermes_cli.plugins as plugins_mod
 from hermes_cli.plugins import PluginManager, VALID_HOOKS

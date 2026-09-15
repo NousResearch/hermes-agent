@@ -8,7 +8,6 @@ gateway housekeeping, claims and fires those jobs after a grace window.
 """
 
 import threading
-import time
 from datetime import timedelta
 
 import pytest
@@ -145,19 +144,30 @@ class TestFireOverdueJobs:
         assert fire_overdue_jobs(provider2) == 0
 
     def test_dispatch_is_nonblocking(self, tmp_cron_dir):
-        """fire_claimed runs off-thread — a slow job must not stall the
-        sweep (housekeeping loop) for the length of an agent run."""
+        """The sweep returns while the dispatched provider is still blocked."""
+        worker_running = threading.Event()
+        release = threading.Event()
 
-        class SlowProvider(RecordingProvider):
+        class BlockedProvider(RecordingProvider):
             def fire_claimed(self, claimed_job, **kw):
-                time.sleep(3.0)
-                return super().fire_claimed(claimed_job, **kw)
+                worker_running.set()
+                try:
+                    assert release.wait(timeout=10), "test never released the worker"
+                    return super().fire_claimed(claimed_job, **kw)
+                finally:
+                    self._done.set()
 
         job = create_job(prompt="p", schedule="every 1h")
         _park_in_past(job["id"], minutes=30)
-        provider = SlowProvider()
-        start = time.monotonic()
-        assert fire_overdue_jobs(provider) == 1
-        assert time.monotonic() - start < 1.0  # returned before the run
+        provider = BlockedProvider()
+        try:
+            # Must return while the dispatched run is still blocked.
+            assert fire_overdue_jobs(provider) == 1
+            # The run actually started off-thread (dispatch happened, not a skip).
+            assert worker_running.wait(timeout=10)
+            assert not provider._done.is_set()
+            assert provider.fired == []
+        finally:
+            release.set()
         assert provider.wait_fired(timeout=10)
         assert provider.fired == [job["id"]]

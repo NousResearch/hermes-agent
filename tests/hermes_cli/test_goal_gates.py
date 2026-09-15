@@ -64,7 +64,10 @@ def test_run_gate_pass():
     assert "hello" in out
 
 
+@pytest.mark.platforms("linux")
 def test_run_gate_fail_captures_output():
+    # POSIX shell syntax (`>&2`, `;`, `exit`) — cmd.exe (shell=True on Windows)
+    # doesn't parse it, so the gate "passes" instead of failing.
     passed, code, out = run_gate(GoalGate(command="echo broken >&2; exit 3"))
     assert passed is False
     assert code == 3

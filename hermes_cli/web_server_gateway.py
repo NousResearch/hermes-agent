@@ -291,38 +291,6 @@ def _terminate_desktop_managed_gateway() -> None:
         pass  # exited between poll() and terminate()
 
 
-def _dashboard_spawn_executable() -> str:
-    """Interpreter for detached dashboard actions: the install's venv python when it differs
-    from ``sys.executable``, else ``sys.executable``.
-
-    Under an SSH remote backend the server runs on the uv BASE interpreter with the venv's
-    site-packages injected into sys.path at startup, so ``sys.executable`` is dependency-less and
-    a detached child dies on its first third-party import; the venv launcher resolves the same
-    dependency set on its own. Paths are compared UNRESOLVED: the venv python is typically a
-    symlink to the base interpreter, so resolving would make them compare equal (exactly the
-    case this fixes), and pyvenv.cfg discovery keys off argv0's unresolved location. On Windows
-    the console python plus ``windows_detach_flags()`` keeps the action invisible without
-    pythonw.exe (which makes every console descendant flash its own conhost).
-
-    See #90026.
-    Falls back to ``sys.executable`` when no venv interpreter exists next to the install (in-process dev
-    runs, exotic layouts). See #54220, #56747.
-    """
-    from hermes_cli.web_server import PROJECT_ROOT
-    exe = Path(sys.executable)
-    try:
-        for rel in ("venv/bin/python", "venv/Scripts/python.exe"):
-            candidate = PROJECT_ROOT / rel
-            if candidate.is_file():
-                if os.path.normcase(os.path.normpath(str(candidate))) == (
-                    os.path.normcase(os.path.normpath(str(exe)))):
-                    return sys.executable
-                return str(candidate)
-    except OSError:
-        pass
-    return sys.executable
-
-
 def _named_profile_from_action(subcommand: List[str]) -> Optional[str]:
     """Return the named-profile selector that :func:`_profile_cli_args` puts in front of an action.
 
@@ -404,7 +372,8 @@ def _spawn_hermes_action(
     log_file = open(_ACTION_LOG_DIR / _ACTION_LOG_FILES[name], "ab", buffering=0)
     log_file.write(f"\n=== {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode())
 
-    cmd = [_dashboard_spawn_executable(), "-m", "hermes_cli.main", *subcommand]
+    from hermes_cli._launchers import runtime_command
+    cmd = runtime_command(PROJECT_ROOT, subcommand)
     # Named-profile actions get a scrubbed, pinned environment so the child cannot inherit the
     # dashboard profile's credentials; see _profile_action_environment (also drops _HERMES_GATEWAY).
     action_env = _profile_action_environment(subcommand, env_overrides)

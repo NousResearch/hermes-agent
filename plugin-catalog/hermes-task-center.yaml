@@ -1,0 +1,13 @@
+name: hermes-task-center
+repo: https://github.com/YmilitaryM/hermes-task-center
+sha: d7276b8ba3af748b7817f65d99d319c3ba371c9a
+description: Dashboard panel that triages sessions into active / interrupted / ended with one-click rescue of interrupted work.
+maintainer: YmilitaryM
+tier: community
+docs_url: https://github.com/YmilitaryM/hermes-task-center
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

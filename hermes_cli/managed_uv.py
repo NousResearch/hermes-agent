@@ -19,6 +19,7 @@ import sys
 import tempfile
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -562,6 +563,55 @@ def _smoke_candidate_venv(venv_dir: Path) -> tuple[bool, str, SQLiteRuntimeInfo 
     return True, "", info
 
 
+# A failed ``uv sync`` prints its diagnosis last, so the tail is the actionable part. Kept
+# short: the reason travels into a one-line log entry and a one-line console warning.
+_SYNC_TAIL_LINES = 6
+_SYNC_REASON_CHARS = 600
+
+
+def _sync_reason(tail: deque[str]) -> str:
+    """The actionable part of a failed sync: uv's ``error:`` line and whatever follows it.
+
+    uv prints progress ("Resolving…", "Resolved 259 packages") before the diagnosis, so the raw
+    tail leads with noise; the ``error:``/``hint:`` pair is the part a user can act on.
+    """
+    parts = [line for line in tail if line.strip()]
+    for index, line in enumerate(parts):
+        if line.lower().startswith(("error:", "error ")):
+            parts = parts[index:]
+            break
+    else:
+        parts = parts[-2:]
+    return " | ".join(parts).strip()[:_SYNC_REASON_CHARS]
+
+
+def _stream_sync(argv: list[str], *, cwd: Path, env: dict[str, str]) -> tuple[int, str]:
+    """Run the candidate's locked sync, forwarding output live; return ``(rc, reason)``.
+
+    Streaming is load-bearing, not cosmetic: older desktop update hand-offs drain only the
+    child's stdout while it runs, so a full stderr pipe blocks uv forever — stderr is merged
+    into stdout and forwarded line by line instead of being captured and reprinted at the end.
+
+    The tail is kept anyway. Inherited stdout lands the child's diagnosis in console scrollback
+    ONLY: the rejection line the logger records carried the bare exit code, and the generic
+    "did not pass dependency and import smoke tests" detail the repair returns carries no reason
+    either (receipts quote explicitly recorded steps — none records this repair). Seen in the
+    field, that reads as "hermes update says the SQLite repair failed and never says why".
+    """
+    proc = subprocess.Popen(
+        list(argv), cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", bufsize=1)
+    tail: deque[str] = deque(maxlen=_SYNC_TAIL_LINES)
+    stream = proc.stdout
+    if stream is not None:
+        for line in stream:
+            tail.append(line.rstrip())
+            sys.stdout.write(line)
+            sys.stdout.flush()
+    status = proc.wait()
+    return status, _sync_reason(tail)
+
+
 def _stage_candidate_venv(
     uv_bin: str, *, project_root: Path, generation: Path, python: Path) -> Path | None:
     runtime_root = project_root / _RUNTIME_DIR_NAME
@@ -597,11 +647,15 @@ def _stage_candidate_venv(
     # reset, so even an update running from an old base executes THIS
     # copy — unlike the heartbeat helper (main_install_repair.py), which
     # is imported at startup and only protects bases that ship its twin.
-    synced = subprocess.run(
+    status, reason = _stream_sync(
         [uv_bin, "sync", "--extra", "all", "--locked", "--python", str(_venv_python(candidate))],
-        cwd=project_root, env=sync_env, stderr=subprocess.STDOUT, check=False)
-    if synced.returncode != 0:
-        return reject("candidate dependency sync failed (rc=%d)", synced.returncode)
+        cwd=project_root, env=sync_env)
+    if status != 0:
+        # `_repair_under_lock`'s failure detail is generic ("did not pass dependency and import
+        # smoke tests"), so the reason is announced here; without it only console scrollback has
+        # the text — the rejection line the log records carries the bare exit code.
+        print(f"  ⚠ candidate dependency sync failed (rc={status}): {reason}")
+        return reject("candidate dependency sync failed (rc=%d): %s", status, reason)
     healthy, detail, _ = _smoke_candidate_venv(candidate)
     if not healthy:
         return reject("candidate venv smoke failed: %s", detail)

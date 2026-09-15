@@ -151,6 +151,11 @@ _DEFAULT_PAYLOADS = {
         # response, so without this an observer cannot see or price the fan-out.
         "moa_references": None,
     },
+    "kanban_worktree_created": {
+        "task_id": "test-task", "board": "default", "profile_name": "default",
+        "worktree_path": "/tmp/repo/.worktrees/test-task", "repo_root": "/tmp/repo",
+        "branch": "wt/test-task",
+    },
     "subagent_stop": {
         "parent_session_id": "parent-sess", "child_role": None,
         "child_summary": "Synthetic summary for hooks test", "child_status": "completed",
@@ -312,7 +317,15 @@ def _doctor_one(spec, shell_hooks) -> int:
             rc = result.get("returncode")
             elapsed = result.get("elapsed_seconds", 0)
             stdout = (result.get("stdout") or "").strip()
-            if not stdout:
+            parsed = result.get("parsed")
+            if isinstance(parsed, dict) and parsed.get("action") == "block":
+                # Exit 2 (or block JSON) on a blocking-capable event: the gate fired. Expected for a
+                # script that checks real paths the synthetic payload cannot provide (e.g. a
+                # kanban_worktree_created seeder looking for /tmp/repo/.env); not an error, but not
+                # "observer-only" either — say what the dispatcher would have received.
+                print(f"      ✓ returned a block on the synthetic payload (exit={rc}, {elapsed}s): "
+                      f"{_truncate(str(parsed.get('message') or ''), 120)}")
+            elif not stdout:
                 print(f"      ✓ ran clean with empty stdout "
                       f"(exit={rc}, {elapsed}s) — hook is observer-only")
             else:

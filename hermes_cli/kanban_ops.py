@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 import time
@@ -57,6 +58,29 @@ def _cmd_tail(args: argparse.Namespace) -> int:
     return _poll_loop(args.interval, tick)
 
 
+def _register_config_hooks(args: argparse.Namespace) -> None:
+    """Wire config.yaml's ``hooks:`` block onto the plugin manager for a standalone kanban entry point.
+
+    ``hermes chat`` / ``gateway run`` / ``cron run`` do this in ``_prepare_agent_startup``
+    (hermes_cli/main.py) and the gateway-hosted dispatcher in
+    ``GatewayStartupMixin._register_config_hooks``; ``hermes kanban`` is not an agent
+    command, so ``claim``, ``dispatch`` and ``daemon --force`` must do it themselves before
+    they resolve a workspace — otherwise a ``kanban_worktree_created`` shell hook the
+    operator configured never sees the worktree these paths create, and the unseeded tree
+    is then reused by every later tick. Python plugin hooks need nothing here
+    (``invoke_hook`` discovers plugins lazily). Consent is the bridge's own: the allowlist,
+    ``--accept-hooks``, ``HERMES_ACCEPT_HOOKS``, ``hooks_auto_accept``, or the TTY prompt.
+    Never raises: a broken hooks block must not take the dispatcher down.
+    """
+    try:
+        from hermes_cli.config import load_config
+        from agent.shell_hooks import register_from_config
+
+        register_from_config(load_config(), accept_hooks=bool(getattr(args, "accept_hooks", False)))
+    except Exception:
+        logging.getLogger(__name__).debug("shell-hook registration failed for hermes kanban", exc_info=True)
+
+
 def _cmd_dispatch(args: argparse.Namespace) -> int:
     # Honour kanban.default_assignee, kanban.max_in_progress,
     # kanban.max_in_progress_per_profile and kanban.max_spawn with the same
@@ -81,6 +105,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     except Exception:
         default_assignee = max_in_progress_per_profile = max_in_progress = None
         max_spawn = getattr(args, "max", None)
+    if not args.dry_run:  # a dry run creates no workspace, so there is nothing for a hook to see
+        _register_config_hooks(args)
     with kbc.connect_closing() as conn:
         res = kbd.dispatch_once(
             conn,
@@ -163,6 +189,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
     # Init before printing "started" so the DB path is right and init errors
     # surface immediately.
     kb.init_db()
+    _register_config_hooks(args)
 
     pidfile = getattr(args, "pidfile", None)
     if pidfile:

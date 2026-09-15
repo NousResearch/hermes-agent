@@ -392,8 +392,15 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
-def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
-    """Materialize ``target`` as a linked git worktree under ``repo_root``."""
+def _ensure_git_worktree(
+    repo_root: Path, target: Path, branch_name: str, *,
+    task_id: Optional[str] = None, board: Optional[str] = None,
+) -> None:
+    """Materialize ``target`` as a linked git worktree under ``repo_root``.
+
+    A worktree created here fires ``kanban_worktree_created`` before this
+    returns (see :func:`_fire_worktree_created_hook`); the idempotent early
+    return for an already-materialized checkout does not."""
     target = target.expanduser()
     repo_common = _git_common_dir(repo_root)
     if target.exists() and repo_common is not None and _git_common_dir(target) == repo_common:
@@ -409,12 +416,107 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
         raise RuntimeError(
             f"git worktree add failed for {target} on branch {branch_name}: {stderr}"
         )
+    _fire_worktree_created_hook(repo_root, target, branch_name, task_id=task_id, board=board)
 
 
-def _anchored_worktree(repo_root: Path, task_id: str, branch_name: str) -> tuple[Path, str]:
+#: The card reason travels through ``_record_task_failure``
+#: (hermes_cli/kanban_db_dispatch.py), which keeps ``error[:500]``. The sentence
+#: saying whether a retry is safe is therefore placed BEFORE the hook's own text
+#: and before git's removal error; these caps only bound the tail (a hook that
+#: dumps its whole stderr, git's full refusal) so the exception stays readable.
+_HOOK_MESSAGE_LIMIT = 300
+_REMOVAL_DETAIL_LIMIT = 120
+
+
+def _discard_unseeded_worktree(repo_root: Path, target: Path) -> str:
+    """Remove a worktree whose ``kanban_worktree_created`` hook blocked; describe the outcome.
+
+    Removal is part of the failure, not a courtesy. The raise it accompanies
+    lands in ``dispatch_once``'s workspace guard, which records a ``spawn_failed``
+    and RELEASES the claim, so the card is retried on the next tick. Left in
+    place, the half-seeded tree would make ``_ensure_git_worktree``'s idempotent
+    early return fire on that retry: no ``git worktree add``, no hook, and a
+    worker spawned into the unseeded checkout the block existed to prevent.
+    ``--force`` is required: a hook that failed halfway leaves untracked files
+    and git refuses to remove a dirty worktree. The branch is kept — it may
+    have existed before this call, and the retry's ``worktree add <target>
+    <branch>`` works on it once the tree is gone.
+
+    If the removal itself fails the tree stays and the next retry WILL spawn
+    into it; nothing here can prevent that, so the sentence says to remove it
+    by hand and names why git refused.
+    """
+    try:
+        result = _git(repo_root, "worktree", "remove", "--force", str(target), timeout=60)
+    except Exception as exc:  # git missing, timeout, ...
+        detail = str(exc)
+    else:
+        if result.returncode == 0:
+            return "the unseeded worktree was removed, so a retry re-creates and re-seeds it"
+        detail = (result.stderr or result.stdout or "").strip()
+    return (
+        "the unseeded worktree could NOT be removed — remove it by hand before the retry "
+        f"({detail[:_REMOVAL_DETAIL_LIMIT]})"
+    )
+
+
+def _fire_worktree_created_hook(
+    repo_root: Path, target: Path, branch_name: str, *,
+    task_id: Optional[str], board: Optional[str],
+) -> None:
+    """Fire ``kanban_worktree_created`` for a worktree created just now; a block fails the card.
+
+    A linked worktree is a fresh checkout: tracked files and nothing else, so
+    everything git ignores — for most real projects the ``.env`` the application
+    cannot start without — is absent by definition. Which secrets a project
+    needs, and where they live, is deployment knowledge, so this is the seam for
+    it: a plugin (``ctx.register_hook``) or a ``hooks:`` entry in config.yaml
+    (the shell bridge in ``agent.shell_hooks``) seeds the checkout before any
+    worker sees it.
+
+    Unlike the other ``kanban_*`` hooks this one is a gate, not an observer. It
+    runs synchronously on the caller's thread (``invoke_hook`` does not bound
+    ``kanban_*`` callbacks; a shell hook enforces its own ``timeout``), and a
+    ``{"action": "block", "message"}`` result — the directive shape
+    ``pre_tool_call`` uses, which the shell bridge derives from exit code 2 or
+    ``fail_closed`` — discards the worktree and raises. Raising is deliberate:
+    the hook exists only because somebody installed it, so its failure is a
+    configuration error they want on the card now, not a confusing application
+    failure later inside a checkout missing exactly what the hook was there to
+    provide. ``invoke_hook`` logs and skips a callback that RAISES, so plugins
+    must return the directive. With no subscriber nothing changes.
+    """
+    from hermes_cli.lifecycle import invoke_hook
+
+    try:
+        results = invoke_hook(
+            "kanban_worktree_created", task_id=task_id, board=board or _kb.get_current_board(),
+            profile_name=_kb._hook_profile_name(), worktree_path=str(target),
+            repo_root=str(repo_root), branch=branch_name,
+        )
+    except Exception as exc:
+        discarded = _discard_unseeded_worktree(repo_root, target)
+        raise RuntimeError(
+            f"kanban_worktree_created hook could not run for {target}; {discarded}; "
+            f"cause: {str(exc)[:_HOOK_MESSAGE_LIMIT]}"
+        ) from exc
+    block = next((r for r in results if isinstance(r, dict) and r.get("action") == "block"), None)
+    if block is None:
+        return
+    discarded = _discard_unseeded_worktree(repo_root, target)
+    message = str(block.get("message") or "hook returned a block directive without a message")
+    raise RuntimeError(
+        f"kanban_worktree_created hook blocked the worktree {target}; {discarded}; "
+        f"hook: {message[:_HOOK_MESSAGE_LIMIT]}"
+    )
+
+
+def _anchored_worktree(
+    repo_root: Path, task_id: str, branch_name: str, *, board: Optional[str] = None,
+) -> tuple[Path, str]:
     """Materialize the canonical ``<repo>/.worktrees/<task-id>`` worktree."""
     target = repo_root / ".worktrees" / task_id
-    _ensure_git_worktree(repo_root, target, branch_name)
+    _ensure_git_worktree(repo_root, target, branch_name, task_id=task_id, board=board)
     return target, branch_name
 
 
@@ -447,7 +549,7 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
                 f"task {task.id} has workspace_kind=worktree but board "
                 f"{board_slug!r} default_workdir {board_default!r} is not inside a git repo"
             )
-        return _anchored_worktree(repo_root, task.id, branch_name)
+        return _anchored_worktree(repo_root, task.id, branch_name, board=board)
 
     requested = Path(task.workspace_path).expanduser()
     if not requested.is_absolute():
@@ -470,7 +572,7 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
         if fallback_root is not None:
             fallback = fallback_root / ".worktrees" / task.id
             if fallback.resolve(strict=False) != requested_resolved:
-                _ensure_git_worktree(fallback_root, fallback, branch_name)
+                _ensure_git_worktree(fallback_root, fallback, branch_name, task_id=task.id, board=board)
                 return fallback.resolve(strict=False), branch_name
         # No repo to anchor a fallback on (or the occupied path IS this task's
         # own canonical worktree): keep the legacy reuse rather than fail dispatch.
@@ -478,7 +580,7 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
 
     repo_root = _git_toplevel(requested)
     if repo_root is not None and requested_resolved == repo_root:
-        return _anchored_worktree(repo_root, task.id, branch_name)
+        return _anchored_worktree(repo_root, task.id, branch_name, board=board)
 
     repo_root = _repo_root_for_worktree_target(requested.parent)
     if repo_root is None:
@@ -486,7 +588,7 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
             f"task {task.id} worktree path {task.workspace_path!r} is not inside a git repo "
             "and does not point at a git repo root"
         )
-    _ensure_git_worktree(repo_root, requested, branch_name)
+    _ensure_git_worktree(repo_root, requested, branch_name, task_id=task.id, board=board)
     return requested, branch_name
 
 

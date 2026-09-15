@@ -4,6 +4,7 @@ api.telegram.org while TCP retries known IPv4 literals) plus DoH-based IP discov
 from __future__ import annotations
 
 import asyncio
+import errno
 import ipaddress
 import logging
 import socket
@@ -279,4 +280,34 @@ def _rewrite_request_for_ip(request: httpx.Request, ip: str) -> httpx.Request:
 
 
 def _is_retryable_connect_error(exc: Exception) -> bool:
-    return isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError))
+    if not isinstance(exc, (httpx.ConnectTimeout, httpx.ConnectError)):
+        return False
+    return not _is_local_bind_exhaustion(exc)
+
+
+_WSAEADDRNOTAVAIL = 10049
+
+
+def _is_local_bind_exhaustion(exc: BaseException) -> bool:
+    """True when the exception chain carries a local bind failure (EADDRNOTAVAIL).
+
+    A local ephemeral-range exhaustion is not a remote-reachability problem: dialing a
+    different Telegram IP cannot help, and the fallback walk would only mint more
+    TIME_WAIT sockets (#107880). Windows reports the same condition as winerror 10049.
+    Exceptions without a recognizable errno keep the old retryable path.
+    """
+    stack: list[BaseException] = [exc]
+    seen: set[int] = set()
+    while stack:
+        current = stack.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, OSError):
+            codes = {getattr(current, "errno", None), getattr(current, "winerror", None)}
+            if errno.EADDRNOTAVAIL in codes or _WSAEADDRNOTAVAIL in codes:
+                return True
+        for chained in (current.__cause__, current.__context__):
+            if chained is not None:
+                stack.append(chained)
+    return False

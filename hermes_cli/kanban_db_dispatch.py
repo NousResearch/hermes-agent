@@ -92,6 +92,8 @@ class DispatchResult:
     reconciled_orphans: list[str] = field(default_factory=list)
     """``running`` cards requeued by :func:`reconcile_orphaned_running` (broken
     claim bookkeeping, dead/gone worker)."""
+    reaped_terminal_workers: list[str] = field(default_factory=list)
+    """Terminal task ids whose still-live, start-time-fenced worker was reaped."""
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """``(task_id, assignee, workspace_path)`` triples."""
     skipped_unassigned: list[str] = field(default_factory=list)
@@ -326,6 +328,67 @@ def _terminate_reclaimed_worker(
         info["sigkill"] = True
     info["terminated"] = not _kb._pid_alive(pid)
     return info
+
+
+def _worker_start_time(pid: int) -> Optional[int]:
+    """Return the repository-wide PID incarnation fingerprint, if provable."""
+    try:
+        from gateway.status import get_process_start_time
+
+        return get_process_start_time(pid)
+    except Exception:
+        return None
+
+
+def reap_terminal_workers(conn: sqlite3.Connection, *, signal_fn=None) -> list[str]:
+    """Reap host-local workers left alive after a terminal run.
+
+    Closed runs retain their PID and host claim only for this recovery path.
+    A legacy run without a captured start time, a recycled PID, and the caller
+    itself all fail closed. The guarded signal rechecks identity for SIGTERM
+    and SIGKILL, so a PID reused during the short termination window is not
+    signalled.
+    """
+    rows = conn.execute(
+        "SELECT r.id, r.task_id, r.worker_pid, r.worker_started_at, r.claim_lock "
+        "FROM task_runs r JOIN tasks t ON t.id = r.task_id "
+        "WHERE r.ended_at IS NOT NULL AND r.worker_pid IS NOT NULL "
+        "AND r.worker_started_at IS NOT NULL "
+        "AND t.status IN ('done', 'blocked', 'review', 'todo', 'triage')"
+    ).fetchall()
+    reaped: list[str] = []
+    host_prefix = _kb._host_prefix()
+    for row in rows:
+        pid = int(row["worker_pid"])
+        expected = int(row["worker_started_at"])
+        if pid == os.getpid() or not (row["claim_lock"] or "").startswith(host_prefix):
+            continue
+        if _worker_start_time(pid) != expected:
+            continue
+
+        def guarded_kill(target: int, sig: int) -> None:
+            if _worker_start_time(target) != expected:
+                raise ProcessLookupError(target)
+            (_kill_fn(signal_fn) or os.kill)(target, sig)
+
+        termination = _terminate_reclaimed_worker(pid, row["claim_lock"], signal_fn=guarded_kill)
+        if not termination["terminated"]:
+            continue
+        with _kb.write_txn(conn):
+            cur = conn.execute(
+                "UPDATE task_runs SET worker_pid = NULL, worker_started_at = NULL "
+                "WHERE id = ? AND ended_at IS NOT NULL AND worker_pid = ? "
+                "AND worker_started_at = ?",
+                (row["id"], pid, expected),
+            )
+            if cur.rowcount != 1:
+                continue
+            _kb._append_event(
+                conn, row["task_id"], "terminal_worker_reaped",
+                {"pid": pid, "worker_started_at": expected, **termination}, run_id=row["id"],
+            )
+        reaped.append(row["task_id"])
+    return reaped
 
 
 def _worker_survived_termination(termination: dict) -> bool:
@@ -1103,7 +1166,10 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
         conn.execute("UPDATE tasks SET worker_pid = ? WHERE id = ?", (int(pid), task_id))
         run_id = _kb._current_run_id(conn, task_id)
         if run_id is not None:
-            conn.execute("UPDATE task_runs SET worker_pid = ? WHERE id = ?", (int(pid), run_id))
+            conn.execute(
+                "UPDATE task_runs SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
+                (int(pid), _worker_start_time(int(pid)), run_id),
+            )
         _kb._append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
 
 
@@ -1634,6 +1700,7 @@ def _run_reclaim_phase(
 ) -> None:
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
     reap_worker_zombies()
+    result.reaped_terminal_workers = reap_terminal_workers(conn)
     result.reclaimed = _kb.release_stale_claims(conn)
     if reconcile_orphans:
         result.reconciled_orphans = reconcile_orphaned_running(conn)

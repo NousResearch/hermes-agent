@@ -102,6 +102,18 @@ and the reply renders token-by-token in a single bubble as the model
 generates it. Tool-call progress is folded into the same bubble. Native
 streaming is enabled by default (`display.platforms.wecom.streaming: true` in
 `config.yaml`); set it to `false` to restore single-shot delivery.
+
+**Group chats differ on purpose.** Every member of a group sees whatever is
+written into the bubble, so a group is answer-only: the adapter withholds every
+intermediate frame (assistant text, tool-progress lines such as `🖥️ Running
+python3 …`, command bodies) and strips the tool-progress overlay from the frame
+that does go out, so only the finished answer reaches the group. The thinking
+bubble still appears the moment the turn starts, and direct messages keep
+streaming as before. A group finalize frame must also be *positively* acked by
+WeCom: if the ack never arrives, the stream is declined and the answer is
+delivered as a normal message instead of being silently suppressed — a group may
+therefore see the answer twice, which beats never seeing it. Both behaviours are
+configurable per bot (`group_final_only`, `group_final_ack_strict`).
 :::
 
 ## Configuration Options
@@ -121,6 +133,8 @@ Set these in `config.yaml` under `platforms.wecom.extra`:
 | `stream_keepalive_enabled` | `false` | Send periodic keepalive frames to refresh WeCom's ~6-minute reply-stream window on long turns |
 | `stream_keepalive_interval_seconds` | `120` | Keepalive frame cadence when enabled |
 | `stream_safe_duration_seconds` | `330` | Stream age after which finalize prefers the reliable proactive send |
+| `group_final_only` | `true` | Groups receive only the finished answer: intermediate frames (assistant text + tool progress) are withheld, and the progress overlay is stripped from the final frame. Set `false` to stream in groups like DMs |
+| `group_final_ack_strict` | `true` | A group finalize frame must be positively acked by WeCom; an unconfirmed finalize declines and the answer is sent as a normal message instead of being suppressed |
 
 ## Access Policies
 

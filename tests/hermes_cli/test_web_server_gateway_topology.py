@@ -78,6 +78,40 @@ class TestCollectProfileGatewayTopology:
         assert topo["gateways"] == []
         assert topo["profile_platforms"] == {}
 
+    def test_named_owner_with_multiple_served_profiles_is_multiplex(self, tmp_path, monkeypatch):
+        owner = tmp_path / "transport"
+        worker = tmp_path / "worker"
+        owner.mkdir()
+        worker.mkdir()
+        (owner / "config.yaml").write_text(
+            "gateway:\n"
+            "  profile_routes:\n"
+            "    - name: worker-telegram\n"
+            "      platform: telegram\n"
+            "      profile: worker\n",
+            encoding="utf-8",
+        )
+        homes = [("transport", owner), ("worker", worker)]
+        runtimes = {
+            "transport": {
+                "served_profiles": ["transport", "worker"],
+                "platforms": {},
+            }
+        }
+        _patch_topology(monkeypatch, homes, running={"transport"}, runtimes=runtimes)
+
+        topo = _collect_profile_gateway_topology()
+
+        assert topo["gateway_mode"] == "multiplex"
+        assert topo["gateways"] == [{
+            "profile": "transport",
+            "ports": {},
+            "served_profiles": ["transport", "worker"],
+            "profile_routes": [{
+                "platform": "telegram", "profile": "worker", "scope": "all",
+            }],
+        }]
+
     def test_collects_per_profile_platform_maps(self, tmp_path, monkeypatch):
         # Independent per-profile gateways (gateway_mode == "multiple") each
         # write their own gateway_state.json; the collector surfaces every

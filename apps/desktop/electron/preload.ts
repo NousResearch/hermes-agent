@@ -50,6 +50,11 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     return () => ipcRenderer.removeListener('hermes:browser-popout:closed', listener)
   },
   claimAmbientCue: key => ipcRenderer.invoke('hermes:ambient:claim', key),
+  // Close-button behavior ('tray' = hide to system tray, 'quit' = close quits).
+  closeBehavior: {
+    get: () => ipcRenderer.invoke('hermes:close-behavior:get'),
+    set: mode => ipcRenderer.invoke('hermes:close-behavior:set', mode)
+  },
   wakeIndicator: {
     getState: () => ipcRenderer.invoke('hermes:wake-indicator:get'),
     setState: state => ipcRenderer.send('hermes:wake-indicator:set', state),

@@ -447,6 +447,27 @@ export function AppearanceSettings() {
 
   const [query, setQuery] = useState('')
 
+  // Close-button behavior, persisted by the main process (userData/close-behavior.json).
+  // Only relevant on Windows — other platforms keep the stock close behavior.
+  const isWin32 = typeof navigator !== 'undefined' && navigator.platform.includes('Win')
+  const [closeBehavior, setCloseBehavior] = useState<'tray' | 'quit'>('tray')
+
+  useEffect(() => {
+    let cancelled = false
+
+    window.hermesDesktop?.closeBehavior
+      ?.get()
+      .then(mode => {
+        if (!cancelled) {
+          setCloseBehavior(mode)
+        }
+      })
+      .catch(() => undefined)
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
   useDeepLinkHighlight({
     elementId: appearanceSettingElementId,
     param: 'setting',
@@ -488,6 +509,11 @@ export function AppearanceSettings() {
     { id: 'comfortable', label: a.sessionDensityComfortable },
     { id: 'detailed', label: a.sessionDensityDetailed }
   ] as const satisfies readonly { id: SessionListDensity; label: string }[]
+
+  const closeBehaviorOptions = [
+    { id: 'tray', label: a.closeBehaviorTray },
+    { id: 'quit', label: a.closeBehaviorQuit }
+  ] as const satisfies readonly { id: 'tray' | 'quit'; label: string }[]
 
   const tabStripOptions = [
     { id: 'auto', label: a.tabStripAuto },
@@ -662,6 +688,24 @@ export function AppearanceSettings() {
             title={a.sessionDensityTitle}
           />
 
+          {isWin32 && (
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setCloseBehavior(id)
+                  void window.hermesDesktop?.closeBehavior?.set(id)
+                }}
+                options={closeBehaviorOptions}
+                value={closeBehavior}
+              />
+            }
+            description={a.closeBehaviorDesc}
+            title={a.closeBehaviorTitle}
+          />
+          )}
+
           <ListRow
             action={
               <SegmentedControl
@@ -692,7 +736,6 @@ export function AppearanceSettings() {
             id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.appActions)}
             title={a.appActionsTitle}
           />
-
           {/* Linux has neither half of this setting (see TRANSLUCENCY_SUPPORTED),
               so the row is absent there rather than offering a dead lever. */}
           {TRANSLUCENCY_SUPPORTED && (

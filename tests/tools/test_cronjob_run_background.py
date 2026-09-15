@@ -14,6 +14,7 @@ Sync fallbacks preserved:
 """
 import json
 import threading
+import time
 from unittest.mock import patch
 
 from tools.cronjob_tools import (
@@ -72,18 +73,17 @@ class TestBackgroundDispatch:
                  patch("tools.cronjob_tools.get_job",
                        return_value={"last_status": "ok", "last_error": None}):
                 res = _try_dispatch_background_run(_job('job-bg-01'))
-
-        try:
-            # Returned BEFORE the job finished — that's the whole point.
-            assert res is not None
-            assert res["claimed"] is True
-            assert res["dispatched"] is True
-            assert res["delegation_id"]
-            m_claim.assert_called_once_with("job-bg-01", manual=True, return_job=True)
-            # The job actually starts on the daemon executor.
-            assert run_started.wait(timeout=5.0), "job never started in background"
-        finally:
-            run_release.set()
+                try:
+                    # Returned BEFORE the job finished — that's the whole point.
+                    assert res is not None
+                    assert res["claimed"] is True
+                    assert res["dispatched"] is True
+                    assert res["delegation_id"]
+                    m_claim.assert_called_once_with("job-bg-01", manual=True, return_job=True)
+                    # Keep the patches active until the daemon worker starts.
+                    assert run_started.wait(timeout=5.0), "job never started in background"
+                finally:
+                    run_release.set()
 
     def test_completion_event_reaches_shared_queue(self):
         """The finished run pushes a type='async_delegation' event carrying
@@ -194,6 +194,50 @@ class TestSyncFallbacks:
         assert res["success"] is True
         m_run.assert_called_once()   # ran inline on this thread
 
+    def test_pool_rejection_uses_claimed_snapshot_owner(self):
+        """Inline fallback keeps the exact owner-bearing claim for fenced completion."""
+        claimed = {**_job("job-bg-owner"), "fire_claim": {"by": "claimed-owner"}}
+        seen = {}
+
+        def run_claimed(job, **kwargs):
+            seen["job"] = job
+            return {"claimed": True, "success": True, "error": None}
+
+        with _bound_session_key(), patch(
+            "tools.cronjob_tools.claim_job_for_fire", return_value=claimed
+        ), patch(
+            "tools.async_delegation.dispatch_async_delegation",
+            return_value={"status": "rejected", "error": "capacity"},
+        ), patch("tools.cronjob_tools._run_claimed_job", side_effect=run_claimed):
+            result = _try_dispatch_background_run(_job("job-bg-owner"))
+
+        assert result["dispatched"] is False
+        assert seen["job"] is claimed
+
+    def test_future_handoff_timeout_clears_owned_claim(self):
+        """A broken async handoff fails fenced instead of stranding the fire claim."""
+        claimed = {**_job("job-bg-handoff"), "fire_claim": {"by": "claimed-owner"}}
+
+        def dispatch_without_handoff(**kwargs):
+            threading.Thread(target=kwargs["runner"], daemon=True).start()
+            return {"status": "dispatched", "delegation_id": "deleg-handoff"}
+
+        with _bound_session_key(), patch(
+            "tools.cronjob_tools.claim_job_for_fire", return_value=claimed
+        ), patch(
+            "tools.async_delegation.dispatch_async_delegation",
+            side_effect=dispatch_without_handoff,
+        ), patch("tools.cronjob_tools.mark_job_run") as mark:
+            result = _try_dispatch_background_run(_job("job-bg-handoff"))
+            assert result["dispatched"] is True
+            deadline = time.monotonic() + 6.0
+            while not mark.called and time.monotonic() < deadline:
+                time.sleep(0.02)
+
+        mark.assert_called_once_with(
+            "job-bg-handoff", False, "Background run future was not bound.",
+            expected_fire_owner="claimed-owner")
+
 
 class TestInFlightDedupe:
     """Manual runs must not double-fire a job that is already mid-run
@@ -236,6 +280,27 @@ class TestInFlightDedupe:
         assert res["success"] is True
         assert seen_during_run["registered"] is True
         assert "job-bg-09" not in sched.get_running_job_ids()   # released after
+
+    def test_sync_run_keeps_reclaimable_pending_marker(self):
+        """A wedged synchronous run has no executor Future, so stale recovery
+        must retain the reclaimable submit-pending marker rather than fake liveness."""
+        from cron import scheduler as sched
+        from tools.cronjob_tools import _run_claimed_job
+
+        seen = {}
+
+        def probe_run(job, **kw):
+            seen["future"] = sched._running_futures[job["id"]]
+            return True
+
+        with patch("cron.scheduler.run_one_job", side_effect=probe_run), patch(
+            "tools.cronjob_tools.get_job",
+            return_value={"last_status": "ok", "last_error": None},
+        ):
+            result = _run_claimed_job(_job("job-bg-sync-reclaimable"))
+
+        assert result["success"] is True
+        assert seen["future"] is sched._FUTURE_PENDING
 
     def test_run_claimed_job_reports_exact_unknown_execution_not_stale_success(self):
         from tools.cronjob_tools import _run_claimed_job
@@ -293,6 +358,54 @@ class TestInFlightDedupe:
         assert "job-shared-1" not in sched.get_running_job_ids()
         # Idempotent release: never raises on a non-member.
         sched.release_running_job("job-shared-1")
+
+    def test_blocked_background_runner_survives_stale_sweep_until_completion(self):
+        """A real background manual runner owns a live Future, so an old claim
+        must survive the stale sweep and keep the shared dedupe guard held."""
+        from cron import scheduler as sched
+
+        run_started = threading.Event()
+        run_release = threading.Event()
+        job_id = "job-bg-live-future"
+
+        def slow_run_one_job(job, **kw):
+            run_started.set()
+            assert run_release.wait(timeout=5.0)
+            return True
+
+        with _bound_session_key():
+            with patch(
+                "tools.cronjob_tools.claim_job_for_fire",
+                side_effect=lambda jid, **kw: {
+                    **_job(jid),
+                    "fire_claim": {"by": "bg-owner"},
+                },
+            ), patch("cron.scheduler.run_one_job", side_effect=slow_run_one_job), patch(
+                "tools.cronjob_tools.get_job",
+                return_value={"last_status": "ok", "last_error": None},
+            ), patch.object(sched, "mark_job_run") as mark, patch(
+                "cron.executions.latest_executions", return_value={}
+            ):
+                result = _try_dispatch_background_run(_job(job_id))
+                assert result["dispatched"] is True
+                assert run_started.wait(timeout=5.0), "manual runner never started"
+                assert sched._running_futures[job_id] is not sched._FUTURE_PENDING
+
+                # Push the live claim beyond its daily-job allowance. The
+                # actual Future, not _FUTURE_PENDING, must protect it.
+                sched._running_since[job_id] = time.time() - 3 * 24 * 60 * 60
+                assert sched.sweep_stale_inflight([_job(job_id)]) == []
+                assert job_id in sched.get_running_job_ids()
+                assert not sched.try_register_running_job(job_id)
+                mark.assert_not_called()
+
+                run_release.set()
+
+                deadline = time.monotonic() + 5.0
+                while job_id in sched.get_running_job_ids() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+
+        assert job_id not in sched.get_running_job_ids()
 
 
 class TestCronjobRunToolIntegration:

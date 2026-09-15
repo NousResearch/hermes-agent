@@ -98,7 +98,7 @@ def test_native_apple_container_cross_tool_lifecycle(monkeypatch, tmp_path):
     monkeypatch.setenv("TERMINAL_CONTAINER_MEMORY", "1024")
     monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
     monkeypatch.setattr(terminal, "_terminal_config_bridge_attempted", True)
-    credential_files._config_files = None
+    monkeypatch.setattr(credential_files, "_config_files", {})
     terminal.register_task_env_overrides(
         task_id, {"apple_container_image": "python:3.11-slim-bookworm"}
     )
@@ -147,6 +147,11 @@ def test_native_apple_container_cross_tool_lifecycle(monkeypatch, tmp_path):
         assert "from-file-tool" in execute_result["output"]
         assert "linux" in execute_result["output"]
         assert "Linux" in execute_result["output"]
+
+        credential_read = _terminal_result(terminal.terminal_tool(
+            command="cat /root/.hermes/native-readonly-token.txt", task_id=task_id
+        ))
+        assert "native-readonly-fixture" in credential_read["output"]
 
         readonly_result = json.loads(
             terminal.terminal_tool(

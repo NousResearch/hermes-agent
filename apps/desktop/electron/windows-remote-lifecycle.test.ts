@@ -152,11 +152,11 @@ test('Windows probe validates Hermes and Python topology before selection', asyn
   )
 
   const explicitCheck = script.indexOf('if($explicit){Assert-NoReparse $explicit $false;')
-  const explicitPythonCheck = script.indexOf('Assert-NoReparse $explicitPython $false')
+  const explicitPythonCheck = script.indexOf('Assert-NoReparse $explicitPython $true')
   const fallbackJoin = script.indexOf('Join-Path $hermesHome')
   const candidatePythonCheck = script.indexOf('Assert-NoReparse $candidatePython $true')
   const candidateSelection = script.indexOf('Get-Item -LiteralPath $candidate')
-  const pythonJoin = script.indexOf('$python=[IO.Path]::Combine')
+  const pythonSelection = script.indexOf('$python=$runtime.python')
   const pythonCheck = script.indexOf('Assert-NoReparse $python $false')
   const output = script.indexOf('[ordered]@{')
 
@@ -165,8 +165,8 @@ test('Windows probe validates Hermes and Python topology before selection', asyn
   assert.ok(explicitPythonCheck < fallbackJoin)
   assert.ok(candidatePythonCheck >= 0)
   assert.ok(candidatePythonCheck < candidateSelection)
-  assert.ok(pythonJoin >= 0)
-  assert.ok(pythonJoin < pythonCheck)
+  assert.ok(pythonSelection >= 0)
+  assert.ok(pythonSelection < pythonCheck)
   assert.ok(pythonCheck < output)
 })
 
@@ -196,6 +196,54 @@ test('platform detection preserves POSIX and falls back to Windows PowerShell', 
   assert.match(calls[1], /EncodedCommand/)
 })
 
+test('Windows probe selects a validated Hermes and Python runtime pair', async () => {
+  let script = ''
+
+  const runtime = await probeWindowsRemote(
+    sshWith(async command => {
+      script = Buffer.from(command.split(' ').pop()!, 'base64').toString('utf16le')
+
+      return JSON.stringify({
+        os: 'Windows',
+        arch: 'AMD64',
+        hermesHome: 'C:\\Users\\me\\AppData\\Local\\hermes',
+        hermesPath: 'C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\hermes.exe',
+        python: 'C:\\Users\\me\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\python.exe'
+      })
+    })
+  )
+
+  assert.match(script, /\$runtime=\$null/)
+  assert.match(script, /Get-Item -LiteralPath \$candidate/)
+  assert.match(script, /Get-Item -LiteralPath \$candidatePython/)
+  assert.ok(script.indexOf('foreach($candidate in $candidates)') < script.indexOf('$hermes=$runtime.hermes'))
+  assert.match(runtime.python, /venv\\Scripts\\python\.exe$/)
+})
+
+test('Windows probe names an explicitly configured runtime missing its sibling Python', async () => {
+  let script = ''
+
+  await assert.rejects(
+    detectRemotePlatform(
+      sshWith(async command => {
+        if (command.startsWith('uname ')) {
+          throw new Error('not recognized')
+        }
+
+        script = Buffer.from(command.split(' ').pop()!, 'base64').toString('utf16le')
+        throw new Error('The configured Hermes path was found, but its sibling python.exe was not found.')
+      }),
+      'C:\\Users\\me\\hermes-agent\\venv\\Scripts\\hermes.exe'
+    ),
+    (err: any) =>
+      err.kind === 'unsupported-platform' &&
+      /configured Hermes path was found, but its sibling python\.exe was not found/.test(err.message)
+  )
+
+  assert.match(script, /\$explicitHermesExists=\[bool\]\$explicit/)
+  assert.match(script, /if\(-not \$runtime\)\{if\(\$explicitHermesExists -and -not \$explicitHasPython\)/)
+})
+
 test('platform detection surfaces transport failures as themselves, not unsupported-platform', async () => {
   // A dead/unauthorized host is a connectivity verdict; only a host that answers
   // neither probe is an unsupported platform.
@@ -222,6 +270,24 @@ test('platform detection surfaces transport failures as themselves, not unsuppor
       })
     ),
     (err: any) => err.kind === 'unsupported-platform' && /Hermes is not installed/.test(err.message)
+  )
+
+  await assert.rejects(
+    detectRemotePlatform(
+      sshWith(async command => {
+        if (command.startsWith('uname ')) {
+          throw new Error('not recognized')
+        }
+
+        throw new Error(
+          '#< CLIXML <Objs><S S="progress">module load</S><S S="Error">The remote Hermes Python runtime was not found._x000D__x000A_</S></Objs>'
+        )
+      })
+    ),
+    (err: any) =>
+      err.kind === 'unsupported-platform' &&
+      /probe: The remote Hermes Python runtime was not found\./.test(err.message) &&
+      !/CLIXML|module load/.test(err.message)
   )
 })
 

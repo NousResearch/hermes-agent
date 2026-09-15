@@ -35,7 +35,7 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     '}',
     '}',
     `$explicit=${explicit}`,
-    'if($explicit){Assert-NoReparse $explicit $false;$explicitPython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($explicit), "python.exe");Assert-NoReparse $explicitPython $false}',
+    'if($explicit){Assert-NoReparse $explicit $false;$explicitPython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($explicit), "python.exe");Assert-NoReparse $explicitPython $true}',
     '$hermesHome=$env:HERMES_HOME',
     'if(-not $hermesHome){$hermesHome=Join-Path $env:LOCALAPPDATA "hermes"}',
     'Assert-NoReparse $hermesHome $true',
@@ -55,13 +55,16 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     'if($cmd){Assert-NoReparse $cmd.Source $true;$cmdPython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($cmd.Source), "python.exe");Assert-NoReparse $cmdPython $true;$candidates+=$cmd.Source}',
     '$candidates+=$fallbackHomeCandidate',
     '$candidates+=$fallbackProfileCandidate',
-    '$hermes=$null',
-    'foreach($candidate in $candidates){Assert-NoReparse $candidate $true;$candidatePython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($candidate), "python.exe");Assert-NoReparse $candidatePython $true;try{$item=Get-Item -LiteralPath $candidate -Force -ErrorAction Stop;if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and -not $item.PSIsContainer){$hermes=$item.FullName;break}}catch [Management.Automation.ItemNotFoundException]{continue}}',
-    'if(-not $hermes){throw "Hermes is not installed on the remote Windows host."}',
+    '$explicitHermesExists=[bool]$explicit',
+    '$explicitHasPython=$explicitPython -and (Test-Path -LiteralPath $explicitPython -PathType Leaf)',
+    '$runtime=$null',
+    'foreach($candidate in $candidates){$candidatePython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($candidate), "python.exe");Assert-NoReparse $candidate $true;Assert-NoReparse $candidatePython $true;try{$hermesItem=Get-Item -LiteralPath $candidate -Force -ErrorAction Stop;$pythonItem=Get-Item -LiteralPath $candidatePython -Force -ErrorAction Stop;if(($hermesItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and -not $hermesItem.PSIsContainer -and ($pythonItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and -not $pythonItem.PSIsContainer){$runtime=[pscustomobject]@{hermes=$hermesItem.FullName;python=$pythonItem.FullName};break}}catch [Management.Automation.ItemNotFoundException]{continue}}',
+    'if(-not $runtime){if($explicitHermesExists -and -not $explicitHasPython){throw "The configured Hermes path was found, but its sibling python.exe was not found."};throw "Hermes and its Python runtime were not found on the remote Windows host."}',
+    '$hermes=$runtime.hermes',
+    '$python=$runtime.python',
     'Assert-NoReparse $hermes $false',
-    'if($explicit -and $hermes -ne $explicit){throw "The configured Hermes path is not an executable file."}',
-    '$python=[IO.Path]::Combine([IO.Path]::GetDirectoryName($hermes), "python.exe")',
     'Assert-NoReparse $python $false',
+    'if($explicit -and $hermes -ne $explicit){throw "The configured Hermes path is not paired with a Python runtime."}',
     '[ordered]@{os="Windows";arch=$env:PROCESSOR_ARCHITECTURE;hermesHome=$hermesHome;hermesPath=$hermes;python=$python}|ConvertTo-Json -Compress'
   ].join(';')
 
@@ -177,6 +180,20 @@ const TRANSPORT_KINDS = new Set([
   SSH_ERROR.UNREACHABLE
 ])
 
+function powerShellErrorDetail(value) {
+  const raw = String(value || '')
+  const errors = [...raw.matchAll(/<S S="Error">([\s\S]*?)<\/S>/g)].map(match => match[1])
+  const detail = errors.length ? errors.join(' ') : raw
+
+  return detail
+    .replace(/_x([0-9a-fA-F]{4})_/g, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)))
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+}
+
 async function detectRemotePlatform(ssh, explicitHermesPath = '') {
   try {
     const output = (await ssh.exec('uname -s; uname -m')).trim().split('\n')
@@ -201,7 +218,7 @@ async function detectRemotePlatform(ssh, explicitHermesPath = '') {
     }
 
     // detail is remote-controlled output headed for the UI: redact + strip control chars.
-    const detail = redactSecrets(String(cause?.message || cause || ''))
+    const detail = redactSecrets(powerShellErrorDetail(cause?.message || cause || ''))
       // eslint-disable-next-line no-control-regex -- deliberately strip control chars from remote output
       .replace(/[\x00-\x1f\x7f]/g, ' ')
       .trim()

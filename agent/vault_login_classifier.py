@@ -32,6 +32,15 @@ LOGIN_AUTOFILL_TOKENS = ("username", "email", "tel", "current-password")
 PAYMENT_AUTOFILL_TOKENS = ("cc-number", "cc-name", "cc-exp", "cc-exp-month", "cc-exp-year", "cc-csc")
 ADDRESS_AUTOFILL_TOKENS = ("address-line1", "address-line2", "address-level2", "address-level1",
                            "postal-code", "country-name", "country")
+IDENTITY_AUTOFILL_TOKENS = ("ssn", "tax-id", "itin", "ein", "national-id", "passport", "passport-number")
+_IDENTITY_HEURISTICS = (
+    (re.compile(r"\b(?:social\s*security|ssn)\b"), "ssn"),
+    (re.compile(r"\bitin\b"), "itin"),
+    (re.compile(r"\bein\b"), "ein"),
+    (re.compile(r"\btax\s*id\b"), "tax-id"),
+    (re.compile(r"\bnational\s*(?:insurance|id)\b"), "national-id"),
+    (re.compile(r"\bpassport(?:\s*number)?\b"), "passport-number"),
+)
 _CHECKOUT_HEURISTICS = (
     (re.compile(r"\b(?:card\s*number|cardnumber|ccnumber|cc\s*num|pan)\b"), "cc-number"),
     (re.compile(r"\b(?:name\s*on\s*card|cardholder|cc\s*name|ccname)\b"), "cc-name"),
@@ -177,6 +186,27 @@ def select_password_fill(
             "value": password,
         }
     ]
+
+
+def classify_identity_control(control: LoginControl) -> Optional[ClassifiedLoginControl]:
+    """Classify one control as an identity fill target (SSN / tax / passport).
+
+    Exact autocomplete token match scores 100; label/name heuristics score 70.
+    Password, email, and payment/address (cc-* / address-*) controls are never identity.
+    """
+    if control.type in ("password", "email"):
+        return None
+    tokens = [t for t in control.autocomplete.lower().split() if t]
+    if any(t in PAYMENT_AUTOFILL_TOKENS or t in ADDRESS_AUTOFILL_TOKENS for t in tokens):
+        return None
+    for token in IDENTITY_AUTOFILL_TOKENS:
+        if token in tokens:
+            return ClassifiedLoginControl(control, 100, "passport-number" if token == "passport" else token)
+    searchable = _normalize_text(" ".join(part for part in (control.name, control.label) if part))
+    for pattern, token in _IDENTITY_HEURISTICS:
+        if pattern.search(searchable):
+            return ClassifiedLoginControl(control, 70, token)
+    return None
 
 
 def classify_checkout_control(control: LoginControl) -> Optional[ClassifiedLoginControl]:

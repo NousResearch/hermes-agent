@@ -7,7 +7,7 @@ def build_vault_parser(subparsers) -> None:
     """Attach the local encrypted autofill vault subcommand."""
     vault_parser = subparsers.add_parser(
         "vault",
-        help="Manage the local encrypted autofill vault (add/list/rm credentials)",
+        help="Manage the local encrypted autofill vault (add/list/rm credentials, unlock a manager)",
         description=(
             "Store login credentials in a locally encrypted vault. The agent "
             "sees handles and login identifiers (metadata); passwords are "

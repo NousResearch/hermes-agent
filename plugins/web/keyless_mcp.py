@@ -3,6 +3,10 @@ Resolved strictly LAST — after every keyed backend, the managed gateway, ddgs 
 providers — so it never pre-empts a deliberate setup. Privacy: no user identifiers are sent;
 Parallel gets a random per-process ``session_id`` (rate limiting only) and its optional
 ``model_name`` analytics field is deliberately omitted. Disable with ``web.keyless_fallback: false``.
+Any backend may hand a request to the ring via ``search_with_failover(name, ...)`` /
+``extract_with_failover(name, ...)``; *name* is the entering backend. Only a ring vendor can be
+pinned — by ``web.backend`` / ``search_backend`` / ``extract_backend`` naming it or by
+``web.provider_tier.<vendor>: free`` — every other name round-robins from the shared cursor.
 """
 
 from __future__ import annotations
@@ -323,11 +327,13 @@ def _vendor_pinned(name: str) -> bool:
 
 def _ring_order(name: str) -> List[str]:
     """Vendor walk order: pinned → start at *name* (its ring position fixes the failover
-    succession); else round-robin from the cursor, advancing it per request. Vendors
-    pinned ``paid`` are excluded (explicit paid opts their free endpoint out)."""
+    succession); else round-robin from the cursor, advancing it per request. Only a ring
+    vendor can be pinned; any other *name* (a configured non-ring backend, a plugin
+    provider) always round-robins. Vendors pinned ``paid`` are excluded (explicit paid
+    opts their free endpoint out)."""
     global _ring_cursor
-    if _vendor_pinned(name):
-        start = _KEYLESS_RING.index(name) if name in _KEYLESS_RING else 0
+    if name in _KEYLESS_RING and _vendor_pinned(name):
+        start = _KEYLESS_RING.index(name)
     else:
         with _ring_lock:
             start = _ring_cursor

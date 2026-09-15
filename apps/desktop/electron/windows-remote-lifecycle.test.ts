@@ -16,7 +16,8 @@ import {
   psLiteral,
   reusableWindowsLock,
   terminateOwnedWindowsDashboardForUpdate,
-  validLock
+  validLock,
+  windowsUpdateMarkerProbeCommand
 } from './windows-remote-lifecycle'
 
 const ownershipId = '0123456789abcdef0123456789abcdef'
@@ -79,6 +80,13 @@ test('Windows relaunch gate refuses live and uncertain markers before executing 
       const script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
       scripts.push(script)
 
+      if (!script.includes('$found=')) {
+        return JSON.stringify({
+          explicit: '',
+          hermesHome: 'C:\\Users\\alice\\.hermes'
+        })
+      }
+
       if (script.includes('Get-Command hermes.exe')) {
         return JSON.stringify({
           os: 'Windows',
@@ -135,39 +143,93 @@ test('Windows relaunch gate uses strict install-wide marker parsing and fail-clo
 })
 
 test('Windows probe validates Hermes and Python topology before selection', async () => {
-  let script = ''
-  await probeWindowsRemote(
+  const scripts: string[] = []
+  const result = await probeWindowsRemote(
     sshWith(async command => {
-      script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+      const script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+      scripts.push(script)
 
+      if (script.includes('$found=')) {
+        return JSON.stringify({
+          os: 'Windows',
+          arch: 'AMD64',
+          hermesHome: 'C:\\\\h',
+          hermesPath: 'C:\\\\h\\\\hermes.exe',
+          python: 'C:\\\\h\\\\python.exe'
+        })
+      }
       return JSON.stringify({
-        os: 'Windows',
-        arch: 'AMD64',
+        explicit: 'C:\\\\h\\\\hermes.exe',
         hermesHome: 'C:\\\\h',
-        hermesPath: 'C:\\\\h\\\\hermes.exe',
-        python: 'C:\\\\h\\\\python.exe'
+        candidates: ['C:\\\\h\\\\hermes.exe']
       })
     }),
     'C:\\\\h\\\\hermes.exe'
   )
 
-  const explicitCheck = script.indexOf('if($explicit){Assert-NoReparse $explicit $false;')
-  const explicitPythonCheck = script.indexOf('Assert-NoReparse $explicitPython $false')
-  const fallbackJoin = script.indexOf('Join-Path $hermesHome')
-  const candidatePythonCheck = script.indexOf('Assert-NoReparse $candidatePython $true')
-  const candidateSelection = script.indexOf('Get-Item -LiteralPath $candidate')
-  const pythonJoin = script.indexOf('$python=[IO.Path]::Combine')
-  const pythonCheck = script.indexOf('Assert-NoReparse $python $false')
-  const output = script.indexOf('[ordered]@{')
+  assert.equal(scripts.length, 2)
+  assert.deepEqual(result, {
+    os: 'Windows',
+    arch: 'AMD64',
+    hermesHome: 'C:\\\\h',
+    hermesPath: 'C:\\\\h\\\\hermes.exe',
+    python: 'C:\\\\h\\\\python.exe'
+  })
 
+  // Discovery resolves home without touching the filesystem.
+  const [discovery, validation] = scripts
+  assert.ok(discovery.includes('$hermesHome=$env:HERMES_HOME'))
+  assert.ok(discovery.includes('ConvertTo-Json'))
+  assert.doesNotMatch(discovery, /Assert-NoReparse/)
+  assert.doesNotMatch(discovery, /Get-Item/)
+  assert.doesNotMatch(discovery, /Get-Command/)
+
+  // Validation recomputes candidates from home and keeps the check order.
+  const getCommand = validation.indexOf('Get-Command hermes.exe')
+  const explicitCheck = validation.indexOf('if($explicit){Assert-NoReparse $explicit $false;')
+  const explicitPythonCheck = validation.indexOf('Assert-NoReparse $explicitPython $false')
+  const homeCheck = validation.indexOf('Assert-NoReparse $hermesHome $true')
+  const candidatePythonCheck = validation.indexOf('Assert-NoReparse $candidatePython $true')
+  const candidateSelection = validation.indexOf('Get-Item -LiteralPath $candidate')
+  const pythonJoin = validation.indexOf('$python=[IO.Path]::Combine')
+  const pythonCheck = validation.indexOf('Assert-NoReparse $python $false')
+  const output = validation.indexOf('[ordered]@{')
   assert.ok(explicitCheck >= 0)
+  assert.ok(getCommand >= 0)
+  assert.ok(explicitCheck < homeCheck)
+  assert.ok(homeCheck < getCommand)
   assert.ok(explicitCheck < explicitPythonCheck)
-  assert.ok(explicitPythonCheck < fallbackJoin)
+  assert.ok(explicitPythonCheck < homeCheck)
   assert.ok(candidatePythonCheck >= 0)
   assert.ok(candidatePythonCheck < candidateSelection)
   assert.ok(pythonJoin >= 0)
   assert.ok(pythonJoin < pythonCheck)
   assert.ok(pythonCheck < output)
+})
+
+test('Windows probe commands fit the cmd.exe 8191-char limit (#106716)', async () => {
+  const commands: string[] = []
+  const ssh = sshWith(async command => {
+    commands.push(command)
+    const script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+    if (script.includes('$found=')) {
+      return JSON.stringify({
+        os: 'Windows', arch: 'AMD64', hermesHome: 'C:\\\\h',
+        hermesPath: 'C:\\\\h\\\\hermes.exe', python: 'C:\\\\h\\\\python.exe'
+      })
+    }
+    return JSON.stringify({ explicit: '', hermesHome: 'C:\\\\h', candidates: [] })
+  })
+
+  // Long explicit path + long home: worst-case payload sizes.
+  await probeWindowsRemote(ssh, `C:\\\\${'h'.repeat(200)}\\\\hermes.exe`)
+  commands.push(windowsUpdateMarkerProbeCommand(`C:\\\\${'h'.repeat(200)}`))
+  commands.push(helperCommand({ python: 'C:\\p\\python.exe' }, 'inspect', ['C:\\p\\hermes.exe']))
+
+  assert.ok(commands.length >= 3)
+  for (const command of commands) {
+    assert.ok(command.length < 8191, `probe command is ${command.length} chars (limit 8191)`)
+  }
 })
 
 test('platform detection preserves POSIX and falls back to Windows PowerShell', async () => {

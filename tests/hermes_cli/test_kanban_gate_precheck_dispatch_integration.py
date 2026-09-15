@@ -173,3 +173,16 @@ class TestGatePrecheckEnabled:
         assert spawns == []
         assert result.skipped_gate_precheck[0][0] == task_id
         assert "likely decomposable" in result.skipped_gate_precheck[0][1]
+
+
+def test_gate_precheck_enabled_does_not_crash_on_malformed_kanban_config():
+    """Adversarial-review regression: a malformed config.yaml with a
+    non-dict ``kanban:`` value (e.g. ``kanban: true``) must not crash
+    gate_precheck_enabled() — it should degrade to the default (False),
+    same as the sibling batch_approval_gate_enabled() guard added in PR #5.
+    """
+    assert kbd.gate_precheck_enabled(kanban_cfg=True) is False  # type: ignore[arg-type]
+    assert kbd.gate_precheck_enabled(kanban_cfg="oops") is False  # type: ignore[arg-type]
+    assert kbd.gate_precheck_enabled(kanban_cfg=[]) is False  # type: ignore[arg-type]
+    assert kbd.gate_precheck_enabled(kanban_cfg=None) is False
+    assert kbd.gate_precheck_enabled(kanban_cfg={"gate_precheck_enabled": True}) is True

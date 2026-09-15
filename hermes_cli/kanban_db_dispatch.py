@@ -2021,7 +2021,8 @@ def gate_precheck_enabled(kanban_cfg: Optional[dict] = None) -> bool:
             kanban_cfg = (load_config().get("kanban") or {})
         except Exception:
             kanban_cfg = {}
-    kanban_cfg = kanban_cfg or {}
+    if not isinstance(kanban_cfg, dict):
+        kanban_cfg = {}
     return bool(kanban_cfg.get("gate_precheck_enabled", False))
 
 

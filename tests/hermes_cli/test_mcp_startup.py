@@ -44,7 +44,7 @@ def _agent_args(**overrides) -> Namespace:
     return Namespace(**base)
 
 
-def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
+def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch, tmp_path):
     stop = threading.Event()
     calls = {"mcp": 0}
 
@@ -52,6 +52,12 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
         calls["mcp"] += 1
         stop.wait()
 
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "mcp_servers:\n  demo:\n    transport: stdio\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.plugins",
@@ -61,7 +67,6 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
         sys.modules,
         "hermes_cli.config",
         types.SimpleNamespace(
-            read_raw_config=lambda: {"mcp_servers": {"demo": {"transport": "stdio"}}},
             load_config=lambda: {},
         ),
     )
@@ -154,12 +159,19 @@ def test_prepare_agent_startup_skips_discovery_when_chat_resolves_to_tui(
 
 def test_prepare_agent_startup_keeps_discovery_for_non_chat_commands(
     monkeypatch,
+    tmp_path,
 ):
     """Non-chat commands never launch the TUI, so they must keep their own
     MCP discovery even when the ambient display config resolves to TUI —
     ``_is_tui_chat_launch`` must not consult ``_resolve_use_tui`` there."""
     calls = {"inline": 0}
 
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "mcp_servers:\n  demo:\n    transport: stdio\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(main_mod, "_resolve_use_tui", lambda _args: True)
     monkeypatch.setitem(
         sys.modules,
@@ -170,7 +182,6 @@ def test_prepare_agent_startup_keeps_discovery_for_non_chat_commands(
         sys.modules,
         "hermes_cli.config",
         types.SimpleNamespace(
-            read_raw_config=lambda: {"mcp_servers": {"demo": {"transport": "stdio"}}},
             load_config=lambda: {},
         ),
     )
@@ -192,7 +203,7 @@ def test_prepare_agent_startup_keeps_discovery_for_non_chat_commands(
     assert calls["inline"] == 1
 
 
-def test_background_mcp_discovery_suppresses_interactive_oauth(monkeypatch):
+def test_background_mcp_discovery_suppresses_interactive_oauth(monkeypatch, tmp_path):
     state = {"active": False, "during_discover": None}
 
     class SuppressInteractiveOAuth:
@@ -205,13 +216,12 @@ def test_background_mcp_discovery_suppresses_interactive_oauth(monkeypatch):
     def _discover():
         state["during_discover"] = state["active"]
 
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.config",
-        types.SimpleNamespace(
-            read_raw_config=lambda: {"mcp_servers": {"demo": {"url": "https://mcp.example.test/mcp"}}},
-        ),
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "mcp_servers:\n  demo:\n    url: https://mcp.example.test/mcp\n", encoding="utf-8"
     )
+    monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setitem(
         sys.modules,
         "tools.mcp_oauth",
@@ -237,18 +247,17 @@ def test_background_mcp_discovery_suppresses_interactive_oauth(monkeypatch):
     assert state["active"] is False
 
 
-def test_background_mcp_discovery_propagates_profile_secret_scope(monkeypatch):
+def test_background_mcp_discovery_propagates_profile_secret_scope(monkeypatch, tmp_path):
     """A dashboard-profile discovery thread must retain that profile's secrets."""
     from agent.secret_scope import current_secret_scope, reset_secret_scope, set_secret_scope
 
     seen = []
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.config",
-        types.SimpleNamespace(
-            read_raw_config=lambda: {"mcp_servers": {"demo": {"url": "https://mcp.example.test/mcp"}}},
-        ),
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "mcp_servers:\n  demo:\n    url: https://mcp.example.test/mcp\n", encoding="utf-8"
     )
+    monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setitem(
         sys.modules,
         "tools.mcp_oauth",
@@ -308,14 +317,15 @@ def _retry_logger():
     )
 
 
-def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict, status: str = "configured"):
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.config",
-        types.SimpleNamespace(
-            read_raw_config=lambda: {"mcp_servers": {"demo": {"transport": "stdio"}}},
-        ),
+def _install_retry_stubs(monkeypatch, tmp_path, *, connected: bool, calls: dict, status: str = "configured"):
+    # The gate reads through the canonical effective loader (#91073), so drive it
+    # off a real config file instead of monkeypatching the config readers.
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "mcp_servers:\n  demo:\n    transport: stdio\n", encoding="utf-8"
     )
+    monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setitem(
         sys.modules,
         "tools.mcp_oauth",
@@ -442,13 +452,13 @@ def test_prepare_agent_startup_installs_server_filter(monkeypatch, _reset_mcp_se
 
 
 @pytest.mark.parametrize(("status", "retried"), [("lazy", False), ("configured", True)])
-def test_lazy_only_discovery_counts_as_usable_at_both_startup_sites(monkeypatch, status, retried):
+def test_lazy_only_discovery_counts_as_usable_at_both_startup_sites(monkeypatch, tmp_path, status, retried):
     """A finished run whose servers are all ``lazy`` (registered from the schema cache, spawned
     on first use) left them usable: no zero-connected warning, and the re-entry check must not
     re-spawn discovery (#111717). Control: a run that left them merely ``configured`` still warns
     and is still retried (#66981)."""
     calls = {"mcp": 0}
-    _install_retry_stubs(monkeypatch, connected=False, calls=calls, status=status)
+    _install_retry_stubs(monkeypatch, tmp_path, connected=False, calls=calls, status=status)
     warnings: list = []
     logger = types.SimpleNamespace(debug=lambda *_a, **_k: None,
                                    warning=lambda msg, *a, **_k: warnings.append(msg % a if a else msg))

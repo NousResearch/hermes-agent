@@ -31,6 +31,7 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 GPT_LIVE_MODE = "gpt-live"
+GROK_LIVE_MODE = "grok-live"
 CHAINED_MODE = "chained"
 DEFAULT_LIVE_MODEL = "gpt-live-1"
 DEFAULT_LIVE_VOICE = "marin"
@@ -105,10 +106,18 @@ def _live_section(voice: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
 
 
 def voice_chat_mode(voice: Optional[Dict[str, Any]] = None) -> str:
-    """``chained`` (default) or ``gpt-live``. Accepts the underscore spelling too."""
+    """``chained`` (default), ``gpt-live`` or ``grok-live``. Accepts the underscore spelling too.
+
+    Single source of truth for ``voice.voice_chat_mode`` across all three engines — grok-live's
+    own symbols live in ``tools/voice_live_grok.py`` but MUST NOT re-implement this resolver.
+    """
     raw = (voice if voice is not None else _voice_section()).get("voice_chat_mode")
     mode = str(raw or CHAINED_MODE).strip().lower().replace("_", "-")
-    return GPT_LIVE_MODE if mode in {GPT_LIVE_MODE, "gptlive", "live"} else CHAINED_MODE
+    if mode in {GPT_LIVE_MODE, "gptlive", "live"}:
+        return GPT_LIVE_MODE
+    if mode in {GROK_LIVE_MODE, "groklive"}:
+        return GROK_LIVE_MODE
+    return CHAINED_MODE
 
 
 def _resolve_credentials(live: Dict[str, Any]) -> tuple[str, str]:

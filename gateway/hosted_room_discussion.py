@@ -554,6 +554,31 @@ def _truncate_utf8_text(value: Any, *, max_bytes: int, suffix: str = "") -> str:
     return prefix + suffix if prefix else suffix.strip()
 
 
+def _attachment_prompt_lines(messages: Sequence[_ValidatedEvent]) -> list[str]:
+    entries: list[str] = []
+    queued_media = False
+    for event in messages:
+        if event.kind != "message.user":
+            continue
+        for attachment in event.payload.get("attachments", []):
+            name = compact_json(attachment["name"])
+            metadata = f"{attachment['mime']}, {attachment['size']} bytes"
+            if attachment["kind"] == "file":
+                entries.append(f"- Staged file {name} ({metadata})")
+                continue
+            queued_media = True
+            label = "image" if attachment["kind"] == "image" else "PDF"
+            entries.append(f"- Queued {label} {name} ({metadata}) for this turn.")
+    if not entries:
+        return []
+    lines = ["", "Attachments available to you for this turn:", *entries]
+    if queued_media:
+        lines.append(
+            "Queued image/PDF attachments are staged separately for this turn; "
+            "inspect the supplied media rather than treating its filename as content.")
+    return lines
+
+
 def _build_prompt(
     *, room: DiscussionRoom, member: DiscussionMember, messages: Sequence[_ValidatedEvent], watermark: int,
     seen_through_seq: int) -> str:
@@ -569,7 +594,8 @@ def _build_prompt(
         '- If you have nothing new to add, reply with exactly "(pass)".',
         "- Mention a teammate by handle to pull them into the next round; do not repeat points already made.",
         "- Never reveal content from private conversations. Your reply is published verbatim."]
-    fixed_bytes = len("\n".join([*opening, *rules]).encode("utf-8"))
+    attachment_lines = _attachment_prompt_lines(delta)
+    fixed_bytes = len("\n".join([*opening, *attachment_lines, *rules]).encode("utf-8"))
     available = max(0, driver.MAX_PROMPT_BYTES - fixed_bytes - 1)
     selected: list[str] = []
     for event in reversed(delta):
@@ -582,7 +608,7 @@ def _build_prompt(
         selected.append(line)
         available -= line_bytes
     selected.reverse()
-    if len((prompt := "\n".join([*opening, *selected, *rules])).encode("utf-8")) > driver.MAX_PROMPT_BYTES:
+    if len((prompt := "\n".join([*opening, *selected, *attachment_lines, *rules])).encode("utf-8")) > driver.MAX_PROMPT_BYTES:
         raise DiscussionValidationError("Discussion prompt exceeds the driver limit")
     return prompt
 

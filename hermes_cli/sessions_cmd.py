@@ -261,7 +261,15 @@ def _default_exclude(args):
 
 def _cmd_list(db, args):
     from hermes_state_sessions import workspace_key as _ws_key
-    sessions = db.list_sessions_rich(source=args.source, exclude_sources=_default_exclude(args), limit=args.limit)
+    from hermes_cli._cli_print import print_truncated_footer
+    limit = int(getattr(args, "limit", 20) or 0)  # --limit 0 => no cap (SQLite LIMIT 0 shows no rows)
+    # Fetch one extra row so a silently-capped list can say so: the cap lives
+    # in the query, and LIMIT -1 is SQLite for "no cap".
+    sessions = db.list_sessions_rich(
+        source=args.source, exclude_sources=_default_exclude(args),
+        limit=(limit + 1) if limit > 0 else -1)
+    truncated = limit > 0 and len(sessions) > limit
+    sessions = sessions[:limit] if limit > 0 else sessions
 
     # Workspace filter: workspace key (git repo root, else cwd) — path substring or exact basename.
     _ws_filter = (getattr(args, "workspace", None) or "").strip()
@@ -299,6 +307,7 @@ def _cmd_list(db, args):
     print(header + "\n" + "─" * rule)
     for s in sessions:
         print(fmt(s))
+    print_truncated_footer(1 if truncated else 0)
 
 
 # -- export -----------------------------------------------------------------

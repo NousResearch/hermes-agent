@@ -24,8 +24,8 @@ const { $activeGatewayProfile, $profiles } = await import('@/store/profile')
 const { $settingsScopeOverride } = await import('@/store/settings-scope')
 const { SettingsProfileScope } = await import('./profile-scope')
 
-const profile = (name: string, isDefault = false): ProfileInfo =>
-  ({ has_env: false, is_default: isDefault, model: null, name }) as unknown as ProfileInfo
+const profile = (name: string, over: Partial<ProfileInfo> = {}): ProfileInfo =>
+  ({ has_env: false, is_default: false, model: null, name, ...over }) as unknown as ProfileInfo
 
 beforeEach(() => {
   $activeGatewayProfile.set('default')
@@ -37,25 +37,33 @@ afterEach(cleanup)
 
 describe('SettingsProfileScope', () => {
   it('renders nothing with fewer than two profiles', () => {
-    $profiles.set([profile('default', true)])
+    $profiles.set([profile('default', { is_default: true })])
 
     const { container } = render(<SettingsProfileScope />)
     expect(container.textContent).toBe('')
   })
 
-  it('shows one chip per profile with the active profile selected by default', () => {
-    $profiles.set([profile('default', true), profile('coder')])
+  it('shows Bot title, then display name, while selection keeps the canonical profile id', () => {
+    $profiles.set([
+      profile('default', {
+        display_name: 'JordieF',
+        is_default: true,
+        ui_meta: { 'hermes-bots': { title: 'JordyV' } }
+      }),
+      profile('default-2', { display_name: 'JordyV (copy)' }),
+      profile('weather-man')
+    ])
 
     render(<SettingsProfileScope />)
 
-    expect(screen.getByRole('button', { name: 'default' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'coder' })).toBeTruthy()
-    // Following the active profile → no override, no "applies to X" note.
-    expect($settingsScopeOverride.get()).toBeNull()
+    expect(screen.getByRole('button', { name: 'JordyV' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'JordyV (copy)' }))
+    expect($settingsScopeOverride.get()).toBe('default-2')
+    expect(screen.getByRole('button', { name: 'weather-man' })).toBeTruthy()
   })
 
   it('selecting another profile sets the shared override; re-selecting the active clears it', () => {
-    $profiles.set([profile('default', true), profile('coder')])
+    $profiles.set([profile('default', { is_default: true }), profile('coder')])
 
     render(<SettingsProfileScope />)
 

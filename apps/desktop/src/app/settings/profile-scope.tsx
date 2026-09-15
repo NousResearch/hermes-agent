@@ -3,7 +3,7 @@ import { useEffect } from 'react'
 
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
-import { $activeGatewayProfile, $profiles, normalizeProfileKey, refreshProfiles } from '@/store/profile'
+import { $activeGatewayProfile, $profiles, normalizeProfileKey, profileLabel, refreshProfiles } from '@/store/profile'
 import { $settingsScopeOverride, setSettingsScope } from '@/store/settings-scope'
 
 // The same chip affordance the Gateway page uses for its per-profile
@@ -62,7 +62,7 @@ export function SettingsProfileScope({ className }: { className?: string }) {
           <ScopeChip
             active={normalizeProfileKey(profile.name) === selected}
             key={profile.name}
-            label={profile.name}
+            label={profileLabel(profile)}
             onSelect={() => setSettingsScope(profile.name)}
           />
         ))}

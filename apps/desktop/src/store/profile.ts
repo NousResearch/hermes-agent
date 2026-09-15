@@ -41,10 +41,21 @@ export function normalizeProfileKey(name: string | null | undefined): string {
   return value || 'default'
 }
 
-// Presentation-only label: the display_name from profile.yaml when set (e.g. a
-// renamed default profile), else the canonical name. Never used for
-// comparison or routing — canonical `name` remains the identity everywhere.
-export function profileLabel(profile: Pick<ProfileInfo, 'display_name' | 'name'>): string {
+// Presentation-only label: Bot Mode title, then profile.yaml display_name,
+// then the canonical name. Never used for comparison or routing — canonical
+// `name` remains the identity everywhere.
+export function profileLabel(profile: Pick<ProfileInfo, 'display_name' | 'name' | 'ui_meta'>): string {
+  const botMeta = profile.ui_meta?.['hermes-bots']
+
+  const botTitle =
+    botMeta && typeof botMeta === 'object' && !Array.isArray(botMeta) && typeof botMeta.title === 'string'
+      ? botMeta.title.trim()
+      : ''
+
+  if (botTitle) {
+    return botTitle
+  }
+
   return (profile.display_name ?? '').trim() || profile.name
 }
 

@@ -90,6 +90,7 @@ describe('duplicating a bot', () => {
 
     expect(calls.find(call => call.method === 'profiles.create')?.params).toMatchObject({
       clone_from: 'researcher',
+      display_name: 'Researcher (copy)',
       name: 'researcher-2'
     })
 
@@ -108,6 +109,31 @@ describe('duplicating a bot', () => {
 
     expect($botMeta.get()[name]).toMatchObject({ shape: 'cloud', title: 'Painter (copy)' })
     expect($botMeta.get()[name].chat).toBeUndefined()
+  })
+
+  it('keeps a fallback display name well formed when adding the copy suffix', async () => {
+    await duplicateBot({ display_name: '😀'.repeat(64), name: 'emoji' } as RosterRow, [
+      { name: 'emoji' } as RosterRow
+    ])
+
+    const displayName = calls.find(call => call.method === 'profiles.create')?.params.display_name as string
+
+    expect(displayName).toBe(`${'😀'.repeat(57)} (copy)`)
+    expect(Array.from(displayName)).toHaveLength(64)
+    expect(displayName.endsWith(' (copy)')).toBe(true)
+  })
+
+  it('falls back from a malformed persisted title to the profile display name', async () => {
+    $botMeta.set({ analyst: { title: 42 as never } })
+
+    await duplicateBot({ display_name: 'Analyst', name: 'analyst' } as RosterRow, [
+      { name: 'analyst' } as RosterRow
+    ])
+
+    expect(calls.find(call => call.method === 'profiles.create')?.params).toMatchObject({
+      display_name: 'Analyst (copy)',
+      name: 'analyst-2'
+    })
   })
 
   it('walks past taken suffixes to the first free slot', async () => {

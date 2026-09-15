@@ -659,13 +659,18 @@ def format_profile_label(name: str, display_name: Optional[str]) -> str:
     return f"{dn} ({name})" if dn and dn != name else name
 
 
+def _clean_profile_display_name(display_name: str) -> str:
+    cleaned = (display_name or "").strip()
+    if len(cleaned) > 64:
+        raise ValueError(f"Display name too long ({len(cleaned)} chars, max 64).")
+    return cleaned
+
+
 def set_profile_display_name(profile_name: str, display_name: str) -> str:
     """Set (or clear, with ``""``) a presentation-only display name. Returns the stored value;
     raises ``ValueError`` over 64 chars."""
     canon, profile_dir = _existing_profile_dir(profile_name)
-    cleaned = (display_name or "").strip()
-    if len(cleaned) > 64:
-        raise ValueError(f"Display name too long ({len(cleaned)} chars, max 64).")
+    cleaned = _clean_profile_display_name(display_name)
     write_profile_meta(profile_dir, display_name=cleaned)
     return cleaned
 
@@ -830,7 +835,7 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path]) -> Non
 def create_profile(
     name: str, clone_from: Optional[str] = None, clone_all: bool = False, clone_config: bool = False,
     no_alias: bool = False, no_skills: bool = False, description: Optional[str] = None,
-    clone_channels: bool = False,
+    clone_channels: bool = False, display_name: Optional[str] = None,
 ) -> Path:
     """Create a new profile directory and return its path.
 
@@ -842,6 +847,7 @@ def create_profile(
     was left behind with ``channel_platforms_configured(source_dir)``).
     ``no_skills`` creates an empty profile and writes a marker so ``hermes update`` skips
     re-seeding its skills; it is mutually exclusive with the clone options, which copy skills."""
+    cleaned_display_name = _clean_profile_display_name(display_name) if display_name is not None else None
     if no_skills and (clone_from is not None or clone_config or clone_all):
         raise ValueError(
             "--no-skills is mutually exclusive with --clone / --clone-from / --clone-all "
@@ -941,8 +947,16 @@ def _finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: boo
     if not clone_all:
         _migrate_profile_config_if_outdated(profile_dir)
 
-    # Description last, so a partial-create failure doesn't strand a description file.
-    if description and description.strip():
+    # Profile identity last, after clone metadata has landed. An explicit empty display name clears
+    # a clone's presentation identity so the new canonical id remains its fallback.
+    if cleaned_display_name is not None:
+        write_profile_meta(
+            profile_dir,
+            description=description.strip() if description and description.strip() else None,
+            description_auto=False if description and description.strip() else None,
+            display_name=cleaned_display_name,
+        )
+    elif description and description.strip():
         with contextlib.suppress(Exception):  # non-fatal — `hermes profile describe` works later
             write_profile_meta(profile_dir, description=description.strip(), description_auto=False)
 

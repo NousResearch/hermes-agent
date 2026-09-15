@@ -969,6 +969,7 @@ export interface ProfileInfo {
   path: string
   provider: null | string
   skill_count: number
+  ui_meta?: Record<string, unknown> & { 'hermes-bots'?: { title?: unknown } }
 }
 
 export interface ProfileSetupCommand {

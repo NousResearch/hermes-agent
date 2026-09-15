@@ -343,7 +343,7 @@ def _mirror_launch_credentials(path, params: dict) -> dict:
 
 @method("profiles.create")
 def _(rid, params: dict) -> dict:
-    """Create a profile (ws twin of POST /api/profiles). Params: ``name``, ``description``,
+    """Create a profile (ws twin of POST /api/profiles). Params: ``name``, ``display_name``, ``description``,
     ``clone_from`` (omitted = fresh + bundled skills), ``clone_all``, ``clone_channels`` (opt-in: keep the
     source's bot tokens/allowlists — default strips them so two profiles never hold one bot), ``no_skills``, ``soul``,
     ``model`` + ``provider``, ``share_auth``, ``no_alias``, ``mirror_credentials`` (default true: a bare
@@ -360,7 +360,9 @@ def _(rid, params: dict) -> dict:
             clone_config=bool(clone_from) and not clone_all,
             no_skills=is_truthy_value(params.get("no_skills", False)),
             description=str(params.get("description") or "").strip() or None,
-            clone_channels=is_truthy_value(params.get("clone_channels", False)))
+            clone_channels=is_truthy_value(params.get("clone_channels", False)),
+            display_name=str(params.get("display_name") or "").strip()
+            if "display_name" in params else None)
     except (ValueError, FileExistsError, FileNotFoundError) as e:
         return _err(rid, 4062, str(e))
     except Exception as e:
@@ -573,8 +575,9 @@ def _configure_cfg_sections(profile_dir, params, applied) -> None:
 @_profile_handler("profiles.configure", 5064)
 def _(rid, params: dict) -> dict:
     """Editor Save: ``name`` plus any of ``ui_meta`` (+ ``ui_meta_expected_revisions``), ``soul``,
-    ``description``, ``model`` + ``provider`` (+ ``confirm_expensive_model``), ``disabled_skills``,
-    ``enabled_toolsets``, ``enabled_mcp_servers``; sections are independent, ``applied`` reports each."""
+    ``description``, ``display_name``, ``model`` + ``provider`` (+ ``confirm_expensive_model``),
+    ``disabled_skills``, ``enabled_toolsets``, ``enabled_mcp_servers``; sections are independent,
+    ``applied`` reports each."""
     _name, profile_dir, err = _resolve_profile(rid, params)
     if err is not None:
         return err
@@ -587,6 +590,11 @@ def _(rid, params: dict) -> dict:
         write_meta = _lazy("hermes_cli.profiles", "write_profile_meta")
         applied["description"] = _best_effort(lambda: write_meta(
             profile_dir, description=params["description"].strip(), description_auto=False))
+    if isinstance(params.get("display_name"), str):
+        clean_display_name = _lazy("hermes_cli.profiles", "_clean_profile_display_name")
+        write_meta = _lazy("hermes_cli.profiles", "write_profile_meta")
+        applied["display_name"] = _best_effort(lambda: write_meta(
+            profile_dir, display_name=clean_display_name(params["display_name"])))
     confirm_message = _configure_model(profile_dir, params, applied)
     if any(isinstance(params.get(k), list) for k in ("disabled_skills", "enabled_toolsets", "enabled_mcp_servers")):
         _configure_cfg_sections(profile_dir, params, applied)

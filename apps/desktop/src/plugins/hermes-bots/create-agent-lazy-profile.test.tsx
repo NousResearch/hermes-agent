@@ -27,6 +27,16 @@ interface SkillsViewProps {
   fixedProfile?: string
 }
 
+function deferred<T>() {
+  let resolve!: (value: PromiseLike<T> | T) => void
+
+  const promise = new Promise<T>(done => {
+    resolve = done
+  })
+
+  return { promise, resolve }
+}
+
 const mocks = vi.hoisted(() => ({
   connections: vi.fn(async () => [] as { id: string; label: string }[]),
   createCanonicalChat: vi.fn(async () => 'session-1'),
@@ -36,7 +46,7 @@ const mocks = vi.hoisted(() => ({
   notify: vi.fn(),
   notifyError: vi.fn(),
   request: vi.fn(),
-  requestProfile: vi.fn(async () => ({})),
+  requestProfile: vi.fn(async (..._args: unknown[]) => ({})),
   saveBotMeta: vi.fn(),
   skillsView: [] as SkillsViewProps[]
 }))
@@ -119,6 +129,10 @@ function createCalls() {
   return mocks.request.mock.calls.filter(([method]) => method === 'profiles.create')
 }
 
+function configureCalls() {
+  return mocks.request.mock.calls.filter(([method]) => method === 'profiles.configure')
+}
+
 /** The control under a `labeled(...)` caption — the label is presentational,
  *  so it carries no `for`/`id` pair to query by. */
 function controlUnder(caption: string) {
@@ -140,6 +154,7 @@ beforeEach(() => {
   mocks.skillsView.length = 0
   mocks.connections.mockResolvedValue([])
   mocks.requestProfile.mockResolvedValue({})
+  mocks.saveBotMeta.mockResolvedValue({ serverOutcome: 'persisted', serverPersisted: true })
   mocks.request.mockImplementation(async (method: string) => {
     switch (method) {
       case 'mcp.catalog':
@@ -162,6 +177,17 @@ afterEach(() => {
 })
 
 describe('materializing the draft profile', () => {
+  it('persists at most 64 complete Unicode title code points', async () => {
+    await renderDialog(true)
+
+    fireEvent.change(screen.getByPlaceholderText('Inbox Triage'), { target: { value: '😀'.repeat(65) } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+
+    await waitFor(() => expect(createCalls()).toHaveLength(1))
+    expect(createCalls()[0][1]).toMatchObject({ display_name: '😀'.repeat(64) })
+    expect(Array.from(createCalls()[0][1].display_name as string)).toHaveLength(64)
+  })
+
   it('creates it once when the Capabilities tab opens, pinned to the new slug', async () => {
     await renderDialog(true)
 
@@ -179,11 +205,79 @@ describe('materializing the draft profile', () => {
     expect(createCalls()).toHaveLength(1)
   })
 
+  it('reconciles a title changed after the Capabilities draft materializes', async () => {
+    mocks.saveBotMeta.mockResolvedValue({ serverOutcome: 'persisted', serverPersisted: true })
+    mocks.request.mockImplementation(async (method: string) => {
+      if (method === 'profiles.configure') {
+        return { applied: { display_name: true, ui_meta: true } }
+      }
+
+      if (method === 'profiles.describe') {
+        return { mcp_servers: [], skills: [], toolsets: [] }
+      }
+
+      return {}
+    })
+    await renderDialog(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+    await waitFor(() => expect(createCalls()).toHaveLength(1))
+    expect(createCalls()[0][1]).toMatchObject({ display_name: '' })
+
+    fireEvent.change(screen.getByPlaceholderText('Inbox Triage'), { target: { value: 'Inbox Captain' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
+    expect(createCalls()).toHaveLength(1)
+    expect(configureCalls()).toContainEqual([
+      'profiles.configure',
+      { display_name: 'Inbox Captain', name: 'inbox-triage' }
+    ])
+    expect(mocks.saveBotMeta).toHaveBeenLastCalledWith('inbox-triage', { title: 'Inbox Captain' })
+  })
+
+  it('reconciles a title changed while local draft materialization is in flight', async () => {
+    const creation = deferred<Record<string, never>>()
+    mocks.saveBotMeta.mockResolvedValue({ serverOutcome: 'persisted', serverPersisted: true })
+    mocks.request.mockImplementation(async (method: string) => {
+      if (method === 'profiles.create') {
+        return creation.promise
+      }
+
+      if (method === 'profiles.describe') {
+        return { mcp_servers: [], skills: [], toolsets: [] }
+      }
+
+      return {}
+    })
+    await renderDialog(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+    await waitFor(() => expect(createCalls()).toHaveLength(1))
+
+    fireEvent.change(screen.getByPlaceholderText('Inbox Triage'), { target: { value: 'Inbox Captain' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+    expect(createCalls()).toHaveLength(1)
+
+    creation.resolve({})
+
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
+    expect(createCalls()).toHaveLength(1)
+    expect(configureCalls()).toContainEqual([
+      'profiles.configure',
+      { display_name: 'Inbox Captain', name: 'inbox-triage' }
+    ])
+    expect(mocks.saveBotMeta).toHaveBeenLastCalledWith('inbox-triage', { title: 'Inbox Captain' })
+  })
+
   it('pins a remote-target draft to the TARGET machine, not the active gateway', async () => {
     mocks.connections.mockResolvedValue([
       { id: 'local', label: 'This Mac' },
       { id: 'studio', label: 'Studio' }
     ])
+    mocks.requestProfile.mockImplementation(async (...args: unknown[]) =>
+      args[1] === 'profiles.configure' ? { applied: { display_name: true, ui_meta: true } } : {}
+    )
 
     await renderDialog(true)
 
@@ -207,6 +301,65 @@ describe('materializing the draft profile', () => {
     await waitFor(() =>
       expect(mocks.skillsView.at(-1)).toMatchObject({ fixedConnection: 'studio', fixedProfile: 'inbox-triage' })
     )
+
+    fireEvent.change(screen.getByPlaceholderText('Inbox Triage'), { target: { value: 'Remote Captain' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+    await waitFor(() =>
+      expect(mocks.requestProfile).toHaveBeenCalledWith(
+        expect.objectContaining({ connectionId: 'studio' }),
+        'profiles.configure',
+        expect.objectContaining({
+          display_name: 'Remote Captain',
+          name: 'inbox-triage',
+          ui_meta: expect.objectContaining({
+            'hermes-bots': expect.objectContaining({ title: 'Remote Captain' })
+          })
+        })
+      )
+    )
+  })
+
+  it('reconciles a title changed while remote draft materialization is in flight', async () => {
+    const creation = deferred<Record<string, never>>()
+    mocks.connections.mockResolvedValue([
+      { id: 'local', label: 'This Mac' },
+      { id: 'studio', label: 'Studio' }
+    ])
+    mocks.requestProfile.mockImplementation(async (...args: unknown[]) => {
+      if (args[1] === 'profiles.create') {
+        return creation.promise
+      }
+
+      return {}
+    })
+    await renderDialog(true)
+
+    await screen.findByText('Create on')
+    fireEvent.click(controlUnder('Create on'))
+    fireEvent.click(await screen.findByRole('option', { name: 'Studio' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Capabilities' }))
+    await waitFor(() =>
+      expect(mocks.requestProfile.mock.calls.filter(([, method]) => method === 'profiles.create')).toHaveLength(1)
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('Inbox Triage'), { target: { value: 'Remote Captain' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+    creation.resolve({})
+
+    await waitFor(() =>
+      expect(mocks.requestProfile).toHaveBeenCalledWith(
+        expect.objectContaining({ connectionId: 'studio' }),
+        'profiles.configure',
+        expect.objectContaining({
+          display_name: 'Remote Captain',
+          name: 'inbox-triage',
+          ui_meta: expect.objectContaining({
+            'hermes-bots': expect.objectContaining({ title: 'Remote Captain' })
+          })
+        })
+      )
+    )
+    expect(mocks.requestProfile.mock.calls.filter(([, method]) => method === 'profiles.create')).toHaveLength(1)
   })
 
   it('creates it on the first MCP setup click, then adds the server to it', async () => {

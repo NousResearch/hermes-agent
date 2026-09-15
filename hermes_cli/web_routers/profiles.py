@@ -74,10 +74,29 @@ _spawn_hermes_action = late("_spawn_hermes_action", "hermes_cli.web_server_gatew
 # ---------------------------------------------------------------------------
 
 
+def _profile_ui_meta(path: Optional[Path]) -> Dict[str, Any]:
+    """Bot title needed by profile pickers, without exposing unrelated plugin state."""
+    if path is None:
+        return {}
+    try:
+        import yaml
+
+        meta_path = path / "profile.yaml"
+        raw = yaml.safe_load(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
+        ui_meta = raw.get("ui_meta") if isinstance(raw, dict) else None
+        bot_meta = ui_meta.get("hermes-bots") if isinstance(ui_meta, dict) else None
+        title = bot_meta.get("title") if isinstance(bot_meta, dict) else None
+        return {"hermes-bots": {"title": title.strip()}} if isinstance(title, str) and title.strip() else {}
+    except Exception:
+        return {}
+
+
 def _profile_to_dict(info) -> Dict[str, Any]:
     attr = functools.partial(getattr, info)
+    raw_path = attr("path", None)
+    path = Path(raw_path) if raw_path else None
     return {
-        "name": attr("name", ""), "path": str(attr("path", "")),
+        "name": attr("name", ""), "path": str(path or ""),
         "is_default": bool(attr("is_default", False)),
         "model": attr("model", None), "provider": attr("provider", None),
         "has_env": bool(attr("has_env", False)),
@@ -89,6 +108,7 @@ def _profile_to_dict(info) -> Dict[str, Any]:
         "distribution_name": attr("distribution_name", None),
         "distribution_version": attr("distribution_version", None),
         "distribution_source": attr("distribution_source", None),
+        "ui_meta": _profile_ui_meta(path),
         "has_alias": attr("alias_path", None) is not None}
 
 

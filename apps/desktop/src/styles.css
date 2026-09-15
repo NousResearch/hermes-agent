@@ -3460,12 +3460,29 @@ button[data-slot='aui_msg-reactions'] svg {
 
    CanvasTTY grammar: four edge strips + four larger corner targets, each with
    its native resize cursor and each preserving the opposite edge. Deliberately
-   invisible chrome: no glyph or border over whatever app is below the HUD. */
+   invisible chrome: no glyph or border over whatever app is below the HUD.
+
+   Invisible chrome that is ALWAYS hit-testable is also a dead zone: an idle
+   HUD is just the bar, the window hands every other point to the app
+   underneath, and the only thing left answering the cursor was this frame —
+   a thin invisible border that swallowed clicks and drags aimed at the app
+   behind it (#108793). So the frame rides the band's engagement gate: while
+   the HUD is being used (caret in the composer, or a held band waiting on an
+   answer) its edges may be grabbed; an in-flight resize is unaffected either
+   way, because `data-hud-grabbing` pins the window solid and pointer capture
+   routes the moves. Solid-input hosts never hand the window away in the first
+   place, so their frame stays live unconditionally. */
 [data-hud-shell] [data-hud-resize] {
   position: absolute;
   z-index: 20;
-  pointer-events: auto;
+  pointer-events: none;
   touch-action: none;
+}
+
+[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-resize],
+[data-hud-shell][data-hud-held] [data-hud-resize],
+[data-hud-shell][data-hud-input='solid'] [data-hud-resize] {
+  pointer-events: auto;
 }
 
 [data-hud-shell] [data-hud-resize='n'] {

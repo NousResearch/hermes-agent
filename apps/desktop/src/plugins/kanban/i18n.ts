@@ -8,7 +8,10 @@
 import { type PluginLocaleBundles, type PluginTranslate, usePluginI18n } from '@hermes/plugin-sdk'
 import { useMemo } from 'react'
 
+import { browserEn, browserJa, type BrowserMessages, browserZh, browserZhHant } from './browser-i18n'
+
 type KanbanMessages = {
+  browser: BrowserMessages
   nav: string
   openBoard: string
   /** Command label — shows in the ⌘K palette AND as the keybind panel row,
@@ -212,6 +215,7 @@ type KanbanMessages = {
 }
 
 export const en: KanbanMessages = {
+  browser: browserEn,
   nav: 'Kanban',
   openBoard: 'Kanban: Open board',
   newTaskCommand: 'Kanban: New task',
@@ -424,6 +428,7 @@ export const en: KanbanMessages = {
 }
 
 const ja: KanbanMessages = {
+  browser: browserJa,
   nav: 'カンバン',
   openBoard: 'カンバン: ボードを開く',
   newTaskCommand: 'カンバン: 新しいタスク',
@@ -635,6 +640,7 @@ const ja: KanbanMessages = {
 }
 
 const zh: KanbanMessages = {
+  browser: browserZh,
   nav: '看板',
   openBoard: '看板：打开面板',
   newTaskCommand: '看板：新建任务',
@@ -843,6 +849,7 @@ const zh: KanbanMessages = {
 }
 
 const zhHant: KanbanMessages = {
+  browser: browserZhHant,
   nav: '看板',
   openBoard: '看板：開啟面板',
   newTaskCommand: '看板：新增任務',

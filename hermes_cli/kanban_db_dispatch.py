@@ -2037,15 +2037,24 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
     if not hermes_home:
         return None
     try:
+        from agent.secret_scope import (
+            build_profile_secret_scope, is_multiplex_active, reset_secret_scope, set_secret_scope)
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         from hermes_cli.config import load_config
         from hermes_cli.tools_config import _get_platform_tools
 
         token = set_hermes_home_override(hermes_home)
+        # Toolset availability probes read credentials (``get_secret``); under multiplex an
+        # unscoped read raises and the pin was silently dropped for every worker.
+        secret_token = (
+            set_secret_scope(build_profile_secret_scope(Path(hermes_home)))
+            if is_multiplex_active() else None)
         try:
             cfg = load_config()
             toolsets = sorted(_get_platform_tools(cfg, "cli"))
         finally:
+            if secret_token is not None:
+                reset_secret_scope(secret_token)
             reset_hermes_home_override(token)
         return toolsets or None
     except Exception as exc:
@@ -2071,13 +2080,15 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
     if workspaces_root_path in _retagged_workspace_roots:
         return
     try:
-        from hermes_state import SessionDB
+        from hermes_state_registry import acquire, release_or_close
 
-        db = SessionDB()
+        # Inside the gateway the dispatcher shares the process's registry handle; a bare
+        # SessionDB() here was one more writer connection on the same state.db (#100896).
+        db = acquire()
         try:
             db.retag_kanban_worker_sessions(workspaces_root_path)
         finally:
-            db.close()
+            release_or_close(db)
         _retagged_workspace_roots.add(workspaces_root_path)
     except Exception as exc:
         _kb._log.debug("kanban worker: legacy session retag skipped (%s)", exc)
@@ -2137,17 +2148,23 @@ def _open_worker_log(task: Task, board: Optional[str]):
 
 
 def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
-    """Wrap a managed-gateway worker in the shared restart-safe scope."""
+    """Wrap a managed-gateway worker in the shared restart-safe scope.
+
+    Kanban workers are long-lived agentic runs, so they never take cron's
+    degraded mode: ``require_restart_safe_scope=True`` makes the helper raise.
+    """
     from tools.process_registry import restart_safe_gateway_child_argv
 
     if task.current_run_id is None:
         # Outside managed systemd this is harmless, but a managed dispatch must
-        # never mint an untraceable scope.  Check topology through the shared
+        # never mint an untraceable worker.  Check topology through the shared
         # helper first, using a placeholder suffix that cannot be launched.
-        scoped = restart_safe_gateway_child_argv(
-            command, unit_suffix=f"kanban-{task.id}-run-missing"
+        dispatch = restart_safe_gateway_child_argv(
+            command,
+            unit_suffix=f"kanban-{task.id}-run-missing",
+            require_restart_safe_scope=True,
         )
-        if scoped is not command:
+        if dispatch.mode != "in_process":
             raise RuntimeError(
                 "cannot create restart-safe systemd scope for Kanban worker: "
                 "the claimed task has no current run id"
@@ -2157,7 +2174,8 @@ def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
     return restart_safe_gateway_child_argv(
         command,
         unit_suffix=f"kanban-{task.id}-run-{task.current_run_id}",
-    )
+        require_restart_safe_scope=True,
+    ).argv
 
 
 def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -> Optional[int]:
@@ -2176,13 +2194,33 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
 
     profile_arg = normalize_profile_name(task.assignee)
 
-    from agent.secret_scope import is_multiplex_active
-    from tools.environments.local import build_subprocess_env
+    from agent.secret_scope import (
+        build_profile_secret_scope, is_multiplex_active, reset_secret_scope, set_secret_scope)
+    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
 
-    env = build_subprocess_env(
-        scrub_secrets=is_multiplex_active(),
-        inherit_profile_home=True,
-    )
+    try:
+        profile_home = resolve_profile_env(profile_arg)
+    except FileNotFoundError:
+        # No profile dir (isolated test fixtures) — the CLI resolves it from
+        # HERMES_PROFILE (set below) instead.
+        profile_home = None
+
+    multiplex_active = is_multiplex_active()
+    # build_subprocess_env's secret scrub resolves terminal.env_passthrough vars
+    # through get_secret(), which raises UnscopedSecretError with no profile scope
+    # installed while multiplexing is on — mirrors _resolve_worker_cli_toolsets's
+    # own scope-then-read ordering a few functions up in this module.
+    secret_token = (
+        set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+        if multiplex_active and profile_home else None)
+    try:
+        env = build_subprocess_env(
+            scrub_secrets=multiplex_active,
+            inherit_profile_home=True,
+        )
+    finally:
+        if secret_token is not None:
+            reset_secret_scope(secret_token)
     # The dispatcher is detached from every conversation; its worker must never
     # inherit routing mirrored by a previous gateway turn.
     from gateway.session_context import _VAR_MAP
@@ -2193,12 +2231,11 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # without it the child's get_hermes_home() falls back to the DEFAULT
     # profile root because `hermes -p` applies its override before
     # hermes_constants is imported.
-    try:
-        env["HERMES_HOME"] = resolve_profile_env(profile_arg)
-    except FileNotFoundError:
-        # No profile dir (isolated test fixtures) — the CLI resolves it from
-        # HERMES_PROFILE (set below) instead.
-        pass
+    if profile_home:
+        env["HERMES_HOME"] = profile_home
+        # A multiplexer dispatching for another profile must not hand it the launch
+        # profile's .env settings / TERMINAL_* policy — a standalone dispatcher never would.
+        strip_launch_profile_env(env, profile_home)
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
@@ -2258,6 +2295,8 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.
     cmd = _restart_safe_worker_argv(task, cmd)
+    from tools.process_registry import systemd_user_bus_env
+    env = systemd_user_bus_env(env)
     log_f = _open_worker_log(task, board)
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above

@@ -63,7 +63,6 @@ import {
   $groupChatWorkspace,
   $groupClarify,
   $groupNeedsYou,
-  groupSpeakerLabel,
   groupThreadOf,
   scheduleGroupChatServerSync,
   setGroupChatImage,
@@ -94,7 +93,7 @@ import {
 } from './group-panes'
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
 import { sendToGroupChat, stopGroupThread } from './group-rounds'
-import { clearGroupClarify } from './group-turns'
+import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
 import { displayName, slugify } from './labels'
 import { botRosterMeta, setBotsWorkspaceOwner } from './routing'
@@ -238,7 +237,7 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
  *  rename, so even a member whose sid is later lost falls back to the same
  *  "Group: <roomId>" title lookup instead of a fresh "Group: <new name>".
  *  Returns the new name, or null when the target name is taken. */
-async function renameGroupChat(oldName: string, newName: string, members: GroupMember[] | null | undefined) {
+export async function renameGroupChat(oldName: string, newName: string, members: GroupMember[] | null | undefined) {
   const next = String(newName || '')
     .trim()
     .slice(0, 64)
@@ -299,9 +298,9 @@ async function renameGroupChat(oldName: string, newName: string, members: GroupM
     $groupNeedsYou.set(needs)
   }
 
-  // Mirrored clarify cards key by group name; drop the old room's — the
-  // next poll re-mirrors any still-blocking question under the new name.
-  clearGroupClarify(oldName)
+  // Mirrored clarify cards key by group name; a pending prompt's attention
+  // must follow the room to its new name, not disappear.
+  renameGroupClarify(oldName, next)
 
   // Local memberships: swap the name inside each member's canonical groups
   // list (syncs cross-machine via ui_meta). Remote members' seating lives in
@@ -711,6 +710,24 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   // Events are epoch-tagged, so a superseded run's history drops out of view.
   const activityEvents: GroupActivityEntry[] = currentGroupActivity(group)
   const latestActivity = activityEvents.length ? activityEvents[activityEvents.length - 1] : null
+  // A later "settled" event must not hide a member that failed to answer.
+  // Successful completion for that member clears its unresolved warning.
+  const unresolvedFailures = new Map<string, GroupActivityEntry>()
+
+  for (const event of activityEvents) {
+    const key = event.member || ''
+
+    if (event.kind === 'failed' || event.kind === 'timed-out') {
+      unresolvedFailures.delete(key)
+      unresolvedFailures.set(key, event)
+    } else if (event.kind === 'replied' || event.kind === 'passed' || event.kind === 'delivered') {
+      unresolvedFailures.delete(key)
+    }
+  }
+
+  const summaryActivity = !room.running && unresolvedFailures.size
+    ? [...unresolvedFailures.values()].at(-1)!
+    : latestActivity
 
   // #94570 shell rewired onto the real primitive (#91868/#94569): the button
   // must stop the ROUND, not just spray per-member interrupts — without the
@@ -736,8 +753,8 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         >
           <Codicon className="shrink-0 text-[0.65rem]" name={activityOpen ? 'chevron-down' : 'chevron-right'} />
           <span className="shrink-0 font-medium">{b.group.activity}</span>
-          {latestActivity ? (
-            <span className="min-w-0 flex-1 truncate">{`${groupActivityLabel(latestActivity)} · ${relativeTime(latestActivity.at)}`}</span>
+          {summaryActivity ? (
+            <span className={cn('min-w-0 flex-1 truncate', groupActivityTone(summaryActivity.kind))}>{`${groupActivityLabel(summaryActivity)} · ${relativeTime(summaryActivity.at)}`}</span>
           ) : null}
         </RowButton>
         {room.running ? (
@@ -1146,14 +1163,18 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
                 </div>
               ]}
           {roomClarifies.map(entry => (
-            <GroupClarifyCard entry={entry} key={`clarify:${entry.memberKey}:${entry.requestId}`} members={members} />
+            <GroupClarifyCard
+              entry={entry}
+              key={`clarify:${entry.thread || 'legacy'}:${entry.memberKey}:${entry.requestId}`}
+              members={members}
+            />
           ))}
           {room.running ? (
             <div className="px-2 py-1 text-[0.7rem] italic text-(--ui-text-quaternary)" key={'working'}>
               {roomClarifies.length
                 ? b.group.waitingForAnswer
                 : room.turn
-                  ? b.group.memberThinking(groupSpeakerLabel(room.turn))
+                  ? b.group.memberThinking(displayName(room.turn, botRosterMeta(room.turn, allMeta)))
                   : b.group.roomWorking}
             </div>
           ) : null}

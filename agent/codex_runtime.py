@@ -869,7 +869,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     import httpx as _httpx
     from openai import APIConnectionError as _APIConnectionError
     from agent import relay_llm
-    transport_errors = (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError)
+    transport_errors = (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ReadError, _httpx.ConnectError, ConnectionError)
     active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
     max_stream_retries, model = 1, api_kwargs.get("model")
     # Accumulate streamed text so callers / compat shims can read it.
@@ -918,6 +918,15 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         return bool(agent._interrupt_requested)
 
     def _open_codex_stream(next_api_kwargs: dict[str, Any]):
+        from hermes_cli.providers import is_actual_route
+
+        if is_actual_route(
+            getattr(agent, "provider", ""),
+            str(getattr(active_client, "base_url", "") or ""),
+        ):
+            raise ValueError(
+                "Actual requests require Chat Completions; refusing to call /responses."
+            )
         stream_kwargs = _sanitize_consumer_codex_request(agent, next_api_kwargs)
         stream_kwargs["stream"] = True
         return active_client.responses.create(**_bypass_sdk_request_transform(stream_kwargs))

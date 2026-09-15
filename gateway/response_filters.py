@@ -14,6 +14,11 @@ from typing import Any
 # error/empty-response path, not silence.
 LIVE_GATEWAY_SILENT_MARKERS = frozenset({"[SILENT]", "SILENT", "NO_REPLY", "NO REPLY"})
 
+# The persisted user-row kind of a self-injected MessageEvent(internal=True) turn — the only
+# machinery kind the gateway produces; only these may vanish on a bare silence marker.
+INTERNAL_NOTIFICATION_DISPLAY_KIND = "internal_notification"
+MACHINERY_DISPLAY_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND})
+
 # Longer than any marker could plausibly be, even with stray punctuation.
 _MARKER_LENGTH_CAP = 64
 
@@ -78,6 +83,21 @@ def is_autonomous_silence_response(response: Any) -> bool:
 def is_intentional_silence_agent_result(agent_result: dict | None, response: Any) -> bool:
     """Silence markers suppress delivery only for successful agent turns."""
     return isinstance(agent_result, dict) and not agent_result.get("failed") and is_intentional_silence_response(response)
+
+
+def display_kind_for_event(event: Any) -> str | None:
+    """The persisted user-row kind for a gateway turn: only self-injected events are machinery."""
+    return INTERNAL_NOTIFICATION_DISPLAY_KIND if getattr(event, "internal", False) else None
+
+
+def is_machinery_display_kind(display_kind: Any) -> bool:
+    """Only a machinery turn may vanish on a bare silence marker; a human turn gets a visible fallback.
+
+    The caller passes the current turn's persisted display kind instead of inferring it from the
+    transcript: the inbound user row is not persisted yet, and a previous internal row must never
+    authorize silence on a human turn.
+    """
+    return display_kind in MACHINERY_DISPLAY_KINDS
 
 
 def is_partial_silence_marker(text: Any) -> bool:

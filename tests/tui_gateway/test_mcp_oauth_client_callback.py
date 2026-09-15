@@ -186,7 +186,41 @@ def test_deliver_callback_accepts_matching_state():
     flow = _make_session()
     out = deliver_callback_flow("sess-relay-1", "hosp", code="abc", state="s3cr3tstate")
     assert out == {"ok": True, "session_id": "sess-relay-1"}
-    assert flow._callback == ("abc", "s3cr3tstate")
+    assert flow._callback == ("abc", "s3cr3tstate", None)
+
+
+def test_oauth_callback_rpc_relays_iss():
+    """The gateway ``mcp.servers.oauth.callback`` RPC accepts ``iss`` under the extra=forbid contract
+    and forwards it to the flow; the desktop renderer always sends the key (possibly null)."""
+    import tui_gateway.server as srv
+    from tui_gateway.contracts import registry as contracts
+
+    flow = _make_session()
+    contract = contracts.METHODS["mcp.servers.oauth.callback"]
+    params = {"session_id": "sess-relay-1", "name": "hosp", "code": "abc", "state": "s3cr3tstate",
+              "iss": "https://as.example.com"}
+    params, problem = contracts.validate_params(contract, params)
+    assert problem is None
+    out = srv._methods["mcp.servers.oauth.callback"](1, params)
+    assert out["result"]["ok"] is True
+    assert flow._callback == ("abc", "s3cr3tstate", "https://as.example.com")
+
+
+def test_loopback_listener_forwards_iss():
+    """The gateway-hosted loopback listener parses ``iss`` off the redirect rather than dropping it."""
+    import urllib.request
+
+    flow = _make_session(session_id="sess-relay-loop", server="loopy", state="loopstate")
+    httpd = mcp_oauth_sessions._start_loopback_listener(flow)
+    try:
+        port = httpd.server_address[1]
+        urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/callback?code=abc&state=loopstate&iss=https%3A%2F%2Fas.example.com",
+            timeout=5,
+        ).read()
+    finally:
+        httpd.shutdown()
+    assert flow._callback == ("abc", "loopstate", "https://as.example.com")
 
 
 def test_deliver_callback_rejects_state_mismatch():

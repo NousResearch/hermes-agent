@@ -57,6 +57,11 @@ Hermes ships a curated catalog of MCP servers that Nous staff has reviewed
 and merged. They're disabled by default — install only what you actually
 want.
 
+In the desktop app you can also ask: "add the Linear MCP". The agent calls
+`manage_connections` with an `mcp: true` target, an approval card appears in
+the chat, and Install writes the same config the CLI would. On the CLI and in
+messaging apps the agent relays the commands below instead.
+
 ```bash
 hermes mcp                # interactive picker (default)
 hermes mcp catalog        # plain-text list, scriptable
@@ -271,10 +276,13 @@ mcp_servers:
 
 On first connect, Hermes prints an authorize URL, opens your browser when possible, and waits for the OAuth callback on a local loopback port. Tokens are cached at `~/.hermes/mcp-tokens/<server>.json` with 0o600 perms; subsequent runs reuse them silently until refresh fails.
 
+Refresh tokens are bound to the authorization server that granted them: Hermes records the discovered issuer alongside the cached tokens and, if a server's advertised authorization server ever changes (server migration, metadata edit, or hijack), the stored refresh token is dropped instead of being sent to the new issuer. The current access token keeps working until it expires, then a normal re-authorization runs against the new issuer.
+
 **Remote / headless hosts.** When Hermes runs on a different machine than your browser, the loopback callback can't reach your laptop. Ways to complete the flow:
 
 - **Hermes Desktop (automatic):** when you run the OAuth sign-in from the Desktop app's MCP setup UI against a remote backend, Desktop hosts the callback listener on *your* machine and relays the authorization back to the gateway automatically — no tunnel, paste, or proxy needed. Requires both the Desktop app and the backend to be up to date.
 - **Paste-back (no setup):** on an interactive terminal Hermes prints "Or paste the redirect URL here…" alongside the authorize URL. Open the URL in your browser, approve, copy the full URL the browser ends up on (the redirect will show a connection error — that's expected), paste it at the prompt. Bare `?code=…&state=…` query strings work too.
+- **Device-code login (no callback at all):** if the server's authorization server advertises a device authorization endpoint, run `hermes mcp login <server> --flow device` on the machine running Hermes. It prints a verification URL and a short code; open the URL on any device, enter the code, and Hermes polls for approval. No browser is launched on the host and no callback listener is needed. Set `oauth.flow: device` on the server to make `login` and `reauth` use it by default. Details: [Device-code login](../../reference/mcp-config-reference.md#device-code-login-rfc-8628).
 - **SSH port forward:** `ssh -N -L <port>:127.0.0.1:<port> user@host` in a separate terminal, then let the redirect flow normally.
 - **Proxied callback (`redirect_uri`):** when a public HTTPS endpoint forwards to the host (e.g. a Tailscale Funnel or reverse proxy pointed at the callback port), set `oauth.redirect_uri` and the browser redirect reaches Hermes on its own — no tunnel or paste needed:
 
@@ -645,6 +653,10 @@ If you change MCP config, use:
 ```
 
 This reloads MCP servers from config and refreshes the available tool list. It is also the explicit way to re-probe availability-gated tools (Docker, `HASS_TOKEN`, OAuth…): a session's tool set is otherwise frozen, so a credential or daemon that appears mid-session is only picked up on `/reload-mcp`, `/new`, or context compaction. For runtime tool changes pushed by the server itself, see [Dynamic Tool Discovery](#dynamic-tool-discovery) above.
+
+A running messaging gateway (`hermes gateway run`) also watches `config.yaml` on its own: within about a minute of you removing an `mcp_servers` entry or setting `enabled: false`, that server's connection is torn down; a newly added entry is connected. No restart or `/reload-mcp` needed for the edit to take effect.
+
+**Expired OAuth tokens in the background.** The gateway, `/reload-mcp`, and the periodic self-probe of a parked server never open a browser — nobody is there to complete the flow. When a refresh token dies, the server parks with a warning in `gateway.log` and you re-authorize once with `hermes mcp login <server>` (or the Desktop/dashboard *Authorize* button); the parked server picks the new token up on its next probe.
 
 ### Toolsets
 

@@ -1,6 +1,7 @@
 """Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
 
 import contextlib
+import contextvars
 import itertools
 import json
 import logging
@@ -14,6 +15,7 @@ from cron.scheduler import (
     _build_job_prompt,
     _deliver_result,
     _merge_mcp_into_per_job_toolsets,
+    _run_cron_cleanup_with_timeout,
     _resolve_cron_enabled_toolsets,
     _resolve_delivery_target,
     _summarize_cron_failure_for_delivery,
@@ -22,6 +24,21 @@ from cron.scheduler import (
 from cron.scheduler_delivery import _resolve_origin, _send_media_via_adapter
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
+
+
+def test_cron_cleanup_worker_inherits_caller_contextvars():
+    """Profile-scoped secrets must remain visible during threaded cleanup."""
+    profile_scope = contextvars.ContextVar("test_cron_cleanup_profile_scope")
+    profile_scope.set("profile-key")
+    observed = []
+
+    assert _run_cron_cleanup_with_timeout(
+        lambda: observed.append(profile_scope.get(None)),
+        job_id="context-scope",
+        label="test cleanup",
+        timeout_seconds=1,
+    )
+    assert observed == ["profile-key"]
 
 
 class TestSummarizeCronFailureForDelivery:
@@ -214,6 +231,7 @@ class TestResolveDeliveryTarget:
             "platform": "discord",
             "chat_id": "home-parent",
             "thread_id": None,
+            "_resolved_from": "home",
         }
 
     def test_telegram_cron_thread_id_overrides_home_thread_id(self, monkeypatch):
@@ -226,6 +244,7 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-1001234567890",
             "thread_id": "42",
+            "_resolved_from": "home",
         }
 
 
@@ -312,6 +331,7 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-4004",
             "thread_id": None,
+            "_resolved_from": "home",
         }
 
 
@@ -972,7 +992,7 @@ class TestRunJobSessionPersistence:
         fake_db = MagicMock()
         call_order = []
 
-        def _record_reset():
+        def _record_reset(*_args):
             call_order.append("reset")
 
         def _record_load(*args, **kwargs):
@@ -1084,7 +1104,8 @@ class TestRunJobConfigLogging:
     """Verify that config.yaml parse failures are logged, not silently swallowed."""
 
     def test_bad_config_yaml_is_logged(self, caplog, tmp_path):
-        """When config.yaml is malformed, a warning should be logged."""
+        """When config.yaml is malformed, the shared config loader warns loudly (and serves the
+        last known-good copy instead of silently dropping the user's overrides)."""
         bad_yaml = tmp_path / "config.yaml"
         bad_yaml.write_text("invalid: yaml: [[[bad")
 
@@ -1113,11 +1134,11 @@ class TestRunJobConfigLogging:
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
 
-            with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+            with caplog.at_level(logging.WARNING):
                 run_job(job)
 
-        assert any("failed to load config.yaml" in r.message for r in caplog.records), \
-            f"Expected 'failed to load config.yaml' warning in logs, got: {[r.message for r in caplog.records]}"
+        assert any("Failed to parse" in r.message and "config.yaml" in r.message for r in caplog.records), \
+            f"Expected a config.yaml parse warning in logs, got: {[r.message for r in caplog.records]}"
 
 
 class TestRunJobConfigEnvVarExpansion:
@@ -1250,9 +1271,8 @@ class TestRunJobConfigEnvVarExpansion:
 
         def resolve_runtime(**kwargs):
             requested.append(kwargs.get("requested"))
-            if kwargs.get("requested") in (None, "openai-codex"):
-                # Cron must retain the configured primary provider for drift
-                # comparison even when older/custom AuthError sites omit it.
+            if kwargs.get("requested") == "openai-codex":
+                # The unpinned job's provider_snapshot is its effective pin.
                 raise AuthError("No Codex credentials stored")
             assert kwargs["requested"] == "openrouter"
             assert kwargs["target_model"] == "z-ai/glm-5.2"
@@ -1274,7 +1294,7 @@ class TestRunJobConfigEnvVarExpansion:
 
         assert success is True
         assert error is None
-        assert requested == [None, "openrouter"]
+        assert requested == ["openai-codex", "openrouter"]
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["provider"] == "openrouter"
         assert kwargs["model"] == "z-ai/glm-5.2"
@@ -1674,6 +1694,32 @@ class TestBuildJobPromptSilentHint:
         result = _build_job_prompt(job)
         assert "[SILENT]" in result
         assert "Check for updates" in result
+
+
+class TestBuildJobPromptRecursionGuard:
+    """Verify _build_job_prompt tells the agent this is an execution, not a
+    request to schedule — recurring language in a task prompt must not spawn
+    another cron job (recursive scheduled tasks)."""
+
+    def test_recursion_guard_always_present(self):
+        job = {"prompt": "Check for updates"}
+        result = _build_job_prompt(job)
+        assert "run of an EXISTING scheduled job" in result
+        assert "NEVER create or update a cron job" in result
+
+    def test_recurring_language_treated_as_context(self):
+        job = {
+            "prompt": (
+                "Each Monday, review my calendar for the upcoming "
+                "Monday-through-Sunday week and summarize it."
+            )
+        }
+        result = _build_job_prompt(job)
+        # The guard precedes the task prompt so the model reads it first.
+        guard_pos = result.index("run of an EXISTING scheduled job")
+        task_pos = result.index("Each Monday, review my calendar")
+        assert guard_pos < task_pos
+        assert 'phrasing like "each Monday"' in result
 
 
 class TestParseWakeGate:

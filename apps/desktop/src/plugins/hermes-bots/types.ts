@@ -176,6 +176,8 @@ export interface GroupChat {
   syncRevision?: number
   /** Left behind when a room is disbanded, so sync can't resurrect it. */
   tombstone?: boolean
+  /** Local display order, deliberately excluded from the gateway mirror. */
+  rosterOrder?: number
   /** Read when ordering rooms; no write site in the plugin today. */
   pinned?: boolean
   /** How far each `<thread>::<member>` has read into `log`. Required: unlike
@@ -214,6 +216,9 @@ export interface GroupPrompt {
   questions?: GroupPromptQuestion[] | null
   requestId: string
   sessionId?: null | string
+  /** The thread the blocking question belongs to — part of the mirror key,
+   *  since a member can be blocked in two threads at once. */
+  thread?: string
 }
 
 export type GroupActivityKind =
@@ -286,7 +291,7 @@ export type AvatarShape = 'circle' | 'cloud' | 'drop' | 'hexagon' | 'pill' | 'sq
 export type BlobKind =
   'boxy' | 'capsule' | 'cloud' | 'droplet' | 'hexagon' | 'nub' | 'organic' | 'round' | 'sun' | 'triangle'
 
-export type FaceMood = 'idle' | 'work'
+export type FaceMood = 'idle' | 'think' | 'work'
 
 export interface AvatarAppearance {
   /** `null` when nothing is picked — the name's deterministic hue stands in.

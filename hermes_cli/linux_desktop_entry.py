@@ -16,6 +16,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -619,3 +620,29 @@ def install_desktop_entry(project_root: Path) -> Optional[Path]:
 
     refresh_desktop_databases(entry_path.parent)
     return entry_path
+
+
+def schedule_desktop_entry_install(project_root: Path) -> Optional[threading.Thread]:
+    """Queue best-effort launcher healing outside the desktop launch path.
+
+    A missing entry must still self-heal, but creating or refreshing an app's
+    own entry while a grid-launched ShellApp is STARTING can destabilize older
+    gnome-shell releases.  Keep the filesystem work in a daemon worker so the
+    GUI launch remains independent of entry I/O.
+    """
+    if not is_supported():
+        return None
+
+    def _install() -> None:
+        try:
+            entry = install_desktop_entry(project_root)
+            if entry:
+                print(f"✓ Desktop launcher entry installed: {entry}")
+        except Exception as exc:  # never block a launch on launcher plumbing
+            print(f"⚠ Could not install the desktop launcher entry: {exc}")
+
+    worker = threading.Thread(
+        target=_install, name="desktop-entry-install", daemon=True
+    )
+    worker.start()
+    return worker

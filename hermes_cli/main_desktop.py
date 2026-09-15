@@ -1228,21 +1228,19 @@ def _desktop_launch_options() -> tuple[list[str], str, str, str]:
 
 
 def _register_linux_desktop_entry() -> None:
-    """Install the XDG desktop entry for Hermes Desktop (Linux only, best-effort).
+    """Queue XDG desktop-entry healing for Hermes Desktop (Linux only).
 
-    ``Exec`` and ``Icon`` are absolute so the entry works outside a login shell.
-    ``hermes uninstall --gui`` removes it.
+    Entry writes are intentionally deferred so a grid launch does not perform
+    filesystem work while its shell application is STARTING.
     """
-    from hermes_cli.main import PROJECT_ROOT
     try:
-        from hermes_cli.linux_desktop_entry import install_desktop_entry, is_supported
+        from hermes_cli.linux_desktop_entry import is_supported, schedule_desktop_entry_install
         if not is_supported():
             return
-        entry = install_desktop_entry(PROJECT_ROOT)
-        if entry:
-            print(f"✓ Desktop launcher entry installed: {entry}")
+        from hermes_cli.main import PROJECT_ROOT
+        schedule_desktop_entry_install(PROJECT_ROOT)
     except Exception as exc:  # never block a launch on launcher plumbing
-        print(f"⚠ Could not install the desktop launcher entry: {exc}")
+        print(f"⚠ Could not schedule the desktop launcher entry: {exc}")
 
 
 def _install_desktop_workspace_deps(npm: str, env: dict) -> None:
@@ -1546,9 +1544,6 @@ def cmd_gui(args: argparse.Namespace):
         build_label = "source build" if source_mode else "packaged app"
         print(f"✓ Desktop {build_label} is up to date (content stamp matches)")
 
-    # Best-effort and idempotent; a failure must never stop the app from launching.
-    _register_linux_desktop_entry()
-
     # --build-only: produce the artifact but do NOT launch. The installer's
     # --update flow drives the rebuild headlessly and launches the desktop
     # itself (detached, after the old exe has exited); launching here would
@@ -1566,6 +1561,8 @@ def cmd_gui(args: argparse.Namespace):
             sys.exit(1)
         else:
             print(f"✓ Desktop packaged app ready: {packaged_executable} (not launching; --build-only)")
+        # No ShellApp is launching in build-only mode, so self-heal immediately.
+        _register_linux_desktop_entry()
         return
 
     if source_mode:
@@ -1583,4 +1580,7 @@ def cmd_gui(args: argparse.Namespace):
     if not source_mode:
         print(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")
     launch_result = subprocess.run(launch_command, cwd=desktop_dir, env=env, check=False)
+    # A grid launch may have a gnome-shell ShellApp in STARTING.  Do not write
+    # its .desktop entry until the launched Electron process has exited.
+    _register_linux_desktop_entry()
     sys.exit(launch_result.returncode)

@@ -973,33 +973,35 @@ def test_relaunchable_fixup_legacy_adhoc_success_still_verifies_and_never_delete
 
 
 @pytest.mark.linux_only
-def test_gui_registers_linux_desktop_entry_before_launch(tmp_path, monkeypatch):
-    """`hermes desktop` gives the app a launcher presence on Linux."""
+def test_gui_defers_linux_desktop_entry_registration(tmp_path, monkeypatch):
+    """`hermes desktop` schedules launcher healing without blocking launch."""
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     packaged_exe = _make_packaged_executable(root, monkeypatch)
 
-    registered: list[Path] = []
+    events: list[str] = []
     monkeypatch.setattr("hermes_cli.linux_desktop_entry.is_supported", lambda: True)
     monkeypatch.setattr(
-        "hermes_cli.linux_desktop_entry.install_desktop_entry",
-        lambda project_root: registered.append(project_root) or (tmp_path / "hermes.desktop"),
+        "hermes_cli.linux_desktop_entry.schedule_desktop_entry_install",
+        lambda project_root: events.append(f"schedule:{project_root}"),
     )
 
-    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
+    def launch(cmd, **_kwargs):
+        events.append(f"launch:{cmd[0]}")
+        return subprocess.CompletedProcess(cmd, 0)
 
     with patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
          patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
-         patch("hermes_cli.main.subprocess.run", return_value=launch_ok), \
+         patch("hermes_cli.main.subprocess.run", side_effect=launch), \
          pytest.raises(SystemExit):
         cli_main.cmd_gui(_ns())
 
-    assert registered == [root]
+    assert events == [f"launch:{packaged_exe}", f"schedule:{root}"]
 
 
 @pytest.mark.linux_only
-def test_gui_launches_even_when_desktop_entry_install_fails(tmp_path, monkeypatch):
+def test_gui_launches_even_when_desktop_entry_scheduling_fails(tmp_path, monkeypatch):
     """Launcher plumbing is a convenience — it must never block the app."""
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
@@ -1009,7 +1011,7 @@ def test_gui_launches_even_when_desktop_entry_install_fails(tmp_path, monkeypatc
         raise OSError("read-only /home")
 
     monkeypatch.setattr("hermes_cli.linux_desktop_entry.is_supported", lambda: True)
-    monkeypatch.setattr("hermes_cli.linux_desktop_entry.install_desktop_entry", boom)
+    monkeypatch.setattr("hermes_cli.linux_desktop_entry.schedule_desktop_entry_install", boom)
 
     launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
 

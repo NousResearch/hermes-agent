@@ -603,6 +603,36 @@ def test_install_is_idempotent_and_skips_cache_refresh(tmp_path, xdg_home, monke
     assert len(calls) == 1
 
 
+def test_scheduled_install_creates_missing_entry_off_caller_thread(tmp_path, xdg_home, monkeypatch):
+    """First-run self-healing is queued, rather than writing during GUI setup."""
+    root = _make_project(tmp_path)
+    monkeypatch.setattr(
+        "hermes_cli.relaunch.resolve_hermes_bin", lambda: "/usr/bin/hermes"
+    )
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    started: list[object] = []
+
+    class InlineThread:
+        def __init__(self, *, target, name, daemon):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+
+        def start(self):
+            started.append(self)
+            self.target()
+
+    monkeypatch.setattr(lde.threading, "Thread", InlineThread)
+
+    worker = lde.schedule_desktop_entry_install(root)
+
+    assert worker is started[0]
+    assert worker.name == "desktop-entry-install"
+    assert worker.daemon is True
+    assert lde.desktop_entry_path().is_file()
+
+
 def test_install_without_source_icon_uses_themed_name(tmp_path, xdg_home, monkeypatch):
     root = tmp_path / "hermes-agent"
     root.mkdir()

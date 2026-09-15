@@ -107,7 +107,10 @@ describe('ConfigSettings autosave', () => {
       await vi.advanceTimersByTimeAsync(700)
 
       await vi.waitFor(() =>
-        expect(saveHermesConfig).toHaveBeenCalledWith({ compression: { codex_gpt55_autoraise: false } }, undefined)
+        expect(saveHermesConfig).toHaveBeenCalledWith(
+          { compression: { codex_gpt55_autoraise: false } },
+          { connectionId: 'local', profile: 'default' }
+        )
       )
     } finally {
       vi.useRealTimers()

@@ -1,0 +1,16 @@
+name: anysearch
+repo: https://github.com/vollegrewar/hermes-anysearch
+sha: 43c1757a5d12d4d7adb4e74326c99182f4957b6f
+description: 'AnySearch web search and extraction plus two real-time fallback chains: when a primary backend fails (Exa quota, Firecrawl timeout), the same call is served by AnySearch (1,000 free requests/day).'
+maintainer: vollegrewar
+tier: community
+category: web
+requires_hermes: ">=0.21"
+docs_url: https://github.com/vollegrewar/hermes-anysearch#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - ANYSEARCH_API_KEY

@@ -96,6 +96,42 @@ class TestJudgeGoal:
         assert verdict == "done"
         assert reason == "achieved"
 
+    def test_judge_rebinds_the_session_scope_for_its_aux_call(self):
+        """The judge runs *after* the turn tore its runtime context down. Without an explicit
+        re-bind the auxiliary call carries no session id, the OpenCode relay answers 400
+        MissingSessionID, and the goal parks after 7 transport failures."""
+        from hermes_cli import goals
+        from agent.auxiliary_client import _runtime_main_value
+
+        seen = {}
+
+        def _capture(**_kwargs):
+            seen["session_id"] = _runtime_main_value("session_id")
+            return MagicMock(choices=[MagicMock(message=MagicMock(content='{"done": true, "reason": "ok"}'))])
+
+        with patch("agent.auxiliary_client.call_llm", side_effect=_capture):
+            goals.judge_goal("goal", "agent response", session_id="sess-judge-1")
+
+        assert seen["session_id"] == "sess-judge-1"
+
+    def test_judge_without_a_session_leaves_the_scope_alone(self):
+        """Callers with no session of their own (kanban/loop judges) must not invent one —
+        agent.opencode_affinity supplies its own fallback key instead."""
+        from hermes_cli import goals
+        from agent import auxiliary_client as aux
+
+        seen = {}
+
+        def _capture(**_kwargs):
+            seen["session_id"] = aux._runtime_main_value("session_id")
+            return MagicMock(choices=[MagicMock(message=MagicMock(content='{"done": true, "reason": "ok"}'))])
+
+        aux.clear_runtime_main()
+        with patch("agent.auxiliary_client.call_llm", side_effect=_capture):
+            goals.judge_goal("goal", "agent response")
+
+        assert seen["session_id"] == ""
+
 
 # ──────────────────────────────────────────────────────────────────────
 # GoalManager lifecycle + persistence

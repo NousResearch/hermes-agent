@@ -192,6 +192,20 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_runs.add_argument("job_id", nargs="?", help="Optional job ID filter")
     cron_runs.add_argument("--limit", type=int, default=20, help="Rows to show (1-500)")
 
+    # cron reconcile: close an execution the ledger had to record as 'unknown'.
+    cron_reconcile = cron_subparsers.add_parser(
+        "reconcile",
+        help="Close a shutdown-interrupted execution using an authoritative record")
+    cron_reconcile.add_argument("--execution", required=True, help="Execution ID to reconcile")
+    cron_reconcile.add_argument(
+        "--status", required=True, choices=["completed", "failed"],
+        help="The attempt's true outcome, per the evidence")
+    cron_reconcile.add_argument(
+        "--evidence", required=True,
+        help="Path to the authoritative record the outcome is read from (stored, with its sha256)")
+    cron_reconcile.add_argument(
+        "--note", help="Optional operator note, kept with the reconcile provenance")
+
     # cron incidents — durable failure incidents (list/ack)
     cron_incidents = cron_subparsers.add_parser(
         "incidents", help="List or acknowledge durable cron failure incidents")

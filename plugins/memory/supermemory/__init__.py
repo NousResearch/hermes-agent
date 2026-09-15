@@ -25,7 +25,7 @@ _API_KEY_URL = "http://app.supermemory.ai/integrations?connect=hermes"
 # Strips injected <supermemory-context> / <supermemory-containers> blocks before capture.
 _INJECTED_BLOCK_RE = re.compile(r"<supermemory-(context|containers)>[\s\S]*?</supermemory-\1>\s*", re.DOTALL)
 _DATA_URI_RE = re.compile(r"data:[^;,\s]+;base64,[A-Za-z0-9+/=]+")  # pasted inline images are useless as memory text
-_CAPTURE_BUCKET_HOURS = 4  # one capture document per session per 4h window (matches codex/openclaw plugins)
+_CAPTURE_BUCKET_HOURS = 4  # one capture document per session per 4h window (matches the other Supermemory agent integrations)
 _DEFAULT_ENTITY_CONTEXT = (
     "User-assistant conversation. Format: [role: user]...[user:end] and [role: assistant]...[assistant:end].\n\n"
     "Only extract things useful in future conversations. Most messages are not worth remembering.\n\n"

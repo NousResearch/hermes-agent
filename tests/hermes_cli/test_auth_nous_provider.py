@@ -352,6 +352,96 @@ def test_removed_legacy_session_env_var_does_not_change_jwt_auth(tmp_path, monke
     assert result["agent_key"] == login_token
 
 
+def _stub_nous_device_flow(monkeypatch, *, login_token: str, verification_url: str) -> list:
+    """Patch _request_device_code / _poll_for_token / webbrowser.open; return the browser-call log."""
+    import hermes_cli.auth as auth_mod
+
+    monkeypatch.setattr(
+        auth_mod,
+        "_request_device_code",
+        lambda **_kwargs: {
+            "device_code": "device",
+            "user_code": "user",
+            "verification_uri": "https://portal.example.com/device",
+            "verification_uri_complete": verification_url,
+            "expires_in": 600,
+            "interval": 1,
+        },
+    )
+    monkeypatch.setattr(
+        auth_mod,
+        "_poll_for_token",
+        lambda **_kwargs: {
+            "access_token": login_token,
+            "refresh_token": "refresh-token",
+            "expires_in": 900,
+            "scope": auth_mod.DEFAULT_NOUS_SCOPE,
+        },
+    )
+    browser_calls: list = []
+    monkeypatch.setattr(auth_mod.webbrowser, "open", browser_calls.append)
+    return browser_calls
+
+
+@pytest.mark.linux_only
+def test_nous_device_code_login_headless_linux_real_helper_uses_manual_verification(
+    monkeypatch, capsys
+):
+    """A local Linux console without a display must retain manual verification."""
+    import hermes_cli.auth as auth_mod
+
+    for var in ("DISPLAY", "WAYLAND_DISPLAY", "BROWSER"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(auth_mod, "_is_remote_session", lambda: False)
+
+    verification_url = "https://portal.example.com/device?code=user"
+    login_token = _invoke_jwt(seconds=3600)
+    browser_calls = _stub_nous_device_flow(
+        monkeypatch, login_token=login_token, verification_url=verification_url)
+
+    result = auth_mod._nous_device_code_login(
+        portal_base_url="https://portal.example.com",
+        inference_base_url="https://inference.example.com/v1",
+        timeout_seconds=1,
+    )
+
+    output = capsys.readouterr().out
+    assert browser_calls == []
+    assert verification_url in output
+    assert "separate device" in output
+    assert "may block requests from server IPs" in output
+    assert result["agent_key"] == login_token
+
+
+@pytest.mark.macos_only
+def test_nous_device_code_login_macos_missing_display_is_not_headless(monkeypatch, capsys):
+    """Native macOS browsers do not require an X11 or Wayland display."""
+    from types import SimpleNamespace
+    import hermes_cli.auth as auth_mod
+
+    for var in ("DISPLAY", "WAYLAND_DISPLAY", "BROWSER"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(auth_mod, "_is_remote_session", lambda: False)
+    monkeypatch.setattr(
+        auth_mod.webbrowser, "get", lambda: SimpleNamespace(name="Safari"))
+    verification_url = "https://portal.example.com/device?code=user"
+    login_token = _invoke_jwt(seconds=3600)
+    browser_calls = _stub_nous_device_flow(
+        monkeypatch, login_token=login_token, verification_url=verification_url)
+
+    result = auth_mod._nous_device_code_login(
+        portal_base_url="https://portal.example.com",
+        inference_base_url="https://inference.example.com/v1",
+        timeout_seconds=1,
+    )
+
+    output = capsys.readouterr().out
+    assert browser_calls == [verification_url]
+    assert verification_url in output
+    assert "separate device" not in output
+    assert result["agent_key"] == login_token
+
+
 def test_nous_inference_auth_logs_do_not_include_secret_values(
     tmp_path,
     monkeypatch,

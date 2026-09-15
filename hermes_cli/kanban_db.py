@@ -1306,6 +1306,14 @@ def create_task(
         if board_default:
             workspace_path = str(board_default)
 
+    # A worktree must be anchored before it enters the queue. Deferring this
+    # failure until dispatch turns a malformed producer request into repeated
+    # spawn failures and an opaque blocked card.
+    if workspace_kind == "worktree" and not workspace_path and not project_repo:
+        raise ValueError(
+            "worktree workspace requires a path, project repo, or board default_workdir"
+        )
+
     # Retry once on the extremely unlikely id collision.
     for attempt in range(2):
         task_id = _new_task_id()

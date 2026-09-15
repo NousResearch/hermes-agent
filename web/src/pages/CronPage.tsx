@@ -13,7 +13,7 @@ import { api } from "@/lib/api";
 import type {
   CronJob,
   CronDeliveryTarget,
-  ModelOptionsResponse,
+  ModelOptionsResult,
   ProfileInfo,
   SkillInfo,
   ToolsetInfo,
@@ -22,6 +22,7 @@ import {
   buildCronJobPayload,
   cronJobHasExecutionContent,
   cronJobFormFromJob,
+  cronLastResult,
   type CronJobFormState,
 } from "@/lib/cron-job";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
@@ -128,7 +129,7 @@ interface CronJobEditorState extends CronJobFormState {
 interface CronJobFormResources {
   availableSkills: SkillInfo[];
   availableToolsets: ToolsetInfo[];
-  modelOptions: ModelOptionsResponse | null;
+  modelOptions: ModelOptionsResult | null;
   deliveryTargets: CronDeliveryTarget[];
 }
 
@@ -196,7 +197,7 @@ function CronAdvancedFields({
   idPrefix: string;
   form: CronJobEditorState;
   onChange: (form: CronJobEditorState) => void;
-  modelOptions: ModelOptionsResponse | null;
+  modelOptions: ModelOptionsResult | null;
   availableToolsets: ToolsetInfo[];
 }) {
   const update = <K extends keyof CronJobEditorState,>(
@@ -603,7 +604,7 @@ export default function CronPage() {
   // a job's current skills are always shown even if not in it.
   const [availableSkills, setAvailableSkills] = useState<SkillInfo[]>([]);
   const [availableToolsets, setAvailableToolsets] = useState<ToolsetInfo[]>([]);
-  const [modelOptions, setModelOptions] = useState<ModelOptionsResponse | null>(null);
+  const [modelOptions, setModelOptions] = useState<ModelOptionsResult | null>(null);
 
   const resourceProfile = editJob ? getJobProfile(editJob) : createProfile;
 
@@ -1100,18 +1101,28 @@ export default function CronPage() {
           const toolsets = Array.isArray(job.enabled_toolsets)
             ? job.enabled_toolsets.filter(Boolean)
             : [];
+          const lastResult = cronLastResult(job);
 
           return (
             <Card key={jobKey}>
               <CardContent className="flex items-start gap-4 py-4">
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="font-medium text-sm truncate">
+                  <div className="flex flex-wrap items-center gap-2 mb-1">
+                    <span className="font-medium text-sm truncate min-w-0">
                       {title}
                     </span>
                     <Badge tone={STATUS_TONE[state] ?? "secondary"}>
                       {state}
                     </Badge>
+                    {lastResult && lastResult.status !== "ok" && (
+                      <Badge
+                        tone={lastResult.tone}
+                        title={lastResult.detail ?? undefined}
+                        data-testid="cron-last-result"
+                      >
+                        {lastResult.status}
+                      </Badge>
+                    )}
                     <Badge tone="outline">{profileLabel(profile)}</Badge>
                     {deliver && deliver !== "local" && (
                       <Badge tone="outline">{deliver}</Badge>

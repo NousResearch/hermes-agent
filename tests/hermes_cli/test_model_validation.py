@@ -3,24 +3,9 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
-from hermes_cli.models import (
-    azure_foundry_model_api_mode,
-    copilot_model_api_mode,
-    fetch_github_model_catalog,
-    curated_models_for_provider,
-    fetch_api_models,
-    fetch_lmstudio_models,
-    github_model_reasoning_efforts,
-    normalize_copilot_model_id,
-    normalize_opencode_model_id,
-    normalize_provider,
-    opencode_model_api_mode,
-    parse_model_input,
-    probe_api_models,
-    provider_label,
-    provider_model_ids,
-    validate_requested_model,
-)
+from hermes_cli.models import azure_foundry_model_api_mode, copilot_model_api_mode, fetch_github_model_catalog, curated_models_for_provider, fetch_api_models, github_model_reasoning_efforts, normalize_copilot_model_id, normalize_opencode_model_id, normalize_provider, opencode_model_api_mode, parse_model_input, probe_api_models, provider_label, provider_model_ids
+from hermes_cli.models_local import fetch_lmstudio_models
+from hermes_cli.models_validate import validate_requested_model
 
 
 # -- helpers -----------------------------------------------------------------
@@ -74,6 +59,14 @@ class TestCuratedModelsForProvider:
 
     def test_unknown_provider_returns_empty(self):
         assert curated_models_for_provider("totally-unknown") == []
+
+    def test_live_catalog_projected_to_tuples_else_static_fallback(self):
+        with patch("hermes_cli.models.provider_model_ids", return_value=["m-live"]):
+            assert curated_models_for_provider("nous") == [("m-live", "")]
+        with patch("hermes_cli.models.provider_model_ids", return_value=[]), patch.dict(
+            "hermes_cli.models._PROVIDER_MODELS", {"nous": ["m-static"]}
+        ):
+            assert curated_models_for_provider("nous") == [("m-static", "")]
 
 
 # -- normalize_provider ------------------------------------------------------
@@ -141,7 +134,7 @@ class TestProviderModelIds:
             assert provider_model_ids("anthropic") == ["enterprise-claude"]
 
         req = mock_urlopen.call_args[0][0]
-        assert req.full_url == "http://localhost:6655/anthropic/v1/models"
+        assert req.full_url == "http://localhost:6655/anthropic/v1/models?limit=1000"
         assert req.get_header("X-api-key") == "proxy-key"
 
     def test_custom_provider_passes_anthropic_mode_for_versioned_proxy_catalog(self):
@@ -292,7 +285,7 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-zen", "x-preview-f-free") == "chat_completions"
         assert opencode_model_api_mode("opencode-zen", "opencode-zen/x-preview-f-free") == "chat_completions"
         # Other free-tier Zen models are chat/completions too.
-        assert opencode_model_api_mode("opencode-zen", "hy3-free") == "chat_completions"
+        assert opencode_model_api_mode("opencode-zen", "mimo-v2.5-free") == "chat_completions"
         assert opencode_model_api_mode("opencode-zen", "nemotron-3.5-lightning-free") == "chat_completions"
         # Hy3 on Go is chat/completions (Go endpoint table).
         assert opencode_model_api_mode("opencode-go", "hy3") == "chat_completions"
@@ -407,11 +400,13 @@ class TestValidateFormatChecks:
 
 class TestValidateApiNotFound:
 
-    def test_warning_includes_suggestions(self):
+    def test_not_listed_rejects_with_suggestions(self):
+        """A near-miss on an aggregator listing is rejected with the listed sibling offered, never
+        silently swapped in (the user asked for 4.5, not 4.6)."""
         result = _validate("anthropic/claude-opus-4.5")
-        assert result["accepted"] is True
-        # Close match auto-corrects; less similar inputs show suggestions
-        assert "Auto-corrected" in result["message"] or "Similar models" in result["message"]
+        assert result["accepted"] is False
+        assert "corrected_model" not in result
+        assert "anthropic/claude-opus-4.6" in result["message"]
 
 
 # -- validate — API unreachable — soft-accept via catalog or warning --------
@@ -479,31 +474,32 @@ class TestValidateApiFallback:
 
 
 
-# -- validate — Codex auto-correction ------------------------------------------
+# -- validate — the requested id is never rewritten -----------------------------
 
-class TestValidateCodexAutoCorrection:
-    """Auto-correction for typos on openai-codex provider."""
+class TestRequestedIdIsNeverRewritten:
+    """A selected id that is merely CLOSE to a catalog entry is the user's choice (a newer release,
+    a dated snapshot, a qualifier), never a typo to "fix": the verdict may warn or reject, but no
+    branch may return a different model under the user's label."""
 
-    def test_missing_dash_auto_corrects(self):
-        """gpt5.3-codex (missing dash) auto-corrects to gpt-5.3-codex."""
-        codex_models = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex",
-                        "gpt-5.2-codex", "gpt-5.1-codex-max"]
-        with patch("hermes_cli.models.provider_model_ids", return_value=codex_models):
-            result = validate_requested_model("gpt5.3-codex", "openai-codex")
-        assert result["accepted"] is True
-        assert result["recognized"] is True
-        assert result["corrected_model"] == "gpt-5.3-codex"
-        assert "Auto-corrected" in result["message"]
+    @pytest.mark.parametrize("requested, listing", [
+        ("deepseek-v4.1-flash", ["deepseek-v4-flash-0731", "deepseek-v4-flash"]),   # custom endpoint (#mao)
+        ("gemini-3.8-flash", ["gemini-3.6-flash", "gemini-3.6-pro"]),               # version bump (#101975)
+        ("gpt5.3-codex", ["gpt-5.4", "gpt-5.3-codex"]),                             # genuine typo
+    ])
+    def test_live_listing_near_miss_keeps_requested_id(self, requested, listing):
+        for provider, base_url in (("custom:hyper", "http://127.0.0.1:1/v1"), ("openrouter", None)):
+            result = _validate(requested, provider, api_models=listing, base_url=base_url)
+            assert "corrected_model" not in result
+            assert result["recognized"] is False
+            assert "Similar models" in (result["message"] or "") or listing[-1] in (result["message"] or "")
 
-    def test_exact_match_no_correction(self):
-        """Exact model name does not trigger auto-correction."""
+    def test_static_catalog_near_miss_keeps_requested_id(self):
         codex_models = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex"]
         with patch("hermes_cli.models.provider_model_ids", return_value=codex_models):
-            result = validate_requested_model("gpt-5.3-codex", "openai-codex")
-        assert result["accepted"] is True
-        assert result["recognized"] is True
-        assert result.get("corrected_model") is None
-        assert result["message"] is None
+            result = validate_requested_model("gpt5.3-codex", "openai-codex")
+        assert "corrected_model" not in result
+        assert result["recognized"] is False
+        assert "gpt-5.3-codex" in result["message"]  # offered as a suggestion, not applied
 
 
 class TestValidateCodex900kVariants:
@@ -676,3 +672,158 @@ class TestValidateOpenRouterVariantSuffixes:
         assert result["accepted"] is True
         assert result["recognized"] is True
         assert result.get("corrected_model") is None
+
+
+class TestValidateRequestedModelNousPortalRecommendations:
+    """Regression tests for issue #71312: the Nous Telegram picker (and any
+    other messaging-platform /model validation, since they all share
+    validate_requested_model()) rejected models that are live Nous Portal
+    recommendations (/api/nous/recommended-models) but not yet in the
+    hardcoded curated catalog -- even though `hermes chat` already accepts
+    these via union_with_portal_free/paid_recommendations() at model-list
+    build time. The per-message validation path now checks the same Portal
+    feed as a fallback tier before rejecting, so Telegram/CLI agree.
+    """
+
+    PORTAL_PAYLOAD = {
+        "freeRecommendedModels": [
+            {"modelName": "inclusionai/ling-3.0-flash:free"},
+        ],
+        "paidRecommendedModels": [
+            {"modelName": "inclusionai/ling-3.0-pro"},
+        ],
+    }
+
+    def _validate_nous(self, model, api_models=None, portal_payload=None, portal_raises=False):
+        api_models = api_models if api_models is not None else ["inclusionai/ling-2.6-flash"]
+        probe_payload = {
+            "models": api_models,
+            "probed_url": "https://portal.nousresearch.com/v1/models",
+            "resolved_base_url": "https://portal.nousresearch.com/v1",
+            "suggested_base_url": None,
+            "used_fallback": False,
+        }
+
+        def _fetch_portal(*a, **kw):
+            if portal_raises:
+                raise RuntimeError("portal unreachable")
+            return portal_payload if portal_payload is not None else self.PORTAL_PAYLOAD
+
+        with patch("hermes_cli.models.fetch_api_models", return_value=api_models), \
+             patch("hermes_cli.models.probe_api_models", return_value=probe_payload), \
+             patch("hermes_cli.models.fetch_nous_recommended_models", side_effect=_fetch_portal), \
+             patch("hermes_cli.models._resolve_nous_portal_url", return_value="https://portal.nousresearch.com"), \
+             patch("hermes_cli.models._model_in_provider_catalog", return_value=False):
+            return validate_requested_model(model, "nous")
+
+    def test_free_portal_recommendation_accepted(self):
+        """The exact scenario from #71312: a free-tier Portal recommendation
+        missing from the curated catalog and the live /v1/models listing
+        must be accepted, not rejected."""
+        result = self._validate_nous("inclusionai/ling-3.0-flash:free")
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert "Portal recommendation" in (result["message"] or "")
+
+    def test_paid_portal_recommendation_accepted(self):
+        result = self._validate_nous("inclusionai/ling-3.0-pro")
+        assert result["accepted"] is True
+
+    def test_model_absent_from_portal_and_catalog_still_rejected(self):
+        """A model that's genuinely nowhere (not live, not curated, not a
+        Portal recommendation) must still be rejected -- this fallback
+        tier must not make validation permissive for everything."""
+        result = self._validate_nous("totally-made-up-model-xyz")
+        assert result["accepted"] is False
+        assert result["recognized"] is False
+
+    def test_portal_fetch_failure_falls_through_to_rejection_not_crash(self):
+        """A network/parse failure fetching the Portal feed must not crash
+        validation -- it degrades to the existing rejection path."""
+        result = self._validate_nous(
+            "inclusionai/ling-3.0-flash:free", portal_raises=True
+        )
+        assert result["accepted"] is False  # fails closed, doesn't crash
+
+    def test_non_string_model_name_entries_ignored(self):
+        """Malformed Portal entries (non-string / empty modelName) must be
+        skipped via _extract_model_name -- never stringified into garbage
+        matches (e.g. an int modelName 5 must not accept a model named "5")."""
+        payload = {
+            "freeRecommendedModels": [
+                {"modelName": 5},
+                {"modelName": ""},
+                {"modelName": None},
+                "not-a-dict",
+                {"modelName": "inclusionai/ling-3.0-flash:free"},
+            ],
+            "paidRecommendedModels": [],
+        }
+        assert self._validate_nous("5", portal_payload=payload)["accepted"] is False
+        result = self._validate_nous(
+            "inclusionai/ling-3.0-flash:free", portal_payload=payload
+        )
+        assert result["accepted"] is True
+
+    def test_non_nous_provider_does_not_consult_portal_feed(self):
+        """This fallback tier is Nous-specific; a non-Nous provider must
+        not have its rejection changed by (or trigger a call to) the Nous
+        Portal feed."""
+        probe_payload = {
+            "models": ["some/other-model"],
+            "probed_url": "https://api.example.com/v1/models",
+            "resolved_base_url": "https://api.example.com/v1",
+            "suggested_base_url": None,
+            "used_fallback": False,
+        }
+        with patch("hermes_cli.models.fetch_api_models", return_value=["some/other-model"]), \
+             patch("hermes_cli.models.probe_api_models", return_value=probe_payload), \
+             patch("hermes_cli.models.fetch_nous_recommended_models") as mock_portal, \
+             patch("hermes_cli.models._model_in_provider_catalog", return_value=False):
+            result = validate_requested_model("inclusionai/ling-3.0-flash:free", "openrouter")
+        mock_portal.assert_not_called()
+        assert result["accepted"] is False
+
+    def test_curated_catalog_hit_short_circuits_before_portal_check(self):
+        """When the curated-catalog fallback already accepts the model, the
+        Portal feed should not need to be consulted at all (cheaper, and
+        avoids an unnecessary network call on the common path)."""
+        api_models = ["inclusionai/ling-2.6-flash"]
+        probe_payload = {
+            "models": api_models, "probed_url": "x", "resolved_base_url": "x",
+            "suggested_base_url": None, "used_fallback": False,
+        }
+        with patch("hermes_cli.models.fetch_api_models", return_value=api_models), \
+             patch("hermes_cli.models.probe_api_models", return_value=probe_payload), \
+             patch("hermes_cli.models._model_in_provider_catalog", return_value=True), \
+             patch("hermes_cli.models.fetch_nous_recommended_models") as mock_portal:
+            result = validate_requested_model("inclusionai/ling-2.6-flash", "nous")
+        mock_portal.assert_not_called()
+        assert result["accepted"] is True
+
+
+# -- validate — custom endpoint fallback when /models is unreachable (#12220) --
+
+class TestValidateCustomUnreachableFallback:
+    """A custom proxy without GET /models must not brick `/model` switches (#12220)."""
+
+    def _validate(self, model, provider, models, **kw):
+        probe = {"models": models, "probed_url": "http://localhost:8000/v1/models",
+                 "resolved_base_url": "http://localhost:8000/v1", "suggested_base_url": None, "used_fallback": False}
+        with patch("hermes_cli.models.probe_api_models", return_value=probe):
+            return validate_requested_model(model, provider, api_key="k", base_url="http://localhost:8000/v1", **kw)
+
+    @pytest.mark.parametrize("provider", ["custom", "custom:myproxy"])
+    @pytest.mark.parametrize("api_mode", ["chat_completions", "anthropic_messages"])
+    def test_unreachable_catalog_persists_unverified_for_chat_modes(self, provider, api_mode):
+        result = self._validate("my-proxy-model", provider, models=None, api_mode=api_mode)
+        assert (result["accepted"], result["persist"], result["recognized"]) == (True, True, False)
+        assert "accepted without verification" in result["message"]
+
+    @pytest.mark.parametrize("api_mode", [None, "codex_responses"])
+    def test_unreachable_catalog_still_rejects_other_api_modes(self, api_mode):
+        result = self._validate("my-proxy-model", "custom", models=None, api_mode=api_mode)
+        assert result["accepted"] is False
+        assert "was not saved" in result["message"]
+        # A reachable catalog keeps authoritative validation regardless of mode.
+        assert self._validate("my-model", "custom", models=["my-model"], api_mode="chat_completions")["recognized"] is True

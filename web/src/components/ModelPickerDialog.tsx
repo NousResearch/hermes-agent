@@ -6,13 +6,13 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { GatewayClient } from "@/lib/gatewayClient";
+import type { ModelOptionProvider, ModelOptionsResult } from "@hermes/shared";
 import { Check, RefreshCw, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn, themedBody } from "@/lib/utils";
-import { fuzzyRank } from "@/lib/fuzzy";
 import { queryMatchesProviderOnly } from "@/lib/model-picker-filter";
-import { modelSearchText } from "@/lib/model-search-text";
+import { fuzzyRank, modelSearchText } from "@hermes/shared";
 
 /**
  * Two-stage model picker modal.
@@ -33,21 +33,6 @@ import { modelSearchText } from "@/lib/model-search-text";
  *    command.  This lets the Models page reuse the same UI without
  *    requiring an open chat PTY.
  */
-
-interface ModelOptionProvider {
-  name: string;
-  slug: string;
-  models?: string[];
-  total_models?: number;
-  is_current?: boolean;
-  warning?: string;
-}
-
-interface ModelOptionsResponse {
-  model?: string;
-  provider?: string;
-  providers?: ModelOptionProvider[];
-}
 
 interface ExpensiveModelConfirmResponse {
   confirm_message?: string;
@@ -73,7 +58,7 @@ interface Props {
   onSubmit?(slashCommand: string): void;
 
   /** Standalone-mode: when present (and onSubmit absent), picker calls onApply. */
-  loader?(options?: { refresh?: boolean }): Promise<ModelOptionsResponse>;
+  loader?(options?: { refresh?: boolean }): Promise<ModelOptionsResult>;
   onApply?(args: {
     confirmExpensiveModel?: boolean;
     provider: string;
@@ -118,7 +103,7 @@ export function ModelPickerDialog(props: Props) {
     useState<PendingExpensiveConfirm | null>(null);
   const closedRef = useRef(false);
 
-  const applyOptions = (r: ModelOptionsResponse) => {
+  const applyOptions = (r: ModelOptionsResult) => {
     const next = r?.providers ?? [];
     setProviders(next);
     setCurrentModel(String(r?.model ?? ""));
@@ -132,10 +117,10 @@ export function ModelPickerDialog(props: Props) {
 
   const requestOptions = (refresh = false) =>
     standalone
-      ? (loader as (options?: { refresh?: boolean }) => Promise<ModelOptionsResponse>)({
+      ? (loader as (options?: { refresh?: boolean }) => Promise<ModelOptionsResult>)({
           refresh,
         })
-      : (gw as GatewayClient).request<ModelOptionsResponse>(
+      : (gw as GatewayClient).request<ModelOptionsResult>(
           "model.options",
           {
             ...(sessionId ? { session_id: sessionId } : {}),

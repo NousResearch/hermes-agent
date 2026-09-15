@@ -229,19 +229,35 @@ function NotificationItem({ notification }: { notification: AppNotification }) {
           <p className="m-0 wrap-break-word">{renderMessage(notification.message, accent)}</p>
           {notification.meta && <p className="m-0 text-xs text-muted-foreground tabular-nums">{notification.meta}</p>}
           {hasDetail && <NotificationDetail detail={notification.detail || ''} />}
-          {notification.action && (
-            <Button
-              className="mt-1.5"
-              onClick={() => {
-                notification.action?.onClick()
-                dismissNotification(notification.id)
-              }}
-              size="xs"
-              type="button"
-              variant="textStrong"
-            >
-              {notification.action.label}
-            </Button>
+          {(notification.action || notification.secondaryAction) && (
+            <div className="mt-1.5 flex flex-wrap gap-1.5">
+              {notification.action && (
+                <Button
+                  onClick={() => {
+                    notification.action?.onClick()
+                    dismissNotification(notification.id)
+                  }}
+                  size="sm"
+                  type="button"
+                  variant="default"
+                >
+                  {notification.action.label}
+                </Button>
+              )}
+              {notification.secondaryAction && (
+                <Button
+                  onClick={() => {
+                    notification.secondaryAction?.onClick()
+                    dismissNotification(notification.id)
+                  }}
+                  size="sm"
+                  type="button"
+                  variant="outline"
+                >
+                  {notification.secondaryAction.label}
+                </Button>
+              )}
+            </div>
           )}
         </AlertDescription>
       </div>

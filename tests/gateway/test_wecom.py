@@ -30,6 +30,53 @@ class TestWeComAdapterInit:
         assert WeComAdapter.SUPPORTS_MESSAGE_EDITING is False
 
 
+class TestWeComInboundImageExtension:
+    def test_octet_stream_falls_through_to_magic_bytes(self):
+        """WeCom's CDN serves images as application/octet-stream; the cached file must get the
+        real image extension from magic bytes, not ".bin" (#10085)."""
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 16
+        ext = WeComAdapter._guess_extension(
+            "https://wwcdn.weixin.qq.com/img?aeskey=abc", "application/octet-stream",
+            fallback=WeComAdapter._detect_image_ext(jpeg))
+        assert ext == ".jpg"
+        assert WeComAdapter._guess_extension("https://x/y.png", "image/png", fallback=".jpg") == ".png"
+
+    def test_encoded_aeskey_and_octet_stream_image_cached_as_real_image(self, monkeypatch):
+        """End to end through `_cache_media`: a percent-encoded, unpadded `aeskey` decrypts, and an
+        octet-stream-labelled PNG is stored with an image MIME, not application/octet-stream."""
+        from urllib.parse import quote
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        from plugins.platforms.wecom import media as wecom_media
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        key = os.urandom(32)
+        png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 40
+        pad = 16 - len(png) % 16
+        enc = Cipher(algorithms.AES(key), modes.CBC(key[:16])).encryptor()
+        encrypted = enc.update(png + bytes([pad]) * pad) + enc.finalize()
+        encoded_key = quote(base64.b64encode(key).decode().rstrip("="), safe="")
+
+        adapter = WeComAdapter.__new__(WeComAdapter)
+        stored = {}
+
+        async def _download(url, max_bytes):
+            return encrypted, {"content-type": "application/octet-stream"}
+
+        async def _cache(raw, ext):
+            stored["raw"] = raw
+            return f"/tmp/img{ext}"
+
+        monkeypatch.setattr(adapter, "_download_remote_bytes", _download)
+        monkeypatch.setattr(wecom_media, "cache_image_from_bytes_async", _cache)
+
+        result = asyncio.run(adapter._cache_media("image", {"url": "https://cdn/x", "aeskey": encoded_key}))
+
+        assert result == ("/tmp/img.png", "image/png")
+        assert stored["raw"] == png
+
+
 class TestWeComAdapterAuthzScope:
     """dm_policy/allowlist reads must honor the profile secret scope under
     multiplexing (#93522): a secondary profile's own scope is authoritative
@@ -75,6 +122,40 @@ class TestWeComAdapterAuthzScope:
             secret_scope.reset_secret_scope(token)
         assert adapter._dm_policy == "pairing"
         assert adapter._allow_from == []
+
+    def test_scoped_construction_reads_bot_id_from_scope_not_environ(self, multiplex_on, monkeypatch):
+        """bot_id must honor the same scope as its neighboring _secret read
+        (both are read on adjacent lines in __init__) -- a secondary profile's
+        own bot_id must never fall back to the default profile's os.environ
+        value."""
+        from agent import secret_scope
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        monkeypatch.setenv("WECOM_BOT_ID", "default-profile-bot-id")
+        monkeypatch.setenv("WECOM_SECRET", "default-profile-secret")
+        token = secret_scope.set_secret_scope(
+            {"WECOM_BOT_ID": "scoped-bot-id", "WECOM_SECRET": "scoped-secret"}
+        )
+        try:
+            adapter = WeComAdapter(PlatformConfig(enabled=True))
+        finally:
+            secret_scope.reset_secret_scope(token)
+        assert adapter._bot_id == "scoped-bot-id"
+        assert adapter._secret == "scoped-secret"
+
+    def test_scoped_miss_does_not_leak_default_profiles_bot_id(self, multiplex_on, monkeypatch):
+        from agent import secret_scope
+        from plugins.platforms.wecom.adapter import DEFAULT_WS_URL, WeComAdapter
+
+        monkeypatch.setenv("WECOM_BOT_ID", "default-profile-bot-id")
+        monkeypatch.setenv("WECOM_WEBSOCKET_URL", "wss://default-profile.example/ws")
+        token = secret_scope.set_secret_scope({"SOMETHING_ELSE": "x"})
+        try:
+            adapter = WeComAdapter(PlatformConfig(enabled=True))
+        finally:
+            secret_scope.reset_secret_scope(token)
+        assert adapter._bot_id == ""
+        assert adapter._ws_url == DEFAULT_WS_URL
 
 
 class TestWeComConnect:
@@ -620,7 +701,7 @@ class TestTextBatchFlushRace:
     async def test_superseded_task_does_not_pop_or_process_event(self):
         """A flush task that has been superseded must leave the event in the
         batch dict for the new task to handle."""
-        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.event import MessageEvent, MessageType
         from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
@@ -663,7 +744,7 @@ class TestTextBatchFlushRace:
     @pytest.mark.asyncio
     async def test_active_task_processes_event_normally(self):
         """When the task is not superseded it must still process the event."""
-        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.event import MessageEvent, MessageType
         from plugins.platforms.wecom.adapter import WeComAdapter
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
@@ -777,7 +858,7 @@ class TestAttachmentTextMerge:
         await asyncio.sleep(0.3)
         adapter.handle_message.assert_awaited_once()
         event = adapter.handle_message.await_args.args[0]
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
 
         assert event.text == "what is this?"
         assert event.media_urls == ["/tmp/x.png"]
@@ -797,7 +878,7 @@ class TestAttachmentTextMerge:
         await asyncio.sleep(0.3)
         adapter.handle_message.assert_awaited_once()
         event = adapter.handle_message.await_args.args[0]
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
 
         assert event.media_urls == ["/tmp/x.png"]
         assert event.message_type == MessageType.PHOTO
@@ -846,7 +927,7 @@ class TestAttachmentTextMerge:
         await asyncio.sleep(0.2)
         adapter.handle_message.assert_awaited_once()
         event = adapter.handle_message.await_args.args[0]
-        from gateway.platforms.base import MessageType
+        from gateway.platforms.event import MessageType
 
         assert event.text == "just text"
         assert event.media_urls == []
@@ -886,7 +967,7 @@ class TestWeComNativeStreamingCapability:
         assert WeComAdapter.MAX_STREAM_CONTENT_LENGTH == 20480
 
     def test_stream_expired_errcode_constant(self):
-        from plugins.platforms.wecom.adapter import STREAM_EXPIRED_ERRCODE
+        from plugins.platforms.wecom.streaming import STREAM_EXPIRED_ERRCODE
 
         assert STREAM_EXPIRED_ERRCODE == 846608
 
@@ -1044,7 +1125,8 @@ class TestSendStreamFrame:
     @pytest.mark.asyncio
     async def test_intermediate_frame_cap_drops_excess(self):
         """After MAX_INTERMEDIATE_FRAMES, further intermediate frames are dropped."""
-        from plugins.platforms.wecom.adapter import WeComAdapter, MAX_INTERMEDIATE_FRAMES
+        from plugins.platforms.wecom.adapter import WeComAdapter
+        from plugins.platforms.wecom.streaming import MAX_INTERMEDIATE_FRAMES
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
@@ -1145,9 +1227,8 @@ class TestSendStreamFrameFailures:
     @pytest.mark.asyncio
     async def test_846608_marks_chat_expired_and_returns_false(self):
         """846608 on finalize frame marks the chat expired and returns False."""
-        from plugins.platforms.wecom.adapter import (
-            STREAM_EXPIRED_ERRCODE, WeComAdapter,
-        )
+        from plugins.platforms.wecom.adapter import WeComAdapter
+        from plugins.platforms.wecom.streaming import STREAM_EXPIRED_ERRCODE
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"
@@ -1358,7 +1439,8 @@ class TestSendClosesActiveStream:
 
     @pytest.mark.asyncio
     async def test_send_falls_through_when_stream_expired(self):
-        from plugins.platforms.wecom.adapter import STREAM_EXPIRED_ERRCODE, WeComAdapter
+        from plugins.platforms.wecom.adapter import WeComAdapter
+        from plugins.platforms.wecom.streaming import STREAM_EXPIRED_ERRCODE
 
         adapter = WeComAdapter(PlatformConfig(enabled=True))
         adapter._last_chat_req_ids["chat-1"] = "req-1"

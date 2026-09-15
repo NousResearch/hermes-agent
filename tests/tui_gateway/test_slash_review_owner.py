@@ -19,16 +19,18 @@ def _live_session(agent):
     }
 
 
-def test_slash_review_dispatches_under_the_parent_session_identity(monkeypatch):
+def test_slash_review_dispatches_under_the_parent_session_identity(monkeypatch, tmp_path):
     sid = "review-sid"
     session = _live_session(object())
+    session["cwd"] = str(tmp_path)
     server._sessions[sid] = session
     seen = {}
 
-    def fake_start_review(agent, snapshot, prompt):
+    def fake_start_review(agent, snapshot, prompt, *, cwd=None):
         from gateway.session_context import get_session_env
         seen["ui_session_id"] = get_session_env("HERMES_UI_SESSION_ID", "")
         seen["authority"] = server._current_session_steer_authority(sid)
+        seen["cwd"] = cwd
         return {"status": "dispatched", "delegation_id": "deleg_x"}
 
     token = server.bind_transport(session["transport"])
@@ -48,3 +50,4 @@ def test_slash_review_dispatches_under_the_parent_session_identity(monkeypatch):
     assert out == "Review started. Results will return here."
     assert seen["ui_session_id"] == sid
     assert seen["authority"] == (session["transport"], session)
+    assert seen["cwd"] == str(tmp_path)

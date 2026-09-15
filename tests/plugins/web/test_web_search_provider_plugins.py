@@ -80,6 +80,7 @@ class TestBundledPluginsRegister:
             "brave-free",
             "ddgs",
             "exa",
+            "federated",
             "firecrawl",
             "keenable",
             "parallel",

@@ -41,7 +41,7 @@ import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { ToolIcon } from '@/components/ui/tool-icon'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
-import { connectorCalls } from '@/lib/connector-tools'
+import { connectorCalls, mcpTargets } from '@/lib/connector-tools'
 import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } from '@/lib/external-link'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
@@ -59,6 +59,7 @@ import {
   buildToolView,
   clampForDisplay,
   cleanVisibleText,
+  CONNECTION_CARD_KEY,
   countDiffLineStats,
   inlineDiffFromResult,
   isCardTool,
@@ -1042,8 +1043,9 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
       .slice(Math.max(0, startIndex), endIndex + 1)
       .map(part =>
         part.type === 'tool-call'
-          ? isOnboardingEnabled() && connectorCalls(part.toolName, part.args).length
-            ? 'manage_connections'
+          ? (isOnboardingEnabled() && connectorCalls(part.toolName, part.args).length) ||
+            mcpTargets(part.toolName, part.args).length
+            ? CONNECTION_CARD_KEY
             : part.toolName
           : ''
       )

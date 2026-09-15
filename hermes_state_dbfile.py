@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from hermes_state_holders import canonical_sqlite_path
 from hermes_state_common import (
     FTS_REBUILD_DEFERRAL_KEY, stat_db_file_identity as _stat_db_file_identity
 )
@@ -131,17 +132,12 @@ def _stat_sqlite_sidecar_identity(db_path: Path) -> Dict[str, tuple]:
     return {suffix: ident for suffix, ident in idents.items() if ident is not None}
 
 
-def _canonical_sqlite_path(path: str) -> str:
-    """Normalize a /proc fd target, stripping the Linux `` (deleted)`` suffix."""
-    return os.path.normcase(os.path.abspath(path.removesuffix(" (deleted)")))
-
-
 def _watched_sqlite_sidecar_paths(db_path) -> Dict[str, str]:
     """Map each sidecar's canonical (/proc-comparable) form to its literal, still-named path,
     so a canonical match can be re-``stat``'d for identity rather than trusted as text."""
     base = os.path.abspath(os.fspath(db_path))
     literal = (base + "-wal", base + "-shm")
-    return {_canonical_sqlite_path(path): path for path in literal}
+    return {canonical_sqlite_path(path): path for path in literal}
 
 
 def _identity_is_truly_unlinked(identity: "Tuple[int, int]", watched_path: str) -> bool:
@@ -327,7 +323,7 @@ def iter_deleted_sqlite_sidecar_holders(db_path) -> List[Tuple[int, str]]:
         elif sys.platform.startswith("linux"):
             watched = _watched_sqlite_sidecar_paths(db_path)
             for pid, target, fd_path in _iter_proc_fd_targets():
-                canonical = _canonical_sqlite_path(target)
+                canonical = canonical_sqlite_path(target)
                 if (" (deleted)" in target and canonical in watched
                         and _fd_is_truly_unlinked(fd_path, watched[canonical])):
                     holders.append((pid, target))
@@ -769,13 +765,19 @@ def collect_state_db_stats(db_path: Path) -> Dict[str, Any]:
 
 
 def count_db_holders(db_path: Path) -> Optional[int]:
-    """Best-effort count of distinct PIDs holding ``db_path`` open (``/proc/*/fd`` scan); ``None``
-    on any error or non-Linux host, never raises.  Unreadable fd dirs (other users' processes
-    without root) are skipped, so this is a lower bound."""
+    """Best-effort count of distinct PIDs holding ``db_path`` open (``/proc/*/fd`` on Linux, libproc
+    on macOS); ``None`` on any error or other host, never raises.  Uninspectable processes (other
+    users' without root) are skipped, so this is a lower bound."""
     try:
+        target = os.path.realpath(str(db_path))
+        if sys.platform == "darwin":
+            # Identity, not pathname: libproc reports the vnode's last name as the opener spelled it
+            # (case, symlinked prefix), which is exactly what the sidecar leg had to case-fold around.
+            st = os.stat(target)
+            identity = (st.st_dev, st.st_ino)
+            return len({pid for pid, _fd, _path, ident in _iter_darwin_fd_targets() if ident == identity})
         if not sys.platform.startswith("linux"):
             return None
-        target = os.path.realpath(str(db_path))
         return len({pid for pid, link, _fd_path in _iter_proc_fd_targets() if link == target})
     except Exception:
         return None
@@ -793,4 +795,4 @@ def _concrete_state_db_holder_pids(db_path: Path, holders: List[Tuple[int, str]]
     canonical_db = os.path.normcase(os.path.abspath(os.fspath(db_path)))
     watched = {canonical_db, canonical_db + "-wal", canonical_db + "-shm"}
     return list(dict.fromkeys(
-        pid for pid, path in holders if pid > 0 and _canonical_sqlite_path(path) in watched))
+        pid for pid, path in holders if pid > 0 and canonical_sqlite_path(path) in watched))

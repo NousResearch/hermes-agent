@@ -1972,7 +1972,7 @@ DEFAULT_CONFIG = {
         # Set to False to stay on per-profile gateways — a durable opt-out that survives updates, so
         # the decision is not re-litigated on every release. Only the AUTOMATIC path reads this:
         # `hermes gateway migrate --multiplex` is an explicit request and always proceeds.
-        "auto_migrate": True,
+        "auto_multiplex_migration": True,
         # Route inbound chats of the default profile's bots to another profile
         # (gateway/profile_routing.py): [{profile, platform, chat_id|user_id|guild_id|...}].
         # Most-specific match wins; only read by the multiplexing default gateway.
@@ -2331,6 +2331,10 @@ DEFAULT_CONFIG = {
         "extra_allowed_hosts": [],
     },
     "desktop": {  # Hermes Desktop (Electron) launch options; only affect `hermes desktop`.
+        # CSS font-family for the app's chat and UI text (e.g. "OpenDyslexic"). Layered in front
+        # of the active theme's own sans stack so missing glyphs still fall through. Empty = the
+        # theme's face. The terminal pane is terminal.font_family.
+        "font_family": "",
         # Git repo discovery for the Projects sidebar; empty roots = bounded scan of $HOME.
         "repo_scan_enabled": True,
         "repo_scan_roots": [],
@@ -2415,7 +2419,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 44,  # Config schema version - bump this when adding new required fields
+    "_config_version": 45,  # Config schema version - bump this when adding new required fields
 }
 
 

@@ -18,7 +18,7 @@ from tools.skills_guard import (
     Finding, ScanResult, SUSPICIOUS_BINARY_EXTENSIONS, _determine_verdict, format_scan_report,
     scan_file)
 
-PLUGIN_SCANNER_VERSION = "plugin-guard-v1"
+PLUGIN_SCANNER_VERSION = "plugin-guard-v3"
 
 # Never scanned: VCS internals, caches, vendored envs.
 EXCLUDED_DIRS = {
@@ -37,6 +37,19 @@ TEST_TREE_DIRS = {"tests", "test", "testing", "spec", "specs", "fixtures"}
 # Code files, where "reads an env secret" / "HTTP call with a key" is normal (requires_env).
 CODE_FILE_EXTENSIONS = {".py", ".js", ".ts", ".sh", ".bash", ".rb", ".pl", ".php"}
 
+# Line-comment marker per code extension. Whole-line comments explain intent; hardening
+# notes like "# a symlink could point at /etc/passwd" are prose *about* a defense.
+COMMENT_PREFIXES_BY_EXTENSION = {
+    ".py": "#", ".sh": "#", ".bash": "#", ".rb": "#", ".pl": "#", ".r": "#", ".jl": "#",
+    ".js": "//", ".ts": "//", ".php": "//"}
+
+# One severity step down from the pattern's default.
+_COMMENT_SEVERITY_CAP = {"critical": "high", "high": "medium"}
+
+# History, not an agent-facing instruction surface: a hardening entry mentioning the threat
+# it fixed ("A symlink could point at /etc/passwd, so ...") is documentation, not the attack.
+CHANGELOG_FILENAMES = {"changelog.md"}
+
 # Pattern ids exempt on code files (every legitimate provider plugin trips them); still
 # applied in full to docs/config files.
 CODE_EXEMPT_PATTERN_IDS = {
@@ -53,6 +66,26 @@ CODE_EXEMPT_PATTERN_IDS = {
 # ``read_secrets_file``, critical); ``curl | sh`` in READMEs is caution, not a hard block.
 SEVERITY_REMAP = {
     "binary_file": "high", "hermes_env_access": "medium", "curl_pipe_shell": "high"}
+
+# In JS/TS, these text matches cannot distinguish a UI label or DNS lookup
+# template from a write or exfiltration operation. Keep them visible and require
+# confirmation; do not silently allow them. Shell commands and instructions keep
+# their critical severity, as do separate credential-read/exfiltration findings.
+JS_CAPABILITY_REMAP = {"dns_exfil": "high", "ssh_backdoor": "high"}
+
+# Plugin scans gate a HOST install: what matters is what executes on the host. Two critical
+# families describe the author's own dev workflow when they appear in documentation files, so
+# they are demoted one tier (critical -> high) there instead of hard-blocking an otherwise
+# auditable plugin; the same content in runtime code keeps its critical severity.
+DOC_PROSE_EXTENSIONS = {".md", ".txt", ".rst", ".html"}
+DOC_PROSE_DEMOTIONS = {
+    # Prose modification bullets ("- Modify: `CLAUDE.md`") in plan/design docs describe the
+    # repo's own files; only executable intent (shell writes, code) stays critical.
+    "agent_config_mod": "high",
+    # Example/demo credentials quoted in docs (placeholder hex, test tokens). Real token-shaped
+    # literals (sk-, ghp_, AKIA, glpat-, private keys) keep their own critical patterns.
+    "hardcoded_secret": "high",
+}
 
 # Structural limits — plugins are real codebases, far larger than skills.
 MAX_PLUGIN_FILE_COUNT = 400
@@ -79,15 +112,46 @@ def _filter_findings(findings: List[Finding], rel_path: str) -> List[Finding]:
     """Apply plugin-specific exemptions and severity remaps to raw findings."""
     is_code = Path(rel_path).suffix.lower() in CODE_FILE_EXTENSIONS
     in_test_tree = Path(rel_path).parts[0] in TEST_TREE_DIRS
+    is_js = Path(rel_path).suffix.lower() in {".js", ".ts"}
+    is_doc_prose = Path(rel_path).suffix.lower() in DOC_PROSE_EXTENSIONS
     out: List[Finding] = []
     for f in findings:
         if is_code and f.pattern_id in CODE_EXEMPT_PATTERN_IDS:
             continue
-        f.severity = SEVERITY_REMAP.get(f.pattern_id) or f.severity
+        f.severity = (
+            (JS_CAPABILITY_REMAP.get(f.pattern_id) if is_js else None)
+            or SEVERITY_REMAP.get(f.pattern_id) or f.severity
+        )
+        if is_doc_prose and f.pattern_id in DOC_PROSE_DEMOTIONS:
+            f.severity = DOC_PROSE_DEMOTIONS[f.pattern_id]
         if in_test_tree and f.severity == "critical":
             f.severity = "high"
+        if (
+            _is_defensive_documentation(f, rel_path)
+            and f.severity in _COMMENT_SEVERITY_CAP
+        ):
+            f.severity = _COMMENT_SEVERITY_CAP[f.severity]
         out.append(f)
     return out
+
+
+def _is_defensive_documentation(finding: Finding, rel_path: str) -> bool:
+    """A whole-line code comment or a changelog entry *describes* threats (the attack a
+    defense rejects, the hardening a release shipped) instead of executing them, so its
+    findings cap one severity step lower — visible and reviewable, never un-overridable
+    ``dangerous`` from prose alone. Runtime code and agent-facing docs keep full severity.
+    """
+    if Path(rel_path).name.lower() in CHANGELOG_FILENAMES:
+        return True
+    prefix = COMMENT_PREFIXES_BY_EXTENSION.get(Path(rel_path).suffix.lower())
+    if prefix is None or not finding.match:
+        return False
+    stripped = finding.match.lstrip()
+    if not stripped.startswith(prefix):
+        return False
+    if prefix == "#" and stripped.startswith(("#!", "#:")):
+        return False
+    return True
 
 
 def _dangerous_findings_summary(findings: List[Finding]) -> str:

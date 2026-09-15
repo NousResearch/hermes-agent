@@ -48,10 +48,9 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
 
   for (const member of members) {
     const title = String(member.title || '').trim()
-    // Cross-connection members are also addressable by their @name-device
-    // handle (the roster's disambiguated form) — same-named agents on two
-    // machines resolve to the right one.
-    const handle = String(member.handle || botHandle(member.name, member) || '').trim()
+    // Normalize legacy "default" handles without aliasing device-qualified
+    // defaults to @hermes: that would retarget the primary tag by roster order.
+    const handle = String(botHandle(member.name, member) || '').trim()
 
     const forms = new Set([
       member.name.toLowerCase(),

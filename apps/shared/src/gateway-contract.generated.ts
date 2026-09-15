@@ -458,6 +458,62 @@ export interface ProjectFacts {
   verifyCommands: string[]
   contextFiles: string[]
 }
+export interface ConnectionOperationParams {
+  profile?: string | null
+  session_id: string
+  op_id: string
+}
+/** ``methods_connectors._operation_view``: the operation's full snapshot. */
+export interface ConnectionOperationStatus {
+  op_id: string
+  deadline_at: number
+  settled: boolean
+  settled_at?: number | null
+  settled_by?: ConnectionSettleReason | null
+  targets: ConnectionOperationTarget[]
+}
+/** ``tools/connectors/contract.py::SettleReason``. */
+export type ConnectionSettleReason = 'all_resolved' | 'continue' | 'deadline' | 'interrupt' | 'unavailable'
+/** ``Target.snapshot``: the link minted up front rides here, never in the model result. ``extra`` keys a leg records (``tools``, ``hint``) are typed here as they appear. */
+export interface ConnectionOperationTarget {
+  name: string
+  kind: ConnectionTargetKind
+  action: ConnectionTargetAction
+  state: ConnectionTargetState
+  detail?: string | null
+  connect_url?: string | null
+  attempt?: string | null
+  tools?: string[] | null
+  hint?: string | null
+}
+export type ConnectionTargetKind = 'connector' | 'mcp'
+export type ConnectionTargetAction = 'authorize' | 'connect' | 'enable' | 'install' | 'reconnect'
+/** ``tools/connectors/contract.py::TargetState``. */
+export type ConnectionTargetState = 'pending' | 'initiated' | 'connected' | 'skipped' | 'failed' | 'expired' | 'unavailable' | 'not_connected'
+export interface ConnectionRespondParams {
+  profile?: string | null
+  session_id: string
+  op_id: string
+  result: ConnectionAnswer
+}
+/** The card's answer: per-target outcomes and an optional Continue (``settled_by: "continue"``). Settlement is derived from target states afterwards. */
+export interface ConnectionAnswer {
+  targets?: ConnectionAnswerTarget[]
+  settled_by?: ConnectionSettleReason | null
+}
+/** One row's answer from the card. ``status`` is what the card observed for that row (``tools/connectors/mcp.py::_OUTCOME_STATES`` maps it onto a target state); ``state`` is the older spelling of the same field and one of the two is present. */
+export interface ConnectionAnswerTarget {
+  name: string
+  status?: string | null
+  state?: string | null
+  detail?: string | null
+  tools?: string[] | null
+  [key: string]: unknown
+}
+export interface ConnectionRespondResult {
+  status: string
+  settled: boolean
+}
 /** ``key`` selects one getter from ``_CONFIG_GETTERS``; ``cwd`` feeds the ``project`` getter, ``session_id`` lets ``reasoning`` / ``fast`` answer with the session's live pin. */
 export interface ConfigGetParams {
   profile?: string | null
@@ -719,18 +775,16 @@ export interface ConnectorsConnectParams {
   connectors: string[]
   reconnect?: boolean
 }
+/** The operation the connect opened (or re-minted on): ``tools/connectors/managed.py`` ``_off_desktop_result`` / ``methods_connectors._reissue``. ``status``/``note`` ride along from the tool result when the call ran through ``manage_connections``. */
 export interface ConnectorsConnectResult {
-  results: ConnectorConnectEntry[]
-  summary: Record<string, unknown>
-}
-/** ``tools/connections_tool.py`` per-connector authorization outcome. */
-export interface ConnectorConnectEntry {
-  connector?: string
+  op_id: string
+  deadline_at: number
+  settled: boolean
+  settled_at?: number | null
+  settled_by?: ConnectionSettleReason | null
+  targets: ConnectionOperationTarget[]
   status?: string | null
-  connect_url?: string | null
   note?: string | null
-  instruction?: string | null
-  [key: string]: unknown
 }
 export interface ImageGenerateParams {
   prompt?: string | null
@@ -2460,6 +2514,7 @@ export interface SessionResumeResult {
   queued?: QueuedPrompt | null
   pending_approval?: PendingApproval | null
   open_requests?: OpenRequestEntry[] | null
+  pending_connection?: ConnectionRequestPayload | null
   todo_state?: TodoState | null
   auto_continue?: AutoContinue | null
 }
@@ -2483,6 +2538,14 @@ export interface OpenRequestEntry {
   id: string
   method: string
   params: Record<string, unknown>
+}
+/** ``ConnectionOperation.request_payload``: opens the card; also the ``pending_connection`` resume snapshot so a client that missed the event restores the card with the server's deadline. */
+export interface ConnectionRequestPayload {
+  op_id: string
+  deadline_at: number
+  timeout_seconds: number
+  targets: ConnectionOperationTarget[]
+  tool_call_id?: string | null
 }
 /** ``tool_progress._normalize_todo_state``: the authoritative todo snapshot. */
 export interface TodoState {
@@ -2518,6 +2581,7 @@ export interface SessionActivateResult {
   queued?: QueuedPrompt | null
   pending_approval?: PendingApproval | null
   open_requests?: OpenRequestEntry[] | null
+  pending_connection?: ConnectionRequestPayload | null
   todo_state?: TodoState | null
   auto_continue?: AutoContinue | null
 }
@@ -3650,7 +3714,7 @@ export interface ApprovalResult {
 export interface EmptyRequestParams {
   session_id: string
 }
-/** The answer to any one-string prompt (sudo, secret, vault prompts, desktop bridges, mcp.setup): ``''`` means skipped / declined. */
+/** The answer to any one-string prompt (sudo, secret, vault prompts, desktop bridges): ``''`` means skipped / declined. */
 export interface ValueResult {
   value: string
 }
@@ -3674,12 +3738,6 @@ export interface VaultCodeRequestParams {
   session_id: string
   site?: string | null
   hint?: string | null
-}
-export interface McpSetupRequestParams {
-  session_id: string
-  server?: string | null
-  action?: string | null
-  reason?: string | null
 }
 export interface ReadRangeRequestParams {
   session_id: string
@@ -3719,6 +3777,22 @@ export interface TourStep {
   side?: string | null
   [key: string]: unknown
 }
+/** ``methods_connectors._connection_update``: one target transition (``target``/``from``/``to``/ ``actor``) or the settlement (none of those), with the full snapshot. */
+export interface ConnectionUpdatePayload {
+  op_id: string
+  deadline_at: number
+  settled: boolean
+  settled_at?: number | null
+  settled_by?: ConnectionSettleReason | null
+  targets: ConnectionOperationTarget[]
+  target?: string | null
+  from?: ConnectionTargetState | null
+  to?: ConnectionTargetState | null
+  actor?: ConnectionActor | null
+  detail?: string | null
+}
+/** ``tools/connectors/contract.py::Actor``. */
+export type ConnectionActor = 'user' | 'renderer_flow' | 'backend_watcher' | 'clock'
 /** ``tui_gateway/entry.py`` (stdio) / ``tui_gateway/ws.py`` (WebSocket) first frame. */
 export interface GatewayReadyPayload {
   skin: SkinPayload
@@ -4138,10 +4212,14 @@ export interface RpcMethods {
   'config.set': { params: ConfigSetParams; result: ConfigSetResult }
   /** Masked, display-ready config summary (model / agent / environment rows). */
   'config.show': { params: ConfigShowParams; result: ConfigShowResult }
-  /** Start (or re-initiate) authorization for named connectors; returns per-connector links/status. */
+  /** Per-target outcomes from the card, and an optional Continue. */
+  'connection.respond': { params: ConnectionRespondParams; result: ConnectionRespondResult }
+  /** Start (or re-initiate) authorization for named connectors on the session's connection operation. */
   'connectors.connect': { params: ConnectorsConnectParams; result: ConnectorsConnectResult }
   /** Connector catalog + connection state for one owned session (``available=False`` when the toolset is off). */
   'connectors.list': { params: ConnectorsListParams; result: ConnectorsListResult }
+  /** The current snapshot of one open operation on an owned session. */
+  'connectors.operation.status': { params: ConnectionOperationParams; result: ConnectionOperationStatus }
   /** List/add/remove/pause/resume cron jobs in the (optionally profile-scoped) cron store. */
   'cron.manage': { params: CronManageParams; result: CronManageResult }
   /** Block/unblock NEW spawns globally (active children keep running); returns the new state. */
@@ -4542,8 +4620,10 @@ export const RPC_METHODS = [
   'config.get',
   'config.set',
   'config.show',
+  'connection.respond',
   'connectors.connect',
   'connectors.list',
+  'connectors.operation.status',
   'cron.manage',
   'delegation.pause',
   'delegation.status',
@@ -4736,8 +4816,6 @@ export interface ServerRequestMap {
   approval: { params: ApprovalRequestParams; result: ApprovalResult }
   /** The clarify tool: ask the user one question or a batch. */
   clarify: { params: ClarifyRequestParams; result: ClarifyResult }
-  /** Consent card for installing / enabling / authorising an MCP server. */
-  'mcp.setup': { params: McpSetupRequestParams; result: ValueResult }
   /** Click / type / scroll / annotate inside the in-app browser preview. */
   'preview.act': { params: PreviewActRequestParams; result: ValueResult }
   /** Read the in-app browser preview's text (JSON text answer). */
@@ -4763,7 +4841,6 @@ export type ServerRequestMethod = keyof ServerRequestMap
 export const SERVER_REQUEST_METHODS = [
   'approval',
   'clarify',
-  'mcp.setup',
   'preview.act',
   'preview.read',
   'secret',
@@ -4794,6 +4871,10 @@ export interface BackendGatewayEventMap {
   'browser.progress': BrowserProgressPayload
   /** A /btw side question was answered. */
   'btw.complete': SideAgentCompletePayload
+  /** A connection operation opened on this session; the desktop renders its card. */
+  'connection.request': ConnectionRequestPayload
+  /** One transition or the settlement of an open connection operation. */
+  'connection.update': ConnectionUpdatePayload
   /** cron/jobs.json moved; refetch the cron list. */
   'cron.changed': ChangeSignalPayload
   /** A session-level failure outside a turn (agent init, model switch, compression, resume). */
@@ -4923,6 +5004,8 @@ export const GATEWAY_EVENT_TYPES = [
   'browser.controller.command',
   'browser.progress',
   'btw.complete',
+  'connection.request',
+  'connection.update',
   'cron.changed',
   'error',
   'gateway.ready',

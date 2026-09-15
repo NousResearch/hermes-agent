@@ -45,6 +45,7 @@ from hermes_time import now as _hermes_now
 from agent.interrupt_compat import request_hard_interrupt
 from agent.delegation_context import (
     enter_non_dispatcher_owned_context, exit_non_dispatcher_owned_context)
+from agent.memory_provider import ctx_bound
 
 logger = logging.getLogger(__name__)
 
@@ -345,6 +346,17 @@ def _upsert_incident_for_failure(
             "Incident store unavailable for job %s (delivery unaffected): %s",
             job["id"], exc)
         return False, None
+
+
+def _resolve_incidents_for_recovered_job(job: dict) -> None:
+    """Best-effort: a successful run marks the job's open incidents ``resolved`` (never touches an
+    operator ``closed`` ack). Store errors log at debug; delivery is unaffected."""
+    try:
+        from cron.incidents import close_incidents_for_recovered_job
+
+        close_incidents_for_recovered_job(job["id"])
+    except Exception as exc:
+        logger.debug("Incident store unavailable for job %s (delivery unaffected): %s", job["id"], exc)
 
 
 def _mark_incident_alerted(incident_id: Optional[str]) -> None:
@@ -1171,7 +1183,7 @@ def _run_cron_cleanup_with_timeout(
     # Daemon thread is deliberate: unlike ThreadPoolExecutor workers it is not joined at interpreter
     # exit if cleanup never returns, so the gateway can still shut down.
     worker = threading.Thread(
-        target=_runner, name=f"cron-cleanup-{job_id}", daemon=True)
+        target=ctx_bound(_runner), name=f"cron-cleanup-{job_id}", daemon=True)
     worker.start()
     if not done.wait(timeout):
         logger.error(
@@ -2590,6 +2602,7 @@ def _compose_run_delivery(
         )
     elif success:
         deliver_content = final_response
+        _resolve_incidents_for_recovered_job(job)
     else:
         # Record the job+error signature once; if already acked by the operator, suppress the
         # per-run ping. Best-effort: a ledger failure never breaks delivery.

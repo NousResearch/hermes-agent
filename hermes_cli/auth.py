@@ -754,18 +754,20 @@ def _load_provider_state(auth_store: Dict[str, Any], provider_id: str) -> Option
 
 
 @contextmanager
-def _provider_state_transaction(provider_id: str):
+def _provider_state_transaction(
+        provider_id: str, timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
     """Lock the active auth store and any global fallback source, in that order.
 
     Re-reading the source after its lock is acquired prevents stale refreshes and whole-file lost
-    updates without inverting the documented auth -> shared lock order."""
-    with _auth_store_lock():
+    updates without inverting the documented auth -> shared lock order. ``timeout_seconds`` applies
+    to BOTH locks: a transaction that spans a network call must let waiters outlive that call."""
+    with _auth_store_lock(timeout_seconds):
         auth_store = _load_auth_store()
         state, source_path = _load_provider_state_with_source(auth_store, provider_id)
         if source_path is None or _same_path(source_path, _auth_file_path()):
             yield auth_store, state, source_path
             return
-        with _auth_store_lock(target_path=source_path):
+        with _auth_store_lock(timeout_seconds, target_path=source_path):
             yield auth_store, _provider_state_in(_load_auth_store(source_path), provider_id), source_path
 
 

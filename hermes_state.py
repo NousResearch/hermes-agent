@@ -47,7 +47,7 @@ from hermes_state_schema import SessionSchemaMixin
 import hermes_state_holders as _state_holders
 import hermes_state_lockguard as _lockguard
 from hermes_state_dbfile import (
-    _canonical_sqlite_path, _connect_tracked_db, _fd_is_truly_unlinked, _prepare_connection_retirement,
+    _connect_tracked_db, _fd_is_truly_unlinked, _prepare_connection_retirement,
     _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
     _watched_sqlite_sidecar_paths, has_invalid_sqlite_header_preopen, is_zeroed_state_db, quarantine_cross_process_lock,
     quarantine_invalid_state_db,
@@ -1114,7 +1114,7 @@ class SessionDB(
             watched = _watched_sqlite_sidecar_paths(self.db_path)
             try:
                 for target, fd_path in _proc_fd_targets(os.getpid()):
-                    canonical = _canonical_sqlite_path(target)
+                    canonical = _state_holders.canonical_sqlite_path(target)
                     if (" (deleted)" in target and canonical in watched
                             and _fd_is_truly_unlinked(fd_path, watched[canonical])):
                         return True

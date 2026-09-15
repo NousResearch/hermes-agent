@@ -374,29 +374,46 @@ def refresh_codex_oauth_pure(
 
 
 def _refresh_codex_auth_tokens(tokens: Dict[str, str], timeout_seconds: float) -> Dict[str, str]:
-    """Refresh Codex access token using the refresh token."""
-    from hermes_cli.auth import _save_codex_tokens, refresh_codex_oauth_pure
-    try:
-        refreshed = refresh_codex_oauth_pure(
-            str(tokens.get("access_token", "") or ""), str(tokens.get("refresh_token", "") or ""),
-            timeout_seconds=timeout_seconds)
-    except AuthError as exc:
-        # Self-heal cross-store rotation: refresh_tokens are single-use, so when the Codex CLI (or
-        # another Hermes process) rotates the shared token this frozen copy fails with a
-        # relogin-required error (invalid_grant / refresh_token_reused / 401). Adopt the canonical
-        # fresh token from ~/.codex/auth.json before surfacing a hard 401. Transient failures
-        # (429 quota) keep relogin_required=False — the stored token is still valid — re-raise.
-        if not getattr(exc, "relogin_required", False):
-            raise
-        imported = _recover_codex_tokens_from_cli(
-            f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}")
-        if not imported:
-            raise
-        return imported
-    updated_tokens = {
-        **tokens, "access_token": refreshed["access_token"],
-        "refresh_token": refreshed["refresh_token"]}
-    _save_codex_tokens(updated_tokens, write_through=True)
+    """Refresh Codex access token using the refresh token.
+
+    The whole re-read -> endpoint POST -> write-back runs inside the SOURCE store's transaction:
+    two profiles borrowing the same root grant otherwise both submit the same single-use refresh
+    token (each holds only its own profile lock) and OpenAI revokes the family. A waiter that
+    finds root already rotated by its peer adopts the stored pair instead of replaying the
+    consumed token. Both locks wait out a full endpoint timeout so the waiter adopts, not times out.
+    """
+    from hermes_cli.auth import _provider_state_transaction, _save_codex_tokens, refresh_codex_oauth_pure
+    lock_timeout = max(float(AUTH_LOCK_TIMEOUT_SECONDS), float(timeout_seconds) + 5.0)
+    with _provider_state_transaction("openai-codex", lock_timeout) as (_store, state, _source):
+        stored = (state or {}).get("tokens")
+        stored = stored if isinstance(stored, dict) else {}
+        stored_at, stored_rt = _stripped(stored.get("access_token")), _stripped(stored.get("refresh_token"))
+        if stored_at and stored_rt and stored_rt != _stripped(tokens.get("refresh_token")):
+            logger.info("Codex refresh token already rotated by a peer — adopting the stored pair.")
+            return {**tokens, "access_token": stored_at, "refresh_token": stored_rt}
+        try:
+            refreshed = refresh_codex_oauth_pure(
+                str(tokens.get("access_token", "") or ""), str(tokens.get("refresh_token", "") or ""),
+                timeout_seconds=timeout_seconds)
+        except AuthError as exc:
+            # Self-heal cross-store rotation: refresh_tokens are single-use, so when the Codex CLI
+            # (or another Hermes process) rotates the shared token this frozen copy fails with a
+            # relogin-required error (invalid_grant / refresh_token_reused / 401). Adopt the
+            # canonical fresh token from ~/.codex/auth.json before surfacing a hard 401. Transient
+            # failures (429 quota) keep relogin_required=False — the stored token is still valid —
+            # re-raise.
+            if not getattr(exc, "relogin_required", False):
+                raise
+            imported = _recover_codex_tokens_from_cli(
+                f"refresh_token rejected: {getattr(exc, 'code', None) or 'auth_error'}")
+            if not imported:
+                raise
+            return imported
+        updated_tokens = {
+            **tokens, "access_token": refreshed["access_token"],
+            "refresh_token": refreshed["refresh_token"]}
+        # Nested transaction: the per-path lock is reentrant, and it re-reads under the held locks.
+        _save_codex_tokens(updated_tokens, write_through=True)
     return updated_tokens
 
 

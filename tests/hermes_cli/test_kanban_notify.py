@@ -3,6 +3,7 @@ import pytest
 
 from pathlib import Path
 from types import SimpleNamespace
+from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
@@ -83,6 +84,33 @@ def test_notify_sub_delivery_mode_persists_and_last_write_wins(kanban_home):
         assert subs[0]["delivery_mode"] == "wake"
     finally:
         conn.close()
+
+
+def test_notify_subscribe_cli_records_discord_multiplex_anchors(kanban_home):
+    """The CLI must persist thread route anchors without dropping existing metadata."""
+    import argparse
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="thread route", assignee="worker")
+        kbn.add_notify_sub(
+            conn, task_id=tid, platform="discord", chat_id="thread",
+            thread_id="thread", delivery_metadata={"chat_type": "thread", "existing": "keep"},
+        )
+
+    parser = argparse.ArgumentParser()
+    kc.build_parser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args([
+        "kanban", "notify-subscribe", tid, "--platform", "discord", "--chat-id", "thread",
+        "--thread-id", "thread", "--chat-type", "thread", "--parent-chat-id", "parent",
+        "--guild-id", "guild",
+    ])
+    assert kc.kanban_command(args) == 0
+
+    with kbc.connect() as conn:
+        sub = kbn.list_notify_subs(conn, tid)[0]
+    assert sub["delivery_metadata"] == {
+        "chat_type": "thread", "existing": "keep", "parent_chat_id": "parent", "guild_id": "guild",
+    }
 
 
 def test_child_task_inherits_parent_delivery_mode(kanban_home):

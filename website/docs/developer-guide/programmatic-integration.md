@@ -86,7 +86,7 @@ Approvals, clarify questions, sudo/secret prompts, vault unlock, MCP setup and t
 → {"jsonrpc":"2.0","id":"srq-7","result":{"choice":"once"}}
 ```
 
-Methods: `approval` → `{choice}`; `clarify` → `{answer}` (single) or `{answers}` / `{}` cancel (batch, with `clarify.lock` to lock one answer early); `sudo`, `secret`, `vault.code`, `vault.unlock` → `{value}`; `mcp.setup` → `{result}`; `terminal.read`, `window.read`, `preview.act`, `tour` → `{value}` (JSON text). Respond with a JSON-RPC error (`-32601`) for a method your host does not implement so the agent fails fast instead of waiting out the timeout.
+Methods: `approval` → `{choice}`; `clarify` → `{answer}` (single) or `{answers}` / `{}` cancel (batch, with `clarify.lock` to lock one answer early); `sudo`, `secret`, `vault.code`, `vault.unlock` → `{value}`; `connection` → `{settled_by, targets}` (the `manage_connections` card: one outcome per target); `terminal.read`, `window.read`, `preview.act`, `tour` → `{value}` (JSON text). Respond with a JSON-RPC error (`-32601`) for a method your host does not implement so the agent fails fast instead of waiting out the timeout.
 
 When the gateway withdraws a question (timeout, interrupt, answered from another surface) it emits `request.cancel` `{ id, method, reason }`; clear only the matching prompt. `session.resume` / `session.activate` results and `session.events.since` carry `open_requests` — the still-open frames — so a reconnecting client re-renders (and can still answer) them.
 

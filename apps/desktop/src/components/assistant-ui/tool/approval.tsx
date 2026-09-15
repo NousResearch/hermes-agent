@@ -41,7 +41,7 @@ import type { ToolPart } from './fallback-model'
 // Binding is POSITIONAL, not command-matched: the desktop `tool.start` payload
 // carries no structured args (only tool_id/name/context — see
 // tui_gateway/server.py::_on_tool_start), so we cannot join the approval to the
-// row by command string. `approval.request` can fire from the command guards
+// row by command string. an approval server request can fire from the command guards
 // and protected-instruction file writes. The agent thread blocks on exactly one
 // approval at a time, so the single pending row of those tools IS the row that
 // raised it. The command/description text comes from `$approvalRequest` (the

@@ -96,11 +96,23 @@ function createBootstrapCoordinator() {
   async function cancelAndWait(scope, afterCancel?: () => Promise<void>) {
     let release
 
-    const barrier = new Promise<void>(resolve => {
+    const own = new Promise<void>(resolve => {
       release = resolve
     })
+    // Compose with any drain already in flight for this scope (a pool stop
+    // still tearing down SSH while a connection apply cancels the same scope):
+    // start() must wait for every active teardown, and the map entry is
+    // cleared only once the composed barrier settles.
+    const prior = drains.get(scope)
+    // Drain barriers never reject, so chaining is equivalent to allSettled.
+    const barrier = prior ? prior.then(() => own) : own
 
     drains.set(scope, barrier)
+    void barrier.finally(() => {
+      if (drains.get(scope) === barrier) {
+        drains.delete(scope)
+      }
+    })
     const entries = [...active].filter(entry => entry.scope === scope)
 
     for (const entry of entries) {
@@ -120,12 +132,12 @@ function createBootstrapCoordinator() {
         await afterCancel()
       }
     } finally {
-      if (drains.get(scope) === barrier) {
-        drains.delete(scope)
-      }
-
       release()
     }
+
+    // "Cancel and wait" means the scope is drained: callers tear down SSH right
+    // after this returns, so wait for the composed barrier, not just our own.
+    await barrier
   }
 
   function cancelAll() {

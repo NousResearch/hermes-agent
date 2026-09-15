@@ -513,6 +513,13 @@ export const ja = defineLocale({
       terminalFontPlaceholder: 'MesloLGS NF または CSS フォントスタック',
       terminalFontPreview: 'グリフのプレビュー',
       terminalFontReset: '既定値を使用',
+      chatFontTitle: 'チャットフォント',
+      chatFontDesc:
+        'チャットとアプリ全体に使うインストール済みフォントを選択します。OpenDyslexic などの読みやすいフォントに便利です。空欄ならテーマのフォントを使います。',
+      chatFontPlaceholder: 'OpenDyslexic または CSS フォントスタック',
+      chatFontPreview: 'プレビュー',
+      chatFontSample: 'いろはにほへと ちりぬるを 0123456789',
+      chatFontReset: 'テーマのフォントを使用',
       translucencyTitle: 'ウィンドウの透過',
       translucencyDesc: 'テキストも含めウィンドウ全体を透過させてデスクトップを表示します。',
       translucencyGlassDesc: 'マットガラス: デスクトップが滑らかなぼかしとして透け、テキストは鮮明なまま。',

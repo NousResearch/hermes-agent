@@ -98,6 +98,7 @@ Use the **Move up** and **Move down** arrows beside a room to choose its positio
 
 - **One visible conversation.** Public messages and each member's reply stay readable in arrival order, with the speaker's name and timestamp. Starting another topic does not collapse earlier replies. **Reply in thread** continues that topic without reordering the room; **Activity** is a secondary status view, not a replacement for messages. Private Bot Chats remain separate.
 - Your message triggers up to **three serial rounds** of member turns. @-mentioned Bots respond (everyone responds when nobody is mentioned); each Bot replies briefly or passes, and the room settles when a full round stays silent.
+- Teammates can hand off to the primary Bot with `@hermes`, including in older saved rooms; Bots on other gateways keep their device-qualified tags (for example, `@default-vera`).
 - Bots pull each other in with `@name`, and escalate real judgment calls to you with `@user` — the group row shows a **needs you** badge when that happens. Pending questions and command approvals also light that badge; resolving the last prompt clears only prompt attention, not an independent mention. Prompts follow a renamed room, while disbanding retires them even if a member's in-flight poll arrives later.
 - Hard caps (10 messages per send, 3 rounds) keep rooms from spinning.
 - Each member keeps its own persistent `Group: <name>` session, so room context survives like any other conversation.
@@ -135,6 +136,13 @@ unreadable coordination registry is not mislabeled as another owner. Older local
 CLIs without the code marker still use the historical refusal wording.
 
 A failed delivery turn is retried at most once, and only when a retry can actually help. Transient failures (target runtime offline, delivery timeout, provider rate limit or server error) re-run the same Bot Chat session unchanged. A context-overflow failure also re-runs the same session — the retried turn compacts the over-threshold transcript via the standard context-compression pass before calling the model, so the retry fits where the original didn't. Auth, quota, and configuration failures never auto-retry: a second attempt cannot fix them and only burns quota, so the failure is surfaced immediately. A retried turn never starts a fresh session — your Bot Chat history and context stay intact.
+
+When a target has no live Desktop or TUI owner, local delivery opens that
+profile's canonical Bot Chat through a quiet CLI turn. The transport prefers
+the Hermes entrypoint beside the sending runtime's Python interpreter, so an
+unrelated or older `hermes` on a service's `PATH` cannot take precedence when
+that sibling entrypoint exists. `--in ~` selects the working directory; the
+explicit Bot Chat title is resolved in the target profile's session database.
 
 ### When a delivery fails: typed reasons
 

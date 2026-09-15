@@ -877,20 +877,19 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Dict[str,
     )
 
 
-_FINE_GRAINED_BETA = "fine-grained-tool-streaming-2025-05-14"
-
-
 def _apply_openai_header_policy(agent, client_kwargs: Dict[str, Any]) -> None:
     """Mutate ``client_kwargs`` (== ``agent._client_kwargs``) with header/TLS policy, in order:
     OpenRouter Claude beta header → model.default_headers → custom-provider TLS/extra_headers."""
     # Fine-grained tool streaming for Claude on OpenRouter: without the beta header
     # Anthropic buffers the whole tool call and OpenRouter's proxy times out.
+    from agent.anthropic_adapter import _TOOL_STREAMING_BETA
+
     _effective_base = str(client_kwargs.get("base_url", "")).lower()
     if base_url_host_matches(_effective_base, "openrouter.ai") and "claude" in (agent.model or "").lower():
         headers = client_kwargs.get("default_headers") or {}
         existing_beta = headers.get("x-anthropic-beta", "")
-        if _FINE_GRAINED_BETA not in existing_beta:
-            headers["x-anthropic-beta"] = ",".join(filter(None, (existing_beta, _FINE_GRAINED_BETA)))
+        if _TOOL_STREAMING_BETA not in existing_beta:
+            headers["x-anthropic-beta"] = ",".join(filter(None, (existing_beta, _TOOL_STREAMING_BETA)))
             client_kwargs["default_headers"] = headers
     # model.default_headers override provider/SDK defaults (WAFs rejecting SDK headers).
     agent._apply_user_default_headers()
@@ -2163,7 +2162,7 @@ _CALLBACK_PARAMS = (
     "tool_progress_callback", "tool_start_callback", "tool_complete_callback",
     "thinking_callback", "reasoning_callback", "clarify_callback",
     "read_terminal_callback", "read_preview_callback", "drive_preview_callback",
-    "read_window_below_callback", "setup_mcp_callback", "tour_callback",
+    "read_window_below_callback", "connection_callback", "tour_callback",
     "step_callback", "stream_delta_callback", "interim_assistant_callback",
     "status_callback", "notice_callback", "notice_clear_callback",
     "event_callback", "reaction_callback", "tool_gen_callback",
@@ -2186,7 +2185,7 @@ def init_agent(
     thinking_callback: callable = None, reasoning_callback: callable = None,
     clarify_callback: callable = None, read_terminal_callback: callable = None,
     read_preview_callback: callable = None, drive_preview_callback: callable = None,
-    read_window_below_callback: callable = None, setup_mcp_callback: callable = None,
+    read_window_below_callback: callable = None, connection_callback: callable = None,
     tour_callback: callable = None, step_callback: callable = None,
     stream_delta_callback: callable = None, interim_assistant_callback: callable = None,
     tool_gen_callback: callable = None, status_callback: callable = None,

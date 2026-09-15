@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -870,11 +871,24 @@ def _start_attestation_path() -> Path:
 
 
 def _write_start_attestation(pids: list[int], via: str) -> None:
-    """Persist the PIDs a ✓ vouched for. Best-effort, never raises."""
+    """Persist the PIDs a ✓ vouched for. Best-effort, never raises.
+
+    ``generation`` identifies this marker instance: the update resume token records the generation
+    whose death authorized a cold-start, so execution consumes exactly that marker and never a
+    newer one written by a concurrent ``hermes gateway start`` (#110020 review)."""
     try:
         path = _start_attestation_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"pids": [int(p) for p in pids], "via": via, "ts": datetime.now(timezone.utc).isoformat()}
+        from hermes_cli.process_identity import _process_create_time
+
+        payload = {
+            "pids": [int(p) for p in pids], "via": via, "ts": datetime.now(timezone.utc).isoformat(),
+            "generation": uuid.uuid4().hex,
+        }
+        # Bind each PID to its incarnation (#110020 review): the ledger sentinel is matched by PID
+        # only otherwise, so a stale marker would be re-read against whatever lifecycle wrote last.
+        create_times = {str(int(p)): _process_create_time(int(p)) for p in pids}
+        payload["create_times"] = {k: v for k, v in create_times.items() if v is not None}
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload), encoding="utf-8")
         tmp.replace(path)
@@ -887,6 +901,43 @@ def _clear_start_attestation() -> None:
         _start_attestation_path().unlink(missing_ok=True)
     except OSError:
         pass
+
+
+# A start attestation older than this is no authority (#110020 review (d)): the marker is a one-shot
+# meant to bridge the seconds between a ✓ and the next ``hermes gateway status``/``update``; a
+# historical marker must never later override Desktop ownership into a duplicate gateway (#76129).
+START_ATTESTATION_MAX_AGE_S = 24 * 3600
+# Same slack process_identity uses for psutil create_time comparisons (PID reuse disambiguation).
+_CREATE_TIME_TOLERANCE_S = 2.0
+# A backwards clock step (NTP) between write and read must not kill a fresh marker.
+_ATTESTATION_CLOCK_SLACK_S = 60.0
+
+
+def _attestation_within_horizon(data: object) -> bool:
+    """False for a marker whose ``ts`` is missing, unparsable or older than the horizon (fail closed)."""
+    try:
+        ts = datetime.fromisoformat(str(data["ts"])) if isinstance(data, dict) else None
+        if ts is None:
+            return False
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        age = time.time() - ts.timestamp()
+        return -_ATTESTATION_CLOCK_SLACK_S <= age <= START_ATTESTATION_MAX_AGE_S
+    except Exception:
+        return False
+
+
+def _attestation_generation(data: object) -> str | None:
+    """The marker instance identity, or ``None`` for a marker that carries none."""
+    return str(data["generation"]) if isinstance(data, dict) and data.get("generation") else None
+
+
+def _consume_start_attestation(generation: str) -> None:
+    """Clear the marker only while it is still the ``generation`` that was acted on; a newer
+    marker belongs to a gateway start this caller knows nothing about and keeps its own report."""
+    # Best-effort read-then-unlink: a marker written in between loses one post-start report, never authority.
+    if _attestation_generation(_read_start_attestation()) == generation:
+        _clear_start_attestation()
 
 
 def _read_start_attestation() -> object | None:
@@ -903,39 +954,70 @@ def _attested_pids_from(data: object) -> list[int]:
         return []
     pids = data.get("pids")
     # Fail closed: a null/malformed marker must never authorize a cold start (or raise on iteration).
-    if not isinstance(pids, list):
+    # Exact positive ints only — ``isinstance(True, int)`` holds, and 0 / negatives are not PIDs; one
+    # bad item taints the whole list because the writer never emits such values.
+    if not isinstance(pids, list) or not all(type(p) is int and p > 0 for p in pids):
         return []
-    return [p for p in pids if isinstance(p, int)]
+    return list(pids)
 
 
-def _attested_pid_exited_cleanly(pid: int) -> bool:
-    """True when the lifecycle ledger shows a clean exit for ``pid``."""
+def _attested_create_time(data: object, pid: int) -> float | None:
+    """The process create time the marker bound ``pid`` to, or ``None`` (older marker / psutil silent)."""
+    times = data.get("create_times") if isinstance(data, dict) else None
+    value = times.get(str(pid)) if isinstance(times, dict) else None
+    return float(value) if type(value) in (int, float) else None
+
+
+def _attested_pid_exited_cleanly(pid: int, create_time: float | None = None) -> bool:
+    """True when the lifecycle ledger shows a clean exit for ``pid`` — or, for a marker that bound
+    ``pid`` to a ``create_time``, whenever the sentinel cannot be shown to describe THAT incarnation
+    (#110020 review): a sentinel for another PID or another start time means an unrelated lifecycle
+    has run since and the marker is stale; "unknown" must never read as "dead". A missing sentinel
+    still reads as dead (the attested process never booted far enough to claim it)."""
     try:
         from gateway.lifecycle_ledger import get_lifecycle_sentinel_path
 
         data = json.loads(get_lifecycle_sentinel_path(_hermes_home()).read_text(encoding="utf-8"))
-    except Exception:
+    except OSError:
         return False
-    return isinstance(data, dict) and data.get("phase") == "exited" and data.get("pid") == pid
+    except Exception:
+        return create_time is not None
+    if not isinstance(data, dict):
+        return create_time is not None
+    if create_time is not None:
+        if data.get("pid") != pid:
+            return True
+        sentinel_birth = data.get("create_time")
+        # A sentinel from a gateway older than the identity stamp cannot be told apart: PID-only rule.
+        if type(sentinel_birth) in (int, float) and abs(float(sentinel_birth) - create_time) > _CREATE_TIME_TOLERANCE_S:
+            return True
+    return data.get("phase") == "exited" and data.get("pid") == pid
 
 
-def _attested_dead(attested: list[int], current_pids: list[int]) -> bool:
+def _attested_dead(attested: list[int], current_pids: list[int], data: object = None) -> bool:
     """The liveness rule shared by the consuming and read-only probes: attested PIDs are dead when
     no gateway runs now and the lifecycle ledger shows no clean exit for any of them."""
-    return not current_pids and not any(_attested_pid_exited_cleanly(pid) for pid in attested)
+    return not current_pids and not any(
+        _attested_pid_exited_cleanly(pid, _attested_create_time(data, pid)) for pid in attested
+    )
 
 
-def attested_gateway_died(current_pids: list[int]) -> bool:
-    """True when the start attestation vouches for gateway PID(s) that are gone without a clean exit.
+def attested_death_generation(current_pids: list[int]) -> str | None:
+    """The generation of a start attestation that vouches for gateway PID(s) gone without a clean exit,
+    or ``None``.
 
     Read-only twin of :func:`check_start_attestation` for callers that must not consume the
     one-shot marker — ``hermes update`` consults it to decide whether a Desktop-owned install
-    still owes a gateway cold-start (#109538). Callers pass the liveness they already established
-    (``[]`` after their own discovery came back empty) so the process table is not scanned twice.
-    ``False`` for anything undecidable (no marker, a clean ledger exit): "unknown" must never read
-    as "dead"."""
-    attested = _attested_pids_from(_read_start_attestation())
-    return bool(attested) and _attested_dead(attested, current_pids)
+    still owes a gateway cold-start (#109538) and records the generation in its resume token so the
+    execution step consumes exactly the marker it was authorized by. Callers pass the liveness they
+    already established (``[]`` after their own discovery came back empty) so the process table is
+    not scanned twice. ``None`` for anything undecidable (no marker, no generation, a clean ledger
+    exit): "unknown" must never read as "dead"."""
+    data = _read_start_attestation()
+    attested = _attested_pids_from(data)
+    if not attested or not _attestation_within_horizon(data) or not _attested_dead(attested, current_pids, data):
+        return None
+    return _attestation_generation(data)
 
 
 def check_start_attestation(current_pids: list[int] | None = None) -> str | None:
@@ -958,7 +1040,7 @@ def check_start_attestation(current_pids: list[int] | None = None) -> str | None
             return None
 
     _clear_start_attestation()
-    if not _attested_dead(attested, current_pids):
+    if not _attested_dead(attested, current_pids, data):
         return None
     return _format_attestation_warning(attested, data)
 

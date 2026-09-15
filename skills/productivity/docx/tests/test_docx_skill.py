@@ -186,6 +186,50 @@ class TestEdit:
         assert doc2.paragraphs[idx].style.name == "Heading 2"
 
 
+    def test_replace_self_containing_terminates(self):
+        # Regression: a replacement whose new text contains the old needle
+        # (X -> XX) must not rescan mutated text and loop forever.  The call
+        # runs in a bounded child process: the unfixed code never returns,
+        # and the hard timeout keeps an accidental recurrence from hanging
+        # the suite (no new dependency; subprocess is already the native
+        # runner pattern of this file).
+        child = """import json, sys
+sys.path.insert(0, sys.argv[1])
+from docx import Document
+from docx_common import replace_in_paragraph
+def case(old, new):
+    para = Document().add_paragraph("A X B")
+    count = replace_in_paragraph(para, old, new)
+    return [count, para.text]
+print(json.dumps([case("X", "XX"), case("X", "Y")]))
+"""
+        env = dict(os.environ, LC_ALL="C", PYTHONIOENCODING="utf-8")
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-c", child, str(SCRIPTS)],
+                capture_output=True, env=env, timeout=10)
+        except subprocess.TimeoutExpired:
+            pytest.fail("EXPECTED_TIMEOUT_NONTERMINATION: "
+                        "replace_in_paragraph X -> XX did not return in 10s")
+        assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+        self_containing, ordinary = json.loads(proc.stdout.decode("utf-8"))
+        assert self_containing == [1, "A XX B"]
+        assert ordinary == [1, "A Y B"]
+
+
+    def test_replace_keeps_within_run_precedence(self, monkeypatch):
+        # Curation regression: the self-containment fix must keep the
+        # existing within-run-before-cross-run precedence.  The "aa"
+        # occurrence fully inside run 2 wins over the earlier cross-run
+        # candidate in the concatenated "aaa" ("ab", never "ba").
+        monkeypatch.syspath_prepend(str(SCRIPTS))
+        from docx_common import replace_in_paragraph
+        para = Document().add_paragraph()
+        para.add_run("a")
+        para.add_run("aa")
+        assert replace_in_paragraph(para, "aa", "b") == 1
+        assert para.text == "ab"
+
 class TestTemplate:
     def test_fill_everywhere_non_ascii(self, workdir: Path):
         # Build a template: tokens in body, split runs, table, header, footer.

@@ -815,8 +815,11 @@ _LATER_TASK_COLUMNS = (
     ("block_recurrences", "block_recurrences INTEGER NOT NULL DEFAULT 0"),
     # Spawn-time start fingerprint of worker_pid (PID-reuse guard; NULL = legacy row).
     ("worker_started_at", "worker_started_at INTEGER"),
+    # Lifetime total of worker spawns. NOT NULL DEFAULT 0 — additive column on
+    # legacy DBs treats every pre-migration row as having spawned 0 times, which
+    # matches reality (no prior worker ever existed for them).
+    ("total_runs", "total_runs INTEGER NOT NULL DEFAULT 0"),
 )
-
 _NOTIFY_SUB_COLUMNS = (
     ("last_ping_event_id", "last_ping_event_id INTEGER NOT NULL DEFAULT 0"),
     ("notifier_profile", "notifier_profile TEXT"),

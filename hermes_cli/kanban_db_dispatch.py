@@ -32,6 +32,29 @@ if TYPE_CHECKING:
 # dispatcher parks the task in ``blocked`` with a reason — prevents retry storms.
 DEFAULT_FAILURE_LIMIT = 2
 
+# After this many lifetime worker spawns (``tasks.total_runs``) on a task the
+# dispatcher moves it to ``triage`` — caps the worst-case cost of a permanently
+# failing or no-progress task. 0 disables (legacy behaviour); negative or
+# invalid values fall back to this default.
+DEFAULT_LIFETIME_RUN_LIMIT = 8
+
+
+def _resolve_lifetime_run_limit(kanban_cfg: Optional[dict]) -> int:
+    """``kanban.lifetime_run_limit`` parser: int >= 0 (0 disables); else
+    :data:`DEFAULT_LIFETIME_RUN_LIMIT`. Mirrors the gateway path so the CLI
+    dispatcher and the embedded gateway dispatcher enforce the same value.
+    """
+    cfg = kanban_cfg if isinstance(kanban_cfg, dict) else {}
+    raw = cfg.get("lifetime_run_limit", DEFAULT_LIFETIME_RUN_LIMIT)
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_LIFETIME_RUN_LIMIT
+    if parsed < 0:
+        return DEFAULT_LIFETIME_RUN_LIMIT
+    return parsed
+
+
 # Worker log files larger than this at spawn time are rotated.
 DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
 DEFAULT_LOG_BACKUP_COUNT = 1
@@ -74,18 +97,10 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
 
 @dataclass
 class DispatchResult:
-    """Outcome of a single ``dispatch`` pass.
-
-    ``kanban.default_assignee`` applied this tick before spawning (#27145). Surfaces the auto-assignment to
-    telemetry / CLI / dashboard so the operator can see when the dispatcher is acting on the fallback rule
-    ``kanban.max_in_progress_per_profile`` (#21582). Each entry is ``(task_id, assignee,
-    current_running_count)``. NOT an operator-actionable failure — the task will be picked up on a
-    subsequent tick when the assignee has capacity. Separate bucket so telemetry / dashboards can show "this
-    profile is busy" vs
-    the board's dispatch lock (issue #35240). A losing dispatcher does no DB writes this tick — the lock
-    holder is making progress on the same board. This is the steady-state signal that a single-writer guard
-    is
-    """
+    """Outcome of a single ``dispatch`` pass. Each bucket is a separate
+    ``list``/counter so dashboards, telemetry, and CLI can distinguish
+    categories the operator might address differently (defer vs block vs
+    hard-fail vs lifetime-cap)."""
 
     reclaimed: int = 0
     promoted: int = 0
@@ -133,7 +148,13 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
-
+    run_capped: list[str] = field(default_factory=list)
+    """Task ids moved to ``triage`` by the
+    lifetime-run cap (``kanban.lifetime_run_limit``). Distinct from
+    ``auto_blocked`` (failure circuit breaker) and ``skipped_*`` (deferred,
+    will re-tick): a capped task is permanently parked on this board until an
+    operator archives or reopens it (which is the deliberate signal to reset
+    the lifetime)."""
 
 # Bounded registry of recently-reaped worker exits, filled by the reap loop in
 # ``dispatch_once`` and read by ``detect_crashed_workers`` to classify a dead-pid
@@ -1431,6 +1452,17 @@ def configured_max_in_progress() -> Optional[int]:
     return ival if ival >= 1 else None
 
 
+def _configured_kanban_cfg() -> dict:
+    """``kanban.*`` config dict (read-only) for ad-hoc per-tick resolutions
+    (e.g. ``lifetime_run_limit``). Empty dict when config can't be loaded."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly() or {}
+        kanban = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        return kanban if isinstance(kanban, dict) else {}
+    except Exception:
+        return {}
+
 def count_running_tasks(conn: sqlite3.Connection) -> int:
     """Number of tasks in ``status='running'``.
 
@@ -1518,6 +1550,7 @@ def dispatch_once(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    lifetime_run_limit: int = DEFAULT_LIFETIME_RUN_LIMIT,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -1541,8 +1574,8 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
+            lifetime_run_limit=lifetime_run_limit,
         )
-
     try:
         db_path = _kb.kanban_db_path(board=board)
     except Exception:
@@ -1587,6 +1620,7 @@ def _dispatch_lane_task(
     ttl_seconds: Optional[int],
     board: Optional[str],
     failure_limit: int,
+    lifetime_run_limit: int,
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
@@ -1611,16 +1645,24 @@ def _dispatch_lane_task(
         if current >= per_profile_cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
             return False
+    # Lifetime-run cap (kanban.lifetime_run_limit): BEFORE claim/spawn, if the
+    # task has already reached its budget of worker spawns, route it to
+    # ``triage`` so a human decides whether to archive or reopen. The cap is
+    # intentionally enforced AFTER the respawn guard so a quota-blocker still
+    # sees the auto_block path, and AFTER per-profile cap so a busy profile
+    # still defers normally. 0 disables (legacy behaviour).
+    if lifetime_run_limit > 0:
+        current_total_runs = int(row["total_runs"] or 0)
+        if current_total_runs >= lifetime_run_limit:
+            _move_to_triage_for_lifetime_cap(
+                conn, task_id, total_runs=current_total_runs, limit=lifetime_run_limit,
+                dry_run=dry_run, result=result,
+            )
+            return False
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
         # Event so ``hermes kanban tail`` shows why the task looks stuck.
-        # Honour kanban.default_assignee: when the dispatcher hits an unassigned ready task and an
-        # operator-configured fallback exists, persist the assignment and proceed. This removes the
-        # dashboard footgun where a task created without an assignee parks in 'ready' forever even though
-        # the operator's intent ("default") was perfectly clear (#27145). Mutating the row (not just the
-        # in-memory view) keeps diagnostics and the board state consistent: the task is now legitimately
-        # owned by ``kanban.default_assignee``, not "unassigned but secretly routed".
         if not dry_run:
             with _kb.write_txn(conn):
                 _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
@@ -1679,8 +1721,50 @@ def _dispatch_lane_task(
             outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
         ):
             result.auto_blocked.append(claimed.id)
-        return False
+    return False
 
+
+def _move_to_triage_for_lifetime_cap(
+    conn: sqlite3.Connection, task_id: str, *, total_runs: int, limit: int,
+    dry_run: bool, result: "DispatchResult",
+) -> None:
+    """Route a task to ``triage`` when its lifetime worker-spawn counter has
+    reached ``kanban.lifetime_run_limit``. Appends a ``lifetime_run_capped``
+    event with the current total and the configured limit, records the task in
+    ``DispatchResult.run_capped``, and logs a warning naming the task id +
+    total_runs. Idempotent: if the task is already in ``triage`` no transition
+    event is emitted, but the result entry is still recorded.
+    """
+    result.run_capped.append(task_id)
+    if dry_run:
+        return
+    try:
+        with _kb.write_txn(conn):
+            # Move to triage (idempotent on already-triage). Emit the
+            # machine-readable event with both the counter and the cap so an
+            # operator's audit log can be filtered by ``lifetime_run_capped``.
+            conn.execute(
+                "UPDATE tasks SET status = 'triage', current_run_id = NULL, "
+                "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+                "WHERE id = ? AND status IN ('ready', 'review', 'running', 'todo', 'blocked', 'scheduled')",
+                (task_id,),
+            )
+            _kb._append_event(
+                conn, task_id, "lifetime_run_capped",
+                {"total_runs": total_runs, "limit": limit, "source": "kanban.lifetime_run_limit"},
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        _kb._log.debug(
+            "kanban dispatch: failed to move task %s to triage on lifetime cap (%s)",
+            task_id, exc,
+        )
+    # Warning names both task id and total_runs so the operator can audit
+    # without re-querying the board (matches the dashboard-telemetry style).
+    _kb._log.warning(
+        "kanban dispatcher: task %s reached lifetime_run_limit (%d >= %d); "
+        "moved to triage.",
+        task_id, total_runs, limit,
+    )
 
 def _apply_default_assignee(
     conn: sqlite3.Connection, task_id: str, assignee: str, *, dry_run: bool,
@@ -1796,11 +1880,11 @@ def _tick_spawn_budget(
             spawn_budget = 1
     return True, spawn_budget
 
-
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
-    """Unclaimed rows of one lane in dispatch order."""
+    """Unclaimed rows of one lane in dispatch order. Includes ``total_runs`` so
+    the lifetime-run cap can be checked before claim without an extra query."""
     return conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, total_runs FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -1849,6 +1933,7 @@ def _dispatch_once_locked(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    lifetime_run_limit: int = DEFAULT_LIFETIME_RUN_LIMIT,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
     todo -> ready, then atomically claim each spawnable ready/review row and
@@ -1899,6 +1984,7 @@ def _dispatch_once_locked(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        lifetime_run_limit=lifetime_run_limit,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0
@@ -2417,6 +2503,7 @@ def run_daemon(
     interval: float = 60.0,
     max_spawn: Optional[int] = None,
     failure_limit: int = DEFAULT_FAILURE_LIMIT,
+    lifetime_run_limit: Optional[int] = None,
     stop_event=None,
     on_tick=None,
 ) -> None:
@@ -2426,7 +2513,8 @@ def run_daemon(
     SIGINT / SIGTERM so it is systemd-friendly. ``stop_event`` and ``on_tick``
     are test hooks. Each tick resolves ``kanban.max_in_progress`` exactly like
     the gateway dispatcher and ``hermes kanban dispatch`` — the standalone
-    daemon must not be the one uncapped entry point.
+    daemon must not be the one uncapped entry point. ``lifetime_run_limit``
+    None means read from ``kanban.lifetime_run_limit`` config on each tick.
     """
     import threading
 
@@ -2450,12 +2538,18 @@ def run_daemon(
             # Re-resolved every tick (config load is mtime-cached) so operator
             # edits apply without a restart.
             max_in_progress = resolve_max_in_progress(configured_max_in_progress())
+            # Resolve lifetime cap the same way: explicit arg wins, else config.
+            effective_lifetime_run_limit = (
+                int(lifetime_run_limit) if lifetime_run_limit is not None
+                else _resolve_lifetime_run_limit(_configured_kanban_cfg())
+            )
             with contextlib.closing(_kbc.connect()) as conn:
                 res = dispatch_once(
                     conn,
                     max_spawn=max_spawn,
                     max_in_progress=max_in_progress,
                     failure_limit=failure_limit,
+                    lifetime_run_limit=effective_lifetime_run_limit,
                 )
             if on_tick is not None:
                 with contextlib.suppress(Exception):

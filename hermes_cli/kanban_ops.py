@@ -78,9 +78,11 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         max_spawn = (
             cli_max if cli_max is not None else kbd._positive_int(_kanban_cfg.get("max_spawn"), None)
         )
+        lifetime_run_limit = kbd._resolve_lifetime_run_limit(_kanban_cfg)
     except Exception:
         default_assignee = max_in_progress_per_profile = max_in_progress = None
         max_spawn = getattr(args, "max", None)
+        lifetime_run_limit = kbd.DEFAULT_LIFETIME_RUN_LIMIT
     with kbc.connect_closing() as conn:
         res = kbd.dispatch_once(
             conn,
@@ -90,11 +92,12 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             failure_limit=getattr(args, "failure_limit", kbd.DEFAULT_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            lifetime_run_limit=lifetime_run_limit,
         )
     if getattr(args, "json", False):
         _print_json({
             **{k: getattr(res, k)
-               for k in ("reclaimed", "crashed", "timed_out", "stale", "auto_blocked", "promoted")},
+               for k in ("reclaimed", "crashed", "timed_out", "stale", "auto_blocked", "run_capped", "promoted")},
             "spawned": [
                 {"task_id": tid, "assignee": who, "workspace": ws} for (tid, who, ws) in res.spawned
             ],
@@ -113,6 +116,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         ("Timed out:   ", res.timed_out),
         ("Stale:       ", res.stale),
         ("Auto-blocked:", res.auto_blocked),
+        ("Run-capped:  ", res.run_capped),
     ):
         print(f"{label} {len(items)}")
         if items:
@@ -280,7 +284,6 @@ def _cmd_watch(args: argparse.Namespace) -> int:
             )
 
     return _poll_loop(args.interval, tick)
-
 
 def _cmd_gc(args: argparse.Namespace) -> int:
     """Remove archived tasks' scratch workspaces, old events, and old worker logs."""

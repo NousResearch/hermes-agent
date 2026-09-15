@@ -1752,8 +1752,12 @@ DEFAULT_CONFIG = {
         # Auto-block after this many consecutive non-success attempts (spawn_failed, timed_out,
         # crashed) for the same task/profile. Reassignment resets the streak.
         "failure_limit": 2,
-        # Worker stdout/stderr log rotation at spawn time (2 MiB + one backup). Raise to keep more
-        # early failure evidence from long-running workers.
+        # Per-task lifetime worker-spawn cap. The dispatcher moves a task to
+        # ``triage`` once ``tasks.total_runs`` reaches this count (no more worker
+        # spawns for this task on this board). ``total_runs`` is incremented in
+        # the same txn as the claim and is NEVER reset by unblock/reassign/reopen
+        # — only archive/delete. 0 disables the cap (legacy behaviour).
+        "lifetime_run_limit": 8,
         "worker_log_rotate_bytes": 2 * 1024 * 1024,
         "worker_log_backup_count": 1,
         # Profile for the root/orchestration task after Triage decomposition; "" = default profile.

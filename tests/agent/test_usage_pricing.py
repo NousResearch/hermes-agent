@@ -6,6 +6,7 @@ from agent.usage_pricing import (
     format_cost_label,
     estimate_usage_cost,
     get_pricing_entry,
+    _pricing_entry_from_metadata,
     normalize_usage,
     resolve_billing_route,
 )
@@ -962,3 +963,38 @@ def test_flat_entries_unaffected_by_tier_machinery():
     )
     # 250k * $0.25/M + 10k * $1.50/M
     assert result.amount_usd == Decimal("0.0775")
+
+
+def test_custom_provider_already_per_million_pricing_not_inflated(monkeypatch):
+    """Regression for #112018: a custom OpenAI-compatible provider whose /models
+    pricing is already USD per 1M tokens must not be multiplied by _ONE_MILLION
+    again (that inflated minimax-m3 to ~$600,000/1M)."""
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: {
+            "minimax-m3": {
+                "pricing": {"prompt": 0.6, "completion": 1.2, "cache_read": 0.12}
+            }
+        },
+    )
+    entry = get_pricing_entry(
+        "minimax-m3", provider="custom", base_url="https://api.neosantara.xyz/v1"
+    )
+    assert entry is not None
+    assert entry.input_cost_per_million == Decimal("0.6")
+    assert entry.output_cost_per_million == Decimal("1.2")
+    assert entry.cache_read_cost_per_million == Decimal("0.12")
+
+
+def test_openrouter_path_still_assumes_per_token():
+    """Contract: OpenRouter's per-token convention is untouched by the custom-path
+    heuristic — raw 0.0000006/token must still price as $0.60/1M."""
+    entry = _pricing_entry_from_metadata(
+        {"o1": {"pricing": {"prompt": "0.0000006", "completion": "0.0000024"}}},
+        "o1",
+        source_url="https://openrouter.ai/docs/api/api-reference/models/get-models",
+        pricing_version="openrouter-models-api",
+    )
+    assert entry is not None
+    assert entry.input_cost_per_million == Decimal("0.6")
+    assert entry.output_cost_per_million == Decimal("2.4")

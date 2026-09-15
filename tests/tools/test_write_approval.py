@@ -293,3 +293,49 @@ class TestSkillGist:
         assert wa.skill_gist("remove_file", "demo", file_path="a.py") == "remove a.py from 'demo'"
         assert wa.skill_gist("delete", "demo") == "delete skill 'demo'"
         assert wa.skill_gist("unknown", "demo") == "unknown 'demo'"
+
+
+class TestSkillPendingDiffBatch:
+    """A gated operations[] batch stages as ONE pending record whose payload is
+    {action: batch, operations: [...]} with no top-level name — the exact shape
+    _skill_manage_batch stages. /skills diff <id> must render the ops, not the
+    pre-fix '(batch on '')' dead end."""
+
+    def _batch_payload(self, **overrides):
+        ops = [
+            {"action": "create", "name": "probe", "content": "---\nname: probe\ndescription: Batch probe.\n---\n# Probe\n"},
+            {"action": "write_file", "name": "probe", "file_path": "scripts/a.py", "file_content": "pass"},
+        ]
+        ops.extend(overrides.pop("extra_ops", []))
+        payload = {"action": "batch", "operations": ops}
+        payload.update(overrides)
+        return payload
+
+    def test_batch_renders_each_operation_in_order(self):
+        from tools import write_approval as wa
+        out = wa.skill_pending_diff({"payload": self._batch_payload()})
+        assert "(batch on '')" not in out
+        assert out.count("## op ") == 2
+        assert "## op 1/2: create 'probe'" in out
+        assert "---\nname: probe" in out  # create content shown verbatim
+        assert "## op 2/2: write scripts/a.py in 'probe'" in out
+
+    def test_batch_edit_op_shows_unified_diff(self, hermes_home, monkeypatch):
+        from tools import write_approval as wa
+        skill_dir = os.path.join(hermes_home, "skills", "probe")
+        os.makedirs(skill_dir)
+        with open(os.path.join(skill_dir, "SKILL.md"), "w") as f:
+            f.write("old body\n")
+        monkeypatch.setattr(wa, "_find_skill_path", lambda name: __import__("pathlib").Path(skill_dir))
+        payload = self._batch_payload(extra_ops=[
+            {"action": "edit", "name": "probe", "content": "new body\n"},
+        ])
+        out = wa.skill_pending_diff({"payload": payload})
+        assert "## op 3/3: rewrite 'probe'" in out
+        assert "-old body" in out and "+new body" in out
+
+    def test_batch_without_operations_is_explicit(self):
+        from tools import write_approval as wa
+        out = wa.skill_pending_diff({"payload": {"action": "batch", "operations": []}})
+        assert out == "(empty batch)"
+

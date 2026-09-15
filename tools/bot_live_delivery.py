@@ -8,6 +8,7 @@ not permission to execute the same input again. Receipts are permanent.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
@@ -19,6 +20,8 @@ from pathlib import Path
 from typing import Any
 
 from hermes_cli.active_sessions import _FileLock
+
+log = logging.getLogger(__name__)
 
 DELIVERY_DIR_NAME = "bot_live_delivery"
 _OWNER_KEYS = ("profile_home", "session_id", "lease_id", "live_session_id")
@@ -98,6 +101,23 @@ def _read(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def _scan_read(path: Path) -> dict[str, Any] | None:
+    """Bulk-scan variant: one unreadable ticket must not wedge the whole dir.
+
+    Directory scans (sequence high-water mark, queued-claim sweep) may only
+    treat a file as absent when it is provably absent; an unreadable ticket
+    degrades to "that one delivery is uninspectable" with a loud warning.
+    Exact-id reads (admission idempotency, completion, result lookup) keep
+    using _read so a permission error still fails closed instead of
+    licensing an overwrite of a possibly-live receipt.
+    """
+    try:
+        return _read(path)
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning("bot_live_delivery: skipping unreadable ticket %s (%s)", path.name, exc)
+        return None
+
+
 def _write(path: Path, record: dict[str, Any]) -> None:
     atomic_json_write(path, record, indent=None, sort_keys=True, fsync_dir=True, mode=0o600)
 
@@ -126,7 +146,7 @@ def deliver_to_live_owner(
         # high-water mark, allocated while holding the cross-process lock.
         sequence = max((record.get("sequence", record["created_at"])
                         for candidate in root.glob("*.json")
-                        if (record := _read(candidate)) is not None), default=0) + 1
+                        if (record := _scan_read(candidate)) is not None), default=0) + 1
         record = dict(delivery_id=key, id=key, owner=pinned, **pinned,
                       message=message, status="queued", created_at=time.time_ns(),
                       sequence=sequence, **({"author": dict(author)} if author else {}))
@@ -164,7 +184,7 @@ def claim_pending_delivery(
     with _locked(profile_home) as root:
         pending = []
         for path in root.glob("*.json"):
-            record = _read(path)
+            record = _scan_read(path)
             if record is not None and record["status"] == "queued" and _matches(profile_home, record, current):
                 pending.append(record)
         if not pending:

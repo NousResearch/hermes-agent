@@ -106,3 +106,51 @@ def test_delivery_keeps_the_sender_and_refuses_a_different_one_under_the_same_id
     with pytest.raises(ValueError):
         mailbox.deliver_to_live_owner(tmp_path, owner, "hello", delivery_id="b" * 32, author={**author, "id": "bot:other"})
     assert "author" not in mailbox.deliver_to_live_owner(tmp_path, owner, "no sender", delivery_id="c" * 32)
+
+
+@pytest.mark.skipif(os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0,
+                    reason="needs POSIX file permissions for an unreadable ticket")
+def test_unreadable_ticket_does_not_wedge_bulk_scans(tmp_path, caplog):
+    import logging
+
+    from tools import bot_live_delivery as mailbox
+
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
+                 lease_id="lease", live_session_id="live")
+    queued = mailbox.deliver_to_live_owner(tmp_path, owner, "readable", delivery_id="d" * 32)
+    root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+    unreadable = root / f"{'e' * 32}.json"
+    unreadable.write_text('{"status": "queued"}', encoding="utf-8")
+    unreadable.chmod(0)
+    corrupt = root / f"{'1' * 32}.json"
+    corrupt.write_text("{not json", encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="tools.bot_live_delivery"):
+        # Sender side: admission of a fresh id must survive the sequence sweep.
+        admitted = mailbox.deliver_to_live_owner(tmp_path, owner, "second", delivery_id="f" * 32)
+        # Receiver side: every readable queued ticket must still be claimed, in order.
+        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == queued["delivery_id"]
+        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == admitted["delivery_id"]
+        assert mailbox.claim_pending_delivery(tmp_path, owner) is None
+    assert admitted["status"] == "queued"
+    assert any(record.message.startswith(f"bot_live_delivery: skipping unreadable ticket {'e' * 32}.json")
+               and "Permission denied" in record.message
+               for record in caplog.records)
+
+
+@pytest.mark.skipif(os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0,
+                    reason="needs POSIX file permissions for an unreadable ticket")
+def test_unreadable_ticket_keeps_exact_id_reads_fail_closed(tmp_path):
+    from tools import bot_live_delivery as mailbox
+
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
+                 lease_id="lease", live_session_id="live")
+    unreadable = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME / f"{'e' * 32}.json"
+    unreadable.parent.mkdir(parents=True, exist_ok=True)
+    unreadable.write_text('{"status": "queued"}', encoding="utf-8")
+    unreadable.chmod(0)
+    # Uninspectable is not absent: an exact-id retry must fail closed instead of
+    # minting a fresh receipt that overwrites the possibly-live one (#109820).
+    with pytest.raises(PermissionError):
+        mailbox.deliver_to_live_owner(tmp_path, owner, "same id", delivery_id="e" * 32)
+    with pytest.raises(PermissionError):
+        mailbox.read_delivery_result(tmp_path, "e" * 32)

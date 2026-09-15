@@ -78,3 +78,46 @@ def test_refine_spawns_review_from_persisted_transcript():
         # /refine is explicit: it must not be swallowed by the unattended-review gates.
         "explicit": True,
     }]
+class _DBEmpty:
+    def get_messages_as_conversation(self, key, include_ancestors=True, **_kwargs):
+        return []
+
+
+@contextlib.contextmanager
+def _fake_session_db_empty(_session):
+    yield _DBEmpty()
+
+
+def test_refine_spawns_review_from_in_memory_history_mid_conversation():
+    """A live mid-conversation session with no persisted rows yet falls back to the
+    locked in-memory history (covers the fallback branch, not just the reattach path)."""
+    sid = "refine-mid"
+    agent = _Agent()
+    history = [
+        {"role": "user", "content": "in-flight question"},
+        {"role": "assistant", "content": "in-flight answer"},
+    ]
+    session = _live_session(agent, session_key="mid-key", history=history)
+    server._sessions[sid] = session
+
+    try:
+        with (
+            patch.object(server, "_session_uses_compute_host", return_value=False),
+            patch.object(server, "_session_db", _fake_session_db_empty),
+        ):
+            out = server._live_slash_command_output(sid, session, "refine", "")
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert "Reviewing this conversation" in out
+    assert agent.spawned == [{
+        "messages_snapshot": [
+            {"role": "user", "content": "in-flight question"},
+            {"role": "assistant", "content": "in-flight answer"},
+        ],
+        "review_memory": True,
+        "review_skills": True,
+        "focus": None,
+        # /refine is explicit: it must not be swallowed by the unattended-review gates.
+        "explicit": True,
+    }]

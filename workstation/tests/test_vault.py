@@ -178,6 +178,32 @@ def test_custom_vault_root_accepts_normal_nested_note(tmp_path: Path):
     assert (custom / "Projects" / "Hermes" / "Safe Note.md").is_file()
 
 
+def test_write_round_trip_preserves_frontmatter_without_duplication(tmp_path: Path):
+    manager = VaultManager(str(tmp_path / "vault"))
+    original = """---
+title: Existing
+aliases: [Stable Alias]
+custom-field: keep-me
+tags: [old]
+---
+
+Body with [[Target]].
+"""
+    note = manager.write_note(
+        "Existing",
+        original,
+        frontmatter={"tags": ["new"], "editor": "desktop"},
+    )
+
+    assert note["content"].count("---") == 2
+    parsed, body = parse_frontmatter_and_content(note["content"])
+    assert parsed["custom-field"] == "keep-me"
+    assert parsed["aliases"] == ["Stable Alias"]
+    assert parsed["tags"] == ["new"]
+    assert parsed["editor"] == "desktop"
+    assert body.strip() == "Body with [[Target]]."
+
+
 def test_scan_and_mutations_ignore_file_symlink_escape(tmp_path: Path):
     vault = tmp_path / "vault"
     outside = tmp_path / "outside.md"

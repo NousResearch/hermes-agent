@@ -407,9 +407,10 @@ class VaultManager:
         if self._watch_thread and self._watch_thread.is_alive():
             return
         self._watch_stop.clear()
+        initial_snapshot = self._snapshot()
 
         def watch() -> None:
-            previous = self._snapshot()
+            previous = initial_snapshot
             pending_since: Optional[float] = None
             while not self._watch_stop.wait(interval):
                 current = self._snapshot()
@@ -477,8 +478,13 @@ class VaultManager:
         clean_title = canonicalize_title(title)
         file_path = self._safe_note_path(title, subfolder)
 
-        # Prepare frontmatter
-        fm = dict(frontmatter or {})
+        # Desktop editing sends the complete source so unknown YAML properties
+        # survive a round trip. Treat embedded frontmatter as source metadata,
+        # then let explicit structured fields override it; never nest a second
+        # frontmatter block into the Markdown body.
+        embedded_fm, embedded_body = parse_frontmatter_and_content(content)
+        fm = dict(embedded_fm)
+        fm.update(frontmatter or {})
         fm["title"] = clean_title
         if tags:
             fm_tags = fm.get("tags") or []
@@ -489,7 +495,7 @@ class VaultManager:
             fm["tags"] = combined_tags
 
         # Format full markdown document
-        body = content.strip()
+        body = embedded_body.strip()
         if fm:
             fm_str = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).strip()
             full_text = f"---\n{fm_str}\n---\n\n{body}\n"

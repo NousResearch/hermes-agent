@@ -23,6 +23,7 @@ import {
   fetchVaultNote,
   fetchVaultNotes,
   fetchVaultStatus,
+  fetchVaultSuggestions,
   saveVaultNote
 } from './api'
 import { VaultGraphView } from './graph-view'
@@ -68,6 +69,17 @@ export function VaultPage() {
   })
   const activeNote = noteData?.note
 
+  const wikilinkPrefix = useMemo(() => {
+    const match = draftContent.match(/\[\[([^\]\n]*)$/)
+    return match?.[1] ?? null
+  }, [draftContent])
+
+  const { data: suggestionsData } = useQuery({
+    queryKey: ['vault', 'suggestions', wikilinkPrefix],
+    queryFn: () => fetchVaultSuggestions(wikilinkPrefix ?? ''),
+    enabled: viewMode === 'editor' && wikilinkPrefix !== null
+  })
+
   // Synchronize draft state when active note changes
   useMemo(() => {
     if (activeNote && !isCreatingNew) {
@@ -95,7 +107,7 @@ export function VaultPage() {
       const res = await saveVaultNote({
         title: draftTitle.trim() || 'Sem Título',
         content: draftContent,
-        tags
+        frontmatter: { ...(activeNote?.frontmatter ?? {}), tags }
       })
       return res
     },
@@ -402,13 +414,34 @@ export function VaultPage() {
                 </Streamdown>
               </ScrollArea>
             ) : (
-              <Textarea
-                aria-label="Conteúdo Markdown"
-                className="flex-1 resize-none font-mono text-xs leading-relaxed"
-                onChange={e => setDraftContent(e.target.value)}
-                placeholder="Escreva sua nota em Markdown. Use [[Wikilinks]] para conectar ideias..."
-                value={draftContent}
-              />
+              <div className="relative flex min-h-0 flex-1">
+                <Textarea
+                  aria-label="Conteúdo Markdown"
+                  className="flex-1 resize-none font-mono text-xs leading-relaxed"
+                  onChange={e => setDraftContent(e.target.value)}
+                  placeholder="Escreva sua nota em Markdown. Use [[Wikilinks]] para conectar ideias..."
+                  value={draftContent}
+                />
+                {wikilinkPrefix !== null && (suggestionsData?.suggestions.length ?? 0) > 0 && (
+                  <div className="absolute bottom-2 left-2 z-10 max-h-40 w-64 overflow-y-auto rounded-md border border-(--ui-stroke-primary) bg-(--ui-bg-secondary) p-1 shadow-lg">
+                    {suggestionsData?.suggestions.slice(0, 12).map(suggestion => (
+                      <button
+                        className="block w-full rounded px-2 py-1 text-left hover:bg-(--ui-bg-tertiary)"
+                        key={`${suggestion.title}:${suggestion.alias ?? ''}`}
+                        onClick={() => {
+                          setDraftContent(current => current.replace(/\[\[([^\]\n]*)$/, `[[${suggestion.title}]]`))
+                        }}
+                        type="button"
+                      >
+                        <span className="font-medium">{suggestion.title}</span>
+                        {suggestion.alias && (
+                          <span className="ml-1 text-(--ui-text-tertiary)">via {suggestion.alias}</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             )}
           </div>
         )}

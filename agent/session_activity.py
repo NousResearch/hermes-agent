@@ -46,7 +46,7 @@ def normalize_activity_provenance(provenance: Optional[ActivityProvenance | str]
         return ActivityProvenance.UNKNOWN
 
 
-def format_iteration_progress(api_call_count: Any, max_iterations: Any) -> str:
+def format_iteration_progress(api_call_count: Any, max_iterations: Any, *, label: str = "iteration") -> str:
     """``iteration N/M`` for user-facing status lines, or ``iteration N`` when the cap is unbounded.
 
     ``AIAgent.max_iterations`` defaults to ``sys.maxsize`` (unlimited), so printing the pair verbatim
@@ -57,8 +57,8 @@ def format_iteration_progress(api_call_count: Any, max_iterations: Any) -> str:
     except (TypeError, ValueError):
         cap = sys.maxsize
     if cap >= sys.maxsize:
-        return f"iteration {api_call_count}"
-    return f"iteration {api_call_count}/{cap}"
+        return f"{label} {api_call_count}"
+    return f"{label} {api_call_count}/{cap}"
 
 
 def reset_session_activity_persist_window(agent: Any) -> None:

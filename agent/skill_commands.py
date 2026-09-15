@@ -625,19 +625,32 @@ def resolve_auto_load_skills(user_config: dict | None = None) -> list[str]:
     return list(dict.fromkeys(names))
 
 
-def build_auto_load_prompt(task_id: str | None = None, user_config: dict | None = None) -> tuple[str, list[str], list[str]]:
+def build_auto_load_prompt(
+    task_id: str | None = None, user_config: dict | None = None, home_override: Path | None = None,
+) -> tuple[str, list[str], list[str]]:
     """Render ``skills.auto_load`` as fully loaded skill blocks for a new session; returns
     ``(prompt_text, loaded_names, missing)``. Missing and operator-disabled names are reported,
-    never raised: a typo in config must not block session start on any surface."""
-    auto_skills = resolve_auto_load_skills(user_config)
-    if not auto_skills:
-        return "", [], []
-    loaded_names, missing, _disabled, prompt_parts = _load_skill_blocks(
-        auto_skills,
-        lambda identifier: _load_skill_payload(identifier, task_id=task_id),
-        lambda name: (f'[IMPORTANT: The "{name}" skill is auto-loaded via config (skills.auto_load). '
-                      "Treat its instructions as active guidance for the duration of this session unless "
-                      "the user overrides them.]"),
-        task_id, disabled_names=_disabled_skill_names(), disabled_as_missing=True,
-    )
-    return "\n\n".join(prompt_parts), loaded_names, missing
+    never raised: a typo in config must not block session start on any surface.
+
+    *home_override* makes home resolution EXPLICIT (same seam as ``build_skills_system_prompt``): the config,
+    the disabled list and the ``<home>/skills`` lookup all resolve under that home, so a gateway build thread
+    that lost the HERMES_HOME ContextVar cannot pin the launch profile's skills into another profile's prompt.
+    """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    home_token = set_hermes_home_override(str(home_override)) if home_override is not None else None
+    try:
+        auto_skills = resolve_auto_load_skills(user_config)
+        if not auto_skills:
+            return "", [], []
+        loaded_names, missing, _disabled, prompt_parts = _load_skill_blocks(
+            auto_skills,
+            lambda identifier: _load_skill_payload(identifier, task_id=task_id),
+            lambda name: (f'[IMPORTANT: The "{name}" skill is auto-loaded via config (skills.auto_load). '
+                          "Treat its instructions as active guidance for the duration of this session unless "
+                          "the user overrides them.]"),
+            task_id, disabled_names=_disabled_skill_names(), disabled_as_missing=True,
+        )
+        return "\n\n".join(prompt_parts), loaded_names, missing
+    finally:
+        if home_token is not None:
+            reset_hermes_home_override(home_token)

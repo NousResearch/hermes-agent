@@ -20,7 +20,8 @@ def _bare_agent(session_id="auto-load-test"):
     agent.model = "test-model"
     agent.provider = "test"
     agent.pass_session_id = False
-    agent.skip_context_files = True
+    agent.skip_context_files = False
+    agent._context_cwd_is_launch_artifact = True  # no project-context walk; keeps the build tmp-home only
     agent.load_soul_identity = False
     agent._memory_enabled = False
     agent._user_profile_enabled = False
@@ -38,12 +39,14 @@ def _bare_agent(session_id="auto-load-test"):
 
 class TestBuildAutoLoadPrompt:
     def test_loads_configured_skills_and_reports_missing(self, tmp_path):
+        """Config AND skill lookup resolve under *home_override* (profile-scoped), not the ambient home."""
         from agent.skill_commands import build_auto_load_prompt
 
-        _write_skill(tmp_path, "pinned-skill", "PINNED CONTENT")
-        cfg = {"skills": {"auto_load": ["pinned-skill", " pinned-skill ", "no-such-skill", 7]}}
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            prompt, loaded, missing = build_auto_load_prompt(task_id="s1", user_config=cfg)
+        home = tmp_path / "profile-home"
+        _write_skill(home / "skills", "pinned-skill", "PINNED CONTENT")
+        (home / "config.yaml").write_text(
+            "skills:\n  auto_load: ['pinned-skill', ' pinned-skill ', 'no-such-skill', 7]\n", encoding="utf-8")
+        prompt, loaded, missing = build_auto_load_prompt(task_id="s1", home_override=home)
         assert loaded == ["pinned-skill"]
         assert missing == ["no-such-skill"]
         assert "PINNED CONTENT" in prompt
@@ -81,13 +84,23 @@ class TestSharedPromptPath:
             rebuilt = agent._build_system_prompt()
         assert "ORIGINAL SKILL BYTES" in rebuilt and "MUTATED BYTES" not in rebuilt
 
-    def test_ignore_rules_suppresses_auto_load(self, tmp_path, monkeypatch):
+    def test_gates_suppress_auto_load(self, tmp_path, monkeypatch):
+        """HERMES_IGNORE_RULES, skip_context_files (delegate children / internal forks) and a session without
+        the skills toolset all keep pinned skills out of the prompt."""
         _write_skill(tmp_path, "stable-skill", "ORIGINAL SKILL BYTES")
         cfg = {"skills": {"auto_load": ["stable-skill"]}}
-        monkeypatch.setenv("HERMES_IGNORE_RULES", "1")
-        agent = _bare_agent()
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path), \
              patch("hermes_cli.config.load_config_readonly", return_value=cfg):
-            prompt = agent._build_system_prompt()
-        assert "ORIGINAL SKILL BYTES" not in prompt
-        assert agent._auto_load_skills_resolved is True and agent._auto_load_skills_result == ("", [], [])
+            monkeypatch.setenv("HERMES_IGNORE_RULES", "true")
+            agent = _bare_agent()
+            assert "ORIGINAL SKILL BYTES" not in agent._build_system_prompt()
+            assert agent._auto_load_skills_resolved is True and agent._auto_load_skills_result == ("", [], [])
+
+            monkeypatch.delenv("HERMES_IGNORE_RULES")
+            child = _bare_agent("child")
+            child.skip_context_files = True
+            assert "ORIGINAL SKILL BYTES" not in child._build_system_prompt()
+            no_skills = _bare_agent("no-skills")
+            no_skills.valid_tool_names = {"memory"}
+            assert "ORIGINAL SKILL BYTES" not in no_skills._build_system_prompt()
+            assert "ORIGINAL SKILL BYTES" in _bare_agent("full")._build_system_prompt()

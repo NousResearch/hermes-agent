@@ -201,6 +201,36 @@ def test_handle_approval_off(hermes_home):
     assert "off" in out
 
 
+def test_memory_state_off_explains_background_gate(hermes_home):
+    # Gate off must not read as "everything applies": the unattended replace/remove
+    # restriction still stages background consolidation proposals.
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    out = handle_pending_subcommand(wa.MEMORY, [])
+    assert "memory.write_approval = off" in out
+    assert "apply immediately" in out
+    assert "always staged" in out
+
+
+def test_memory_state_on_says_all_writes_staged(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    _set_approval("memory", True)
+    out = handle_pending_subcommand(wa.MEMORY, [])
+    assert "memory.write_approval = on" in out
+    assert "staged for approval" in out
+
+
+def test_skills_state_stays_compact(hermes_home):
+    # The skills state line is unchanged — the unattended gate is memory-only.
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    out = handle_pending_subcommand(wa.SKILLS, [])
+    first_line = out.splitlines()[0]
+    assert first_line == "skills.write_approval = off"
+    assert "always staged" not in out
+
+
 # ---------------------------------------------------------------------------
 # Inline (interactive CLI) approval path — regression for the bug where the
 # per-thread approval callback was never passed to prompt_dangerous_approval,

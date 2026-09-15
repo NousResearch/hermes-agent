@@ -230,8 +230,11 @@ _ENV_ASSIGN_LOWER_RE = re.compile(
 # bare secret-word key only at line start (optionally after ``export``), so conversational ``I have
 # password=foo`` mid-sentence is left alone.
 _SECRET_CFG_NAMES = r"(?:api[ _.\-]?key|token|secret|passwd|password|credential|auth)"
-# Rendered line-number prefix (``5|line`` from read_file, ``6:line`` from grep -n / cat -n).
-_LINE_NUMBER_GUTTER = r"[0-9]+[|:][ \t]*"
+# Rendered line-number prefix: ``5|line`` (read_file), ``6:line`` (grep -n), ``7-line`` (grep -A/-B/-C
+# context lines) and ``     8\tline`` (cat -n / nl: right-aligned number + TAB). Callers put the ONLY
+# leading ``[ \t]*`` in front of it — stacking a second whitespace run around an optional gutter made
+# the anchored passes quadratic on long indented lines (2s per 5k spaces).
+_LINE_NUMBER_GUTTER = r"(?:[0-9]+(?:[|:\-]|\t)[ \t]*)?"
 _CFG_VALUE = r"(['\"]?)([^\s&]+?)\2(?=[\s&]|$)"
 # Linear pre-gate for the _CFG_*_RE subs: no secret keyword => neither can match.
 _CFG_SECRET_WORD_RE = re.compile(_SECRET_CFG_NAMES, re.IGNORECASE)
@@ -253,11 +256,11 @@ _CFG_DOTTED_RE = re.compile(
 )
 # Line-anchored bare key: ``password=…`` / ``export api_key=…`` at start of line.
 # ``{_LINE_NUMBER_GUTTER}``: line-numbered dumps put the key behind a rendered gutter —
-# ``read_file`` emits ``5|      ADS_API_TOKEN: …`` and ``grep -n`` / ``cat -n`` emit
-# ``6:      ADS_API_TOKEN: …``. Anchored at ``^`` without it, none of those matched, so the
-# rendered read of a secret-bearing file leaked what the raw text masked.
+# ``read_file`` emits ``5|      ADS_API_TOKEN: …``, ``grep -n`` emits ``6:      ADS_API_TOKEN: …``
+# and ``cat -n`` emits ``     7\tADS_API_TOKEN: …``. Anchored at ``^`` without it, none of those
+# matched, so the rendered read of a secret-bearing file leaked what the raw text masked.
 _CFG_ANCHORED_RE = re.compile(
-    rf"(^(?:[ \t]*{_LINE_NUMBER_GUTTER})?[ \t]*(?:export[ \t]+)?[A-Za-z0-9_\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_\-]*)={_CFG_VALUE}",
+    rf"(^[ \t]*{_LINE_NUMBER_GUTTER}(?:export[ \t]+)?[A-Za-z0-9_\-]*{_SECRET_CFG_NAMES}[A-Za-z0-9_\-]*)={_CFG_VALUE}",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -270,7 +273,7 @@ _CFG_ANCHORED_RE = re.compile(
 # stays backtrackable (see _CFG_DOTTED_RE).
 _YAML_CFG_NAMES = r"(?:api[ _.\-]?key|token|secret|passwd|password|credential)"
 _YAML_ASSIGN_RE = re.compile(
-    rf"(^(?:[ \t]*+{_LINE_NUMBER_GUTTER})?[ \t]*+[A-Za-z0-9_.\-]*{_YAML_CFG_NAMES}[A-Za-z0-9_.\-]*+)(:[ \t]*+)(?!['\"])([^\s&]++)",
+    rf"(^[ \t]*+{_LINE_NUMBER_GUTTER}[A-Za-z0-9_.\-]*{_YAML_CFG_NAMES}[A-Za-z0-9_.\-]*+)(:[ \t]*+)(?!['\"])([^\s&]++)",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -305,6 +308,11 @@ _STRONG_KEY_KEYWORD_RE = re.compile(
     r"|key[ _.\\-]?material|secret|passwd|password|pass|pw|credential|auth|bearer",
     re.IGNORECASE,
 )
+# Password-class keys mask any literal value; for other keys a value that starts like ``$HOME/...``,
+# ``/usr/...`` or ``~/...`` references a variable or a path, not a credential, even under a strong key
+# (``SSH_AUTH_SOCK=$HOME/.ssh/agent.sock``, ``DOCKER_AUTH_CONFIG=/home/u/.docker``).
+_PASSWORD_KEY_RE = re.compile(r"passwd|password|pass|pw", re.IGNORECASE)
+_PATH_OR_VAR_VALUE_RE = re.compile(r"[$/~]")
 
 
 def _is_word_start(s: str, i: int) -> bool:
@@ -369,6 +377,10 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
     if value == "***" or value.startswith("«redacted"):
         return False
     if check_keyword and not _key_has_secret_keyword(key):
+        return False
+    # A shell rc's ``SSH_AUTH_SOCK=$HOME/.ssh/agent.sock`` is configuration the agent must keep
+    # readable; only password-class keys mask a path/variable reference.
+    if _PATH_OR_VAR_VALUE_RE.match(value) and not _has_word_bounded_keyword(key, _PASSWORD_KEY_RE):
         return False
     return (_has_word_bounded_keyword(key, _STRONG_KEY_KEYWORD_RE)
             or _looks_like_opaque_credential(value))
@@ -1030,7 +1042,7 @@ def _is_secret_file_arg(arg: str) -> bool:
         return True
     # ``config.yaml`` plus the ``config.yaml.good.<stamp>`` / ``.corrupt.<stamp>`` copies Hermes
     # writes under ``backups/config/`` — same contents, same secrets.
-    if parts[-1] != "config.yaml" and not parts[-1].startswith("config.yaml."):
+    if parts[-1] != "config.yaml" and not parts[-1].startswith(("config.yaml.good.", "config.yaml.corrupt.")):
         return False
     return hermes_home or ".hermes" in parts[:-1] or _is_under_hermes_home(path)
 

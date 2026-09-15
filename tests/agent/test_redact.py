@@ -2,6 +2,7 @@
 
 import ast
 import logging
+import time
 
 import pytest
 
@@ -1259,7 +1260,10 @@ class TestSecretFileAssignmentRedaction:
         ("FOO_API_KEY={tok}", "«redacted-secret»"),             # dotenv
         ('{{"api_key": "{tok}"}}', "«redacted-secret»"),        # JSON
         ("5|      ADS_API_TOKEN: {tok}", "«redacted-secret»"),  # read_file line gutter
-        ("108:ADS_API_TOKEN: {tok}", "«redacted-secret»"),      # grep -n / cat -n gutter
+        ("108:ADS_API_TOKEN: {tok}", "«redacted-secret»"),      # grep -n gutter
+        ("108-      ADS_API_TOKEN: {tok}", "«redacted-secret»"),  # grep -A/-B/-C context gutter
+        ("   108\tADS_API_TOKEN: {tok}", "«redacted-secret»"),   # cat -n / nl gutter (number + TAB)
+        ("   108\texport FOO_TOKEN={tok}", "«redacted-secret»"),
         ("GITHUB_TOKEN: ghp_S1abcdefghijklmnopqrstuvwxyz0Pn2T", "«redacted:ghp_…»"),  # prefix label kept
     ])
     def test_secret_file_masks_assignment_with_non_reusable_sentinel(self, template, sentinel):
@@ -1272,9 +1276,17 @@ class TestSecretFileAssignmentRedaction:
     def test_unclassified_read_and_non_secret_scalars_are_untouched(self):
         for text in ("MAX_TOKENS: 100", '{"apiKey": "test"}', "api_key: test", f"5|ADS_API_TOKEN: {self.SYNTH}"):
             assert redact_sensitive_text(text, force=True, file_read=True) == text
-        out = redact_sensitive_text(f"ADS_API_TOKEN: {self.SYNTH}\n5|MAX_TOKENS: 100\n", force=True,
-                                    file_read=True, secret_file=True)
-        assert self.SYNTH not in out and "5|MAX_TOKENS: 100" in out
+        # Strong-key names whose value is a variable/path reference are shell-rc configuration, not
+        # secrets; the agent must still be able to read and edit them (password-class keys mask anyway).
+        rc = "export SSH_AUTH_SOCK=$HOME/.ssh/agent.sock\nexport DOCKER_AUTH_CONFIG=/home/u/.docker\n"
+        out = redact_sensitive_text(rc + f"ADS_API_TOKEN: {self.SYNTH}\n5|MAX_TOKENS: 100\nDB_PASSWORD=~/pw\n",
+                                    force=True, file_read=True, secret_file=True)
+        assert out.startswith(rc) and self.SYNTH not in out and "5|MAX_TOKENS: 100" in out and "~/pw" not in out
+        # The gutter-tolerant anchors must stay linear: a wide indented line is not a stall.
+        wide = "1|" + " " * 20000 + "token:"
+        started = time.perf_counter()
+        assert redact_sensitive_text(wide, force=True, file_read=True, secret_file=True) == wide
+        assert time.perf_counter() - started < 1.0
 
 
 class TestHermesHomePathClassification:
@@ -1292,6 +1304,7 @@ class TestHermesHomePathClassification:
         assert _is_secret_file_arg(str(home / "config.yaml"))
         assert _is_secret_file_arg(str(home / "profiles" / "coder" / "config.yaml"))
         assert _is_secret_file_arg(str(home / "backups" / "config" / "config.yaml.good.20260914-184559"))
+        assert not _is_secret_file_arg(str(home / "config.yaml.pdf"))  # only the backups/config/ copies
         assert not _is_secret_file_arg(str(tmp_path / "proj" / "config.yaml"))
         assert not _is_secret_file_arg("config.yaml")  # relative, not resolvable to the home
 

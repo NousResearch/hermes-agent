@@ -647,6 +647,17 @@ def _(rid, params: dict) -> dict:
         logger.warning(
             "compute-host dispatch failed for session %s; falling back inline: %s", sid,
             isolated_response["error"].get("message", "unknown error"))
+        # Dispatch refusal is the commit point for in-process ownership.  Clear the
+        # durable host-routing latch here, not in the generic dispatch helper: other
+        # callers (notably auto-continue) may handle its error without falling back.
+        with session["history_lock"]:
+            session.pop("_compute_host_active", None)
+            session["_compute_host_released"] = True
+            for stale_key in (
+                "_metadata_mirror", "_metadata_mirror_updated_at", "_metadata_message_count",
+                "_compute_host_pending_clarify",
+            ):
+                session.pop(stale_key, None)
     if (err := _persist_session_row_for_submit(rid, session)) is not None:
         return err
     # A completed FAILED build must not wedge the session: rebuild, don't replay it.

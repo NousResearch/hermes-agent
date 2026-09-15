@@ -169,7 +169,7 @@ describe('useMessageStream delta flush scheduling', () => {
   it('keeps the write-cost floor when no frame fires (hidden renderer)', async () => {
     // A parked renderer never runs rAF callbacks. The cost must stay at the
     // synchronous store-write measurement so the gap falls back to the fixed
-    // 33ms floor instead of waiting on a frame that will never come.
+    // 48ms floor instead of waiting on a frame that will never come.
     let now = 1000
     vi.mocked(performance.now).mockImplementation(() => now)
     vi.mocked(window.requestAnimationFrame).mockImplementation(() => 1)
@@ -183,7 +183,7 @@ describe('useMessageStream delta flush scheduling', () => {
 
     expect(assistantText()).toBe('first')
 
-    // 100ms later (well past the 33ms floor): the next flush is immediate.
+    // 100ms later (well past the 48ms floor): the next flush is immediate.
     now = 1100
     act(() => stream.appendDelta(SID, 'second'))
     await act(async () => {
@@ -214,7 +214,7 @@ describe('useMessageStream delta flush scheduling', () => {
     now = 1010
     act(() => stream.appendDelta(SID, 'b'))
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(23)
+      await vi.advanceTimersByTimeAsync(38)
     })
 
     expect(assistantText()).toBe('ab')
@@ -227,7 +227,7 @@ describe('useMessageStream delta flush scheduling', () => {
 
     act(() => stream.appendDelta(SID, 'c'))
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(13)
+      await vi.advanceTimersByTimeAsync(28)
     })
 
     expect(assistantText()).toBe('abc')
@@ -385,7 +385,7 @@ describe('useMessageStream composed with the real useSessionStateCache', () => {
 
     expect(cachedText()).toBe('first')
 
-    // 100ms later (well past the 33ms floor): the next flush is immediate.
+    // 100ms later (well past the 48ms floor): the next flush is immediate.
     now = 1100
     act(() => appendAssistantDelta!(SID, 'second'))
     await act(async () => {

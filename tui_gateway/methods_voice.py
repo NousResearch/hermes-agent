@@ -458,6 +458,7 @@ def _(rid, params: dict) -> dict:
     def refused(reason, **extra):
         return _ok(rid, {"started": False, "reason": reason, **extra})
     try:
+        from tools.lazy_deps import FeatureUnavailable
         from tools.wake_word import (
             WakeWordInUse, detector_frame_info, load_wake_word_config, owns_listener,
             start_listening, wake_phrase, wake_surface_enabled)
@@ -493,6 +494,13 @@ def _(rid, params: dict) -> dict:
                         external_audio=capture_mode == "client")
     except WakeWordInUse:
         return refused("owned", owner_surface=existing_surface or None)
+    except FeatureUnavailable as e:
+        logger.warning("wake.start(%s): failed to start listener: %s", surface, e)
+        if e.restart_required:
+            # Retrying every reconnect/auto-arm repeats the same outcome; expose the one action
+            # that can repair it. Other lazy-dependency failures retain the existing RPC error.
+            return refused("restart_required", hint=str(e))
+        return _err(rid, 5026, str(e))
     except Exception as e:
         logger.warning("wake.start(%s): failed to start listener: %s", surface, e)
         return _err(rid, 5026, str(e))

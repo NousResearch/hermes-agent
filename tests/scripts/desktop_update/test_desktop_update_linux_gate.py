@@ -57,3 +57,27 @@ def test_target_outside_the_checkout_is_still_skew(tmp_path):
     assert _gate(tmp_path / "link", foreign / "hermes") == "skew"
     # A sibling directory sharing the prefix must not be mistaken for the checkout either.
     assert _gate(tmp_path / "link", Path(str(unpacked) + "-evil") / "Hermes") == "skew"
+
+
+def test_arch_specific_unpacked_dir_still_relaunches(tmp_path):
+    """electron-builder names the output dir ``linux-<arch>-unpacked`` off x86_64
+    (``linux-arm64-unpacked`` is what Hermes ships for ARM). Hardcoding the x86_64
+    ``linux-unpacked`` name made a healthy ARM install false-gate as "skew" on every
+    update, telling the user to reinstall an app that was already correct."""
+    unpacked = tmp_path / "apps" / "desktop" / "release" / "linux-arm64-unpacked"
+    unpacked.mkdir(parents=True)
+    (unpacked / "Hermes").touch()
+    assert _gate(tmp_path, unpacked / "Hermes") == "relaunch"
+
+
+def test_arch_specific_dir_is_preferred_over_a_stale_x86_64_one(tmp_path):
+    """Both dirs can exist after a cross-arch rebuild; the gate must follow the dir the
+    running binary actually lives in, not just the first one it finds."""
+    release = tmp_path / "apps" / "desktop" / "release"
+    stale = release / "linux-unpacked"
+    live = release / "linux-arm64-unpacked"
+    stale.mkdir(parents=True)
+    live.mkdir(parents=True)
+    (stale / "Hermes").touch()
+    (live / "Hermes").touch()
+    assert _gate(tmp_path, live / "Hermes") == "relaunch"

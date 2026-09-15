@@ -6981,7 +6981,10 @@ def _ladder_nous_rungs(
         step = _refreshed_nous_step(
             route, kwargs, "Auxiliary %s%s: refreshed Nous runtime credentials after 401, retrying")
         if step is not None:
-            return (yield step), None
+            resp, first_err = yield from _rung(
+                step, lambda exc: _credential_rung_accepts(exc) or _is_connection_error(exc))
+            if first_err is None:
+                return resp, None
     return None, first_err
 
 
@@ -7003,13 +7006,24 @@ def _ladder_credential_rungs(
                 _evict_cached_clients(resolved_provider)
             logger.info("Auxiliary %s%s: refreshed %s credentials after auth error, retrying",
                         task or "call", tag, auth_refresh_provider)
-            return (yield _LadderStep(
+            step = _LadderStep(
                 "retry_same_provider",
-                (auth_refresh_provider, route.resolved_model or route.final_model))), None
+                (auth_refresh_provider, route.resolved_model or route.final_model))
+            resp, first_err = yield from _rung(
+                step, lambda exc: _credential_rung_accepts(exc) or _is_connection_error(exc))
+            if first_err is None:
+                return resp, None
+            # ``first_err`` is now the retry's own failure, not the original auth error: the
+            # pool gate below and the ladder tail's eviction check both read this narrowed
+            # value. An unclaimed failure (e.g. a 500) re-raised out of ``_rung`` above
+            # instead, since the provider-fallback rung only acts on ``_FALLBACK_REASONS``.
     pool_provider = _recoverable_pool_provider(resolved_provider, client, main_runtime=route.main_runtime)
     # Capture the exact key used so recovery finds the right pool entry even if another
     # process rotated the pool meanwhile (current() would be None).
     _client_api_key = str(getattr(client, "api_key", "") or "")
+    # Gate on the narrowed error: a connection failure from the retry above arrives here
+    # unaccepted on purpose (a fresh key cannot fix an unreachable endpoint), so rotation
+    # is skipped and ``first_err`` is handed to the provider-fallback chain as-is.
     if pool_provider and _credential_rung_accepts(first_err):
         recovery_err = first_err
         # Skip the extra retry for clear payment/quota errors — the endpoint won't accept
@@ -7165,8 +7179,9 @@ def _aux_recovery_ladder(
         return resp
     # Connection/timeout errors poison the cached client (closed transport, half-read
     # stream); evict so the next aux call rebuilds a fresh one.
-    # Drop it from the cache regardless of whether we found a fallback above so the next auxiliary call
-    # rebuilds a fresh client instead of reusing the dead one. See issue #23432.
+    # Reached only when no fallback answered, so the next auxiliary call rebuilds a fresh
+    # client instead of reusing the dead one. ``first_err`` is the narrowed error from the
+    # rungs above, not necessarily the original one. See issue #23432.
     # Mirror the sync path: drop poisoned clients on connection/timeout so the next aux call rebuilds. See
     # issue #23432.
     if _is_connection_error(first_err):

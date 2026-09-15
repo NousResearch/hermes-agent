@@ -2180,6 +2180,16 @@ def switch_model(
     )
     if hasattr(agent, "context_compressor") and agent.context_compressor:
         _update_switch_compressor(agent, custom_providers, effective_context_length, snapshot)
+    # ── Re-resolve Ollama num_ctx for the new model (#110239) ──
+    # _configure_ollama_num_ctx is only called at init; after /model switch the stale value
+    # is silently sent to Ollama, so per-model context_length overrides are ignored.
+    try:
+        from agent.agent_init import _configure_ollama_num_ctx
+        from hermes_cli.config import load_config as _sm_reload_cfg
+        _sm_model_cfg = (_sm_reload_cfg() or {}).get("model", {})
+        _configure_ollama_num_ctx(agent, _sm_model_cfg, agent._config_context_length)
+    except Exception as _num_ctx_err:
+        logger.debug("switch_model: could not re-resolve ollama_num_ctx: %s", _num_ctx_err)
     # Re-read the per-model reasoning_effort override so it applies immediately (per-model > global;
     # YAML False = disabled).
     try:

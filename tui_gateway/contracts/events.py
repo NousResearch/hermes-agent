@@ -383,6 +383,12 @@ class SessionInfoPayload(Payload, SessionLiveInfo):
 
     config_warning: str | None = None  # set once, by the agent-build tail, when the profile config had a problem
 
+    @classmethod
+    def of(cls, info: "SessionLiveInfo | dict", **extra) -> "SessionInfoPayload":
+        """Pydantic rejects a base-class instance where the subclass is required, so every emitter converts here."""
+        data = info if isinstance(info, dict) else info.model_dump(mode="json")
+        return cls(**data, **extra)
+
 
 event("session.info", SessionInfoPayload,
       doc="Live session settings snapshot (``server._session_info``); method results use SessionLiveInfo.")

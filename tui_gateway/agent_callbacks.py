@@ -200,7 +200,7 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
         info = _session_info(agent, session) if agent is not None else {
             "cwd": resolved, "branch": git_probe.branch(resolved),
             "project": _project_info_for_cwd(resolved), "lazy": True}
-        _emit("session.info", sid, SessionLiveInfo.model_validate(info))
+        _emit("session.info", sid, SessionInfoPayload.of(info))
     except Exception:
         logger.debug("failed to emit session.info after project workspace move", exc_info=True)
 
@@ -301,7 +301,7 @@ def _apply_personality_to_session(
         session["history"].append({"role": "user", "content": marker, "display_kind": "personality_switch"})
         session["history_version"] = int(session.get("history_version", 0)) + 1
     info = _session_info(agent)
-    _emit("session.info", sid, SessionLiveInfo.model_validate(info))
+    _emit("session.info", sid, SessionInfoPayload.of(info))
     return False, info
 
 
@@ -534,7 +534,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
         session["history"] = []
         session["history_version"] = int(session.get("history_version", 0)) + 1
     info = _session_info(new_agent, session)
-    _emit("session.info", sid, SessionLiveInfo.model_validate(info))
+    _emit("session.info", sid, SessionInfoPayload.of(info))
     _restart_slash_worker(sid, session)
     return info
 

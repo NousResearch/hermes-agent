@@ -140,7 +140,11 @@ def _create_whisper_model(model_name: str, *, device: str, compute_type: str):
     kwargs = {"device": device, "compute_type": compute_type}
     try:
         return WhisperModel(model_name, local_files_only=True, **kwargs)
-    except _hub_cache_miss_error():
+    except (_hub_cache_miss_error(), RuntimeError) as exc:
+        # An interrupted first download leaves a snapshot folder without the weights;
+        # snapshot_download still returns it and ctranslate2 raises "Unable to open file".
+        if isinstance(exc, RuntimeError) and "Unable to open file" not in str(exc):
+            raise
         logger.info("faster-whisper model '%s' is not cached; downloading it from the Hugging Face Hub", model_name)
 
     # huggingface_hub surfaces every Hub/network failure as an OSError subclass

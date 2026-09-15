@@ -351,6 +351,10 @@ class TestTranscribeLocalCommand:
 # _transcribe_local — additional tests
 # ============================================================================
 
+@pytest.mark.skipif(
+    not __import__("importlib").util.find_spec("faster_whisper"),
+    reason="faster_whisper not installed",
+)
 class TestLocalModelLoading:
     def test_cached_model_load_never_uses_online_resolution(self):
         cached_model = object()
@@ -390,6 +394,19 @@ class TestLocalModelLoading:
             call("base", local_files_only=True, device="auto", compute_type="auto"),
             call("base", local_files_only=False, device="auto", compute_type="auto"),
         ]
+
+    def test_partial_cache_is_treated_as_a_cache_miss(self):
+        # An interrupted first download leaves refs/main + a snapshot without model.bin;
+        # snapshot_download(local_files_only=True) returns that folder and ctranslate2
+        # raises RuntimeError, so the online path must still run.
+        from tools.transcription_local import _create_whisper_model
+
+        downloaded_model = object()
+        side_effect = [RuntimeError("Unable to open file 'model.bin' in model '/cache/snap'"), downloaded_model]
+        with patch("faster_whisper.WhisperModel", side_effect=side_effect) as model_cls:
+            assert _create_whisper_model("base", device="cpu", compute_type="int8") is downloaded_model
+
+        assert [c.kwargs["local_files_only"] for c in model_cls.call_args_list] == [True, False]
 
 
 @pytest.mark.skipif(

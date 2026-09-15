@@ -59,17 +59,32 @@ async function stampExeIdentity(exe, desktopRoot = resolve(import.meta.dirname, 
   console.log(`[set-exe-identity] stamping ${exe}`)
   console.log(`[set-exe-identity] icon: ${icon}`)
 
-  await rcedit(exe, {
-    icon,
-    'version-string': {
-      ProductName: 'Hermes',
-      FileDescription: 'Hermes',
-      CompanyName: 'Nous Research',
-      LegalCopyright: 'Copyright (c) 2026 Nous Research'
+  // Retry loop: security software may lock a freshly-copied exe for ~60 s.
+  const maxRetries = 5
+  const delayMs = 15000
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      await rcedit(exe, {
+        icon,
+        'version-string': {
+          ProductName: 'Hermes',
+          FileDescription: 'Hermes',
+          CompanyName: 'Nous Research',
+          LegalCopyright: 'Copyright (c) 2026 Nous Research'
+        }
+      })
+      console.log(`[set-exe-identity] done — Hermes icon + identity stamped (attempt ${attempt}/${maxRetries})`)
+      return
+    } catch (err) {
+      const isLocked = err.message?.includes('Unable to commit changes') || err.message?.includes('busy') || err.message?.includes('locked')
+      if (isLocked && attempt < maxRetries) {
+        console.log(`[set-exe-identity] exe locked by security scan, waiting ${delayMs / 1000}s before retry ${attempt + 1}/${maxRetries}...`)
+        await new Promise(r => setTimeout(r, delayMs))
+      } else {
+        throw err
+      }
     }
-  })
-
-  console.log('[set-exe-identity] done — Hermes icon + identity stamped')
+  }
 }
 
 export { stampExeIdentity }

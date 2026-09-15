@@ -118,12 +118,12 @@ def test_plaintext_yes_resolves_approval(reply):
         "/approve all",      # resolve all
         "/approve session",  # session scope
         "/approve always",   # permanent scope
-        "> previous prompt\n/approve",          # quoted reply
-        "> quoted\n/approve all",               # quoted /approve all
-        "> quoted\n/approve session",           # quoted /approve session
+        pytest.param("> previous prompt\n/approve", id="quoted-previous-prompt-/approve"),
+        pytest.param("> quoted\n/approve all", id="quoted-/approve-all"),
+        pytest.param("> quoted\n/approve session", id="quoted-/approve-session"),
         "!approve",          # Slack/Matrix display prefix
         "/yes",              # alias slash
-        "> quoted\n/yes",    # quoted alias
+        pytest.param("> quoted\n/yes", id="quoted-/yes"),
     ],
 )
 def test_approval_routing_handles_slash_and_quoted_replies(reply):

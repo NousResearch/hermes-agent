@@ -67,6 +67,7 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "wecom": {**_TIER_LOW, "streaming": True},
     "wecom_callback": _TIER_LOW,
     "dingtalk": _TIER_LOW,
+    "qqbot": _TIER_LOW,  # QQ Bot API has no message edit support
     "email": _TIER_MINIMAL,
     "sms": _TIER_MINIMAL,
     "webhook": _TIER_MINIMAL,

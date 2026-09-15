@@ -16,10 +16,13 @@ export function usePanel<T>(path: string, refreshMs = 15000, nonce = 0): Loaded<
       if (alive) setState(next);
     };
     void tick();
-    const id = window.setInterval(tick, refreshMs);
+    // A non-positive interval means "read once, then only on a nonce bump". Guarded here
+    // rather than at each call site: setInterval(fn, 0) is a tight loop that pins a core
+    // and floods the control plane, and it is one typo away at every usePanel call.
+    const id = refreshMs > 0 ? window.setInterval(tick, refreshMs) : 0;
     return () => {
       alive = false;
-      window.clearInterval(id);
+      if (id) window.clearInterval(id);
     };
   }, [path, refreshMs, nonce]);
 

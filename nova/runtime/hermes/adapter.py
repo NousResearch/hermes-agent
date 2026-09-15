@@ -541,6 +541,33 @@ class HermesRuntime(AgentRuntime):
             return ()
         return _automations.executions(profile, automation_id, limit=limit)
 
+    def log_streams(self, agent_id: str) -> tuple[dict, ...]:
+        from nova.runtime.hermes import observe as _observe
+
+        profile = self.paths.profile_dir(agent_id)
+        return _observe.log_streams(profile) if profile.is_dir() else ()
+
+    def read_log(self, agent_id: str, stream: str, *, lines: int = 200) -> dict:
+        from nova.runtime.hermes import observe as _observe
+
+        profile = self.paths.profile_dir(agent_id)
+        if not profile.is_dir():
+            return {"stream": stream, "present": False, "lines": [], "truncated": False}
+        return _observe.tail(profile, stream, lines=lines)
+
+    def credential_presence(self, agent_id: str, names: tuple[str, ...]) -> dict:
+        from nova.runtime.hermes import observe as _observe
+
+        profile = self.paths.profile_dir(agent_id)
+        if not profile.is_dir():
+            return {name: False for name in names}
+        return _observe.credential_presence(profile, tuple(names))
+
+    def write_credentials(self, agent_id: str, values: dict) -> tuple[str, ...]:
+        from nova.runtime.hermes import observe as _observe
+
+        return _observe.write_credentials(self.paths.profile_dir(agent_id), values)
+
     def toolsets(self) -> tuple[dict, ...]:
         """The runtime's own toolset registry, as ``{id, description, tools}``.
 

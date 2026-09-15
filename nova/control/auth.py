@@ -87,6 +87,9 @@ WRITE_ROUTES: Mapping[str, str] = {
     "/agents/archive": "admin",
     "/agents/restore": "admin",
     "/agents/delete": "admin",
+    # The only route in NOVA that writes a secret. Admin, like every other agent write —
+    # and the value never comes back out, so there is no matching read to gate.
+    "/agents/credentials": "admin",
     # Putting a declared objective's steps on the board.
     "/objectives/submit": "admin",
     # Making the runtime deliver declared conversations to granted agents.

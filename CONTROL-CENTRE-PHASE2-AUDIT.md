@@ -191,19 +191,74 @@ claims. 798 platform tests and the protected-identifier check pass.
 
 **Not done, and why:**
 
-- **Runtime activity / logs.** `/decisions` and the task board are already surfaced, and the
-  Schedules tab shows real execution rows where the runtime recorded any. What does not
-  exist is a route that tails an agent's `agent.log` / `errors.log`. Building the UI shell
-  for it without the route would have meant a panel with nothing behind it, which §17 of the
-  brief forbids and which this project treats as the worst failure available. The
-  per-profile log files exist and the right shape is a bounded, authenticated tail — it is
-  one route, and it is the obvious next piece of work.
 - **Channel association from the agent form.** A grant is declared on the connection
   (`channels.yaml`), which Phase 9 made the single place it lives. The Channels step shows
   what would reach the agent and where to change it; offering a second place to set it would
   guarantee the two disagree.
-- **Credential entry.** Unchanged and deliberate: `.env` is on `materialize.NEVER_WRITE`, so
-  NOVA cannot hold a customer secret, and the brief's §13 asks for exactly that restraint.
 - **Live "Running" status.** There is no per-agent process heartbeat. Disabled, Not yet
   applied, Awaiting a human, Working and Idle are all backed by real data; a sixth state
   claiming a process is alive would not be.
+
+---
+
+## 10. Phase 3: runtime logs, execution monitoring, and credential entry
+
+Both were listed above as not done — logs because the route did not exist, credential entry
+because NOVA deliberately could not write a secret. The administrator asked for both, so
+both now exist. The second changes a security property of the platform, so it is worth
+stating what changed and what did not.
+
+### What was added
+
+| Surface | Route | Role |
+|---|---|---|
+| Which logs an agent has | `GET /agents/<id>/logs` | admin |
+| A bounded tail of one log | `GET /agents/<id>/logs?stream=&lines=` | admin |
+| Work, executions, decisions, log inventory | `GET /agents/<id>/activity` | admin |
+| Which credentials are needed, and which are set | `GET /agents/<id>/credentials` | admin |
+| Set or clear credentials | `POST /agents/<id>/credentials` | admin |
+
+### Credential entry: what changed, precisely
+
+**NOVA can now write a secret.** It could not before, and that was a deliberate property.
+What changed is narrower than "the restriction was lifted":
+
+* **`.env` is still on `materialize.NEVER_WRITE`.** `nova apply` still cannot touch it, so a
+  configuration push cannot overwrite a credential. Credential entry is a *separate* path,
+  not a relaxation of the existing one. A test applies the bundle after a write and asserts
+  the value survives.
+* **The name is allowlisted, and this is the load-bearing control.** `<profile>/.env` is
+  loaded into the environment of the process that runs the agent. A write path accepting any
+  name could set `LD_PRELOAD`, `PYTHONPATH`, `PATH` or `BASH_ENV` and turn "set a Slack
+  token" into "run my code inside the agent". `nova/credentials.py` derives the writable set
+  from the tenant's own declaration — the channels that grant this agent, its model, the
+  deployment default — and everything else is refused by name. Revoking a channel grant also
+  revokes the ability to write that channel's credentials, because the set is derived per
+  request rather than cached.
+* **Values go one way only.** There is no read that returns one. The status of a credential
+  is "set" or "not set". The audit log records which names changed and who changed them, and
+  a test greps it for the value to prove it is absent.
+* **Written 0600, merging.** The temporary file is created with that mode rather than
+  chmod-ed afterwards, so the value is never briefly world-readable. Comments and variables
+  NOVA does not model survive the write: the file is the operator's.
+
+### Logs: what is and is not done
+
+* Tailed from the end, capped in **bytes before lines**, so a caller cannot ask for a
+  megabyte by asking for a lot of lines.
+* The stream name is looked up in an explicit map, never resolved against a directory —
+  which is how traversal happens even when each individual check looks fine.
+* **Admin-only, and no sanitisation is attempted.** A log line can carry anything the
+  runtime wrote — a prompt, a tool argument, part of a document NOVA never saw. A sanitiser
+  that misses one pattern is worse than a clear statement of who may read, so the gate is
+  the role.
+* **Not done: live tailing.** Each read is a snapshot with a Refresh button. Streaming would
+  need a long-lived connection through the control plane, and the value of watching a log
+  update in real time did not justify that surface today.
+
+### Verified
+
+19 unit tests (`tests/platform/test_credentials_and_logs.py`) and 20 browser checks
+(`tests/browser/credentials_and_logs_e2e.py`), which type a distinctive secret through the
+real form and then grep every read route and the audit log for it from inside the browser's
+own session. 817 platform tests pass.

@@ -88,7 +88,7 @@ def _write_route(tail: str) -> Optional[str]:
 #: sees on every turn, and an unbounded one is a per-turn cost nobody reviewed.
 MAX_INSTRUCTIONS_CHARS = 20000
 
-AGENT_ACTIONS = ("update", "soul", "duplicate", "archive", "restore", "delete")
+AGENT_ACTIONS = ("update", "soul", "duplicate", "archive", "restore", "delete", "credentials")
 
 
 #: What an administrator may do to an automation the runtime already holds.
@@ -294,7 +294,114 @@ class ControlAPI:
             return self.agent_automations(tail[len("/agents/") : -len("/automations")])
         if tail.startswith("/agents/") and tail.endswith("/config"):
             return self.agent_config(tail[len("/agents/") : -len("/config")])
+        if tail.startswith("/agents/") and tail.endswith("/logs"):
+            return self.agent_logs(tail[len("/agents/") : -len("/logs")], query)
+        if tail.startswith("/agents/") and tail.endswith("/credentials"):
+            return self.agent_credentials(tail[len("/agents/") : -len("/credentials")])
+        if tail.startswith("/agents/") and tail.endswith("/activity"):
+            return self.agent_activity(tail[len("/agents/") : -len("/activity")], query)
         return _error(404, f"no such route: {path}")
+
+    def _known_agent(self, agent_id: str):
+        return next((a for a in self.bundle.agents if a.id == agent_id), None)
+
+    def agent_logs(self, agent_id: str, query: Mapping[str, str]) -> Response:
+        """A bounded tail of one of this agent's log files.
+
+        Admin-only, and that is load-bearing rather than incidental: a log line can carry
+        anything the runtime wrote — a prompt, a tool argument, part of a document NOVA
+        never saw. No attempt is made to sanitise it, because a sanitiser that misses one
+        pattern is worse than a clear statement of who may read.
+
+        Without ``stream`` this lists what exists rather than guessing which log was meant.
+        """
+        if self._known_agent(agent_id) is None:
+            return _error(404, f"no agent {agent_id!r}")
+
+        stream = str(query.get("stream") or "").strip()
+        if not stream:
+            return Response(
+                200,
+                {"agent_id": agent_id, "streams": [dict(s) for s in self.runtime.log_streams(agent_id)]},
+            )
+        try:
+            lines = int(query.get("lines") or 200)
+        except (TypeError, ValueError):
+            return _error(400, "lines must be a number")
+        try:
+            body = self.runtime.read_log(agent_id, stream, lines=lines)
+        except NovaError as exc:
+            return _error(400, str(exc))
+        return Response(200, {"agent_id": agent_id, **body})
+
+    def agent_credentials(self, agent_id: str) -> Response:
+        """Which credentials this agent needs, and which are set. Never a value.
+
+        The list is derived from the tenant's own declaration — the channels that grant
+        this agent, its model, the deployment default — so revoking a channel grant also
+        removes its credentials from this screen and from what may be written.
+        """
+        from nova.credentials import slots_for_agent
+
+        if self._known_agent(agent_id) is None:
+            return _error(404, f"no agent {agent_id!r}")
+
+        slots = slots_for_agent(self.bundle, agent_id)
+        present = self.runtime.credential_presence(agent_id, tuple(s.name for s in slots))
+        return Response(
+            200,
+            {
+                "agent_id": agent_id,
+                "credentials": [s.to_dict(present=bool(present.get(s.name))) for s in slots],
+                "writable": self.runtime.capabilities.credential_isolation,
+            },
+        )
+
+    def agent_activity(self, agent_id: str, query: Mapping[str, str]) -> Response:
+        """What this agent has actually done, from the records the runtime kept.
+
+        Three real sources, no synthesis: work the runtime holds for this agent, the
+        executions its schedules recorded, and the policy decisions made on its behalf.
+        An empty section means the runtime recorded nothing, which is reported as that
+        rather than softened.
+        """
+        if self._known_agent(agent_id) is None:
+            return _error(404, f"no agent {agent_id!r}")
+        try:
+            limit = max(1, min(int(query.get("limit") or 25), 200))
+        except (TypeError, ValueError):
+            return _error(400, "limit must be a number")
+
+        # The runtime filters by agent itself — doing it here would pull the whole board
+        # across the boundary to throw most of it away.
+        tasks = [t.to_dict() for t in self.runtime.list_tasks(agent_id=agent_id, limit=limit)]
+
+        executions: list[dict[str, Any]] = []
+        for row in self.runtime.list_automations():
+            if row.agent_id != agent_id:
+                continue
+            for run in self.runtime.automation_executions(agent_id, row.automation_id, limit=limit):
+                record = run.to_dict()
+                record["automation_id"] = row.automation_id
+                record["automation_name"] = row.name
+                executions.append(record)
+
+        # Reuse the /decisions route rather than a second reader over the same log: it
+        # already filters by agent, and two implementations of "what was refused" would
+        # eventually disagree about which is authoritative.
+        decided = self.decisions({"limit": str(limit), "agent": agent_id})
+        decisions = decided.body.get("decisions", []) if decided.status == 200 else []
+
+        return Response(
+            200,
+            {
+                "agent_id": agent_id,
+                "tasks": tasks,
+                "executions": executions[:limit],
+                "decisions": decisions,
+                "logs": [dict(s) for s in self.runtime.log_streams(agent_id)],
+            },
+        )
 
     def agent_config(self, agent_id: str) -> Response:
         """An agent's editable declaration, plus the options a form can offer.
@@ -777,6 +884,100 @@ class ControlAPI:
             ),
         )
 
+    def _write_credentials(self, agent_id: str, principal, payload: Mapping[str, Any]) -> Response:
+        """Set or clear this agent's credentials.
+
+        The one path in NOVA that writes a secret, and everything about it is narrower than
+        the routes around it.
+
+        *It does not go through the bundle.* A credential is not a declaration — it does not
+        belong in version control, and ``apply`` must keep being unable to overwrite one.
+        ``.env`` therefore stays on the materialiser's ``NEVER_WRITE`` list and this writes
+        the profile directly.
+
+        *It does not accept an arbitrary name.* ``.env`` is loaded into the environment of
+        the process that runs the agent, so a write path taking any name could set
+        ``LD_PRELOAD`` or ``PYTHONPATH`` and become code execution. Names are checked
+        against what the tenant's own declaration says this agent needs.
+
+        *It does not record the value.* The audit log gets which names changed and who
+        changed them. Copying the secret into a second store would double what a leak
+        exposes, and the whole point of the audit is to be safely readable.
+        """
+        from nova.credentials import check_writable
+
+        if self._known_agent(agent_id) is None:
+            return _error(404, f"no agent {agent_id!r}")
+
+        raw = payload.get("values")
+        if not isinstance(raw, Mapping) or not raw:
+            return _error(400, "send the credentials as an object under 'values'")
+
+        values: dict[str, Optional[str]] = {}
+        for name, value in raw.items():
+            name = str(name).strip()
+            if not name:
+                return _error(400, "a credential name may not be blank")
+            if value is None:
+                values[name] = None            # explicit clear
+                continue
+            if not isinstance(value, str):
+                return _error(400, f"{name}: a credential value must be text")
+            # A blank string is a clear, not a credential set to nothing: an operator who
+            # empties the field means "remove this", and storing "" would leave the adapter
+            # believing it had one.
+            values[name] = value if value.strip() else None
+
+        try:
+            check_writable(self.bundle, agent_id, values)
+        except NovaError as exc:
+            return _error(400, str(exc))
+
+        correlation_id = new_correlation_id()
+        audit = self.audit.with_actor(principal.name)
+        setting = sorted(n for n, v in values.items() if v is not None)
+        clearing = sorted(n for n, v in values.items() if v is None)
+        audit.record(
+            kind="agent.credentials_changed", phase="intent", subject=agent_id,
+            correlation_id=correlation_id,
+            # Names only. There is no branch of this method that puts a value in a record.
+            detail={"set": setting, "cleared": clearing, "actor": principal.name},
+        )
+        try:
+            changed = self.runtime.write_credentials(agent_id, values)
+        except NovaError as exc:
+            audit.record(
+                kind="agent.credentials_changed", phase="failed", subject=agent_id,
+                correlation_id=correlation_id, detail={"set": setting, "cleared": clearing},
+                error=str(exc),
+            )
+            return _error(400, str(exc))
+        except Exception as exc:  # noqa: BLE001 — an intent always reaches a terminal phase
+            audit.record(
+                kind="agent.credentials_changed", phase="failed", subject=agent_id,
+                correlation_id=correlation_id, detail={"set": setting, "cleared": clearing},
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            raise
+        audit.record(
+            kind="agent.credentials_changed", phase="committed", subject=agent_id,
+            correlation_id=correlation_id, detail={"changed": list(changed)},
+        )
+        return Response(
+            200,
+            {
+                "ok": True, "actor": principal.name, "agent_id": agent_id,
+                "changed": list(changed),
+                # No apply: a credential is read by the agent's process at start, not
+                # materialised from a declaration, so there is nothing for apply to do.
+                "runtime": {"applied": True},
+                "detail": (
+                    "" if changed
+                    else "nothing changed — the values sent already matched what was stored"
+                ),
+            },
+        )
+
     def _agent_action(
         self, tail: str, action: str, principal, payload: Mapping[str, Any]
     ) -> Response:
@@ -837,6 +1038,9 @@ class ControlAPI:
                 principal, kind="agent.deleted", subject=agent_id, detail={},
                 operation=lambda: agent_ops.delete_agent(root, agent_id),
             )
+
+        if action == "credentials":
+            return self._write_credentials(agent_id, principal, payload)
 
         return _error(404, f"no such agent action: {action!r}")
 

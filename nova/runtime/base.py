@@ -825,6 +825,30 @@ class AgentRuntime(ABC):
         """Recorded executions for one automation, newest first. Empty when none ran."""
         return ()
 
+    def log_streams(self, agent_id: str) -> tuple[dict, ...]:
+        """Which logs this agent has, and how big. Empty when the runtime keeps none."""
+        return ()
+
+    def read_log(self, agent_id: str, stream: str, *, lines: int = 200) -> dict:
+        """A bounded tail of one of this agent's logs.
+
+        ``{"present": False}`` when the runtime keeps no such log, which is a different and
+        more useful answer than an empty list of lines.
+        """
+        return {"stream": stream, "present": False, "lines": [], "truncated": False}
+
+    def credential_presence(self, agent_id: str, names: tuple[str, ...]) -> dict:
+        """Which of ``names`` this agent has set. Presence only, never a value."""
+        return {name: False for name in names}
+
+    def write_credentials(self, agent_id: str, values: dict) -> tuple[str, ...]:
+        """Set or clear this agent's credentials. Returns the names that changed.
+
+        A runtime with no per-agent credential store returns ``()`` and the control plane
+        reports that nothing was written, rather than claiming a save that did not happen.
+        """
+        return ()
+
     def toolsets(self) -> tuple[dict, ...]:
         """Tool groups this runtime understands, for a form to offer.
 

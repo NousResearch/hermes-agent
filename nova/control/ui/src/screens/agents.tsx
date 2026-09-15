@@ -1,6 +1,8 @@
 import * as React from "react";
 
+import { AgentActivity } from "@/screens/agent-activity";
 import { AgentConfigPanel } from "@/screens/agent-config";
+import { AgentCredentials } from "@/screens/agent-credentials";
 import { AgentLifecycle } from "@/screens/agent-lifecycle";
 import { AgentSchedules } from "@/screens/agent-schedules";
 import { SoulEditor } from "@/screens/soul";
@@ -162,6 +164,7 @@ export function AgentDetail({
     { id: "model", label: "Model" },
     { id: "capabilities", label: "Capabilities" },
     { id: "schedules", label: "Schedules" },
+    { id: "activity", label: "Activity" },
     { id: "knowledge", label: "Knowledge", count: corpora.length },
     { id: "channels", label: "Channels", count: reaching.length },
     { id: "permissions", label: "Permissions" },
@@ -248,6 +251,7 @@ export function AgentDetail({
       : tab === "model" ? <AgentConfigPanel agentId={agent.id} section="model" onChanged={onChanged} />
       : tab === "capabilities" ? <AgentConfigPanel agentId={agent.id} section="capabilities" onChanged={onChanged} />
       : tab === "schedules" ? <AgentSchedules agentId={agent.id} />
+      : tab === "activity" ? <AgentActivity agentId={agent.id} />
       : (
       <GlassPanel className="p-5">
         {tab === "work" ? (
@@ -376,6 +380,11 @@ export function AgentDetail({
         ) : null}
       </GlassPanel>
       )}
+
+      {/* Credentials sit under Channels because that is what they are for: the tab already
+          lists which connections reach this agent, and these are what those connections
+          need before they work. Its own panel, since it is a form. */}
+      {tab === "channels" ? <AgentCredentials agentId={agent.id} /> : null}
 
       {mineDecisions.length ? (
         <GlassPanel className="p-5">

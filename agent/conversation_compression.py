@@ -1229,9 +1229,33 @@ def _emit_aborted_attempt_telemetry(agent: Any, started_at: float, failure_class
     )
 
 
+def _same_typed_state(left: Any, right: Any) -> bool:
+    """Equality that treats ``1`` and ``True`` as distinct transcript values."""
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        if len(left) != len(right):
+            return False
+        for key, value in left.items():
+            matches = [
+                candidate_key
+                for candidate_key in right
+                if type(candidate_key) is type(key) and candidate_key == key
+            ]
+            if len(matches) != 1 or not _same_typed_state(value, right[matches[0]]):
+                return False
+        return True
+    if isinstance(left, (list, tuple)):
+        return len(left) == len(right) and all(
+            _same_typed_state(left_item, right_item)
+            for left_item, right_item in zip(left, right)
+        )
+    return left == right
+
+
 def _restore_messages_snapshot(messages: list, snapshot: Optional[list]) -> None:
     """Put the pre-compression deep snapshot back into the live list if it drifted."""
-    if snapshot is not None and messages != snapshot:
+    if snapshot is not None and not _same_typed_state(messages, snapshot):
         messages[:] = copy.deepcopy(snapshot)
 
 
@@ -3956,11 +3980,12 @@ def compress_context(
         finally:
             _restore_messages_snapshot(messages, messages_before_prepare)
 
-    # Pure sanitation does not use the auxiliary summary route. Retained retries
-    # and generic compression still run the normal lazy feasibility check.
+    # Pure sanitation does not use the auxiliary summary route, including a
+    # retained retry that already validated a candidate.
     if (
         not getattr(agent, "_compression_feasibility_checked", False)
         and prechecked_prepared_operation is None
+        and not sanitation.has_sanitation_retry(agent, messages)
     ):
         try:
             check_compression_model_feasibility(agent)
@@ -4005,6 +4030,18 @@ def compress_context(
         if commit_fence is not None:
             _commit_fence_entered = commit_fence.begin_commit(_hard_cancel_event)
             if not _commit_fence_entered:
+                if pure_sanitation:
+                    sanitation.remember_sanitation_retry(
+                        agent,
+                        sanitation.prepare_sanitation_commit(
+                            messages_before_compression or messages,
+                            compressed,
+                            watermark_messages=messages_before_compression or messages,
+                            externalized_payload_loader=sanitation.externalized_payload_loader(
+                                agent
+                            ),
+                        ),
+                    )
                 attempt.restore_compressor(agent.context_compressor)
                 _restore_messages_snapshot(messages, messages_before_compression)
                 logger.info(

@@ -46,6 +46,10 @@ _MESSAGE_PAYLOAD_FIELDS = frozenset(
         "api_content",
         "reasoning",
         "reasoning_content",
+    }
+)
+_REPLAY_ENVELOPE_FIELDS = frozenset(
+    {
         "reasoning_details",
         "codex_reasoning_items",
         "codex_message_items",
@@ -272,13 +276,40 @@ def _dict_context(context: str, original: dict) -> str:
     return "content_part" if "type" in original else "payload"
 
 
+def _same_typed_value(original: Any, candidate: Any) -> bool:
+    if type(original) is not type(candidate):
+        return False
+    if isinstance(original, dict):
+        if len(original) != len(candidate):
+            return False
+        for key, value in original.items():
+            matches = [
+                candidate_key
+                for candidate_key in candidate
+                if type(candidate_key) is type(key) and candidate_key == key
+            ]
+            if len(matches) != 1 or not _same_typed_value(
+                value, candidate[matches[0]]
+            ):
+                return False
+        return True
+    if isinstance(original, (list, tuple)):
+        return len(original) == len(candidate) and all(
+            _same_typed_value(left, right)
+            for left, right in zip(original, candidate)
+        )
+    return original == candidate
+
+
 def _child_context(context: str, key: Any) -> tuple[str, bool]:
     if context == "message":
-        return (
-            ("payload", key == "content")
-            if key in _MESSAGE_PAYLOAD_FIELDS
-            else ("tool_calls" if key == "tool_calls" else "structural", False)
-        )
+        if key in _MESSAGE_PAYLOAD_FIELDS:
+            return ("payload", key == "content")
+        if key == "tool_calls":
+            return ("tool_calls", False)
+        if key in _REPLAY_ENVELOPE_FIELDS:
+            return ("replay_envelope", False)
+        return ("structural", False)
     if context == "tool_calls":
         return ("function" if key == "function" else "structural", False)
     if context == "function":
@@ -304,6 +335,8 @@ def _validate_sanitized_value(
     allow_structured_externalization: bool = False,
     allow_json_normalization: bool = False,
 ) -> Optional[SanitationChanges]:
+    if context == "replay_envelope":
+        return SanitationChanges() if _same_typed_value(original, candidate) else None
     if (
         allow_structured_externalization
         and not isinstance(original, str)
@@ -689,8 +722,10 @@ def has_sanitation_retry(agent: Any, messages: list) -> bool:
     if (
         not isinstance(retry, SanitationRetryCandidate)
         or retry.session_id != agent.session_id
-        or _strip_persistence_marker(messages)
-        != _strip_persistence_marker(retry.original)
+        or not _same_typed_value(
+            _strip_persistence_marker(messages),
+            _strip_persistence_marker(retry.original),
+        )
     ):
         return False
     return (

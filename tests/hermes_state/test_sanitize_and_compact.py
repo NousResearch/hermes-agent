@@ -196,3 +196,59 @@ def test_sanitation_does_not_insert_ephemeral_recovery_scaffolding(db: SessionDB
     )
 
     assert [row["content"] for row in db.get_messages("sess1")] == ["clean"]
+
+
+def test_sanitation_places_post_snapshot_rows_after_unpersisted_live_tail(
+    db: SessionDB,
+) -> None:
+    """A concurrent append after the snapshot must follow the whole candidate."""
+    represented = db.append_message("sess1", role="user", content="represented")
+    assert db.try_acquire_compression_lock("sess1", "sanitizer")
+    db.append_message("sess1", role="assistant", content="post-snapshot")
+
+    db.sanitize_and_compact(
+        "sess1",
+        [
+            {"role": "user", "content": "clean-represented"},
+            {"role": "user", "content": "live-unpersisted"},
+        ],
+        watermark=represented,
+        represented_row_ids=(represented,),
+        lock_holder="sanitizer",
+    )
+
+    assert [row["content"] for row in db.get_messages("sess1")] == [
+        "clean-represented",
+        "live-unpersisted",
+        "post-snapshot",
+    ]
+
+
+def test_sanitation_preserves_concurrent_display_metadata_on_represented_rows(
+    db: SessionDB,
+) -> None:
+    """Reactions and display kind written during sanitation must survive rewrite."""
+    row_id = db.append_message("sess1", role="user", content="secret-token")
+    assert db.try_acquire_compression_lock("sess1", "sanitizer")
+    assert db.set_latest_matching_message_display_kind(
+        "sess1",
+        role="user",
+        content="secret-token",
+        display_kind="steer",
+        display_metadata={"source": "gateway"},
+    )
+    assert db.set_message_reaction("sess1", row_id, "👍", author="user")
+
+    db.sanitize_and_compact(
+        "sess1",
+        [{"role": "user", "content": "clean"}],
+        watermark=row_id,
+        represented_row_ids=(row_id,),
+        lock_holder="sanitizer",
+    )
+
+    published = db.get_messages_as_conversation("sess1")
+    assert published[0]["content"] == "clean"
+    assert published[0]["display_kind"] == "steer"
+    assert published[0]["display_metadata"]["source"] == "gateway"
+    assert published[0]["display_metadata"]["reactions"][0]["emoji"] == "👍"

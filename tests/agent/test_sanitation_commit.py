@@ -484,6 +484,65 @@ def test_claimed_sanitation_skips_aux_feasibility_probe(tmp_path, monkeypatch):
     assert harness.agent.context_compressor.operation_claims[0] is not None
 
 
+def test_retained_sanitation_retry_skips_aux_feasibility_probe(
+    tmp_path, monkeypatch
+):
+    import agent.auxiliary_client as aux_client
+    import agent.conversation_compression as compression
+    import agent.model_metadata as model_metadata
+
+    harness = _make_harness(tmp_path, rounds=1)
+    real_commit = harness.db.sanitize_and_compact
+
+    def _fail_commit(*args, **kwargs):
+        raise RuntimeError("commit failed")
+
+    monkeypatch.setattr(harness.db, "sanitize_and_compact", _fail_commit)
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+    assert returned is harness.messages
+
+    monkeypatch.setattr(harness.db, "sanitize_and_compact", real_commit)
+    harness.agent.context_compressor.current_operation = None
+    harness.agent._compression_feasibility_checked = False
+    minimum_context = model_metadata.MINIMUM_CONTEXT_LENGTH
+    fake_client = SimpleNamespace(
+        base_url="https://auxiliary.invalid/v1",
+        api_key="test-key",
+    )
+    monkeypatch.setattr(
+        aux_client,
+        "_resolve_task_provider_model",
+        lambda _task: ("openrouter", "", "", "", ""),
+    )
+    monkeypatch.setattr(
+        aux_client,
+        "get_text_auxiliary_client",
+        lambda *_args, **_kwargs: (fake_client, "auxiliary/small"),
+    )
+    monkeypatch.setattr(
+        model_metadata,
+        "get_model_context_length",
+        lambda *_args, **_kwargs: minimum_context - 1,
+    )
+
+    retried, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert harness.agent.context_compressor.calls == 1
+    assert _without_persistence_markers(retried) == _without_persistence_markers(
+        harness.candidate
+    )
+
+
 def test_generic_compression_still_enforces_aux_feasibility_probe(
     tmp_path, monkeypatch
 ):
@@ -559,6 +618,36 @@ def test_prepare_hook_mutation_is_validated_against_pre_hook_snapshot(tmp_path):
     assert _without_persistence_markers(
         harness.db.get_messages_as_conversation(harness.agent.session_id)
     ) == _without_persistence_markers(harness.candidate)
+
+
+def test_prepare_hook_type_drift_is_restored_before_sanitation(tmp_path):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1, initial_status=None)
+    harness.messages[0]["count"] = 1
+    harness.candidate[0]["count"] = 1
+    engine = harness.agent.context_compressor
+    real_prepare = engine.prepare_compression_operation
+
+    def _mutating_prepare(messages, **kwargs):
+        prepared = real_prepare(messages, **kwargs)
+        messages[0]["count"] = True
+        return prepared
+
+    engine.prepare_compression_operation = _mutating_prepare
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert harness.messages[0]["count"] is 1
+    assert returned[0]["count"] is 1
+    assert _without_persistence_markers(returned) == _without_persistence_markers(
+        harness.candidate
+    )
 
 
 def test_replayed_result_claim_cannot_classify_later_invocation_as_sanitation(
@@ -1097,6 +1186,34 @@ def test_sanitation_rejects_structural_field_redactions(path, replacement):
     assert validate_sanitation_candidate(original, candidate) is None
 
 
+@pytest.mark.parametrize(
+    "field",
+    ("reasoning_details", "anthropic_content_blocks", "bedrock_content_blocks"),
+)
+def test_sanitation_rejects_replay_envelope_structural_redactions(field):
+    original = [
+        {
+            "role": "assistant",
+            "content": "api_key=abcdefghijkl",
+            field: [
+                {
+                    "type": "thinking",
+                    "signature": "abcdefghijkl",
+                    "thinking": "api_key=abcdefghijkl",
+                }
+            ],
+        }
+    ]
+    candidate = copy.deepcopy(original)
+    candidate[0]["content"] = "api_key=" + _placeholder("api_key", "abcdefghijkl")
+    candidate[0][field][0]["signature"] = _placeholder("api_key", "abcdefghijkl")
+    candidate[0][field][0]["thinking"] = (
+        "api_key=" + _placeholder("api_key", "abcdefghijkl")
+    )
+
+    assert validate_sanitation_candidate(original, candidate) is None
+
+
 def test_externalization_marker_byte_count_normalizes_lone_surrogates():
     original = [
         {
@@ -1605,6 +1722,40 @@ def test_sanitation_fence_cancellation_preserves_original(tmp_path, caplog):
         harness.agent.session_id
     ) == durable_before
     assert "cancelled before session mutation" in caplog.text
+
+
+def test_sanitation_fence_cancellation_retains_retry(tmp_path):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1)
+    fence = compression.CompressionCommitFence()
+    harness.agent.context_compressor.after_compress = fence.cancel_before_commit
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+        commit_fence=fence,
+    )
+    assert returned is harness.messages
+
+    harness.agent.context_compressor.current_operation = None
+    retried, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert harness.agent.context_compressor.calls == 1
+    assert harness.memory.pre_compress_calls == 0
+    assert _without_persistence_markers(retried) == _without_persistence_markers(
+        harness.candidate
+    )
+    assert _without_persistence_markers(
+        harness.db.get_messages_as_conversation(harness.agent.session_id)
+    ) == _without_persistence_markers(harness.candidate)
 
 
 def test_sanitation_supersession_preserves_original(tmp_path, caplog):

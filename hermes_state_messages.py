@@ -572,9 +572,11 @@ class SessionMessagesMixin:
 
         Unlike ordinary compaction, sanitation must remove superseded rows and their
         FTS entries. Active rows absent from *represented_row_ids* (or, for legacy
-        callers, rows appended after *watermark*) are cloned byte-exactly after the
-        sanitized snapshot, then their earlier display generation is deleted in the
-        same transaction.
+        callers, rows appended after *watermark*) are cloned byte-exactly, interleaved
+        by durable id up to *watermark* and always after the complete candidate when
+        they arrived later. Concurrent display metadata on represented rows is merged
+        onto the replacement before insert. The earlier display generation is deleted
+        in the same transaction.
         """
         from agent.session_persistence import _is_ephemeral_scaffolding
         from hermes_state import SessionCompressionInProgressError
@@ -652,15 +654,30 @@ class SessionMessagesMixin:
                 )
             represented_set = set(represented)
             represented_sorted = sorted(represented_set)
+            current_by_id = {int(row["id"]): dict(row) for row in active_rows}
+            for message, row_id in zip(durable_messages, represented):
+                live = current_by_id.get(row_id)
+                if live is None:
+                    continue
+                if live["display_kind"]:
+                    message["display_kind"] = live["display_kind"]
+                display_metadata = self._decode_display_metadata(
+                    live["display_metadata"]
+                )
+                if display_metadata:
+                    message["display_metadata"] = display_metadata
             retained_by_slot: Dict[int, List[Dict[str, Any]]] = {}
             for row in active_rows:
                 row_id = int(row["id"])
                 if row_id in represented_set:
                     continue
-                slot = min(
-                    bisect.bisect_left(represented_sorted, row_id),
-                    len(durable_messages),
-                )
+                if row_id > int(watermark):
+                    slot = len(durable_messages)
+                else:
+                    slot = min(
+                        bisect.bisect_left(represented_sorted, row_id),
+                        len(durable_messages),
+                    )
                 retained_by_slot.setdefault(slot, []).append(dict(row))
 
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))

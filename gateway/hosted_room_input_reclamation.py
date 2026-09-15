@@ -167,8 +167,11 @@ def _external_holds(conn, db, copy, path, now):
             for other in conn.execute("SELECT * FROM input_custody_copies WHERE namespace IN ('v2','alias') AND state!='removed' AND device=? AND inode=?",
                     (str(identity[0]), str(identity[1]))):
                 other_path = copy_path(db, other)
-                if _file_identity(other_path) == identity:
-                    known.add(str(other_path))
+                try:
+                    if _file_identity(other_path) == identity:
+                        known.add(str(other_path))
+                except FileNotFoundError:
+                    return True  # A missing sibling is uncertainty, not a missing candidate.
             if links != len(known):
                 return True  # A physical owner outside the inventoried pair.
     except FileNotFoundError:

@@ -424,8 +424,9 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
 
     A task parked in ``review`` with a PR link younger than 24h is the
     CANONICAL review handoff (worker opened a PR then requested review) —
-    the review-lane dispatch must still claim/spawn it. The same comment on
-    a ready-lane task is a duplicate-work signal and stays deferred.
+    the review-lane dispatch must still claim/spawn it. An explicitly
+    task-attributed comment on a ready-lane task is a duplicate-work signal
+    and stays deferred.
     Rate-limit cooldown still applies in the review lane.
     """
     import hermes_cli.config as cfgmod
@@ -448,9 +449,14 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
             conn, review_id, summary="PR ready",
             expected_run_id=claimed.current_run_id,
         )
-        # Ready-lane task with the same fresh PR comment.
+        # Ready-lane task with a fresh PR comment attributed to this card.
         ready_id = kb.create_task(conn, title="already PRed", assignee="worker")
-        kb.add_comment(conn, ready_id, author="worker", body=pr_comment)
+        kb.add_comment(
+            conn,
+            ready_id,
+            author="worker",
+            body=f"kanban-task: {ready_id}\n{pr_comment}",
+        )
 
         assert kbd.check_respawn_guard(conn, ready_id) == "active_pr"
         assert kbd.check_respawn_guard(conn, review_id, lane="review") is None
@@ -476,6 +482,46 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         assert kbd.check_respawn_guard(
             conn, review_id, lane="review"
         ) == "rate_limit_cooldown"
+
+
+def test_active_pr_guard_requires_task_scoped_pr_provenance(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cited PR is not evidence that this card opened it.
+
+    The ready-lane guard must leave a citation-only card dispatchable, while
+    retaining the duplicate-work protection for a PR comment explicitly tied
+    to the card's id.
+    """
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+    pr_url = "https://github.com/example/repo/pull/123"
+
+    with kbc.connect() as conn:
+        citation_id = kb.create_task(title="citation", conn=conn, assignee="worker")
+        attributed_id = kb.create_task(title="attributed", conn=conn, assignee="worker")
+        kb.add_comment(conn, citation_id, author="worker", body=f"Prior art: {pr_url}")
+        kb.add_comment(
+            conn,
+            attributed_id,
+            author="worker",
+            body=f"kanban-task: {attributed_id}\nOpened {pr_url} for review.",
+        )
+
+        assert kbd.check_respawn_guard(conn, citation_id) is None
+        assert kbd.check_respawn_guard(conn, attributed_id) == "active_pr"
+
+        res = kbd.dispatch_once(conn, dry_run=True)
+        spawned_ids = [task_id for task_id, _profile, _workspace in res.spawned]
+        assert citation_id in spawned_ids
+        assert attributed_id not in spawned_ids
+        assert dict(res.respawn_guarded)[attributed_id] == "active_pr"
 
 
 def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(

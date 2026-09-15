@@ -63,12 +63,21 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 # ``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS``.
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 
-# Within this window a GitHub PR URL in a comment blocks re-spawn.
+# Within this window a task-attributed GitHub PR URL in a comment blocks
+# re-spawn. A plain URL is often prior-art evidence, not this card's PR.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
 _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
     re.IGNORECASE,
+)
+
+# Structured provenance written beside a worker's published-PR handoff. Keep
+# the marker line-oriented so a task id quoted as ordinary prose cannot turn a
+# cited URL into duplicate-work evidence.
+_RESPAWN_GUARD_TASK_MARKER_RE = re.compile(
+    r"^\s*kanban-task\s*:\s*(\S+)\s*$",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 
@@ -121,7 +130,8 @@ class DispatchResult:
     respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
     """``(task_id, reason)`` skipped by the respawn guard: ``"blocker_auth"``
     (quota/auth error — also auto-blocked), ``"recent_success"`` (completed run
-    within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    within guard window), ``"active_pr"`` (task-attributed GitHub PR URL in a
+    recent comment)."""
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
@@ -1174,7 +1184,8 @@ def check_respawn_guard(
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR). The review
+    (a task-attributed PR URL in a recent comment; re-spawning risks a duplicate
+    PR). The review
     lane skips the last two: they are the *inputs* to a review handoff. Stale /
     dead claim locks are NOT a guard reason — the reclaim passes own those.
     """
@@ -1242,13 +1253,22 @@ def check_respawn_guard(
         if not requeued_after:
             return "recent_success"
 
-    # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # 4. A task-attributed GitHub PR URL in a recent comment means a prior
+    #    worker already opened a PR. Plain URLs are commonly cited prior art;
+    #    only the explicit card marker makes a URL provenance for this task.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+        body = c["body"]
+        marker = _RESPAWN_GUARD_TASK_MARKER_RE.search(body or "")
+        if (
+            body
+            and _RESPAWN_GUARD_PR_URL_RE.search(body)
+            and marker is not None
+            and marker.group(1) == task_id
+        ):
             return "active_pr"
 
     return None

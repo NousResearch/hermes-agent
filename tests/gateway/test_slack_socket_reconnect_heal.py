@@ -295,3 +295,145 @@ class TestSocketModeRestart:
         await adapter._socket_watchdog_loop()
 
         assert reasons == ["transport disconnected"]
+
+
+class TestSocketModeAppRebuild:
+    """Regression for #85574: _restart_socket_mode must rebuild the AsyncApp.
+
+    When the aiohttp ClientSession inside the AsyncApp's AsyncWebClient is
+    closed, simply stopping/starting the Socket Mode handler reuses the same
+    dead client. The restart path must drop the old app/clients and build fresh
+    ones from the stored tokens.
+    """
+
+    @pytest.mark.asyncio
+    async def test_restart_rebuilds_app_and_clients(self, adapter):
+        """_restart_socket_mode creates a new AsyncApp and per-workspace clients."""
+        old_app = adapter._app
+        old_team_clients = {"T1": MagicMock(), "T2": MagicMock()}
+        adapter._team_clients = dict(old_team_clients)
+        adapter._bot_tokens = ["xoxb-primary", "xoxb-second"]
+        adapter._team_tokens = {"T1": "xoxb-primary", "T2": "xoxb-second"}
+        adapter._app_token = "xapp-fake"
+        adapter._proxy_url = None
+
+        created_apps: list = []
+        created_clients: list = []
+
+        def _fake_async_app(*, token: str, client):
+            app = MagicMock()
+            app.token = token
+            app.client = client
+            created_apps.append((token, client))
+            return app
+
+        def _fake_async_web_client(*, token: str, user_agent_prefix: str):
+            client = MagicMock()
+            client.token = token
+            client.user_agent_prefix = user_agent_prefix
+            created_clients.append((token, user_agent_prefix))
+            return client
+
+        # Avoid actually starting a socket task in the test.
+        start_calls: list = []
+
+        def _fake_start():
+            start_calls.append(adapter._app)
+            adapter._socket_mode_task = MagicMock()
+            adapter._socket_mode_task.done.return_value = False
+
+        adapter._stop_socket_mode_handler = AsyncMock()
+        adapter._close_workspace_clients = AsyncMock()
+        adapter._register_app_event_handlers = MagicMock()
+        adapter._start_socket_mode_handler = _fake_start
+
+        with patch.object(_slack_mod, "AsyncApp", side_effect=_fake_async_app):
+            with patch.object(_slack_mod, "AsyncWebClient", side_effect=_fake_async_web_client):
+                await adapter._restart_socket_mode("ping/pong stale")
+
+        # The old app and team clients should have been discarded.
+        assert adapter._app is not old_app, "AsyncApp was not rebuilt"
+        assert adapter._team_clients is not old_team_clients, "team_clients dict not replaced"
+        assert set(adapter._team_clients.keys()) == {"T1", "T2"}, "team workspaces lost"
+
+        # One AsyncApp plus one AsyncWebClient per bot token were created
+        # (the primary is the first bot token, which is also the T1 client).
+        assert len(created_apps) == 1
+        assert len(created_clients) == 3  # primary + T1 + T2
+        # Primary token is the first bot token.
+        app_token, app_client = created_apps[0]
+        assert app_token == "xoxb-primary"
+        assert app_client.user_agent_prefix == _slack_mod._HERMES_SLACK_USER_AGENT_PREFIX
+
+        # Per-workspace clients use the stored team_id → token mapping.
+        client_tokens = {c[0] for c in created_clients}
+        assert client_tokens == {"xoxb-primary", "xoxb-second"}
+
+        # Clean-up and handler wiring were performed in order.
+        adapter._stop_socket_mode_handler.assert_awaited_once()
+        adapter._close_workspace_clients.assert_awaited_once()
+        adapter._register_app_event_handlers.assert_called_once()
+        assert len(start_calls) == 1
+        assert start_calls[0] is adapter._app
+
+    @pytest.mark.asyncio
+    async def test_restart_skips_without_stored_tokens(self, adapter):
+        """Empty token cache leaves the live app/handler alone and warns once."""
+        adapter._bot_tokens = []
+        adapter._app_token = "xapp-fake"
+        old_app = adapter._app
+
+        adapter._stop_socket_mode_handler = AsyncMock()
+        adapter._close_workspace_clients = AsyncMock()
+        adapter._start_socket_mode_handler = MagicMock()
+
+        with patch.object(_slack_mod.logger, "warning") as warn:
+            await adapter._restart_socket_mode("ping/pong stale")
+            await adapter._restart_socket_mode("ping/pong stale")
+
+        adapter._stop_socket_mode_handler.assert_not_awaited()
+        adapter._close_workspace_clients.assert_not_awaited()
+        adapter._start_socket_mode_handler.assert_not_called()
+        assert adapter._app is old_app
+        assert adapter._socket_rebuild_skipped_no_tokens is True
+        assert warn.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_restart_keeps_app_when_construct_fails(self, adapter):
+        """A failed AsyncApp construct must not null _app or stop the handler."""
+        old_app = adapter._app
+        adapter._bot_tokens = ["xoxb-primary"]
+        adapter._team_tokens = {"T1": "xoxb-primary"}
+        adapter._app_token = "xapp-fake"
+
+        adapter._stop_socket_mode_handler = AsyncMock()
+        adapter._close_workspace_clients = AsyncMock()
+        adapter._start_socket_mode_handler = MagicMock()
+
+        with patch.object(_slack_mod, "AsyncApp", side_effect=RuntimeError("boom")):
+            with patch.object(_slack_mod, "AsyncWebClient", return_value=MagicMock()):
+                await adapter._restart_socket_mode("ping/pong stale")
+
+        assert adapter._app is old_app
+        adapter._stop_socket_mode_handler.assert_not_awaited()
+        adapter._close_workspace_clients.assert_not_awaited()
+        adapter._start_socket_mode_handler.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_clears_stored_tokens(self, adapter):
+        """disconnect() drops the token cache so a later restart cannot build a stale app."""
+        adapter._bot_tokens = ["xoxb-fake"]
+        adapter._team_tokens = {"T1": "xoxb-fake"}
+
+        # Avoid stopping/cleanup side effects and platform lock release.
+        adapter._stop_socket_mode_handler = AsyncMock()
+        adapter._close_workspace_clients = AsyncMock()
+        adapter._seal_stream = AsyncMock()
+        adapter._stop_native_task_card_stream = AsyncMock()
+        adapter._release_platform_lock = MagicMock()
+
+        # _release_platform_lock normally checks _running; make it a no-op.
+        await adapter.disconnect()
+
+        assert adapter._bot_tokens == []
+        assert adapter._team_tokens == {}

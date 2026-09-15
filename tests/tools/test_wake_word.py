@@ -221,6 +221,7 @@ def test_openwakeword_ensures_base_models_for_custom_path(monkeypatch):
     # so a fresh install crashed at load time on a missing melspectrogram.onnx.
     # The base feature models must be ensured for a custom path too.
     calls = _install_fake_openwakeword(monkeypatch)
+    monkeypatch.setattr(ww, "_is_macos_arm64", lambda: False)
     eng = ww._OpenWakeWordEngine(
         {"provider": "openwakeword", "openwakeword": {"model": "/models/hey_hermes.onnx"}}
     )
@@ -326,7 +327,7 @@ def _openwakeword_engine_with_scores(monkeypatch, cfg_wake, scores):
 # ── sherpa-onnx open-vocabulary engine ───────────────────────────────────
 
 
-def _install_fake_sherpa(monkeypatch, tmp_path):
+def _install_fake_sherpa(monkeypatch, tmp_path, *, bpe=True):
     """Fake sherpa_onnx + a fake model dir so the engine builds offline."""
     calls = {"text2token": [], "spotter": [], "results": []}
 
@@ -334,12 +335,13 @@ def _install_fake_sherpa(monkeypatch, tmp_path):
     model_dir.mkdir()
     for name in (
         "tokens.txt",
-        "bpe.model",
         "encoder-epoch-12-avg-2-chunk-16-left-64.onnx",
         "decoder-epoch-12-avg-2-chunk-16-left-64.onnx",
         "joiner-epoch-12-avg-2-chunk-16-left-64.onnx",
     ):
         (model_dir / name).write_bytes(b"x")
+    if bpe:
+        (model_dir / "bpe.model").write_bytes(b"x")
 
     class _FakeStream:
         def accept_waveform(self, sample_rate, samples):
@@ -364,8 +366,8 @@ def _install_fake_sherpa(monkeypatch, tmp_path):
         def reset_stream(self, stream):
             pass
 
-    def _fake_text2token(phrases, tokens, tokens_type, bpe_model):
-        calls["text2token"].append(list(phrases))
+    def _fake_text2token(phrases, **kwargs):
+        calls["text2token"].append({"phrases": list(phrases), **kwargs})
         return [p.split() for p in phrases]
 
     sherpa = types.ModuleType("sherpa_onnx")
@@ -387,6 +389,29 @@ def _install_fake_sherpa(monkeypatch, tmp_path):
         np_stub.asarray = lambda x, dtype=None: _FakeArr(x)
         monkeypatch.setitem(sys.modules, "numpy", np_stub)
     return calls, model_dir
+
+
+def test_sherpa_uses_cjkchar_tokenization_without_bpe_model(monkeypatch, tmp_path):
+    """A model without ``bpe.model`` must use sherpa's CJK-character mode."""
+    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path, bpe=False)
+    ww._SherpaKwsEngine(
+        {"provider": "sherpa", "sherpa": {"model_dir": str(model_dir)}}
+    )
+
+    (tokenization,) = calls["text2token"]
+    assert tokenization["tokens_type"] == "cjkchar"
+    assert "bpe_model" not in tokenization
+
+
+def test_sherpa_preserves_bpe_tokenization_for_gigaspeech(monkeypatch, tmp_path):
+    calls, model_dir = _install_fake_sherpa(monkeypatch, tmp_path)
+    ww._SherpaKwsEngine(
+        {"provider": "sherpa", "sherpa": {"model_dir": str(model_dir)}}
+    )
+
+    (tokenization,) = calls["text2token"]
+    assert tokenization["tokens_type"] == "bpe"
+    assert tokenization["bpe_model"] == str(model_dir / "bpe.model")
 
 
 # ── Multi-profile phrase routing ─────────────────────────────────────────

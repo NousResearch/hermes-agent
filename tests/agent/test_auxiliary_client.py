@@ -106,6 +106,62 @@ class TestAuxiliaryMaxTokensParam:
 
 
 
+class TestAuxiliaryTaskEffortWiring:
+    """Task-level ``reasoning_effort`` must reach wires that translate reasoning.
+
+    ``auxiliary.<task>.reasoning_effort`` is folded into the generic ``extra_body.reasoning`` while
+    provider profiles only see ``reasoning_config`` (DeepSeek ``thinking``/``reasoning_effort``, zai,
+    kimi) — the folded value must be promoted for those, and left untouched for passthrough wires.
+    """
+
+    def test_promoted_for_a_translating_wire(self):
+        from agent.auxiliary_client import _build_call_kwargs, _resolve_aux_reasoning_config
+
+        folded = {"reasoning": {"enabled": False}, "response_format": {"type": "json_object"}}
+        with patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value={"reasoning_effort": "none"},
+        ):
+            reasoning_config = _resolve_aux_reasoning_config("title_generation", None, folded)
+        assert reasoning_config == {"enabled": False}
+
+        kwargs = _build_call_kwargs(
+            "opencode-go", "deepseek-flash", [{"role": "user", "content": "x"}],
+            max_tokens=64, extra_body=folded, reasoning_config=reasoning_config,
+            task="title_generation",
+        )
+        assert kwargs["extra_body"]["thinking"] == {"type": "disabled"}
+        # the folded value is added to, never removed from, the caller's extra_body
+        assert kwargs["extra_body"]["reasoning"] == {"enabled": False}
+        assert kwargs["extra_body"]["response_format"] == {"type": "json_object"}
+
+    def test_wire_without_a_reasoning_profile_keeps_the_generic_field(self):
+        """A provider without a reasoning-aware profile keeps the generic passthrough verbatim."""
+        from agent.auxiliary_client import _build_call_kwargs, _resolve_aux_reasoning_config
+
+        folded = {"reasoning": {"enabled": True, "effort": "low"}}
+        reasoning_config = _resolve_aux_reasoning_config("compression", None, folded)
+        assert reasoning_config == {"enabled": True, "effort": "low"}
+
+        kwargs = _build_call_kwargs(
+            "acme-openai-compat", "some-model", [{"role": "user", "content": "x"}],
+            extra_body=folded, reasoning_config=reasoning_config, task="compression",
+        )
+        assert kwargs["extra_body"]["reasoning"] == {"enabled": True, "effort": "low"}
+
+    def test_provider_shaped_task_extra_body_is_not_reshaped(self):
+        """A ``reasoning`` payload set by the task's own extra_body block is passed through verbatim."""
+        from agent.auxiliary_client import _resolve_aux_reasoning_config
+
+        with patch(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            return_value={"extra_body": {"enable_thinking": False, "reasoning": {"effort": "none"}}},
+        ):
+            assert _resolve_aux_reasoning_config(
+                "session_search", None, {"enable_thinking": False, "reasoning": {"effort": "none"}}
+            ) is None
+
+
 class TestResolveTaskProviderModel:
     @pytest.mark.parametrize(
         "provider",

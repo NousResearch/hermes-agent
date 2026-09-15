@@ -286,6 +286,14 @@ export function ModelPicker({
     }
   }, [filteredHopRows.length, modelIdx, stage])
 
+  useEffect(() => {
+    if (stage !== 'hop' || loading || hopRows.length > 0) {
+      return
+    }
+
+    setStage('provider')
+  }, [hopRows.length, loading, stage])
+
   const back = () => {
     // Esc first clears an active filter on the list stages, before navigating.
     if ((stage === 'provider' || stage === 'model' || stage === 'hop') && filter.trim()) {
@@ -524,12 +532,6 @@ export function ModelPicker({
     if (key.downArrow && sel < count - 1) {
       setSel(v => v + 1)
 
-      return
-    }
-
-    if (key.tab && stage === 'hop') {
-      setStage('provider')
-      setFilter('')
       return
     }
 
@@ -773,6 +775,7 @@ export function ModelPicker({
   if (stage === 'hop') {
     const labels = filteredHopRows.map(row => row.selector)
     const { items, offset } = windowItems(labels, modelIdx, VISIBLE)
+    const noMatches = __omp_shell("!filter.trim() && labels.length === 0")
 
     return (
       <Box flexDirection="column" width={width}>
@@ -794,9 +797,9 @@ export function ModelPicker({
           {offset > 0 ? ` ↑ ${offset} more` : ' '}
         </Text>
 
-        {!labels.length ? (
+        {noMatches ? (
           <Text color={t.color.muted} wrap="truncate-end">
-            {filter.trim() ? 'no models match' : 'no models · Tab for providers'}
+            no models match
           </Text>
         ) : (
           Array.from({ length: VISIBLE }, (_, i) => {
@@ -831,7 +834,7 @@ export function ModelPicker({
           persist: {allowPersistGlobal ? (persistGlobal ? 'global' : 'session') : 'session'}
           {allowPersistGlobal ? ' · ^g toggle' : ' only'}
         </Text>
-        <OverlayHint t={t}>↑/↓ select · Enter use · Tab providers · Esc close</OverlayHint>
+        <OverlayHint t={t}>↑/↓ select · Enter use · type nous/claude · Esc close</OverlayHint>
       </Box>
     )
   }

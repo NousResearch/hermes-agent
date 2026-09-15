@@ -149,14 +149,23 @@ def _which_with_config_pathext(command: str, path_arg, env: dict):
             os.environ["PATHEXT"] = saved
 
 
-def _node_fallback(command: str) -> str:
-    """Well-known Node install locations for bare ``npx``/``npm``/``node``; *command* unchanged when none exists."""
+def _node_fallback(command: str, *, windows: Optional[bool] = None) -> str:
+    """Resolve bare Node launchers from managed and conventional install locations.
+
+    The managed Windows bundle places ``npx.cmd``/``npm.cmd``/``node.exe``
+    directly under ``$HERMES_HOME/node``.  ``windows`` is injectable so that
+    candidate ordering can be tested without pretending the host OS changed.
+    """
     home = os.path.expanduser("~")
     hermes_home = os.path.expanduser(os.getenv("HERMES_HOME", os.path.join(home, ".hermes")))
+    is_windows = sys.platform == "win32" if windows is None else windows
     # /usr/local/bin: canonical Node location (from-source Linux, Hermes Docker image, Intel Homebrew),
     # needed when a hand-authored env.PATH omits it — npx's shebang re-execs /usr/bin/env node.
-    candidates = (os.path.join(hermes_home, "node", "bin", command), os.path.join(home, ".local", "bin", command),
-                  os.path.join(os.sep, "usr", "local", "bin", command))
+    directories = (os.path.join(hermes_home, "node", "bin"), os.path.join(hermes_home, "node"),
+                   os.path.join(home, ".local", "bin"), os.path.join(os.sep, "usr", "local", "bin"))
+    extensions = (".cmd", ".exe") if is_windows else ("",)
+    candidates = tuple(os.path.join(directory, command + extension)
+                       for directory in directories for extension in extensions)
     return next((c for c in candidates if os.path.isfile(c) and os.access(c, os.X_OK)), command)
 
 

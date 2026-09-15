@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from tools.mcp_tool import MCPServerTask, _MCP_AVAILABLE
 from tools.mcp_tool_errors import _format_connect_error
-from tools.mcp_tool_config import _resolve_stdio_command
+from tools.mcp_tool_config import _node_fallback, _resolve_stdio_command
 
 # Ensure the mcp module symbols exist for patching even when the SDK isn't installed
 if not _MCP_AVAILABLE:
@@ -33,6 +33,29 @@ def test_resolve_stdio_command_falls_back_to_hermes_node_bin(tmp_path):
 
     assert command == str(npx_path)
     assert env["PATH"].split(os.pathsep)[0] == str(node_bin)
+
+
+def test_windows_managed_node_root_prefers_cmd_launchers(tmp_path):
+    """Managed Windows Node lives directly in ``$HERMES_HOME/node``.
+
+    npm creates ``.cmd`` launchers there, and the extensionless sibling is a
+    POSIX shell script that Windows cannot spawn.
+    """
+    node_root = tmp_path / "node"
+    node_root.mkdir()
+    for command in ("npx", "npm"):
+        launcher = node_root / f"{command}.cmd"
+        launcher.write_text("@echo off\r\n", encoding="utf-8")
+        launcher.chmod(0o755)
+    (node_root / "npx.exe").write_bytes(b"exe")
+    node_exe = node_root / "node.exe"
+    node_exe.write_bytes(b"exe")
+    node_exe.chmod(0o755)
+
+    with patch.dict("os.environ", {"HERMES_HOME": str(tmp_path)}, clear=False):
+        assert _node_fallback("npx", windows=True) == str(node_root / "npx.cmd")
+        assert _node_fallback("npm", windows=True) == str(node_root / "npm.cmd")
+        assert _node_fallback("node", windows=True) == str(node_exe)
 
 
 def test_resolve_stdio_command_falls_back_to_usr_local_bin():

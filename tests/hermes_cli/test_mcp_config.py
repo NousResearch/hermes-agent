@@ -534,6 +534,205 @@ class TestProbeEnvResolution:
         assert seen["config"]["headers"]["Authorization"] == "Bearer jwt-token-xyz"
 
 
+class TestProbeLiveSessionReuse:
+    """Desktop health checks must not open a second Slack-like HTTP session."""
+
+    def test_probe_reuses_live_session_without_second_connect(self, monkeypatch):
+        import hermes_cli.mcp_config as mc
+        import tools.mcp_tool as mt
+
+        class _FakeTool:
+            name = "slack_search_users"
+            description = "find people"
+
+        class _Live:
+            session = object()
+            _tools = [_FakeTool()]
+
+        called = {"connect": 0}
+
+        async def _fake_connect(name, config):
+            called["connect"] += 1
+            raise AssertionError("standalone probe must not run when live")
+
+        monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _fake_connect)
+        mt._servers["slack"] = _Live()  # type: ignore[assignment]
+        try:
+            tools = mc._probe_single_server(
+                "slack",
+                {"url": "https://mcp.slack.com/mcp", "auth": "oauth"},
+            )
+        finally:
+            mt._servers.pop("slack", None)
+
+        assert tools == [("slack_search_users", "find people")]
+        assert called["connect"] == 0
+
+    def test_probe_does_not_second_connect_while_owned_session_is_down(self, monkeypatch):
+        import hermes_cli.mcp_config as mc
+        import tools.mcp_tool as mt
+
+        class _Parked:
+            session = None
+            _tools = []
+
+        async def _fake_connect(name, config):
+            raise AssertionError("must not second-connect a parked server")
+
+        monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _fake_connect)
+        mt._servers["slack"] = _Parked()  # type: ignore[assignment]
+        try:
+            with pytest.raises(TimeoutError, match="already claimed"):
+                mc._probe_single_server(
+                    "slack",
+                    {"url": "https://mcp.slack.com/mcp", "auth": "oauth"},
+                    connect_timeout=0.2,
+                )
+        finally:
+            mt._servers.pop("slack", None)
+
+    def test_wait_on_mcp_loop_does_not_sleep(self, monkeypatch):
+        """Probe wait must not block-sleep if invoked on the MCP event loop."""
+        import hermes_cli.mcp_config as mc
+
+        slept: list[float] = []
+        monkeypatch.setattr(
+            "tools.mcp_tool_discovery.mcp_event_loop_is_current", lambda: True
+        )
+        monkeypatch.setattr(
+            "tools.mcp_tool_discovery.snapshot_live_mcp_server", lambda name: None
+        )
+        monkeypatch.setattr(mc.time, "sleep", lambda seconds: slept.append(seconds))
+        assert mc._wait_for_live_mcp_server("slack", 30.0, wait_for_claim=True) is None
+        assert slept == []
+
+    def test_live_zero_tools_is_healthy_not_timeout(self, monkeypatch):
+        """Prompt/resource-only servers have a live session with empty _tools."""
+        import hermes_cli.mcp_config as mc
+        import tools.mcp_tool as mt
+
+        class _LiveNoTools:
+            session = object()
+            _tools = []
+
+        async def _fake_connect(name, config):
+            raise AssertionError("must not second-connect a live zero-tool server")
+
+        monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _fake_connect)
+        mt._servers["prompts-only"] = _LiveNoTools()  # type: ignore[assignment]
+        try:
+            tools = mc._probe_single_server(
+                "prompts-only",
+                {"url": "https://example.com/mcp"},
+            )
+        finally:
+            mt._servers.pop("prompts-only", None)
+
+        assert tools == []
+
+    def test_url_claim_grace_reuses_session_that_appears_while_loop_running(self, monkeypatch):
+        """When the MCP loop is up, wait_for_claim covers the health-sweep vs discovery race."""
+        import hermes_cli.mcp_config as mc
+
+        class _FakeTool:
+            name = "slack_search_users"
+            description = "find people"
+
+        class _Live:
+            session = object()
+            _tools = [_FakeTool()]
+
+        live = _Live()
+        snapshots = {"n": 0}
+
+        def snapshot(name):
+            snapshots["n"] += 1
+            return live if snapshots["n"] >= 3 else None
+
+        def owned(name):
+            return snapshots["n"] >= 2
+
+        async def _fake_connect(name, config):
+            raise AssertionError("must not second-connect during claim grace")
+
+        monkeypatch.setattr("tools.mcp_tool_discovery.snapshot_live_mcp_server", snapshot)
+        monkeypatch.setattr("tools.mcp_tool_discovery.mcp_server_owned_or_connecting", owned)
+        monkeypatch.setattr("tools.mcp_tool_discovery.mcp_event_loop_is_running", lambda: True)
+        monkeypatch.setattr("tools.mcp_tool_discovery.mcp_event_loop_is_current", lambda: False)
+        monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _fake_connect)
+        monkeypatch.setattr(mc.time, "sleep", lambda seconds: None)
+
+        tools = mc._probe_single_server(
+            "slack",
+            {"url": "https://mcp.slack.com/mcp", "auth": "oauth"},
+        )
+        assert tools == [("slack_search_users", "find people")]
+        assert snapshots["n"] >= 3
+
+    def test_live_reuse_fills_details_contract(self, monkeypatch):
+        """Reuse must still populate schema_chars / prompts / resources."""
+        import asyncio
+        import hermes_cli.mcp_config as mc
+        import tools.mcp_tool as mt
+
+        class _FakeTool:
+            name = "do_thing"
+            description = "a tool"
+
+        class _Result(list):
+            @property
+            def prompts(self):
+                return self
+
+            @property
+            def resources(self):
+                return self
+
+        class _Session:
+            async def list_prompts(self):
+                return _Result([object(), object()])
+
+            async def list_resources(self):
+                return _Result([object()])
+
+        class _Caps:
+            prompts = object()
+            resources = object()
+
+        class _InitResult:
+            capabilities = _Caps()
+
+        class _Live:
+            session = _Session()
+            _tools = [_FakeTool()]
+            initialize_result = _InitResult()
+
+        async def _fake_connect(name, config):
+            raise AssertionError("standalone probe must not run when live")
+
+        def _run(coro_or_factory, timeout=30):
+            coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
+            return asyncio.run(coro)
+
+        monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _fake_connect)
+        monkeypatch.setattr("tools.mcp_tool_loop._run_on_mcp_loop", _run)
+        mt._servers["slack"] = _Live()  # type: ignore[assignment]
+        details: dict = {}
+        try:
+            tools = mc._probe_single_server(
+                "slack",
+                {"url": "https://mcp.slack.com/mcp", "auth": "oauth"},
+                details=details,
+            )
+        finally:
+            mt._servers.pop("slack", None)
+
+        assert tools == [("do_thing", "a tool")]
+        assert "do_thing" in details.get("schema_chars", {})
+        assert details.get("prompts") == 2
+        assert details.get("resources") == 1
+
+
 class TestProbeCapabilityGating:
     """The ``details`` probe must not fire prompts/list or resources/list at
     servers that either disabled them in config or never advertised them.

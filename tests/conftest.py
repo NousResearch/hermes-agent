@@ -567,38 +567,33 @@ def _hermetic_environment(tmp_path, monkeypatch):
 
 
 # ── Keep every test out of the operator's REAL Hermes home ──────────────────
+def _hermes_home_under_native_home(env_home: str, native_home: Path) -> bool:
+    """True when HERMES_HOME sits *under* the platform-native home — the shape that leaks.
+
+    ``get_default_hermes_root()`` returns the native home whenever HERMES_HOME is empty or a
+    descendant of it, so a per-test ``<basetemp>/hermes_test`` under the operator's home resolves
+    back to the LIVE root.
+    """
+    return bool(env_home) and Path(env_home).resolve().is_relative_to(native_home.resolve())
+
+
 @pytest.fixture(autouse=True)
-def _bind_platform_native_home(_hermetic_environment, request, tmp_path_factory, monkeypatch):
+def _bind_platform_native_home(_hermetic_environment, request, tmp_path, monkeypatch):
     """Redirect the native-home FALLBACK, but only in the shape where it would leak.
 
-    ``get_default_hermes_root()`` returns the platform-native home whenever HERMES_HOME is empty or
-    sits *under* it. The per-test HERMES_HOME is ``<basetemp>/hermes_test``, so when basetemp is
-    inside the operator's home that sandbox resolves back to the LIVE root — the inversion this
-    guards. Redirect the native base only then: tests that deliberately unset HERMES_HOME and patch
-    ``Path.home()`` to exercise native/profile resolution keep the real resolver (they assert
-    resolution, not isolation), and a custom or already-isolated HERMES_HOME is left untouched.
-    Opt out explicitly with ``@pytest.mark.real_platform_home``.
+    A custom or already-isolated HERMES_HOME is left untouched. Tests that unset HERMES_HOME and
+    patch ``Path.home()`` to assert native/profile resolution opt out with
+    ``@pytest.mark.real_platform_home`` (the fixture reads HERMES_HOME before the test body runs).
     """
     if request.node.get_closest_marker("real_platform_home"):
         return
-    try:
-        import hermes_constants
-    except Exception:
+    import hermes_constants
+
+    real_native = Path(hermes_constants._get_platform_default_hermes_home())
+    if not _hermes_home_under_native_home(os.environ.get("HERMES_HOME", "").strip(), real_native):
         return
-    real_native = hermes_constants._get_platform_default_hermes_home()
-    env_home = os.environ.get("HERMES_HOME", "").strip()
-    if not env_home:
-        return
-    try:
-        inverted = Path(env_home).resolve().is_relative_to(Path(real_native).resolve())
-    except Exception:
-        return
-    if not inverted:
-        return
-    native = tmp_path_factory.mktemp("platform-native-home")
-    monkeypatch.setattr(
-        hermes_constants, "_get_platform_default_hermes_home", lambda: native, raising=False
-    )
+    native = tmp_path / "platform-native-home"
+    monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: native)
 
 
 # Backward-compat alias — old tests reference this fixture name. Keep it

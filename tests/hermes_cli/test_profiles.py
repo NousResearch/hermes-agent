@@ -846,9 +846,8 @@ class TestExportImport:
 
     def test_export_default_includes_profile_data(self, profile_env, tmp_path):
         """Profile data files end up in the archive (credentials excluded)."""
-        # Write through HERMES_HOME, not get_profile_dir("default"): the latter resolves to the
-        # OPERATOR's real install whenever basetest sits inside it, so this test used to
-        # overwrite the live config.yaml / .env / MEMORY.md with its fixtures.
+        # Write through the fixture's home directly rather than the resolver, so the test does not
+        # depend on ``Path.home()`` being patched to stay out of the operator's install.
         default_dir = profile_env / ".hermes"
         (default_dir / "config.yaml").write_text("model: test")
         (default_dir / ".env").write_text("KEY=val")
@@ -878,7 +877,7 @@ class TestExportImport:
         symlinks inside *allowed* artifacts (e.g. ``skills/``) survive as
         symlinks; the link and its target are both retained.
         """
-        # Same reason as above: never resolve the operator's real default home from a test.
+        # Same as above: write through the fixture's home, not the resolver.
         default_dir = profile_env / ".hermes"
         (default_dir / "config.yaml").write_text("ok")
         # Place broken symlink *inside* the allowed ``skills/`` tree so the

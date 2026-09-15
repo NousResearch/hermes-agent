@@ -457,6 +457,7 @@ export const ja = defineLocale({
       completionSoundPreview: '試聴'
     },
     sections: {
+      browser: 'ブラウザ',
       model: 'モデル',
       chat: 'チャット',
       appearance: '外観',
@@ -480,6 +481,21 @@ export const ja = defineLocale({
       system: { label: 'システム', description: 'OS の外観に合わせる' }
     },
     appearance: {
+      themeDescriptions: {
+        github: 'GitHub 標準のライトテーマとダークテーマ',
+        nous: 'GitHub 風の外観に Nous ブルーのアクセント',
+        catppuccin: '落ち着いたパステルカラー — Latte と Mocha',
+        everforest: '温かみのある低コントラストの森林色',
+        solarized: '一定のコントラストを保つライトとダーク',
+        'nous-alt': 'ガラスのような中間色、深い青にクリーム色',
+        midnight: '深い青紫にクールなアクセント',
+        ember: '鍛冶場を思わせる温かな深紅とブロンズ',
+        mono: 'すっきりしたグレースケール — シンプルで集中しやすい',
+        cyberpunk: '黒地にネオングリーン — マトリックス風ターミナル',
+        slate: 'クールな青灰色 — 開発に集中できるテーマ'
+      },
+      themeMarketplace: 'VS Code Marketplace のテーマ',
+      noInstalledThemes: query => `"${query}" に一致するインストール済みテーマはありません。`,
       title: '外観',
       intro:
         'デスクトップ専用の表示設定です。モードは明るさ、テーマはアクセントカラーとチャット面のスタイルを制御します。',
@@ -1418,6 +1434,36 @@ export const ja = defineLocale({
   },
 
   skills: {
+    toolsetLabels: {
+      web: 'ウェブ検索とコンテンツ抽出',
+      browser: 'ブラウザ自動化',
+      terminal: 'ターミナルとプロセス',
+      file: 'ファイル操作',
+      code_execution: 'コード実行',
+      vision: '画像分析',
+      video: '動画分析',
+      image_gen: '画像生成',
+      video_gen: '動画生成',
+      x_search: 'X（Twitter）検索',
+      tts: 'テキスト読み上げ',
+      stt: '音声文字起こし',
+      skills: 'スキル',
+      todo: 'タスク計画',
+      kanban: 'カンバン',
+      memory: 'メモリ',
+      context_engine: 'コンテキストエンジン',
+      session_search: '会話履歴の検索',
+      connections: '接続',
+      clarify: '確認の質問',
+      delegation: 'タスク委任',
+      cronjob: 'スケジュール済みタスク',
+      homeassistant: 'Home Assistant',
+      spotify: 'Spotify',
+      discord: 'Discord（閲覧・参加）',
+      discord_admin: 'Discord サーバー管理',
+      yuanbao: 'Yuanbao',
+      computer_use: 'コンピューター操作（macOS/Windows/Linux）'
+    },
     tabSkills: 'スキル',
     tabToolsets: 'ツールセット',
     tabMcp: 'MCP',

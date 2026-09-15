@@ -63,9 +63,22 @@ describe('language persistence through the real renderer config API', () => {
         const profile = request.profile || 'default'
 
         if (request.method === 'PUT') {
-          const saved: HermesConfigRecord = structuredClone((request.body as { config: HermesConfigRecord }).config)
+          const incoming = structuredClone((request.body as { config: HermesConfigRecord }).config)
+          const previous = readConfig(connection, profile)
+
+          // The backend deep-merges PUT fields onto the latest disk contents.
+          // These fixtures use a nested display and an otherwise untouched terminal.
+          const saved: HermesConfigRecord = {
+            ...previous,
+            ...incoming,
+            display: {
+              ...(previous.display as Record<string, unknown>),
+              ...(incoming.display as Record<string, unknown>)
+            }
+          }
+
           const display = saved.display as Record<string, unknown>
-          const previousDisplay = readConfig(connection, profile).display
+          const previousDisplay = previous.display
           const languageWasExplicit = Object.hasOwn(previousDisplay ?? {}, 'language')
 
           // Match the backend's sparse writer: existing explicit keys survive,
@@ -140,6 +153,40 @@ describe('language persistence through the real renderer config API', () => {
     await waitFor(() => expect(screen.getByTestId('ready').textContent).toBe('true'))
     expect(screen.getByTestId('locale').textContent).toBe('en')
     expect(readConfig(connection, 'writer').terminal).toEqual({ cwd: `/${connection}/writer` })
+    expect(readConfig(connection, 'default').display).toEqual({ language: 'en', skin: `${connection}-default` })
+  })
+
+  it.each(['local', 'remote'])('keeps settings changed after the language read on %s', async connection => {
+    setApiRequestConnection(connection)
+    setApiRequestProfile('writer')
+    render(
+      <I18nProvider>
+        <Probe />
+      </I18nProvider>
+    )
+    await waitFor(() => expect(screen.getByTestId('ready').textContent).toBe('true'))
+    let releaseRead!: () => void
+    pauseRead = () =>
+      new Promise<void>(resolve => {
+        releaseRead = resolve
+      })
+    fireEvent.click(screen.getByRole('button', { name: '한국어' }))
+    await waitFor(() => expect(releaseRead).toBeTypeOf('function'))
+    writeFileSync(
+      configPath(connection, 'writer'),
+      JSON.stringify({
+        display: { language: 'en', skin: 'new-theme' },
+        terminal: { cwd: '/changed-elsewhere' }
+      })
+    )
+    await act(async () => {
+      releaseRead()
+    })
+    await waitFor(() => expect(screen.getByTestId('ready').textContent).toBe('true'))
+    expect(readConfig(connection, 'writer')).toEqual({
+      display: { language: 'ko', skin: 'new-theme' },
+      terminal: { cwd: '/changed-elsewhere' }
+    })
     expect(readConfig(connection, 'default').display).toEqual({ language: 'en', skin: `${connection}-default` })
   })
 

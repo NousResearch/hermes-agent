@@ -60,7 +60,7 @@ export const ko = defineLocale({
     error: '오류',
     expand: '펼치기',
     failed: '실패',
-    formatJson: 'JSON 정렬',
+    formatJson: 'JSON 서식 정리',
     free: '무료',
     loading: '불러오는 중…',
     notSet: '설정되지 않음',
@@ -181,7 +181,8 @@ export const ko = defineLocale({
       signIn: '로그인',
       view: '보기',
       disable: '비활성화',
-      disabledMessage: name => `${name} MCP가 비활성화되었습니다. 기능 → MCP에서 언제든 다시 활성화할 수 있습니다.`,
+      disabledMessage: name =>
+        `${name} MCP가 비활성화되었습니다. 스킬과 도구 → MCP에서 언제든 다시 활성화할 수 있습니다.`,
       disableFailed: name => `${name} MCP를 비활성화할 수 없습니다.`
     },
     errors: {
@@ -486,7 +487,7 @@ export const ko = defineLocale({
         desktopSuccess: name => `데스크톱 플러그인 ${name} 설치 완료`,
         agentFailed: '에이전트 플러그인 설치 실패',
         desktopFailed: '데스크톱 플러그인 설치 실패',
-        missingEnv: vars => `필요한 환경 변수: ${vars}. 설정 → 키에서 추가하세요.`,
+        missingEnv: vars => `필요한 환경 변수: ${vars}. 설정 → 도구와 키에서 추가하세요.`,
         installFromGit: 'Git에서 설치',
         reviewRepository: '저장소 검토',
         repoPlaceholder: 'https://github.com/owner/repo',
@@ -507,7 +508,7 @@ export const ko = defineLocale({
       },
       agentHalfMissing: '에이전트 구성 요소가 설치되지 않음',
       agentHalfMissingTip:
-        '이 통합 플러그인의 데스크톱 구성 요소는 있지만, 현재 연결된 백엔드/프로필에는 에이전트 구성 요소가 없습니다. 기능 → 플러그인에서 설치하세요.'
+        '이 통합 플러그인의 데스크톱 구성 요소는 있지만, 현재 연결된 백엔드/프로필에는 에이전트 구성 요소가 없습니다. 스킬과 도구 → 플러그인에서 설치하세요.'
     },
     notifications: {
       title: '알림',
@@ -549,12 +550,13 @@ export const ko = defineLocale({
       testTitle: 'Hermes',
       testBody: '알림이 정상적으로 작동합니다.',
       testSent: '테스트 알림을 보냈습니다. 표시되지 않으면 운영체제 알림 권한과 집중 모드/방해 금지 설정을 확인하세요.',
-      testUnsupported: '이 시스템은 기본 알림을 지원하지 않습니다.',
+      testUnsupported: '이 시스템은 운영체제 알림을 지원하지 않습니다.',
       completionSoundTitle: '완료 소리',
       completionSoundDesc: '에이전트 턴이 완료되면 재생합니다. 여기에서 소리를 선택하고 미리 들어 보세요.',
       completionSoundPreview: '미리 듣기'
     },
     sections: {
+      browser: '브라우저',
       model: '모델',
       chat: '채팅',
       appearance: '모양',
@@ -587,6 +589,21 @@ export const ko = defineLocale({
       }
     },
     appearance: {
+      themeDescriptions: {
+        github: 'GitHub 기본 밝은 테마와 어두운 테마',
+        nous: 'GitHub 스타일에 Nous 파란색 강조',
+        catppuccin: '차분한 파스텔 색상 — Latte와 Mocha',
+        everforest: '따뜻하고 대비가 낮은 숲의 녹색',
+        solarized: '일정한 대비의 밝은 테마와 어두운 테마',
+        'nous-alt': '유리 같은 중성 색조, 짙은 파랑 위의 크림색',
+        midnight: '깊은 청보라색과 시원한 강조색',
+        ember: '대장간을 떠올리는 따뜻한 진홍색과 청동색',
+        mono: '깔끔한 회색조 — 간결하고 집중하기 좋은 테마',
+        cyberpunk: '검정 바탕의 네온 녹색 — 매트릭스풍 터미널',
+        slate: '차분한 청회색 — 개발에 집중하기 좋은 테마'
+      },
+      themeMarketplace: 'VS Code 마켓플레이스 테마',
+      noInstalledThemes: query => `설치된 테마 중 "${query}"와 일치하는 항목이 없습니다.`,
       title: '모양',
       intro:
         '데스크톱 전용 표시 환경설정입니다. 모드는 밝기를 조절하고, 테마는 강조 색상과 채팅 화면 스타일을 결정합니다.',
@@ -762,9 +779,9 @@ export const ko = defineLocale({
       'approvals.mcpReloadConfirm': 'MCP 다시 로드 확인',
       commandAllowlist: '명령 허용 목록',
       'security.redactSecrets': '비밀 정보 가리기',
-      'security.allowPrivateUrls': '비공개 URL 허용',
-      'browser.allowPrivateUrls': '브라우저 비공개 URL',
-      'browser.autoLocalForPrivateUrls': '비공개 URL용 로컬 브라우저',
+      'security.allowPrivateUrls': '내부 네트워크 URL 허용',
+      'browser.allowPrivateUrls': '브라우저의 내부 네트워크 URL 접근 허용',
+      'browser.autoLocalForPrivateUrls': '내부 네트워크 URL에 로컬 브라우저 사용',
       'browser.useRealProfile': '내 실제 브라우저 프로필 사용',
       'checkpoints.enabled': '파일 체크포인트',
       'checkpoints.maxSnapshots': '체크포인트 한도',
@@ -1073,7 +1090,7 @@ export const ko = defineLocale({
       title: 'Gateway 연결',
       envOverride: '환경 변수 오버라이드',
       intro:
-        'Hermes Desktop은 기본적으로 자체 로컬 Gateway를 시작합니다. 다른 컴퓨터에서 이미 실행 중인 Hermes 백엔드를 제어하거나 신뢰할 수 있는 프록시 뒤에 있는 경우 원격 Gateway를 사용하세요. 아래에서 프로필을 선택하여 고유한 원격 호스트를 지정할 수 있습니다.',
+        '기본적으로 로컬 백엔드를 사용합니다. 다른 컴퓨터의 Hermes 백엔드에 연결하려면 원격 연결을 사용하세요. 게이트웨이 연결은 기기 단위로 관리하며, 프로필은 연결한 게이트웨이에서 불러옵니다.',
       envOverrideTitle: '환경 변수가 이 데스크톱 세션을 제어하고 있습니다.',
       envOverrideDesc:
         '아래 저장된 설정을 사용하려면 HERMES_DESKTOP_REMOTE_URL과 HERMES_DESKTOP_REMOTE_TOKEN의 설정을 해제하세요.',
@@ -1548,7 +1565,7 @@ export const ko = defineLocale({
       defaultDirTitle: '기본 프로젝트 디렉터리',
       defaultDirDesc:
         '새 세션은 다른 폴더를 선택하지 않으면 이 폴더에서 시작됩니다. 비워두면 홈 디렉터리를 사용합니다.',
-      defaultDirUpdated: '기본 프로젝트 디렉터리 업데이트됨',
+      defaultDirUpdated: '기본 프로젝트 폴더를 변경했습니다. 적용하려면 새 대화(Ctrl/⌘+N)를 시작하세요.',
       defaultsTo: label => `기본값: ${label}.`,
       change: '변경',
       choose: '선택',
@@ -1613,7 +1630,7 @@ export const ko = defineLocale({
       webUsedForSearch: '검색 백엔드',
       webUsedForExtract: '추출 백엔드',
       webCapabilitySelectedMessage: (provider, capability) =>
-        `${provider}이(가) 이제 웹 ${capability}을(를) 처리합니다.`,
+        `${provider}: 웹 ${capability === 'search' ? '검색' : '본문 추출'}에 사용합니다.`,
       failedSelectCapability: provider => `${provider} 설정 실패`,
       loadingModels: '모델 카탈로그 불러오는 중...',
       modelSectionTitle: '모델',
@@ -1807,6 +1824,36 @@ export const ko = defineLocale({
     }
   },
   skills: {
+    toolsetLabels: {
+      web: '웹 검색 및 본문 추출',
+      browser: '브라우저 자동화',
+      terminal: '터미널 및 프로세스',
+      file: '파일 작업',
+      code_execution: '코드 실행',
+      vision: '이미지 분석',
+      video: '동영상 분석',
+      image_gen: '이미지 생성',
+      video_gen: '동영상 생성',
+      x_search: 'X(Twitter) 검색',
+      tts: '텍스트 음성 변환',
+      stt: '음성 텍스트 변환',
+      skills: '스킬',
+      todo: '작업 계획',
+      kanban: '칸반 보드',
+      memory: '메모리',
+      context_engine: '컨텍스트 엔진',
+      session_search: '대화 기록 검색',
+      connections: '연결',
+      clarify: '추가 확인 질문',
+      delegation: '작업 위임',
+      cronjob: '예약 작업',
+      homeassistant: 'Home Assistant',
+      spotify: 'Spotify',
+      discord: 'Discord 읽기 및 참여',
+      discord_admin: 'Discord 서버 관리',
+      yuanbao: 'Yuanbao',
+      computer_use: '컴퓨터 제어(macOS/Windows/Linux)'
+    },
     tabSkills: '스킬',
     tabToolsets: '도구 세트',
     configuringProfile: '설정 대상:',
@@ -2188,8 +2235,8 @@ export const ko = defineLocale({
     requestRejected: '하위 에이전트가 요청을 수락하지 않았습니다'
   },
   commandCenter: {
-    close: '커맨드 센터 닫기',
-    paletteTitle: '커맨드 팔레트',
+    close: '명령 센터 닫기',
+    paletteTitle: '명령 팔레트',
     back: '뒤로',
     searchPlaceholder: '세션, 보기, 작업 검색',
     goTo: '이동',
@@ -2201,7 +2248,7 @@ export const ko = defineLocale({
     newSessionInProject: project => `${project}에서 새 세션`,
     commands: '명령',
     startInBranch: branch => `${branch}에서 새 대화`,
-    commandCenter: '커맨드 센터',
+    commandCenter: '명령 센터',
     appearance: '모양',
     settings: '설정',
     changeTheme: '테마 변경...',
@@ -2295,7 +2342,7 @@ export const ko = defineLocale({
         detail: 'Telegram, Slack, Discord 등 설정'
       },
       artifacts: {
-        title: '아티팩트',
+        title: '결과물',
         detail: '생성된 출력 찾아보기'
       }
     },
@@ -2389,11 +2436,11 @@ export const ko = defineLocale({
       memoryProvider: name => `활성 제공업체: ${name}`,
       builtinMemory: '내장',
       memoryFile: '에이전트 메모리 (MEMORY.md)',
-      userFile: '사용자 프로필 (USER.md)',
+      userFile: '사용자 정보 (USER.md)',
       bytes: size => size,
       empty: '비어 있음',
       resetMemory: '메모리 초기화',
-      resetUser: '프로필 초기화',
+      resetUser: '사용자 정보 초기화',
       resetAll: '모두 초기화',
       resetConfirm: target => `${target}을(를) 삭제할까요? 되돌릴 수 없습니다.`,
       resetDone: files => `${files} 삭제됨.`,
@@ -2630,7 +2677,7 @@ export const ko = defineLocale({
       saveAndRestart: '저장하고 다시 시작',
       applying: '저장 중…',
       pairingExpired: 'Telegram 페어링이 만료되었습니다. 새 QR 설정으로 다시 시도하세요.',
-      stillWaiting: detail => `Telegram 응답을 계속 기다리고 있습니다. 다음 오류 후 다시 시도합니다: ${detail}`,
+      stillWaiting: detail => `Telegram 응답을 기다리는 중 오류가 발생해 다시 시도합니다: ${detail}`,
       savedRestarting: 'Telegram 설정이 저장되었습니다. 게이트웨이 다시 시작 중…',
       savedRestartFailed: detail => `Telegram 설정은 저장되었지만 게이트웨이를 다시 시작하지 못했습니다${detail}`
     }
@@ -2785,9 +2832,9 @@ export const ko = defineLocale({
     notSet: '설정되지 않음',
     soulDesc: '이 프로필에 새겨진 시스템 프롬프트와 페르소나 지시.',
     soulOptional: '선택사항',
-    soulPlaceholder: mode => `이 프로필의 시스템 프롬프트 / 페르소나입니다.\n${mode} 기본값을 유지하려면 비워두세요.`,
-    soulPlaceholderCloned: '복제됨',
-    soulPlaceholderEmpty: '비어 있음',
+    soulPlaceholder: mode => `이 프로필의 시스템 프롬프트 / 페르소나입니다.\n${mode} 유지하려면 비워 두세요.`,
+    soulPlaceholderCloned: '복제한 기본값을',
+    soulPlaceholderEmpty: '빈 상태를',
     unsavedChanges: '저장되지 않은 변경',
     loadingSoul: 'SOUL.md 불러오는 중...',
     emptySoul: '빈 SOUL.md — 페르소나 작성을 시작하세요...',
@@ -2835,8 +2882,9 @@ export const ko = defineLocale({
     title: '예약 작업',
     count: count => `작업 ${count}개`,
     modelImpact: {
-      title: '예약 작업 검토 필요',
-      message: count => `모델 설정을 검토할 때까지 예약 작업 ${count}개의 실행을 건너뜁니다.`,
+      title: '예약 작업은 기존 모델을 계속 사용합니다',
+      message: count =>
+        `모델을 고정하지 않은 예약 작업 ${count}개는 생성 당시 모델로 계속 실행됩니다. 사용할 모델을 작업별로 고정하거나 cron.model을 설정하여 변경하세요.`,
       detailMore: (names, remaining) => `${names} 외 ${remaining}개`,
       review: '예약 작업 검토',
       saveFailed: 'Hermes가 모델 변경 사항을 저장하지 않았습니다.',
@@ -2936,7 +2984,8 @@ export const ko = defineLocale({
     editTitle: 'Cron 작업 편집',
     createTitle: '새 Cron 작업',
     editDesc: '일정, 프롬프트 또는 전송 대상을 업데이트합니다. 변경사항은 다음 실행 시 적용됩니다.',
-    createDesc: '자동으로 실행할 프롬프트를 예약합니다. cron 구문이나 "15분마다" 같은 자연어를 사용하세요.',
+    createDesc:
+      '자동으로 실행할 프롬프트를 예약합니다. cron 구문이나 "every 15 minutes"(15분마다) 같은 영어 표현을 사용하세요.',
     nameLabel: '이름',
     namePlaceholder: '아침 브리핑',
     promptLabel: '프롬프트',
@@ -2947,8 +2996,8 @@ export const ko = defineLocale({
     modelLabel: '모델',
     modelDefault: '기본값 (전역 모델)',
     customScheduleLabel: '사용자 지정 일정',
-    customPlaceholder: '0 9 * * * 또는 평일 오전 9시',
-    customHint: 'cron 표현식 또는 "매시간", "평일 오전 9시" 같은 문구.',
+    customPlaceholder: '0 9 * * * 또는 weekdays at 9am',
+    customHint: 'cron 표현식이나 "every hour"(매시간), "weekdays at 9am"(평일 오전 9시) 같은 영어 표현을 입력하세요.',
     optional: '선택사항',
     promptRequired: '프롬프트가 필요합니다.',
     promptScheduleRequired: '프롬프트와 일정이 필요합니다.',
@@ -2976,17 +3025,17 @@ export const ko = defineLocale({
     }
   },
   artifacts: {
-    search: '아티팩트 검색...',
-    refresh: '아티팩트 새로 고침',
-    refreshing: '아티팩트 새로 고침 중',
-    indexing: '최근 세션 아티팩트 인덱싱 중',
+    search: '결과물 검색...',
+    refresh: '결과물 새로 고침',
+    refreshing: '결과물 새로 고침 중',
+    indexing: '최근 세션 결과물 인덱싱 중',
     tabAll: '전체',
     tabImages: '이미지',
     tabFiles: '파일',
     tabLinks: '링크',
-    noArtifactsTitle: '아티팩트를 찾을 수 없습니다',
+    noArtifactsTitle: '결과물를 찾을 수 없습니다',
     noArtifactsDesc: '세션에서 생성된 이미지와 파일 출력이 여기에 표시됩니다.',
-    failedLoad: '아티팩트 불러오기 실패',
+    failedLoad: '결과물 불러오기 실패',
     openFailed: '열기 실패',
     itemsImage: '이미지',
     itemsLink: '링크',
@@ -3047,7 +3096,7 @@ export const ko = defineLocale({
       'new-session': '새 세션',
       skills: '스킬과 도구',
       messaging: '메시징',
-      artifacts: '아티팩트',
+      artifacts: '결과물',
       cron: '예약 작업'
     },
     searchAria: '세션 검색',
@@ -3272,7 +3321,7 @@ export const ko = defineLocale({
       '/help': '전체 명령 및 단축키 목록',
       '/clear': '새 세션 시작',
       '/resume': '이전 세션 재개',
-      '/details': '대본 세부 수준 제어',
+      '/details': '대화 기록의 상세 표시 수준 조절',
       '/copy': '선택 항목 또는 마지막 응답 복사',
       '/quit': 'hermes 종료'
     },
@@ -3283,7 +3332,7 @@ export const ko = defineLocale({
       'composer.sendNewline': '보내기 · Shift+Enter로 줄 바꿈',
       'composer.sendQueued': '다음 대기 메시지 보내기',
       'keybinds.openPanel': '모든 키보드 단축키',
-      'composer.cancel': '팝오버 닫기 · 실행 취소',
+      'composer.cancel': '팝오버 닫기 · 실행 중단',
       'composer.history': '팝오버 / 기록 탐색'
     },
     attachUrlTitle: 'URL 첨부',
@@ -3372,12 +3421,12 @@ export const ko = defineLocale({
     snippets: {
       codeReview: {
         label: '코드 리뷰',
-        description: '회귀, 누락된 엣지 케이스, 누락된 테스트를 위해 현재 변경사항을 감사합니다.',
+        description: '현재 변경 사항에서 회귀, 놓친 예외 상황, 누락된 테스트를 점검합니다.',
         text: '버그, 회귀, 누락된 테스트가 있는지 검토해 주세요.'
       },
       implementationPlan: {
         label: '구현 계획',
-        description: '코드를 건드리기 전에 접근 방식을 정리하여 diff를 집중적으로 유지합니다.',
+        description: '변경 범위가 흐트러지지 않도록 코드를 수정하기 전에 구현 방향을 정리합니다.',
         text: '코드를 변경하기 전에 간결한 구현 계획을 만들어 주세요.'
       },
       explainThis: {
@@ -3586,9 +3635,10 @@ export const ko = defineLocale({
     copy: '복사',
     copied: '복사됨',
     done: '완료',
-    applyingBody: 'Hermes 업데이트 프로그램이 자체 창에서 작업을 인계받아 완료 시 Hermes를 다시 엽니다.',
+    applyingBody:
+      'Hermes 업데이트 프로그램이 별도 창에서 업데이트를 진행하고 완료되면 Hermes를 자동으로 다시 엽니다. 업데이트 중에는 Hermes를 직접 다시 열지 마세요.',
     applyingBodyBackend: '원격 백엔드가 업데이트를 적용한 뒤 재시작합니다. 준비되면 Hermes가 자동으로 다시 연결합니다.',
-    applyingClose: '업데이트를 적용하기 위해 Hermes가 닫힙니다.',
+    applyingClose: '업데이트 중에는 이 창이 닫히며, 완료되면 Hermes가 자동으로 다시 열립니다.',
     errorTitle: '업데이트가 완료되지 않았습니다',
     errorBody: '걱정 마세요 — 잃은 것은 없습니다. 지금 다시 시도할 수 있습니다.',
     blockerTitle: '로컬 미리보기를 닫고 Hermes를 업데이트할까요?',
@@ -3675,7 +3725,7 @@ export const ko = defineLocale({
     settingUpTitle: 'Hermes Agent 설정 중',
     finishingTitle: '마무리 중',
     failedDesc:
-      '설치 단계 중 하나가 실패했습니다. Windows에서는 다른 Hermes CLI나 데스크톱 인스턴스가 실행 중일 때 발생할 수 있습니다. 실행 중인 Hermes 인스턴스를 중지한 후 재시도하세요. 전체 대본은 아래 세부정보나 데스크톱 로그를 확인하세요.',
+      '설치 단계 중 하나가 실패했습니다. Windows에서는 다른 Hermes CLI나 데스크톱 인스턴스가 실행 중일 때 발생할 수 있습니다. 실행 중인 Hermes 인스턴스를 중지한 후 재시도하세요. 전체 실행 기록은 아래 세부 정보나 데스크톱 로그에서 확인하세요.',
     activeDesc:
       '이는 일회성 설정입니다. Hermes 설치 프로그램이 의존성을 다운로드하고 컴퓨터를 구성하고 있습니다. 이후 실행에서는 이 단계를 건너뜁니다.',
     progress: (completed, total) => `${total}단계 중 ${completed}단계 완료`,
@@ -3688,7 +3738,7 @@ export const ko = defineLocale({
     noOutput: '아직 출력이 없습니다.',
     cancelling: '취소 중...',
     cancelInstall: '설치 취소',
-    transcriptSaved: '전체 대본 저장 위치:',
+    transcriptSaved: '전체 설치 기록 저장 위치:',
     copiedOutput: '복사됨!',
     copyOutput: '출력 복사',
     reloadRetry: '다시 불러오고 재시도'
@@ -3709,7 +3759,7 @@ export const ko = defineLocale({
     fireworksPitch: '직접 연결하는 모델 API — Fireworks가 호스팅하는 최신 모델',
     localModelsTitle: '모델 로컬 실행',
     localModelsPitch: '계정 없이 모델을 다운로드하여 이 컴퓨터에서 실행',
-    openRouterPitch: '하나의 키, 수백 개의 모델 — 견고한 기본값',
+    openRouterPitch: '키 하나로 수백 개의 모델 사용 — 처음 시작하기에 좋은 선택',
     apiKeyOptions: {
       fireworks: {
         short: '직접 연결하는 모델 API',
@@ -3717,7 +3767,7 @@ export const ko = defineLocale({
       },
       openrouter: {
         short: '하나의 키, 다양한 모델',
-        description: '하나의 키로 수백 개의 모델을 호스팅합니다. 새 설치에 좋은 기본값.'
+        description: 'API 키 하나로 수백 개의 모델을 사용할 수 있습니다. 처음 설정할 때 선택하기 좋습니다.'
       },
       openai: {
         short: 'GPT 계열 모델',
@@ -3733,8 +3783,7 @@ export const ko = defineLocale({
       },
       local: {
         short: '자체 호스팅',
-        description:
-          '로컬 또는 자체 호스팅 OpenAI 호환 엔드포인트(vLLM, llama.cpp, Ollama 등)를 Hermes가 가리키게 합니다.'
+        description: '로컬 또는 직접 운영하는 OpenAI 호환 서버(vLLM, llama.cpp, Ollama 등)에 Hermes를 연결합니다.'
       }
     },
     backToSignIn: '로그인으로 돌아가기',
@@ -3760,14 +3809,14 @@ export const ko = defineLocale({
     pickDifferentProvider: '다른 공급자 선택',
     signInWith: provider => `${provider}(으)로 로그인`,
     openedBrowser: provider => `브라우저에서 ${provider}을(를) 열었습니다.`,
-    authorizeThere: '거기에서 Hermes를 인증하세요.',
+    authorizeThere: '해당 페이지에서 Hermes의 접근 권한을 허용하세요.',
     copyAuthCode: '인증 코드를 복사하여 아래에 붙여넣으세요.',
     pasteAuthCode: '인증 코드 붙여넣기',
     reopenAuthPage: '인증 페이지 다시 열기',
     autoBrowser: provider =>
-      `브라우저에서 ${provider}을(를) 열었습니다. 거기에서 Hermes를 인증하면 자동으로 연결됩니다 — 복사하거나 붙여넣을 필요 없습니다.`,
+      `브라우저에서 ${provider}을(를) 열었습니다. 해당 페이지에서 Hermes의 접근 권한을 허용하면 자동으로 연결됩니다. 코드를 복사하거나 붙여넣을 필요가 없습니다.`,
     reopenSignInPage: '로그인 페이지 다시 열기',
-    waitingAuthorize: '인증을 기다리는 중...',
+    waitingAuthorize: '접근 권한 허용을 기다리는 중...',
     externalPending: provider =>
       `${provider}은(는) 자체 CLI를 통해 로그인합니다. 터미널에서 이 명령을 실행한 후 돌아와 "로그인했습니다"를 선택하세요:`,
     signedIn: '로그인했습니다',
@@ -3778,7 +3827,7 @@ export const ko = defineLocale({
     freeTier: '무료 요금제',
     pro: 'Pro',
     free: '무료',
-    price: (input, output) => `입력 ${input} / 출력 ${output} Mtok당`,
+    price: (input, output) => `100만 토큰당 입력 ${input} / 출력 ${output}`,
     change: '변경',
     startChatting: '채팅 시작',
     docs: provider => `${provider} 문서`
@@ -3824,7 +3873,7 @@ export const ko = defineLocale({
       options: '옵션',
       thinking: '추론',
       fast: '빠름',
-      effort: '노력',
+      effort: '추론 강도',
       minimal: '최소',
       low: '낮음',
       medium: '중간',
@@ -3879,8 +3928,8 @@ export const ko = defineLocale({
       backendLabel: version => `백엔드 v${version}`,
       commit: sha => `커밋 ${sha}`,
       branch: branch => `브랜치 ${branch}`,
-      closeCommandCenter: '커맨드 센터 닫기',
-      openCommandCenter: '커맨드 센터 열기',
+      closeCommandCenter: '명령 센터 닫기',
+      openCommandCenter: '명령 센터 열기',
       showTerminal: '터미널 표시',
       hideTerminal: '터미널 숨기기',
       gateway: 'Gateway',
@@ -3950,8 +3999,8 @@ export const ko = defineLocale({
         tokenSummary: (used, max) => `${used} / ${max} 토큰`
       },
       session: '세션',
-      yoloOn: 'YOLO 켜짐 — 위험한 명령을 자동 승인 중. 끄려면 클릭.',
-      yoloOff: 'YOLO 꺼짐 — 위험한 명령을 자동 승인하려면 클릭.',
+      yoloOn: 'YOLO 켜짐 — 위험한 명령을 자동 승인합니다. Shift+클릭으로 전체 적용 설정을 전환합니다.',
+      yoloOff: 'YOLO 꺼짐. Shift+클릭으로 전체 적용 설정을 전환합니다.',
       modelNone: '없음',
       noModel: '모델 없음',
       switchModel: '모델 전환',
@@ -3979,7 +4028,7 @@ export const ko = defineLocale({
     previewUnavailable: '미리보기 사용 불가',
     couldNotPreview: path => `${path}을(를) 미리볼 수 없습니다`,
     noProjectTitle: '프로젝트 없음',
-    noProjectBody: '파일을 탐색하려면 상태 표시줄에서 작업 디렉터리를 설정하세요.',
+    noProjectBody: '파일을 탐색하고 변경 사항을 검토하려면 프로젝트를 여세요.',
     noProjectOpen: '열린 프로젝트 없음',
     noDiffs: '변경 사항 없음',
     unreadableTitle: '읽을 수 없음',
@@ -4130,7 +4179,7 @@ export const ko = defineLocale({
     newSessionTab: '새 세션 탭',
     newTab: '새 탭',
     pluginDisabled: pluginId => `"${pluginId}" 플러그인 비활성화됨`,
-    pluginDisabledBody: '기능 → 플러그인에서 다시 활성화하면 패널을 복원할 수 있습니다.',
+    pluginDisabledBody: '스킬과 도구 → 플러그인에서 다시 활성화하면 패널을 복원할 수 있습니다.',
     missingPane: paneId => `패널 없음: ${paneId}`,
     editTitle: '레이아웃',
     editHint: '레이아웃을 선택하거나 패널을 영역 간에 드래그하세요.',
@@ -4513,7 +4562,7 @@ export const ko = defineLocale({
     desktopCommands: '데스크톱 명령',
     skillCommandsAvailable: count => `${count}개의 스킬 명령 사용 가능.`,
     warningLine: message => `경고: ${message}`,
-    yoloArmed: '이 채팅에 YOLO 무장됨',
+    yoloArmed: '이 채팅에서 YOLO가 켜졌습니다',
     yoloOff: 'YOLO 꺼짐',
     yoloSystem: active => `이 세션에 YOLO ${active ? '켜짐' : '꺼짐'}`,
     yoloTitle: 'YOLO',

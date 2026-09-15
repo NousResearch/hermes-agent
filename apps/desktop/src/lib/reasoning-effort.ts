@@ -2,8 +2,8 @@ import { DEFAULT_REASONING_EFFORT, isReasoningEffort } from '@hermes/shared'
 
 import { normalize } from '@/lib/text'
 
-/** Compact labels for chrome where space is tight (pill, picker rows). Menus
- *  and settings use the translated `shell.modelOptions` strings instead. */
+/** Default compact labels for non-rendering callers. UI callers pass their
+ *  reactive translated modelOptions labels, including the common off label. */
 const SHORT_LABELS: Record<string, string> = {
   none: 'Off',
   minimal: 'Min',
@@ -15,10 +15,10 @@ const SHORT_LABELS: Record<string, string> = {
   ultra: 'Ultra'
 }
 
-export function reasoningEffortLabel(effort: string): string {
+export function reasoningEffortLabel(effort: string, labels: Readonly<Record<string, string>> = SHORT_LABELS): string {
   const key = normalize(effort)
 
-  return key ? (SHORT_LABELS[key] ?? effort) : ''
+  return key ? (Object.hasOwn(SHORT_LABELS, key) && Object.hasOwn(labels, key) ? labels[key] : effort) : ''
 }
 
 /** Thinking is on unless a level explicitly says otherwise; an empty value

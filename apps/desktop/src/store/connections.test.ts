@@ -803,6 +803,149 @@ describe('selectConnection', () => {
     }
   })
 
+  it.each([false, true])(
+    'keeps the saved local startup profile when boot exceeds the descriptor deadline (stale default: %s)',
+    async staleDefault => {
+      vi.useFakeTimers()
+
+      try {
+        if (staleDefault) {
+          $connection.set({ connectionId: 'local', mode: 'local', profile: 'default', registryScoped: true })
+          $connection.set(null)
+        }
+
+        const desktop = {
+          connections: { list, setLastUsed },
+          profile: { get: vi.fn(async () => ({ profile: 'writer' })) },
+          getConnectionConfig: vi.fn(async () => ({ mode: 'local' }))
+        }
+
+        vi.stubGlobal('window', { hermesDesktop: desktop, localStorage })
+        const restoring = initializeConnectionsRegistry()
+        await vi.advanceTimersByTimeAsync(45_000)
+        await restoring
+
+        // A slow cold boot must not turn the explicit next-launch preference
+        // into a different workspace merely because the renderer map is empty/stale.
+        expect(openGatewayAgent).toHaveBeenCalledWith('local', 'writer')
+        expect(ensureGatewayAgent).toHaveBeenCalledWith('local', 'writer', expect.anything())
+        expect($connection.get()?.profile).toBe('writer')
+        $connection.set({ connectionId: 'local', mode: 'local', profile: 'writer', registryScoped: true })
+        expect(desktop.profile.get).toHaveBeenCalledTimes(1)
+      } finally {
+        vi.useRealTimers()
+      }
+    }
+  )
+
+  it.each(['ssh', 'remote', 'cloud'])('does not reinterpret a %s startup override as a local profile', async mode => {
+    vi.useFakeTimers()
+
+    try {
+      vi.stubGlobal('window', {
+        hermesDesktop: {
+          connections: { list, setLastUsed },
+          profile: { get: async () => ({ profile: 'writer' }) },
+          getConnectionConfig: async () => ({ mode })
+        },
+        localStorage
+      })
+      const restoring = initializeConnectionsRegistry()
+      await vi.advanceTimersByTimeAsync(45_000)
+      await restoring
+      expect(ensureGatewayAgent).toHaveBeenCalledWith('local', 'default', expect.anything())
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(['missing', 'unset', 'failed', 'stalled'])(
+    'keeps a bounded local fallback when startup preference IPC is %s',
+    async state => {
+      vi.useFakeTimers()
+
+      try {
+        const get = vi.fn(() => {
+          if (state === 'failed') {
+            return Promise.reject(new Error('Preference unavailable'))
+          }
+
+          if (state === 'stalled') {
+            return new Promise<{ profile: null }>(() => undefined)
+          }
+
+          return Promise.resolve({ profile: null })
+        })
+
+        vi.stubGlobal('window', {
+          hermesDesktop: { connections: { list, setLastUsed }, ...(state === 'missing' ? {} : { profile: { get } }) },
+          localStorage
+        })
+        const restoring = initializeConnectionsRegistry()
+        await vi.advanceTimersByTimeAsync(50_000)
+        await restoring
+        expect(ensureGatewayAgent).toHaveBeenCalledWith('local', 'default', expect.anything())
+      } finally {
+        vi.useRealTimers()
+      }
+    }
+  )
+
+  it.each(['primary', 'user', 'profile'])(
+    'yields when the %s publishes a connection during the startup preference read',
+    async owner => {
+      vi.useFakeTimers()
+
+      try {
+        const preference = deferred<{ profile: string }>()
+        const get = vi.fn(() => preference.promise)
+        vi.stubGlobal('window', {
+          hermesDesktop: { connections: { list, setLastUsed }, profile: { get } },
+          localStorage
+        })
+        const restoring = initializeConnectionsRegistry()
+        await vi.advanceTimersByTimeAsync(45_000)
+        expect(get).toHaveBeenCalledTimes(1)
+
+        if (owner === 'primary') {
+          $connection.set({ connectionId: 'local', mode: 'local', profile: 'writer', registryScoped: true })
+        } else if (owner === 'profile') {
+          // A local rail click publishes its next-chat intent before its backend
+          // is ready; it does not use selectConnection's source-switch revision.
+          $newChatProfile.set('research')
+        } else {
+          await selectConnection('homelab', { profile: 'research' })
+        }
+
+        preference.resolve({ profile: 'writer' })
+        await restoring
+        expect(openGatewayAgent.mock.calls.some(([source]) => source === 'local')).toBe(false)
+        expect($connection.get()?.profile).toBe(
+          owner === 'primary' ? 'writer' : owner === 'user' ? 'research' : undefined
+        )
+      } finally {
+        vi.useRealTimers()
+      }
+    }
+  )
+
+  it('does not consult a local startup preference when restoring a remote source', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const get = vi.fn(async () => ({ profile: 'writer' }))
+      vi.stubGlobal('window', { hermesDesktop: { connections: { list, setLastUsed }, profile: { get } }, localStorage })
+      list.mockResolvedValueOnce({ ...registry, lastUsed: 'homelab', launchMode: 'last-used' })
+      const restoring = initializeConnectionsRegistry()
+      await vi.advanceTimersByTimeAsync(45_000)
+      await restoring
+      expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
+      expect(get).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('a user-initiated source switch still collapses "All profiles"', async () => {
     setConnectionsRegistry(registry)
     $connection.set({ connectionId: 'local', mode: 'local' })

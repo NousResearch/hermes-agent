@@ -11,10 +11,19 @@
  */
 
 import type * as HermesSdk from '@hermes/plugin-sdk'
+import type { PluginContext } from '@hermes/plugin-sdk'
+import { useI18n } from '@hermes/plugin-sdk'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { translateBots } from './i18n-test-helper'
+// The harness supplies the provider and registry normally installed by the host.
+// eslint-disable-next-line no-restricted-imports
+import { createPluginI18n, I18nProvider } from '@/i18n'
+// eslint-disable-next-line no-restricted-imports
+import { setRuntimeI18nLocale } from '@/i18n/runtime'
+
+import { BOTS_LOCALES } from './i18n'
+import { setPluginCtx } from './shared'
 
 // Radix calls these on open; jsdom doesn't implement them.
 beforeAll(() => {
@@ -33,10 +42,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
 
   return {
     ...sdk,
-    host: { ...sdk.host, notify, request },
-    // The plugin bundle normally lands via `ctx.i18n.register` at load, so
-    // without this every localized label renders empty.
-    usePluginI18n: () => translateBots
+    host: { ...sdk.host, notify, request }
   }
 })
 
@@ -59,13 +65,100 @@ function fillRequiredFields() {
   })
 }
 
+let disposeLocales: () => void
+
 beforeEach(() => {
   vi.clearAllMocks()
   $botMeta.set({})
+  const i18n = createPluginI18n('hermes-bots', dispose => dispose)
+  disposeLocales = i18n.register(BOTS_LOCALES)
+  setPluginCtx({ i18n } as PluginContext)
 })
 
 afterEach(() => {
   cleanup()
+  disposeLocales()
+  setPluginCtx(null)
+  setRuntimeI18nLocale('en')
+})
+
+function SwitchLanguage() {
+  const { locale, setLocale } = useI18n()
+
+  return (
+    <button onClick={() => void setLocale(locale === 'en' ? 'ko' : 'en')} type="button">
+      Switch language
+    </button>
+  )
+}
+
+it('updates a mounted weekly schedule through the provider while retaining its schedule', async () => {
+  render(
+    <I18nProvider configClient={null} initialLocale="en">
+      <SwitchLanguage />
+      <CreateRoutineDialog bot={{ name: 'ops' }} onClose={() => undefined} open />
+    </I18nProvider>
+  )
+
+  const selected = (label: string) => screen.getAllByRole('combobox').find(box => box.textContent === label)
+  fireEvent.click(selected('Every day')!)
+  fireEvent.click(screen.getByRole('option', { name: 'Every week' }))
+  fireEvent.click(selected('9:00 AM')!)
+  fireEvent.click(screen.getByRole('option', { name: '3:30 PM' }))
+  expect(screen.getByText('Runs every Monday at 3:30 PM · 30 15 * * 1')).toBeTruthy()
+
+  // The dialog makes its sibling inert; the test control still calls the real
+  // provider as Settings does when changing the locale of a mounted surface.
+  fireEvent.click(screen.getByText('Switch language'))
+  expect(selected('매주')).toBeTruthy()
+  expect(selected('월요일')).toBeTruthy()
+  expect(selected('오후 3:30')).toBeTruthy()
+  expect(screen.getByText('매주 월요일 오후 3:30에 실행 · 30 15 * * 1')).toBeTruthy()
+
+  fireEvent.click(screen.getByText('Switch language'))
+  expect(selected('Every week')).toBeTruthy()
+  expect(selected('Monday')).toBeTruthy()
+  expect(selected('3:30 PM')).toBeTruthy()
+  expect(screen.getByText('Runs every Monday at 3:30 PM · 30 15 * * 1')).toBeTruthy()
+  fillRequiredFields()
+  fireEvent.click(screen.getByRole('button', { name: 'Create cron' }))
+
+  await waitFor(() => expect(request).toHaveBeenCalled())
+  expect(request.mock.calls[0][1]).toMatchObject({ schedule: '30 15 * * 1', profile: 'ops' })
+})
+
+it('shows Korean delay units while preserving the schedule sent to the backend', async () => {
+  setRuntimeI18nLocale('ko')
+  render(
+    <I18nProvider configClient={null} initialLocale="ko">
+      <CreateRoutineDialog bot={{ name: 'ops' }} onClose={() => undefined} open />
+    </I18nProvider>
+  )
+
+  const selected = (label: string) => screen.getAllByRole('combobox').find(box => box.textContent === label)!
+  fireEvent.click(selected('매일'))
+  fireEvent.click(screen.getByRole('option', { name: '일정 시간 후 한 번…' }))
+
+  expect(selected('분 후')).toBeTruthy()
+  fireEvent.click(selected('분 후'))
+
+  expect(screen.getAllByRole('option').map(option => option.textContent)).toEqual(['분 후', '시간 후', '일 후'])
+
+  fireEvent.click(screen.getByRole('option', { name: '일 후' }))
+  expect(screen.getByText('지금부터 30일 후 한 번 실행 · 30d')).toBeTruthy()
+
+  const inputs = screen.getAllByRole('textbox')
+  fireEvent.change(inputs[0], { target: { value: 'Digest' } })
+  fireEvent.change(
+    inputs.find(input => input.tagName === 'TEXTAREA')!,
+    {
+      target: { value: 'Summarize yesterday.' }
+    }
+  )
+  fireEvent.click(screen.getByRole('button', { name: 'Cron 생성' }))
+
+  await waitFor(() => expect(request).toHaveBeenCalled())
+  expect(request.mock.calls[0][1]).toMatchObject({ schedule: '30d', profile: 'ops' })
 })
 
 describe('the dialog names the bot, never its object', () => {

@@ -234,7 +234,7 @@ function MarketplaceThemeResults({
 
   const header = (
     <p className="mb-2 mt-4 text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-tertiary)">
-      From the VS Code Marketplace
+      {t.settings.appearance.themeMarketplace}
     </p>
   )
 
@@ -455,12 +455,16 @@ export function AppearanceSettings() {
   // backend) for anything not already installed.
   const needle = normalize(query)
 
+  const themeDescription = (theme: Pick<DesktopTheme, 'name' | 'description'>) =>
+    isUserTheme(theme.name) ? theme.description : (a.themeDescriptions[theme.name] ?? theme.description)
+
   const filteredThemes = availableThemes
     .filter(
       theme =>
         !needle ||
         theme.label.toLowerCase().includes(needle) ||
         theme.name.toLowerCase().includes(needle) ||
+        themeDescription(theme).toLowerCase().includes(needle) ||
         theme.description.toLowerCase().includes(needle)
     )
     // Active theme first; stable sort keeps the rest in their original order.
@@ -544,7 +548,7 @@ export function AppearanceSettings() {
                   {filteredThemes.length === 0 ? (
                     needle ? (
                       <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                        No installed themes match "{query.trim()}".
+                        {a.noInstalledThemes(query.trim())}
                       </p>
                     ) : null
                   ) : (
@@ -569,7 +573,7 @@ export function AppearanceSettings() {
                                   {theme.label}
                                 </div>
                                 <div className="mt-0.5 line-clamp-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                                  {theme.description}
+                                  {themeDescription(theme)}
                                 </div>
                               </div>
                             </button>

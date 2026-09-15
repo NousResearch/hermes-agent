@@ -40,7 +40,11 @@ function scopedConfigClient(scope: ApiRequestScope): I18nConfigClient {
         return Promise.resolve({ ok: true })
       }
 
-      return saveHermesConfigRecord(config, scope, { preserveLanguage: true })
+      // PUT merges onto the latest disk config. Send only this control's field:
+      // resending the GET snapshot would undo concurrent settings/CLI edits.
+      return saveHermesConfigRecord({ display: { language: getConfigDisplayLanguage(config) } }, scope, {
+        preserveLanguage: true
+      })
     }
   }
 }

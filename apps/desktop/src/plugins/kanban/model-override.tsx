@@ -21,7 +21,8 @@ import {
   ModelCatalogMenu,
   ModelMenuCloseContext,
   type ModelMenuController,
-  reasoningEffortLabel
+  reasoningEffortLabel,
+  useI18n
 } from '@hermes/plugin-sdk'
 import { useState } from 'react'
 
@@ -42,14 +43,18 @@ export const isInherited = (value: TaskModelOverride): boolean =>
   !value.model.trim() && !value.provider.trim() && !value.effort.trim()
 
 /** The trigger's label: `provider: model · High`, or the inherit copy. */
-export function overrideLabel(value: TaskModelOverride, inheritCopy: string): string {
+export function overrideLabel(
+  value: TaskModelOverride,
+  inheritCopy: string,
+  effortLabels?: Readonly<Record<string, string>>
+): string {
   if (isInherited(value)) {
     return inheritCopy
   }
 
   const model = value.model.trim()
   const base = model ? (value.provider.trim() ? `${value.provider}: ${model}` : model) : inheritCopy
-  const effort = value.effort.trim() ? reasoningEffortLabel(value.effort) : ''
+  const effort = value.effort.trim() ? reasoningEffortLabel(value.effort, effortLabels) : ''
 
   return effort ? `${base} · ${effort}` : base
 }
@@ -66,6 +71,7 @@ export function ModelOverrideField({
   value: TaskModelOverride
 }) {
   const k = useKanban()
+  const { t } = useI18n()
   const [open, setOpen] = useState(false)
 
   const controller: ModelMenuController = {
@@ -111,7 +117,9 @@ export function ModelOverrideField({
           type="button"
           variant="outline"
         >
-          <span className="min-w-0 truncate">{overrideLabel(value, k.modelInherit)}</span>
+          <span className="min-w-0 truncate">
+            {overrideLabel(value, k.modelInherit, { ...t.shell.modelOptions, none: t.common.off })}
+          </span>
           <span className="flex shrink-0 items-center gap-1">
             {!isInherited(value) && (
               <span

@@ -37,6 +37,7 @@ const SWITCH_REMEMBER_TIMEOUT_MS = 5_000
 // restore should stop waiting for it. Shared constant so the boot-class
 // budgets can't drift apart (see with-timeout.ts).
 const BOOT_DESCRIPTOR_WAIT_TIMEOUT_MS = BACKEND_BOOT_WAIT_TIMEOUT_MS
+const STARTUP_PROFILE_READ_TIMEOUT_MS = 5_000
 
 export { $connectionsRegistry } from '@/store/connection-registry-state'
 
@@ -225,6 +226,45 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
 
   if (!preferredId) {
     return registry
+  }
+
+  if (!$connection.get() && registry.connections.find(connection => connection.id === preferredId)?.kind === 'local') {
+    // A slow primary can outlive the descriptor deadline. Electron's explicit
+    // next-launch profile still outranks this renderer's empty/stale source map;
+    // otherwise recovery opens Default while the chosen local profile boots.
+    let startupProfile: string | undefined
+    const profileIntent = $newChatProfile.get()
+
+    try {
+      startupProfile = await withTimeout(
+        (async () => {
+          const desktop = window.hermesDesktop
+          const saved = (await desktop?.profile?.get?.())?.profile?.trim()
+
+          if (!saved) {
+            return undefined
+          }
+
+          const config = await desktop?.getConnectionConfig?.(saved)
+
+          return !config || config.mode === 'local' ? saved : undefined
+        })(),
+        STARTUP_PROFILE_READ_TIMEOUT_MS,
+        'Timed out reading the local startup profile'
+      )
+    } catch {
+      // Older/unavailable IPC keeps the existing bounded source-map fallback.
+    }
+
+    // The primary or an explicit choice may have won during the IPC read.
+    // Background recovery must never replace that newly published workspace.
+    if (switchRevision > 0 || pendingTarget !== null || $connection.get() || $newChatProfile.get() !== profileIntent) {
+      return registry
+    }
+
+    await selectConnection(preferredId, { profile: startupProfile })
+
+    return $connectionsRegistry.get() ?? registry
   }
 
   if ($activeConnectionId.get() === preferredId) {

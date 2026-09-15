@@ -2,7 +2,10 @@
 
 export const asText = (v: unknown): string => (typeof v === 'string' ? v : v == null ? '' : String(v))
 
-export const includesQuery = (v: unknown, q: string) => asText(v).toLowerCase().includes(q)
+// Search treats canonically equivalent Unicode text alike, while stored names
+// and the length-preserving model highlighter keep their original spelling.
+export const includesQuery = (v: unknown, q: string) =>
+  asText(v).normalize('NFC').toLowerCase().includes(q.normalize('NFC'))
 
 export const prettyName = (v: string) => v.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
 

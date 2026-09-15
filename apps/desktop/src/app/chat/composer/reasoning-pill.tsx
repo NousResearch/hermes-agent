@@ -31,7 +31,8 @@ const PILL = cn(
  * Reads THIS surface's SessionView (primary or tile), like the model pill.
  */
 export function ReasoningPill({ disabled, model }: { disabled: boolean; model: ChatBarState['model'] }) {
-  const copy = useI18n().t.shell.modelOptions
+  const { t } = useI18n()
+  const copy = t.shell.modelOptions
   const view = useSessionView()
   const reasoningEffort = useStore(view.$reasoningEffort)
   const defaultEffort = useStore($defaultReasoningEffort)
@@ -41,7 +42,11 @@ export function ReasoningPill({ disabled, model }: { disabled: boolean; model: C
     return null
   }
 
-  const label = reasoningEffortLabel(reasoningEffort || defaultEffort || DEFAULT_REASONING_EFFORT)
+  const label = reasoningEffortLabel(reasoningEffort || defaultEffort || DEFAULT_REASONING_EFFORT, {
+    ...copy,
+    none: t.common.off
+  })
+
   const title = `${copy.effort}: ${label}`
 
   // Closing the menu ends its claim on the keyboard: Radix restores focus to

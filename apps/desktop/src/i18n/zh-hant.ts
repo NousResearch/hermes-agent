@@ -443,6 +443,7 @@ export const zhHant = defineLocale({
       completionSoundPreview: '預覽'
     },
     sections: {
+      browser: '瀏覽器',
       model: '模型',
       chat: '聊天',
       appearance: '外觀',
@@ -466,6 +467,21 @@ export const zhHant = defineLocale({
       system: { label: '跟隨系統', description: '跟隨作業系統外觀' }
     },
     appearance: {
+      themeDescriptions: {
+        github: 'GitHub 預設淺色與深色佈景主題',
+        nous: 'GitHub 風格介面，搭配 Nous 藍色點綴',
+        catppuccin: '柔和的粉彩色調 — Latte 與 Mocha',
+        everforest: '溫暖、低對比的森林綠',
+        solarized: '保持固定對比的淺色與深色佈景主題',
+        'nous-alt': '玻璃質感的中性色，深藍底色搭配奶油色',
+        midnight: '深藍紫色搭配冷色點綴',
+        ember: '溫暖的深紅與青銅色，營造鍛造爐氛圍',
+        mono: '簡潔灰階，便於專注',
+        cyberpunk: '黑底霓虹綠 — 矩陣風格終端機',
+        slate: '冷調藍灰色，適合專注開發'
+      },
+      themeMarketplace: 'VS Code Marketplace 佈景主題',
+      noInstalledThemes: query => `沒有與「${query}」相符的已安裝佈景主題。`,
       title: '外觀',
       intro: '這些是僅限桌面端的顯示偏好。模式控制亮度；主題控制強調色與聊天介面樣式。',
       colorMode: '色彩模式',
@@ -1430,6 +1446,36 @@ export const zhHant = defineLocale({
   },
 
   skills: {
+    toolsetLabels: {
+      web: '網頁搜尋與內容擷取',
+      browser: '瀏覽器自動化',
+      terminal: '終端機與程序',
+      file: '檔案操作',
+      code_execution: '程式碼執行',
+      vision: '影像分析',
+      video: '影片分析',
+      image_gen: '影像生成',
+      video_gen: '影片生成',
+      x_search: 'X（Twitter）搜尋',
+      tts: '文字轉語音',
+      stt: '語音轉文字',
+      skills: '技能',
+      todo: '任務規劃',
+      kanban: '看板',
+      memory: '記憶',
+      context_engine: '上下文引擎',
+      session_search: '對話記錄搜尋',
+      connections: '連線',
+      clarify: '釐清問題',
+      delegation: '任務委派',
+      cronjob: '排程任務',
+      homeassistant: 'Home Assistant',
+      spotify: 'Spotify',
+      discord: 'Discord（讀取與參與）',
+      discord_admin: 'Discord 伺服器管理',
+      yuanbao: 'Yuanbao',
+      computer_use: '電腦操作（macOS/Windows/Linux）'
+    },
     tabSkills: '技能',
     tabToolsets: '工具集',
     tabMcp: 'MCP',

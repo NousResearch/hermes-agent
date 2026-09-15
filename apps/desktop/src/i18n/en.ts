@@ -673,6 +673,7 @@ export const en: Translations = {
       completionSoundPreview: 'Preview'
     },
     sections: {
+      browser: 'Browser',
       model: 'Model',
       chat: 'Chat',
       appearance: 'Appearance',
@@ -696,6 +697,21 @@ export const en: Translations = {
       system: { label: 'System', description: 'Follow OS appearance' }
     },
     appearance: {
+      themeDescriptions: {
+        github: 'GitHub Light Default and Dark Default',
+        nous: 'GitHub chrome, Nous blue accent',
+        catppuccin: 'Soothing pastels — Latte and Mocha',
+        everforest: 'Warm, low-contrast forest greens',
+        solarized: 'Fixed-contrast light and dark',
+        'nous-alt': 'Glass neutrals, cream on mission-blue',
+        midnight: 'Deep blue-violet with cool accents',
+        ember: 'Warm crimson and bronze — forge vibes',
+        mono: 'Clean grayscale — minimal and focused',
+        cyberpunk: 'Neon green on black — matrix terminal',
+        slate: 'Cool slate blue — focused developer theme'
+      },
+      themeMarketplace: 'From the VS Code Marketplace',
+      noInstalledThemes: query => `No installed themes match "${query}".`,
       title: 'Appearance',
       intro: 'Desktop-only. Mode is brightness; theme is palette and chat chrome.',
       colorMode: 'Color Mode',
@@ -1609,6 +1625,36 @@ export const en: Translations = {
   },
 
   skills: {
+    toolsetLabels: {
+      web: 'Web Search & Scraping',
+      browser: 'Browser Automation',
+      terminal: 'Terminal & Processes',
+      file: 'File Operations',
+      code_execution: 'Code Execution',
+      vision: 'Vision / Image Analysis',
+      video: 'Video Analysis',
+      image_gen: 'Image Generation',
+      video_gen: 'Video Generation',
+      x_search: 'X (Twitter) Search',
+      tts: 'Text-to-Speech',
+      stt: 'Speech-to-Text',
+      skills: 'Skills',
+      todo: 'Task Planning',
+      kanban: 'Kanban',
+      memory: 'Memory',
+      context_engine: 'Context Engine',
+      session_search: 'Session Search',
+      connections: 'Connections',
+      clarify: 'Clarifying Questions',
+      delegation: 'Task Delegation',
+      cronjob: 'Cron Jobs',
+      homeassistant: 'Home Assistant',
+      spotify: 'Spotify',
+      discord: 'Discord (read/participate)',
+      discord_admin: 'Discord Server Admin',
+      yuanbao: 'Yuanbao',
+      computer_use: 'Computer Use (macOS/Windows/Linux)'
+    },
     tabSkills: 'Skills',
     tabToolsets: 'Tools',
     configuringProfile: 'Configuring:',

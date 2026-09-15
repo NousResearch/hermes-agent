@@ -580,6 +580,9 @@ export interface Translations {
     searchPlaceholder: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string>
     modeOptions: Record<'light' | 'dark' | 'system', ModeOptionCopy>
     appearance: {
+      themeDescriptions: Record<string, string>
+      themeMarketplace: string
+      noInstalledThemes: (query: string) => string
       title: string
       intro: string
       colorMode: string
@@ -1420,6 +1423,7 @@ export interface Translations {
   }
 
   skills: {
+    toolsetLabels: Record<string, string>
     tabSkills: string
     tabToolsets: string
     configuringProfile: string

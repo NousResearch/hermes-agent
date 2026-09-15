@@ -648,6 +648,7 @@ export const zh = defineLocale({
       completionSoundPreview: '预览'
     },
     sections: {
+      browser: '浏览器',
       model: '模型',
       chat: '对话',
       appearance: '外观',
@@ -671,6 +672,21 @@ export const zh = defineLocale({
       system: { label: '跟随系统', description: '跟随系统外观' }
     },
     appearance: {
+      themeDescriptions: {
+        github: 'GitHub 默认浅色与深色主题',
+        nous: 'GitHub 风格界面，搭配 Nous 蓝色点缀',
+        catppuccin: '柔和的粉彩色调 — Latte 与 Mocha',
+        everforest: '温暖、低对比度的森林绿',
+        solarized: '保持固定对比度的浅色与深色主题',
+        'nous-alt': '玻璃质感的中性色，深蓝底色搭配奶油色',
+        midnight: '深蓝紫色搭配冷色点缀',
+        ember: '温暖的深红与青铜色，营造锻造炉氛围',
+        mono: '简洁灰阶，便于专注',
+        cyberpunk: '黑底霓虹绿 — 矩阵风格终端',
+        slate: '冷调蓝灰色，适合专注开发'
+      },
+      themeMarketplace: 'VS Code Marketplace 主题',
+      noInstalledThemes: query => `没有与“${query}”匹配的已安装主题。`,
       title: '外观',
       intro: '这些是仅桌面端的显示偏好。模式控制明暗；主题控制强调色与对话界面样式。',
       colorMode: '颜色模式',
@@ -1811,6 +1827,36 @@ export const zh = defineLocale({
   },
 
   skills: {
+    toolsetLabels: {
+      web: '网页搜索与内容提取',
+      browser: '浏览器自动化',
+      terminal: '终端与进程',
+      file: '文件操作',
+      code_execution: '代码执行',
+      vision: '图像分析',
+      video: '视频分析',
+      image_gen: '图像生成',
+      video_gen: '视频生成',
+      x_search: 'X（Twitter）搜索',
+      tts: '文本转语音',
+      stt: '语音转文本',
+      skills: '技能',
+      todo: '任务规划',
+      kanban: '看板',
+      memory: '记忆',
+      context_engine: '上下文引擎',
+      session_search: '会话记录搜索',
+      connections: '连接',
+      clarify: '澄清问题',
+      delegation: '任务委派',
+      cronjob: '定时任务',
+      homeassistant: 'Home Assistant',
+      spotify: 'Spotify',
+      discord: 'Discord（读取与参与）',
+      discord_admin: 'Discord 服务器管理',
+      yuanbao: 'Yuanbao',
+      computer_use: '计算机操作（macOS/Windows/Linux）'
+    },
     tabSkills: '技能',
     tabToolsets: '工具集',
     configuringProfile: '正在配置：',

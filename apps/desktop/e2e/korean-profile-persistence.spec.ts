@@ -33,6 +33,14 @@ interface SavedConfig {
   terminal: { cwd: string }
 }
 
+interface ProfileBridgeWindow {
+  hermesDesktop: {
+    getConnectionConfig: (profile: string) => Promise<unknown>
+    getConnection: () => Promise<{ profile?: string; mode?: string; registryScoped?: boolean }>
+    profile: { get: () => Promise<{ profile: string | null }> }
+  }
+}
+
 const readConfig = (home: string) => load(readFileSync(path.join(home, 'config.yaml'), 'utf8')) as SavedConfig
 const rail = (page: Page) => page.locator('[data-slot="profile-rail"]')
 
@@ -76,8 +84,20 @@ for (const initialProfile of ['default', 'writer'] as const) {
 
     // A caller can set HERMES_DESKTOP_PYTHON to a provisioned interpreter;
     // otherwise the app resolves the checkout's normal development venv.
-    delete env.HERMES_DESKTOP_DEV_SERVER
-    delete env.ELECTRON_RUN_AS_NODE
+    for (const key of Object.keys(env)) {
+      if (
+        [
+          'HERMES_DESKTOP_DEV_SERVER',
+          'HERMES_DESKTOP_REMOTE_URL',
+          'HERMES_DESKTOP_FAKE_BOOT',
+          'ELECTRON_RUN_AS_NODE',
+          'NODE_OPTIONS'
+        ].includes(key) ||
+        key.startsWith('HERMES_DESKTOP_BOOT_FAKE')
+      ) {
+        delete env[key]
+      }
+    }
 
     let app: ElectronApplication | undefined
     let page!: Page
@@ -90,13 +110,45 @@ for (const initialProfile of ['default', 'writer'] as const) {
     }
 
     const attachProfileState = async (name: string) => {
+      const visibleState =
+        page && !page.isClosed()
+          ? await page
+              .evaluate(async () => {
+                const bridge = (window as unknown as ProfileBridgeWindow).hermesDesktop
+
+                const native = await Promise.race([
+                  Promise.all([bridge.profile.get(), bridge.getConnection()])
+                    .then(([saved, connection]) => ({
+                      savedProfile: saved.profile,
+                      primaryProfile: connection.profile ?? null,
+                      mode: connection.mode ?? null,
+                      registryScoped: connection.registryScoped ?? false
+                    }))
+                    .catch(() => ({ unavailable: true })),
+                  new Promise<{ unavailable: boolean }>(resolve =>
+                    setTimeout(() => resolve({ unavailable: true }), 5000)
+                  )
+                ])
+
+                return {
+                  language: document.documentElement.lang,
+                  selectedProfiles: Array.from(
+                    document.querySelectorAll('[data-slot="profile-rail"] [aria-pressed="true"]')
+                  ).map(element => element.getAttribute('aria-label')),
+                  native
+                }
+              })
+              .catch(() => ({ unavailable: true }))
+          : null
+
       await testInfo.attach(name, {
         body: JSON.stringify(
           {
             step: currentStep,
             startup: JSON.parse(readFileSync(activeProfilePath, 'utf8')).profile,
             defaultLanguage: readConfig(sandbox.hermesHome).display.language,
-            writerLanguage: readConfig(writerHome).display.language
+            writerLanguage: readConfig(writerHome).display.language,
+            visibleState
           },
           null,
           2
@@ -113,6 +165,7 @@ for (const initialProfile of ['default', 'writer'] as const) {
       await waitForAppReady({ app, page } as MockBackendFixture, 120_000)
       await prepareWindowForInput(app, page)
       await expect(rail(page).getByRole('button', { name: 'writer', exact: true })).toBeVisible({ timeout: 60_000 })
+      await attachProfileState('profile-state-after-launch')
     }
 
     const expectLanguage = async (language: 'en' | 'ko') => {
@@ -120,8 +173,22 @@ for (const initialProfile of ['default', 'writer'] as const) {
       await expect(page.locator('html')).toHaveAttribute('dir', 'ltr')
     }
 
+    const expectPanelTitles = async (language: 'en' | 'ko') => {
+      // Pane identities remain stable; only their visible tab titles change.
+      await expect(page.locator('[data-tree-tab="sessions"]')).toHaveText(language === 'ko' ? '세션' : 'Sessions')
+      await expect(page.locator('[data-tree-tab="hermes-bots:pane"]')).toHaveText(language === 'ko' ? '봇' : 'Bots')
+    }
+
+    const captureSurface = async (name: string) => {
+      await testInfo.attach(name, {
+        body: await page.screenshot({ timeout: 5_000 }),
+        contentType: 'image/png'
+      })
+    }
+
     const expectKoreanComposer = async () => {
       const input = page.locator('[contenteditable="true"][data-placeholder]')
+
       // Check actual resting copy; translated startup/reconnect hints do not count.
       const starters = [
         '무엇을 만드시나요?',
@@ -132,6 +199,7 @@ for (const initialProfile of ['default', 'writer'] as const) {
         '무엇이든 물어보세요',
         '목표부터 시작하세요'
       ]
+
       await expect.poll(async () => starters.includes((await input.getAttribute('data-placeholder')) ?? '')).toBe(true)
     }
 
@@ -168,6 +236,29 @@ for (const initialProfile of ['default', 'writer'] as const) {
 
     try {
       await step('Launch the isolated app and prepare native input', launch)
+      await step('Observe concurrent profile configuration reads through the actual native bridge', async () => {
+        const completionOrder = await page.evaluate(async () => {
+          const completed: number[] = []
+          await Promise.all(
+            Array.from({ length: 12 }, async (_, index) => {
+              await (window as unknown as ProfileBridgeWindow).hermesDesktop.getConnectionConfig(
+                index % 2 === 0 ? 'writer' : 'default'
+              )
+              completed.push(index)
+            })
+          )
+
+          return completed
+        })
+
+        await testInfo.attach('native-config-completion-order', {
+          body: JSON.stringify(completionOrder),
+          contentType: 'application/json'
+        })
+        // Completion order is evidence for the separate race investigation,
+        // not a contract required of independent configuration reads.
+        expect([...completionOrder].sort((a, b) => a - b)).toEqual(Array.from({ length: 12 }, (_, index) => index))
+      })
 
       if (initialProfile === 'default') {
         await step('Activate writer from the English default profile', async () => {
@@ -190,31 +281,70 @@ for (const initialProfile of ['default', 'writer'] as const) {
           await korean.click()
           await expectLanguage('ko')
           await expect(page.getByRole('button', { name: '언어 전환', exact: true })).toBeEnabled()
-          await testInfo.attach('korean-appearance-after-save', {
-            body: await page.screenshot({ timeout: 5_000 }),
-            contentType: 'image/png'
+          await captureSurface('korean-appearance-after-save')
+        })
+        await step('Read Korean built-in theme descriptions without searching the Marketplace', async () => {
+          // Reading installed cards must not trigger the external theme search
+          // or change the profile's saved Mono skin.
+          for (const [label, description] of [
+            ['Nous', 'GitHub 스타일에 Nous 파란색 강조'],
+            ['GitHub', 'GitHub 기본 밝은 테마와 어두운 테마'],
+            ['Catppuccin', '차분한 파스텔 색상 — Latte와 Mocha']
+          ]) {
+            const card = page.getByRole('button').filter({ has: page.getByText(label, { exact: true }) })
+            await card.scrollIntoViewIfNeeded()
+            await expect(card.getByText(description, { exact: true })).toBeVisible()
+            await captureSurface(`korean-theme-${label.toLowerCase()}`)
+          }
+        })
+        await step('Verify Korean browser settings and the restored ConfigField explanation', async () => {
+          await page.evaluate(() => {
+            window.location.hash = '#/settings?tab=config:browser'
           })
+          const browserNav = page.locator('[data-tour="nav-config:browser"]')
+          await expect(browserNav).toHaveText('브라우저')
+          await expect(browserNav).toBeVisible()
+          await expect(page.locator('[data-tour="field-browser.use_real_profile"]')).toBeVisible()
+          await captureSurface('korean-browser-settings')
+
+          await page.evaluate(() => {
+            window.location.hash = '#/settings?tab=config:safety'
+          })
+          const approvalTimeout = page.locator('[data-tour="field-approvals.timeout"]')
+          await approvalTimeout.scrollIntoViewIfNeeded()
+          await expect(approvalTimeout.getByText('승인 시간 초과', { exact: true })).toBeVisible()
+          // The old ASCII-only duplicate filter dropped this distinct Korean
+          // explanation. This assertion exercises the real schema + renderer.
+          await expect(
+            approvalTimeout.getByText('승인 프롬프트가 시간 초과되기까지의 대기 시간입니다.', { exact: true })
+          ).toBeVisible()
+          await captureSurface('korean-config-field-description')
+        })
+        await step('Read Korean keyboard and terminal toolset copy without running tools', async () => {
           await page.evaluate(() => {
             window.location.hash = '#/settings?tab=keybinds'
           })
           await expect(page.getByRole('heading', { name: '키보드 단축키', exact: true })).toBeVisible()
-          await testInfo.attach('korean-keybinds', {
-            body: await page.screenshot({ timeout: 5_000 }),
-            contentType: 'image/png'
-          })
+          await captureSurface('korean-keybinds')
           await page.evaluate(() => {
             window.location.hash = '#/skills?tab=toolsets'
           })
-          const toolsetSearch = page.getByPlaceholder('도구 세트 검색...', { exact: true })
+          const toolsetSearch = page.getByRole('textbox', { name: '도구 세트 검색...', exact: true })
           await expect(toolsetSearch).toBeVisible()
-          await toolsetSearch.fill('terminal')
-          const terminalDescription = page.getByText('터미널, 프로세스', { exact: true }).first()
-          await expect(terminalDescription).toBeVisible({ timeout: 60_000 })
-          await terminalDescription.click()
-          await testInfo.attach('korean-capabilities', {
-            body: await page.screenshot({ timeout: 5_000 }),
-            contentType: 'image/png'
-          })
+          await toolsetSearch.fill('터미널')
+          await toolsetSearch.fill('터미널'.normalize('NFD'))
+
+          const terminalRow = page
+            .getByRole('button')
+            .filter({ has: page.getByText('터미널 및 프로세스', { exact: true }) })
+
+          await expect(terminalRow).toBeVisible({ timeout: 60_000 })
+          await expect(terminalRow.getByText('도구 2개', { exact: true })).toBeVisible()
+          await expect(terminalRow.getByText('터미널, 프로세스', { exact: true })).toBeVisible()
+          await terminalRow.click()
+          await expect(page.getByRole('heading', { name: '터미널 및 프로세스', exact: true })).toBeVisible()
+          await expect(page.getByText('실행 백엔드', { exact: true })).toBeVisible({ timeout: 60_000 })
+          await captureSurface('korean-capabilities')
           await page.evaluate(() => {
             window.location.hash = '#/'
           })
@@ -225,6 +355,99 @@ for (const initialProfile of ['default', 'writer'] as const) {
           await page.evaluate(() => {
             window.location.hash = '#/'
           })
+          await expectPanelTitles('ko')
+          await captureSurface('korean-session-and-bot-panel-titles')
+        })
+        await step('Read the Korean new-bot dialog and cancel without creating a profile', async () => {
+          await page.locator('[data-tree-tab="hermes-bots:pane"]').click()
+          await page.getByRole('button', { name: '새 봇 또는 그룹 대화', exact: true }).click()
+          await page.getByRole('menuitem', { name: '새 봇', exact: true }).click()
+
+          const dialog = page.getByRole('dialog', { name: '새 봇', exact: true })
+
+          await expect(dialog.getByRole('heading', { name: '새 봇', exact: true })).toBeVisible()
+          await expect(
+            dialog.getByText(
+              '자신만의 메모리, 스킬, 대화를 갖춘 동료입니다. 다른 에이전트와 메시지를 주고받을 수 있습니다.',
+              { exact: true }
+            )
+          ).toBeVisible()
+          await expect(dialog.getByPlaceholder('이 봇이 어떤 일을 도와주면 좋을까요?', { exact: true })).toBeVisible()
+
+          for (const label of ['이름', '표시 제목', '설명']) {
+            const field = dialog.getByRole('textbox', { name: label, exact: true })
+            await expect(field).toBeVisible()
+            await dialog
+              .locator('label')
+              .filter({ hasText: new RegExp(`^${label}$`) })
+              .click()
+            await expect(field).toBeFocused()
+          }
+
+          await expect(dialog.getByRole('button', { name: '얼굴 고정', exact: true })).toBeVisible()
+          await expect(dialog.getByText('이름에 따라 얼굴이 바뀝니다.', { exact: true })).toBeVisible()
+          await expect(dialog.getByText('자동', { exact: true })).toBeVisible()
+          await captureSurface('korean-new-bot-dialog')
+          // Advanced/General reads the capability catalog. Leave the name empty
+          // and avoid the Skills tab, which can materialize a draft profile.
+          await dialog.getByRole('button', { name: '고급', exact: true }).click()
+          await expect(dialog.getByText('공급자', { exact: true })).toBeVisible()
+          await expect(dialog.getByText('모델', { exact: true })).toBeVisible()
+          await dialog.getByText('공급자', { exact: true }).scrollIntoViewIfNeeded()
+          await captureSurface('korean-new-bot-model-options')
+          const nativeWindow = await app!.browserWindow(page)
+          const originalBounds = await nativeWindow.evaluate(window => window.getBounds())
+          const originalZoom = await nativeWindow.evaluate(window => window.webContents.getZoomFactor())
+
+          try {
+            await nativeWindow.evaluate(window => {
+              window.setSize(900, 700)
+              window.webContents.setZoomFactor(1.25)
+            })
+            await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(720)
+            await dialog.getByRole('textbox', { name: '설명', exact: true }).scrollIntoViewIfNeeded()
+            const bounds = await dialog.boundingBox()
+            const viewportWidth = await page.evaluate(() => window.innerWidth)
+
+            expect(bounds).not.toBeNull()
+            expect(bounds!.x).toBeGreaterThanOrEqual(0)
+            expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewportWidth + 1)
+            await testInfo.attach('narrow-window-metrics', {
+              body: JSON.stringify({
+                dialog: bounds,
+                viewport: await page.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight })),
+                native: await nativeWindow.evaluate(window => ({
+                  bounds: window.getBounds(),
+                  zoom: window.webContents.getZoomFactor()
+                }))
+              }),
+              contentType: 'application/json'
+            })
+
+            // Capture the native backing surface: Playwright's page screenshot
+            // can crop the backing pixels at a non-default Electron zoom.
+            const nativePng = await nativeWindow.evaluate(async window =>
+              (await window.webContents.capturePage()).toPNG().toString('base64')
+            )
+
+            await testInfo.attach('korean-new-bot-narrow-zoom', {
+              body: Buffer.from(nativePng, 'base64'),
+              contentType: 'image/png'
+            })
+            await dialog.getByRole('button', { name: '취소', exact: true }).scrollIntoViewIfNeeded()
+          } finally {
+            await nativeWindow.evaluate(
+              (window, original) => {
+                window.webContents.setZoomFactor(original.zoom)
+                window.setBounds(original.bounds)
+              },
+              { zoom: originalZoom, bounds: originalBounds }
+            )
+          }
+
+          await dialog.getByRole('button', { name: '취소', exact: true }).click()
+          await expect(dialog).not.toBeVisible()
+          await page.locator('[data-tree-tab="sessions"]').click()
         })
       } else {
         await step('Load the saved Korean alias from the startup writer profile', async () => {
@@ -251,8 +474,10 @@ for (const initialProfile of ['default', 'writer'] as const) {
       // the language that happened to be mounted at app startup.
       await step('Switch to English default and back to Korean writer', async () => {
         await selectDefault()
+        await expectPanelTitles('en')
         await selectWriter()
         await expectLanguage('ko')
+        await expectPanelTitles('ko')
         expect(await collectErrorBanners(page)).toEqual([])
         await expectKoreanComposer()
       })

@@ -1,8 +1,14 @@
 import type { FC, ReactNode } from 'react'
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 
 import { type Contribution, useContributions } from '@/contrib'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
+import {
+  describeDirectiveDrop,
+  warnDirectiveRenderFailed,
+  warnUnclaimedDirective,
+  warnUnparsedDirective
+} from '@/lib/directive-diagnostics'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import {
   type ParsedTranscriptDirective,
@@ -65,8 +71,15 @@ const DirectiveEntry: FC<{
     [render, parsed]
   )
 
+  // The boundary only knows the contribution id; a dropped panel is far easier
+  // to chase when the log also names the directive the model addressed.
+  const onRenderError = useMemo(
+    () => (error: Error) => warnDirectiveRenderFailed(parsed.name, contribution.id, error),
+    [contribution.id, parsed.name]
+  )
+
   return (
-    <ContribBoundary id={contribution.id} variant="chip">
+    <ContribBoundary id={contribution.id} onError={onRenderError} variant="chip">
       <Leaf streaming={streaming} />
     </ContribBoundary>
   )
@@ -115,13 +128,20 @@ export const TranscriptDirectiveLeaf: FC<{ text: string; streaming?: boolean }> 
     [render, parsed, streaming]
   )
 
+  // Name the directive, not just the contribution id, when a widget throws:
+  // the boundary's chip is easy to miss in a long transcript.
+  const onRenderError = useMemo(
+    () => (match && parsed ? (error: Error) => warnDirectiveRenderFailed(parsed.name, match.id, error) : undefined),
+    [match, parsed]
+  )
+
   if (!onboardingEnabled) {
     if (!match || !renderLeaf) {
       return null
     }
 
     return (
-      <ContribBoundary id={match.id} variant="chip">
+      <ContribBoundary id={match.id} onError={onRenderError} variant="chip">
         <ContribRender render={renderLeaf} />
       </ContribBoundary>
     )
@@ -204,4 +224,50 @@ export function useResolvedParagraph(text: string | null): ResolvedParagraphSegm
 
     return out.filter(segment => segment.kind === 'directive' || segment.text.trim() !== '')
   }, [contributions, text])
+}
+
+/** True when the paragraph text will resolve to at least one registered
+ *  directive — callers that must decide `<p>` vs slot before rendering use
+ *  this against the same registry snapshot the leaf reads. */
+export function useIsClaimedDirective(text: string | null): boolean {
+  return useResolvedParagraph(text) !== null
+}
+
+/**
+ * Report a directive-looking paragraph that will NOT become a widget, and say
+ * why in one user-facing line.
+ *
+ * This has to live with the caller that keeps the plain `<p>`, not inside the
+ * leaf: when nothing claims the name the leaf never mounts, so a drop there is
+ * unobservable. Streaming is never a drop — every prefix of an arriving
+ * directive is malformed, and a badge would flicker through the emission.
+ */
+export function useDirectiveDropWarning(text: string | null, claimed: boolean, streaming: boolean): string | null {
+  const contributions = useContributions(TRANSCRIPT_DIRECTIVE_AREA)
+
+  const registeredNames = useMemo(
+    () => contributions.map(c => (c.data as TranscriptDirectiveContribution | undefined)?.name ?? '?'),
+    [contributions]
+  )
+
+  useEffect(() => {
+    if (text === null || claimed) {
+      return
+    }
+
+    const parsed = parseTranscriptDirective(text)
+
+    if (!parsed) {
+      warnUnparsedDirective(text, streaming)
+
+      return
+    }
+
+    warnUnclaimedDirective(parsed.name, registeredNames, streaming)
+  }, [text, claimed, registeredNames, streaming])
+
+  return useMemo(
+    () => (text === null || claimed ? null : describeDirectiveDrop(text, registeredNames, streaming)),
+    [text, claimed, registeredNames, streaming]
+  )
 }

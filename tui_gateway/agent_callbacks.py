@@ -95,7 +95,7 @@ def _agent_cbs(sid: str) -> dict:
         "thinking_callback": lambda text: _emit("thinking.delta", sid, {"text": text}),
         # Affection reaction (ily / <3 / good bot) → hearts; core-detected so TUI/desktop share it.
         "reaction_callback": lambda kind: _emit("reaction", sid, {"kind": kind}),
-        "reasoning_callback": lambda text: _emit(
+        "reasoning_callback": lambda text: _show_reasoning_enabled(sid) and _emit(
             "reasoning.delta", sid, {"text": text, **({"verbose": True} if _session_verbose(sid) else {})}),
         "status_callback": lambda kind, text=None: _status_update(sid, str(kind), None if text is None else str(text)),
         # Credits/notice spine: AgentNotice → notification.show; recovery → notification.clear.

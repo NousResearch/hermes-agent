@@ -304,7 +304,8 @@ def _progress_output_risk(sid, name, preview, kw):
 
 
 def _progress_reasoning(sid, name, preview, kw):
-    _emit("reasoning.available", sid, {"text": str(preview), **({"verbose": True} if _session_verbose(sid) else {})})
+    if _show_reasoning_enabled(sid):
+        _emit("reasoning.available", sid, {"text": str(preview), **({"verbose": True} if _session_verbose(sid) else {})})
 
 
 def _progress_moa_reference(sid, name, preview, kw):

@@ -306,6 +306,13 @@ def test_default_config_exposes_missed_message_backfill_settings():
     }
 
 
+def test_default_config_includes_discord_force_thread_channels():
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    assert "force_thread_channels" in DEFAULT_CONFIG["discord"]
+    assert DEFAULT_CONFIG["discord"]["force_thread_channels"] == ""
+
+
 def test_missed_message_backfill_config_stays_per_adapter():
     first_extra = _apply_yaml_config(
         {},

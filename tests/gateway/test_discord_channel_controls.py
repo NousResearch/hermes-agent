@@ -53,13 +53,14 @@ class FakeDMChannel:
     def __init__(self, channel_id: int = 1, name: str = "dm"):
         self.id = channel_id
         self.name = name
+        self.guild = None
 
 
 class FakeTextChannel:
     def __init__(self, channel_id: int = 1, name: str = "general", guild_name: str = "Hermes Server"):
         self.id = channel_id
         self.name = name
-        self.guild = SimpleNamespace(name=guild_name)
+        self.guild = SimpleNamespace(id=12345, name=guild_name)
         self.topic = None
 
 
@@ -88,6 +89,7 @@ def adapter(monkeypatch):
 
 def make_message(*, channel, content: str, mentions=None):
     author = SimpleNamespace(id=42, display_name="TestUser", name="TestUser")
+    guild = getattr(channel, "guild", None)
     return SimpleNamespace(
         id=123,
         content=content,
@@ -97,6 +99,7 @@ def make_message(*, channel, content: str, mentions=None):
         created_at=datetime.now(timezone.utc),
         channel=channel,
         author=author,
+        guild=guild,
     )
 
 

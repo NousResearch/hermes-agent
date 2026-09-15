@@ -69,6 +69,7 @@ class FakeDMChannel:
     def __init__(self, channel_id: int = 1):
         self.id = channel_id
         self.name = "dm"
+        self.guild = None
 
 
 class FakeThread:
@@ -77,7 +78,7 @@ class FakeThread:
         self.name = "thread"
         self.parent = None
         self.parent_id = None
-        self.guild = SimpleNamespace(name="TestServer")
+        self.guild = SimpleNamespace(id=12345, name="TestServer")
         self.topic = None
 
 
@@ -128,6 +129,7 @@ def make_attachment(
 
 
 def make_message(attachments: list, content: str = "") -> SimpleNamespace:
+    channel = FakeDMChannel()
     return SimpleNamespace(
         id=123,
         content=content,
@@ -135,8 +137,9 @@ def make_message(attachments: list, content: str = "") -> SimpleNamespace:
         mentions=[],
         reference=None,
         created_at=datetime.now(timezone.utc),
-        channel=FakeDMChannel(),
+        channel=channel,
         author=SimpleNamespace(id=42, display_name="Tester", name="Tester"),
+        guild=getattr(channel, "guild", None),
     )
 
 

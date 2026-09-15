@@ -15,7 +15,7 @@ A's last output into job B's prompt), `workdir` (run with that directory's `AGEN
 loaded), multi-platform delivery.
 
 Hardening invariants — each guards a real failure; don't weaken without answering for it:
-- **3-minute hard interrupt** on cron sessions: runaway loops cannot monopolise the scheduler.
+- **600-second inactivity watchdog** on cron sessions: `HERMES_CRON_TIMEOUT` controls the idle limit (`0` disables it), so runaway inactive loops cannot monopolise the scheduler.
 - Catch-up window = half the period, clamped to 120s–2h; 120s grace for missed one-shots.
 - Every recurring occurrence is accounted for: `tick()` advances `next_run_at` BEFORE dispatch
   (at-most-once across a mid-run crash) and stamps `pending_slot` in the same save; a scan that

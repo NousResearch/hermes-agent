@@ -102,7 +102,9 @@ def test_unconfigured_profile_skipped(monkeypatch, tmp_path):
     assert not (bare / "config.yaml").exists()
 
 
-def test_one_broken_profile_does_not_block_others(monkeypatch, tmp_path):
+def test_one_broken_profile_warns_and_does_not_block_others(
+    monkeypatch, tmp_path, capsys
+):
     active = _write_profile(tmp_path / "profiles", "active", _latest_version())
     broken_home = tmp_path / "profiles" / "broken"
     broken_home.mkdir()
@@ -113,6 +115,9 @@ def test_one_broken_profile_does_not_block_others(monkeypatch, tmp_path):
     migrated = update_cmd._migrate_sibling_profile_configs()
 
     assert [m[0] for m in migrated] == ["healthy"]
+    output = capsys.readouterr().out
+    assert "Profile 'broken'" in output
+    assert "hermes -p broken config migrate" in output
 
 
 def test_override_is_reset_after_run(monkeypatch, tmp_path):

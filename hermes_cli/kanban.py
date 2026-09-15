@@ -388,6 +388,13 @@ def _cmd_create(args: argparse.Namespace) -> int:
             running, message = _check_dispatcher_presence()
             if not running and message:
                 print(f"\n⚠  {message}", file=sys.stderr)
+    # A pin that resolves to nothing silently costs the worker its briefing, so
+    # say it on stderr (never stdout, which --json must keep parseable).
+    from hermes_cli.kanban_skills import pin_warning_text, unresolved_skill_pins
+
+    dead_pins = unresolved_skill_pins(getattr(args, "skills", None), assignee=task.assignee)
+    if dead_pins:
+        print(f"\n⚠  {pin_warning_text(dead_pins)}", file=sys.stderr)
     return 0
 
 

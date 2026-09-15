@@ -539,6 +539,8 @@ hermes kanban create "audit auth flow" \
 
 The dispatcher emits one `--skills <name>` flag per skill listed, so the worker spawns with all of them loaded on top of the auto-injected kanban guidance. The skill names must match skills that are actually installed on the assignee's profile (run `hermes skills list` to see what's available); there's no runtime install.
 
+A pin that matches no installed skill (or a category label like `research`/`creative`, which is a directory rather than a skill) is **flagged, never silently accepted and never fatal**: `create` warns on stderr (and returns `skill_pin_warning` from the `kanban_create` tool), and the card records a `skill_pin_unresolved` event. A dispatched worker drops the unresolvable pin with a warning instead of aborting — the card's `skills` column is a card-authoring mistake, and a worker that dies at agent init can never fix it.
+
 ### Per-task model override
 
 Pin a task's worker to a specific model (and optionally provider), independent of the assignee profile's default:
@@ -1257,6 +1259,7 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 | `block_loop_detected` | `{reason, kind, recurrences, limit}` | A task was unblocked and re-blocked for the same reason `BLOCK_RECURRENCE_LIMIT` times (default 2). Instead of landing in `blocked` again — where a cron would keep unblocking it — it routes to `triage` for a human decision, breaking the unblock↔re-block loop. |
 | `unblocked` | — | `blocked → ready` (or `todo` if parents are still open), either manually or via `/unblock`. Resets the dispatcher's `consecutive_failures` but deliberately preserves `block_recurrences` so the loop breaker keeps its memory. `run_id` is `NULL`. |
 | `archived` | — | Hidden from the default board. If the task was still running, carries the `run_id` of the run that was reclaimed as a side effect. |
+| `skill_pin_unresolved` | `{skills, phase, hint}` | A pinned skill in the task's `skills` column matches no installed skill (exact name, frontmatter name, `category/name`, or leaf basename). Flagged at write time (`phase: "create"`, `run_id` NULL) and again by the worker that had to skip it (`phase: "preload"`, `run_id` set). The pin is never silently dropped, and never fatal: the worker runs without it. |
 
 **Edits** (human-driven changes that aren't transitions):
 

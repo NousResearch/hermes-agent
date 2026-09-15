@@ -163,7 +163,32 @@ function initials(name: string): string {
   return `${parts[0]?.[0] ?? '?'}${parts[1]?.[0] ?? ''}`.toUpperCase()
 }
 
-export function Avatar({ name, size = '1.25rem' }: { name: string; size?: string }) {
+export function Avatar({
+  decorative = false,
+  name,
+  size = '1.25rem',
+  title = false
+}: {
+  /** Set true when the assignee name is ALREADY rendered as adjacent visible
+   *  text (the drawer reassign trigger, the queued footer chip). The avatar is
+   *  then decorative: it is hidden from the accessibility tree (aria-hidden)
+   *  and emits NO aria-label. Otherwise the enclosing control computes its
+   *  accessible name from content and stutters the assignee twice
+   *  ("alice alice") — the avatar's aria-label "alice" replaces its "A"
+   *  initials during traversal, doubling the adjacent visible <span>alice</span>.
+   *  `title` still follows the opt-in default below, so a decorative avatar that
+   *  is NOT opted-in also carries no native title (no second, stacked tooltip on
+   *  top of the <Tip> the caller wraps it in). */
+  decorative?: boolean
+  name: string
+  size?: string
+  /** Set true when the caller wants the native browser tooltip (opt-in).
+   *  Defaults to false so that callers wrapping Avatar in <Tip> don't get
+   *  a double tooltip. When title is suppressed AND the avatar is not
+   *  decorative, aria-label is rendered so the assignee name remains
+   *  accessible on a plain avatar that has no adjacent visible name. */
+  title?: boolean
+}) {
   // Same identity hue the rest of the app uses (profileColor); default/empty
   // profiles are neutral. Soft tag fill + colored glyph, per the app's tags.
   const color = profileColor(name)
@@ -178,7 +203,9 @@ export function Avatar({ name, size = '1.25rem' }: { name: string; size?: string
         height: size,
         width: size
       }}
-      title={name}
+      aria-hidden={decorative || undefined}
+      title={title ? name : undefined}
+      aria-label={title || decorative ? undefined : name}
     >
       {initials(name)}
     </span>

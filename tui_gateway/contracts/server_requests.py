@@ -34,7 +34,7 @@ class ValueResult(Result):
 class ClarifyQuestion(Params):
     qid: str
     question: str
-    choices: list[str] | None
+    choices: list[str] | None = None
     multi_select: bool
 
 
@@ -43,7 +43,7 @@ class ClarifySingle(ServerRequestParams):
 
     kind: Literal["single"]
     question: str
-    choices: list[str] | None
+    choices: list[str] | None = None
     multi_select: bool
 
 
@@ -53,7 +53,7 @@ class ClarifyBatch(ServerRequestParams):
 
     kind: Literal["batch"]
     questions: list[ClarifyQuestion]
-    answers: dict[str, str] | None
+    answers: dict[str, str] | None = None
 
 
 # ``server_request`` accepts this alias through the registry's TypeAdapter-backed declaration.
@@ -98,11 +98,11 @@ class ApprovalRequestParams(ServerRequestParams):
     request_id: str
     command: str
     description: str
-    pattern_key: str | None
-    pattern_keys: list[str] | None
-    allow_permanent: bool | None
-    allow_session: bool | None
-    smart_denied: bool | None
+    pattern_key: str | None = None
+    pattern_keys: list[str] | None = None
+    allow_permanent: bool | None = None
+    allow_session: bool | None = None
+    smart_denied: bool | None = None
     choices: list[ApprovalChoice]
 
 
@@ -136,14 +136,14 @@ class SecretMetadata(Params):
     """``tools.skills_tool_setup._capture_required_environment_variables`` supplies these keys."""
 
     skill_name: str
-    help: str | None
-    required_for: str | None
+    help: str | None = None
+    required_for: str | None = None
 
 
 class SecretRequestParams(ServerRequestParams):
     env_var: str
     prompt: str
-    metadata: SecretMetadata | None
+    metadata: SecretMetadata | None = None
 
 
 server_request("secret", params=SecretRequestParams, result=ValueResult,
@@ -169,8 +169,8 @@ server_request("vault.save_login", params=VaultSaveLoginRequestParams, result=Va
 
 
 class VaultCodeRequestParams(ServerRequestParams):
-    site: str | None
-    hint: str | None
+    site: str | None = None
+    hint: str | None = None
 
 
 server_request("vault.code", params=VaultCodeRequestParams, result=ValueResult,
@@ -181,8 +181,8 @@ server_request("vault.code", params=VaultCodeRequestParams, result=ValueResult,
 
 
 class ReadRangeRequestParams(ServerRequestParams):
-    start: int | None
-    count: int | None
+    start: int | None = None
+    count: int | None = None
 
 
 server_request("terminal.read", params=ReadRangeRequestParams, result=ValueResult,
@@ -219,15 +219,15 @@ class PreviewActRequestParams(ServerRequestParams):
     ``tools.annotate_preview_tool``."""
 
     action: PreviewActAction
-    ref: str | None
-    selector: str | None
-    text: str | None
-    key: str | None
-    submit: bool | None
-    full: bool | None
-    to: PreviewScrollTo | None
-    amount: int | None
-    max: int | None
+    ref: str | None = None
+    selector: str | None = None
+    text: str | None = None
+    key: str | None = None
+    submit: bool | None = None
+    full: bool | None = None
+    to: PreviewScrollTo | None = None
+    amount: int | None = None
+    max: int | None = None
 
 
 server_request("preview.act", params=PreviewActRequestParams, result=ValueResult,
@@ -258,10 +258,10 @@ class TourSide(WireEnum):
 class TourStep(Params):
     """Closed DOM step from ``tools.tour_tool``'s ``_STEP_SCHEMA``."""
 
-    selector: str | None
-    title: str | None
-    text: str | None
-    side: TourSide | None
+    selector: str | None = None
+    title: str | None = None
+    text: str | None = None
+    side: TourSide | None = None
 
 
 class TourRequestParams(ServerRequestParams):

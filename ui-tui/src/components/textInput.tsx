@@ -768,6 +768,35 @@ function useFwdDelete(active: boolean) {
   return ref
 }
 
+/**
+ * Whether an incoming `value` prop should reset the composer's local buffer.
+ *
+ * The composer pushes edits to its parent on a FRAME_BATCH_MS (16 ms)
+ * deferral and keeps accepting edits while that flush is in flight, so a
+ * flushed prop can arrive carrying a string the buffer has already moved
+ * past. Adopting it rewinds the buffer one edit, and the next erase in the
+ * same IME recompose burst then re-applies an already-applied deletion:
+ * Vietnamese Telex `chinh` + backspace x3 + `ính` renders `chiính`
+ * instead of `chính`.
+ *
+ * A value this component itself pushed can never be newer than the live
+ * buffer, so it is never a reason to reset. Everything else — a slash
+ * command rewriting the composer, history recall, a programmatic setValue —
+ * still resets.
+ */
+export function shouldAdoptPropValue(
+  incoming: string,
+  local: string,
+  lastPushed: string | null,
+  ownEcho: boolean
+): boolean {
+  if (ownEcho || incoming === local) {
+    return false
+  }
+
+  return incoming !== lastPushed
+}
+
 type PasteResult = { cursor: number; value: string } | null
 
 const isPasteResultPromise = (
@@ -804,6 +833,9 @@ export function TextInput({
   const selRef = useRef<null | { end: number; start: number }>(null)
   const vRef = useRef(value)
   const self = useRef(false)
+  // The exact string this component last handed to the parent. A prop equal to
+  // it can never be newer than the live buffer (see the [value] sync effect).
+  const lastPushedRef = useRef<string | null>(null)
   const keyBurstTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const editVersionRef = useRef(0)
   const parentChangeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -926,7 +958,7 @@ export function TextInput({
     const ownEcho = self.current && value === vRef.current
     self.current = false
 
-    if (ownEcho || value === vRef.current) {
+    if (!shouldAdoptPropValue(value, vRef.current, lastPushedRef.current, ownEcho)) {
       return
     }
 
@@ -1045,6 +1077,7 @@ export function TextInput({
 
     if (next !== null) {
       self.current = true
+      lastPushedRef.current = next
       cbChange.current(next)
     }
   }
@@ -1104,6 +1137,7 @@ export function TextInput({
     nextLineWidth?: number
   ) => {
     const prev = vRef.current
+
     const c = snapPos(next, nextCur)
     editVersionRef.current += 1
 
@@ -1138,6 +1172,7 @@ export function TextInput({
       if (syncParent) {
         flushParentChange()
         self.current = true
+        lastPushedRef.current = next
         cbChange.current(next)
         // A full Ink repaint just happened. Mark it so any fast-echo backspace
         // later in this IME recompose burst is suppressed (it would write

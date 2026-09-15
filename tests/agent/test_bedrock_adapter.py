@@ -1003,6 +1003,17 @@ class TestBedrockContextLength:
             mock_probe.assert_not_called()
 
 
+    def test_llama4_windows_are_the_measured_ones(self):
+        # Both rows sat at 128K -- an eighth of Maverick's window and a
+        # twenty-seventh of Scout's -- so a Llama 4 session compacted long
+        # before it had to whenever the live probe could not run.
+        from agent.bedrock_adapter import get_bedrock_context_length
+        assert get_bedrock_context_length(
+            "us.meta.llama4-maverick-17b-instruct-v1:0", probe=False) == 1_048_576
+        assert get_bedrock_context_length(
+            "us.meta.llama4-scout-17b-instruct-v1:0", probe=False) == 3_500_000
+
+
 class TestBedrockContextProbe:
     """Test the live context-window probe that reads the real window from
     Bedrock's 'prompt is too long' validation error."""

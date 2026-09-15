@@ -1058,9 +1058,14 @@ BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
     ), 200_000),
     # Amazon Nova
     **dict.fromkeys(("amazon.nova-pro", "amazon.nova-lite"), 300_000), "amazon.nova-micro": 128_000,
-    # Meta Llama / Mistral / DeepSeek
+    # Meta Llama / Mistral / DeepSeek. The two Llama 4 windows are the number Converse itself
+    # states when it rejects an oversized prompt, measured in us-east-1 and us-east-2. Scout is
+    # deliberately not the 10M of its model card: Bedrock serves less, and a table value above
+    # what the API enforces turns early compaction into hard ValidationExceptions.
+    "meta.llama4-maverick": 1_048_576,
+    "meta.llama4-scout": 3_500_000,
     **dict.fromkeys((
-        "meta.llama4-maverick", "meta.llama4-scout", "meta.llama3-3-70b-instruct", "mistral.mistral-large", "deepseek.v3",
+        "meta.llama3-3-70b-instruct", "mistral.mistral-large", "deepseek.v3",
     ), 128_000),
     # OpenAI on Bedrock (Mantle/Responses route): docs.aws.amazon.com/bedrock/latest/userguide/model-cards-openai.html
     **dict.fromkeys(BEDROCK_OPENAI_RESPONSES_MODEL_IDS, 272_000),

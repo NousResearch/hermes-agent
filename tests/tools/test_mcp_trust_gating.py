@@ -247,3 +247,18 @@ class TestAnnotationCaptureAtDiscovery:
         assert _mcp_registration._annotation_read_only_hint(
             SimpleNamespace()
         ) is False
+
+    def test_mcp_sdk_snake_case_annotations_supported(self):
+        """mcp SDK 2.x ToolAnnotations uses snake_case read_only_hint."""
+        # SDK 2.x object with snake_case read_only_hint=True
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(read_only_hint=True))
+        ) is True
+        # SDK 2.x object with snake_case read_only_hint=False
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(read_only_hint=False))
+        ) is False
+        # Legacy SDK 1.x camelCase readOnlyHint=True
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(readOnlyHint=True))
+        ) is True

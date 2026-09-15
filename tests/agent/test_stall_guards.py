@@ -358,6 +358,30 @@ def test_detects_trailing_next_i():
     assert trailing_continue_intent("Step one complete. Next: I run the tests")
 
 
+def test_detects_trailing_japanese_action_intent():
+    replies = (
+        "まだ起動中みたい… 数秒待って再確認します。",
+        "ブラウザハーネスデーモンを正しく起動して、Chrome(9222)に接続し、Grokにアクセスする。",
+        "次に、ログを確認します。",
+        "それでは設定を更新します。",
+        "The server is up. 次に、ログを確認します。",
+        "The server is up.\n次に、ログを確認します。",
+    )
+    assert all(trailing_continue_intent(reply) for reply in replies)
+
+
+def test_ignores_japanese_answers_without_immediate_action_intent():
+    replies = (
+        "答えは42です。",
+        "設定は正しく保存されています。",
+        "テストはすべて成功しました。",
+        "必要なら後で確認します。",
+        "この関数はAPIに接続して、ログを確認します。",
+        "これからは設定を更新します。",
+    )
+    assert not any(trailing_continue_intent(reply) for reply in replies)
+
+
 def test_ignores_intent_followed_by_more_content():
     # Intent phrase mid-message with substantive content after it — the model
     # already continued; nothing dangling.

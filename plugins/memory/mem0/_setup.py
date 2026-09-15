@@ -145,10 +145,8 @@ def _write_env(env_path: Path, env_writes: dict[str, str]) -> None:
     keys = [line.split("=", 1)[0].strip() if "=" in line and not line.startswith("#") else None for line in existing_lines]
     new_lines = [f"{k}={env_writes[k]}" if k in env_writes else line for k, line in zip(keys, existing_lines)]
     new_lines += [f"{k}={v}" for k, v in env_writes.items() if k not in keys]
-    # This file holds provider API keys in plaintext, so a .env this wizard CREATES must be
-    # owner-only rather than umask-default (0644). An existing file keeps its mode: a profile
-    # .env is already seeded 0600 by `hermes profile create`, and silently loosening or
-    # tightening a file the operator manages is not this writer's call.
+    # Plaintext API keys: a .env this wizard creates is owner-only, while an existing file keeps
+    # the mode its operator (or `hermes profile create`) gave it.
     atomic_write_text(env_path, "\n".join(new_lines) + "\n", preserve_mode=True, create_mode=0o600)
 
 

@@ -185,36 +185,31 @@ class TestWriteEnv:
 
 
 class TestWriteEnvPermissions:
-    """`.env` holds provider API keys in plaintext (and, once #79850 lands, the pgvector
-    password), so a file this wizard creates must not be umask-default world-readable."""
+    """`.env` holds provider API keys in plaintext, so a file this wizard creates must not be
+    umask-default world-readable; a file it did not create keeps the mode its operator gave it."""
 
-    @staticmethod
-    def _mode(path):
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits; Windows uses ACLs")
+    def test_a_created_env_is_owner_only_and_an_existing_one_keeps_its_mode(self, tmp_path):
+        import os
         import stat
 
-        return stat.S_IMODE(path.stat().st_mode)
+        old_umask = os.umask(0o022)  # the common default, under which a plain write lands 0644
+        try:
+            created = tmp_path / ".env"
+            _write_env(created, {"MEM0_API_KEY": "m0-secret"})
+            assert stat.S_IMODE(created.stat().st_mode) == 0o600
+            assert "MEM0_API_KEY=m0-secret" in created.read_text(encoding="utf-8")
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits; Windows uses ACLs")
-    def test_a_new_env_file_is_created_owner_only(self, tmp_path):
-        env_path = tmp_path / ".env"
-        _write_env(env_path, {"MEM0_API_KEY": "m0-secret"})
-        assert self._mode(env_path) == 0o600
-        assert "MEM0_API_KEY=m0-secret" in env_path.read_text(encoding="utf-8")
-
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits; Windows uses ACLs")
-    def test_an_existing_file_keeps_the_mode_the_operator_gave_it(self, tmp_path):
-        """`hermes profile create` already seeds .env 0600; a hand-managed file is the
-        operator's call either way, so this writer never re-modes what it did not create."""
-        import os
-
-        for existing_mode in (0o600, 0o644):
-            env_path = tmp_path / f"env-{existing_mode:o}"
-            env_path.write_text("EXISTING=1\n", encoding="utf-8")
-            os.chmod(env_path, existing_mode)
-            _write_env(env_path, {"MEM0_API_KEY": "m0-secret"})
-            assert self._mode(env_path) == existing_mode
-            content = env_path.read_text(encoding="utf-8")
-            assert "EXISTING=1" in content and "MEM0_API_KEY=m0-secret" in content
+            # `hermes profile create` already seeds .env 0600; a hand-managed file is the operator's call.
+            for existing_mode in (0o600, 0o644):
+                env_path = tmp_path / f"env-{existing_mode:o}"
+                env_path.write_text("EXISTING=1\n", encoding="utf-8")
+                os.chmod(env_path, existing_mode)
+                _write_env(env_path, {"MEM0_API_KEY": "m0-secret"})
+                assert stat.S_IMODE(env_path.stat().st_mode) == existing_mode
+                assert "EXISTING=1" in env_path.read_text(encoding="utf-8")
+        finally:
+            os.umask(old_umask)
 
 
 class TestPromptApiKey:

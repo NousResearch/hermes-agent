@@ -463,6 +463,69 @@ class TestSyncSkills:
         assert len(manifest["new-skill"]) == 32
         assert len(manifest["old-skill"]) == 32
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are platform-specific")
+    def test_fresh_seed_from_immutable_epoch_source_is_mutable(self, tmp_path):
+        """A bundled tree from a Nix-like store must not make a fresh user copy immutable."""
+        bundled = self._setup_bundled(tmp_path)
+        source = bundled / "category" / "new-skill"
+        nested = source / "references"
+        nested.mkdir()
+        runner = source / "run.sh"
+        runner.write_text("#!/bin/sh\nexit 0\n")
+        (nested / "note.md").write_text("reference\n")
+        for path in (source / "SKILL.md", source / "main.py", nested / "note.md"):
+            os.chmod(path, 0o444)
+            os.utime(path, (1, 1))
+        os.chmod(runner, 0o555)
+        os.utime(runner, (1, 1))
+        for path in (nested, source):
+            os.chmod(path, 0o555)
+            os.utime(path, (1, 1))
+
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        with self._patches(bundled, skills_dir, manifest_file):
+            result = sync_skills(quiet=True)
+
+        dest = skills_dir / "category" / "new-skill"
+        assert "new-skill" in result["copied"]
+        assert stat.S_IMODE((dest / "SKILL.md").stat().st_mode) & stat.S_IWUSR
+        assert stat.S_IMODE((dest / "references").stat().st_mode) & stat.S_IWUSR
+        assert stat.S_IMODE((dest / "run.sh").stat().st_mode) & stat.S_IXUSR
+        assert (dest / "SKILL.md").stat().st_mtime > 1
+        assert (dest / "references").stat().st_mtime > 1
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are platform-specific")
+    def test_pristine_update_from_immutable_epoch_source_is_mutable(self, tmp_path):
+        """A replacement of a pristine skill must also shed store metadata."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        with self._patches(bundled, skills_dir, manifest_file):
+            sync_skills(quiet=True)
+
+            source = bundled / "old-skill"
+            runner = source / "run.sh"
+            runner.write_text("#!/bin/sh\nexit 0\n")
+            (source / "SKILL.md").write_text("# Updated\n")
+            for path in (source / "SKILL.md",):
+                os.chmod(path, 0o444)
+                os.utime(path, (1, 1))
+            os.chmod(runner, 0o555)
+            os.utime(runner, (1, 1))
+            os.chmod(source, 0o555)
+            os.utime(source, (1, 1))
+
+            result = sync_skills(quiet=True)
+
+        dest = skills_dir / "old-skill"
+        assert "old-skill" in result["updated"]
+        assert stat.S_IMODE((dest / "SKILL.md").stat().st_mode) & stat.S_IWUSR
+        assert stat.S_IMODE(dest.stat().st_mode) & stat.S_IWUSR
+        assert stat.S_IMODE((dest / "run.sh").stat().st_mode) & stat.S_IXUSR
+        assert (dest / "SKILL.md").stat().st_mtime > 1
+        assert dest.stat().st_mtime > 1
+
     def test_user_deleted_skill_not_re_added_and_stale_entries_cleaned(self, tmp_path):
         """In manifest but not on disk = user deleted it; don't re-add. And a
         manifest entry no longer present in bundled gets cleaned out."""

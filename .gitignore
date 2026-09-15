@@ -171,7 +171,8 @@ docs/superpowers/*
 # Flat-install runtime state (checkout root == $HERMES_HOME, e.g. installs made
 # with HERMES_INSTALL_DIR=$HERMES_HOME or by older installers): every root-level
 # SQLite store (state.db, kanban.db, response_store.db, ...) with its
-# WAL/SHM/journal sidecars and retired-WAL capture dirs, the legacy transcripts,
+# adjacent locks/recovery artifacts, WAL/SHM/journal sidecars and retired-WAL
+# capture dirs, the legacy transcripts,
 # the cron job store (jobs.json) and executions ledger, gateway lock/pid/state
 # files, cache/spill directories, and the profile's own config/credential/
 # memory/profile/pairing roots are Hermes-managed runtime state, never code
@@ -181,6 +182,7 @@ docs/superpowers/*
 # gateway (#110648). Nested installs keep all of this under $HERMES_HOME outside
 # the checkout, where the `.hermes/` rule above already applies.
 /*.db
+/*.db.*
 /*.db-wal
 /*.db-shm
 /*.db-journal

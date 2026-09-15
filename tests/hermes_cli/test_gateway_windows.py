@@ -353,6 +353,59 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# start() must not double-spawn after install() already launched (#106932)
+# ---------------------------------------------------------------------------
+
+
+def _arrange_uninstalled_start(monkeypatch, *, after_install_pids):
+    """``start()`` offer-install path: no task/startup yet, first pid scan empty."""
+    pids = []
+    registered = {"task": False}
+    spawn_count = {"n": 0}
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_print_start_attestation_warning", lambda: None)
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: list(pids))
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: registered["task"])
+    monkeypatch.setattr(gateway_windows, "is_startup_entry_installed", lambda: False)
+    monkeypatch.setattr(setup, "prompt_yes_no", lambda *_a, **_k: True)
+
+    def fake_install(force=False, **_kwargs):
+        registered["task"] = True
+        pids.extend(after_install_pids)
+
+    def fake_spawn():
+        spawn_count["n"] += 1
+        return 9999
+
+    monkeypatch.setattr(gateway_windows, "install", fake_install)
+    monkeypatch.setattr(gateway_windows, "_spawn_detached", fake_spawn)
+    monkeypatch.setattr(gateway_windows, "_report_gateway_start", lambda via: None)
+    return spawn_count
+
+
+def test_start_does_not_double_spawn_when_install_already_started(monkeypatch, capsys):
+    """install(start_now=True) may already spawn; start() must report running, not spawn again."""
+    spawn_count = _arrange_uninstalled_start(monkeypatch, after_install_pids=[1234])
+
+    gateway_windows.start()
+
+    assert spawn_count["n"] == 0
+    out = capsys.readouterr().out
+    assert "already running" in out
+    assert "1234" in out
+
+
+def test_start_spawns_when_install_did_not_start_gateway(monkeypatch):
+    """install with no live PIDs (declined UAC / start_now=False) still does a manual spawn."""
+    spawn_count = _arrange_uninstalled_start(monkeypatch, after_install_pids=[])
+
+    gateway_windows.start()
+
+    assert spawn_count["n"] == 1
+
+
+# ---------------------------------------------------------------------------
 # stop() drain semantics — issue #33778
 #
 # Background: on Windows, asyncio.add_signal_handler raises NotImplementedError,

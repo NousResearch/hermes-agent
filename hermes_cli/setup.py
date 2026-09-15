@@ -288,6 +288,12 @@ def prompt_yes_no(question: str, default: bool = True) -> bool:
     # consistently; every other caller keeps the traditional line prompt.
     if _SETUP_NAVIGATION.get() is not None:
         return _curses_prompt_choice(question, ["Yes", "No"], 0 if default else 1) == 0
+    try:
+        stdin = sys.stdin
+        if stdin is None or not getattr(stdin, "isatty", lambda: True)():
+            return default
+    except Exception:
+        return default
     default_str = "Y/n" if default else "y/N"
     while True:
         try:

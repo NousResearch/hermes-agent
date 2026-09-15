@@ -811,3 +811,46 @@ def test_bootstrap_failure_never_raises(tmp_path, monkeypatch):
         "hermes_cli.local_runtime.binaries.ensure_runtime_installed", boom)
     result = bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True}})
     assert result is None  # no exception escaped
+
+
+def test_router_argv_uses_flag_spellings_every_supported_build_accepts(tmp_path, monkeypatch):
+    """Regression for #111323.
+
+    llama.cpp renamed the direct-I/O and web-UI flags (`-dio` -> `--load-mode dio`,
+    `--no-webui` -> `--no-ui`). Pinning the removed spelling makes the router exit 1
+    with `error: invalid argument: -dio`, so the managed runtime never comes up and
+    every local model is stranded behind a misleading cloud-provider error. The new
+    spellings are accepted by the older bundled build too, so one argv covers every
+    supported runtime.
+    """
+    from hermes_cli.local_runtime import supervisor as sup_mod
+
+    class _FakeProc:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+    captured: dict[str, list[str]] = {}
+
+    def _fake_spawn(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        return _FakeProc(), None
+
+    exe = tmp_path / "llama-server.exe"
+    exe.write_bytes(b"")
+    monkeypatch.setattr(sup_mod, "server_binary", lambda _dir: exe)
+    monkeypatch.setattr(sup_mod, "spawn_server", _fake_spawn)
+    monkeypatch.setattr(sup_mod.LlamaServerSupervisor, "_write_state", lambda self: None)
+
+    sup = sup_mod.LlamaServerSupervisor(
+        tmp_path / "install", tmp_path / "models", port=18999,
+        log_path=tmp_path / "logs" / "llama-server.log")
+
+    sup._spawn()
+
+    cmd = captured["cmd"]
+    assert "-dio" not in cmd  # removed by newer llama.cpp builds
+    assert cmd[cmd.index("--load-mode") + 1] == "dio"
+    assert "--no-webui" not in cmd
+    assert "--no-ui" in cmd

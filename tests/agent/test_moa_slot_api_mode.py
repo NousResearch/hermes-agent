@@ -150,6 +150,7 @@ moa:
         "metadata": {"source": "caller"},
         "reasoning": {"effort": "none"},
     }
+    assert captured["_skip_auxiliary_observers"] is True
 
 
 def test_one_shot_aggregate_moa_context_passes_slot_extra_body(monkeypatch):
@@ -192,6 +193,7 @@ def test_one_shot_aggregate_moa_context_passes_slot_extra_body(monkeypatch):
     agg_calls = [c for c in captured_calls if c.get("task") == "moa_aggregator"]
     assert len(agg_calls) == 1
     assert agg_calls[0]["extra_body"] == {"enable_thinking": False}
+    assert "_skip_auxiliary_observers" not in agg_calls[0]
 
 
 class TestCallLlmApiMode:

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v6"
+SCANNER_VERSION = "skills-guard-v7"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills"}
@@ -485,6 +485,34 @@ def _demote_inert_path_reference(pid: str, severity: str, description: str, line
     return severity, description
 
 
+# Markdown lines that present content as documentation rather than commands: bullets,
+# numbered steps, table rows, blockquotes. Inside them a threat token wrapped in an inline
+# code span (`cat .env.example`) is a *quoted example* the doc discusses.
+_DOC_STRUCT_LINE_RE = re.compile(r'^(?:[-*+]\s|\d+[.)]\s+\S|\||>)')
+_INLINE_CODE_SPAN_RE = re.compile(r'`[^`\n]+`')
+
+# Code-pattern families eligible for the documented-example cap, one severity step down
+# (critical -> high, so the verdict stops at reviewable `caution`, never `safe`). Only
+# local-read/staging shapes belong here; anything that exfiltrates to the network,
+# downloads-and-executes, or injects keeps its severity in EVERY shape — a malicious
+# instruction does not become safe because it sits in a list item (#37036, #111334).
+_DOC_EXAMPLE_CAP_PIDS = {"read_secrets_file", "js_read_secrets_file", "py_read_secrets_file", "tmp_staging"}
+_SEVERITY_STEP_DOWN = {"critical": "high", "high": "medium", "medium": "low"}
+
+
+def _cap_documented_example(pid: str, severity: str, description: str, line: str, match) -> Tuple[str, str]:
+    """``(severity, description)`` for a Markdown finding whose match is a quoted example inside a
+    documentation-structure line. The finding stays visible, one step lower, so an instructional
+    anti-pattern bullet (`cat .env.example` — small config file) yields `caution` (confirm / --force)
+    instead of an un-overridable `dangerous` block."""
+    if (pid not in _DOC_EXAMPLE_CAP_PIDS or severity not in _SEVERITY_STEP_DOWN
+            or not _DOC_STRUCT_LINE_RE.match(line.lstrip())):
+        return severity, description
+    if any(match.start() < s.end() and s.start() < match.end() for s in _INLINE_CODE_SPAN_RE.finditer(line)):
+        return _SEVERITY_STEP_DOWN[severity], f"{description} (documented example; review before install)"
+    return severity, description
+
+
 # Structural limits: file count; total KB (5MB, informational only — large skills don't block); single-file KB.
 MAX_FILE_COUNT, MAX_TOTAL_SIZE_KB, MAX_SINGLE_FILE_KB = 50, 5120, 256
 
@@ -569,15 +597,17 @@ _FENCE_LINE = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
 _CONTAINER_PREFIX = re.compile(r"^(?: {0,3}(?:>|(?:[-*+]|\d{1,9}[.)]) {1,4}))+")
 
 
-def _mask_prose_link_destinations(lines: List[str]) -> List[str]:
+def _mask_prose_link_destinations(lines: List[str]) -> Tuple[List[str], set]:
     """Mask link destinations only in Markdown prose. Inside a fenced or indented code block a
     ``[x](../..)`` is an argument to whatever command surrounds it, not a hyperlink, so those lines
     scan verbatim. Fence state is ``(marker_char, opener_length)`` rather than a bool so a
     mismatched fence line cannot drop the scanner back into prose mode; an unclosed fence stays
-    code to EOF (fail-safe)."""
+    code to EOF (fail-safe). Also returns the 1-based line numbers of code-block lines so other
+    Markdown affordances (the documented-example cap) can treat embedded code like a code file."""
     out: List[str] = []
+    code_lines: set = set()
     fence = None  # (marker char, opener length) while a fenced block is open
-    for line in lines:
+    for n, line in enumerate(lines, start=1):
         match = _FENCE_LINE.match(_CONTAINER_PREFIX.sub("", line))
         if fence is not None:
             if (match and match["marker"][0] == fence[0] and len(match["marker"]) >= fence[1]
@@ -588,8 +618,10 @@ def _mask_prose_link_destinations(lines: List[str]) -> List[str]:
             if match and not (match["marker"][0] == "`" and "`" in match["info"]):
                 fence = (match["marker"][0], len(match["marker"]))
             code = fence is not None or line.startswith(("\t", "    "))  # indented code block (§4.4)
+        if code:
+            code_lines.add(n)
         out.append(line if code else _mask_markdown_link_destinations(line))
-    return out
+    return out, code_lines
 
 
 def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
@@ -604,15 +636,21 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
         return []
     findings = []
     docstring_lines = _compute_docstring_lines(lines)  # so code patterns don't fire on prose
-    traversal_lines = _mask_prose_link_destinations(lines) if file_path.suffix.lower() == ".md" else lines
+    if file_path.suffix.lower() == ".md":
+        traversal_lines, md_code_lines = _mask_prose_link_destinations(lines)
+    else:
+        traversal_lines, md_code_lines = lines, set()
     suffix, owners = file_path.suffix.lower(), _statement_owners(lines)  # per-file context for the demotion
     for pattern, pid, severity, category, description in _COMPILED_THREAT_PATTERNS:
         for i, line in enumerate(lines, start=1):
             scan_line = traversal_lines[i - 1] if pid in _PATH_TRAVERSAL_PATTERN_IDS else line
-            if i not in docstring_lines and pattern.search(scan_line):
+            if i not in docstring_lines and (m := pattern.search(scan_line)):
                 text = line.strip()
                 line_severity, line_description = _demote_inert_path_reference(
                     pid, severity, description, line, lines[owners[i - 1]], suffix)
+                if file_path.suffix.lower() == ".md" and i not in md_code_lines:
+                    line_severity, line_description = _cap_documented_example(
+                        pid, line_severity, line_description, line, m)
                 findings.append(Finding(pid, line_severity, category, rel_path, i,
                                         text if len(text) <= 120 else text[:117] + "...", line_description))
     for i, line in enumerate(lines, start=1):

@@ -3511,6 +3511,20 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             job_id = (body or {}).get("job_id")
             if not job_id:
                 return web.json_response({"error": "missing job_id"}, status=400)
+            # `hermes pause` ESTOP: refuse the fire and ask NAS to retry later.
+            # Placed after JWT verify (don't leak pause state to unauth callers)
+            # and after the drain check (drain is transient shutdown, ESTOP is
+            # operator override). 503 + Retry-After reschedules the job via NAS
+            # retry or the misfire backstop rather than silently dropping it —
+            # matches _CRON_FIRE_RETRY_AFTER_SECONDS in web_routers/cron.py.
+            with suppress(ImportError):
+                from agent.estop import check_paused as _estop_check_paused
+                if _estop_check_paused("cron-webhook", logger):
+                    return web.json_response(
+                        {"error": "hermes is paused (ESTOP)", "job_id": job_id},
+                        status=503,
+                        headers={"Retry-After": str(60)},
+                    )
             from cron.scheduler_provider import provider_supports_split_fire, resolve_cron_scheduler
             provider = resolve_cron_scheduler()
             loop = asyncio.get_running_loop()

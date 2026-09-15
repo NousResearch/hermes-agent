@@ -12,7 +12,7 @@ Covers:
 
 import logging
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -556,4 +556,98 @@ class TestCronPromptScanParity:
                 data = await resp.json()
                 assert "Blocked" in data["error"] or "threat" in data["error"].lower()
                 mock_create.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 19. test_cron_fire_estop
+# ---------------------------------------------------------------------------
+
+class TestCronFireEstop:
+    """ESTOP must halt the NAS-managed cron fire webhook (Door 2 of the bug report).
+
+    See ``agent/estop.py:1-9`` contract: "the cron scheduler ... skips work;
+    in-flight work is never killed." The webhook path was the gap — a managed-cron
+    operator running ``hermes pause`` previously kept getting fires through.
+    """
+
+    @pytest.mark.asyncio
+    async def test_fire_webhook_returns_503_when_estop_engaged(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        """Engaged ESTOP → 503 + Retry-After; claim_fire never reached."""
+        from agent import estop
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        estop._logged_components.clear()
+        estop.engage(reason="ops window")
+
+        try:
+            app = web.Application(middlewares=[cors_middleware])
+            app["api_server_adapter"] = adapter
+            app.router.add_post("/api/cron/fire", adapter._handle_cron_fire)
+
+            claims = {"sub": "chronos", "aud": "test"}
+            async with TestClient(TestServer(app)) as cli:
+                with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                    f"{_MOD}._call_verifier", AsyncMock(return_value=claims)
+                ), patch(
+                    "cron.scheduler_provider.resolve_cron_scheduler"
+                ) as resolve:
+                    resp = await cli.post(
+                        "/api/cron/fire",
+                        json={"job_id": "aabbccddeeff"},
+                        headers={"Authorization": "Bearer test-token"},
+                    )
+                    assert resp.status == 503
+                    assert resp.headers.get("Retry-After") == "60"
+                    data = await resp.json()
+                    assert "paused" in data["error"].lower()
+                    assert data["job_id"] == "aabbccddeeff"
+                    # ESTOP check happens before admission — none of the
+                    # provider's claim/execute entry points may run.
+                    resolve.return_value.claim_fire.assert_not_called()
+                    resolve.return_value.fire_claimed.assert_not_called()
+                    resolve.return_value.fire_due.assert_not_called()
+        finally:
+            estop.disengage()
+
+    @pytest.mark.asyncio
+    async def test_fire_webhook_401_when_verifier_crashes(
+        self, adapter, tmp_path, monkeypatch
+    ):
+        """Crashing verifier → 401 without consulting ESTOP.
+
+        Auth runs before the ESTOP check, so a broken verifier never
+        learns the sentinel state. Prevents leaking pause state to
+        unauthenticated callers and proves the ordering invariant.
+        """
+        from agent import estop
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        estop._logged_components.clear()
+        estop.engage(reason="ops window")
+
+        try:
+            app = web.Application(middlewares=[cors_middleware])
+            app["api_server_adapter"] = adapter
+            app.router.add_post("/api/cron/fire", adapter._handle_cron_fire)
+
+            async def _verifier_raises(*args, **kwargs):
+                raise RuntimeError("JWKS endpoint unreachable")
+
+            async with TestClient(TestServer(app)) as cli:
+                with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(
+                    f"{_MOD}._call_verifier",
+                    AsyncMock(side_effect=_verifier_raises),
+                ):
+                    resp = await cli.post(
+                        "/api/cron/fire",
+                        json={"job_id": "aabbccddeeff"},
+                        headers={"Authorization": "Bearer test-token"},
+                    )
+                    assert resp.status == 401
+                    data = await resp.json()
+                    assert "token" in data["error"].lower() or "auth" in data["error"].lower()
+        finally:
+            estop.disengage()
 

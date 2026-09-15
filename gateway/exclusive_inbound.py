@@ -61,28 +61,28 @@ def configure_exclusive_inbound(runner: Any, adapter: BasePlatformAdapter, *, pr
         source._authorization_profile_home = authorization_home
         if profile_name and not getattr(source, "profile", None):
             source.profile = profile_name
-        from gateway.run import _async_profile_runtime_scope
-        from hermes_cli.plugins import get_plugin_manager
+        try:
+            from gateway.run import _async_profile_runtime_scope
+            from hermes_cli.plugins import get_plugin_manager
 
-        async with _async_profile_runtime_scope(authorization_home):
-            sender_allowed = claim["allowed_senders"] is None or (
-                str(getattr(source, "user_id", "")).strip().lower() in claim["allowed_senders"]
-            )
-            if not sender_allowed or not runner._is_user_authorized_for_source(source):
-                logger.warning("Exclusive inbound sender refused on %s/%s", adapter.platform.value, source.chat_id)
-                return True
-            callbacks = get_plugin_manager().iter_exclusive_inbound_handlers(claim["handler"])
-            if len(callbacks) != 1:
-                logger.error("Exclusive inbound handler %s has %d registrations", claim["handler"], len(callbacks))
-                return True
-            try:
+            async with _async_profile_runtime_scope(authorization_home):
+                sender_allowed = claim["allowed_senders"] is None or (
+                    str(getattr(source, "user_id", "")).strip().lower() in claim["allowed_senders"]
+                )
+                if not sender_allowed or not runner._is_user_authorized_for_source(source):
+                    logger.warning("Exclusive inbound sender refused on %s/%s", adapter.platform.value, source.chat_id)
+                    return True
+                callbacks = get_plugin_manager().iter_exclusive_inbound_handlers(claim["handler"])
+                if len(callbacks) != 1:
+                    logger.error("Exclusive inbound handler %s has %d registrations", claim["handler"], len(callbacks))
+                    return True
                 accepted = callbacks[0](event)
                 if not inspect.isawaitable(accepted):
                     raise TypeError("exclusive inbound handler must return an awaitable")
                 if await accepted is not True:
                     raise RuntimeError("exclusive inbound handler did not durably accept message")
-            except Exception:
-                logger.exception("Exclusive inbound handler %s failed", claim["handler"])
-            return True
+        except Exception:
+            logger.exception("Exclusive inbound handler %s failed", claim["handler"])
+        return True
 
     adapter.set_exclusive_inbound_handler(admit)

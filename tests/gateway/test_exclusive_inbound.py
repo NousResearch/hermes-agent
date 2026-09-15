@@ -109,6 +109,19 @@ async def test_claimed_event_fails_closed_for_plugin_failures(scoped, monkeypatc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["authorization", "plugin_discovery"])
+async def test_claimed_event_fails_closed_when_admission_setup_raises(scoped, monkeypatch, failure):
+    adapter = Adapter(claim())
+    r = runner()
+    if failure == "authorization":
+        r._is_user_authorized_for_source.side_effect = RuntimeError("authorization unavailable")
+    else:
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", MagicMock(side_effect=RuntimeError("plugins unavailable")))
+    configure_exclusive_inbound(r, adapter)
+    assert await adapter.handler(event()) is True
+
+
+@pytest.mark.asyncio
 async def test_authorized_sender_boundary_is_optional_and_additive(scoped, monkeypatch):
     adapter, manager = Adapter(claim(allowed_senders=["sender"])), PluginManager()
     context = PluginContext(PluginManifest(name="capture"), manager)

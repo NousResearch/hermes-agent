@@ -60,6 +60,12 @@ export const LOCALE_OPTIONS = [
     name: LOCALE_ENDONYMS.es,
     englishName: 'Spanish',
     configValue: 'es'
+  },
+  {
+    id: 'fa',
+    name: 'فارسی',
+    englishName: 'Persian (Farsi)',
+    configValue: 'fa'
   }
 ] as const satisfies readonly { configValue: string; englishName: string; id: Locale; name: string }[]
 
@@ -135,7 +141,6 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   'de-ch': 'de',
   de_ch: 'de',
   german: 'de',
-  deutsch: 'de',
   es: 'es',
   'es-es': 'es',
   es_es: 'es',
@@ -147,7 +152,15 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   es_419: 'es',
   spanish: 'es',
   español: 'es',
-  espanol: 'es'
+  espanol: 'es',
+  fa: 'fa',
+  'fa-ir': 'fa',
+  fa_ir: 'fa',
+  'fa-af': 'fa',
+  fa_af: 'fa',
+  farsi: 'fa',
+  persian: 'fa',
+  فارسی: 'fa'
 }
 
 export function isLocale(value: unknown): value is Locale {

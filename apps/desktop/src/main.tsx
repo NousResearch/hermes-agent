@@ -47,6 +47,11 @@ if (import.meta.env.MODE !== 'production' || import.meta.env.VITE_PERF_PROBE ===
 
 const winParam = new URLSearchParams(window.location.search).get('win')
 
+// Dev/verification override: `?locale=fa` forces the UI language without a
+// backend config round-trip (configClient is disabled for that window). Does
+// nothing in normal launches, where the locale comes from display.language.
+const localeParam = new URLSearchParams(window.location.search).get('locale')
+
 if (winParam === 'hud') {
   document.title = 'Hermes HUD'
 }
@@ -90,7 +95,7 @@ if (winParam === 'overlay') {
     <StrictMode>
       <RootErrorBoundary>
         <QueryClientProvider client={queryClient}>
-          <I18nProvider>
+          <I18nProvider configClient={localeParam ? null : undefined} initialLocale={localeParam ?? undefined}>
             <ThemeProvider>
               <HapticsProvider>
                 {/* ONE tooltip provider for the whole app. Every `Tip` used to

@@ -315,6 +315,29 @@ def _end_current_session(cli, reason: str) -> None:
         cli._session_db.end_session(cli.session_id, reason)
 
 
+def _move_active_session_lease(cli, target_id: str) -> bool:
+    """Re-anchor this CLI's active-session lease onto ``target_id`` before a /resume or /branch switch.
+    False (after showing a read-only transcript) when another live surface holds the target: the
+    per-session single-writer guarantee that startup ``--resume`` enforces must hold mid-chat too.
+    Startup claimed no lease (registry unavailable, tests) => nothing to move."""
+    lease = getattr(cli, "_active_session_lease", None)
+    if lease is None:
+        return True
+    from hermes_cli.active_sessions import live_session_owner, transfer_active_session
+    try:
+        owner = live_session_owner(target_id, own_lease_id=lease.lease_id)
+    except Exception as exc:
+        # Fail CLOSED: an unreadable registry has not proven the target unowned.
+        return _cp(f"  Cannot prove session {target_id} has no other live owner: {exc}") or False
+    if owner is not None:
+        cli._show_read_only_transcript(target_id, owner)
+        return False
+    if not transfer_active_session(lease, session_id=target_id,
+                                   metadata={"live_session_id": str(target_id)}):
+        return _cp(f"  Could not re-anchor the active-session lease onto {target_id}; staying put.") or False
+    return True
+
+
 def _sync_agent_to_session(cli, session_id: str, *, parent_session_id: str, reason: str) -> None:
     """Point an already-built agent at ``session_id`` after a /resume or /branch switch: reset
     per-session state, re-anchor the DB flush index, and notify memory providers with
@@ -1288,6 +1311,8 @@ class CLICommandsMixin:
         target_id, session_meta = resolved
         if target_id == self.session_id:
             return _cp("  Already on that session.")
+        if not _move_active_session_lease(self, target_id):
+            return
         old_session_id = self.session_id
         _end_current_session(self, "resumed_other")
         self.session_id, self._resumed, self._pending_title = target_id, True, None
@@ -1391,6 +1416,7 @@ class CLICommandsMixin:
         except Exception as e:
             return _cp(f"  Failed to create branch session: {e}")
         _end_current_session(self, "branched")
+        _move_active_session_lease(self, new_session_id)  # freshly minted id: never held elsewhere
         # Best-effort chunked copy (a failed copy still yields a usable branch); the api_content
         # sidecar lets the branch's first turn replay the parent's exact wire bytes (warm cache).
         with suppress(Exception):

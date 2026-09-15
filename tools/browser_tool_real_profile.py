@@ -119,6 +119,11 @@ _REAL_PROFILE_CHROME_FLAGS = (
     "--disable-sync", "--disable-features=Translate", "--no-startup-window",
 )
 
+# How long /json/version may lag behind DevToolsActivePort before the endpoint is treated as
+# silent (Chrome >=136 can write the port file while withholding CDP behind a consent the
+# headless copy can never receive — #105064). Module-level so tests can shrink it.
+_CDP_SILENT_GRACE_S = 5.0
+
 
 def _real_profile_unsupported_reason(browser) -> Optional[str]:
     """Fail-closed message when the default browser can't be used, else None.
@@ -177,7 +182,25 @@ def _launch_real_profile_chrome(real_binary: str, copy_dir: str) -> Tuple[Option
     while time.monotonic() < deadline:
         line = _read_devtools_port(copy_dir) or ""
         if line.isdigit():
-            return int(line), None
+            # The port file alone is not proof the endpoint works: on Chrome >=136 the port can
+            # listen while CDP is withheld behind a remote-debugging consent a headless copy can
+            # never receive, and every /json/version request then hangs forever. Verify the
+            # endpoint actually answers and fail fast (#105064) instead of letting the harness
+            # block until the full tool timeout.
+            port = int(line)
+            ready_deadline = time.monotonic() + _CDP_SILENT_GRACE_S
+            while time.monotonic() < ready_deadline:
+                if _cdp_http_ready(f"http://127.0.0.1:{port}"):
+                    return port, None
+                if chrome_proc.poll() is not None:
+                    _terminate_real_profile_chrome()
+                    return None, _RP + "Chrome exited during startup (another instance may hold the profile copy)."
+                time.sleep(0.25)
+            _terminate_real_profile_chrome()
+            return None, (_RP + "the real-profile browser's DevTools endpoint is not answering. On Chrome 136+ "
+                          "a headless profile copy can be stuck waiting for a remote-debugging consent it can "
+                          "never receive. Set browser.headed: true (or AGENT_BROWSER_HEADED=1) and retry, "
+                          "or turn the toggle off.")
         if chrome_proc.poll() is not None:
             _terminate_real_profile_chrome()
             return None, _RP + "Chrome exited during startup (another instance may hold the profile copy)."

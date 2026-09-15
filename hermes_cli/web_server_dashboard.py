@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 import yaml
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
@@ -755,6 +755,32 @@ def _plugin_api_mount_skip_reason(plugin: Dict[str, Any], enabled_set: set, disa
     if source == "user" and plugin_name not in enabled_set:
         return "not in plugins.enabled"
     return None
+
+
+class _PluginProfileScopeMiddleware:
+    """Hold the request's ``?profile=`` home override across every ``/api/plugins/*`` handler.
+
+    Desktop appends ``?profile=<name>`` to every REST call (``profileScoped()``); core routers read it
+    per handler, plugin routers never did, so a plugin's state, ledger and credentials silently came
+    from the serve process's own profile. Set here, in the request's own context, so the handler's
+    threadpool copy inherits it (a FastAPI dependency enters and exits in different contexts, which
+    a ContextVar token refuses). Config-only scope: no process-global module retargeting.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not scope["path"].startswith("/api/plugins/"):
+            return await self.app(scope, receive, send)
+        from urllib.parse import parse_qs
+        from hermes_cli.web_server_profiles import _config_profile_scope
+        profile = (parse_qs(scope.get("query_string", b"").decode("latin-1")).get("profile") or [None])[0]
+        try:
+            with _config_profile_scope(profile):
+                return await self.app(scope, receive, send)
+        except HTTPException as exc:  # unknown / malformed profile name from _resolve_profile_dir
+            await JSONResponse({"detail": exc.detail}, status_code=exc.status_code)(scope, receive, send)
 
 
 def _mount_plugin_api_routes():

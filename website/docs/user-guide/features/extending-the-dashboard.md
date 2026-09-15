@@ -749,6 +749,8 @@ Routes are mounted under `/api/plugins/<name>/`, so the above becomes:
 
 Plugin API routes sit behind the dashboard's normal auth gate — unauthenticated requests get a `401` before the plugin route runs, and requests to a disabled plugin's routes are rejected at request time. Still, **don't expose the dashboard on a public interface with `--host 0.0.0.0` if you run untrusted plugins** — an authenticated session can reach their routes too.
 
+Plugin routes are **profile-scoped by the host**: when a caller (the Desktop app does this on every request) adds `?profile=<name>`, `get_hermes_home()`, `load_config()`, `PluginState` and anything else resolving the home at call time see that profile for the duration of the request. Unknown profile names return `404`. Your route needs no `profile` parameter of its own; just resolve paths at call time rather than at import time.
+
 #### Accessing Hermes internals
 
 Backend routes run inside the dashboard process, so they can import from the hermes-agent codebase directly:

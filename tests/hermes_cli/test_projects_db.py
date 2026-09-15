@@ -144,3 +144,31 @@ def test_per_profile_isolation(tmp_path):
         b.close()
 
 
+
+
+
+def test_connect_reinitializes_schema_when_db_file_vanished(tmp_path):
+    """#102066: the schema cache is process-local, but the schema is on disk.
+
+    A long-lived process that already initialized a path keeps taking the
+    ``_INITIALIZED_PATHS`` fast path after the file is deleted underneath
+    it. SQLite recreates an empty DB on the next open, so every query then
+    fails with ``no such table: projects`` until that process restarts.
+    """
+    db_path = tmp_path / "projects.db"
+
+    with pdb.connect_closing(db_path) as conn:
+        pdb.create_project(conn, name="Hermes Agent", folders=["/tmp/hermes"])
+        conn.commit()
+    assert str(db_path.resolve()) in pdb._INITIALIZED_PATHS
+
+    # External deletion (manual cleanup, restore, sync tool) while the process
+    # that cached this path is still alive: DB file plus sidecars.
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
+
+    with pdb.connect_closing(db_path) as conn:
+        assert pdb.list_projects(conn) == []
+
+
+

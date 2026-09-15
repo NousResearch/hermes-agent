@@ -410,7 +410,8 @@ class CronMonitorState(Result):
 
 
 class CronJobRow(Result):
-    """Closed row from ``tools/cronjob_job_args.py:346-394``."""
+    """Closed row from ``tools/cronjob_job_args.py::_format_job``; the ``_FORMAT_JOB_OPTIONAL_KEYS`` /
+    continuity / context_from / attach_to_session keys are only present when set."""
 
     job_id: str
     name: str
@@ -434,17 +435,17 @@ class CronJobRow(Result):
     state: str | None
     paused_at: str | None
     paused_reason: str | None
-    script: str | None
-    reasoning_effort: str | None
-    monitor_script: str | None
-    monitor_url: str | None
-    monitor_state: CronMonitorState | None
-    no_agent: bool | None
-    enabled_toolsets: list[str] | None
-    workdir: str | None
-    continuity: bool | None
-    context_from: list[str] | None
-    attach_to_session: bool | None
+    script: str | None = None
+    reasoning_effort: str | None = None
+    monitor_script: str | None = None
+    monitor_url: str | None = None
+    monitor_state: CronMonitorState | None = None
+    no_agent: bool | None = None
+    enabled_toolsets: list[str] | None = None
+    workdir: str | None = None
+    continuity: bool | None = None
+    context_from: list[str] | None = None
+    attach_to_session: bool | None = None
 
 
 class CronRemovedJob(Result):
@@ -454,27 +455,28 @@ class CronRemovedJob(Result):
 
 
 class CronManageResult(Result):
-    """``methods_tools.py:1059-1083`` adapts the listed ``cronjob`` action outcomes."""
+    """``methods_tools.py:1059-1083`` adapts the listed ``cronjob`` action outcomes;
+    each action fills its own subset, so every optional key defaults."""
 
     success: bool
-    error: str | None
-    count: int | None
-    jobs: list[CronJobRow] | None
-    scoped: str | None
-    gateway_running: bool | None
-    warning: str | None
-    job_id: str | None
-    name: str | None
-    skill: str | None
-    skills: list[str] | None
-    schedule: str | None
-    repeat: int | str | None
-    deliver: str | None
-    next_run_at: str | None
-    job: CronJobRow | None
-    message: str | None
-    guidance: list[str] | None
-    removed_job: CronRemovedJob | None
+    error: str | None = None
+    count: int | None = None
+    jobs: list[CronJobRow] | None = None
+    scoped: str | None = None
+    gateway_running: bool | None = None
+    warning: str | None = None
+    job_id: str | None = None
+    name: str | None = None
+    skill: str | None = None
+    skills: list[str] | None = None
+    schedule: str | None = None
+    repeat: int | str | None = None
+    deliver: str | None = None
+    next_run_at: str | None = None
+    job: CronJobRow | None = None
+    message: str | None = None
+    guidance: list[str] | None = None
+    removed_job: CronRemovedJob | None = None
 
 
 method("cron.manage", params=CronManageParams, result=CronManageResult,

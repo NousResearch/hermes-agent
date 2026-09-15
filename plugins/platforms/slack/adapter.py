@@ -648,6 +648,7 @@ def _normalize_slack_text_for_dedupe(text: str, bot_uid: str = "") -> str:
         return parts[2] if len(parts) > 2 else ""
 
     canonical = text or ""
+    canonical = canonical.translate(str.maketrans("", "", "\u200b\u200c\u200d\ufeff"))
     # Order matters: unescape before links (same brackets/``&``); permalinks after links (bare
     # URL); labels after dates (dates carry a label); bot mention after labels (``<@U…|hermes>``).
     canonical = _unescape_slack_entities(canonical)
@@ -3688,20 +3689,21 @@ class SlackAdapter(BasePlatformAdapter):
         explicit_allowlist = bool(triggers)
         if explicit_allowlist and reaction_name.strip(":") not in triggers:
             return
-        thread_ts = await self._reaction_thread_ts(
+        thread_ts, target = await self._reaction_target(
             client, channel_id, msg_ts, event, team_id, explicit_allowlist)
         if thread_ts is None:
             return
         await self._handle_slack_message(
-            self._synthetic_reaction_event(event, action, thread_ts, team_id))
+            self._synthetic_reaction_event(event, action, thread_ts, team_id, target))
 
     def _synthetic_reaction_event(
-        self, event: dict, action: str, thread_ts: str, team_id: str) -> dict:
+        self, event: dict, action: str, thread_ts: str, team_id: str,
+        target: Optional[dict] = None) -> dict:
         """Message-shaped event for a reaction. The reaction's own event_ts keeps the deduplicator
         from conflating it with the reacted-to message; ``_hermes_force_process`` skips the mention
-        requirement (user auth and allowed_channels still apply); ``_hermes_reaction`` is
-        informational. An optional handoff target channel replaces the reacted-to channel; a
-        channel-only target is a handoff, not a reply — respond top-level there."""
+        requirement (user auth and allowed_channels still apply); ``_hermes_reaction`` carries
+        exact target provenance. An optional handoff target channel replaces the reacted-to
+        channel; a channel-only target is a handoff, not a reply — respond top-level there."""
         item = event.get("item") or {}
         channel_id, msg_ts = item.get("channel"), item.get("ts")
         reaction_name, user_id = event.get("reaction") or "", event.get("user")
@@ -3717,6 +3719,16 @@ class SlackAdapter(BasePlatformAdapter):
             "_hermes_reaction": {
                 "name": reaction_name, "action": action, "reacted_to_ts": msg_ts,
                 "event_ts": event.get("event_ts")}}
+        if target is not None:
+            provenance = synthetic["_hermes_reaction"]
+            provenance["reacted_to_text"] = self._render_message_text(target)
+            bot_uid = self._team_bot_user_ids.get(team_id) or self._bot_user_id
+            target_user = target.get("user")
+            if bot_uid and target_user:
+                provenance["reacted_to_is_own_message"] = (
+                    target_user == bot_uid
+                    and (not event.get("item_user") or event["item_user"] == bot_uid)
+                )
         if team_id:
             synthetic["team"] = team_id
         # Optional handoff target (#45265): route the reaction-triggered turn into a configured channel (and
@@ -3734,33 +3746,35 @@ class SlackAdapter(BasePlatformAdapter):
                 synthetic["_hermes_no_thread_response"] = True
         return synthetic
 
-    async def _reaction_thread_ts(
+    async def _reaction_target(
         self, client, channel_id: str, msg_ts: str, event: dict, team_id: str,
-        explicit_allowlist: bool) -> Optional[str]:
+        explicit_allowlist: bool) -> Tuple[Optional[str], Optional[dict]]:
         """Thread to route a reaction into, or None to drop. Looks up the reacted-to message for
-        thread + author; on failure the message itself is the parent (right top-level, loses
-        linkage in-thread). Without an explicit allowlist only the bot's own messages route."""
+        thread + author; failed lookups carry no target text or verified author. Without an
+        explicit allowlist only the bot's own messages route."""
         thread_ts: str = msg_ts
         item_user = event.get("item_user") or ""
+        target = None
         if client is not None:
             try:
                 history = await client.conversations_replies(
-                    channel=channel_id, ts=msg_ts, limit=1, inclusive=True)
+                    channel=channel_id, ts=msg_ts, oldest=msg_ts, latest=msg_ts,
+                    limit=1, inclusive=True)
                 messages = (history or {}).get("messages") or []
-                if messages:
-                    first = messages[0]
-                    thread_ts = first.get("thread_ts") or first.get("ts") or msg_ts
-                    item_user = item_user or first.get("user") or ""
+                target = next((msg for msg in messages if msg.get("ts") == msg_ts), None)
+                if target is not None:
+                    thread_ts = target.get("thread_ts") or target.get("ts") or msg_ts
+                    item_user = target.get("user") or item_user
                 else:
-                    return thread_ts
+                    return thread_ts, None
             except Exception as e:  # pragma: no cover - network path
                 logger.debug("[Slack] reaction thread_ts lookup failed for %s: %s", msg_ts, e)
-                return thread_ts
+                return thread_ts, None
         if not explicit_allowlist:
             bot_uid = self._team_bot_user_ids.get(team_id) or self._bot_user_id
             if item_user and bot_uid and item_user != bot_uid:
-                return None
-        return thread_ts
+                return None, None
+        return thread_ts, target
 
     def _slack_reaction_triggers(self) -> Optional[set]:
         """Reaction-routing opt-in: None = disabled (default, events acked+dropped);
@@ -4515,6 +4529,15 @@ class SlackAdapter(BasePlatformAdapter):
         # Remaining ``<@UID>`` are OTHER participants (own mention stripped
         # above); render as ``@DisplayName`` so the agent knows who is addressed.
         text = await self._humanize_user_mentions(text, chat_id=channel_id, team_id=team_id)
+        reaction = event.get("_hermes_reaction")
+        reply_to_message_id = thread_ts if thread_ts != ts else None
+        reply_to_text = None
+        reply_to_is_own_message = False
+        if isinstance(reaction, dict):
+            # Thread routing and the exact reacted-to message are different identities.
+            reply_to_message_id = reaction.get("reacted_to_ts") or None
+            reply_to_text = reaction.get("reacted_to_text") or None
+            reply_to_is_own_message = reaction.get("reacted_to_is_own_message") is True
         return MessageEvent(
             text=(command_probe_text if is_command_text else text),
             message_type=msg_type,
@@ -4523,11 +4546,12 @@ class SlackAdapter(BasePlatformAdapter):
             message_id=ts,
             media_urls=media_urls,
             media_types=media_types,
-            reply_to_message_id=thread_ts if thread_ts != ts else None,
+            reply_to_message_id=reply_to_message_id,
             channel_prompt=self._channel_prompt_with_identity(channel_id, team_id),
             channel_context=channel_context,
-            # thread_ts is the thread root, not an explicit reply (root is in channel_context).
-            reply_to_text=None,
+            # Ordinary thread roots stay in channel_context; reactions identify an exact reply.
+            reply_to_text=reply_to_text,
+            reply_to_is_own_message=reply_to_is_own_message,
             auto_skill=resolve_channel_skills(self.config.extra, channel_id, None),
             metadata={
                 "slack_team_id": team_id, "slack_channel_id": channel_id,
@@ -5525,7 +5549,12 @@ class SlackAdapter(BasePlatformAdapter):
         extras: list[str] = []
 
         def _unseen(piece: str, base: str) -> bool:
-            return piece not in base and all(piece not in e for e in extras)
+            normalized = _normalize_slack_text_for_dedupe(piece, bot_uid)
+            return all(
+                piece not in candidate
+                and normalized != _normalize_slack_text_for_dedupe(candidate, bot_uid)
+                for candidate in [base, *extras]
+            )
 
         if blocks:
             rich_text = _extract_additional_text_from_slack_blocks(

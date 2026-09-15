@@ -97,6 +97,104 @@ def _make_adapter(platform_val="telegram"):
 class TestBusySessionAck:
     """User sends a message while agent is running — should get acknowledgment."""
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("entry", ["adapter", "runner"])
+    @pytest.mark.parametrize("mode", ["steer", "interrupt", "queue"])
+    @pytest.mark.parametrize("pending_kind", [MessageType.TEXT, MessageType.PHOTO])
+    @pytest.mark.parametrize("starting", [False, True])
+    async def test_reaction_provenance_survives_busy_queue(self, entry, mode, pending_kind, starting):
+        """Each reaction reaches a separate prepared turn, even behind pending media."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = mode
+        runner._busy_text_mode = "queue"
+        adapter = _make_adapter("slack")
+        first = _make_event(text="pending work")
+        first.source.platform = Platform.SLACK
+        first.message_type = pending_kind
+        if pending_kind == MessageType.PHOTO:
+            first.media_urls = ["/tmp/queued-image.png"]
+            first.media_types = ["image/png"]
+        sk = build_session_key(first.source)
+        runner.adapters[Platform.SLACK] = adapter
+        adapter._pending_messages[sk] = first
+        agent = MagicMock()
+        agent._active_children = []
+        agent._supports_active_turn_redirect = True
+        runner._running_agents[sk] = sentinel if starting else agent
+
+        reactions = []
+        for target_id in ("2000.000002", "2000.000003"):
+            draft = f"📝 REVIEW DRAFT\nEvidence for {target_id}\nDraft ID: {target_id}"
+            event = MessageEvent(
+                text="reaction:added:✅", source=first.source,
+                reply_to_message_id=target_id, reply_to_text=draft,
+                reply_to_is_own_message=True,
+                raw_message={"_hermes_reaction": {
+                    "reacted_to_ts": target_id, "reacted_to_text": draft,
+                    "reacted_to_is_own_message": True,
+                }},
+            )
+            reactions.append(event)
+            if entry == "adapter":
+                assert await runner._handle_active_session_busy_message(event, sk) is True
+            else:
+                await runner._hm_handle_running_session_message(event, event.source, sk)
+
+        assert adapter._pending_messages[sk] is first
+        assert first.text == "pending work"
+        assert runner._overflow_queue(sk) == reactions
+        for event in reactions:
+            prepared = runner._prepend_inbound_reply_context(event, event.source, event.text)
+            assert event.reply_to_text in prepared
+            assert f"message id: {event.reply_to_message_id}; author: this Hermes bot;" in prepared
+            assert "[End of reacted-to message]" in prepared
+        agent.steer.assert_not_called()
+        agent.redirect.assert_not_called()
+        agent.interrupt.assert_not_called()
+
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("entry", ["adapter", "runner"])
+    @pytest.mark.parametrize("followup_kind,starting", [
+        (MessageType.PHOTO, False), (MessageType.TEXT, True),
+    ])
+    async def test_pending_reaction_is_not_contaminated_by_followup(self, entry, followup_kind, starting):
+        """A queued reaction keeps its own text and media when later input arrives."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter("slack")
+        reaction = _make_event(text="reaction:added:✅")
+        reaction.source.platform = Platform.SLACK
+        reaction.raw_message = {"_hermes_reaction": {
+            "reacted_to_ts": "2000.000002", "reacted_to_text": "Review evidence",
+            "reacted_to_is_own_message": True,
+        }}
+        sk = build_session_key(reaction.source)
+        runner.adapters[Platform.SLACK] = adapter
+        agent = MagicMock()
+        agent._active_children = []
+        runner._running_agents[sk] = sentinel if starting else agent
+        followup = MessageEvent(
+            text="independent follow-up", source=reaction.source,
+            message_type=followup_kind,
+            media_urls=["/tmp/followup.png"] if followup_kind == MessageType.PHOTO else [],
+            media_types=["image/png"] if followup_kind == MessageType.PHOTO else [],
+        )
+        for event in (reaction, followup):
+            if entry == "adapter":
+                assert await runner._handle_active_session_busy_message(event, sk) is True
+            else:
+                await runner._hm_handle_running_session_message(event, event.source, sk)
+
+        assert adapter._pending_messages[sk] is reaction
+        assert reaction.text == "reaction:added:✅"
+        assert reaction.media_urls == []
+        assert reaction.media_types == []
+        assert runner._overflow_queue(sk) == [followup]
+        assert followup.text == "independent follow-up"
+        agent.steer.assert_not_called()
+        agent.redirect.assert_not_called()
+        agent.interrupt.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_telegram_grace_followups_respect_queue_fifo(self, monkeypatch):

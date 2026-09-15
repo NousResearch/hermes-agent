@@ -9,12 +9,12 @@ import { $sessionStates } from './session-states'
 
 /**
  * Live todo list per runtime session, rendered by the composer status stack
- * (the inline transcript panel is gone). Fed from two places:
+ * (the inline transcript panel is gone). Fed from three places:
  *
  * - live `todo` tool events (use-message-stream)
- * - stored-session hydration (desktop-controller) — but only when the list is
- *   still in flight, so reopening an old chat doesn't pin its finished plan
- *   above the composer forever.
+ * - resume/activate snapshots while the backend says the turn is running
+ * - post-turn stored-session hydration — but only for a list that just
+ *   finished, so the final checkmarks can complete their live linger.
  */
 export const $todosBySession = atom<Record<string, TodoItem[]>>({})
 export const $todoRevisionsBySession = atom<Record<string, number>>({})
@@ -147,9 +147,9 @@ export function clearActiveSessionTodos(sid: string) {
   dropSessionTodos(sid, false)
 }
 
-/** Apply a session.resume/activate or todo.updated full snapshot. Idle
- * sessions keep the existing stale-active guard; running sessions restore the
- * active plan because the backend has proved that turn is still live. */
+/** Apply a session.resume/activate or todo.updated full snapshot. Resume and
+ * activate only restore while the backend proves the turn is still running;
+ * an idle snapshot is historical state and must not restart the live linger. */
 export function restoreSessionTodosFromSnapshot(sid: string, snapshot: unknown, running: boolean) {
   const todos = parseTodos(snapshot)
 
@@ -166,10 +166,8 @@ export function restoreSessionTodosFromSnapshot(sid: string, snapshot: unknown, 
     return
   }
 
-  const visible = running ? todos : todosForHydration(todos)
-
-  if (visible !== null) {
-    setSessionTodos(sid, visible, revision)
+  if (running) {
+    setSessionTodos(sid, todos, revision)
   } else if (acceptRevision(sid, revision)) {
     dropSessionTodos(sid, false)
   }

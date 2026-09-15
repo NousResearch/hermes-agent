@@ -43,7 +43,8 @@ from hermes_cli.update_cmd_windows import (  # noqa: F401
 from hermes_cli.update_cmd_fleet import (  # noqa: F401
     _FLEET_RESTART_PENDING_NAME, _FRESH_RESTART_SUPERVISORS, _GatewayRestartOutcome,
     _apply_pending_fleet_restart_catchup, _clear_fleet_restart_pending_marker,
-    _current_checkout_sha, _drain_or_signal_gateway_for_update, _fleet_probe_expected_runtimes,
+    _current_checkout_sha, _dismiss_stale_receipt_trigger, _drain_or_signal_gateway_for_update,
+    _fleet_probe_expected_runtimes,
     _fleet_restart_pending_marker_path, _for_each_systemd_gateway_unit,
     _gateway_recovery_partition, _gateway_service_matches_profile, _pending_fleet_restart_needed,
     _receipt_looks_unfinished, _receipt_reports_stale_runtime, _resolve_manage_cmd,

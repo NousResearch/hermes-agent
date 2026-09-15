@@ -4,8 +4,10 @@ import json
 
 import pytest
 
-from tools import apply_layout_tool as al, desktop_ui
+from tools import apply_layout_tool as al
+from tools import desktop_ui
 from tools.registry import registry
+from tui_gateway.contracts.events import LayoutApplyPayload
 
 
 @pytest.fixture(autouse=True)
@@ -34,7 +36,7 @@ def test_emits_layout_apply():
     out = json.loads(al.apply_layout_tool("  focus  "))
 
     assert out == {"success": True, "preset": "focus"}
-    assert calls == [("layout.apply", {"preset": "focus"})]
+    assert calls == [("layout.apply", LayoutApplyPayload(preset="focus"))]
 
 
 def test_preset_ids_pass_through_unmapped():
@@ -46,7 +48,7 @@ def test_preset_ids_pass_through_unmapped():
     out = json.loads(al.apply_layout_tool("user-research-cockpit"))
 
     assert out["success"] is True
-    assert calls[0][1] == {"preset": "user-research-cockpit"}
+    assert calls[0][1] == LayoutApplyPayload(preset="user-research-cockpit")
 
 
 def test_empty_preset_is_an_error():

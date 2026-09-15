@@ -4,8 +4,10 @@ import json
 
 import pytest
 
-from tools import desktop_ui, focus_pane_tool as fp
+from tools import desktop_ui
+from tools import focus_pane_tool as fp
 from tools.registry import registry
+from tui_gateway.contracts.events import PaneRevealPayload
 
 
 @pytest.fixture(autouse=True)
@@ -35,4 +37,4 @@ def test_emits_pane_reveal(pane):
     out = json.loads(fp.focus_pane_tool(f"  {pane.upper()}  "))
 
     assert out == {"success": True, "pane": pane}
-    assert calls == [("pane.reveal", {"pane": pane})]
+    assert calls == [("pane.reveal", PaneRevealPayload(pane=pane))]

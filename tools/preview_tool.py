@@ -10,13 +10,14 @@ Lives in the ``desktop_ui`` toolset — desktop-app sessions only.
 from tools import desktop_ui
 from tools.open_preview_tool import _normalize_target, open_preview_tool
 from tools.registry import registry, tool_error
+from tui_gateway.contracts.events import PreviewClosePayload
 
 
 def preview_close(url: str = "") -> str:
     target = _normalize_target(url or "")
     return desktop_ui.emit_or_error(
         "preview.close",
-        {"url": target},
+        PreviewClosePayload(url=target),
         "Failed to close the preview: ",
         "The preview pane is only available in the Hermes desktop app.",
         {"success": True, "closed": target or "all"},
@@ -83,6 +84,7 @@ registry.register(
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
 # The whole block is removed by reverting the commit that added it.
 import json  # noqa: F401,E402
+
 
 def preview_open(url: str, label: str = "") -> str:
     return open_preview_tool(url=url, label=label)

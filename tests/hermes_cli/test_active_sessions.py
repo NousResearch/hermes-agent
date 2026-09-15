@@ -646,3 +646,75 @@ def test_liveness_guard_keeps_a_just_acquired_own_lease_it_cannot_vouch_for(
     ) as active:
         assert active is False
     assert active_sessions.active_session_registry_snapshot(home) == []
+
+
+def test_entries_carry_repo_root_so_sessions_are_attributable(tmp_path, monkeypatch):
+    """A registry entry with no repo dimension cannot answer the #46303 question.
+
+    "Is another session already attached to *this* checkout?" needs the checkout
+    on the entry; surface and session id alone do not say where a session is
+    working.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    repo_a = tmp_path / "repo_a"
+    (repo_a / ".git").mkdir(parents=True)
+    repo_b = tmp_path / "repo_b"
+    (repo_b / ".git").mkdir(parents=True)
+
+    monkeypatch.chdir(repo_a)
+    active_sessions.try_acquire_active_session(
+        session_id="in_a", surface="cli", config={}
+    )
+    monkeypatch.chdir(repo_b)
+    active_sessions.try_acquire_active_session(
+        session_id="in_b", surface="desktop", config={}
+    )
+
+    attributed = {
+        entry["session_id"]: (entry.get("metadata") or {}).get("repo_root")
+        for entry in active_sessions.active_session_registry_snapshot()
+    }
+    assert attributed == {
+        "in_a": str(repo_a.resolve()),
+        "in_b": str(repo_b.resolve()),
+    }
+
+
+def test_repo_root_is_omitted_outside_any_checkout(tmp_path, monkeypatch):
+    """Attribution is advisory: no checkout means no field, not a null one."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    elsewhere = tmp_path / "not_a_repo"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="homeless", surface="cli", config={}
+    )
+    assert lease is not None and message is None
+
+    (entry,) = active_sessions.active_session_registry_snapshot()
+    assert "repo_root" not in (entry.get("metadata") or {})
+
+
+def test_repo_root_survives_a_session_id_transfer(tmp_path, monkeypatch):
+    """A transfer re-writes metadata from the caller's identity fields, which
+    would otherwise silently drop the attribution the entry already had — the
+    process has not changed repos just because the session got an id.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    monkeypatch.chdir(repo)
+
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="draft", surface="cli", config={}
+    )
+    assert lease is not None and message is None
+
+    assert active_sessions.transfer_active_session(
+        lease, session_id="saved", metadata={"live_session_id": "saved"}
+    )
+
+    (entry,) = active_sessions.active_session_registry_snapshot()
+    assert entry["session_id"] == "saved"
+    assert entry["metadata"]["repo_root"] == str(repo.resolve())

@@ -651,7 +651,14 @@ preview = true  # required for PLW1514 (unspecified-encoding) — preview rule
 # ASYNC230 (blocking open()) and ASYNC240 (blocking path methods) are real
 # but ~180 legacy sites deep; they graduate to this list once the backlog
 # is burned down (see per-file-ignores below for the frozen baseline).
-select = ["PLW1514", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251"]
+#
+# F821 — undefined name.  A bare name that nothing binds is a NameError
+# waiting for the first caller to reach that line (a constant deleted in a
+# refactor while two readers stayed behind; a helper used across script
+# files that were never imported).  tui_gateway's split modules reach the
+# facade through ``srv.<name>`` so every name resolves lexically, and no
+# file is exempt: ruff must be able to see what runs.
+select = ["PLW1514", "ASYNC210", "ASYNC220", "ASYNC221", "ASYNC251", "F821"]
 
 [tool.ruff.lint.per-file-ignores]
 # Tests can intentionally exercise locale-encoding edge cases.

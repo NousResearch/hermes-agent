@@ -15,6 +15,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 
 from hermes_cli import web_git as _web_git
+from hermes_cli._subprocess_compat import bounded_probe_run
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_files import _fs_path
 from hermes_cli.web_models import (
@@ -56,6 +57,7 @@ async def git_status_route(path: str):
 # only to users who aren't already authenticated.
 _GH_AUTH_TTL_S = 300.0
 _gh_auth_cache: Optional[tuple] = None  # (monotonic_ts, payload)
+_gh_auth_probe_task: Optional[asyncio.Task] = None
 
 
 def _probe_gh_auth() -> dict:
@@ -64,25 +66,33 @@ def _probe_gh_auth() -> dict:
         return {"available": False, "authenticated": False}
     try:
         # Exits 0 when at least one host is logged in; DEVNULL stdin guards against any prompt.
-        proc = subprocess.run(
-            [gh, "auth", "status"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=10,
-        )
-        return {"available": True, "authenticated": proc.returncode == 0}
+        proc = bounded_probe_run([gh, "auth", "status"], timeout=10)
+        return {"available": True, "authenticated": bool(proc and proc.returncode == 0)}
     except Exception:
         return {"available": True, "authenticated": False}
+
+
+def _clear_gh_auth_probe_task(completed_task: asyncio.Task) -> None:
+    """Release a completed shared probe even if all requesters disconnected."""
+    global _gh_auth_probe_task
+    if _gh_auth_probe_task is completed_task:
+        _gh_auth_probe_task = None
 
 
 @router.get("/api/git/gh-auth")
 async def gh_auth_status_route(refresh: bool = False):
     """``{"available", "authenticated"}`` for the `gh` CLI; cached 5 min
     (``refresh=true`` bypasses so the pill withdraws right after a login)."""
-    global _gh_auth_cache
+    global _gh_auth_cache, _gh_auth_probe_task
     if not refresh and _gh_auth_cache and time.monotonic() - _gh_auth_cache[0] < _GH_AUTH_TTL_S:
         return _gh_auth_cache[1]
-    payload = await asyncio.to_thread(_probe_gh_auth)
+    if _gh_auth_probe_task is None:
+        _gh_auth_probe_task = asyncio.create_task(asyncio.to_thread(_probe_gh_auth))
+        _gh_auth_probe_task.add_done_callback(_clear_gh_auth_probe_task)
+    probe_task = _gh_auth_probe_task
+    # Shield the shared probe: disconnecting one requester must not cancel the
+    # probe that other refreshes/cache misses are awaiting.
+    payload = await asyncio.shield(probe_task)
     _gh_auth_cache = (time.monotonic(), payload)
     return payload
 

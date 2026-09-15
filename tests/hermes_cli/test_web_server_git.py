@@ -1,12 +1,86 @@
+import asyncio
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import web_server
+from hermes_cli.web_routers import git as git_router
 
 pytest.importorskip("starlette.testclient")
 from starlette.testclient import TestClient
+
+
+@pytest.fixture(autouse=True)
+def reset_gh_auth_probe_state():
+    previous_cache = git_router._gh_auth_cache
+    previous_task = git_router._gh_auth_probe_task
+    git_router._gh_auth_cache = None
+    git_router._gh_auth_probe_task = None
+    try:
+        yield
+    finally:
+        git_router._gh_auth_cache = previous_cache
+        git_router._gh_auth_probe_task = previous_task
+
+
+def test_gh_auth_probe_uses_bounded_process_probe(monkeypatch):
+    monkeypatch.setattr(git_router.shutil, "which", lambda _: "/usr/bin/gh")
+    calls = []
+
+    def bounded(argv, *, timeout):
+        calls.append((argv, timeout))
+        return None  # The bounded helper returns None after timeout/tree cleanup.
+
+    monkeypatch.setattr(git_router, "bounded_probe_run", bounded)
+
+    assert git_router._probe_gh_auth() == {"available": True, "authenticated": False}
+    assert calls == [(["/usr/bin/gh", "auth", "status"], 10)]
+
+
+def test_gh_auth_concurrent_refreshes_share_one_probe(monkeypatch):
+    started = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def probe():
+        nonlocal calls
+        calls += 1
+        started.set()
+        assert release.wait(timeout=1)
+        return {"available": True, "authenticated": True}
+
+    monkeypatch.setattr(git_router, "_probe_gh_auth", probe)
+
+    async def exercise():
+        first = asyncio.create_task(git_router.gh_auth_status_route(refresh=True))
+        while not started.is_set():
+            await asyncio.sleep(0)
+        second = asyncio.create_task(git_router.gh_auth_status_route(refresh=True))
+        await asyncio.sleep(0)
+        assert calls == 1
+        release.set()
+        return await asyncio.gather(first, second)
+
+    assert asyncio.run(exercise()) == [
+        {"available": True, "authenticated": True},
+        {"available": True, "authenticated": True},
+    ]
+    assert calls == 1
+
+
+def test_gh_auth_returns_fresh_cache_without_probing(monkeypatch):
+    git_router._gh_auth_cache = (git_router.time.monotonic(), {"available": True, "authenticated": True})
+    monkeypatch.setattr(git_router, "_probe_gh_auth", lambda: pytest.fail("cache miss"))
+
+    assert asyncio.run(git_router.gh_auth_status_route()) == {"available": True, "authenticated": True}
+
+
+def test_gh_auth_reports_unavailable_when_gh_is_missing(monkeypatch):
+    monkeypatch.setattr(git_router.shutil, "which", lambda _: None)
+
+    assert git_router._probe_gh_auth() == {"available": False, "authenticated": False}
 
 
 @pytest.fixture

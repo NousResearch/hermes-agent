@@ -1,0 +1,164 @@
+import { useState } from "react";
+import { ChevronDown, BookOpen } from "lucide-react";
+import { useI18n } from "@/i18n";
+import { cn } from "@/lib/utils";
+
+/**
+ * راهنمای فارسی — a Persian quick-start guide shown on the Documentation page
+ * while the active locale is Persian (or Arabic, which shares the RTL
+ * treatment). The upstream docs site is English-only, so this gives Persian
+ * users a localized overview of every dashboard section plus the key CLI
+ * commands. Collapsible so it never blocks access to the real docs iframe.
+ */
+
+interface GuideSection {
+  title: string;
+  body: string;
+}
+
+const GUIDE_SECTIONS: GuideSection[] = [
+  {
+    title: "💬 گفتگو",
+    body: "با عامل خود گفتگو کنید. پیام تایپ کنید، Enter بزنید و پاسخ را ببینید. می‌توانید فایل پیوست کنید، مدل را عوض کنید و از دستورهای اسلش (مثل /help) استفاده کنید.",
+  },
+  {
+    title: "🗂 نشست‌ها",
+    body: "تاریخچه همه گفتگوها اینجاست. با فیلترهای «گفتگوها / خودکارسازی / همه» جستجو کنید، نشست‌های قدیمی را حذف کنید یا خروجی JSON نشست‌ها را دوباره وارد کنید.",
+  },
+  {
+    title: "📊 تحلیل‌ها و مدل‌ها",
+    body: "مصرف توکن، فراخوانی‌های API، هزینه تخمینی و تفکیک روزانه بر اساس مدل را ببینید تا مصرف خود را مدیریت کنید.",
+  },
+  {
+    title: "🕐 زمان‌بندی (Cron)",
+    body: "وظایف تکرارشونده بسازید: هر روز ساعت ۹ صبح خلاصه خبر بده، هر هفته گزارش ایمیل کن و... خروجی را به کانال دلخواه (تلگرام، ایمیل و...) تحویل بدهید.",
+  },
+  {
+    title: "🧩 مهارت‌ها و افزونه‌ها",
+    body: "مهارت‌ها قابلیت‌های آماده‌ای هستند که عامل از ~/.hermes/skills/ بارگذاری می‌کند. افزونه‌ها را از GitHub نصب کنید یا ارائه‌دهنده حافظه را عوض کنید.",
+  },
+  {
+    title: "🔗 کانال‌ها و اتصال‌ها",
+    body: "در «کانال‌ها» پلتفرم‌های پیام‌رسانی (تلگرام، Discord، Slack، واتساپ) را وصل کنید. «وب‌هوک‌ها» برای اتصال سرویس‌های خارجی و «جفت‌سازی» برای اتصال امن دستگاه‌های جدید است.",
+  },
+  {
+    title: "🔑 کلیدها و پیکربندی",
+    body: "کلیدهای API ارائه‌دهندگان (OpenAI، Anthropic و...) را در «کلیدها» وارد کنید — تغییرات بلافاصله ذخیره می‌شوند. تنظیمات پیشرفته در «پیکربندی» (فایل config.yaml) است.",
+  },
+  {
+    title: "🖥 سیستم",
+    body: "وضعیت دروازه، راه‌اندازی مجدد، به‌روزرسانی Hermes و گزارش‌های لحظه‌ای از اینجا در دسترس است. اگر چیزی کار نکرد، اول «گزارش‌ها» را ببینید.",
+  },
+];
+
+const CLI_TIPS: Array<{ cmd: string; desc: string }> = [
+  { cmd: "hermes", desc: "شروع گفتگوی تعاملی در ترمینال" },
+  { cmd: "hermes gateway", desc: "اجرای دروازه (کانال‌ها و API سرور)" },
+  { cmd: "hermes status", desc: "مشاهده وضعیت سرویس‌ها" },
+  { cmd: "hermes update", desc: "به‌روزرسانی Hermes" },
+];
+
+export function PersianGuide() {
+  const { locale } = useI18n();
+  const [open, setOpen] = useState(true);
+
+  // Only shown for RTL locales — the English docs iframe covers everyone else.
+  if (locale !== "fa" && locale !== "ar") return null;
+
+  return (
+    <div
+      dir="rtl"
+      className={cn(
+        "mb-3 rounded-sm border border-primary/25 bg-primary/[0.04]",
+        "shadow-[inset_0_1px_0_0_#ffffff12]",
+      )}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className={cn(
+          "flex w-full items-center gap-2 px-4 py-3 text-start",
+          "hover:bg-primary/[0.06] transition-colors",
+        )}
+      >
+        <BookOpen className="size-4 shrink-0 text-primary" />
+        <span className="flex-1 text-sm font-bold text-foreground">
+          راهنمای استفاده از داشبورد
+        </span>
+        <span className="text-xs text-muted-foreground">
+          {open ? "بستن" : "نمایش"}
+        </span>
+        <ChevronDown
+          className={cn(
+            "size-4 shrink-0 text-muted-foreground transition-transform",
+            open && "rotate-180",
+          )}
+        />
+      </button>
+
+      {open && (
+        <div className="border-t border-primary/15 px-4 py-3">
+          <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
+            این داشبورد کنترل‌پنل کامل عامل Hermes است — گفتگو، خودکارسازی،
+            اتصال به پیام‌رسان‌ها و مدیریت پیکربندی، همه از مرورگر. بخش‌های
+            زیر را به ترتیب بررسی کنید تا سریع شروع کنید:
+          </p>
+
+          <ol className="grid gap-2 sm:grid-cols-2">
+            {GUIDE_SECTIONS.map((section, i) => (
+              <li
+                key={section.title}
+                className={cn(
+                  "rounded-sm border border-current/10 bg-background/40",
+                  "px-3 py-2",
+                )}
+              >
+                <div className="mb-0.5 flex items-center gap-1.5">
+                  <span className="inline-flex size-4 items-center justify-center rounded-full bg-primary/15 text-[10px] font-bold text-primary tabular-nums">
+                    {i + 1}
+                  </span>
+                  <span className="text-xs font-bold text-foreground">
+                    {section.title}
+                  </span>
+                </div>
+                <p className="text-[11px] leading-relaxed text-muted-foreground">
+                  {section.body}
+                </p>
+              </li>
+            ))}
+          </ol>
+
+          <div className="mt-3 rounded-sm border border-current/10 bg-background/40 px-3 py-2">
+            <div className="mb-1.5 text-xs font-bold text-foreground">
+              ⌨️ دستورهای پرکاربرد ترمینال
+            </div>
+            <dl className="grid gap-1">
+              {CLI_TIPS.map((tip) => (
+                <div key={tip.cmd} className="flex items-baseline gap-2">
+                  <code
+                    dir="ltr"
+                    className={cn(
+                      "shrink-0 rounded-sm bg-muted px-1.5 py-0.5",
+                      "font-mono text-[11px] text-primary",
+                    )}
+                  >
+                    {tip.cmd}
+                  </code>
+                  <dd className="text-[11px] text-muted-foreground">
+                    {tip.desc}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+
+          <p className="mt-3 text-[11px] text-muted-foreground">
+            💡 نکته: زبان و پوسته را از دکمه‌های پایین نوار کناری عوض کنید.
+            مستندات کامل انگلیسی در قاب زیر است.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}

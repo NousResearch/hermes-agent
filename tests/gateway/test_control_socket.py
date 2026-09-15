@@ -323,19 +323,10 @@ def test_bind_refused_in_home_falls_back_to_tempdir_with_pointer(short_home: Pat
     assert attempts == [str(home / "gateway.sock"), str(fallback)]
     assert not fallback.exists()
     assert not (home / "gateway.sock.path").exists()
-
-
-def test_bind_refused_for_other_reasons_still_fails(short_home: Path, monkeypatch):
-    # A live sibling (EADDRINUSE) must keep failing loudly — no silent fallback
-    # that would let two gateways for one home both look healthy.
-    home = short_home
+    # Only a refused bind falls back: a live sibling (EADDRINUSE) must keep failing loudly, or two
+    # gateways for one home would both look healthy.
     attempts = _refusing_start_unix_server(monkeypatch, refuse_under=home, err=errno.EADDRINUSE)
-
-    async def scenario():
-        server = GatewayControlServer(home)
-        return await server.start()
-
-    assert _run(scenario()) is False
+    assert _run(GatewayControlServer(home).start()) is False
     assert attempts == [str(home / "gateway.sock")]
     assert not (home / "gateway.sock.path").exists()
 

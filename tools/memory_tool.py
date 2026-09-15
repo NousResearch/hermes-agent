@@ -7,6 +7,8 @@ Single `memory` tool: add/replace/remove or a batch `operations` list."""
 import copy
 import json
 import logging
+import time
+import uuid
 from contextvars import ContextVar
 from pathlib import Path
 from hermes_constants import get_hermes_home
@@ -38,6 +40,126 @@ _memory_surface_flags: ContextVar[Optional[Tuple[bool, bool]]] = ContextVar("mem
 def get_memory_dir() -> Path:
     """Profile-scoped memories dir, resolved per call (HERMES_HOME may switch after import)."""
     return get_hermes_home() / "memories"
+
+
+# ---------------------------------------------------------------------------
+# Reversible mutations — local eviction archive (ARCHIVE.jsonl)
+#
+# remove/replace/apply_batch (and `/journey delete`|`edit` on memory nodes, see
+# agent/learning_mutations.py) append the evicted entry to
+# ~/.hermes/memories/ARCHIVE.jsonl BEFORE the main file rewrite to preserve
+# evicted content when archiving succeeds (issue #76883).
+# Zero-dependency, provider-independent, per-profile (the file lives under
+# get_memory_dir(), which is already profile-scoped).
+#
+# Semantics:
+#   - Best-effort recovery: append precedes rewrite, but the two files are
+#     not a crash-atomic transaction and no power-loss durability is promised.
+#   - Batches are serialized by a per-profile archive lock with best-effort
+#     rollback. A crash or rollback failure can leave partial records. Retries
+#     reuse record IDs so complete duplicates can be reconciled by `id`.
+#   - Failure degradation: an archive write failure is retried once; if it
+#     still fails, the mutation proceeds by default and the tool result
+#     carries `"archive_status": "degraded"`. `memory.archive_on_failure:
+#     "abort"` restores strict behavior (mutation refused) at the cost of
+#     being able to deadlock the memory-full consolidation path.
+#   - Privacy: MEMORY.md evictions are archived by default; USER.md is not
+#     (`memory.archive_user: false`) — data minimization for profile data.
+# ---------------------------------------------------------------------------
+
+ARCHIVE_FILENAME = "ARCHIVE.jsonl"
+
+
+def get_memory_archive_path() -> Path:
+    """Profile-scoped eviction-archive path, resolved per call (mirrors ``get_memory_dir()``)."""
+    return get_memory_dir() / ARCHIVE_FILENAME
+
+
+def _should_archive_target(target: str) -> bool:
+    """MEMORY.md evictions are archived by default; USER.md only when
+    ``memory.archive_user`` is set (data minimization for profile data)."""
+    if target != "user":
+        return True
+    return is_truthy_value(get_builtin_memory_config().get("archive_user"), default=False)
+
+
+def _archive_abort_on_failure() -> bool:
+    """``memory.archive_on_failure: "abort"`` refuses the mutation on an archive
+    write failure instead of the default degrade-and-warn."""
+    return str(get_builtin_memory_config().get("archive_on_failure", "warn")).strip().lower() == "abort"
+
+
+def _archive_append_lines(lines: List[str]) -> None:
+    """Append a batch under the shared cross-process archive lock.
+
+    Rollback is best-effort, not a crash-atomic transaction. Hold the lock
+    from before opening the archive through close/rollback so a failed writer
+    cannot truncate another writer's committed records. Unbuffered bytes avoid
+    a close-time flush re-appending failed data after rollback.
+    """
+    if not lines:
+        return
+    if fcntl is None and msvcrt is None:
+        raise OSError("archive requires cross-process file locking")
+    path = get_memory_archive_path()
+    data = "".join(lines).encode("utf-8")
+    with MemoryStore._file_lock(path):
+        with open(path, "ab", buffering=0) as f:
+            start = f.tell()
+            try:
+                remaining = memoryview(data)
+                while remaining:
+                    written = f.write(remaining)
+                    if not written:
+                        raise OSError("short archive write")
+                    remaining = remaining[written:]
+            except OSError:
+                try:
+                    f.truncate(start)
+                except OSError:
+                    pass  # Retry may duplicate records; IDs are stable across attempts.
+                raise
+
+
+def archive_entries(target: str, actions_entries: List[Tuple[str, str]]
+                    ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Append one serialized batch before the caller's memory-file rewrite.
+
+    Returns ``(records, None)`` on success — each record carries ``id``/``ts``/
+    ``store``/``action``/``entry`` — or ``([], error)`` after one retry on I/O
+    failure. Rollback is best-effort: partial data may remain if it also fails,
+    and retries reuse IDs for deduplication of complete records. Callers choose
+    degradation (default) or abort via ``memory.archive_on_failure``; journey
+    always degrades. Empty batches do not touch disk.
+    """
+    if not actions_entries:
+        return [], None
+    records = [{
+        "id": uuid.uuid4().hex,
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "store": target,
+        "action": action,  # "removed" | "superseded"
+        "entry": entry,
+    } for action, entry in actions_entries]
+    lines = [json.dumps(record, ensure_ascii=False) + "\n" for record in records]
+    last_error: Optional[str] = None
+    for _ in (1, 2):  # one retry, then degrade/abort per config
+        try:
+            _archive_append_lines(lines)
+            return records, None
+        except OSError as exc:
+            last_error = str(exc)
+    return [], last_error
+
+
+def archive_entry(target: str, action: str, entry: str) -> Tuple[Optional[str], Optional[str]]:
+    """Append one evicted entry to ARCHIVE.jsonl. Returns ``(record_id, None)``
+    on success, ``(None, error)`` after one retry when the write keeps
+    failing. Never raises."""
+    records, error = archive_entries(target, [(action, entry)])
+    if error:
+        return None, error
+    return records[0]["id"], None
 
 
 from tools.memory_tool_store import (  # noqa: E402,F401  (re-exports)
@@ -270,7 +392,9 @@ MEMORY_SCHEMA = {
         "to free room AND add new ones, even when an add alone would overflow. The response "
         "reports current/limit chars and confirms completion; one batch call finishes the "
         "update, so don't repeat it. Use the bare action/content/old_text fields only for a "
-        "single lone change.\n\n"
+        "single lone change. When archiving is enabled and succeeds, 'replace'/'remove' saves "
+        "evicted entries to ARCHIVE.jsonl; the response's 'archived' field confirms it. "
+        "USER.md archiving is opt-in, and archive failures may degrade.\n\n"
         "WHEN: only for facts that apply to EVERY session regardless of task: who the user "
         "is, stable environment facts, standing conventions with no task home. Anything "
         "learned while doing a task (procedures, pitfalls, and the user's preferences and "

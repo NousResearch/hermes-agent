@@ -67,6 +67,9 @@ async def dispatch_group_control(connection, method, params):
             if method == 'profiles.list':
                 return _profiles(authority, actor, home, supplied)
             try:
+                if method in {'groups.peer.revoke', 'groups.peer.revoke_exact'}:
+                    from gateway.session_group_files_revoke import dispatch_native_revoke
+                    return dispatch_native_revoke(connection, method, supplied)
                 return _group(authority, actor, home, method, supplied)
             except RuntimeStoreError:
                 raise

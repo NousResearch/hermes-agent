@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,70 @@ def client(kanban_home):
     app = FastAPI()
     app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
     return TestClient(app)
+
+
+@pytest.mark.parametrize("internal_field", [False, True])
+def test_public_event_schema_and_surface_parity(client, monkeypatch, internal_field):
+    from hermes_cli import kanban as kc
+    import tools.kanban_tools  # register the real tool handler
+    from tools.registry import registry
+
+    if internal_field:
+        @dataclass
+        class InternalEvent(kb.Event):
+            internal_metadata: str = "not public"
+
+        monkeypatch.setattr(kb, "Event", InternalEvent)
+
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="public event contract")
+        other_id = kb.create_task(conn, title="interleaved events")
+        kb.claim_task(conn, task_id)
+        run = kb.latest_run(conn, task_id)
+        assert run is not None
+        for index in range(55):
+            kb.add_comment(conn, task_id, author="worker", body=f"progress {index}")
+            kb.add_comment(conn, other_id, author="other", body="interleaved")
+        kb._append_event(conn, task_id, "heartbeat", run_id=run.id)
+        # Reverse timestamp groups relative to insertion order, retaining ties.
+        conn.execute("UPDATE task_events SET created_at = ? - (id % 3)", (1_700_000_000,))
+        conn.commit()
+        rows = conn.execute(
+            "SELECT id, task_id, kind, payload, created_at, run_id FROM task_events "
+            "WHERE task_id = ? ORDER BY created_at, id", (task_id,),
+        ).fetchall()
+
+    expected = [
+        {"id": row["id"], "task_id": row["task_id"], "kind": row["kind"],
+         "payload": json.loads(row["payload"]) if row["payload"] is not None else None,
+         "created_at": row["created_at"], "run_id": row["run_id"]}
+        for row in rows
+    ]
+    assert len(expected) > 50
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    cli_events = json.loads(kc.run_slash(f"show {task_id} --json"))["events"]
+    tool_output = registry.dispatch("kanban_show", {})
+    assert isinstance(tool_output, str)
+    tool_events = json.loads(tool_output)["events"]
+    response = client.get(f"/api/plugins/kanban/tasks/{task_id}")
+    assert response.status_code == 200, response.text
+    dashboard_events = response.json()["events"]
+
+    keys = {"id", "task_id", "kind", "payload", "created_at", "run_id"}
+    assert {
+        surface: [set(event) for event in events]
+        for surface, events in (
+            ("cli", cli_events), ("tool", tool_events), ("dashboard", dashboard_events),
+        )
+    } == {"cli": [keys] * len(expected), "tool": [keys] * 50,
+          "dashboard": [keys] * len(expected)}
+    assert cli_events == dashboard_events == expected
+    assert tool_events == cli_events[-50:]
+    assert all(
+        type(event["id"]) is int
+        for events in (cli_events, tool_events, dashboard_events)
+        for event in events
+    )
 
 
 # ---------------------------------------------------------------------------

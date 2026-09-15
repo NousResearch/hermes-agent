@@ -81,6 +81,43 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "runs" in d
 
 
+def test_show_preserves_canonical_last_50_events(worker_env):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+    from tools.registry import registry
+
+    with kbc.connect_closing() as conn:
+        other_id = kb.create_task(conn, title="unrelated events")
+        for index in range(55):
+            kb.add_comment(conn, worker_env, author="worker", body=f"progress {index}")
+            kb.add_comment(conn, other_id, author="other", body="interleaved")
+        run = kb.latest_run(conn, worker_env)
+        assert run is not None
+        kb._append_event(conn, worker_env, "heartbeat", run_id=run.id)
+        conn.execute("UPDATE task_events SET created_at = ?", (1_700_000_000,))
+        conn.commit()
+        rows = conn.execute(
+            "SELECT id, task_id, kind, payload, created_at, run_id FROM task_events "
+            "WHERE task_id = ? ORDER BY created_at, id", (worker_env,),
+        ).fetchall()
+
+    assert len(rows) > 50
+    expected = [
+        {"id": row["id"], "task_id": row["task_id"], "kind": row["kind"],
+         "payload": json.loads(row["payload"]) if row["payload"] is not None else None,
+         "created_at": row["created_at"], "run_id": row["run_id"]}
+        for row in rows[-50:]
+    ]
+    output = json.loads(kt._handle_show({}))
+
+    assert output["events"] == expected
+    assert all(type(event["id"]) is int for event in output["events"])
+    dispatched = registry.dispatch("kanban_show", {})
+    assert isinstance(dispatched, str)
+    assert json.loads(dispatched)["events"] == expected
+
+
 def test_list_filters_tasks(monkeypatch, worker_env):
     """kanban_list gives orchestrators filtered board discovery."""
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)

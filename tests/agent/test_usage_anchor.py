@@ -173,12 +173,13 @@ class TestAnchorInvalidation:
 
 class TestPreflightConsumer:
     def _agent(self, anchor):
-        return SimpleNamespace(
-            _usage_anchor=anchor,
+        agent = SimpleNamespace(
             tools=None,
             api_mode="",
             provider="openai",
         )
+        set_usage_anchor(agent, anchor)
+        return agent
 
     def test_preflight_prefers_anchor(self):
         messages = _history_with_images(10)

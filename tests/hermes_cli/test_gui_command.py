@@ -11,6 +11,9 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli import main as cli_main
+# The macOS bundle builder lives with its own tests; reused here so the two modules cannot
+# drift apart on what counts as a launchable bundle.
+from tests.hermes_cli.test_desktop_macos_bundle_integrity import make_app_bundle
 from hermes_cli import main_desktop
 from hermes_cli import main_install_repair
 from hermes_cli import main_web_build
@@ -88,18 +91,7 @@ def _make_packaged_executable(root: Path, monkeypatch) -> Path:
     darwin-by-default fake concealed — on Linux the packaged tree genuinely has
     to include it.
     """
-    desktop_dir = root / "apps" / "desktop"
-    if sys.platform == "darwin":
-        exe = desktop_dir / "release" / "mac-arm64" / "Hermes.app" / "Contents" / "MacOS" / "Hermes"
-    elif sys.platform == "win32":
-        exe = desktop_dir / "release" / "win-unpacked" / "Hermes.exe"
-    else:
-        exe = desktop_dir / "release" / "linux-unpacked" / "hermes"
-    exe.parent.mkdir(parents=True, exist_ok=True)
-    exe.write_text("", encoding="utf-8")
-    if sys.platform not in ("darwin", "win32"):
-        (exe.parent / "chrome-sandbox").write_text("", encoding="utf-8")
-    return exe
+    return _write_packaged_app(root / "apps" / "desktop" / "release")
 
 
 def _staging_dir_from(cmd) -> Path:
@@ -120,6 +112,43 @@ def _packaged_exe_rel() -> Path:
     return Path("linux-unpacked") / "hermes"
 
 
+def _write_packaged_app(output_dir: Path, content: str = "") -> Path:
+    """Lay a launchable packaged app into electron-builder's *output_dir* and return its exe.
+
+    On macOS ``cmd_gui`` and the promote step now refuse a bundle whose node-pty payload this
+    Mac cannot load, so an empty placeholder file is no longer a packaged app — the same way
+    the Linux arm has to lay down ``chrome-sandbox`` because ``cmd_gui`` refuses to launch
+    without it. The real bundle builder is reused rather than copied so the two test modules
+    cannot drift apart on what "loadable" means.
+
+    *content* is a build marker read back with ``_app_marker``; on macOS it trails the Mach-O
+    header the gate parses, so the file stays a valid (if minimal) executable.
+    """
+    if sys.platform == "darwin":
+        exe = make_app_bundle(output_dir, "mac-arm64", prebuild_arch="arm64")
+        exe.write_bytes(exe.read_bytes() + content.encode("utf-8"))
+        return exe
+    exe = output_dir / _packaged_exe_rel()
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    exe.write_text(content, encoding="utf-8")
+    if sys.platform != "win32":
+        (exe.parent / "chrome-sandbox").write_text("", encoding="utf-8")
+    return exe
+
+
+def _stamp_app_marker(exe: Path, content: str) -> Path:
+    """Rewrite *exe*'s build marker, keeping the Mach-O header the macOS gate parses."""
+    head = exe.read_bytes()[:8] if sys.platform == "darwin" else b""
+    exe.write_bytes(head + content.encode("utf-8"))
+    return exe
+
+
+def _app_marker(exe: Path) -> str:
+    """The ``content`` marker ``_write_packaged_app`` stamped onto *exe*."""
+    data = exe.read_bytes()
+    return data[8:].decode("utf-8") if sys.platform == "darwin" else data.decode("utf-8")
+
+
 def _pack_into_staging(root: Path, content: str = "", returncode: int = 0):
     """``subprocess.run`` side effect mimicking a real ``npm run pack``: lays
     the packaged app down inside the STAGING dir named on the command line
@@ -127,11 +156,7 @@ def _pack_into_staging(root: Path, content: str = "", returncode: int = 0):
     launch) return success."""
     def _run(cmd, **kwargs):
         if len(cmd) >= 3 and cmd[1:3] == ["run", "pack"]:
-            exe = _staging_dir_from(cmd) / _packaged_exe_rel()
-            exe.parent.mkdir(parents=True, exist_ok=True)
-            exe.write_text(content, encoding="utf-8")
-            if sys.platform not in ("darwin", "win32"):
-                (exe.parent / "chrome-sandbox").write_text("", encoding="utf-8")
+            _write_packaged_app(_staging_dir_from(cmd), content)
             return subprocess.CompletedProcess(cmd, returncode)
         return subprocess.CompletedProcess(cmd, 0)
     return _run
@@ -303,7 +328,7 @@ def test_gui_does_not_retry_after_packaged_executable_exists(tmp_path, monkeypat
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     live_exe = _make_packaged_executable(root, monkeypatch)
-    live_exe.write_text("good build", encoding="utf-8")
+    _stamp_app_marker(live_exe, "good build")
     monkeypatch.delenv("ELECTRON_MIRROR", raising=False)
 
     install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
@@ -323,7 +348,7 @@ def test_gui_does_not_retry_after_packaged_executable_exists(tmp_path, monkeypat
 
     assert exc.value.code == 1
     # The live app was never touched by the failed pack (#86443).
-    assert live_exe.read_text(encoding="utf-8") == "good build"
+    assert _app_marker(live_exe) == "good build"
     assert not list((root / "apps" / "desktop").glob(".staging-*"))
     # Neither destructive recovery runs, and there is exactly ONE pack attempt.
     mock_purge.assert_not_called()
@@ -1415,7 +1440,7 @@ def test_gui_failed_pack_leaves_previous_app_untouched(tmp_path, monkeypatch, ca
     desktop_dir = root / "apps" / "desktop"
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     live_exe = _make_packaged_executable(root, monkeypatch)
-    live_exe.write_text("good build", encoding="utf-8")
+    _stamp_app_marker(live_exe, "good build")
     monkeypatch.setenv("ELECTRON_MIRROR", "https://example.test/electron/")
 
     def failing_pack(cmd, **kwargs):
@@ -1437,7 +1462,7 @@ def test_gui_failed_pack_leaves_previous_app_untouched(tmp_path, monkeypatch, ca
             p.stop()
 
     assert exc.value.code == 1
-    assert live_exe.read_text(encoding="utf-8") == "good build"
+    assert _app_marker(live_exe) == "good build"
     assert not list(desktop_dir.glob(".staging-*"))
     assert not list((desktop_dir / "release").glob("*.previous"))
     out = capsys.readouterr().out
@@ -1449,7 +1474,7 @@ def test_gui_successful_pack_swaps_new_app_into_release(tmp_path, monkeypatch):
     desktop_dir = root / "apps" / "desktop"
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     live_exe = _make_packaged_executable(root, monkeypatch)
-    live_exe.write_text("old build", encoding="utf-8")
+    _stamp_app_marker(live_exe, "old build")
 
     patches = _gui_build_patches(root, _pack_into_staging(root, content="new build"))
     for p in patches:
@@ -1460,7 +1485,7 @@ def test_gui_successful_pack_swaps_new_app_into_release(tmp_path, monkeypatch):
         for p in patches:
             p.stop()
 
-    assert live_exe.read_text(encoding="utf-8") == "new build"
+    assert _app_marker(live_exe) == "new build"
     assert not list(desktop_dir.glob(".staging-*"))
     assert not list((desktop_dir / "release").glob("*.previous"))
 
@@ -1470,7 +1495,7 @@ def test_gui_zero_exit_pack_without_artifact_keeps_previous_app(tmp_path, monkey
     desktop_dir = root / "apps" / "desktop"
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     live_exe = _make_packaged_executable(root, monkeypatch)
-    live_exe.write_text("good build", encoding="utf-8")
+    _stamp_app_marker(live_exe, "good build")
 
     def empty_pack(cmd, **kwargs):
         _staging_dir_from(cmd).mkdir(parents=True, exist_ok=True)
@@ -1487,6 +1512,6 @@ def test_gui_zero_exit_pack_without_artifact_keeps_previous_app(tmp_path, monkey
             p.stop()
 
     assert exc.value.code == 1
-    assert live_exe.read_text(encoding="utf-8") == "good build"
+    assert _app_marker(live_exe) == "good build"
     assert not list(desktop_dir.glob(".staging-*"))
     assert "produced no launchable app" in capsys.readouterr().out

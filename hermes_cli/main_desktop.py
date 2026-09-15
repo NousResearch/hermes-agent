@@ -7,11 +7,13 @@ are imported lazily inside the functions that use them (avoids an import cycle).
 import logging
 import contextlib
 import argparse
+import json
 import os
 import re
 import shlex
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -158,6 +160,17 @@ def _desktop_packaged_executable_in(release_dir: Path) -> Optional[Path]:
         matching = [p for p in existing if _pe_machine_or_none(p) in expected]
         if matching:
             existing = matching
+    if sys.platform == "darwin" and len(existing) > 1:
+        # release/mac (electron-builder's unpinned x64 default) and release/mac-arm64 coexist because
+        # _swap_staged_desktop_app names the live dir after the STAGED output dir, so an x64-declared pack
+        # lands beside the last good arm64 one instead of replacing it. Breaking that tie by mtime alone
+        # hands the launcher whichever pack ran last, which is the broken one whenever the build did not
+        # pin arm64 — the macOS twin of the stale win-arm64-unpacked trap #69179 fixed above. Prefer
+        # bundles whose node-pty payload this Mac can actually load; fall through when none can, so the
+        # caller's gate explains WHY nothing runs instead of reporting "no app found".
+        loadable = [p for p in existing if _desktop_macos_bundle_error(p) is None]
+        if loadable:
+            existing = loadable
     return max(existing, key=lambda p: p.stat().st_mtime)
 
 
@@ -404,7 +417,7 @@ def _pe_machine_or_none(path: Path) -> Optional[int]:
         return None
 
 
-def _desktop_exe_integrity_error(path: Path) -> Optional[str]:
+def _desktop_windows_exe_error(path: Path) -> Optional[str]:
     """Why ``path`` cannot run on this Windows host, or None when it parses as a loadable PE."""
     try:
         machine = _parse_pe_machine(path)
@@ -419,10 +432,204 @@ def _desktop_exe_integrity_error(path: Path) -> Optional[str]:
     return None
 
 
+# ─── Desktop bundle integrity gate: macOS ─────────────────────────────────── The Windows gate above reads
+# one exe's PE header. macOS needs a different probe for a different failure. ``npm run pack`` pins no
+# target arch, so electron-builder defaults to x64 and names its output ``release/mac`` — while
+# run-electron-builder.mjs hands it ``-c.electronDist=<local dist>``, the arm64 Electron. before-pack.mjs
+# then stages node-pty for the DECLARED (x64) target. The bundle is internally inconsistent: an arm64
+# Electron carrying only ``prebuilds/darwin-x64``. It dies at launch with "Failed to load native module:
+# pty.node ... Cannot find module './prebuilds/darwin-arm64//pty.node'".
+#
+# Two properties make it invisible to the obvious checks. The main executable is arm64 in the BROKEN bundle
+# too, so mirroring the Windows arch probe onto Contents/MacOS/Hermes passes it — only the node-pty payload
+# differs. And Electron resolves requires through the ASAR HEADER, not the filesystem: a header listing
+# darwin-x64 alone cannot reach darwin-arm64 binaries copied into app.asar.unpacked, so no amount of
+# file-dropping repairs such a bundle (verified 2026-08-23) and only a correctly-targeted rebuild fixes it.
+# The gate therefore reads the header, and refuses the bundle BEFORE it is selected, swapped in, or
+# launched, leaving the last known-good app in place.
+_CPU_TYPE_X86_64 = 0x01000007
+_CPU_TYPE_ARM64 = 0x0100000C
+_CPU_TYPE_NAMES = {_CPU_TYPE_X86_64: "x86_64", _CPU_TYPE_ARM64: "arm64"}
+
+# node-pty names its prebuild dirs with npm's arch spelling, not uname's.
+_MACOS_PREBUILD_ARCH = {_CPU_TYPE_ARM64: "arm64", _CPU_TYPE_X86_64: "x64"}
+
+_NODE_PTY_PREBUILDS = "dist/node_modules/node-pty/prebuilds"
+# pty.node is the addon; spawn-helper is the setuid-less forkpty helper node-pty EXECS to open a pty.
+# A bundle missing either one is dead on arrival, so both are required.
+_NODE_PTY_REQUIRED = ("pty.node", "spawn-helper")
+_MACHO_FAT_MAGICS = (0xCAFEBABE, 0xBEBAFECA)
+_MACHO_THIN_BE_MAGICS = (0xFEEDFACE, 0xFEEDFACF)
+_MACHO_THIN_LE_MAGICS = (0xCEFAEDFE, 0xCFFAEDFE)
+_MACHO_MAX_FAT_ARCHES = 64
+
+
+def _macho_cputypes(path: Path) -> Optional[set]:
+    """CPU types declared by the Mach-O at *path*, or None when it is not Mach-O.
+
+    Handles thin binaries of either byte order and fat/universal archives (whose slices are the reason a
+    lipo-merged prebuild must pass). Only the headers are read — never the whole binary.
+    """
+    try:
+        with path.open("rb") as stream:
+            head = stream.read(8)
+            if len(head) < 8:
+                return None
+            magic = struct.unpack(">I", head[:4])[0]
+            if magic in _MACHO_FAT_MAGICS:
+                order = ">I" if magic == 0xCAFEBABE else "<I"
+                count = struct.unpack(order, head[4:8])[0]
+                if not 0 < count <= _MACHO_MAX_FAT_ARCHES:
+                    return None
+                slices = stream.read(count * 20)
+                if len(slices) < count * 20:
+                    return None
+                return {struct.unpack(order, slices[i * 20:i * 20 + 4])[0] for i in range(count)}
+            if magic in _MACHO_THIN_BE_MAGICS:
+                return {struct.unpack(">I", head[4:8])[0]}
+            if magic in _MACHO_THIN_LE_MAGICS:
+                return {struct.unpack("<I", head[4:8])[0]}
+            return None
+    except OSError:
+        return None
+
+
+def _macos_native_cputype() -> int:
+    """This Mac's NATIVE CPU type — the one the packaged app must target.
+
+    ``platform.machine()`` reports the PROCESS architecture and lies under Rosetta, which is not a corner
+    case here: ~/.local/bin/node is an x86_64 build on this arm64 Mac, so the very toolchain that packages
+    the app reports "x64". Trusting it is how the x64-targeted build got made in the first place.
+    ``hw.optional.arm64`` is a property of the hardware, so it answers the same on either side of Rosetta.
+    Mirrors the ``IsWow64Process2`` probe the Windows gate uses for exactly this reason.
+    """
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL("libc.dylib", use_errno=True)
+        value = ctypes.c_int(0)
+        size = ctypes.c_size_t(ctypes.sizeof(value))
+        if libc.sysctlbyname(b"hw.optional.arm64", ctypes.byref(value), ctypes.byref(size), None, 0) == 0:
+            return _CPU_TYPE_ARM64 if value.value else _CPU_TYPE_X86_64
+    except (OSError, AttributeError, ValueError):
+        pass  # sysctl missing (unlikely) — fall back to the process arch.
+    import platform as _platform
+
+    return _CPU_TYPE_ARM64 if (_platform.machine() or "").lower() in ("arm64", "aarch64") else _CPU_TYPE_X86_64
+
+
+def _asar_header(archive: Path) -> tuple:
+    """Parse an asar's Pickle header → ``(header dict, header_size)``.
+
+    The framing checks reject a truncated or non-asar file before any JSON is parsed. Shared with
+    ``desktop_update_verify._verify_packaged_entry`` so the two readers can never drift apart.
+    """
+    with archive.open("rb") as stream:
+        size, header_size, payload_size, json_size = struct.unpack("<4I", stream.read(16))
+        if (size != 4 or header_size != payload_size + 4
+                or payload_size != 4 + ((json_size + 3) // 4) * 4
+                or not 0 < json_size <= 64 * 1024 * 1024
+                or 8 + header_size > archive.stat().st_size):
+            raise ValueError("invalid ASAR header")
+        return json.loads(stream.read(json_size)), header_size
+
+
+def _asar_entry(header: dict, path: str) -> Optional[dict]:
+    """The asar header node named by the ``/``-separated *path*, or None when it is not listed."""
+    node = header
+    for part in path.split("/"):
+        if not isinstance(node, dict):
+            return None
+        node = (node.get("files") or {}).get(part)
+        if node is None:
+            return None
+    return node
+
+
+def _desktop_macos_bundle_error(executable: Path) -> Optional[str]:
+    """Why the .app around *executable* cannot run on this Mac, or None when it is loadable.
+
+    *executable* is ``<App>.app/Contents/MacOS/Hermes``.
+    """
+    want = _macos_native_cputype()
+    want_name = _CPU_TYPE_NAMES.get(want, f"cputype 0x{want:08X}")
+    arch_dir = f"darwin-{_MACOS_PREBUILD_ARCH.get(want, want_name)}"
+
+    def spell(cputypes) -> str:
+        return "/".join(sorted(_CPU_TYPE_NAMES.get(c, f"0x{c:08X}") for c in cputypes))
+
+    found = _macho_cputypes(executable)
+    if found is None:
+        return f"{executable.name} is not a readable Mach-O executable (truncated or corrupt pack)"
+    if want not in found:
+        return (f"architecture mismatch: the app executable is {spell(found)} "
+                f"but this is an {want_name} Mac")
+
+    resources = executable.parents[1] / "Resources"
+    archive = resources / "app.asar"
+    if not archive.exists():
+        return f"the bundle has no app.asar at {archive}"
+    try:
+        header, _ = _asar_header(archive)
+    except (OSError, ValueError, struct.error, json.JSONDecodeError) as exc:
+        return f"unreadable app.asar: {exc}"
+
+    prebuilds = _asar_entry(header, f"{_NODE_PTY_PREBUILDS}/{arch_dir}")
+    if prebuilds is None:
+        staged = _asar_entry(header, _NODE_PTY_PREBUILDS) or {}
+        present = ", ".join(sorted((staged.get("files") or {}).keys())) or "none"
+        return (f"node-pty is staged for {present}, but this Mac needs {arch_dir}: app.asar does not list "
+                f"{_NODE_PTY_PREBUILDS}/{arch_dir}, so require() cannot resolve pty.node no matter what is "
+                f"on disk. Rebuild with the {want_name} target.")
+
+    for name in _NODE_PTY_REQUIRED:
+        entry = (prebuilds.get("files") or {}).get(name)
+        if entry is None:
+            return f"app.asar does not list {_NODE_PTY_PREBUILDS}/{arch_dir}/{name}"
+        if not entry.get("unpacked"):
+            return (f"{arch_dir}/{name} is packed inside app.asar; native code must be unpacked to be "
+                    f"loaded (asarUnpack)")
+        binary = resources / "app.asar.unpacked" / _NODE_PTY_PREBUILDS / arch_dir / name
+        if not binary.exists():
+            return f"app.asar lists {arch_dir}/{name} as unpacked but it is missing at {binary}"
+        types = _macho_cputypes(binary)
+        if types is None:
+            return f"{arch_dir}/{name} is not a readable Mach-O binary"
+        if want not in types:
+            return f"{arch_dir}/{name} is {spell(types)}, not {want_name}"
+        if name == "spawn-helper" and not os.access(binary, os.X_OK):
+            return f"{arch_dir}/spawn-helper is not executable; node-pty cannot exec it to open a pty"
+    return None
+
+
+def _desktop_exe_integrity_error(path: Path) -> Optional[str]:
+    """Why the desktop app at *path* cannot run on this host, or None when it is loadable.
+
+    Platform-dispatched: the PE header on Windows, the bundle's arch + node-pty payload on macOS. Linux
+    has no equivalent failure mode wired up yet, so it reports no error rather than a fabricated one.
+    """
+    if sys.platform == "win32":
+        return _desktop_windows_exe_error(path)
+    if sys.platform == "darwin":
+        return _desktop_macos_bundle_error(path)
+    return None
+
+
 def _desktop_backup_unpacked_dir(packaged_executable: Path) -> Path:
     """The rollback tree before-pack.mjs preserves: ``<unpacked-dir>.bak``."""
     unpacked = packaged_executable.parent
     return unpacked.parent / (unpacked.name + ".bak")
+
+
+def _desktop_output_dir(packaged_executable: Path) -> Path:
+    """electron-builder's ``directories.output`` holding *packaged_executable* (release/ or a staging dir).
+
+    On macOS the exe is four levels deeper than elsewhere
+    (``<out>/mac-arm64/Hermes.app/Contents/MacOS/Hermes``), so a plain ``parent.parent`` would name
+    ``Contents`` and point a cache purge at the wrong tree.
+    """
+    depth = 4 if sys.platform == "darwin" else 1
+    return packaged_executable.parents[depth]
 
 
 def _rollback_desktop_from_backup(packaged_executable: Path) -> Optional[Path]:
@@ -451,33 +658,37 @@ def _rollback_desktop_from_backup(packaged_executable: Path) -> Optional[Path]:
 
 
 def _ensure_desktop_exe_launchable(desktop_dir: Path, packaged_executable: Optional[Path]) -> tuple:
-    """Windows post-build integrity gate → ``(verified_exe_or_None, rolled_back)``: pass →
-    ``(exe, False)``; corrupt with backup restored → ``(old_exe, True)``; nothing restorable →
-    ``(None, False)``. Failure purges the cached zip + stamp so the retry re-downloads.
+    """Post-build integrity gate → ``(verified_exe_or_None, rolled_back)``: pass → ``(exe, False)``;
+    corrupt with backup restored → ``(old_exe, True)``; nothing restorable → ``(None, False)``. Failure
+    purges the cached zip + stamp so the retry re-downloads.
 
-    See #69179.
+    Windows (#69179) checks the PE header; macOS checks the bundle's arch and node-pty payload. Only
+    before-pack.mjs preserves a ``.bak`` (Windows), so on macOS a failure returns ``(None, False)`` — the
+    caller then discards the staged tree and keeps the live app, which is the same guarantee by a
+    different route.
     """
-    if packaged_executable is None or sys.platform != "win32":
+    if packaged_executable is None or sys.platform not in ("win32", "darwin"):
         return packaged_executable, False
 
     error = _desktop_exe_integrity_error(packaged_executable)
     if error is None:
         return packaged_executable, False
 
-    print(f"✗ The built Hermes.exe failed its integrity check: {error}\n    at: {packaged_executable}")
+    artifact = "Hermes.exe" if sys.platform == "win32" else "Hermes.app bundle"
+    print(f"✗ The built {artifact} failed its integrity check: {error}\n    at: {packaged_executable}")
 
     # Only the exe's OWN output dir is purged (a staging dir), never the live
     # release/ tree that still holds the last working app.
     # Self-heal setup for the retry: drop the (likely corrupt) cached Electron zip and the content stamp so
     # the next rebuild is a genuine re-download + re-stage rather than a replay of the same broken
     # extraction. See #86443.
-    _purge_electron_build_cache(desktop_dir, release_dir=packaged_executable.parent.parent)
+    _purge_electron_build_cache(desktop_dir, release_dir=_desktop_output_dir(packaged_executable))
     with contextlib.suppress(OSError):
         _desktop_stamp_path().unlink()
 
     restored = _rollback_desktop_from_backup(packaged_executable)
     if restored is not None:
-        print("  ↩ Update aborted — restored the previous working Hermes.exe from backup.")
+        print(f"  ↩ Update aborted — restored the previous working {artifact} from backup.")
         print("    Your existing version was kept and still works. Run `hermes desktop`")
         print("    (or the in-app update) again to retry with a fresh Electron download.")
         return restored, True
@@ -1575,6 +1786,15 @@ def cmd_gui(args: argparse.Namespace):
         if packaged_executable is None:
             print(f"✗ Desktop package build completed but no launchable app was found at: {desktop_dir / 'release'}")
             print("  Expected an unpacked Electron app for the current OS.")
+            sys.exit(1)
+        # Never exec an app this machine cannot run. The bundle reaching here may predate the gate
+        # (installed by an older updater) or have been swapped in by hand, so the check belongs at the
+        # launch site too, not only after a build.
+        integrity_error = _desktop_exe_integrity_error(packaged_executable)
+        if integrity_error is not None:
+            print(f"✗ Refusing to launch a desktop app this machine cannot run: {integrity_error}")
+            print(f"    at: {packaged_executable}")
+            print("  Rebuild it with:  hermes desktop --force-build")
             sys.exit(1)
         launch_command = _packaged_desktop_launch_command(packaged_executable)
         launch_command.extend(config_electron_flags)

@@ -351,12 +351,66 @@ linux_gate() {
   GATE=manual GATE_MSG="Update complete, but the rebuilt app can't relaunch itself (its sandbox helper needs root ownership). Reopen Hermes to finish."
 }
 
+# Bundle integrity gate (macOS), the shell half of hermes_cli/main_desktop.py's. An arm64 Electron packed
+# against darwin-x64 node-pty prebuilds launches and dies on "Failed to load native module: pty.node", so
+# neither `release/mac` nor a stale bundle may be installed over a working app or reopened. Delegates the
+# verdict to the same Python function the CLI uses so the two paths cannot disagree. Fails OPEN when no
+# interpreter is reachable: the Python gate has already run inside `hermes update` (a rejected bundle makes
+# FINAL_CODE nonzero, which blocks the swap below), so this is defense in depth, not the only guard.
+BUNDLE_ERROR=""
+bundle_gate_python() { # -> prints an interpreter that can import hermes_cli, or fails
+  local py
+  py="${INSTALL_ROOT:+$INSTALL_ROOT/venv/bin/python3}"
+  [ -x "${py:-/nonexistent}" ] || py="$(command -v python3 2>/dev/null)"
+  [ -n "$py" ] || return 1
+  printf '%s\n' "$py"
+}
+
+bundle_unloadable() { # $1 = path to Hermes.app -> 0 when the bundle must be refused
+  BUNDLE_ERROR=""
+  [ "$(uname)" = "Darwin" ] || return 1
+  local py
+  py="$(bundle_gate_python)" || { log "bundle gate skipped: no python3 available"; return 1; }
+  BUNDLE_ERROR="$(HERMES_BUNDLE="$1" "$py" -c '
+import os, sys
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+from hermes_cli.main_desktop import _desktop_exe_integrity_error
+app = Path(os.environ["HERMES_BUNDLE"])
+sys.stdout.write(_desktop_exe_integrity_error(app / "Contents" / "MacOS" / "Hermes") or "")
+' "$INSTALL_ROOT" 2>/dev/null)" || { log "bundle gate could not run; not blocking"; BUNDLE_ERROR=""; return 1; }
+  [ -n "$BUNDLE_ERROR" ]
+}
+
+# Which freshly-rebuilt bundle to install, per hermes_cli.desktop_app_path -- the SAME resolver
+# `hermes desktop`, `hermes doctor` and the installer use. This used to be a hardcoded
+# `mac-arm64` then `mac` list, one of four copies that disagreed about which bundle wins.
+# Exit 2 means "present but this Mac cannot run it": refuse, never fall back to guessing.
+resolve_rebuilt_bundle() { # -> prints path, or empty with BUNDLE_ERROR set when the user must be told
+  local py out rc
+  BUNDLE_ERROR=""
+  if ! py="$(bundle_gate_python)"; then
+    # `hermes update` itself is Python, so reaching a zero FINAL_CODE without an interpreter is
+    # pathological. Say so rather than silently skipping the swap: an unvalidated hardcoded
+    # candidate list is what shipped the broken app three times, and is not a safe fallback.
+    BUNDLE_ERROR="no python3 was available to identify the rebuilt app"
+    return 1
+  fi
+  out="$(cd "$INSTALL_ROOT" && "$py" -m hermes_cli.desktop_app_path "$INSTALL_ROOT" 2>&1)"; rc=$?
+  case "$rc" in
+    0) printf '%s\n' "$out"; return 0 ;;
+    2) BUNDLE_ERROR="$out"; return 1 ;;  # present but unusable -> refuse, never guess instead
+    *) return 1 ;;                       # nothing was built; the swap simply has no input
+  esac
+}
+
 mac_swap() {
-  local rebuilt="" c
-  for c in "$INSTALL_ROOT/apps/desktop/release/mac-arm64/Hermes.app" \
-           "$INSTALL_ROOT/apps/desktop/release/mac/Hermes.app"; do
-    [ -d "$c" ] && { rebuilt="$c"; break; }
-  done
+  local rebuilt=""
+  rebuilt="$(resolve_rebuilt_bundle)" || rebuilt=""
+  if [ "$FINAL_CODE" -eq 0 ] && [ -z "$rebuilt" ] && [ -n "$BUNDLE_ERROR" ]; then
+    DONE_NOTE="Update complete, but the rebuilt app could not run on this Mac and was not installed; the previous version was kept. Run \`hermes desktop --force-build\` to rebuild it."
+    log "WARNING: refusing the rebuilt bundle: $BUNDLE_ERROR"
+  fi
 
   # Transactional swap: stage a full copy, move the old bundle aside, move
   # the copy in. Every step checked; a failed final move ROLLS BACK so the
@@ -409,6 +463,12 @@ launch_app() { # attempted BEFORE the terminal event (launch acceptance is
     # A supplied target that no longer exists is a REJECTED launch (the
     # swap failed badly or the bundle vanished) — not "no launch due".
     [ -d "$RELAUNCH_TARGET" ] || { log "WARNING: relaunch target missing: $RELAUNCH_TARGET"; return 1; }
+    # `open` accepts a bundle whose native modules cannot load — it would flash a window and die — so
+    # the same verdict that gates the swap gates the reopen, and a refusal downgrades to manual.
+    if bundle_unloadable "$RELAUNCH_TARGET"; then
+      log "WARNING: refusing to reopen an unloadable app: $BUNDLE_ERROR"
+      return 1
+    fi
     /usr/bin/xattr -dr com.apple.quarantine "$RELAUNCH_TARGET" 2>/dev/null || true
     # `open` talks to launchd and FAILS LOUDLY on a broken/unlaunchable
     # bundle — its exit code IS launch acceptance here.

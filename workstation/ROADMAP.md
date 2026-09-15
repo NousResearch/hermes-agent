@@ -911,6 +911,50 @@ dependencies:
 - **agent governance primitives:** independent verifier/auditor roles for high-stakes
   multiagent workflows, with human authority remaining outside the agent society.
 
+### Human card → Hermes Agent Task delegation bridge — Planned
+
+**Purpose:** turn the hybrid/Trello-like human Kanban into a true delegation
+interface for Hermes without collapsing human work management and agent execution
+into one lifecycle.
+
+A human-owned card may expose an explicit **“Entregar isto ao Hermes”** action.
+Invoking that action must:
+
+- preserve the original human card as the source of truth for the human workflow;
+- create a separate canonical Hermes Agent Task with a stable bidirectional link
+  (`human_card_id` ↔ `agent_task_id`) and explicit delegation provenance;
+- execute and transition the Agent Task only through the existing agentic Kanban,
+  Hermes session/run, BrowserTask, Worker and Execution Journal owners;
+- project useful agent progress back onto the human card without making that
+  projection authoritative for the Agent Task lifecycle;
+- on completion, failure or cancellation, return the result, deliverables, concise
+  summary and relevant evidence to the original human card while preserving the
+  full agent-side journal/history;
+- keep human columns/statuses and agent execution states semantically independent:
+  moving/completing a human card must not silently complete/cancel the Agent Task,
+  and an agent-side transition must not silently move the human card unless an
+  explicit user action or declared policy requests it;
+- preserve delegation lineage across restart/recovery, and treat re-delegation as
+  an explicit new attempt/task (or conscious reuse) rather than overwriting prior
+  execution evidence.
+
+The intended flow is:
+
+```text
+human Trello-like card
+  → “Entregar isto ao Hermes”
+  → linked canonical Agent Task
+  → execution visible in the Agentic Kanban
+  → journal / evidence / deliverables produced under agent lifecycle
+  → result + evidence projected back to the original human card
+```
+
+**Acceptance:** delegate one human card, prove the original card remains in its
+human board lifecycle while the linked Agent Task independently moves through
+queued/running/waiting/completed states, then verify that completion returns the
+result/evidence to the same human card and that restart/recovery preserves the
+link without introducing a second canonical Kanban/task store.
+
 ### Research-derived acceptance principle
 
 A roadmap item should only be promoted from “interesting” to “default path” after it

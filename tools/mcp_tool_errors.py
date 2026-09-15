@@ -305,9 +305,11 @@ _EXC_TRAVERSAL_MAX_NODES = 10_000
 
 
 def _exc_children(exc: BaseException) -> List[BaseException]:
-    """Sub-exceptions of a group, else ``__cause__``/``__context__`` when they are exceptions."""
-    nested = getattr(exc, "exceptions", None)
-    return list(nested) if nested else [c for c in (exc.__cause__, exc.__context__) if isinstance(c, BaseException)]
+    """A group's sub-exceptions (if any) followed by ``__cause__``/``__context__`` when they are exceptions — a
+    group raised inside an ``except`` block carries the caught error as ``__context__``, so the chain is never
+    skipped."""
+    nested = getattr(exc, "exceptions", None) or ()
+    return [*nested, *(c for c in (exc.__cause__, exc.__context__) if isinstance(c, BaseException))]
 
 
 def _iter_exception_nodes(exc: BaseException) -> List[BaseException]:

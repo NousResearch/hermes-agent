@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from gateway.config import Platform, PlatformConfig, _coerce_dict, _dict_slot, _normalize_choice
+from gateway.config import UNAUTHORIZED_DM_BEHAVIORS, Platform, PlatformConfig, _coerce_dict, _dict_slot, _normalize_choice
 
 # Logger name parity with the origin module: records stay under "gateway.config".
 logger = logging.getLogger("gateway.config")
@@ -59,7 +59,7 @@ def _quick_commands_ok(value: Any) -> bool:
 
 
 def _dm_behavior_choice(value: Any, default: str = "pair") -> str:
-    return _normalize_choice(value, {"pair", "ignore"}, default)
+    return _normalize_choice(value, UNAUTHORIZED_DM_BEHAVIORS, default)
 
 
 def _presence(*keys: str) -> tuple:
@@ -83,6 +83,7 @@ _TOPLEVEL_BRIDGE: tuple = (
         "filter_silence_narration",
     ),
     ("unauthorized_dm_behavior", "unauthorized_dm_behavior", "presence", None, _dm_behavior_choice),
+    *_presence("unauthorized_dm_decline_message"),
 )
 
 

@@ -842,8 +842,9 @@ class TelegramAdapter(BasePlatformAdapter):
         return any(_scoped_gate_env(key).strip() for key in keys)
 
     def _should_pass_unauthorized_dm_for_pairing(self, source) -> bool:
-        """True when an unauthorized DM must still reach gateway pairing (``unauthorized_dm_behavior``
-        resolves to ``pair``, incl. an allowlist plus an explicit platform override)."""
+        """True when an unauthorized DM must still reach the gateway for an outbound reply
+        (``unauthorized_dm_behavior`` resolves to anything but ``ignore`` — a pairing code or a
+        one-time decline — incl. an allowlist plus an explicit platform override)."""
         if source.chat_type != "dm":
             return False
         # Bound-handler ``__self__`` is None under multiplex; ``gateway_runner`` survives that wrapping.
@@ -852,11 +853,11 @@ class TelegramAdapter(BasePlatformAdapter):
         if callable(behavior_fn):
             try:
                 profile = getattr(source, "profile", None) or getattr(self, "_owner_profile", None)
-                return behavior_fn(Platform.TELEGRAM, profile=profile) == "pair"
+                return behavior_fn(Platform.TELEGRAM, profile=profile) != "ignore"
             except Exception:
                 logger.debug("[Telegram] Failed to resolve unauthorized DM behavior; falling back to adapter-local override", exc_info=True)
         extra = getattr(getattr(self, "config", None), "extra", None) or {}
-        return str(extra.get("unauthorized_dm_behavior", "")).strip().lower() == "pair"
+        return str(extra.get("unauthorized_dm_behavior", "")).strip().lower() in ("pair", "decline")
 
     def _is_user_authorized_from_message(self, message: Message) -> bool:
         """Intake auth prefilter, run BEFORE batching/event construction/group observation.

@@ -417,8 +417,7 @@ def test_qqbot_with_allowlist_ignores_unauthorized_dm(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# "decline" behavior: one-time polite decline instead of a pairing code
-# (ported from qwibitai/nanoclaw#3260, #88028)
+# "decline" behavior: one-time polite decline instead of a pairing code (#88028)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -451,18 +450,32 @@ async def test_unauthorized_dm_decline_sends_once_then_stays_silent(monkeypatch)
 
 
 def test_decline_config_and_stamp_roundtrip(monkeypatch, tmp_path):
-    """Config accepts 'decline' (case-insensitive) and round-trips the custom text; a real
-    PairingStore persists the stamp, scopes it per sender, and expires it after the window."""
+    """The real startup path (config.yaml -> load_gateway_config) keeps 'decline' (case-insensitive)
+    at top level and as a platform override, and carries the custom text; a real PairingStore
+    persists the stamp, scopes it per sender, and expires it after the window."""
     from unittest.mock import patch as _patch
 
     import gateway.pairing as pairing_mod
+    from gateway.config import load_gateway_config
 
-    config = GatewayConfig.from_dict(
-        {"unauthorized_dm_behavior": "DECLINE", "unauthorized_dm_decline_message": "  custom text  "}
+    _clear_auth_env(monkeypatch)
+    (tmp_path / "config.yaml").write_text(
+        "unauthorized_dm_behavior: DECLINE\n"
+        "unauthorized_dm_decline_message: '  custom text  '\n"
+        "platforms:\n"
+        "  telegram:\n"
+        "    unauthorized_dm_behavior: pair\n"
+        "  whatsapp:\n"
+        "    unauthorized_dm_behavior: decline\n",
+        encoding="utf-8",
     )
+    with _patch("gateway.config.get_hermes_home", return_value=tmp_path):
+        config = load_gateway_config()
     assert config.unauthorized_dm_behavior == "decline"
-    assert config.get_unauthorized_dm_behavior(Platform.TELEGRAM) == "decline"
-    assert config.to_dict()["unauthorized_dm_behavior"] == "decline"
+    assert config.unauthorized_dm_decline_message == "custom text"
+    assert config.get_unauthorized_dm_behavior(Platform.TELEGRAM) == "pair"
+    assert config.get_unauthorized_dm_behavior(Platform.WHATSAPP) == "decline"
+    assert config.get_unauthorized_dm_behavior(Platform.DISCORD) == "decline"
     assert GatewayConfig.from_dict(config.to_dict()).unauthorized_dm_decline_message == "custom text"
 
     with _patch("gateway.pairing.PAIRING_DIR", tmp_path):

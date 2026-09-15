@@ -5059,19 +5059,22 @@ def _prompt_csv(prompt_text: str, default: str) -> str:
 
 # (default index, *choices) for the no-allowlist access prompt, keyed by is_email.
 _UNAUTHORIZED_ACCESS_CHOICES = {
-    True: (2,
+    True: (3,
         "Enable open access (any email sender can message the bot)",
         "Use DM pairing (unknown email senders receive a pairing code)",
+        "Politely decline unknown senders (one-time message, then silence)",
         "Keep unknown senders silent"),
     False: (1,
         "Enable open access (anyone can message the bot)",
         "Use DM pairing (unknown users request access, you approve with 'hermes pairing approve')",
+        "Politely decline unknown senders (one-time message, then silence)",
         "Skip for now (bot will deny all users until configured)"),
 }
 
 
-def _prompt_unauthorized_access(*, is_email: bool) -> None:
-    """No allowlist was given — ask open access vs DM pairing vs skip/silent, and persist."""
+def _prompt_unauthorized_access(platform_key: str) -> None:
+    """No allowlist was given — ask open access vs DM pairing vs decline vs skip/silent, and persist."""
+    is_email = platform_key == "email"
     print()
     default_idx, *access_choices = _UNAUTHORIZED_ACCESS_CHOICES[is_email]
     access_idx = prompt_choice("  How should unauthorized users be handled?", access_choices, default_idx)
@@ -5083,6 +5086,9 @@ def _prompt_unauthorized_access(*, is_email: bool) -> None:
             _set_platform_unauthorized_dm_behavior("email", "pair")
         print_success("  DM pairing mode — users will receive a code to request access.")
         print_info("  Approve with: hermes pairing approve <platform> <code>")
+    elif access_idx == 2:
+        _set_platform_unauthorized_dm_behavior(platform_key, "decline")
+        print_success("  Unknown senders get one polite decline, then silence (unauthorized_dm_behavior: decline).")
     elif is_email:
         print_success("  Unknown email senders will be ignored.")
     else:
@@ -5154,7 +5160,7 @@ def _prompt_allowlist_var(var: dict, platform_key: str, auto_owner_user_id) -> s
     )
     value = prompt(f"  {var['prompt']}", password=False)
     if not value:
-        _prompt_unauthorized_access(is_email=platform_key == "email")
+        _prompt_unauthorized_access(platform_key)
         return None
     cleaned = value.replace(" ", "")
     if "DISCORD" in var["name"]:

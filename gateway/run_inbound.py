@@ -111,7 +111,7 @@ class GatewayInboundMixin:
 
     async def _hm_send_unauthorized_decline(self, source: SessionSource) -> None:
         """``decline`` behavior: one short refusal per sender per DECLINE_DEDUPE_SECONDS, then silence
-        (port of qwibitai/nanoclaw#3260, #88028). The stamp is written BEFORE the send so a delivery
+        (#88028). The stamp is written BEFORE the send so a delivery
         hiccup cannot become a decline storm; without a store there is no dedupe state → stay silent."""
         from gateway.config import DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE
         platform_name = source.platform.value if source.platform else "unknown"

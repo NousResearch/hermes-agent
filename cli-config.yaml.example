@@ -249,6 +249,16 @@ model:
 #     models:
 #       gpt-5.4:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
+#
+# ``max_in_flight`` caps how many requests to this provider are in flight at
+# once, process-wide (main turns, subagents, auxiliary/compression calls, sync
+# and async — streaming holds its slot until the stream ends). Use it when the
+# provider/account only accepts a limited number of concurrent requests: agents
+# queue locally instead of collecting 429s. Unset = unlimited (default).
+#
+#   providers:
+#     one-request-at-a-time:
+#       max_in_flight: 1
 
 # =============================================================================
 # Unified Timeouts (operation deadlines)

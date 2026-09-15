@@ -312,7 +312,15 @@ _STRONG_KEY_KEYWORD_RE = re.compile(
 # ``/usr/...`` or ``~/...`` references a variable or a path, not a credential, even under a strong key
 # (``SSH_AUTH_SOCK=$HOME/.ssh/agent.sock``, ``DOCKER_AUTH_CONFIG=/home/u/.docker``).
 _PASSWORD_KEY_RE = re.compile(r"passwd|password|pass|pw", re.IGNORECASE)
-_PATH_OR_VAR_VALUE_RE = re.compile(r"[$/~]")
+# Anchored on both ends: the whole value must be a ``$VAR``/``${VAR}`` reference, a ``~/``
+# path, or an absolute path — not merely a string whose FIRST character is one of those.
+# A 40-char AWS secret key starts with '/' ~1 in 64 times and argon2/bcrypt digests always
+# start with '$'; an unanchored class let those secrets skip every check below.
+# Further ``$VAR`` interpolations may appear anywhere in the path (``/run/user/$UID/ssh``,
+# ``$XDG_RUNTIME_DIR/agent.$USER.sock``, ``$A:$B`` lists); crypt digests never parse as one
+# because their ``$`` fields start with a digit or carry ``=``/``,``.
+_SHELL_VAR_REF = r"\$(?:\{[A-Za-z_]\w*[^}]*\}|[A-Za-z_]\w*)"
+_PATH_OR_VAR_VALUE_RE = re.compile(rf"^(?:{_SHELL_VAR_REF}|~|/)(?:[\w./:-]|{_SHELL_VAR_REF})*$")
 
 
 def _is_word_start(s: str, i: int) -> bool:
@@ -381,7 +389,13 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
     # A shell rc's ``SSH_AUTH_SOCK=$HOME/.ssh/agent.sock`` is configuration the agent must keep
     # readable; only password-class keys mask a path/variable reference.
     if _PATH_OR_VAR_VALUE_RE.match(value) and not _has_word_bounded_keyword(key, _PASSWORD_KEY_RE):
-        return False
+        # ``$VAR`` and ``~/`` are unambiguous references. A bare ``/...`` is not:
+        # ``/home/u/.docker`` and ``/8f3kd9sKd0als...`` have the same shape, so a
+        # single-segment absolute path still has to clear the opaque-credential bar
+        # before it is treated as configuration.
+        if not (value.startswith("/") and "/" not in value[1:]
+                and _looks_like_opaque_credential(value)):
+            return False
     return (_has_word_bounded_keyword(key, _STRONG_KEY_KEYWORD_RE)
             or _looks_like_opaque_credential(value))
 

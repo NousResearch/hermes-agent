@@ -314,6 +314,73 @@ def test_reader_loop_streams_incremental_chunks_from_read1(registry, monkeypatch
     assert moved == ["proc_reader_live"]
 
 
+def test_reader_waits_past_early_stdout_eof_before_publishing_completion(registry, monkeypatch):
+    """Closing stdout is not process completion; the reader must still reap the child."""
+
+    class _EarlyEofStdout:
+        def read(self, _n):
+            return ""
+
+    class _StillRunningProcess:
+        stdout = _EarlyEofStdout()
+        returncode = None
+
+        def wait(self, timeout=None):
+            # A bounded wait expires: the child outlives its stdout by more than the old 5 s cap.
+            if timeout is not None:
+                raise subprocess.TimeoutExpired("render", timeout)
+            self.returncode = 0
+            return 0
+
+    session = _make_session(sid="proc_early_eof")
+    session.process = _StillRunningProcess()
+    monkeypatch.setattr(registry, "_move_to_finished", lambda _s: None)
+
+    registry._reader_loop(session)
+
+    assert session.exited is True
+    assert session.exit_code == 0
+
+
+def test_failed_reader_wait_does_not_publish_false_completion(registry, monkeypatch):
+    """A failed reap must leave the session running for later reconciliation."""
+    session = _make_session(sid="proc_wait_failed")
+    moved = []
+    monkeypatch.setattr(registry, "_move_to_finished", lambda _s: moved.append(_s.id))
+
+    registry._finish_reader(
+        session,
+        MagicMock(decode=MagicMock(return_value="")),
+        lambda _text: None,
+        "Process",
+        MagicMock(side_effect=OSError("wait failed")),
+        lambda: None,
+    )
+
+    assert session.exited is False
+    assert moved == []
+
+
+def test_failed_reader_wait_still_records_known_exit_status(registry, monkeypatch):
+    """A PTY child reaped by isalive() has its status; a raising wait must not lose it."""
+    session = _make_session(sid="proc_pty_wait_failed")
+    moved = []
+    monkeypatch.setattr(registry, "_move_to_finished", lambda _s: moved.append(_s.id))
+
+    registry._finish_reader(
+        session,
+        MagicMock(decode=MagicMock(return_value="")),
+        lambda _text: None,
+        "PTY",
+        MagicMock(side_effect=OSError("waitpid ECHILD")),
+        lambda: 9,
+    )
+
+    assert session.exited is True
+    assert session.exit_code == 9
+    assert moved == [session.id]
+
+
 # =========================================================================
 # Incremental UTF-8 decoding across chunk boundaries
 # (ported from openclaw/openclaw#112325)
@@ -2492,6 +2559,32 @@ class TestSystemdCgroupIsolation:
             value.startswith("OOMPolicy=") for value in probe_argv if isinstance(value, str)
         ), probe_argv
 
+    def test_successful_systemd_probe_revalidates_after_cache_ttl(self, monkeypatch):
+        """A vanished user bus invalidates a formerly successful scope verdict."""
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_IS_LINUX", True)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", 0.0)
+        clock = [100.0]
+        probe_results = [0, 1]
+        probe_calls = []
+
+        def fake_run(*args, **kwargs):
+            probe_calls.append(args)
+            return subprocess.CompletedProcess(
+                args=args[0], returncode=probe_results.pop(0)
+            )
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr("tools.process_registry.time.monotonic", lambda: clock[0])
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        assert pr._systemd_run_user_scope_available() is True
+        clock[0] += 61
+        assert pr._systemd_run_user_scope_available() is False
+        assert len(probe_calls) == 2
+
     @pytest.mark.linux_only
     def test_systemd_probe_derives_owned_user_bus_env_for_system_gateway(
         self, registry, monkeypatch, request
@@ -2540,6 +2633,44 @@ class TestSystemdCgroupIsolation:
         assert env["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={bus_path}"
         assert "XDG_RUNTIME_DIR" not in os.environ
         assert "DBUS_SESSION_BUS_ADDRESS" not in os.environ
+
+    @pytest.mark.linux_only
+    def test_scoped_spawn_lost_user_bus_honours_configured_runtime_dir(self, monkeypatch, request):
+        """The lost-bus check must derive from the env the worker was spawned with: when the bus
+        lives under a configured ``XDG_RUNTIME_DIR`` (not ``/run/user/<uid>``), an unrelated wrapper
+        exit is not a lost bus and must not flip the cached scope verdict to unscoped dispatch."""
+        import socket
+        import tempfile
+
+        import tools.process_registry as pr
+
+        runtime_dir = pr.Path(tempfile.mkdtemp(prefix="hbus-", dir="/tmp"))
+        runtime_dir.chmod(0o700)
+        bus_path = runtime_dir / "bus"
+        bus_socket = socket.socket(socket.AF_UNIX)
+        bus_socket.bind(str(bus_path))
+
+        def _cleanup():
+            bus_socket.close()
+            bus_path.unlink(missing_ok=True)
+            runtime_dir.rmdir()
+
+        request.addfinalizer(_cleanup)
+
+        monkeypatch.setattr(pr, "_default_user_runtime_dir", lambda: pr.Path("/nonexistent/run/user/0"))
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", True)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", pr.time.monotonic())
+        spawn_env = pr.systemd_user_bus_env({"XDG_RUNTIME_DIR": str(runtime_dir)})
+        assert spawn_env["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={bus_path}"
+
+        assert pr.scoped_spawn_lost_user_bus(spawn_env) is False
+        assert pr._SYSTEMD_SCOPE_AVAILABLE is True
+
+        # Same spawn env, bus actually gone: now it is a lost bus and the verdict flips.
+        bus_socket.close()
+        bus_path.unlink()
+        assert pr.scoped_spawn_lost_user_bus(spawn_env) is True
+        assert pr._SYSTEMD_SCOPE_AVAILABLE is False
 
     @pytest.mark.linux_only
     def test_probe_succeeds_without_bin_true(self, monkeypatch):

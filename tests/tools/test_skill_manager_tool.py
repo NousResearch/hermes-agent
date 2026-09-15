@@ -432,10 +432,11 @@ class TestSkillManageDispatcher:
             usage = load_usage()
         result = json.loads(raw)
         assert result["success"] is True
-        # No provenance marker on a foreground create — record either missing
-        # entirely (telemetry best-effort) or present with created_by unset.
+        # Foreground create carries the "learn" learning-signal marker — never the
+        # curator-management opt-in ("agent"), and the record may be missing
+        # entirely (telemetry best-effort).
         rec = usage.get("test-skill") or {}
-        assert rec.get("created_by") in {None, "", False}
+        assert rec.get("created_by") in {"learn", None, "", False}
 
     def test_successful_mutations_emit_lifecycle_with_correlation(self, tmp_path):
         with (

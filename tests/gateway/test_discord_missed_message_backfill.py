@@ -458,3 +458,18 @@ async def test_iter_candidates_keeps_latest_messages_when_window_exceeds_limit(a
     assert got == [2, 3, 4]
 
 
+@pytest.mark.asyncio
+async def test_iter_candidates_skips_obfuscated_channel_on_explicit_ids(adapter, monkeypatch):
+    """A channel the bot lost VIEW_CHANNEL on (Discord obfuscation) is dropped even when
+    listed by explicit id — history reads on it always fail (#90154)."""
+    from gateway.platforms.helpers import DISCORD_CHANNEL_OBFUSCATED_FLAG
+
+    visible = FakeChannel(channel_id=1, history_messages=[make_message(message_id=11)])
+    hidden = FakeChannel(channel_id=2, history_messages=[make_message(message_id=22)])
+    hidden.name = "___hidden___"
+    hidden.flags = SimpleNamespace(value=DISCORD_CHANNEL_OBFUSCATED_FLAG)
+    adapter._client.get_channel = lambda channel_id: {1: visible, 2: hidden}[channel_id]
+
+    got = [msg.id async for msg in adapter._iter_missed_message_backfill_candidates({"1", "2"})]
+
+    assert got == [11]

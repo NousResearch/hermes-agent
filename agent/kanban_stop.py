@@ -15,9 +15,21 @@ _TERMINAL_KANBAN_TOOLS = frozenset({"kanban_complete", "kanban_block"})
 _DEFAULT_MAX_ATTEMPTS = 2
 
 
+def _is_delegated_child_context() -> bool:
+    try:
+        from agent.delegation_context import is_delegated_child_context
+        return is_delegated_child_context()
+    except Exception:
+        return False
+
+
 def kanban_stop_nudge_enabled() -> bool:
-    """On when ``HERMES_KANBAN_TASK`` is set, unless ``HERMES_KANBAN_STOP_NUDGE`` disables it."""
+    """On when ``HERMES_KANBAN_TASK`` is set, unless ``HERMES_KANBAN_STOP_NUDGE`` disables it
+    or this execution is a ``delegate_task`` child, which inherits the env var without
+    owning the board task and so can never call a terminal kanban tool."""
     if (os.environ.get("HERMES_KANBAN_STOP_NUDGE") or "").strip().lower() in {"0", "false", "no", "off"}:
+        return False
+    if _is_delegated_child_context():
         return False
     return bool((os.environ.get("HERMES_KANBAN_TASK") or "").strip())
 

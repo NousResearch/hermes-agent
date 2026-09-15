@@ -88,3 +88,20 @@ def test_no_nudge_after_kanban_complete(clear_kanban_env):
 
 
 
+
+
+def test_delegated_child_is_not_a_kanban_worker(clear_kanban_env):
+    """A delegate_task child inherits HERMES_KANBAN_TASK from the dispatcher-owned
+    parent but owns no board task and has no kanban toolset, so it can never call a
+    terminal kanban tool. Nudging it pushes it back into its loop until the timeout
+    and replaces its structured answer with the nudge's instructions."""
+    from agent.delegation_context import delegated_child_context
+
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_parent")
+    assert kanban_stop_nudge_enabled() is True
+
+    with delegated_child_context("child-session"):
+        assert kanban_stop_nudge_enabled() is False
+        assert build_kanban_stop_nudge(messages=[]) is None
+
+    assert kanban_stop_nudge_enabled() is True

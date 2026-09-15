@@ -178,26 +178,36 @@ export function transcriptGutterWidth(role: Role, userPrompt: string) {
   return role === 'user' ? composerPromptWidth(userPrompt) : 3
 }
 
+/** paddingX={1} on the transcript body and composer — both sides. */
+export const PANE_PADDING_X_COLS = 2
+
+/** TranscriptScrollbar is width={1}. Composer is not beside it, but wrap
+ *  shares this cell so typed text and user history reflow together. */
+export const TRANSCRIPT_SCROLLBAR_COLS = 1
+
+/** Pet right-gutter only when this many text columns would remain. */
+export const MIN_PET_GUTTER_BODY_COLS = 72
+
+export function paneChromeCols(termuxMode = false) {
+  // Termux: skip the scrollbar cell so unusual-aspect mobile panes don't clip.
+  return PANE_PADDING_X_COLS + (termuxMode ? 0 : TRANSCRIPT_SCROLLBAR_COLS)
+}
+
 export function transcriptBodyWidth(totalCols: number, role: Role, userPrompt: string, termuxMode = false) {
-  const horizontalReserve = termuxMode ? 2 : 4
-  const available = Math.max(1, totalCols - transcriptGutterWidth(role, userPrompt) - horizontalReserve)
-
-  if (termuxMode) {
-    // On narrow / unusual aspect-ratio mobile panes, forcing a wide minimum
-    // width causes right-edge clipping and chopped words.
-    return available
-  }
-
-  return Math.max(20, available)
+  // Live pane cols minus gutter glyph minus real chrome. No leftover
+  // reading-column reserve and no 20-col floor (that overflowed narrow panes).
+  return Math.max(1, totalCols - transcriptGutterWidth(role, userPrompt) - paneChromeCols(termuxMode))
 }
 
 export function stableComposerColumns(totalCols: number, promptWidth: number, termuxMode = false) {
-  // Physical render/wrap width. Always reserve outer composer padding and
-  // prompt prefix. Only reserve the transcript scrollbar gutter when the
-  // terminal is wide enough; on narrow panes, preserving input columns beats
-  // keeping gutters visually aligned.
-  const afterPrompt = totalCols - promptWidth
-  const reserveScrollbar = afterPrompt >= (termuxMode ? 36 : 24) ? 2 : 0
+  // Same pane budget as transcriptBodyWidth for a user row (gutter === prompt).
+  return Math.max(1, totalCols - promptWidth - paneChromeCols(termuxMode))
+}
 
-  return Math.max(1, totalCols - promptWidth - 2 - reserveScrollbar)
+/** Transcript/composer text column after ambient rails and optional pet gutter. */
+export function transcriptPaneCols(termCols: number, railCols: number, petWidth: number | null): number {
+  const useGutter = petWidth != null && termCols - railCols - petWidth >= MIN_PET_GUTTER_BODY_COLS
+  const afterPet = useGutter && petWidth != null ? termCols - petWidth : termCols
+
+  return Math.max(1, afterPet - railCols)
 }

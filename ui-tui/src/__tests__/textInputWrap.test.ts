@@ -106,10 +106,10 @@ describe('input metrics helpers', () => {
     expect(composerPromptWidth('Ψ >')).toBe(4)
   })
 
-  it('reserves gutters on wide panes without starving narrow composer width', () => {
-    expect(stableComposerColumns(100, 3)).toBe(93)
-    expect(stableComposerColumns(100, 5)).toBe(91)
-    expect(stableComposerColumns(10, 3)).toBe(5)
+  it('reserves pane chrome without a leftover reading column', () => {
+    expect(stableComposerColumns(100, 3)).toBe(94)
+    expect(stableComposerColumns(100, 5)).toBe(92)
+    expect(stableComposerColumns(10, 3)).toBe(4)
     expect(stableComposerColumns(6, 3)).toBe(1)
   })
 })

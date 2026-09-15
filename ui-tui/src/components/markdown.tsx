@@ -243,8 +243,8 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   )
 
   // Available width: cols minus table padding minus column gaps minus safety.
-  // transcriptBodyWidth (source of cols) subtracts message gutter + scrollbar,
-  // but NOT this table's paddingLeft — we subtract it here.
+  // transcriptBodyWidth (source of cols) subtracts message gutter + pane chrome
+  // (paddingX + scrollbar), but NOT this table's paddingLeft — subtract that here.
   const gapOverhead = (numCols - 1) * COL_GAP
 
   const availableWidth = cols

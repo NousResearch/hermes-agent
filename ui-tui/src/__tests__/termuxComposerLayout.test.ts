@@ -16,14 +16,14 @@ describe('Termux composer prompt + width guards', () => {
     expect(composerPromptText('❯', 'upstr', false, true, 120)).toBe('upstr >')
   })
 
-  it('reserves fewer columns for gutter on narrow Termux widths', () => {
-    // 32 columns after prompt: desktop reserves 2 for transcript scrollbar,
-    // Termux keeps those 2 columns for the active composer.
-    expect(stableComposerColumns(40, 8, false)).toBe(28)
+  it('reserves padding only on Termux; desktop also reserves the scrollbar cell', () => {
+    // 32 columns after prompt: both modes keep paddingX (2). Desktop also
+    // shares the transcript scrollbar cell so composer and history match.
+    expect(stableComposerColumns(40, 8, false)).toBe(29)
     expect(stableComposerColumns(40, 8, true)).toBe(30)
 
-    // With ample room, Termux still reserves the gutter for alignment.
-    expect(stableComposerColumns(60, 8, true)).toBe(48)
+    // With ample room, Termux still skips the scrollbar cell.
+    expect(stableComposerColumns(60, 8, true)).toBe(50)
   })
 
   it('never over-allocates transcript body width on narrow panes', () => {
@@ -33,8 +33,8 @@ describe('Termux composer prompt + width guards', () => {
     expect(transcriptBodyWidth(10, 'user', '>', true)).toBeGreaterThanOrEqual(1)
   })
 
-  it('keeps legacy desktop floor outside Termux mode', () => {
-    expect(transcriptBodyWidth(24, 'assistant', '>')).toBe(20)
-    expect(transcriptBodyWidth(24, 'user', 'upstr >')).toBe(20)
+  it('does not floor desktop wrap at 20 on narrow panes', () => {
+    expect(transcriptBodyWidth(24, 'assistant', '>')).toBe(18)
+    expect(transcriptBodyWidth(24, 'user', 'upstr >')).toBe(13)
   })
 })

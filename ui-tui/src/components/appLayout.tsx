@@ -18,7 +18,8 @@ import {
   COMPOSER_PROMPT_GAP_WIDTH,
   composerPromptWidth,
   inputVisualHeight,
-  stableComposerColumns
+  stableComposerColumns,
+  transcriptPaneCols
 } from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
 import { composerPromptText } from '../lib/prompt.js'
@@ -45,9 +46,6 @@ const PET_PAD_LEFT = 2
 const PET_RIGHT = 1
 const PET_GUTTER_GAP = 1
 const KITTY_PLACEHOLDER = '\u{10eeee}'
-// Below this many columns of remaining text width, the right gutter is too
-// cramped, so the transcript collapses to reserving bottom rows instead.
-const MIN_GUTTER_BODY_COLS = 72
 
 // Petdex mascot — a small floating overlay riding the bottom-right corner just
 // above the status bar, with a little top/left breathing room. It reserves no
@@ -151,8 +149,8 @@ const TranscriptPane = memo(function TranscriptPane({
   //    (as long as enough width is left for comfortable reading);
   //  - narrow terminals: keep full width and reserve bottom rows instead, so
   //    the newest lines sit above the pet rather than getting cramped.
-  const useGutter = !!petBox && composer.cols - railCols - petBox.width >= MIN_GUTTER_BODY_COLS
-  const bodyCols = Math.max(28, (useGutter && petBox ? composer.cols - petBox.width : composer.cols) - railCols)
+  const bodyCols = transcriptPaneCols(composer.cols, railCols, petBox?.width ?? null)
+  const useGutter = bodyCols < composer.cols - railCols
   const petBandRows = petBox && !useGutter ? petBox.height : 0
 
   // LiveTodoPanel rides as a child of the latest user-message row so it
@@ -282,7 +280,10 @@ const ComposerPane = memo(function ComposerPane({
 }) {
   const ui = useStore($uiState)
   const isBlocked = useStore($isBlocked)
+  const petBox = useStore($petBox)
+  const railCols = useAmbientRailWidth('left') + useAmbientRailWidth('right')
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
+  const paneCols = transcriptPaneCols(composer.cols, railCols, petBox?.width ?? null)
 
   const promptText = composerPromptText(
     ui.theme.brand.prompt,
@@ -294,7 +295,7 @@ const ComposerPane = memo(function ComposerPane({
 
   const promptWidth = composerPromptWidth(promptText)
   const promptBlank = ' '.repeat(promptWidth)
-  const inputColumns = stableComposerColumns(composer.cols, promptWidth, TERMUX_TUI_MODE)
+  const inputColumns = stableComposerColumns(paneCols, promptWidth, TERMUX_TUI_MODE)
   const inputHeight = inputVisualHeight(composer.input, inputColumns)
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
 
@@ -421,7 +422,7 @@ const ComposerPane = memo(function ComposerPane({
               </Box>
 
               <Box flexGrow={0} flexShrink={0} height={inputHeight} width={inputColumns}>
-                {/* Reserve the transcript scrollbar gutter too so typing never rewraps when the scrollbar column repaints. */}
+                {/* Wrap width matches user-history rows (padding + scrollbar cell). */}
                 <TextInput
                   accentColor={ui.theme.color.accent}
                   color={ui.theme.color.text}

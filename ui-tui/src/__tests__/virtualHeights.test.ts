@@ -18,10 +18,9 @@ describe('virtual height estimates', () => {
   })
 
   it('uses compound user prompt width when estimating user message wrapping', () => {
-    // cols must clear the 20-col body-width floor for both prompts (gutter +
-    // horizontalReserve=4) so the wider 'Ψ >' prompt actually narrows the
-    // body enough to wrap an extra line vs the single-cell '❯' prompt.
-    const msg: Msg = { role: 'user', text: 'x'.repeat(23) }
+    // Wider compound prompt must actually narrow the body enough to wrap an
+    // extra line vs the single-cell '❯' prompt (gutter + pane chrome=3).
+    const msg: Msg = { role: 'user', text: 'x'.repeat(24) }
 
     expect(estimatedMsgHeight(msg, 30, { compact: false, details: false, userPrompt: '❯' })).toBe(3)
     expect(estimatedMsgHeight(msg, 30, { compact: false, details: false, userPrompt: 'Ψ >' })).toBe(4)

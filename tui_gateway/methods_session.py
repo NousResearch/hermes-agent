@@ -1209,7 +1209,11 @@ def _(rid, params: dict, session: dict) -> dict:
     tokens = _set_session_context(session["session_key"])
     try:
         from agent.context_breakdown import compute_session_context_breakdown
-        return _ok(rid, compute_session_context_breakdown(agent, history))
+        from agent.context_file_sources import context_file_sources_for_agent
+        payload = compute_session_context_breakdown(agent, history)
+        # Structured per-file rows so the Desktop popover can explain "why is my CLAUDE.md ignored?".
+        payload["context_files"] = context_file_sources_for_agent(agent)
+        return _ok(rid, payload)
     except Exception as exc:
         return _err(rid, 5000, f"Could not compute context breakdown: {exc}")
     finally:

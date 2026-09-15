@@ -3,10 +3,13 @@
 Read-only: enumerates the same candidates ``build_context_files_prompt`` loads (through
 ``agent.prompt_builder.discover_context_files`` — one discovery walk, so the listing cannot drift from the
 prompt) and reports, per file, its size and whether it was loaded, truncated over the context-file cap,
-shadowed by a higher-priority context type, empty/unreadable, or suppressed by the install-tree guard.
-Nothing here builds a prompt or touches the truncation-warning ContextVar, so it is free of cache impact.
+shadowed by a higher-priority context type, blocked by the injection scan, empty/unreadable, or suppressed
+by the install-tree guard. Nothing here builds a prompt or touches the truncation-warning ContextVar, so it
+is free of cache impact.
 
-Inspired by Copilot CLI 1.0.81's per-file ``/instructions`` view.
+Approximations (the manifest re-derives, it does not re-render): the truncation check sizes the raw
+``## label`` section, so a .hermes.md whose YAML frontmatter the builder strips can read a few chars larger
+here, and the AGENTS.md directory-chain cap (applied to the merged chain after per-file caps) is not modelled.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ _STATUS_DISPLAY = {
     "loaded": ("✓", ""),
     "truncated": ("◐", "truncated — over context_file_max_chars"),
     "shadowed": ("○", "not loaded — higher-priority context type wins"),
+    "blocked": ("✗", "not loaded — blocked by the prompt-injection scan"),
     "empty": ("○", "not loaded — empty file"),
     "unreadable": ("✗", "not loaded — could not be read"),
     "suppressed": ("○", "not loaded — cwd fell back to the Hermes install tree"),
@@ -44,7 +48,10 @@ def _empty_status(path: Path) -> str:
         return "unreadable"
 
 
-def _loaded_status(rendered_len: int, max_chars: int) -> str:
+def _loaded_status(content: str, rendered_len: int, max_chars: int) -> str:
+    """Same scan the builder runs (``_scan_context_content``): a hit replaces the file with a BLOCKED marker."""
+    if _pb._scan_for_threats(content.lstrip("\ufeff"), scope="context"):
+        return "blocked"
     return "truncated" if rendered_len > max_chars else "loaded"
 
 
@@ -56,7 +63,7 @@ def list_context_file_sources(
 
     Same signature semantics as ``build_context_files_prompt`` (``cwd=None`` → launch dir, install-tree guard
     unless *allow_install_tree_fallback*). Keys: ``label``, ``path``, ``chars``, ``est_tokens``, ``loaded``
-    and ``status`` ∈ loaded / truncated / shadowed / empty / unreadable / suppressed.
+    and ``status`` ∈ loaded / truncated / shadowed / blocked / empty / unreadable / suppressed.
     """
     cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
     max_chars = _pb._get_context_file_max_chars(context_length)
@@ -71,7 +78,7 @@ def list_context_file_sources(
         elif winner in (None, kind):
             winner = kind
             # The builder caps the rendered ``## label`` section, not the raw file.
-            status = _loaded_status(len(f"## {label}\n\n{content}"), max_chars)
+            status = _loaded_status(content, len(f"## {label}\n\n{content}"), max_chars)
         else:
             status = "shadowed"
         sources.append(_entry(label, path, content, status))
@@ -81,7 +88,7 @@ def list_context_file_sources(
         soul_path = home / "SOUL.md"
         if _pb._exists_or_denied(soul_path):
             content = _pb._read_context_file(soul_path)
-            status = _loaded_status(len(content), max_chars) if content else _empty_status(soul_path)
+            status = _loaded_status(content, len(content), max_chars) if content else _empty_status(soul_path)
             sources.append(_entry("SOUL.md", soul_path, content, status))
     return sources
 

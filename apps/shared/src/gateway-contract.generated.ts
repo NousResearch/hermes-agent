@@ -2798,7 +2798,7 @@ export interface SessionContextBreakdownParams {
   session_id: string
   profile?: string | null
 }
-/** ``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds). */
+/** ``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds) plus the per-file context manifest (empty until the agent exists). */
 export interface SessionContextBreakdownResult {
   categories: ContextCategory[]
   context_max: number
@@ -2808,12 +2808,22 @@ export interface SessionContextBreakdownResult {
   context_estimated: boolean
   context_source: string
   model: string
+  context_files?: ContextFileSource[]
 }
 export interface ContextCategory {
   color: string
   id: string
   label: string
   tokens: number
+}
+/** One row of ``agent.context_file_sources.list_context_file_sources``. */
+export interface ContextFileSource {
+  label: string
+  path: string
+  chars: number
+  est_tokens: number
+  loaded: boolean
+  status: string
 }
 export interface SessionCompressParams {
   session_id: string

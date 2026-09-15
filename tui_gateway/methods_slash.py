@@ -152,6 +152,16 @@ def _format_live_context_output(sid: str, session: dict, arg: str) -> str:
         lines.append(f"Context usage: {mark}{context_used:,} tokens")
     if usage.get("compressions"):
         lines.append(f"Compressions: {int(usage.get('compressions') or 0):,}")
+    if (agent := session.get("agent")) is not None:
+        from agent.context_file_sources import context_file_sources_for_agent, render_context_file_lines
+        # RPC thread: bind the session cwd or the discovery walk keys on the backend's cwd, not the workspace.
+        tokens = _set_session_context(session["session_key"], cwd=_session_cwd(session))
+        try:
+            file_lines = render_context_file_lines(context_file_sources_for_agent(agent))
+        finally:
+            _clear_session_context(tokens)
+        if file_lines:
+            lines += [""] + file_lines
     return "\n".join(lines)
 
 

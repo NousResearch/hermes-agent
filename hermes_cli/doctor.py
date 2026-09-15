@@ -25,6 +25,7 @@ from hermes_cli.doctor_connectivity import _has_healthy_oauth_fallback_for_apike
 from hermes_cli.doctor_tools import _safe_which
 
 from hermes_cli.doctor_config import (
+    _check_approvals_mode,
     _check_config_drift,
     _check_config_file,
     _check_env_file,
@@ -108,6 +109,7 @@ def _check_api_connectivity(should_fix: bool, f: Finding) -> None:
 # Ordered (section title, check). None title = check prints its own header (or none); order is user-visible.
 DOCTOR_CHECKS = (
     ('Security Advisories', _check_security_advisories), ('MCP Server Security', _check_mcp_security),
+    ("Approvals Mode", _check_approvals_mode),
     ('Python Environment', _check_python_environment), ('SSL / CA Certificates', _check_certificates),
     ('Required Packages', _check_required_packages), ('Configuration Files', _check_env_file),
     (None, _check_config_file), (None, _check_config_drift),

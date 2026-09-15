@@ -202,6 +202,58 @@ describe('preprocessMarkdown', () => {
     expect(output).toContain('<https://example.com/a_b/c~d/page>')
   })
 
+  it('escapes lone tildes in CJK ranges without touching strikethrough syntax', () => {
+    const output = preprocessMarkdown('Ranges: 1~10,11~20 and ~~deleted~~ text.')
+
+    expect(output).toContain('1\\~10,11\\~20')
+    expect(output).toContain('~~deleted~~')
+  })
+
+  it('escapes lone-tilde approximation prefixes so they cannot pair up mid-paragraph', () => {
+    const output = preprocessMarkdown('收益为 3~5 倍，成本约 ~¥0.089。')
+
+    expect(output).toContain('3\\~5 倍')
+    expect(output).toContain('\\~¥0.089')
+  })
+
+  it('does not escape lone tildes inside inline or fenced code', () => {
+    const input = ['Use `1~10` as a literal.', '', '```txt', '1~10,11~20', '```'].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('`1~10`')
+    expect(output).toContain(['```txt', '1~10,11~20', '```'].join('\n'))
+  })
+
+  it('escapes unknown html-like prose tokens before they reach the renderer', () => {
+    const output = preprocessMarkdown(
+      'The proxy uses <tool_call> and <observation> blocks. Keep the rest of the sentence visible.'
+    )
+
+    expect(output).toContain(
+      'The proxy uses &lt;tool_call&gt; and &lt;observation&gt; blocks. Keep the rest of the sentence visible.'
+    )
+    expect(output).not.toContain('<tool_call>')
+    expect(output).not.toContain('<observation>')
+  })
+
+  it('preserves known html tags and autolinks while escaping unknown tags', () => {
+    const output = preprocessMarkdown(
+      'Use <strong>bold</strong> and visit https://example.com/page, then <span>ok</span> and <unk> text.'
+    )
+
+    expect(output).toContain('<strong>bold</strong>')
+    expect(output).toContain('<https://example.com/page>')
+    expect(output).toContain('<span>ok</span>')
+    expect(output).toContain('&lt;unk&gt;')
+  })
+
+  it('leaves math comparisons like a < b and 2<3 untouched', () => {
+    const output = preprocessMarkdown('If a < b and 2<3 then keep it as text.')
+
+    expect(output).toContain('a < b and 2<3')
+  })
+
   it('handles a fenced block larger than V8 spread-argument limit', () => {
     // A single huge code block (e.g. a logged minified bundle) used to throw
     // `RangeError: Maximum call stack size exceeded` via `out.push(...lines)`.

@@ -23,6 +23,7 @@ import asyncio
 import atexit
 import importlib
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -113,6 +114,59 @@ os.environ["HERMES_TEST_ISOLATION"] = os.environ.get("HERMES_HOME", "") or "1"
 #: `_isolate_env` fixture has sandboxed it by then, so the check would pass
 #: even with this block removed.
 HERMES_HOME_AT_CONFTEST_IMPORT = os.environ.get("HERMES_HOME", "")
+
+
+_LAUNCHCTL_EXECUTABLE_RE = re.compile(
+    r"(?<![A-Za-z0-9_.-])launchctl(?=$|[^A-Za-z0-9_.-])",
+    re.IGNORECASE,
+)
+
+
+def _iter_command_text(value):
+    """Yield decoded command fragments without stringifying arbitrary objects."""
+    if isinstance(value, os.PathLike):
+        value = os.fspath(value)
+    if isinstance(value, bytes):
+        yield os.fsdecode(value)
+        return
+    if isinstance(value, str):
+        yield value
+        return
+    if isinstance(value, (list, tuple, set, frozenset)):
+        for item in value:
+            yield from _iter_command_text(item)
+
+
+def _command_mentions_launchctl(*values) -> bool:
+    """Detect launchctl in argv, shell fragments, bytes, or executable overrides."""
+    return any(
+        _LAUNCHCTL_EXECUTABLE_RE.search(fragment)
+        for value in values
+        for fragment in _iter_command_text(value)
+    )
+
+
+def _pytest_launchctl_audit_guard(event, args):
+    """Block Python process primitives before collection or fixture setup."""
+    guarded_events = {
+        "subprocess.Popen",
+        "os.system",
+        "os.exec",
+        "os.spawn",
+        "os.posix_spawn",
+    }
+    if event in guarded_events and _command_mentions_launchctl(args):
+        raise RuntimeError(
+            "tests/conftest.py live-system guard: blocked launchctl before "
+            "process creation; unit tests must use fakes and temporary paths"
+        )
+
+
+# Process-global: markers and imports of run/Popen before fixture setup cannot
+# bypass this hook. Install once during root conftest import, before collection.
+if not getattr(sys, "_hermes_pytest_launchctl_audit_guard", False):
+    sys.addaudithook(_pytest_launchctl_audit_guard)
+    setattr(sys, "_hermes_pytest_launchctl_audit_guard", True)
 
 
 # ── Per-file process isolation ──────────────────────────────────────────────
@@ -453,11 +507,11 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_environment(tmp_path, monkeypatch):
+def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     """Blank out all credential/behavioral env vars so local and CI match.
 
-    Also redirects HOME and HERMES_HOME to per-test tempdirs so code that
-    reads ``~/.hermes/*`` can't touch the real one, and pins TZ/LANG so
+    Redirects HERMES_HOME to a per-test tempdir while keeping HOME stable,
+    installs a POSIX launchctl PATH stub, and pins TZ/LANG so
     datetime/locale-sensitive tests are deterministic.
     """
     # 1. Blank every credential-shaped env var that's currently set.
@@ -514,6 +568,23 @@ def _hermetic_environment(tmp_path, monkeypatch):
     if hermes_state_mod is not None and hasattr(hermes_state_mod, "DEFAULT_DB_PATH"):
         monkeypatch.setattr(
             hermes_state_mod, "DEFAULT_DB_PATH", fake_hermes_home / "state.db"
+        )
+
+    if os.name == "posix":
+        # Opaque child scripts cannot be inspected by the Python guards. Bare
+        # launchctl resolves to this stub; absolute commands inside external
+        # scripts still require a separate disposable service sandbox.
+        guard_bin = tmp_path_factory.mktemp("live-system-guard-bin")
+        launchctl_stub = guard_bin / "launchctl"
+        launchctl_stub.write_text(
+            "#!/bin/sh\n"
+            "echo 'pytest live-system guard: launchctl blocked' >&2\n"
+            "exit 126\n",
+            encoding="utf-8",
+        )
+        launchctl_stub.chmod(0o700)
+        monkeypatch.setenv(
+            "PATH", f"{guard_bin}{os.pathsep}{os.environ.get('PATH', '')}"
         )
 
     # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with
@@ -1167,9 +1238,10 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
     """Register markers used by hermetic conftest."""
     config.addinivalue_line(
         "markers",
-        f"{_LIVE_SYSTEM_GUARD_BYPASS_MARK}: bypass the live-system guard "
+        f"{_LIVE_SYSTEM_GUARD_BYPASS_MARK}: bypass signal/process guards "
         "(only for tests that genuinely need real os.kill / subprocess "
-        "behaviour — e.g. PTY tests that signal their own child).",
+        "behaviour — e.g. PTY tests that signal their own child); "
+        "launchctl remains blocked and must be faked.",
     )
     config.addinivalue_line(
         "markers",
@@ -1319,11 +1391,12 @@ def pytest_collection_modifyitems(config, items):  # noqa: D401 — pytest hook
 
 @pytest.fixture(autouse=True)
 def _live_system_guard(request, monkeypatch):
-    """Block real os.kill / systemctl / gateway-pid scans during tests.
+    """Block real signals, launchctl, and mutating gateway service commands.
 
     See block comment above for the why. Tests that genuinely need
     real signal delivery (e.g. PTY tests that SIGINT their own child)
-    can opt out with ``@pytest.mark.live_system_guard_bypass``.
+    can opt out of signal/process guards with
+    ``@pytest.mark.live_system_guard_bypass``. launchctl is never bypassable.
 
     Coverage (every primitive that can deliver a signal to or otherwise
     terminate a foreign process):
@@ -1339,9 +1412,9 @@ def _live_system_guard(request, monkeypatch):
     are all caught. ``pkill``/``killall``/``taskkill`` invocations
     targeting hermes/python patterns are also blocked.
     """
-    if request.node.get_closest_marker(_LIVE_SYSTEM_GUARD_BYPASS_MARK):
-        yield
-        return
+    bypass_signal_and_process_guards = bool(
+        request.node.get_closest_marker(_LIVE_SYSTEM_GUARD_BYPASS_MARK)
+    )
 
     import os as _os
     import shlex as _shlex
@@ -1410,14 +1483,15 @@ def _live_system_guard(request, monkeypatch):
             "delivery is genuinely required."
         )
 
-    monkeypatch.setattr(_os, "kill", _guarded_kill)
+    if not bypass_signal_and_process_guards:
+        monkeypatch.setattr(_os, "kill", _guarded_kill)
 
     # ``os.killpg`` is the same risk class — sends a signal to every
     # process in a group. The gateway is a session leader (its own
     # PGID == its PID), so killpg(gateway_pid, SIGTERM) is a one-shot
     # kill of the live process. Allow it only when the target PGID is
     # the test process's own group.
-    if hasattr(_os, "killpg"):
+    if hasattr(_os, "killpg") and not bypass_signal_and_process_guards:
         real_killpg = _os.killpg
         own_pgid = _os.getpgrp()
 
@@ -1531,7 +1605,16 @@ def _live_system_guard(request, monkeypatch):
                     return True
         return False
 
-    def _check_subprocess_cmd(name, cmd):
+    def _check_subprocess_cmd(name, cmd, *, executable=None):
+        if _command_mentions_launchctl(cmd, executable):
+            raise RuntimeError(
+                f"tests/conftest.py live-system guard: blocked launchctl via "
+                f"subprocess.{name}({cmd!r}) - unit tests must use fakes and "
+                "temporary launchd paths. This block cannot be bypassed with "
+                "@pytest.mark.live_system_guard_bypass."
+            )
+        if bypass_signal_and_process_guards:
+            return
         if _is_blocked_systemctl(cmd):
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
@@ -1615,7 +1698,7 @@ def _live_system_guard(request, monkeypatch):
 
     def _wrap_subprocess(name, real):
         def _guarded(cmd, *args, **kwargs):
-            _check_subprocess_cmd(name, cmd)
+            _check_subprocess_cmd(name, cmd, executable=kwargs.get("executable"))
             return real(cmd, *args, **kwargs)
         _guarded.__name__ = f"_guarded_{name}"
         # Make the wrapper subscriptable like the wrapped callable when
@@ -1633,7 +1716,7 @@ def _live_system_guard(request, monkeypatch):
 
         class _GuardedPopen(real):  # type: ignore[misc, valid-type]
             def __init__(self, cmd, *args, **kwargs):
-                _check_subprocess_cmd("Popen", cmd)
+                _check_subprocess_cmd("Popen", cmd, executable=kwargs.get("executable"))
                 super().__init__(cmd, *args, **kwargs)
 
         _GuardedPopen.__name__ = "Popen"

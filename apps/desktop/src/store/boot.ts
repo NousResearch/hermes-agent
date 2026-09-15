@@ -33,12 +33,16 @@ export function applyDesktopBootProgress(progress: DesktopBootProgress) {
   const nextProgress = clampProgress(progress.progress)
   const mergedProgress = progress.running ? Math.max(current.progress, nextProgress) : nextProgress
 
+  // Don't let a late progress event (error: null) clobber a previously-set
+  // boot failure — failDesktopBoot is terminal for this boot cycle.
+  const error = progress.error ?? (current.running ? null : current.error)
+
   $desktopBoot.set({
     ...current,
     ...progress,
-    error: progress.error ?? null,
+    error,
     progress: mergedProgress,
-    visible: progress.running || mergedProgress < 100 || Boolean(progress.error)
+    visible: progress.running || mergedProgress < 100 || Boolean(error)
   })
 }
 
@@ -59,6 +63,27 @@ export function setDesktopBootStep(step: {
     progress: step.progress,
     running: step.running ?? true,
     timestamp: Date.now()
+  })
+}
+
+/**
+ * Re-arm the boot overlay for an automatic bounded retry of a failed REMOTE
+ * boot (#82679). Unlike setDesktopBootStep — whose null `error` intentionally
+ * cannot clear a latched failure — this explicitly lifts the error so the
+ * overlay shows the retry status instead of the terminal failure surface
+ * while the retry is in flight. failDesktopBoot() re-latches when the
+ * bounded retries are exhausted.
+ */
+export function resumeDesktopBootForRetry(message: string) {
+  const current = $desktopBoot.get()
+  $desktopBoot.set({
+    ...current,
+    error: null,
+    message,
+    phase: 'renderer.boot.retry',
+    running: true,
+    timestamp: Date.now(),
+    visible: true
   })
 }
 

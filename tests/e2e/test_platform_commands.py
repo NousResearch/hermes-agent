@@ -57,6 +57,16 @@ class TestSlashCommands:
         assert "no" in response_lower or "stop" in response_lower or "not running" in response_lower
 
     @pytest.mark.asyncio
+    async def test_leading_space_stop_is_still_a_command(self, adapter, platform):
+        """Slack users type `` /stop`` to avoid native Slack slash interception."""
+        send = await send_and_capture(adapter, " /stop", platform)
+
+        send.assert_called_once()
+        response_text = send.call_args[1].get("content") or send.call_args[0][1]
+        response_lower = response_text.lower()
+        assert "no" in response_lower or "stop" in response_lower or "not running" in response_lower
+
+    @pytest.mark.asyncio
     async def test_commands_shows_listing(self, adapter, platform):
         send = await send_and_capture(adapter, "/commands", platform)
 

@@ -8,6 +8,7 @@
     "start": "docusaurus start",
     "prebuild": "node scripts/prebuild.mjs",
     "build": "docusaurus build",
+    "build:fast": "docusaurus build --locale en",
     "swizzle": "docusaurus swizzle",
     "deploy": "docusaurus deploy",
     "clear": "docusaurus clear",
@@ -18,26 +19,32 @@
     "lint:diagrams": "ascii-guard lint --exclude-code-blocks docs"
   },
   "dependencies": {
-    "@docusaurus/core": "3.9.2",
-    "@docusaurus/plugin-client-redirects": "3.9.2",
-    "@docusaurus/preset-classic": "3.9.2",
-    "@docusaurus/theme-mermaid": "^3.9.2",
-    "@easyops-cn/docusaurus-search-local": "^0.55.1",
-    "@mdx-js/react": "^3.0.0",
-    "clsx": "^2.0.0",
-    "prism-react-renderer": "^2.3.0",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "@docusaurus/core": "3.10.2",
+    "@docusaurus/plugin-client-redirects": "3.10.2",
+    "@docusaurus/preset-classic": "3.10.2",
+    "@docusaurus/theme-mermaid": "3.10.2",
+    "@mdx-js/react": "3.1.1",
+    "clsx": "2.1.1",
+    "prism-react-renderer": "2.3.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
   },
   "devDependencies": {
-    "@docusaurus/module-type-aliases": "3.9.2",
-    "@docusaurus/tsconfig": "3.9.2",
-    "@docusaurus/types": "3.9.2",
-    "typescript": "^6.0.3"
+    "@docusaurus/module-type-aliases": "3.10.2",
+    "@docusaurus/tsconfig": "3.10.2",
+    "@docusaurus/types": "3.10.2",
+    "typescript": "6.0.3"
   },
   "overrides": {
-    "serialize-javascript": "^7.0.5",
-    "uuid": "^14.0.0"
+    "serialize-javascript": "7.0.7",
+    "uuid": "14.0.1",
+    "minimatch": "10.2.6",
+    "nanoid": "3.3.17",
+    "js-yaml": "4.3.1",
+    "dompurify": "3.4.13",
+    "mermaid": "11.16.1",
+    "image-size": "npm:@nous-research/image-size@2.0.3",
+    "tar": "7.5.22"
   },
   "browserslist": {
     "production": [
@@ -52,6 +59,11 @@
     ]
   },
   "engines": {
-    "node": ">=20.0"
+    "node": ">=20.0",
+    "npm": ">=11.17.0"
+  },
+  "allowScripts": {
+    "core-js@3.49.0": true,
+    "fsevents@2.3.3": true
   }
 }

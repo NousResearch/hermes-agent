@@ -166,6 +166,7 @@ If you skip that install or it fails, the wizard falls back to Edge TTS.
 ```yaml
 voice:
   record_key: "ctrl+b"
+  submit_mode: "direct"  # TUI: direct | draft
   max_recording_seconds: 120
   auto_tts: false
   beep_enabled: true
@@ -184,6 +185,18 @@ tts:
 ```
 
 This is a good conservative default for most people.
+
+In the TUI, `voice.submit_mode` controls what happens after transcription:
+
+- `direct` (default) submits the transcript immediately.
+- `draft` puts the transcript in the composer so you can edit or cancel it before pressing Enter.
+
+For editable voice drafts, set:
+
+```yaml
+voice:
+  submit_mode: "draft"
+```
 
 If you want local TTS instead, switch the `tts` block to:
 
@@ -444,7 +457,7 @@ By default, the bot needs an `@mention` in Discord server text channels unless c
 If you want the shortest path to success:
 
 1. get text Hermes working
-2. install `hermes-agent[voice]`
+2. run `hermes setup tts` to enable voice support
 3. use CLI voice mode with local STT + Edge TTS
 4. then enable `/voice on` in Telegram or Discord
 5. only after that, try Discord VC mode

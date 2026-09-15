@@ -1,14 +1,14 @@
 ---
-title: "Comfyui"
+title: "Comfyui — Generate images, video, and audio via diffusion workflows"
 sidebar_label: "Comfyui"
-description: "Generate images, video, and audio with ComfyUI — install, launch, manage nodes/models, run workflows with parameter injection"
+description: "Generate images, video, and audio via diffusion workflows"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Comfyui
 
-Generate images, video, and audio with ComfyUI — install, launch, manage nodes/models, run workflows with parameter injection. Uses the official comfy-cli for lifecycle and direct REST/WebSocket API for execution.
+Generate images, video, and audio via diffusion workflows.
 
 ## Skill metadata
 
@@ -21,7 +21,7 @@ Generate images, video, and audio with ComfyUI — install, launch, manage nodes
 | License | MIT |
 | Platforms | macos, linux, windows |
 | Tags | `comfyui`, `image-generation`, `stable-diffusion`, `flux`, `sd3`, `wan-video`, `hunyuan-video`, `creative`, `generative-ai`, `video-generation` |
-| Related skills | [`stable-diffusion-image-generation`](/docs/user-guide/skills/optional/mlops/mlops-stable-diffusion), `image_gen` |
+| Related skills | [`stable-diffusion`](/docs/user-guide/skills/optional/mlops/mlops-stable-diffusion) |
 
 ## Reference: full SKILL.md
 
@@ -328,7 +328,7 @@ For users without a capable GPU or who want zero setup. Hosted on RTX 6000 Pro.
 2. Generate an API key at https://platform.comfy.org/login
 3. Set the key:
    ```bash
-   export COMFY_CLOUD_API_KEY="comfyui-xxxxxxxxxxxx"
+   export COMFY_CLOUD_API_KEY="your-comfyui-key"
    ```
 4. Run workflows:
    ```bash

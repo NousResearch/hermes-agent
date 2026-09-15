@@ -77,6 +77,35 @@ def _accent_line(text: str) -> str:
     return f"  {_accent(text)}"
 
 
+# Workflow triggers shipped with Hermes: (phrase, description). Single source of truth —
+# the CLI `/trigger` chooser and the TUI `trigger.list` RPC both read through
+# configured_triggers() so config-defined extensions stay in sync across surfaces.
+DEFAULT_TRIGGERS: tuple[tuple[str, str], ...] = (
+    ("todo tracking", "Track a multi-step objective with todo_list"),
+    ("shepherd the flock", "Diagnose and recover stalled DAGr agents"),
+    ("Gate approved", "Independently verify and promote a gate"),
+    ("gate notebook", "Investigate and verify a gate notebook"),
+)
+
+
+def configured_triggers(cfg=None) -> list[tuple[str, str]]:
+    """Resolve the workflow-trigger list: built-ins extended by ``config.triggers``.
+
+    Config entries are ``{"phrase": str, "description": str}``; a user entry with the same
+    phrase overrides the built-in description but never *replaces* the default set. Returns
+    ``list[(phrase, description)]`` in built-in order then config order.
+    """
+    builtin = dict(DEFAULT_TRIGGERS)
+    for entry in ((cfg or {}).get("triggers") or []):
+        if not isinstance(entry, dict):
+            continue
+        phrase = entry.get("phrase")
+        desc = entry.get("description", "")
+        if isinstance(phrase, str) and phrase.strip():
+            builtin[phrase.strip()] = str(desc) if desc else ""
+    return list(builtin.items())
+
+
 def _probe(module: str, name: str, default, *args):
     """``<module>.<name>(*args)`` or ``default`` when the import or the call fails (optional
     subsystems: browser backends, async delegations, wake word, ...)."""
@@ -2243,6 +2272,55 @@ class CLICommandsMixin:
         except Exception as exc:
             return _cp(f"  /review failed to start: {exc}")
         _cp(f"  {format_dispatch_note(result, prompt)}")
+
+    # ---- /trigger --------------------------------------------------------------------------
+    def _default_triggers(self) -> list[tuple[str, str]]:
+        """Built-in workflow triggers (phrase, description) that ship with Hermes.
+
+        Delegates to the module-level ``configured_triggers`` so the set stays identical to what
+        the TUI ``trigger.list`` RPC resolves. Kept as an instance method so tests can override it
+        without touching the config system.
+        """
+        return configured_triggers()
+
+    def _configured_triggers(self) -> list[tuple[str, str]]:
+        """User-configurable trigger list: built-ins extended by ``config.triggers``.
+
+        Config entries are ``{"phrase": str, "description": str}``. They are appended after the
+        built-ins and deduped by phrase (a user entry with the same phrase overrides the built-in
+        description); user entries never *replace* the default set.
+        """
+        return configured_triggers(getattr(self, "config", None) or {})
+
+    def _handle_trigger_command(self, cmd: str) -> None:
+        """Choose a saved workflow trigger, then queue its canonical phrase."""
+        from hermes_cli.curses_ui import curses_radiolist
+
+        triggers = self._configured_triggers()
+        raw = _command_arg(cmd)
+        if raw:
+            selected = next((i for i, (phrase, _) in enumerate(triggers) if raw.lower().startswith(phrase.lower())), None)
+            if selected is None:
+                return _cp("  Unknown trigger. Use /trigger with no argument to choose from the list.")
+            suffix = raw[len(triggers[selected][0]):].lstrip(" :")
+        else:
+            selected = curses_radiolist(
+                "Select workflow trigger",
+                [f"{phrase} — {description}" for phrase, description in triggers],
+                selected=0,
+                cancel_returns=-1,
+                description="Choose a trigger; following text is preserved as its objective or context.",
+                searchable=True,
+            )
+            if selected < 0:
+                return _cp("  Trigger selection cancelled.")
+            suffix = ""
+        phrase = triggers[selected][0]
+        payload = f"{phrase}: {suffix}" if suffix else phrase
+        pending_input = getattr(self, "_pending_input", None)
+        if pending_input is not None:
+            pending_input.put(payload)
+        _cp(f"  Trigger queued: {payload}")
 
     # ---- /goal, /loop, /subgoal -----------------------------------------------------------
     def _handle_goal_command(self, cmd: str) -> None:

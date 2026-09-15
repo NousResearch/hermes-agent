@@ -400,6 +400,13 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> None:
         skills[k] = {"usage": usage(name), "origin": origin_of(name)}
 
 
+@_rpc("trigger.list", 5020)
+def _(rid, params: dict) -> dict:
+    """Return the configured workflow triggers for the TUI picker."""
+    triggers = _tools_mod("hermes_cli.cli_commands_mixin").configured_triggers(_load_cfg())
+    return _ok(rid, {"triggers": [{"phrase": phrase, "description": description} for phrase, description in triggers]})
+
+
 @_rpc("commands.catalog", 5020)
 def _(rid, params: dict) -> dict:
     """Registry-backed slash metadata, categorized, no aliases. Discovery failures land in ``warning``

@@ -534,6 +534,27 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    help: 'choose and dispatch a saved workflow trigger',
+    name: 'trigger',
+    run: (arg, ctx) => {
+      if (arg.trim()) {
+        // Direct phrase via the slash worker's prefix-match (no picker needed).
+        return ctx.gateway.gw
+          .request<SlashExecResponse>('slash.exec', { command: `trigger ${arg}`, session_id: ctx.sid })
+          .then(ctx.guarded<SlashExecResponse>(r => ctx.transcript.sys(r.output || '(no output)')))
+          .catch(ctx.guardedErr)
+      }
+
+      // Bare /trigger opens the interactive picker.
+      return patchOverlayState({
+        triggerPicker: {
+          onPick: phrase => ctx.transcript.send(phrase)
+        }
+      })
+    }
+  },
+
+  {
     help: 'inspect or set reasoning effort (updates live agent)',
     name: 'reasoning',
     run: (arg, ctx) => {

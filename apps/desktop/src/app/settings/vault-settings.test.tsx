@@ -9,12 +9,16 @@ const { requestGateway } = vi.hoisted(() => ({
   requestGateway: vi.fn()
 }))
 
-// The panel routes every RPC through the owner profile's socket (never the ambient gateway);
-// the mock receives (method, params) after the profile argument.
+// The panel routes every RPC through the owner connection/profile socket (never the ambient gateway);
+// this legacy fixture ignores owner identity and keeps its method/params assertions focused.
 vi.mock('@/store/gateway', async importActual => ({
   ...(await importActual<Record<string, unknown>>()),
-  requestGatewayForProfile: (_profile: string, method: string, params?: Record<string, unknown>) =>
-    requestGateway(method, params ?? {})
+  requestGatewayForAgent: (
+    _connectionId: null | string,
+    _profile: string,
+    method: string,
+    params?: Record<string, unknown>
+  ) => requestGateway(method, params ?? {})
 }))
 
 import { queryClient } from '@/lib/query-client'

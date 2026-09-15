@@ -22,7 +22,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { KeyRound, Lock, Plus, ShieldLock, Trash2 } from '@/lib/icons'
 import { $activeConnectionId } from '@/store/connections'
-import { requestGatewayForProfile } from '@/store/gateway'
+import { requestGatewayForAgent } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $gatewayState } from '@/store/session'
 import { $settingsScopeProfile } from '@/store/settings-scope'
@@ -165,8 +165,8 @@ export function VaultSettings() {
 
   const requestGateway = useCallback(
     <T,>(method: string, params: Record<string, unknown> = {}) =>
-      requestGatewayForProfile<T>(scopeProfile, method, params),
-    [scopeProfile]
+      requestGatewayForAgent<T>(connectionId, scopeProfile, method, params),
+    [connectionId, scopeProfile]
   )
 
   const VAULT_QUERY_KEY = useMemo(() => vaultQueryKey(owner), [owner])

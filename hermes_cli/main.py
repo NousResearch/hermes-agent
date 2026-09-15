@@ -349,6 +349,7 @@ from hermes_cli.subcommands.uninstall import build_uninstall_parser
 from hermes_cli.subcommands.dashboard import build_dashboard_parser, build_serve_parser
 from hermes_cli.subcommands.gui import build_gui_parser
 from hermes_cli.subcommands.logs import build_logs_parser
+from hermes_cli.subcommands.runs import build_runs_parser
 from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
 from hermes_cli.subcommands.memory import build_memory_parser
 from hermes_cli.subcommands.acp import build_acp_parser
@@ -2658,6 +2659,16 @@ def cmd_logs(args):
     )
 
 
+def cmd_runs(args):
+    """Watch an API-server run from this interactive CLI."""
+    if getattr(args, "runs_action", None) != "watch":
+        raise SystemExit("Usage: hermes runs watch <run_id> --api-key <key>")
+    from hermes_cli.run_watch import watch_run
+    status = watch_run(args.run_id, args.url, args.api_key)
+    if status not in {"completed", "cancelled"}:
+        raise SystemExit(f"Run ended with status: {status}")
+
+
 def cmd_console(args):
     """Open the safe Hermes command console."""
     from hermes_cli.console_engine import run_console_repl
@@ -3342,6 +3353,7 @@ def _build_cli_parser():
     # must be the name --help shows); "gui" is a deprecated alias.
     build_gui_parser(subparsers, cmd_gui=cmd_gui)
     build_logs_parser(subparsers, cmd_logs=cmd_logs)
+    build_runs_parser(subparsers, cmd_runs=cmd_runs)
     build_prompt_size_parser(subparsers, cmd_prompt_size=cmd_prompt_size)
     return parser, subparsers
 

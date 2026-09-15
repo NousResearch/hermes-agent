@@ -26,6 +26,15 @@ def _fmt_age(ts: Any) -> str:
     return f"{int(age / 86400)}d ago"
 
 
+def _project_state(p: dict) -> str:
+    """``live`` / ``orphan`` / ``ambiguous`` for one ``store_status`` row.
+
+    The manager classifies with the same criterion ``prune`` deletes by; the
+    existence-only fallback keeps hand-built status payloads rendering as before.
+    """
+    return p.get("state") or ("live" if p.get("exists") else "orphan")
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     from tools.checkpoint_manager import store_status
 
@@ -39,14 +48,19 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     projects = sorted(info["projects"], key=lambda p: (p.get("last_touch") or 0), reverse=True)
     if projects:
+        shown = projects[: getattr(args, "limit", None) or 20]
         print()
         print(f"  {'WORKDIR':<60}  {'COMMITS':>7}  {'LAST TOUCH':>12}  STATE")
-        for p in projects[: getattr(args, "limit", None) or 20]:
+        for p in shown:
             wd = p.get("workdir") or "(unknown)"
             if len(wd) > 60:
                 wd = "…" + wd[-59:]
-            state = "live" if p.get("exists") else "orphan"
-            print(f"  {wd:<60}  {p.get('commits', 0):>7}  {_fmt_age(p.get('last_touch')):>12}  {state}")
+            print(f"  {wd:<60}  {p.get('commits', 0):>7}  {_fmt_age(p.get('last_touch')):>12}  {_project_state(p)}")
+        if any(_project_state(p) == "ambiguous" for p in shown):
+            print()
+            print("  ambiguous = workdir is missing, but its deletion was not positively observed")
+            print("              (e.g. a detached volume / unmounted share looks identical).")
+            print("              `prune` keeps these safe; age-based retention still applies.")
 
     legacy = info.get("legacy_archives", [])
     if legacy:
@@ -75,19 +89,31 @@ def cmd_prune(args: argparse.Namespace) -> int:
 
     if delete_orphans and not args.force:
         info = store_status()
-        orphans = [p for p in info.get("projects", []) if not p.get("exists")]
-        pre_v2_orphans = [p for p in info.get("pre_v2_projects", []) if not p.get("exists")]
+        orphans = [p for p in info.get("projects", []) if _project_state(p) == "orphan"]
+        pre_v2_orphans = [p for p in info.get("pre_v2_projects", []) if _project_state(p) == "orphan"]
+        # Workdir missing but deletion not provable: prune keeps these, so the preview must not
+        # promise their deletion — say why instead of ending on a silent `Deleted orphan: 0`.
+        ambiguous = [p for p in info.get("projects", []) + info.get("pre_v2_projects", [])
+                     if _project_state(p) == "ambiguous"]
         if orphans or pre_v2_orphans:
             print(f"This will permanently delete {len(orphans) + len(pre_v2_orphans)} "
-                  "orphan checkpoint project(s) whose workdir is not currently reachable:")
+                  "orphan checkpoint project(s) whose workdir was observed as deleted:")
             print()
             for p in orphans:
                 print(f"  {p.get('workdir') or '(unknown)'}  ({p.get('commits', 0)} commit(s))")
             for p in pre_v2_orphans:
                 print(f"  {p.get('workdir') or '(unknown)'}  (pre-v2 shadow repo)")
             print()
-            print("A workdir can be unreachable because the project was deleted,")
-            print("or because an external volume / network share / VPN is down.")
+        if ambiguous:
+            print(f"Not deleting {len(ambiguous)} unreachable project(s): the workdir is missing, but the")
+            print("removal was not positively observed — an external volume / network share / VPN")
+            print("being down looks identical, so these are kept. `hermes checkpoints status`")
+            print("shows them as `ambiguous`; age-based retention still applies:")
+            print()
+            for p in ambiguous:
+                print(f"  {p.get('workdir') or '(unknown)'}  (kept)")
+            print()
+        if orphans or pre_v2_orphans:
             print("Pass --keep-orphans to prune stale entries only.")
             if not _confirm("Delete these orphan projects?"):
                 print("Aborted.")
@@ -115,6 +141,13 @@ def cmd_prune(args: argparse.Namespace) -> int:
     print(f"Deleted stale:   {result['deleted_stale']}")
     print(f"Errors:          {result['errors']}")
     print(f"Bytes reclaimed: {_fmt_bytes(result['bytes_freed'])}")
+    retained = result.get("retained_ambiguous", 0)
+    if retained:
+        print()
+        print(f"Retained (ambiguous): {retained}")
+        print("  Workdir missing, but the deletion was not positively observed (a detached")
+        print("  volume / unmounted share looks identical), so it is kept. `hermes checkpoints")
+        print("  status` shows these entries as `ambiguous`.")
     return 0
 
 
@@ -205,7 +238,8 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     p_prune.add_argument("--keep-orphans", action="store_true",
                          help="Skip deleting projects whose workdir no longer exists")
     p_prune.add_argument("-f", "--force", action="store_true",
-                         help="Skip the orphan-deletion confirmation prompt")
+                         help="Skip the orphan-deletion confirmation prompt (deletion safety "
+                              "checks still apply)")
     p_prune.set_defaults(func=cmd_prune)
 
     for name, help_text, func in (

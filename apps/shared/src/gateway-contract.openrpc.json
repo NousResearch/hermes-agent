@@ -42123,6 +42123,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Pattern Key"
           },
           "pattern_keys": {
@@ -42137,6 +42138,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Pattern Keys"
           },
           "allow_permanent": {
@@ -42148,6 +42150,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Allow Permanent"
           },
           "allow_session": {
@@ -42159,6 +42162,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Allow Session"
           },
           "smart_denied": {
@@ -42170,6 +42174,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Smart Denied"
           },
           "choices": {
@@ -42185,11 +42190,6 @@
           "request_id",
           "command",
           "description",
-          "pattern_key",
-          "pattern_keys",
-          "allow_permanent",
-          "allow_session",
-          "smart_denied",
           "choices"
         ],
         "type": "object"
@@ -42243,14 +42243,14 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Answers"
           }
         },
         "required": [
           "session_id",
           "kind",
-          "questions",
-          "answers"
+          "questions"
         ],
         "title": "ClarifyBatch",
         "type": "object"
@@ -42278,6 +42278,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Choices"
           },
           "multi_select": {
@@ -42288,7 +42289,6 @@
         "required": [
           "qid",
           "question",
-          "choices",
           "multi_select"
         ],
         "title": "ClarifyQuestion",
@@ -42323,6 +42323,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Choices"
           },
           "multi_select": {
@@ -42334,7 +42335,6 @@
           "session_id",
           "kind",
           "question",
-          "choices",
           "multi_select"
         ],
         "title": "ClarifySingle",
@@ -42452,6 +42452,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Ref"
           },
           "selector": {
@@ -42463,6 +42464,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Selector"
           },
           "text": {
@@ -42474,6 +42476,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Text"
           },
           "key": {
@@ -42485,6 +42488,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Key"
           },
           "submit": {
@@ -42496,6 +42500,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Submit"
           },
           "full": {
@@ -42507,6 +42512,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Full"
           },
           "to": {
@@ -42517,7 +42523,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "default": null
           },
           "amount": {
             "anyOf": [
@@ -42528,6 +42535,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Amount"
           },
           "max": {
@@ -42539,21 +42547,13 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Max"
           }
         },
         "required": [
           "session_id",
-          "action",
-          "ref",
-          "selector",
-          "text",
-          "key",
-          "submit",
-          "full",
-          "to",
-          "amount",
-          "max"
+          "action"
         ],
         "type": "object"
       },
@@ -42587,6 +42587,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Start"
           },
           "count": {
@@ -42598,13 +42599,12 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Count"
           }
         },
         "required": [
-          "session_id",
-          "start",
-          "count"
+          "session_id"
         ],
         "type": "object"
       },
@@ -42639,6 +42639,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Help"
           },
           "required_for": {
@@ -42650,13 +42651,12 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Required For"
           }
         },
         "required": [
-          "skill_name",
-          "help",
-          "required_for"
+          "skill_name"
         ],
         "title": "SecretMetadata",
         "type": "object"
@@ -42684,14 +42684,14 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "default": null
           }
         },
         "required": [
           "session_id",
           "env_var",
-          "prompt",
-          "metadata"
+          "prompt"
         ],
         "type": "object"
       },
@@ -42758,6 +42758,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Start"
           },
           "count": {
@@ -42769,13 +42770,12 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Count"
           }
         },
         "required": [
-          "session_id",
-          "start",
-          "count"
+          "session_id"
         ],
         "type": "object"
       },
@@ -42828,6 +42828,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Selector"
           },
           "title": {
@@ -42839,6 +42840,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Title"
           },
           "text": {
@@ -42850,6 +42852,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Text"
           },
           "side": {
@@ -42860,15 +42863,10 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "default": null
           }
         },
-        "required": [
-          "selector",
-          "title",
-          "text",
-          "side"
-        ],
         "title": "TourStep",
         "type": "object"
       },
@@ -43013,6 +43011,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Site"
           },
           "hint": {
@@ -43024,13 +43023,12 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Hint"
           }
         },
         "required": [
-          "session_id",
-          "site",
-          "hint"
+          "session_id"
         ],
         "type": "object"
       },
@@ -47667,7 +47665,7 @@
         },
         {
           "name": "pattern_key",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -47677,12 +47675,13 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Pattern Key"
           }
         },
         {
           "name": "pattern_keys",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -47695,12 +47694,13 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Pattern Keys"
           }
         },
         {
           "name": "allow_permanent",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -47710,12 +47710,13 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Allow Permanent"
           }
         },
         {
           "name": "allow_session",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -47725,12 +47726,13 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Allow Session"
           }
         },
         {
           "name": "smart_denied",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -47740,6 +47742,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Smart Denied"
           }
         },
@@ -47804,7 +47807,7 @@
         },
         {
           "name": "ref",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -47814,12 +47817,13 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Ref"
           }
         },
         {
           "name": "selector",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -47829,12 +47833,13 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Selector"
           }
         },
         {
           "name": "text",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -47844,12 +47849,13 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Text"
           }
         },
         {
           "name": "key",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -47859,12 +47865,13 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Key"
           }
         },
         {
           "name": "submit",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -47874,12 +47881,13 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Submit"
           }
         },
         {
           "name": "full",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -47889,12 +47897,13 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Full"
           }
         },
         {
           "name": "to",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -47903,12 +47912,13 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "default": null
           }
         },
         {
           "name": "amount",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -47918,12 +47928,13 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Amount"
           }
         },
         {
           "name": "max",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -47933,6 +47944,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Max"
           }
         }
@@ -47959,7 +47971,7 @@
         },
         {
           "name": "start",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -47969,12 +47981,13 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Start"
           }
         },
         {
           "name": "count",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -47984,6 +47997,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Count"
           }
         }
@@ -48026,7 +48040,7 @@
         },
         {
           "name": "metadata",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -48035,7 +48049,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "default": null
           }
         }
       ],
@@ -48091,7 +48106,7 @@
         },
         {
           "name": "start",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -48101,12 +48116,13 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Start"
           }
         },
         {
           "name": "count",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -48116,6 +48132,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Count"
           }
         }
@@ -48283,7 +48300,7 @@
         },
         {
           "name": "site",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -48293,12 +48310,13 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Site"
           }
         },
         {
           "name": "hint",
-          "required": true,
+          "required": false,
           "schema": {
             "anyOf": [
               {
@@ -48308,6 +48326,7 @@
                 "type": "null"
               }
             ],
+            "default": null,
             "title": "Hint"
           }
         }

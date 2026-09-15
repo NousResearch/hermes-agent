@@ -67,9 +67,13 @@ Do not add a surface-specific goal parser. ACP has no goal command or goal loop 
   (`gateway_timeout`; `terminal.cwd` → `TERMINAL_CWD`). `MESSAGING_CWD` is removed and `TERMINAL_CWD`
   in `.env` is deprecated — the loader warns; canonical is `terminal.cwd`.
 - **Three loaders — know which you're in:** `load_cli_config()` (CLI, `cli.py`); `load_config()`
-  (`hermes tools/setup`, most subcommands, `hermes_cli/config.py`, merges `DEFAULT_CONFIG`); raw
-  YAML (gateway runtime, `gateway/run.py` + `gateway/config.py`). If the CLI sees a key and the
-  gateway doesn't (or vice versa), you're on the wrong loader — check `DEFAULT_CONFIG` coverage.
+  (`hermes tools/setup`, most subcommands, `hermes_cli/config.py`, merges `DEFAULT_CONFIG`);
+  `hermes_cli/config_effective.py::load_user_config_effective()` (gateway runtime via
+  `gateway/run.py::_load_gateway_config`, TUI gateway `_load_cfg`, cron, `hermes send`, doctor,
+  `hermes_time`/`hermes_logging`: user file + managed overlay + `${VAR}` expansion + model-key
+  canon, NO defaults — for presence-sensitive readers). If the CLI sees a key and the gateway
+  doesn't (or vice versa), you're on the wrong loader — check `DEFAULT_CONFIG` coverage. Never
+  hand-roll raw-read → overlay → expand; `read_user_config_raw` is for write-back round-trips only.
 - **Working directory:** CLI uses `os.getcwd()`; messaging uses `terminal.cwd`, bridged to
   `TERMINAL_CWD` for child tools.
 
@@ -128,8 +132,34 @@ matchers; parser-derived flag sets; never blanket-exclude gateway ancestors, #87
 
 `_apply_profile_override()` in `hermes_cli/main.py` sets `HERMES_HOME` before any module import, so
 every `get_hermes_home()` scopes to the active profile (rules in root). Profiles are independent
-islands by design — no live config inheritance; `--clone` copies at creation. Multiplex
-(`gateway.multiplex_profiles`) secret-scope rules: `gateway/AGENTS.md`.
+islands by design — no live config inheritance; `--clone` copies at creation, minus messaging
+channels (`profile_channels.py`: ownership-based inventory evaluated in the SOURCE's plugin scope —
+adapter-declared keys + canonical/alias prefixes + `GATEWAY_ALLOW*`/`GATEWAY_RELAY_*`; prefixes shared
+with tools (`HASS_`/`TWILIO_`/`EMAIL_`) are stripped only when the source runs that adapter; never a hand
+list). `--clone-channels` opts in and its live-multiplexer refusal lives in `create_profile` (CLI, REST
+and TUI all go through it). Clones are built in `profiles/.<name>.staging-<pid>` (hidden → invisible to
+`_iter_named_profile_dirs` and the hot-serve rescan) and published by one `os.rename` after the strip;
+symlinked `.env`/`config.yaml` are materialized first so a clone never writes through to its source. Multiplex
+(`gateway.multiplex_profiles`) secret-scope rules: `gateway/AGENTS.md`. The served set is
+`profiles.py::profiles_to_serve(multiplex=True)` = default + every live (non-tombstoned) dir under
+`profiles/` — there is no allowlist (`gateway.multiplex_profile_allowlist` was retired in config v43).
+Enumeration is a pure read: never `mkdir` a profile home from a served path (`SessionDB`, logging,
+cron all go through `mkdir_under_hermes_home` / `_ensure_cron_dir`, which refuse a deleted or
+missing named profile, #94590). Process-global per-profile slots (MCP discovery in `mcp_startup.py`,
+tool registry overlays) key on `hermes_constants.hermes_home_key()`, never a single flag.
+Migration from per-profile gateways: `hermes_cli/gateway_migrate.py` (`hermes gateway migrate
+--multiplex|--standalone`, table-driven `_PREFLIGHT_CHECKS`, manifest `<default>/gateway_migration.json`);
+`update_cmd_fleet._verify_fleet_after_update` calls `maybe_auto_migrate_after_update` on the success
+path only; `gateway_migrate_guards.py` holds the auto-path-only refusals (table `_AUTO_MIGRATION_GUARDS`:
+other service domain / UNIX user / HERMES_HOME outside `profiles/` — notices for the explicit command,
+blockers for the hook) and the `gateway.auto_multiplex_migration` opt-out (#109954). Blockers reuse `GatewayRunner._adapter_credential_fingerprint` and `platform_binds_port`;
+"has a `/p/<profile>/` ingress" is the adapter class attribute `serves_profile_prefix` — set it on a
+new HTTP-inbound adapter when it answers the prefix, never extend a list here.
+`hermes gateway restart` for a gateway Hermes did not install (custom launchd agent / unit running
+`gateway run --external-supervisor`): `gateway_supervised_restart.py` — the gateway's SELF-declared
+supervisor (control-socket `identify` answering anything but `manual`, OR the argv marker) decides; hand back via SIGUSR1 and wait
+for a fresh supervised PID, never stop + foreground `run_gateway` (that stamps the CLI's PID and wedges
+every KeepAlive respawn, #110637).
 
 ## Nous free tier (`hermes_cli/anon_auth.py`)
 

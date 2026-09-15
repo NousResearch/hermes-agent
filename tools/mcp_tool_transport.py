@@ -7,7 +7,7 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 from typing import Dict, Optional, Set
-from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _handshake_rejected_as_modern, _make_redirect_header_stripper, _resolve_client_cert
+from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_config as _config
@@ -350,14 +350,16 @@ class MCPServerTransportMixin:
         # Streamable HTTP read timeout), not tool_timeout. ``auth`` must be forwarded or OAuth SSE 401s silently.
         sse_kwargs: dict = {"url": url, "headers": headers or None, "timeout": float(connect_timeout),
                             "sse_read_timeout": 300.0, **_present(auth=oauth_auth)}
-        if client_cert is not None or ssl_verify is not True:
-            # sse_client has no verify/cert kwargs: an httpx_client_factory forwards the SDK's (headers,
-            # auth, timeout) and layers TLS on top. Client MUST come from the SDK's httpx (httpx2 on mcp >= 2.0).
-            _httpx_mod = _core.sdk_httpx()
-            sse_kwargs["httpx_client_factory"] = lambda headers=None, timeout=None, auth=None: _httpx_mod.AsyncClient(
-                follow_redirects=True, verify=ssl_verify,
-                timeout=timeout if timeout is not None else _httpx_mod.Timeout(30.0, read=300.0),
-                **_present(headers=headers, auth=auth, cert=client_cert))
+        # Always own the client: the httpx_client_factory forwards the SDK's (headers, auth, timeout),
+        # installs the wire-body cap and layers TLS on the inner transport (client-level verify/cert are
+        # inert once a custom transport= is passed). Client MUST come from the SDK's httpx (httpx2 on mcp >= 2.0).
+        _httpx_mod = _core.sdk_httpx()
+        sse_kwargs["httpx_client_factory"] = lambda headers=None, timeout=None, auth=None: _httpx_mod.AsyncClient(
+            follow_redirects=True,
+            timeout=timeout if timeout is not None else _httpx_mod.Timeout(30.0, read=300.0),
+            transport=_make_mcp_body_cap_transport(
+                _httpx_mod, _httpx_mod.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))),
+            **_present(headers=headers, auth=auth))
         return _core.sse_client(**sse_kwargs)
 
     def _streamable_http_transport(self, url: str, headers: dict, connect_timeout: float,
@@ -377,10 +379,13 @@ class MCPServerTransportMixin:
         httpx = _core.sdk_httpx()
         _strip_auth_on_cross_origin_redirect = _make_redirect_header_stripper(
             httpx.URL(url), strict=strict_cfg_headers, configured_header_names=configured_header_names)
+        # verify/cert live on the inner transport: a custom transport= makes client-level TLS kwargs inert.
         client_kwargs: dict = {"follow_redirects": True, "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
-                               "verify": ssl_verify, **({"headers": headers} if headers else {}),
+                               **({"headers": headers} if headers else {}),
                                "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
-                               **_present(auth=oauth_auth, cert=client_cert)}
+                               "transport": _make_mcp_body_cap_transport(
+                                   httpx, httpx.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))),
+                               **_present(auth=oauth_auth)}
 
         @asynccontextmanager
         async def _owned_client_streams():  # the SDK skips cleanup when http_client is provided
@@ -410,11 +415,45 @@ class MCPServerTransportMixin:
         common = (url, headers, connect_timeout, config.get("ssl_verify", True), _resolve_client_cert(self.name, config),
                   self._build_oauth_auth(url, config), bool(config.get("strict_redirect_headers")))
         if config.get("transport") == "sse":
-            transport, label = self._sse_transport(*common), "SSE"
-        else:
-            transport = self._streamable_http_transport(*common, configured_header_names)
-            label = "HTTP" if _core._MCP_NEW_HTTP else "legacy HTTP"
-        return await self._serve_transport(transport, label, float(connect_timeout))
+            return await self._serve_transport(self._sse_transport(*common), "SSE", float(connect_timeout))
+        if self._sse_fallback:
+            # A prior connect already proved this server SSE-only: skip the doomed Streamable
+            # HTTP attempt on reconnects instead of flapping into the retry budget.
+            logger.info("MCP server '%s': using latched SSE fallback transport", self.name)
+            return await self._serve_transport(self._sse_transport(*common), "SSE", float(connect_timeout))
+        transport = self._streamable_http_transport(*common, configured_header_names)
+        label = "HTTP" if _core._MCP_NEW_HTTP else "legacy HTTP"
+        try:
+            return await self._serve_transport(transport, label, float(connect_timeout))
+        except Exception as exc:
+            # SSE-only servers (or their load balancers) reject the Streamable HTTP chunked
+            # ``initialize`` POST — with a 400-family status or an opaque SDK INTERNAL_ERROR —
+            # previously a permanent failure with 0 active tools unless the user set
+            # ``transport: sse`` (#53676, #104343). Retry over SSE on the initial connect, as
+            # the MCP spec's transport-fallback behavior describes. Never on reconnect after a
+            # proven session (``_ever_connected``: a genuine rejection on an established
+            # transport must not silently switch transports), never on a timeout (not a
+            # transport mismatch — ``_is_streamable_http_rejection`` matches neither), and never
+            # with ``strict_redirect_headers`` (SSE cannot enforce that boundary).
+            if (self._ever_connected or common[-1] or not _is_streamable_http_rejection(exc)):
+                raise
+            logger.warning(
+                "MCP server '%s': Streamable HTTP rejected the initial connect (%s) — retrying "
+                "over SSE. If this connects, set `transport: sse` for this server in config.yaml "
+                "to skip the failed attempt on future startups.",
+                self.name, _unwrap_exception_group(exc))
+            try:
+                self._sse_fallback = True
+                return await self._serve_transport(self._sse_transport(*common), "SSE", float(connect_timeout))
+            except Exception as sse_exc:
+                if self._ever_connected:  # SSE session was live and dropped: transient, keep the latch
+                    raise
+                self._sse_fallback = False
+                raise ConnectionError(
+                    f"MCP server '{self.name}': both Streamable HTTP and SSE transports failed "
+                    f"(Streamable HTTP: {_unwrap_exception_group(exc)}; SSE: "
+                    f"{_unwrap_exception_group(sse_exc)}). Check the URL points at an MCP "
+                    "endpoint, or pin `transport: sse` if the server is SSE-only.") from sse_exc
 
     # -------------------------------------------------------------- discovery
 
@@ -449,10 +488,11 @@ class MCPServerTransportMixin:
         if self._registered_tool_names:
             return
         with _core._lock:
-            owned = _core._servers.get(self.name) is self
+            owned = [key for key, live in _core._servers.items() if live is self]
         if not owned and not self._ready.is_set():
             return
         self._registered_tool_names = _registration._register_server_tools(self.name, self, self._config)
         with _core._lock:  # a retained initial-failure server that just published tools has recovered
-            if _core._servers.get(self.name) is self:
-                _core._server_connect_errors.pop(self.name, None)
+            for key in owned:
+                if _core._servers.get(key) is self:
+                    _core._server_connect_errors.pop(key, None)

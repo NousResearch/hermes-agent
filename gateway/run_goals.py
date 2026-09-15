@@ -357,10 +357,10 @@ class GatewayGoalsMixin:
         state = mgr.state if mgr is not None else None
         if state is None or not state.awaiting_response:
             return
-        # The --until judge is a sync aux-LLM call — keep it off the event loop.
-        decision = await asyncio.get_running_loop().run_in_executor(
-            None, mgr.complete_tick, final_response or ""
-        )
+        # The --until judge is a sync aux-LLM call — keep it off the event loop, but carry the
+        # contextvars: a bare executor hop drops the profile HERMES_HOME override and secret scope,
+        # so a served secondary's tick would be written into the DEFAULT profile's state.db.
+        decision = await self._run_in_executor_with_context(mgr.complete_tick, final_response or "")
         msg = decision.get("message") or ""
         if msg and source is not None:
             await self._defer_goal_status_notice_after_delivery(source, msg)

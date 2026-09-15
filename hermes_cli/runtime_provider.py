@@ -20,7 +20,7 @@ from agent.credential_pool import (  # custom_provider_pool_key_candidates is re
     CredentialPool, PooledCredential, credential_pool_matches_provider, custom_provider_pool_key_candidates,  # noqa: F401
     load_pool,
 )
-from agent.secret_scope import get_secret as _get_secret
+from agent.secret_scope import get_secret_str
 from hermes_cli.auth import (  # resolve_external_process_provider_credentials is read via origin by runtime_provider_backends
     ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, AuthError, DEFAULT_CODEX_BASE_URL, DEFAULT_QWEN_BASE_URL, DEFAULT_XAI_OAUTH_BASE_URL,
     PROVIDER_REGISTRY, _agent_key_is_usable, _nous_inference_env_override, format_auth_error, resolve_provider,
@@ -51,13 +51,6 @@ def normalize_extra_headers(value):
     return _config_mod.normalize_extra_headers(value)
 
 
-def _getenv(name: str, default: str = "") -> str:
-    """Profile-scoped ``os.getenv`` for credential/provider reads: identical to ``os.getenv`` when
-    multiplexing is off; scope-aware (fail-closed on an unscoped read) when on."""
-    val = _get_secret(name, default)
-    return val if val is not None else default
-
-
 def _loopback_hostname(host: str) -> bool:
     return (host or "").lower().rstrip(".") in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
 
@@ -81,7 +74,11 @@ def _config_base_url_trustworthy_for_bare_custom(cfg_base_url: str, cfg_provider
     """
     cfg_provider_norm = (cfg_provider or "").strip().lower()
     bu = (cfg_base_url or "").strip()
-    return bool(bu) and (cfg_provider_norm == "custom" or _resolves_to_custom(cfg_provider_norm)
+    # A bare or ``auto`` provider is the caller currently resolving auto. Asking
+    # ``resolve_provider`` whether it aliases custom re-enters that same path.
+    return bool(bu) and (cfg_provider_norm == "custom" or (
+        cfg_provider_norm not in {"", "auto"} and _resolves_to_custom(cfg_provider_norm)
+    )
                          or (not base_url_host_matches(bu, "openrouter.ai") and _loopback_hostname(base_url_hostname(bu))))
 
 
@@ -309,7 +306,7 @@ def _host_derived_api_key(base_url: str) -> str:
     sanitized = "".join(ch if ch.isalnum() else "_" for ch in labels[-2]).upper() if len(labels) >= 2 else ""
     if not sanitized or not sanitized[0].isalpha() or sanitized in ("OPENAI", "OPENROUTER", "OLLAMA"):
         return ""
-    return (_getenv(f"{sanitized}_API_KEY", "") or "").strip()
+    return (get_secret_str(f"{sanitized}_API_KEY", "") or "").strip()
 
 
 def _host_gated_env_key_candidates(base_url: str, *, ollama: bool) -> list:
@@ -318,9 +315,9 @@ def _host_gated_env_key_candidates(base_url: str, *, ollama: bool) -> list:
     (GHSA-76xc-57q6-vm5m); match on HOST, not substring. ``_host_derived_api_key`` skips OLLAMA, so
     callers that want it opt in via ``ollama``."""
     is_openai = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
-    candidates = [_getenv("OLLAMA_API_KEY", "").strip() if base_url_host_matches(base_url, "ollama.com") else ""] if ollama else []
-    return candidates + [_getenv("OPENAI_API_KEY", "").strip() if is_openai else "",
-                         _getenv("OPENROUTER_API_KEY", "").strip() if base_url_host_matches(base_url, "openrouter.ai") else "",
+    candidates = [get_secret_str("OLLAMA_API_KEY", "").strip() if base_url_host_matches(base_url, "ollama.com") else ""] if ollama else []
+    return candidates + [get_secret_str("OPENAI_API_KEY", "").strip() if is_openai else "",
+                         get_secret_str("OPENROUTER_API_KEY", "").strip() if base_url_host_matches(base_url, "openrouter.ai") else "",
                          _host_derived_api_key(base_url)]
 
 
@@ -341,7 +338,7 @@ def _nous_min_key_ttl() -> int:
 
 
 def _resolve_nous_creds() -> Dict[str, Any]:
-    return resolve_nous_runtime_credentials(timeout_seconds=float(_getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")))
+    return resolve_nous_runtime_credentials(timeout_seconds=float(get_secret_str("HERMES_NOUS_TIMEOUT_SECONDS", "15")))
 
 
 def _finalize_base_url(provider: str, api_mode: str, base_url: str) -> str:
@@ -414,7 +411,7 @@ def resolve_requested_provider(requested: Optional[str] = None) -> str:
     cfg_provider = _get_model_config().get("provider")
     if isinstance(cfg_provider, str) and cfg_provider.strip():
         return cfg_provider.strip().lower()
-    return _getenv("HERMES_INFERENCE_PROVIDER", "").strip().lower() or "auto"
+    return get_secret_str("HERMES_INFERENCE_PROVIDER", "").strip().lower() or "auto"
 
 
 # ── extracted collaborators (re-exported; see module docstring) ────────────────────────────
@@ -452,6 +449,13 @@ def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_u
         base_url = _config_base_url_for_provider(model_cfg, provider) or base_url
     if provider in _POOL_ENTRY_SIMPLE_MODES:
         api_mode, default_url = _POOL_ENTRY_SIMPLE_MODES[provider]
+        if provider == "openai-codex":
+            # Pool entries retain the canonical ChatGPT URL, but the profile-wide
+            # HERMES_CODEX_BASE_URL override must apply consistently to every
+            # credential source, including pooled OAuth credentials.
+            override_url = get_secret_str("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+            if override_url:
+                return api_mode, override_url
         return api_mode, base_url or (default_url() if callable(default_url) else default_url)
     if provider == "anthropic":
         return "anthropic_messages", _anthropic_cfg_base_url(model_cfg) or base_url or _ANTHROPIC_DEFAULT_BASE_URL
@@ -490,8 +494,15 @@ def _resolve_runtime_from_pool_entry(*, provider: str, entry: PooledCredential, 
 def _openrouter_should_use_pool(requested_provider, model_cfg, explicit_api_key, explicit_base_url) -> bool:
     """OpenRouter pool only for a plain openrouter/auto request with no custom endpoint or override."""
     cfg_base_url = str(model_cfg.get("base_url") or "").strip()
-    env_base_urls = _getenv("OPENAI_BASE_URL", "").strip() or _getenv("OPENROUTER_BASE_URL", "").strip()
-    has_custom_endpoint = bool(explicit_base_url or env_base_urls or (cfg_base_url and _cfg_provider(model_cfg) in {"auto", "custom"}))
+    env_base_urls = get_secret_str("OPENAI_BASE_URL", "").strip() or get_secret_str("OPENROUTER_BASE_URL", "").strip()
+    # A config base_url under provider: openrouter is a mirror only when it is NOT the canonical
+    # OpenRouter host — `hermes setup` persists https://openrouter.ai/api/v1 for plain installs,
+    # and treating that as custom would drop the auth.json pool (empty key).
+    cfg_is_mirror = bool(cfg_base_url) and (
+        _cfg_provider(model_cfg) in {"auto", "custom"}
+        or (_cfg_provider(model_cfg) == "openrouter" and not base_url_host_matches(cfg_base_url, "openrouter.ai"))
+    )
+    has_custom_endpoint = bool(explicit_base_url or env_base_urls or cfg_is_mirror)
     return requested_provider in {"openrouter", "auto"} and not has_custom_endpoint and not bool(explicit_api_key or explicit_base_url)
 
 
@@ -595,7 +606,7 @@ def _explicit_api_key_provider(provider, pconfig, requested_provider, model_cfg,
         elif provider in {"kimi-coding", "kimi-coding-cn"}:
             base_url = resolve_api_key_provider_credentials(provider).get("base_url", "").rstrip("/")
         else:
-            env_url = _getenv(pconfig.base_url_env_var, "").strip().rstrip("/") if pconfig.base_url_env_var else ""
+            env_url = get_secret_str(pconfig.base_url_env_var, "").strip().rstrip("/") if pconfig.base_url_env_var else ""
             base_url = env_url or pconfig.inference_base_url
     base_url = _actual_url(provider, base_url)
     if not api_key:
@@ -698,10 +709,10 @@ def _azure_anthropic_env_key(model_cfg: Dict[str, Any]) -> str:
     api_key (multi-profile setups), then the historical fixed names."""
     for hint_key in ("key_env", "api_key_env"):
         env_var = str(model_cfg.get(hint_key) or "").strip()
-        if env_var and (token := _getenv(env_var, "").strip()):
+        if env_var and (token := get_secret_str(env_var, "").strip()):
             return token
-    return (str(model_cfg.get("api_key") or "").strip() or _getenv("AZURE_ANTHROPIC_KEY", "").strip()
-            or _getenv("ANTHROPIC_API_KEY", "").strip())
+    return (str(model_cfg.get("api_key") or "").strip() or get_secret_str("AZURE_ANTHROPIC_KEY", "").strip()
+            or get_secret_str("ANTHROPIC_API_KEY", "").strip())
 
 
 def _anthropic_env_runtime(requested_provider: str, model_cfg: Dict[str, Any]) -> Dict[str, Any]:

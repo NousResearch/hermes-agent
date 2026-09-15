@@ -122,6 +122,16 @@ export const transcriptPaneBudget = (mountedPanes: number, hidden: boolean): num
 // is a no-op. Parked panes are unmounted, so they never hit this path.
 export const shouldClampTranscriptBudget = (hidden: boolean, renderBudget: number, paneBudget: number): boolean =>
   hidden && renderBudget > paneBudget
+
+// Whether a backfill step may record its distance-from-bottom anchor. A
+// settled load has a position the user chose. An UNSETTLED load only has one
+// when it is pinned to the bottom: the settle loop rewrites scrollTop to the
+// bottom every frame, so the measured distance is the truth and the restore
+// effect re-pins in the same commit the taller tree lands in. An unsettled
+// OFFSET load is still being applied — recording it would clobber the
+// remembered offset with a way-point (#99920 regressed exactly this way).
+export const shouldAnchorBeforePrepend = (settled: boolean, target: ThreadScrollState): boolean =>
+  settled || target.kind === 'bottom'
 // Units the backfill adds per committed step (see the backfill effect). A
 // 60-unit step produced ~10 visible prepend frames after FIRST_PAINT_BUDGET
 // retune (#83681). 290 fills a 600-unit page in two interruptible commits —
@@ -492,10 +502,19 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // Where to land after a prepend, in distance-from-bottom (survives the
   // height change). Shared by "Show earlier" and the budget backfill below.
   const restoreFromBottomRef = useRef<number | null>(null)
+  // scrollHeight when the anchor was recorded. The restore effect below also
+  // runs on commits that do not grow the content (the transcript arriving
+  // under the first-paint budget; a "Show earlier" whose page comes from the
+  // store a commit later); consuming the anchor there spends it as a no-op and
+  // leaves the real prepend unanchored. Only a taller tree is the prepend.
+  const anchorHeightRef = useRef<number | null>(null)
   // False from a session switch until the settle loop below parks the
   // transcript at its true bottom. While false, scrollTop is a way-point of a
   // load in progress, not a reading position anyone chose — never anchor to it.
   const loadSettledRef = useRef(false)
+  // What the in-flight load is steering toward; decides whether a backfill
+  // step may anchor while the load is still unsettled.
+  const loadTargetRef = useRef<ThreadScrollState>(THREAD_SCROLL_BOTTOM)
   const cancelRestoreRef = useRef<(() => void) | null>(null)
   const isRunning = useAuiState(s => s.thread.isRunning)
   // Session the settle loop last armed for, so a re-arm within the same load
@@ -503,60 +522,24 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   const settleKeyRef = useRef(sessionKey)
 
   // Record where the view should land once a prepend has grown the content,
-  // measured from the BOTTOM so the added height doesn't invalidate it. Only a
-  // settled load has an offset the user chose; while the settle loop is still
-  // running, scrollTop is a way-point of a load in progress (or a restored
-  // offset the loop is applying) — never anchor to it. Recording 0 here would
-  // make the restore effect clobber a restored offset with the bottom once the
-  // backfill lands; the settle loop re-writes its own target every frame, so
-  // skipping is safe.
+  // measured from the BOTTOM so the added height doesn't invalidate it. A
+  // bottom-pinned load anchors even before it settles: the settle loop hands
+  // back at the FIRST-PAINT height, before the backfill transition commits, so
+  // without an anchor that commit prepends thousands of px with nothing
+  // re-pinning the view until use-stick-to-bottom's ResizeObserver catches up
+  // frames later — the full-viewport lurch of #99920. An unsettled OFFSET load
+  // never anchors: the settle loop is still applying the remembered offset,
+  // and parks it itself on a clamped exit.
   const anchorBeforePrepend = useCallback(() => {
     const el = scrollRef.current
 
-    if (!el || !loadSettledRef.current) {
+    if (!el || !shouldAnchorBeforePrepend(loadSettledRef.current, loadTargetRef.current)) {
       return
     }
 
     restoreFromBottomRef.current = el.scrollHeight - el.scrollTop
+    anchorHeightRef.current = el.scrollHeight
   }, [scrollRef])
-
-  // Backfill from FIRST_PAINT_BUDGET to the full budget after the small
-  // commit painted — as a TRANSITION, so the heavy markdown + syntax
-  // highlight render of the older turns is interruptible instead of one long
-  // synchronous commit that freezes input right after the switch. Route
-  // changes stay urgent (main.tsx disables router transitions); it's exactly
-  // this backfill that belongs at background priority. "Show earlier" pages
-  // (budget > paneBudget) never re-enter here.
-  //
-  // In BOUNDED STEPS, not one jump to the full budget. A transition render is
-  // interruptible but its COMMIT is not, and one 20→600 step commits every
-  // backfilled turn at once — measured as a 780ms uninterruptible frame when
-  // the session was revealed while other tiles streamed (the flushes kept
-  // interrupting the transition, which finally landed whole, seconds later,
-  // mid-stream). Each step commits at most BACKFILL_STEP units; the effect
-  // re-arms off the committed budget, so steps pace one per frame.
-  useEffect(() => {
-    if (renderBudget >= paneBudget) {
-      return
-    }
-
-    const rafId = requestAnimationFrame(() => {
-      // The backfill PREPENDS older turns, so everything on screen slides down
-      // by their height. Anchor first and let the restore effect below re-apply
-      // it in the same commit the taller tree lands in — otherwise the view is
-      // stranded near the TOP until use-stick-to-bottom's ResizeObserver
-      // catches up a frame or two later (measured: an 11.5k px jump showing
-      // ~160ms of unrelated old turns, on every session load).
-      anchorBeforePrepend()
-
-      // Functional max, not a plain set: an urgent "Show earlier" click can
-      // land between scheduling and committing this transition, and a plain
-      // set would rebase over it and shrink the budget back down.
-      startTransition(() => setRenderBudget(budget => Math.max(budget, Math.min(budget + BACKFILL_STEP, paneBudget))))
-    })
-
-    return () => cancelAnimationFrame(rafId)
-  }, [anchorBeforePrepend, paneBudget, renderBudget])
 
   // Weights (part count + visible character cost) fold into the BUDGET only.
   // Group identity stays structural, so a streaming append re-runs this cheap
@@ -590,6 +573,52 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // mounted transcript. Under the budget the raw `groups` identity made the
   // memo hold; heavy sessions lost it exactly when they could least afford to.
   const visibleGroups = useMemo(() => (hiddenCount > 0 ? groups.slice(hiddenCount) : groups), [groups, hiddenCount])
+
+  // Backfill from FIRST_PAINT_BUDGET to the full budget after the small
+  // commit painted — as a TRANSITION, so the heavy markdown + syntax
+  // highlight render of the older turns is interruptible instead of one long
+  // synchronous commit that freezes input right after the switch. Route
+  // changes stay urgent (main.tsx disables router transitions); it's exactly
+  // this backfill that belongs at background priority. "Show earlier" pages
+  // (budget > paneBudget) never re-enter here.
+  //
+  // In BOUNDED STEPS, not one jump to the full budget. A transition render is
+  // interruptible but its COMMIT is not, and one 20→600 step commits every
+  // backfilled turn at once — measured as a 780ms uninterruptible frame when
+  // the session was revealed while other tiles streamed (the flushes kept
+  // interrupting the transition, which finally landed whole, seconds later,
+  // mid-stream). Each step commits at most BACKFILL_STEP units; the effect
+  // re-arms off the committed budget, so steps pace one per frame.
+  //
+  // Nothing to backfill while the transcript is still empty (a COLD switch);
+  // an anchor measured against the empty viewport would be consumed by the
+  // first-paint commit and leave the real prepend unanchored.
+  useEffect(() => {
+    if (!hasGroups || renderBudget >= paneBudget) {
+      return
+    }
+
+    const rafId = requestAnimationFrame(() => {
+      // The backfill PREPENDS older turns, so everything on screen slides down
+      // by their height. Anchor first and let the restore effect below re-apply
+      // it in the same commit the taller tree lands in — otherwise the view is
+      // stranded near the TOP until use-stick-to-bottom's ResizeObserver
+      // catches up a frame or two later (measured: an 11.5k px jump showing
+      // ~160ms of unrelated old turns, on every session load). A step with
+      // nothing left hidden prepends nothing: an anchor recorded for it would
+      // never be consumed and would re-pin a later append instead.
+      if (hiddenCount > 0) {
+        anchorBeforePrepend()
+      }
+
+      // Functional max, not a plain set: an urgent "Show earlier" click can
+      // land between scheduling and committing this transition, and a plain
+      // set would rebase over it and shrink the budget back down.
+      startTransition(() => setRenderBudget(budget => Math.max(budget, Math.min(budget + BACKFILL_STEP, paneBudget))))
+    })
+
+    return () => cancelAnimationFrame(rafId)
+  }, [anchorBeforePrepend, hasGroups, hiddenCount, paneBudget, renderBudget])
 
   // Where the always-rendered live tail begins. Derived from the WEIGHTED
   // groups (render cost, not turns) so the tail is a viewport's worth of content —
@@ -783,15 +812,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       // DOM collapse clamps scrollTop to garbage, so forget the restore gate —
       // when content (re)arrives, reapply from memory. The previous session's
       // real state was already recorded by its own cleanup just before this.
-      // An anchor captured for the OUTGOING transcript must not be applied to
-      // this one — a switch owns the position outright. The empty→non-empty
-      // re-arm is the SAME load, whose in-flight anchor is still correct.
+      // Whatever anchor exists was measured against the tree that just
+      // collapsed (the OUTGOING transcript, or stale rows shown under this key
+      // before the swap) and would re-pin the arriving one to garbage. The
+      // re-arm below restores from the remembered position instead.
       loadSettledRef.current = false
-
-      if (settleKeyRef.current !== sessionKey) {
-        settleKeyRef.current = sessionKey
-        restoreFromBottomRef.current = null
-      }
+      settleKeyRef.current = sessionKey
+      restoreFromBottomRef.current = null
 
       return record
     }
@@ -807,6 +834,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     // The previous session's parting state must not leak into this one: from
     // here every scroll/RO event describes the restored session.
     liveScrollStateRef.current = target
+    loadTargetRef.current = target
 
     stopScroll()
     el.scrollTop = threadScrollTargetTop(target, el)
@@ -860,6 +888,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           // can't be overwritten by a mid-load anchor measurement. The restore
           // effect flips settled once it consumes the parked value.
           restoreFromBottomRef.current = target.fromBottom + node.clientHeight
+          anchorHeightRef.current = height
         } else {
           loadSettledRef.current = true
         }
@@ -998,7 +1027,12 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     const el = scrollRef.current
     const restoreFromBottom = restoreFromBottomRef.current
 
-    if (el && restoreFromBottom != null && el.scrollHeight >= restoreFromBottom) {
+    if (
+      el &&
+      restoreFromBottom != null &&
+      el.scrollHeight > (anchorHeightRef.current ?? 0) &&
+      el.scrollHeight >= restoreFromBottom
+    ) {
       el.scrollTop = el.scrollHeight - restoreFromBottom
       restoreFromBottomRef.current = null
       // Consuming a parked offset (clamped-exit) means the view just landed at

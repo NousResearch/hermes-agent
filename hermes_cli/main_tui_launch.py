@@ -41,7 +41,7 @@ def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Opti
     db = None
     try:
         from hermes_state import SessionDB
-        db = SessionDB()
+        db = SessionDB(read_only=True)  # exit epilogue only reads
         session = db.get_session(target)
         if not session:
             return
@@ -454,7 +454,11 @@ def _tui_node_bin(bin: str) -> str:
             if ensure_dependency("node"):
                 path = find_node_executable("node")
     if not path:
-        print(f"{bin} not found — install Node.js to use the TUI.")
+        print(
+            f"Node.js is required for the TUI but `{bin}` was not found. Install it from "
+            "https://nodejs.org (run `hermes doctor` for the install hint for your OS), then "
+            "retry `hermes --tui`. To keep working now, run `hermes --cli`."
+        )
         sys.exit(1)
     return path
 
@@ -815,7 +819,7 @@ def _launch_tui(
     # preserve_inherited=False keeps --tui and other flags out of the subcommand.
     if code == 42:
         from hermes_cli.relaunch import relaunch
-        print("\n⚕ Launching update...\n")
+        print("\n☤ Launching update...\n")
         relaunch(["update"], preserve_inherited=False)
 
     sys.exit(code)

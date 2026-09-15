@@ -948,6 +948,42 @@ class TestSkillViewCollisionDetection:
         assert "REAL SKETCH SKILL" in result["content"]
 
 
+    def test_package_owned_markdown_does_not_collide_with_real_skill(self, tmp_path):
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+        _make_skill(local_dir, "research", body="REAL RESEARCH SKILL")
+        _make_skill(local_dir, "example", category="character")
+        prompt = local_dir / "character" / "example" / "prompts" / "research.md"
+        prompt.parent.mkdir()
+        prompt.write_text("# Internal research prompt\n", encoding="utf-8")
+
+        p1, p2 = self._patch_dirs(local_dir, [])
+        with p1, p2:
+            raw = skill_view("research")
+            internal_raw = skill_view("character/example/prompts/research")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert Path(result["path"]).parts == ("research", "SKILL.md")
+        assert "REAL RESEARCH SKILL" in result["content"]
+        assert json.loads(internal_raw)["success"] is False
+
+    def test_categorized_legacy_flat_markdown_remains_loadable(self, tmp_path):
+        category = tmp_path / "legacy"
+        category.mkdir()
+        (category / "research.md").write_text(
+            "---\nname: research\ndescription: Legacy research skill.\n---\n",
+            encoding="utf-8",
+        )
+
+        p1, p2 = self._patch_dirs(tmp_path, [])
+        with p1, p2:
+            result = json.loads(skill_view("legacy/research"))
+
+        assert result["success"] is True
+        assert Path(result["path"]).parts == ("legacy", "research.md")
+
+
     def test_two_externals_same_name_also_refuse(self, tmp_path):
         """Collision detection is symmetric — two external dirs with
         same-name skills also trigger the refusal."""

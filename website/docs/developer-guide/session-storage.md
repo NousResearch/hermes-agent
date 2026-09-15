@@ -6,6 +6,53 @@ sessions. This replaces the earlier per-session JSONL file approach.
 
 Source files: `hermes_state.py` (facade) plus the `hermes_state_*.py` siblings (schema, fts, search, compression, portability, gateway, ...)
 
+## Hermes home and profile isolation
+
+`get_hermes_home()` is the authoritative filesystem resolver for state and
+configuration. It uses a context-local override first, then the `HERMES_HOME`
+environment variable, and finally the platform default (`~/.hermes` on macOS
+and Linux; `%LOCALAPPDATA%/hermes` on Windows). Consequently, the default
+database is always `get_hermes_home() / "state.db"`, not a path that callers
+should hard-code as `~/.hermes/state.db`.
+
+Named profiles are isolated directories: a profile named `coder`, for example,
+uses `<default Hermes root>/profiles/coder/` and therefore has its own
+`state.db`, configuration, logs, and other profile-scoped state. A process that
+creates a database, reads configuration, or starts a child process for a
+profile must retain or pass that profile's `HERMES_HOME`; falling back to the
+default root mixes the wrong profile's state into the operation.
+
+The CLI bootstrap calls `_apply_profile_override()` before importing the rest
+of Hermes. An explicit `--profile`/`-p` resolves that profile and writes the
+resolved directory to `HERMES_HOME`. Without an explicit selector, a
+profile-specific `HERMES_HOME` is preserved; otherwise the bootstrap can use
+the default root's active-profile selection. `HOME` only determines the
+platform default used when no context override or `HERMES_HOME` is available.
+Changing `HOME` is not a safe way to select a named profile. In particular, a
+subprocess that drops `HERMES_HOME` can fall back to the default profile even
+when another profile is active, so subprocess spawners should pass
+`HERMES_HOME` explicitly.
+
+Use `display_hermes_home()` only for user-facing text. It formats the resolved
+home relative to the user's home directory when possible (for example,
+`~/.hermes/profiles/coder`); it does not provide a separate resolution rule.
+
+### Test isolation guard
+
+Tests must use a temporary `HERMES_HOME` or an explicit temporary database
+path. The live-system guard raises before a test-context process opens a
+production `state.db` under the real default Hermes root or a real named
+profile, preventing fixture data or SQLite side effects from reaching a live
+installation.
+
+`HERMES_STATE_DB_GUARD_BYPASS=1` is a test-only escape hatch for a spawned
+child process that genuinely must access the live database. The equivalent
+in-process escape hatch is `@pytest.mark.live_system_guard_bypass`. Do not set
+either bypass in normal Hermes commands, development shells, or application
+configuration: it disables the guard (a hard `RuntimeError`) that protects live
+session history, and a shell that exports it hands the bypass to every later
+pytest run.
+
 ### Desktop profile isolation and compaction generations
 
 Each named profile stores its transcript in its own `$HERMES_HOME/state.db`,
@@ -468,10 +515,9 @@ db.delete_session("sess_abc123")
 
 ## Database Location
 
-Default path: `~/.hermes/state.db`
-
-This is derived from `hermes_constants.get_hermes_home()` which resolves to
-`~/.hermes/` by default, or the value of `HERMES_HOME` environment variable.
+Default path: `get_hermes_home() / "state.db"` — `~/.hermes/state.db` for the
+default profile, `~/.hermes/profiles/<name>/state.db` for a named profile, or
+wherever `HERMES_HOME` points (see [Hermes home and profile isolation](#hermes-home-and-profile-isolation)).
 
 The database file, WAL file (`state.db-wal`), and shared-memory file
 (`state.db-shm`) are all created in the same directory.

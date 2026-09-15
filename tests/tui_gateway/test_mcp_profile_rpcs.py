@@ -360,3 +360,31 @@ def test_default_profile_add_when_profile_omitted(hermes_root):
     assert "rootsvc" not in _read_yaml(root / "profiles" / "work" / "config.yaml").get(
         "mcp_servers", {}
     )
+
+
+def test_test_resolves_env_refs_from_requested_profile_secret_scope(hermes_root, monkeypatch):
+    """``mcp.servers.test`` for a secondary must expand its ``${VAR}`` header from THAT profile's
+    secret scope, not the launch process's ``os.environ`` (the default profile's value) — the
+    Desktop MCP setup "Test connection" otherwise reports green against the wrong credential.
+    ``os.environ`` is never mutated by the scope."""
+    import hermes_cli.mcp_config as mcp_config
+
+    work = hermes_root / "profiles" / "work"
+    (work / ".env").write_text("ALPHA_ONLY_TOKEN=work-token\n", encoding="utf-8")
+    (work / "config.yaml").write_text(
+        "mcp_servers:\n  srv:\n    url: http://x/mcp\n"
+        "    headers:\n      Authorization: Bearer ${ALPHA_ONLY_TOKEN}\n", encoding="utf-8")
+    monkeypatch.setenv("ALPHA_ONLY_TOKEN", "default-process-token")
+
+    resolved = {}
+
+    def fake_probe(name, config, connect_timeout=30, details=None):
+        resolved.update(mcp_config._resolve_mcp_server_config(config).get("headers", {}))
+        return [("tool-a", "desc")]
+
+    monkeypatch.setattr(mcp_config, "_probe_single_server", fake_probe)
+    result = _result(_call("mcp.servers.test", {"profile": "work", "name": "srv"}))
+
+    assert result["ok"] is True
+    assert resolved["Authorization"] == "Bearer work-token"
+    assert os.environ["ALPHA_ONLY_TOKEN"] == "default-process-token"

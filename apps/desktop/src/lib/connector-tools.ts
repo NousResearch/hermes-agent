@@ -1,12 +1,77 @@
 import { isRecord } from '@assistant-ui/core/internal'
 import type { ToolCallMessagePart } from '@assistant-ui/react'
 
-/** Connector names/results as presentation data, never authorization. */
+import type { ChatMessage } from '@/lib/chat-messages'
+
+export function latestConnectorPart(messages: ChatMessage[]) {
+  return messages
+    .flatMap(message => message.parts)
+    .filter(part => {
+      if (part.type !== 'tool-call') {
+        return false
+      }
+
+      if (part.toolName === 'manage_connections') {
+        const input = recordOf(part.args)
+
+        return (
+          (input.action ?? 'status') !== 'status' || (Array.isArray(input.connectors) && input.connectors.length > 0)
+        )
+      }
+
+      return connectorCalls(part.toolName, part.args).length > 0
+    })
+    .at(-1)
+}
+
+export interface McpTarget {
+  name: string
+  action: 'authorize' | 'enable' | 'install'
+}
+
+const MCP_ACTIONS: readonly McpTarget['action'][] = ['install', 'enable', 'authorize']
+
+/** Reads args so live and settled rows classify alike. */
+export function mcpTargets(toolName: string, args: ToolCallMessagePart['result']): McpTarget[] {
+  if (toolName !== 'manage_connections') {
+    return []
+  }
+
+  const input = recordOf(args)
+  const action = MCP_ACTIONS.find(a => a === input.action) ?? 'install'
+
+  if (!Array.isArray(input.connectors)) {
+    return []
+  }
+
+  return input.connectors.flatMap(entry => {
+    const name = isRecord(entry) && entry.mcp === true ? connectorText(entry.name)?.trim() : undefined
+
+    return name ? [{ action, name: name.toLowerCase() }] : []
+  })
+}
+
+export type ConnectionStatus = 'active' | 'initiated' | 'failed' | 'expired' | 'revoked' | 'inactive' | 'initializing'
+
+const CONNECTION_STATUSES: readonly ConnectionStatus[] = [
+  'active',
+  'initiated',
+  'failed',
+  'expired',
+  'revoked',
+  'inactive',
+  'initializing'
+]
+
+const isConnectionStatus = (value: string): value is ConnectionStatus =>
+  CONNECTION_STATUSES.some(status => status === value)
+
+/** Display-only; these fields never grant access. */
 export interface ConnectorRow {
   connector: string
   connected?: boolean
   enabled?: boolean
-  connectionStatus?: string | null
+  connectionStatus?: ConnectionStatus
   name?: string
   description?: string
 }
@@ -26,7 +91,7 @@ export const recordOf = (value: ToolCallMessagePart['result']): ToolCallMessageP
     }
   }
 
-  // SAFETY: tool payloads arrive as JSON-RPC or stored JSON; the object guard excludes arrays and primitives.
+  // SAFETY: isRecord excludes arrays and primitives from the JSON payload.
   return isRecord(value) ? (value as ToolCallMessagePart['args']) : {}
 }
 
@@ -38,10 +103,13 @@ const TITLES: ConnectorTitles = {
   gmail: 'Gmail',
   googlecalendar: 'Google Calendar',
   googledrive: 'Google Drive',
+  googledocs: 'Google Docs',
   slack: 'Slack',
   github: 'GitHub',
   notion: 'Notion',
   linear: 'Linear',
+  jira: 'Jira',
+  todoist: 'Todoist',
   figma: 'Figma',
   discord: 'Discord',
   stripe_mcp: 'Stripe',
@@ -120,7 +188,13 @@ export function connectionRows(
       merged.enabled = row.enabled
     }
 
-    for (const key of ['connectionStatus', 'name', 'description'] as const) {
+    const connectionStatus = connectorText(row.connectionStatus)
+
+    if (connectionStatus && isConnectionStatus(connectionStatus)) {
+      merged.connectionStatus = connectionStatus
+    }
+
+    for (const key of ['name', 'description'] as const) {
       const text = connectorText(row[key])
 
       if (text !== undefined) {
@@ -146,7 +220,7 @@ export function connectionRows(
   return [...rows.values()]
 }
 
-/** Token-bearing auth links are opened only by a deliberate user action. */
+/** Authorization URLs may carry tokens; reject non-HTTPS or embedded credentials. */
 export function connectorAuthorizationUrl(value: ToolCallMessagePart['result']): string | null {
   const text = connectorText(value)
 

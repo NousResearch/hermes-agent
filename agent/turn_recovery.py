@@ -668,6 +668,62 @@ _NONRETRYABLE_LABELS = {
 }
 
 
+def _resolve_unattended_deferral(agent: Any, reason: Any, error_context: Any) -> Optional[float]:
+    """Reset timestamp to park this UNATTENDED run until, or None to walk as usual.
+
+    Thin seam over ``agent.unattended_defer.resolve_deferral`` so the recovery module
+    keeps one import site and the policy stays in one file. Also stashes
+    ``error_context`` on the agent: the SECOND walk site (``turn_api_error``'s
+    max-retries path) has no access to it, and the sticky guard in
+    ``_defer_instead_of_walking`` reads it from there.
+    """
+    try:
+        agent._last_error_context = error_context
+    except Exception:
+        pass
+    try:
+        from agent.unattended_defer import resolve_deferral
+        return resolve_deferral(agent, reason, error_context=error_context)
+    except Exception:
+        logger.debug("Unattended deferral check failed; falling back to the chain walk", exc_info=True)
+        return None
+
+
+def _unattended_deferred_result(
+    agent: Any, reset_at: float, *, messages: List[Dict[str, Any]], api_call_count: int, classified: Any,
+) -> Dict[str, Any]:
+    """Terminal turn result for a deferred unattended run.
+
+    ``failed=True`` + ``failure_retryable=True`` so every existing caller treats it as
+    a recoverable non-completion (no partial answer is invented), and the new
+    ``deferred_until`` / ``deferral_reason`` keys let the cron scheduler and the kanban
+    worker re-schedule precisely instead of retrying blind. Callers that don't know
+    about deferral see an ordinary retryable failure — which is the correct degraded
+    behaviour, not a wrong one.
+    """
+    from agent.unattended_defer import format_reset, record_deferral
+    record_deferral(agent, reset_at)
+    when = format_reset(reset_at)
+    summary = (
+        f"Deferred: {getattr(agent, 'model', '?')} via {getattr(agent, 'provider', '?')} is "
+        f"rate-limited until {when}. This is an unattended run "
+        f"(fallback.unattended_on_rate_limit=defer), so it was parked rather than falling "
+        f"back to a costlier model."
+    )
+    logger.warning("%s%s", getattr(agent, "log_prefix", ""), summary)
+    agent._flush_status_buffer()
+    agent._emit_status(f"⏸️ {summary}")
+    return {
+        "final_response": summary, "messages": messages, "api_calls": api_call_count,
+        "completed": False, "failed": True, "error": summary,
+        "failure_reason": "unattended_rate_limit_deferred", "failure_retryable": True,
+        "deferred_until": float(reset_at),
+        "deferral_reason": getattr(classified.reason, "value", str(classified.reason)),
+        "deferred_provider": str(getattr(agent, "provider", "") or ""),
+        "deferred_model": str(getattr(agent, "model", "") or ""),
+    }
+
+
 def nonretryable_client_error_result(
     agent: Any, api_error: Exception, classified: Any, *, status_code: Optional[int],
     api_kwargs: Any, api_messages: Any, messages: List[Dict[str, Any]], conversation_history: Any,
@@ -1441,6 +1497,17 @@ def route_classified_error(
         or (_is_transport_failure and retry_count >= 2)
     )
     if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
+        # Defer-on-429 for UNATTENDED runs: this is the eager rate-limit path, and the
+        # only site where the provider's reset timestamp (``error_context``) is still in
+        # scope. When the policy fires, END the turn with a structured deferral instead
+        # of walking — the cron scheduler / kanban worker read ``deferred_until`` off the
+        # result and re-schedule. Fails open to the walk below.
+        _deferred_until = _resolve_unattended_deferral(agent, classified.reason, error_context)
+        if _deferred_until:
+            return _verdict("return", _unattended_deferred_result(
+                agent, _deferred_until, messages=messages, api_call_count=api_call_count,
+                classified=classified,
+            ))
         # No eager fallback while credential pool rotation may recover. Exception: an
         # upstream-aggregator 429 — the pool can't help, always fall back.
         # Fixes #11314.

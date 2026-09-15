@@ -1227,10 +1227,15 @@ def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
 
 
 def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
+    # ``not_before`` mirrors _lane_rows: a card parked by defer-on-429 is correctly
+    # idle, not stuck. Counting it here would make health telemetry report
+    # "spawnable work exists, 0 spawned" every tick until the reset elapses —
+    # exactly the false stall alarm this predicate exists to avoid.
     rows = conn.execute(
         "SELECT DISTINCT assignee FROM tasks "
-        "WHERE status = ? AND assignee IS NOT NULL AND claim_lock IS NULL",
-        (status,),
+        "WHERE status = ? AND assignee IS NOT NULL AND claim_lock IS NULL "
+        "AND (not_before IS NULL OR not_before <= ?)",
+        (status, int(time.time())),
     ).fetchall()
     if not rows:
         return False
@@ -1709,11 +1714,19 @@ def _tick_spawn_budget(
 
 
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
-    """Unclaimed rows of one lane in dispatch order."""
+    """Unclaimed rows of one lane in dispatch order.
+
+    ``not_before`` gates defer-on-429 re-queues: a card parked until its provider's
+    rate-limit reset stays invisible to dispatch until the clock passes, instead of
+    respawning a worker that would 429 on its first call. NULL (the overwhelming
+    majority) is dispatchable now, so the predicate is a no-op for every other card.
+    """
     return conn.execute(
         "SELECT id, assignee FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
-        "ORDER BY priority DESC, created_at ASC"
+        "AND (not_before IS NULL OR not_before <= ?) "
+        "ORDER BY priority DESC, created_at ASC",
+        (int(time.time()),),
     ).fetchall()
 
 

@@ -1671,7 +1671,7 @@ test('connect() reuse path does not write a token file', async () => {
 })
 
 test('spawnRemoteDashboard fails with update-required when remote lacks --ssh-session-token-file', async () => {
-  const ssh = fakeSsh([[/--ssh-session-token-file/, 'NO\n']])
+  const ssh = fakeSsh([[/serve --help/, 'NO\n']])
 
   await assert.rejects(
     () => spawnRemoteDashboard(ssh, { hermesPath: '/x/hermes', profile: '', token: 'tk', ownershipId: OWNERSHIP_ID }),
@@ -1811,6 +1811,20 @@ test('remote SSH ownership capability requires both secure bootstrap flags', asy
 
   const unsupported = fakeSsh([[/serve --help/, 'NO\n']])
   assert.equal(await remoteSupportsSshOwnership(unsupported, '/x/hermes'), false)
+})
+
+test('remote SSH ownership capability probe failure is not reported as a missing capability', async () => {
+  const failedProbe = fakeSsh([[/serve --help/, '']])
+
+  await assert.rejects(
+    () => remoteSupportsSshOwnership(failedProbe, '/x/hermes'),
+    (error: any) => {
+      assert.equal(error.kind, 'transient-transport-error')
+      assert.doesNotMatch(error.message, /update.*remote/i)
+
+      return true
+    }
+  )
 })
 
 test('probes run under the remote watchdog so a hung CLI cannot orphan (#110478)', async () => {

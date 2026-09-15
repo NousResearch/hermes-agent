@@ -1134,9 +1134,22 @@ async function remoteSupportsSshOwnership(ssh, hermesPath) {
       `printf '%s' "$help" | grep -q ssh-owner-nonce && echo YES || echo NO`
   )
 
-  return String(out || '')
-    .trim()
-    .endsWith('YES')
+  const verdict = String(out || '').trim()
+
+  if (verdict === 'YES') {
+    return true
+  }
+
+  if (verdict === 'NO') {
+    return false
+  }
+
+  const error: any = new Error(
+    'Could not determine whether the remote Hermes install supports Desktop SSH ownership; the capability probe did not return YES or NO.'
+  )
+
+  error.kind = 'transient-transport-error'
+  throw error
 }
 
 async function scrapeReadyPort(ssh, logPath, { timeoutMs = DEFAULT_READY_TIMEOUT_MS, isAlive, signal }: any = {}) {

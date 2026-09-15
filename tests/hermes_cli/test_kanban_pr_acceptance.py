@@ -60,11 +60,15 @@ def github(tmp_path, monkeypatch):
     shim = tmp_path / "bin"
     shim.mkdir()
     gh = shim / "gh"
-    gh.write_text(f"#!{sys.executable}\nimport sys,urllib.request\n"
+    gh.write_text(f"#!{sys.executable}\nimport os,sys,urllib.request\n"
+                  "real=os.environ.get('HERMES_REAL_HOME')\n"
+                  "assert not real or os.environ.get('HOME') == real\n"
                   f"u='http://127.0.0.1:{server.server_port}/'+sys.argv[2]\n"
                   "print(urllib.request.urlopen(u).read().decode())\n")
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("HOME", str(tmp_path / "profile-home"))
+    monkeypatch.setenv("HERMES_REAL_HOME", str(tmp_path / "real-home"))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     kb.init_db()
     try:

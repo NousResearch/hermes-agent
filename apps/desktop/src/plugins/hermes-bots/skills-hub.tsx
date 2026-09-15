@@ -63,11 +63,11 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
 
       const data = event.data
 
-      if (!data || data.type !== 'hermes-skill-pick' || !data.name) {
+      if (!data || data.type !== 'hermes-skill-pick' || !data.name || !data.identifier) {
         return
       }
 
-      const target = String(data.identifier || data.name)
+      const target = String(data.identifier)
 
       // Skill identifiers are slugs / owner-name paths — keep anything
       // else out of skills.manage.

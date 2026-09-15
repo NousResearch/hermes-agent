@@ -81,14 +81,24 @@ const electron = vi.hoisted(() => {
     }
 
     async executeJavaScript(source: string): Promise<unknown> {
+      if (source.includes('byRef.get')) {
+        return { success: true, x: 50, y: 50 }
+      }
       if (source.includes('__hermesWorkstationRefs')) {
         return {
           url: this.url,
           title: this.title,
-          text: '',
+          text: this.url.includes('challenge') ? 'confirm you are human' : '',
           totalTextChars: 0,
           truncated: false,
           elements: []
+        }
+      }
+      if (source.includes('selectorUsed')) {
+        return {
+          count: 1,
+          selector_used: 'article',
+          items: [{ index: 1, title: 'Item 1', url: 'https://example.test/1', price: '$10' }]
         }
       }
 
@@ -633,3 +643,73 @@ test('controller binds kanbanCardId and runId and rejects mismatch fail-closed a
   assert.equal(persistedTask(taskId)?.runId, 'run-101')
   await second.destroy()
 })
+
+test('browser_extract_items extracts structured cards via controller request', async () => {
+  runtimeHome()
+  const runtime = new WorkstationBrowserRuntime()
+  const taskId = 'task-extract-test'
+
+  await executeControlRequest(runtime, {
+    action: 'browser_navigate',
+    task_id: taskId,
+    arguments: { url: 'https://example.test/store' }
+  })
+
+  const extracted = await executeControlRequest(runtime, {
+    action: 'browser_extract_items',
+    task_id: taskId,
+    arguments: { selector: 'article', limit: 10 }
+  })
+
+  assert.equal(extracted.success, true)
+  assert.equal(extracted.count, 1)
+  assert.equal(extracted.selector_used, 'article')
+  assert.equal((extracted.items as Array<Record<string, unknown>>)[0].title, 'Item 1')
+  await runtime.destroy()
+})
+
+test('browser_snapshot detects verification wall and flags human handoff', async () => {
+  runtimeHome()
+  const runtime = new WorkstationBrowserRuntime()
+  const taskId = 'task-wall-test'
+
+  const nav = await executeControlRequest(runtime, {
+    action: 'browser_navigate',
+    task_id: taskId,
+    arguments: { url: 'https://example.test/gz/account-verification' }
+  })
+
+  assert.equal(nav.success, true)
+  assert.equal(nav.wall_detected, true)
+  assert.match(String(nav.snapshot), /HUMAN_HANDOFF_REQUIRED/)
+  assert.match(String(nav.wall_reason), /Verification URL pattern/)
+  await runtime.destroy()
+})
+
+test('browser_type handles clear and append options without errors', async () => {
+  runtimeHome()
+  const runtime = new WorkstationBrowserRuntime()
+  const taskId = 'task-type-test'
+
+  await executeControlRequest(runtime, {
+    action: 'browser_navigate',
+    task_id: taskId,
+    arguments: { url: 'https://example.test/form' }
+  })
+
+  const typed = await executeControlRequest(runtime, {
+    action: 'browser_type',
+    task_id: taskId,
+    arguments: { ref: '@e1', text: 'cleared text', clear: true, append: false }
+  })
+  assert.equal(typed.success, true)
+
+  const appended = await executeControlRequest(runtime, {
+    action: 'browser_type',
+    task_id: taskId,
+    arguments: { ref: '@e1', text: ' more text', clear: false, append: true }
+  })
+  assert.equal(appended.success, true)
+  await runtime.destroy()
+})
+

@@ -13,7 +13,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { probeGatewayWebSocket } from './gateway-ws-probe'
+import { probeGatewayWebSocket, probeGatewayWebSocketWithRetry } from './gateway-ws-probe'
 
 // Minimal WebSocket double: records listeners synchronously (the probe attaches
 // them in its executor) and exposes emit() so the test can replay events.
@@ -178,3 +178,59 @@ test('probe passes extra upgrade headers to the WebSocket constructor (Cloudflar
   await barePending
   assert.equal(seenBare[0], undefined)
 })
+
+test('probeGatewayWebSocketWithRetry succeeds on first attempt', async () => {
+  const { FakeWs, instances } = makeFakeWs()
+  const promise = probeGatewayWebSocketWithRetry('ws://host/api/ws?token=t', {
+    WebSocketImpl: FakeWs,
+    connectTimeoutMs: 50,
+    maxDurationMs: 200,
+    retryDelayMs: 10
+  })
+  instances[0].emit('open', {})
+  instances[0].emit('message', {})
+  const result = await promise
+  assert.deepEqual(result, { ok: true })
+})
+
+test('probeGatewayWebSocketWithRetry retries after timeout and succeeds', async () => {
+  const { FakeWs, instances } = makeFakeWs()
+  const promise = probeGatewayWebSocketWithRetry('ws://host/api/ws?token=t', {
+    WebSocketImpl: FakeWs,
+    connectTimeoutMs: 20,
+    maxDurationMs: 200,
+    retryDelayMs: 10
+  })
+
+  // First instance times out (no open event emitted).
+  // Wait for the second instance to be created on retry.
+  const t0 = Date.now()
+  while (instances.length < 2 && Date.now() - t0 < 500) {
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  assert.equal(instances.length >= 2, true)
+  instances[1].emit('open', {})
+  instances[1].emit('message', {})
+
+  const result = await promise
+  assert.deepEqual(result, { ok: true })
+})
+
+test('probeGatewayWebSocketWithRetry fast-fails on auth 4401 rejection without retrying', async () => {
+  const { FakeWs, instances } = makeFakeWs()
+  const start = Date.now()
+  const promise = probeGatewayWebSocketWithRetry('ws://host/api/ws?token=bad', {
+    WebSocketImpl: FakeWs,
+    connectTimeoutMs: 100,
+    maxDurationMs: 1000,
+    retryDelayMs: 50
+  })
+
+  instances[0].emit('close', { code: 4401, reason: 'unauthorized' })
+  const result = await promise
+
+  assert.equal(result.ok, false)
+  assert.equal(instances.length, 1) // Did not retry
+  assert.ok(Date.now() - start < 300) // Fast failed
+})
+

@@ -234,4 +234,58 @@ function closeReason(event, fallback) {
   return fallback
 }
 
-export { DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_READY_GRACE_MS, probeGatewayWebSocket }
+export type ProbeGatewayWebSocketOptions = {
+  WebSocketImpl?: any
+  connectTimeoutMs?: number
+  readyGraceMs?: number
+  headers?: Record<string, string>
+}
+
+export type ProbeGatewayWebSocketWithRetryOptions = ProbeGatewayWebSocketOptions & {
+  maxDurationMs?: number
+  retryDelayMs?: number
+}
+
+async function probeGatewayWebSocketWithRetry(
+  wsUrl: string,
+  options: ProbeGatewayWebSocketWithRetryOptions = {}
+) {
+  const maxDurationMs = options.maxDurationMs ?? 30_000
+  const deadline = Date.now() + maxDurationMs
+  const retryDelayMs = options.retryDelayMs ?? 500
+  let lastResult: { ok: boolean; reason?: string } | null = null
+
+  while (Date.now() < deadline) {
+    const remaining = Math.max(1_000, deadline - Date.now())
+    const connectTimeoutMs = Math.min(options.connectTimeoutMs ?? 10_000, remaining)
+
+    lastResult = await probeGatewayWebSocket(wsUrl, {
+      ...options,
+      connectTimeoutMs
+    })
+
+    if (lastResult.ok) {
+      return lastResult
+    }
+
+    // Fast-fail if the server explicitly rejected the credentials (4401 / 4403 / closed post-accept).
+    const reason = String(lastResult.reason || '')
+    if (reason.includes('4401') || reason.includes('4403') || reason.includes('credential rejected')) {
+      return lastResult
+    }
+
+    if (Date.now() + retryDelayMs < deadline) {
+      await new Promise(resolve => setTimeout(resolve, retryDelayMs))
+    }
+  }
+
+  return lastResult ?? { ok: false, reason: 'Timed out waiting for WebSocket to become ready.' }
+}
+
+export {
+  DEFAULT_CONNECT_TIMEOUT_MS,
+  DEFAULT_READY_GRACE_MS,
+  probeGatewayWebSocket,
+  probeGatewayWebSocketWithRetry
+}
+

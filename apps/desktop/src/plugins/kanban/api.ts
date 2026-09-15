@@ -30,7 +30,10 @@ import type {
   KanbanTaskDetail,
   OrchestrationSettings,
   TaskEstimate,
-  WorkerLog
+  WorkerLog,
+  HybridBoard,
+  HybridCard,
+  HybridColumn
 } from './types'
 
 type Rest = <T>(path: string, opts?: PluginRestOptions) => Promise<T>
@@ -270,3 +273,19 @@ export const autoDescribeProfile = (name: string) =>
     `/profiles/${encodeURIComponent(name)}/describe-auto`,
     { method: 'POST', body: { overwrite: true } }
   )
+
+// ── Hybrid board reads/writes ───────────────────────────────────────────────
+// These calls use the same plugin REST door and canonical Kanban database as
+// the agentic board. The renderer only supplies semantic move intent.
+export const fetchHybridBoards = () => call<{ boards: HybridBoard[] }>(withBoard('/hybrid/boards'))
+export const fetchHybridBoard = (id: string) => call<{ board: HybridBoard }>(withBoard(`/hybrid/boards/${id}`))
+export const createHybridBoard = (name: string, description = '') =>
+  call<{ board: HybridBoard }>(withBoard('/hybrid/boards'), { method: 'POST', body: { name, description } })
+export const createHybridColumn = (boardId: string, name: string) =>
+  call<{ column: HybridColumn }>(withBoard(`/hybrid/boards/${boardId}/columns`), { method: 'POST', body: { name } })
+export const createHybridCard = (boardId: string, columnId: string, title: string, description = '') =>
+  call<{ card: HybridCard }>(withBoard(`/hybrid/boards/${boardId}/cards`), { method: 'POST', body: { column_id: columnId, title, description } })
+export const moveHybridCard = (cardId: string, targetColumnId: string, expectedRevision: number) =>
+  call<{ card: HybridCard }>(withBoard(`/hybrid/cards/${cardId}/move`), { method: 'POST', body: { target_column_id: targetColumnId, expected_revision: expectedRevision } })
+export const updateHybridCard = (cardId: string, patch: Pick<HybridCard, 'title' | 'description' | 'revision'>) =>
+  call<{ card: HybridCard }>(withBoard(`/hybrid/cards/${cardId}`), { method: 'PATCH', body: { title: patch.title, description: patch.description, expected_revision: patch.revision } })

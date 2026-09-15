@@ -53,7 +53,6 @@ function resolvePortAnnounceTimeoutMs(env = process.env) {
  */
 function waitForDashboardPort(child, timeoutMs = resolvePortAnnounceTimeoutMs()) {
   return new Promise((resolve, reject) => {
-    let buf = ''
     let done = false
 
     function cleanup() {
@@ -63,28 +62,36 @@ function waitForDashboardPort(child, timeoutMs = resolvePortAnnounceTimeoutMs())
 
       done = true
       clearTimeout(timer)
-      child.stdout.off('data', onData)
+      child.stdout?.off?.('data', onStdoutData)
+      child.stderr?.off?.('data', onStderrData)
       child.off('exit', onExit)
       child.off('error', onError)
     }
 
-    function onData(chunk) {
-      buf += chunk.toString()
-      let nl
+    function makeStreamMatcher() {
+      let buf = ''
 
-      while ((nl = buf.indexOf('\n')) !== -1) {
-        const line = buf.slice(0, nl)
-        buf = buf.slice(nl + 1)
-        const m = line.match(_READY_RE)
+      return function onData(chunk) {
+        buf += chunk.toString()
+        let nl
 
-        if (m) {
-          cleanup()
-          resolve(parseInt(m[1], 10))
+        while ((nl = buf.indexOf('\n')) !== -1) {
+          const line = buf.slice(0, nl)
+          buf = buf.slice(nl + 1)
+          const m = line.match(_READY_RE)
 
-          return
+          if (m) {
+            cleanup()
+            resolve(parseInt(m[1], 10))
+
+            return
+          }
         }
       }
     }
+
+    const onStdoutData = makeStreamMatcher()
+    const onStderrData = makeStreamMatcher()
 
     function onExit(code, signal) {
       cleanup()
@@ -101,7 +108,8 @@ function waitForDashboardPort(child, timeoutMs = resolvePortAnnounceTimeoutMs())
       reject(new Error(`Timed out waiting for Hermes backend port announcement (${timeoutMs}ms)`))
     }, timeoutMs)
 
-    child.stdout.on('data', onData)
+    child.stdout?.on?.('data', onStdoutData)
+    child.stderr?.on?.('data', onStderrData)
     child.on('exit', onExit)
     child.on('error', onError)
   })
@@ -189,7 +197,10 @@ function waitForDashboardPortAnnouncement(
   const timeoutMs = options.timeoutMs ?? resolvePortAnnounceTimeoutMs()
 
   if (options.readyFile) {
-    return waitForDashboardReadyFile(options.readyFile, child, timeoutMs)
+    return Promise.race([
+      waitForDashboardReadyFile(options.readyFile, child, timeoutMs),
+      waitForDashboardPort(child, timeoutMs)
+    ])
   }
 
   return waitForDashboardPort(child, timeoutMs)

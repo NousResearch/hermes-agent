@@ -233,7 +233,7 @@ def patch_browser_tool(text: str) -> str:
         "browser_navigate": 'browser_navigate(url=args.get("url", ""), task_id=kw.get("task_id"))',
         "browser_snapshot": 'browser_snapshot(\n            full=args.get("full", False), task_id=kw.get("task_id"), user_task=kw.get("user_task"))',
         "browser_click": 'browser_click(ref=args.get("ref", ""), task_id=kw.get("task_id"))',
-        "browser_type": 'browser_type(ref=args.get("ref", ""), text=args.get("text", ""), task_id=kw.get("task_id"))',
+        "browser_type": 'browser_type(ref=args.get("ref", ""), text=args.get("text", ""), clear=args.get("clear", True), append=args.get("append", False), task_id=kw.get("task_id"))',
         "browser_scroll": 'browser_scroll(direction=args.get("direction", "down"), task_id=kw.get("task_id"))',
         "browser_back": 'browser_back(task_id=kw.get("task_id"))',
         "browser_press": 'browser_press(key=args.get("key", ""), task_id=kw.get("task_id"))',

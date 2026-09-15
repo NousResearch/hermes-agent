@@ -87,6 +87,7 @@ _WORKSTATION_SCHEMA_TOOLS = frozenset({
     "browser_get_images",
     "browser_vision",
     "browser_console",
+    "browser_extract_items",
     # Extension management is a Desktop-session capability: the agent can
     # request it explicitly, but non-Desktop sessions never carry these
     # schemas. Runtime reachability/policy remain checked at dispatch.

@@ -1666,6 +1666,53 @@ def _handle_link(args: dict, **kw) -> str:
         return tool_error(f"kanban_link: {e}")
 
 
+def _handle_hybrid(args: dict, **kw) -> str:
+    """Operate a Hybrid board through the canonical Kanban domain service."""
+    delegated_err = _reject_delegated_child_mutation("kanban_hybrid")
+    if delegated_err:
+        return delegated_err
+    from hermes_cli import hybrid_kanban as hybrid
+
+    action = str(args.get("action") or "").strip()
+    board = args.get("board")
+    session_id = args.get("session_id") or os.environ.get("HERMES_SESSION_ID")
+    actor_id = os.environ.get("HERMES_PROFILE") or "agent"
+    try:
+        _, conn = _connect(board=board)
+        try:
+            common = {"actor_type": "agent", "actor_id": actor_id, "session_id": session_id, "source": "agent-tool"}
+            if action == "list_boards":
+                return _ok(boards=hybrid.list_boards(conn))
+            if action == "get_board":
+                return _ok(board=hybrid.get_board(conn, str(args["board_id"])))
+            if action == "create_board":
+                return _ok(board=hybrid.create_board(conn, name=str(args["name"]), description=str(args.get("description") or ""), **common))
+            if action == "create_column":
+                return _ok(column=hybrid.create_column(conn, board_id=str(args["board_id"]), name=str(args["name"]), **common))
+            if action == "move_column":
+                return _ok(column=hybrid.move_column(conn, column_id=str(args["column_id"]), before_id=args.get("before_id"), after_id=args.get("after_id"), expected_revision=args.get("expected_revision"), **common))
+            if action == "create_card":
+                return _ok(card=hybrid.create_card(conn, board_id=str(args["board_id"]), column_id=str(args["column_id"]), title=str(args["title"]), description=str(args.get("description") or ""), metadata=args.get("metadata"), **common))
+            if action == "get_card":
+                return _ok(card=hybrid.get_card(conn, str(args["card_id"])))
+            if action == "update_card":
+                return _ok(card=hybrid.update_card(conn, card_id=str(args["card_id"]), title=args.get("title"), description=args.get("description"), expected_revision=args.get("expected_revision"), **common))
+            if action == "move_card":
+                return _ok(card=hybrid.move_card(conn, card_id=str(args["card_id"]), target_column_id=str(args["target_column_id"]), before_id=args.get("before_id"), after_id=args.get("after_id"), expected_revision=args.get("expected_revision"), **common))
+            return tool_error("unknown Hybrid Kanban action")
+        finally:
+            conn.close()
+    except KeyError as exc:
+        return tool_error(f"kanban_hybrid: missing required field {exc.args[0]}")
+    except hybrid.HybridKanbanConflict as exc:
+        return tool_error(f"kanban_hybrid conflict: {exc}; refetch and retry")
+    except hybrid.HybridKanbanError as exc:
+        return tool_error(f"kanban_hybrid: {exc}")
+    except Exception as exc:
+        logger.exception("kanban_hybrid failed")
+        return tool_error(f"kanban_hybrid: {exc}")
+
+
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
@@ -2348,6 +2395,20 @@ KANBAN_LINK_SCHEMA = {
     },
 }
 
+KANBAN_HYBRID_SCHEMA = {
+    "name": "kanban_hybrid",
+    "description": "Operate the shared human+agent Hybrid Kanban. Hybrid columns are organizational only and never complete or dispatch agentic tasks. Use semantic move intent (before_id/after_id), not positions.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["list_boards", "get_board", "create_board", "create_column", "move_column", "create_card", "get_card", "update_card", "move_card"]},
+            "board": _board_schema_prop(), "board_id": {"type": "string"}, "column_id": {"type": "string"}, "target_column_id": {"type": "string"}, "card_id": {"type": "string"},
+            "name": {"type": "string"}, "title": {"type": "string"}, "description": {"type": "string"}, "before_id": {"type": "string"}, "after_id": {"type": "string"}, "expected_revision": {"type": "integer"}, "metadata": {"type": "object"}, "session_id": {"type": "string"}
+        },
+        "required": ["action"],
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # Registration
@@ -2477,4 +2538,13 @@ registry.register(
     handler=_handle_link,
     check_fn=_check_kanban_mode,
     emoji="🔗",
+)
+
+registry.register(
+    name="kanban_hybrid",
+    toolset="kanban",
+    schema=KANBAN_HYBRID_SCHEMA,
+    handler=_handle_hybrid,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="🗂",
 )

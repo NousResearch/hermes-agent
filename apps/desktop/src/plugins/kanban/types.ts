@@ -163,6 +163,37 @@ export interface BoardsResponse {
   current: string
 }
 
+/** Human+agent shared workspaces. These are deliberately separate from the
+ * agentic ``KanbanTask.status`` state machine. */
+export interface HybridCard {
+  id: string
+  board_id: string
+  column_id: string
+  title: string
+  description: string
+  position: number
+  revision: number
+  metadata: Record<string, unknown>
+  updated_at: number
+}
+
+export interface HybridColumn {
+  id: string
+  board_id: string
+  name: string
+  position: number
+  revision: number
+  cards: HybridCard[]
+}
+
+export interface HybridBoard {
+  id: string
+  name: string
+  description: string
+  revision: number
+  columns: HybridColumn[]
+}
+
 /** GET /tasks/:id/log — the worker's stdout/stderr tail. */
 export interface WorkerLog {
   exists: boolean

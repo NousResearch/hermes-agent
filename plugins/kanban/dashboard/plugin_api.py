@@ -51,10 +51,49 @@ from pydantic import BaseModel, Field
 
 from hermes_cli import kanban_db
 from hermes_cli import kanban_diagnostics as kd
+from hermes_cli import hybrid_kanban
 
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _hybrid_error(exc: Exception) -> "HTTPException":
+    """Map canonical Hybrid domain failures without leaking SQLite details."""
+    code = 409 if isinstance(exc, hybrid_kanban.HybridKanbanConflict) else 400
+    return HTTPException(status_code=code, detail=str(exc))
+
+
+class HybridBoardBody(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=20_000)
+
+
+class HybridColumnBody(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class HybridMoveBody(BaseModel):
+    before_id: Optional[str] = None
+    after_id: Optional[str] = None
+    expected_revision: Optional[int] = Field(default=None, ge=1)
+
+
+class HybridCardBody(BaseModel):
+    column_id: str
+    title: str = Field(min_length=1, max_length=300)
+    description: str = Field(default="", max_length=100_000)
+    metadata: Optional[dict[str, Any]] = None
+
+
+class HybridCardPatch(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=300)
+    description: Optional[str] = Field(default=None, max_length=100_000)
+    expected_revision: Optional[int] = Field(default=None, ge=1)
+
+
+class HybridCardMove(HybridMoveBody):
+    target_column_id: str
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +411,116 @@ def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, list[str]]:
         )
     ]
     return {"parents": parents, "children": children}
+
+
+# ---------------------------------------------------------------------------
+# Hybrid Kanban — same canonical DB/domain, separate human organization mode
+# ---------------------------------------------------------------------------
+
+@router.get("/hybrid/boards")
+def hybrid_list_boards(board: Optional[str] = Query(None), include_archived: bool = False):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        return {"boards": hybrid_kanban.list_boards(conn, include_archived=include_archived)}
+    finally:
+        conn.close()
+
+
+@router.post("/hybrid/boards")
+def hybrid_create_board(payload: HybridBoardBody, board: Optional[str] = Query(None)):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        return {"board": hybrid_kanban.create_board(conn, name=payload.name, description=payload.description, source="dashboard", actor_id="dashboard")}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
+@router.get("/hybrid/boards/{board_id}")
+def hybrid_get_board(board_id: str, board: Optional[str] = Query(None), include_archived: bool = False):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        return {"board": hybrid_kanban.get_board(conn, board_id, include_archived=include_archived)}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
+@router.post("/hybrid/boards/{board_id}/columns")
+def hybrid_create_column(board_id: str, payload: HybridColumnBody, board: Optional[str] = Query(None)):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        return {"column": hybrid_kanban.create_column(conn, board_id=board_id, name=payload.name, source="dashboard", actor_id="dashboard")}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
+@router.post("/hybrid/columns/{column_id}/move")
+def hybrid_move_column(column_id: str, payload: HybridMoveBody, board: Optional[str] = Query(None)):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        return {"column": hybrid_kanban.move_column(conn, column_id=column_id, before_id=payload.before_id, after_id=payload.after_id, expected_revision=payload.expected_revision, source="dashboard", actor_id="dashboard")}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
+@router.post("/hybrid/boards/{board_id}/cards")
+def hybrid_create_card(board_id: str, payload: HybridCardBody, board: Optional[str] = Query(None)):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        return {"card": hybrid_kanban.create_card(conn, board_id=board_id, column_id=payload.column_id, title=payload.title, description=payload.description, metadata=payload.metadata, source="dashboard", actor_id="dashboard")}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
+@router.get("/hybrid/cards/{card_id}")
+def hybrid_get_card(card_id: str, board: Optional[str] = Query(None)):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        return {"card": hybrid_kanban.get_card(conn, card_id)}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
+@router.patch("/hybrid/cards/{card_id}")
+def hybrid_update_card(card_id: str, payload: HybridCardPatch, board: Optional[str] = Query(None)):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        return {"card": hybrid_kanban.update_card(conn, card_id=card_id, title=payload.title, description=payload.description, expected_revision=payload.expected_revision, source="dashboard", actor_id="dashboard")}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
+@router.post("/hybrid/cards/{card_id}/move")
+def hybrid_move_card(card_id: str, payload: HybridCardMove, board: Optional[str] = Query(None)):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        return {"card": hybrid_kanban.move_card(conn, card_id=card_id, target_column_id=payload.target_column_id, before_id=payload.before_id, after_id=payload.after_id, expected_revision=payload.expected_revision, source="dashboard", actor_id="dashboard")}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,12 @@
+{
+  "name": "vault",
+  "label": "Vault",
+  "description": "Local-first Markdown knowledge base (Obsidian-compatible) with bidirectional links, graph view, and agent co-authoring",
+  "icon": "BookOpen",
+  "version": "1.0.0",
+  "tab": {
+    "path": "/vault",
+    "position": "after:kanban"
+  },
+  "api": "plugin_api.py"
+}

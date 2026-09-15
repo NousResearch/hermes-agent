@@ -1,15 +1,125 @@
 # CURRENT — Workstation Engineering Journal
 
-Last updated: 2026-09-12
-Active track: V3.1–V3.4 runtime-hardening contract layer — VALIDATED; **175/175** product contract tests green; product evidence gates open
+Last updated: 2026-09-14
+Active track: Workstation Knowledge Subsystem (Hermes Vault) & V3 Hardening
 Repository: `kevynlucasprofissional-stack/hermes-agent`
 Active feature branch: `main` plus current Workstation working tree
 Journal entries:
 - `v1-1-5-integrated-dogfood-mvp.md` (V1 #1.5 MVP verification)
 - `v2-roadmap-completion.md` (Full roadmap completion: V1.1 and V2)
 - `v3-runtime-hardening-closure.md` (V3.1–V3.4 contract-layer closure)
-Status: 158/158 Workstation Pytest passing, Desktop typecheck passing; broad
-Desktop UI and platform/Electron suites pass after the HW-018 KI-006 closure.
+Status: 175/175 Workstation Pytest passing, Desktop typecheck passing.
+
+## H-049 — Workstation Browser Automation Ergonomics: Input Hygiene, Proactive Human Handoff, Canvas Awareness, and Batch Extraction
+
+Status: PLANNED & SPECIFIED — dogfood evidence recorded; roadmap promoted; implementation staged
+Origin: workstation browser real-world dogfood session (session `20260914_223624_261d02`)
+Date / ref: 2026-09-14 / `feat/workstation-hybrid-kanban`
+
+### Claim and decision
+
+Real-world dogfooding of the Hermes Workstation Browser across 5 diverse web paradigms (Python.org documentation, G1 news portal, Mercado Livre & Amazon e-commerce, GitHub issue tracker, and Google Maps SPA) demonstrated that while the Chromium runtime and agent task decomposition are robust, agentic web automation encounters four specific friction points:
+
+1. **Input Hygiene (`browser_type`)**: Typing into inputs with pre-existing values (e.g. GitHub's issue search prefilled with `is:issue state:open `) resulted in duplicated/malformed queries (`is:issue state:open is:issue state:open label:...`) because CDP key events lacked explicit selection/clearing guarantees across platforms.
+2. **Auth & Verification Wall Handoff**: When encountering account verification gates (Mercado Livre `/gz/account-verification`), the agent spent turns trying URL workarounds before abandoning the site. A proactive Human Handoff banner in the UI should invite the user to complete verification in the persistent profile once and yield control back to the agent.
+3. **Canvas / WebGL SPA Settlement (Google Maps)**: Canvas-rendered applications yielded an initial accessibility snapshot with `total_text_chars: 1, element_count: 0`. The agent was forced to inject 10+ raw `browser_console` JS scripts to scroll and inspect feed cards. The browser runtime should detect canvas/sparse trees and perform adaptive DOM feed settling before returning snapshots.
+4. **Batch Extraction Overhead**: Extracting product grids (Amazon) and opening hours tables (Maps) required 9–15 sequential tool calls and large token context budgets. Introducing a high-level `browser_extract_items` primitive allows one-step extraction of structured cards/tables without custom scripts.
+
+### Observed evidence (Session `20260914_223624_261d02`)
+
+- **Python.org**: Successfully extracted Python 3.14.7 and synthesized changelog in 2 turns.
+- **G1 Tecnologia**: Successfully navigated, clicked lead article (`@e5`), and summarized deepfake investigation.
+- **Mercado Livre**: Blocked by `/gz/account-verification` (trace ID `cff34157-597e-425d-818c-b3d1c2acfb6a`); agent pivoted to Amazon.
+- **Amazon.com.br**: Extracted 47 items via raw console script; required 3 subsequent scans to map ASINs and filter 27" 144Hz monitors, demonstrating the need for structured extraction.
+- **GitHub**: Search combobox `@e18` duplicated query strings upon `browser_type`.
+- **Google Maps**: Initial snapshot was empty (0 elements); agent successfully used `browser_console` with DOM feed queries and `feed.scrollTop = feed.scrollHeight` to map 21 cafeterias and extract weekly schedules.
+
+### Subsystem roadmap (V3.5)
+
+- **Step 1: Input Clearing in `workstation-browser-runtime.ts`**: Make `typeRef` ensure complete input clearing (`Ctrl/Cmd+A` with explicit `windowsVirtualKeyCode: 65`, `select()`, and DOM value reset) before typing.
+- **Step 2: Verification Wall Detection & Takeover Event**: Detect auth/challenge URL patterns and emit human-takeover prompt.
+- **Step 3: Adaptive DOM Settlement for SPAs**: Heuristic wait for feed containers (`div[role="feed"]`, `main`, etc.) when canvas is detected and accessibility count is <= 2.
+- **Step 4: `browser_extract_items` Tool**: First-class structured card/table extractor returning clean JSON with titles, prices, ratings, and links in one call.
+
+## H-048 — Hybrid Kanban must extend canonical Kanban without inheriting Agentic status semantics
+
+Status: EXPERIMENTAL VERTICAL SLICE IMPLEMENTED
+Origin: human + agent shared workspaces
+Date / ref: 2026-09-14 / `feat/workstation-hybrid-kanban`
+
+### Claim and decision
+
+The established Agentic Kanban is a dispatcher-owned execution state machine.
+The requested Trello-like surface is instead a human/agent organization view.
+The accepted seam is therefore additive Hybrid entities in the existing
+per-board `hermes_cli.kanban_db` database, with one domain service shared by
+the authenticated plugin API and agent tool. Hybrid columns have no mapping to
+`tasks.status`, so a Hybrid “Done” move cannot complete an Agentic task.
+
+### Experiment and observed evidence
+
+- Added `hybrid_boards`, `hybrid_columns`, `hybrid_cards` and
+  `hybrid_activity` through the normal idempotent Kanban schema initialization;
+  no SessionDB, BrowserTask, Journal or Electron-local store was created.
+- `hermes_cli.hybrid_kanban` performs all writes in `kanban_db.write_txn`.
+  It uses semantic placement (`before_id`/`after_id`), a negative temporary
+  rank namespace followed by dense canonical reindexing, and optional entity
+  revision checks for stale client commands.
+- The Kanban plugin API and `kanban_hybrid` agent tool call that same service.
+  Activity records `human` or `agent` actor provenance plus available session
+  and source; the Electron view is a cache/projection with post-write
+  invalidation and bounded polling.
+- `python -m pytest tests/hermes_cli/test_hybrid_kanban.py
+  workstation/tests/test_kanban_journal.py -q` passed **9 tests**. It proves
+  persistence after reopening SQLite, ordering repair, stale rejection,
+  human/agent provenance, agent-tool/domain convergence, and that a Hybrid
+  “Done” move leaves an Agentic task outside the terminal state.
+- `npm run typecheck` in `apps/desktop` passed after restoring locked workspace
+  dependencies.
+
+### Deliberate boundary / next experiment
+
+This is not yet a claim of multi-user realtime or a full Trello clone. The
+next hardening slice should add visual activity/card drawer, destructive
+archive policy, horizontal column drag, and Hybrid event invalidation through
+the existing plugin websocket rather than a new realtime service.
+
+## H-047 — Hermes Vault: Local-First Agentic PKM Subsystem (Obsidian-Compatible Knowledge Core)
+
+Status: PLANNED & DESIGNED — architectural specification recorded; roadmap promoted; execution staged
+Origin: workstation knowledge management & human-agent co-authoring
+Date / ref: 2026-09-14 / `main`
+
+### Claim
+
+A personal AI agent's effectiveness multiplies when user and agent share a single, local-first, durable knowledge base. By introducing **Hermes Vault**—a native, Obsidian-compatible Personal Knowledge Management (PKM) subsystem inside Hermes Workstation—the user and agent can co-author plain Markdown files with bidirectional wikilinks (`[[Note]]`), backlinks indexing, YAML frontmatter, and interactive graph views directly in Hermes Desktop.
+
+### Observed evidence & technical alignment
+
+- Analysis of native Obsidian installation (`C:\Program Files\Obsidian`) confirms that Obsidian's foundation is Electron + Chromium + local Markdown files + CodeMirror editor + D3 force-directed graph.
+- Hermes Desktop (`apps/desktop`) shares the identical Electron Chromium foundation and already includes a sophisticated force-directed simulation engine in `apps/desktop/src/app/starmap` (`d3-force`, canvas rendering, physics, zoom, viewport).
+- Hermes Agent already owns rich file inspection, search, and editing capabilities (`read_file`, `write_to_file`, `replace_file_content`, `grep_search`).
+- Creating a native `/vault` route and Vault indexer eliminates the boundary between external note-taking tools and the agent's memory/actions, enabling the agent to synthesize web research, log decisions, link concepts, and maintain maps of content (MOCs) locally with zero vendor lock-in.
+
+### Subsystem architecture
+
+1. **Vault Engine & Local Indexer (`workstation/vault.py` + Desktop IPC/service)**:
+   - Root directory resolution (default `~/.hermes/vault` or user-configured external directory, e.g. an existing Obsidian vault).
+   - Local filesystem watcher for `.md` files.
+   - AST / regex parser for `[[wikilinks]]`, `#tags`, headings (`[[Note#Heading]]`), and YAML frontmatter properties.
+   - In-memory bidirectional link cache (forward links and backlinks index).
+2. **Desktop UI & Editor (`apps/desktop/src/app/vault`)**:
+   - Master-detail file tree explorer + tags panel.
+   - Markdown editor with live preview, syntax highlighting, and callout rendering.
+   - Autocomplete triggers on typing `[[`.
+   - Side panel showing incoming backlinks and metadata properties.
+3. **Knowledge Graph View**:
+   - Visualizing interconnected notes as an interactive graph using the `starmap` force-simulation primitives.
+4. **Agent-Vault Bridge Tools**:
+   - `vault_search(query)`: FTS5 / BM25 search across vault markdown notes.
+   - `vault_read(note)`: Read note content and metadata.
+   - `vault_write(note, content)`: Create or update notes with frontmatter.
+   - `vault_backlinks(note)`: Query references and connected notes.
 
 ## H-054 — Corpus hardening audit: retain only gaps reproducible on current `main`
 

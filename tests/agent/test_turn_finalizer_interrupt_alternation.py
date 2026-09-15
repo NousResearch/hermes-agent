@@ -43,6 +43,7 @@ class _StubAgent:
         self.platform = "cli"
         self._interrupt_requested = False
         self._interrupt_message = None
+        self._tool_interrupt_reason = None
         self._tool_guardrail_halt_decision = None
         self._response_was_previewed = False
         self._skill_nudge_interval = 0
@@ -180,3 +181,34 @@ def test_interrupt_without_tool_tail_adds_nothing():
     _finalize(agent, messages, interrupted=True, final_response="partial reply")
     assert len(messages) == before
     assert messages[-1]["role"] == "assistant"
+
+
+def test_cli_interrupt_stages_one_shot_model_context_without_rewriting_history():
+    """A CLI stop informs the next model turn without adding a transcript row."""
+    agent = _StubAgent()
+    agent._tool_interrupt_reason = "explicit stop requested"
+    messages = [
+        {"role": "user", "content": "inspect the project"},
+        {"role": "assistant", "content": "I will inspect it."},
+    ]
+    before = [dict(message) for message in messages]
+
+    _finalize(agent, messages, interrupted=True, final_response=None)
+
+    assert messages == before
+    assert agent.persisted_messages == before
+    assert agent._gateway_turn_context_notes == (
+        "[System note: Your previous turn was interrupted (explicit stop requested). "
+        "Resume from the first step without a recorded result. Do not re-run tools whose "
+        "results already appear in the conversation history.]"
+    )
+
+
+def test_non_cli_interrupt_uses_its_existing_recovery_path():
+    agent = _StubAgent()
+    agent.platform = "gateway"
+    agent._tool_interrupt_reason = "explicit stop requested"
+
+    _finalize(agent, [{"role": "user", "content": "continue"}], interrupted=True)
+
+    assert not hasattr(agent, "_gateway_turn_context_notes")

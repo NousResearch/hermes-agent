@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import sys
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1821,3 +1822,58 @@ class TestSendTelegramThreadNotFoundRetry:
         finally:
             if media_path and os.path.exists(media_path):
                 os.unlink(media_path)
+
+
+class TestTelegramSilentAndChunkModes:
+    """``silent`` / ``chunk_indicators`` kwargs on the standalone Telegram sender."""
+
+    def test_silent_adds_disable_notification(self, monkeypatch):
+        bot = MagicMock()
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(_send_telegram("token", "12345", "Hello", silent=True))
+
+        assert result["success"] is True
+        assert bot.send_message.await_args.kwargs.get("disable_notification") is True
+
+    def test_not_silent_by_default(self, monkeypatch):
+        bot = MagicMock()
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(_send_telegram("token", "12345", "Hello"))
+
+        assert "disable_notification" not in bot.send_message.await_args.kwargs
+
+    def test_split_messages_drop_page_markers(self, monkeypatch):
+        sent = []
+
+        async def capture(**kwargs):
+            sent.append(kwargs.get("text") or "")
+            return SimpleNamespace(message_id=len(sent))
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock(side_effect=capture)
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(_send_telegram("token", "12345", "word " * 2200, chunk_indicators=False))
+
+        assert len(sent) >= 2
+        assert not any(re.search(r" \(\d+/\d+\)$", text) for text in sent)
+
+    def test_pagination_markers_kept_by_default(self, monkeypatch):
+        sent = []
+
+        async def capture(**kwargs):
+            sent.append(kwargs.get("text") or "")
+            return SimpleNamespace(message_id=len(sent))
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock(side_effect=capture)
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(_send_telegram("token", "12345", "word " * 2200))
+
+        assert len(sent) >= 2
+        assert any(re.search(r" \(\d+/\d+\)$", text) for text in sent)

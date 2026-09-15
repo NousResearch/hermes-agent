@@ -1726,6 +1726,26 @@ display:
   #         cleanup_progress: true
   cleanup_progress: false
 
+  # Mirror local-surface turns of a messaging session to the platform chat.
+  # When a session that belongs to a messaging platform (its source resolves to a
+  # gateway platform, e.g. telegram) is continued from the Desktop app / TUI /
+  # dashboard, only that surface sees the exchange. With this on, each completed
+  # turn is forwarded to the session's own platform chat — the user's message as a
+  # quote block, then the assistant reply — so the platform record stays complete.
+  # Off by default. Delivery needs no live gateway connection and is silent.
+  # Per-platform override: display.platforms.<platform>.mirror_local_turns
+  # Sub-options (same namespace):
+  #   mirror_local_turns_silent: true       # disable_notification on the mirrored sends
+  #   mirror_local_turns_4096_split: false  # false: paginate past the platform cap;
+  #                                         # true: split into standalone <=4096 messages
+  #   mirror_local_turns_label: "📲"        # first-line marker; "" hides it
+  # Example:
+  #   display:
+  #     platforms:
+  #       telegram:
+  #         mirror_local_turns: true
+  mirror_local_turns: false
+
   # Natural mid-turn assistant updates.
   # On gateway platforms, when true, completed assistant status messages are
   # sent as separate chat messages. On the Desktop app, when true, mid-turn

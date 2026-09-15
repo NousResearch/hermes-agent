@@ -346,3 +346,33 @@ class TestLiveStatusSetting:
         assert resolve_display_setting({}, "slack", "live_status") == "full"
 
 
+class TestMirrorLocalTurns:
+    """display.platforms.<platform>.mirror_local_turns* — local-surface turn mirroring."""
+
+    def test_defaults_are_off(self):
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "telegram", "mirror_local_turns") is False
+        assert resolve_display_setting({}, "telegram", "mirror_local_turns_silent") is True
+        assert resolve_display_setting({}, "telegram", "mirror_local_turns_4096_split") is False
+        assert resolve_display_setting({}, "telegram", "mirror_local_turns_label") == "📲"
+
+    def test_platform_override_and_top_level_fallback(self):
+        from gateway.display_config import resolve_display_setting
+
+        cfg = {"display": {"platforms": {"telegram": {"mirror_local_turns": True}}}}
+        assert resolve_display_setting(cfg, "telegram", "mirror_local_turns") is True
+        cfg = {"display": {"mirror_local_turns": True}}
+        assert resolve_display_setting(cfg, "telegram", "mirror_local_turns") is True
+
+    def test_yaml_truthy_tokens_normalise(self):
+        from gateway.display_config import resolve_display_setting
+
+        cfg = {"display": {"platforms": {"telegram": {"mirror_local_turns": "off"}}}}
+        assert resolve_display_setting(cfg, "telegram", "mirror_local_turns") is False
+        cfg = {"display": {"platforms": {"telegram": {
+            "mirror_local_turns": "on", "mirror_local_turns_4096_split": "true"}}}}
+        assert resolve_display_setting(cfg, "telegram", "mirror_local_turns") is True
+        assert resolve_display_setting(cfg, "telegram", "mirror_local_turns_4096_split") is True
+
+

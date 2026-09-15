@@ -17,6 +17,7 @@ from agent.prompt_builder import (
     _skill_should_show,
     _find_hermes_md,
     _find_git_root,
+    _cursorrules_candidates,
     _strip_yaml_frontmatter,
     build_skills_system_prompt,
     build_context_files_prompt,
@@ -628,7 +629,46 @@ class TestFindHermesMd:
         with patch("agent.prompt_builder._find_git_root", return_value=None):
             assert _find_hermes_md(cwd) is None
 
+    def test_unreadable_candidate_is_treated_as_not_found(self, tmp_path, monkeypatch):
+        """A candidate the process cannot stat must not raise out of prompt construction.
 
+        Regression for the crash that took down every Hermes surface (terminal,
+        TUI, dashboard, gateway messaging) at once: TERMINAL_CWD pointed at an
+        SSH backend's remote home (``/root``) while the gateway ran as a non-root
+        local user, and ``.is_file()`` on the candidate raised PermissionError
+        with no guard, unlike every sibling finder in this module (see #8751,
+        which explicitly listed this exact function as affected but whose merged
+        fix only covered ``_find_git_root``).
+        """
+        locked = tmp_path / "root"
+        locked.mkdir()
+        real_is_file = Path.is_file
+
+        def _is_file(self):
+            if self.parent == locked and self.name in (".hermes.md", "HERMES.md"):
+                raise PermissionError(13, "Permission denied", str(self))
+            return real_is_file(self)
+
+        monkeypatch.setattr(Path, "is_file", _is_file)
+        assert _find_hermes_md(locked) is None
+
+    def test_walk_continues_past_unreadable_directory(self, tmp_path, monkeypatch):
+        """An unreadable intermediate directory must not stop the upward walk."""
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".hermes.md").write_text("root rules")
+        blocked = tmp_path / "blocked"
+        blocked.mkdir()
+        sub = blocked / "work"
+        sub.mkdir()
+        real_is_file = Path.is_file
+
+        def _is_file(self):
+            if self.parent == blocked:
+                raise PermissionError(13, "Permission denied", str(self))
+            return real_is_file(self)
+
+        monkeypatch.setattr(Path, "is_file", _is_file)
+        assert _find_hermes_md(sub) == tmp_path / ".hermes.md"
 
 
 class TestFindGitRoot:
@@ -655,6 +695,26 @@ class TestFindGitRoot:
         # If result is not None, it must actually contain .git
         if result is not None:
             assert (result / ".git").exists()
+
+
+class TestCursorrulesCandidates:
+    def test_finds_cursorrules_file(self, tmp_path):
+        (tmp_path / ".cursorrules").write_text("rules")
+        labels = [label for label, _path, _content in _cursorrules_candidates(tmp_path)]
+        assert ".cursorrules" in labels
+
+    def test_unreadable_rules_dir_is_treated_as_absent(self, tmp_path, monkeypatch):
+        """Same crash shape as _find_hermes_md: an unreadable .cursor/rules dir
+        must not raise out of prompt construction."""
+        real_is_dir = Path.is_dir
+
+        def _is_dir(self):
+            if self.name == "rules" and self.parent.name == ".cursor":
+                raise PermissionError(13, "Permission denied", str(self))
+            return real_is_dir(self)
+
+        monkeypatch.setattr(Path, "is_dir", _is_dir)
+        assert _cursorrules_candidates(tmp_path) == []
 
 
 class TestStripYamlFrontmatter:

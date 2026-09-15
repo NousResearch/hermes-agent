@@ -5041,3 +5041,28 @@ class TestFastModelTier:
             _FAST_MODEL_TASKS
         )
         assert not overlap
+
+class TestAuxiliaryReasoningExtraBodyGating:
+    """Issue #109774: Providers without a reasoning-aware profile must not receive
+    extra_body.reasoning unless the provider/endpoint actually supports it,
+    preventing HTTP 400 from strict-schema providers like Fireworks."""
+
+    def test_fireworks_omits_reasoning_extra_body(self):
+        kwargs = _build_call_kwargs(
+            provider="fireworks",
+            model="accounts/fireworks/models/deepseek-v4p1-flash",
+            messages=[{"role": "user", "content": "hello"}],
+            base_url="https://api.fireworks.ai/inference/v1",
+            reasoning_config={"enabled": False},
+        )
+        assert "reasoning" not in (kwargs.get("extra_body") or {})
+
+    def test_openrouter_endpoint_keeps_reasoning_extra_body(self):
+        kwargs = _build_call_kwargs(
+            provider="unknown_aggregator",
+            model="test-model",
+            messages=[{"role": "user", "content": "hello"}],
+            base_url="https://openrouter.ai/api/v1",
+            reasoning_config={"enabled": False},
+        )
+        assert (kwargs.get("extra_body") or {}).get("reasoning") == {"enabled": False}

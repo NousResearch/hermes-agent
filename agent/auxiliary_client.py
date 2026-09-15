@@ -6105,18 +6105,44 @@ def _project_provider_profile(
     return _ProfileProjection(body, reasoning_extra, top_level, handles_reasoning, messages_wire)
 
 
+def _supports_aux_reasoning_extra_body(provider_norm: str, base_url: str = "", model: str = "") -> bool:
+    """True when extra_body.reasoning is supported by the provider/endpoint.
+
+    Mirrors ReasoningParamsMixin._supports_reasoning_extra_body to avoid leaking
+    `extra_body.reasoning` to strict providers (like Fireworks) that reject unknown
+    top-level parameters with HTTP 400 (issue #109774).
+    """
+    if provider_norm in _NOUS_PROVIDER_NAMES:
+        return True
+    if base_url:
+        url = base_url.lower()
+        if base_url_host_matches(url, "nousresearch.com") or base_url_host_matches(url, "ai-gateway.vercel.sh"):
+            return True
+        if base_url_host_matches(url, "models.github.ai") or base_url_host_matches(url, "githubcopilot.com"):
+            return True
+        if base_url_host_matches(url, "ollama.com"):
+            return True
+        if base_url_host_matches(url, "openrouter.ai") and not base_url_host_matches(url, "api.mistral.ai"):
+            return True
+    if provider_norm in {"openrouter", "lmstudio", "ollama", "github-models"}:
+        return True
+    return False
+
+
 def _merge_aux_extra_body(
     extra_body: Optional[dict], projection: _ProfileProjection, reasoning_config: Optional[dict], provider_norm: str,
+    *, base_url: str = "", model: str = "",
 ) -> Dict[str, Any]:
     """Caller extra_body + profile body/reasoning + generic reasoning fallback + Nous tags."""
     merged_extra = dict(extra_body or {})
     merged_extra.update(projection.body)
     merged_extra.update(projection.reasoning_extra)
     if reasoning_config and isinstance(reasoning_config, dict) and not projection.handles_reasoning:
-        if reasoning_config.get("enabled") is False:
-            merged_extra["reasoning"] = {"enabled": False}
-        else:
-            merged_extra["reasoning"] = {"enabled": True, "effort": reasoning_config.get("effort") or "medium"}
+        if _supports_aux_reasoning_extra_body(provider_norm, base_url=base_url, model=model):
+            if reasoning_config.get("enabled") is False:
+                merged_extra["reasoning"] = {"enabled": False}
+            else:
+                merged_extra["reasoning"] = {"enabled": True, "effort": reasoning_config.get("effort") or "medium"}
     # Portal tags + sticky session_id fallback when the profile didn't supply them; session_id
     # keeps aux calls on the main turn's upstream instance (cache warmth) — tags alone are not
     # enough on /v1/messages.
@@ -6164,7 +6190,7 @@ def _build_call_kwargs(
     # ``extra_body.reasoning`` fallback.
     projection = _project_provider_profile(provider, provider_norm, model, effective_base, reasoning_config)
     kwargs.update(projection.top_level)
-    if merged_extra := _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm):
+    if merged_extra := _merge_aux_extra_body(extra_body, projection, reasoning_config, provider_norm, base_url=effective_base, model=model):
         kwargs["extra_body"] = merged_extra
     # Anthropic Messages adapters take reasoning via a private kwarg that plain OpenAI SDK clients
     # would reject; Portal Claude is dual-wire, so include it only when the catalog id selects

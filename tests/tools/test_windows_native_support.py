@@ -12,6 +12,7 @@ Windows runner.
 from __future__ import annotations
 
 import asyncio
+import ntpath
 import os
 import signal
 import subprocess
@@ -75,6 +76,51 @@ class TestConfigureWindowsStdio:
         buf = io.StringIO()
         # Must not raise
         stdio._reconfigure_stream(buf)
+
+    @pytest.mark.parametrize(
+        "existing_entry",
+        [
+            r"c:\users\alice\appdata\local\HERMES\HERMES-AGENT\VENV\sCRIPTS",
+            "C:\\Users\\Alice\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\",
+            "C:/Users/Alice/AppData/Local/hermes/hermes-agent/venv/Scripts",
+        ],
+    )
+    def test_augment_path_recognizes_equivalent_windows_venv_scripts(
+        self, monkeypatch, existing_entry
+    ):
+        from hermes_cli import stdio
+
+        local_appdata = r"C:\Users\Alice\AppData\Local"
+        candidate = ntpath.join(
+            local_appdata, "hermes", "hermes-agent", "venv", "Scripts"
+        )
+        monkeypatch.setattr(stdio, "is_windows", lambda: True)
+        monkeypatch.setattr(stdio.os.path, "join", ntpath.join)
+        monkeypatch.setattr(stdio.os.path, "isdir", lambda path: path == candidate)
+        monkeypatch.setattr(stdio.os, "pathsep", ";")
+        monkeypatch.setenv("LOCALAPPDATA", local_appdata)
+        monkeypatch.setenv("PATH", existing_entry)
+
+        stdio._augment_path_with_known_tools()
+
+        assert os.environ["PATH"] == existing_entry
+
+    def test_augment_path_preserves_non_windows_path(self, monkeypatch):
+        from hermes_cli import stdio
+
+        original = "/usr/local/bin:/usr/bin/"
+        monkeypatch.setattr(stdio, "is_windows", lambda: False)
+        monkeypatch.setattr(
+            stdio.os.path,
+            "isdir",
+            lambda path: pytest.fail("non-Windows PATH must not inspect candidates"),
+        )
+        monkeypatch.setenv("LOCALAPPDATA", "/unused")
+        monkeypatch.setenv("PATH", original)
+
+        stdio._augment_path_with_known_tools()
+
+        assert os.environ["PATH"] == original
 
 
 # ---------------------------------------------------------------------------

@@ -370,3 +370,104 @@ describe('legacy display-name descriptors', () => {
     expect(modules.membership.groupChatMemberBots('room', [TAIYI], {})[0]).toBe(TAIYI)
   })
 })
+
+describe('groupMemberGroupNames (settings dialog view)', () => {
+  const SPARK = { connectionId: 'c1', name: 'spark', remoteSource: true, sourceScoped: true } as RosterRow
+
+  beforeEach(() => {
+    modules.chat.$groupChats.set({})
+  })
+
+  it('reports meta groups even with no room record', () => {
+    const names = modules.membership.groupMemberGroupNames(
+      { connectionId: 'local', name: 'researcher' },
+      { group: 'Research', groups: ['Research'] },
+      {}
+    )
+
+    expect(names).toEqual(['Research'])
+  })
+
+  it('reports a room-seated member whose meta dropped the group', () => {
+    // Reproduced bug: member is seated in the room only via the stored
+    // descriptor (meta no longer names the group) — the settings dialog must
+    // still list it so it can be removed.
+    modules.chat.$groupChats.set(
+      rooms({
+        Research: {
+          log: [],
+          members: [{ connectionId: 'c1', name: 'spark', remoteSource: true, sourceScoped: true }]
+        }
+      })
+    )
+
+    const names = modules.membership.groupMemberGroupNames(SPARK, { groups: [] }, modules.chat.$groupChats.get())
+
+    expect(names).toEqual(['Research'])
+  })
+
+  it('matches a legacy friendly-name descriptor to its room', () => {
+    modules.chat.$groupChats.set(
+      rooms({
+        Alphas: {
+          log: [],
+          members: [{ connectionId: 'local', name: '大司命' }]
+        }
+      })
+    )
+
+    const names = modules.membership.groupMemberGroupNames(
+      { connectionId: 'local', display_name: '大司命', name: 'taiyi' },
+      { groups: [] },
+      modules.chat.$groupChats.get()
+    )
+
+    expect(names).toEqual(['Alphas'])
+  })
+
+  it('ignores disbanded (tombstoned) rooms', () => {
+    modules.chat.$groupChats.set({
+      Old: { log: [], tombstone: true, members: [{ connectionId: 'c1', name: 'spark', remoteSource: true, sourceScoped: true }] }
+    })
+
+    expect(modules.membership.groupMemberGroupNames(SPARK, { groups: [] }, modules.chat.$groupChats.get())).toEqual([])
+  })
+
+  it('does not cross-match members across connections by bare name', () => {
+    modules.chat.$groupChats.set(
+      rooms({
+        Other: {
+          log: [],
+          members: [{ connectionId: 'alien', name: 'spark', remoteSource: true, sourceScoped: true }]
+        }
+      })
+    )
+
+    const names = modules.membership.groupMemberGroupNames(
+      { connectionId: 'c1', name: 'spark' },
+      { groups: [] },
+      modules.chat.$groupChats.get()
+    )
+
+    expect(names).toEqual([])
+  })
+
+  it('dedupes a group listed in both meta and the room record', () => {
+    modules.chat.$groupChats.set(
+      rooms({
+        Research: {
+          log: [],
+          members: [{ connectionId: 'c1', name: 'researcher' }]
+        }
+      })
+    )
+
+    const names = modules.membership.groupMemberGroupNames(
+      { connectionId: 'local', name: 'researcher' },
+      { groups: ['Research'] },
+      modules.chat.$groupChats.get()
+    )
+
+    expect(names).toEqual(['Research'])
+  })
+})

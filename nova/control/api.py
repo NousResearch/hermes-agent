@@ -106,12 +106,14 @@ MAX_INSTRUCTIONS_CHARS = 20000
 
 #: What an administrator may do to a corpus. ``reindex`` is separate from upload so an
 #: operator who added files on the host by hand can make them searchable without one.
-KNOWLEDGE_ACTIONS = ("upload", "remove", "reindex")
+#: ``sync`` only means anything for a corpus that declares an origin.
+KNOWLEDGE_ACTIONS = ("upload", "remove", "reindex", "sync")
 
 #: What an administrator may change about the tenant itself.
 SETTINGS_ACTIONS = ("organization", "identity", "logo", "agent-name")
 
-AGENT_ACTIONS = ("update", "soul", "duplicate", "archive", "restore", "delete", "credentials")
+AGENT_ACTIONS = ("update", "soul", "duplicate", "archive", "restore", "delete", "credentials",
+                 "mcp", "plugins")
 
 
 #: What an administrator may do to an automation the runtime already holds.
@@ -325,6 +327,10 @@ class ControlAPI:
             return self.agent_logs(tail[len("/agents/") : -len("/logs")], query)
         if tail.startswith("/agents/") and tail.endswith("/credentials"):
             return self.agent_credentials(tail[len("/agents/") : -len("/credentials")])
+        if tail.startswith("/agents/") and tail.endswith("/extensions"):
+            return self.agent_extensions(tail[len("/agents/") : -len("/extensions")])
+        if tail == "/extensions":
+            return self.extensions()
         if tail.startswith("/agents/") and tail.endswith("/activity"):
             return self.agent_activity(tail[len("/agents/") : -len("/activity")], query)
         if tail.startswith("/knowledge/") and tail.endswith("/documents"):
@@ -431,6 +437,126 @@ class ControlAPI:
         except NovaError as exc:
             return _error(400, str(exc))
         return Response(200, {"agent_id": agent_id, **body})
+
+    def extensions(self) -> Response:
+        """Everything this deployment could grant an agent.
+
+        Read from the runtime's own MCP catalogue and plugin registry. NOVA keeps no second
+        list: a hand-maintained copy of a registry the runtime owns drifts, and the drift is
+        invisible until somebody picks an option that no longer exists.
+        """
+        from nova.extensions import catalogue
+
+        known = catalogue()
+        return Response(
+            200,
+            {
+                "mcp": [entry.to_dict() for entry in known.mcp],
+                # Platforms are excluded: they are channels, they have their own screen, and
+                # a second switch for the same thing would eventually disagree with the
+                # first. The count is reported so their absence is explained rather than
+                # looking like a gap.
+                "plugins": [entry.to_dict() for entry in known.plugins if entry.grantable],
+                "channels_elsewhere": sum(
+                    1 for entry in known.plugins if entry.kind == "platform"
+                ),
+                "detail": known.detail,
+            },
+        )
+
+    def agent_extensions(self, agent_id: str) -> Response:
+        """What one agent is granted, and what granting it actually achieves.
+
+        Every row carries the honest runtime consequence rather than a tick. An OAuth MCP
+        server that has been granted and applied still cannot be called until somebody
+        authorizes it on the host, and a bundled backend plugin loads whether or not
+        anything here says "enabled" — both are stated, because a control plane that
+        implies otherwise is worse than one that says nothing.
+        """
+        from nova.extensions import catalogue
+
+        agent = next((a for a in self.bundle.agents if a.id == agent_id), None)
+        if agent is None:
+            return _error(404, f"no agent {agent_id!r} in this bundle")
+
+        known = catalogue()
+        granted = set(agent.extensions.mcp)
+        enabled = set(agent.extensions.plugins_enable)
+        disabled = set(agent.extensions.plugins_disable)
+
+        mcp = []
+        for entry in known.mcp:
+            row = entry.to_dict()
+            row["granted"] = entry.id in granted
+            mcp.append(row)
+
+        plugins = []
+        for entry in known.plugins:
+            if not entry.grantable:
+                continue
+            row = entry.to_dict()
+            row["state"] = (
+                "disable" if entry.id in disabled
+                else "enable" if entry.id in enabled
+                else "default"
+            )
+            # What "default" means for this plugin, which is not the same answer for all
+            # of them: a bundled backend loads, everything else does not.
+            row["loads_by_default"] = entry.auto_loads
+            plugins.append(row)
+
+        # A grant that has been saved but not applied is a real and common state — the
+        # bundle is edited here and the profile is written by apply. Reported the same way
+        # every other saved-vs-applied pair in this control plane is.
+        applied = self._applied_extensions(agent_id)
+        return Response(
+            200,
+            {
+                "agent_id": agent_id,
+                "mcp": mcp,
+                "plugins": plugins,
+                "granted": {
+                    "mcp": sorted(granted),
+                    "enable": sorted(enabled),
+                    "disable": sorted(disabled),
+                },
+                "applied": applied,
+                "detail": known.detail,
+            },
+        )
+
+    def _applied_extensions(self, agent_id: str) -> dict[str, Any]:
+        """What the running profile actually has, as opposed to what the bundle declares.
+
+        Read from the materialized ``config.yaml``. Two different facts, reported apart:
+        an operator who granted a server and has not applied should see that, not a tick
+        that means "we wrote it down".
+        """
+        path = getattr(self.runtime, "paths", None)
+        config_path = path.config_path(agent_id) if path is not None else None
+        if config_path is None or not config_path.is_file():
+            return {"known": False, "mcp": [], "enabled": [], "disabled": [],
+                    "detail": "this agent has not been applied to the runtime yet"}
+        try:
+            import yaml
+
+            data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except (OSError, ValueError) as exc:
+            return {"known": False, "mcp": [], "enabled": [], "disabled": [],
+                    "detail": f"the applied configuration could not be read: {exc}"}
+        if not isinstance(data, dict):
+            return {"known": False, "mcp": [], "enabled": [], "disabled": [],
+                    "detail": "the applied configuration is not a mapping"}
+        servers = data.get("mcp_servers")
+        plugins = data.get("plugins")
+        plugins = plugins if isinstance(plugins, dict) else {}
+        return {
+            "known": True,
+            "mcp": sorted(servers) if isinstance(servers, dict) else [],
+            "enabled": [str(n) for n in (plugins.get("enabled") or [])],
+            "disabled": [str(n) for n in (plugins.get("disabled") or [])],
+            "detail": "",
+        }
 
     def agent_credentials(self, agent_id: str) -> Response:
         """Which credentials this agent needs, and which are set. Never a value.
@@ -1005,6 +1131,10 @@ class ControlAPI:
                 "accepts": list(source.include),
                 "excludes": list(source.exclude),
                 "max_file_bytes": source.max_file_bytes,
+                # Present only for a mirrored corpus. Its presence is what tells the screen
+                # to offer Sync instead of Upload — the two are mutually exclusive, because
+                # a document uploaded into a mirror survives only until the next sync.
+                "origin": source.origin.to_dict() if source.origin else None,
                 "documents": [dict(row) for row in list_documents(source)],
                 "indexed": {
                     "documents": indexed.get("documents", 0),
@@ -1063,6 +1193,53 @@ class ControlAPI:
         return {"ok": True, "documents": 0, "unchanged": 0, "chunks": 0,
                 "removed": [], "skipped": []}
 
+    def _sync_origin(
+        self, source, principal, payload: Mapping[str, Any], correlation_id: str, audit
+    ) -> Response:
+        """Mirror a corpus's bucket into its root, then reindex what arrived.
+
+        Two reports rather than one, for the same reason upload separates ``saved`` from
+        ``index``: a sync that downloaded twelve documents and an index that then refused
+        them is a real state, and a single tick would let it read as done.
+        """
+        from nova.knowledge.origin import sync as sync_origin
+
+        if source.origin is None:
+            return _error(
+                409,
+                f"{source.id!r} has no declared origin. Add an `origin:` block to its entry "
+                "in knowledge.yaml to mirror it from a bucket.",
+            )
+
+        dry_run = bool(payload.get("dry_run"))
+        kind = "knowledge.synced"
+        audit.record(kind=kind, phase="intent", subject=source.id,
+                     correlation_id=correlation_id,
+                     detail={"location": source.origin.location, "dry_run": dry_run,
+                             "actor": principal.name})
+        try:
+            report = sync_origin(source, dry_run=dry_run)
+        except NovaError as exc:
+            audit.record(kind=kind, phase="failed", subject=source.id,
+                         correlation_id=correlation_id, detail={}, error=str(exc))
+            return _error(400, str(exc))
+
+        result = report.to_dict()
+        if not report.ok:
+            audit.record(kind=kind, phase="failed", subject=source.id,
+                         correlation_id=correlation_id, detail=result, error=report.error)
+            return Response(200, {"ok": False, "source": source.id, "sync": result,
+                                  "index": {"ok": False, "error": "not attempted"}})
+
+        # A dry run touched nothing, so there is nothing to reindex.
+        index = ({"ok": True, "documents": 0, "unchanged": 0, "chunks": 0,
+                  "removed": [], "skipped": []} if dry_run
+                 else self._reindex(source.id, correlation_id, principal.name))
+        audit.record(kind=kind, phase="committed", subject=source.id,
+                     correlation_id=correlation_id, detail={**result, "index": index})
+        return Response(200, {"ok": True, "source": source.id, "sync": result,
+                              "index": index})
+
     def _knowledge_write(
         self, tail: str, action: str, principal, payload: Mapping[str, Any]
     ) -> Response:
@@ -1098,6 +1275,20 @@ class ControlAPI:
                 subject=source_id, correlation_id=correlation_id, detail=result,
             )
             return Response(200, {"ok": True, "source": source_id, "index": result})
+
+        if action == "sync":
+            return self._sync_origin(source, principal, payload, correlation_id, audit)
+
+        if source.origin is not None:
+            # Both remaining actions write into the corpus root, and the next sync would
+            # undo them. Refusing is the honest answer; the bucket is where the documents
+            # are managed.
+            return _error(
+                409,
+                f"{source_id!r} is mirrored from {source.origin.location} — add or remove "
+                "documents there and sync. A change made here would be reverted by the "
+                "next sync.",
+            )
 
         if action == "remove":
             name = str(payload.get("name") or "")
@@ -1415,6 +1606,36 @@ class ControlAPI:
 
         if action == "credentials":
             return self._write_credentials(agent_id, principal, payload)
+
+        if action == "mcp":
+            from nova.extensions import manage as extension_ops
+
+            server_id = str(payload.get("server") or "").strip()
+            granted = bool(payload.get("granted"))
+            if not server_id:
+                return _error(400, "name the MCP server under 'server'")
+            return self._agent_write(
+                principal, kind="agent.mcp_changed", subject=agent_id,
+                detail={"server": server_id, "granted": granted},
+                operation=lambda: extension_ops.set_mcp(
+                    root, agent_id, server_id, granted=granted
+                ),
+            )
+
+        if action == "plugins":
+            from nova.extensions import manage as extension_ops
+
+            plugin_id = str(payload.get("plugin") or "").strip()
+            state = str(payload.get("state") or "").strip()
+            if not plugin_id:
+                return _error(400, "name the plugin under 'plugin'")
+            return self._agent_write(
+                principal, kind="agent.plugin_changed", subject=agent_id,
+                detail={"plugin": plugin_id, "state": state},
+                operation=lambda: extension_ops.set_plugin(
+                    root, agent_id, plugin_id, state=state
+                ),
+            )
 
         return _error(404, f"no such agent action: {action!r}")
 

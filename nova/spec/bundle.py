@@ -177,6 +177,7 @@ def load_bundle(root: Path | str, *, env: Optional[Mapping[str, str]] = None) ->
     agents = _load_agents(root, env=env)
     _check_cross_references(agents, identity)
     _check_knowledge_references(agents, knowledge)
+    _check_extension_references(agents)
     if policy is not None:
         _check_policy_references(agents, policy)
 
@@ -251,6 +252,46 @@ def _check_knowledge_references(
                 field="knowledge.sources",
                 source=spec.source,
             )
+
+
+def _check_extension_references(agents: tuple[AgentSpec, ...]) -> None:
+    """Fail on an MCP server or plugin this deployment does not ship.
+
+    **Skipped when nothing has been discovered.** The catalogue comes from the runtime, and
+    the platform layer is importable without one — validating against an empty inventory
+    would reject every correct bundle on a machine that simply has not loaded the adapter
+    yet. Refusing to check is the honest failure here; refusing the bundle is not.
+    """
+    from nova.extensions import catalogue
+
+    known = catalogue()
+    if not known.mcp and not known.plugins:
+        return
+
+    server_ids = {entry.id for entry in known.mcp}
+    plugin_ids = {entry.id for entry in known.plugins} | {
+        entry.name for entry in known.plugins if entry.name
+    }
+    for spec in agents:
+        unknown = sorted(set(spec.extensions.mcp) - server_ids)
+        if unknown:
+            raise SpecError(
+                f"names MCP server(s) this runtime does not offer: {', '.join(unknown)}. "
+                "Only servers in the runtime's own catalogue can be granted",
+                field="extensions.mcp",
+                source=spec.source,
+            )
+        for field_name, names in (
+            ("enable", spec.extensions.plugins_enable),
+            ("disable", spec.extensions.plugins_disable),
+        ):
+            missing = sorted(set(names) - plugin_ids)
+            if missing:
+                raise SpecError(
+                    f"names plugin(s) this runtime does not ship: {', '.join(missing)}",
+                    field=f"extensions.plugins.{field_name}",
+                    source=spec.source,
+                )
 
 
 def _load_agents(root: Path, *, env: Optional[Mapping[str, str]]) -> tuple[AgentSpec, ...]:

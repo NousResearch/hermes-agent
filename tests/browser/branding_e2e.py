@@ -43,19 +43,26 @@ with sync_playwright() as p:
         page.wait_for_timeout(400)
 
     print("\n# Company")
+    import yaml
+    before = yaml.safe_load((BUNDLE/"organization.yaml").read_text())
+    # Derived from what is there, so the form is genuinely dirtied whatever bundle this
+    # runs against — and so a second run of this script still tests something.
+    LEGAL = "Northwind Logistics Ltd" if before["legal_name"] != "Northwind Logistics Ltd" else "Acme Corporation"
+    CONTACT = "ops@northwind.example" if before["contact_email"] != "ops@northwind.example" else "platform@acme.example"
     goto("/settings")
     page.wait_for_selector("#org-legal", timeout=10000)
     check("settings screen reachable from the nav", True)
     check("tenant id shown as fixed", "Fixed." in page.content())
-    page.fill("#org-legal", "Northwind Logistics Ltd")
-    page.fill("#org-contact", "ops@northwind.example")
+    page.fill("#org-legal", LEGAL)
+    page.fill("#org-contact", CONTACT)
     page.get_by_role("button", name="Save company").click()
     page.wait_for_selector("text=Applied — the runtime has it now", timeout=20000)
-    import yaml
     org = yaml.safe_load((BUNDLE/"organization.yaml").read_text())
     check("company details reached the bundle",
-          org["legal_name"] == "Northwind Logistics Ltd" and org["contact_email"] == "ops@northwind.example")
-    check("tenant id untouched", org["tenant_id"] == "northwind")
+          org["legal_name"] == LEGAL and org["contact_email"] == CONTACT)
+    # Unchanged from whatever it was — which is what "immutable" means here. A literal
+    # would only hold for the one bundle this was first written against.
+    check("tenant id untouched", org["tenant_id"] == before["tenant_id"])
 
     print("\n# Brand")
     goto("/settings")

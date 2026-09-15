@@ -11,11 +11,16 @@
  * **The corpus decides what it takes.** The accepted patterns and the size limit come from
  * the source's own declaration and are shown, so a rejection is predictable rather than a
  * surprise at the end of an upload.
+ *
+ * **A mirrored corpus is not a place to put documents.** When the source declares an
+ * origin, the bucket is the source of truth: uploading here would work until the next sync
+ * deleted it. The upload control is replaced by Sync rather than left to fail, and the
+ * screen says where the documents actually come from.
  */
 
 import * as React from "react";
 import {
-  AlertTriangle, Check, FileText, Loader2, RefreshCw, Trash2, Upload,
+  AlertTriangle, Check, CloudDownload, FileText, Loader2, RefreshCw, Trash2, Upload,
 } from "lucide-react";
 
 import { GlassPanel, SectionHeader, StatusPill } from "@/components/glass";
@@ -24,10 +29,15 @@ import { usePanel } from "@/lib/hooks";
 import { sinceIso } from "@/lib/state";
 
 type Doc = { name: string; bytes: number; modified_at: number; too_large: boolean };
+type Origin = {
+  type: string; bucket: string; prefix?: string; region?: string; prune: boolean;
+  endpoint_url?: string;
+};
 type Corpus = {
   id: string; title: string; root: string; classification: string;
   accepts: string[]; excludes: string[]; max_file_bytes: number;
   documents: Doc[];
+  origin: Origin | null;
   indexed: { documents: number; chunks: number; detail: string };
   readable_by: string[];
 };
@@ -40,6 +50,34 @@ type Result =
 
 function kb(bytes: number) {
   return bytes < 1000 ? `${bytes} B` : `${(bytes / 1000).toFixed(bytes < 100_000 ? 1 : 0)} kB`;
+}
+
+type Sync = {
+  location: string; downloaded: number; unchanged: number; removed: number;
+  skipped: { document: string; reason: string }[]; ok: boolean; error: string;
+};
+
+/* What a sync did, in the terms an operator cares about.
+ *
+ * "0 downloaded" alone reads as a failure. "0 downloaded, 12 already current" reads as the
+ * success it is, which is why every count is spelled out rather than only the changes. */
+function syncMessage(sync?: Sync) {
+  if (!sync) return "Synced";
+  if (!sync.ok) return "The bucket could not be read";
+  const parts = [`${sync.downloaded} downloaded`, `${sync.unchanged} already current`];
+  if (sync.removed) parts.push(`${sync.removed} removed locally`);
+  return `Synced from ${sync.location} — ${parts.join(", ")}`;
+}
+
+/* Objects the bucket held that this corpus would not take. Worth surfacing: a bucket of
+ * PDFs behind a corpus declaring **\/*.md is a survivable mismatch, and silently ignoring
+ * it leaves somebody wondering where their documents went. */
+function syncWarning(path: string, sync?: Sync) {
+  if (path !== "sync" || !sync?.ok || !sync.skipped.length) return "";
+  const first = sync.skipped[0];
+  return sync.skipped.length === 1
+    ? `The bucket has ${first.document}, which this corpus did not take: ${first.reason}.`
+    : `${sync.skipped.length} objects in the bucket were not taken — first: ${first.document} (${first.reason}).`;
 }
 
 export function CorpusPanel({ sourceId, onChanged }: { sourceId: string; onChanged?: () => void }) {
@@ -64,12 +102,17 @@ export function CorpusPanel({ sourceId, onChanged }: { sourceId: string; onChang
         message:
           path === "upload" ? `Stored ${response?.stored?.name ?? ""}`
           : path === "remove" ? `Removed ${response?.removed ?? ""}`
+          : path === "sync" ? syncMessage(response?.sync)
           : "Index rebuilt",
-        warning: index.ok === false
+        warning: response?.ok === false && response?.sync?.error
+          // A sync that could not reach the bucket answers 200 with ok:false, because the
+          // corpus is unchanged rather than broken. Saying so beats a red banner.
+          ? `The bucket could not be read: ${response.sync.error}. This corpus is unchanged.`
+          : syncWarning(path, response?.sync) || (index.ok === false
           ? `Saved, but the index was not rebuilt: ${index.error ?? "unknown error"}. No agent can find it yet.`
           : (index.skipped ?? []).length
             ? `${index.skipped.length} file(s) the ingester skipped — see below.`
-            : "",
+            : ""),
       });
       refresh();
     } catch (cause) {
@@ -151,24 +194,52 @@ export function CorpusPanel({ sourceId, onChanged }: { sourceId: string; onChang
       ) : null}
 
       <div className="border-glass-border mb-4 flex flex-wrap items-center gap-3 rounded-lg border p-3">
-        <label className="glass-solid text-ink inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12.5px] font-medium">
-          {busy && result.what === "upload" ? <Loader2 className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />}
-          {busy && result.what === "upload" ? "Uploading…" : "Upload a document"}
-          <input
-            type="file" className="sr-only" disabled={busy}
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              e.target.value = "";
-              if (file) void upload(file);
-            }}
-          />
-        </label>
-        <p className="text-ink-faint min-w-0 flex-1 text-[11.5px] leading-relaxed">
-          This corpus takes <span className="font-mono">{c.accepts.join(", ")}</span>
-          {c.excludes.length ? <> and excludes <span className="font-mono">{c.excludes.join(", ")}</span></> : null}
-          , up to {kb(c.max_file_bytes)} per document. Uploading rebuilds the index so agents
-          can find it.
-        </p>
+        {c.origin ? (
+          <>
+            <button
+              type="button" disabled={busy}
+              onClick={() => void act("sync", "sync", {})}
+              className="glass-solid text-ink inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12.5px] font-medium disabled:opacity-40"
+            >
+              {busy && result.what === "sync" ? <Loader2 className="size-3.5 animate-spin" /> : <CloudDownload className="size-3.5" />}
+              {busy && result.what === "sync" ? "Syncing…" : "Sync from the bucket"}
+            </button>
+            <p className="text-ink-faint min-w-0 flex-1 text-[11.5px] leading-relaxed">
+              Mirrored from{" "}
+              <span className="font-mono">
+                s3://{c.origin.bucket}{c.origin.prefix ? `/${c.origin.prefix}` : ""}
+              </span>
+              {c.origin.region ? <> in <span className="font-mono">{c.origin.region}</span></> : null}
+              . The bucket is the source of truth: add and remove documents there, then sync.
+              {c.origin.prune
+                ? " Documents the bucket no longer has are deleted here."
+                : " Documents the bucket no longer has are left in place."}
+              {" "}Only <span className="font-mono">{c.accepts.join(", ")}</span> up to{" "}
+              {kb(c.max_file_bytes)} are taken.
+            </p>
+          </>
+        ) : (
+          <>
+            <label className="glass-solid text-ink inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12.5px] font-medium">
+              {busy && result.what === "upload" ? <Loader2 className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />}
+              {busy && result.what === "upload" ? "Uploading…" : "Upload a document"}
+              <input
+                type="file" className="sr-only" disabled={busy}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = "";
+                  if (file) void upload(file);
+                }}
+              />
+            </label>
+            <p className="text-ink-faint min-w-0 flex-1 text-[11.5px] leading-relaxed">
+              This corpus takes <span className="font-mono">{c.accepts.join(", ")}</span>
+              {c.excludes.length ? <> and excludes <span className="font-mono">{c.excludes.join(", ")}</span></> : null}
+              , up to {kb(c.max_file_bytes)} per document. Uploading rebuilds the index so agents
+              can find it.
+            </p>
+          </>
+        )}
       </div>
 
       {result.kind === "error" ? (
@@ -194,8 +265,11 @@ export function CorpusPanel({ sourceId, onChanged }: { sourceId: string; onChang
 
       {c.documents.length === 0 ? (
         <p className="text-ink-muted text-[12.5px]">
-          This corpus is empty. Upload a document, or put files in{" "}
-          <span className="font-mono">{c.root}</span> on the host and rebuild the index.
+          {c.origin
+            ? <>This corpus is empty. Nothing has been synced from the bucket yet — or the
+               bucket holds nothing this corpus takes.</>
+            : <>This corpus is empty. Upload a document, or put files in{" "}
+               <span className="font-mono">{c.root}</span> on the host and rebuild the index.</>}
         </p>
       ) : (
         <ul className="divide-glass-border divide-y">
@@ -210,8 +284,10 @@ export function CorpusPanel({ sourceId, onChanged }: { sourceId: string; onChang
               <span className="text-ink-faint text-[11.5px]">
                 {sinceIso(new Date(doc.modified_at * 1000).toISOString())}
               </span>
+              {/* Not offered for a mirror: the route refuses, because the next sync would
+                  bring the document back. The bucket is where it is deleted. */}
               <button
-                type="button" disabled={busy}
+                type="button" disabled={busy} hidden={!!c.origin}
                 onClick={() => setConfirm(confirm === doc.name ? null : doc.name)}
                 aria-label={`Remove ${doc.name}`}
                 className="text-ink-faint hover:text-blocked rounded-md p-1 transition-colors disabled:opacity-40"

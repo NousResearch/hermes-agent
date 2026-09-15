@@ -264,6 +264,39 @@ def plugins_section(*, policy: bool, knowledge: bool) -> dict[str, Any]:
     }
 
 
+def extension_sections(
+    spec: AgentSpec,
+) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, str]]]:
+    """The ``mcp_servers`` block and the plugin enable/disable lists for one agent.
+
+    Returns ``(mcp_servers, plugins_delta, problems)``, where each problem is
+    ``{"server": id, "reason": text}``. Problems are returned rather than raised: a
+    catalogue entry that has gone away between one apply and the next must not stop the
+    other nineteen agents from materializing, and the operator needs to be told which grant
+    stopped working rather than watching the whole apply fail.
+    """
+    from nova.runtime.hermes import extensions as _extensions
+
+    servers: dict[str, Any] = {}
+    problems: list[dict[str, str]] = []
+    for server_id in spec.extensions.mcp:
+        config, reason = _extensions.server_config(server_id)
+        if reason:
+            problems.append({"server": server_id, "reason": reason})
+            continue
+        # ``enabled`` is written explicitly rather than left to the runtime's default.
+        # ``hermes_cli.mcp_catalog.server_enabled`` reads it, and a grant NOVA compiled
+        # should say so in the file an operator will read at 3am.
+        servers[server_id] = {**config, "enabled": True}
+
+    plugins: dict[str, Any] = {}
+    if spec.extensions.plugins_enable:
+        plugins["enabled"] = list(spec.extensions.plugins_enable)
+    if spec.extensions.plugins_disable:
+        plugins["disabled"] = list(spec.extensions.plugins_disable)
+    return servers, plugins, problems
+
+
 def build_config(
     spec: AgentSpec,
     *,
@@ -285,8 +318,23 @@ def build_config(
     config: dict[str, Any] = {}
 
     section = plugins_section(policy=policy, knowledge=knowledge)
+    servers, granted_plugins, _ = extension_sections(spec)
+    if granted_plugins:
+        # MERGED, never replaced. ``section`` carries the enable for NOVA's own policy and
+        # knowledge plugins; dropping it would leave an agent whose enforcement plugin is
+        # present, correct and never consulted — the most dangerous state a governance
+        # control can be in, because it passes review by inspection.
+        merged = dict(section)
+        merged["enabled"] = list(
+            dict.fromkeys([*section.get("enabled", ()), *granted_plugins.get("enabled", ())])
+        )
+        if granted_plugins.get("disabled"):
+            merged["disabled"] = list(granted_plugins["disabled"])
+        section = merged
     if section:
         config["plugins"] = section
+    if servers:
+        config["mcp_servers"] = servers
 
     # Operator-owned deployment settings first, so anything NOVA compiles below wins over
     # them. The passthrough exists for what NOVA does not model; it may not quietly replace
@@ -411,7 +459,31 @@ def warnings_for(spec: AgentSpec) -> list[str]:
         notes.append(
             "agent is disabled in its spec; its profile is written but nothing should dispatch to it"
         )
+    if spec.extensions.mcp:
+        servers, _, problems = extension_sections(spec)
+        notes.extend(problem["reason"] for problem in problems)
+        # Said plainly rather than implied by a green tick. An OAuth server is configured
+        # and unusable until somebody completes a browser consent, and the gap between
+        # those two states is where a deployment sits looking finished and answering
+        # nothing.
+        # Only servers that actually compiled: one that could not is already reported
+        # above, and naming it twice under two different problems reads as two faults.
+        pending = sorted(server for server in servers if _oauth_server(server))
+        if pending:
+            notes.append(
+                "MCP server(s) " + ", ".join(pending) + " use OAuth; they are configured but "
+                "cannot be called until somebody authorizes them on the host with "
+                "`hermes mcp login <name>`"
+            )
     return notes
+
+
+def _oauth_server(server_id: str) -> bool:
+    """Whether a catalogue entry needs an interactive consent. False when unknown."""
+    from nova.extensions import catalogue
+
+    entry = catalogue().mcp_server(server_id)
+    return bool(entry and entry.needs_interactive_auth)
 
 
 def build_persona(

@@ -21,6 +21,7 @@ from typing import Any, Iterator, Mapping, Optional, Sequence
 
 from nova._fields import Doc
 from nova.errors import SpecError
+from nova.knowledge.origin import Origin
 
 #: The file a tenant bundle declares its corpora in.
 KNOWLEDGE_FILE = "knowledge.yaml"
@@ -39,6 +40,12 @@ SKIPPED_DIRECTORIES = frozenset(
     }
 )
 
+#: Files NOVA itself writes into a corpus root, which are therefore never documents.
+#: Excluded by name rather than by a dot-file rule: a customer whose corpus legitimately
+#: holds ``.eslintrc.md`` should get it indexed, and a rule broad enough to catch this
+#: marker would quietly drop theirs too.
+RESERVED_FILES = frozenset({".nova-sync.json"})
+
 #: Free-form in the sense that NOVA does not interpret it, but constrained to a short list
 #: so the label means the same thing in every tenant's dashboard and every citation.
 CLASSIFICATIONS = ("public", "internal", "confidential", "restricted")
@@ -56,6 +63,10 @@ class KnowledgeSource:
     exclude: tuple[str, ...] = ()
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES
     classification: str = "internal"
+    #: Where the documents come from, when they are mirrored rather than local. A corpus
+    #: with an origin is a mirror: NOVA syncs into ``root`` and the ingest runs over the
+    #: result, so nothing downstream knows the difference.
+    origin: Optional["Origin"] = None
     source: Optional[Path] = None
 
     @property
@@ -98,6 +109,7 @@ class KnowledgeSource:
                 "max_file_bytes", default=DEFAULT_MAX_FILE_BYTES, minimum=1
             ),
             classification=doc.choice("classification", CLASSIFICATIONS, default="internal"),
+            origin=Origin.parse(doc.child("origin")),
             source=source,
         )
         doc.reject_unknown()
@@ -113,6 +125,7 @@ class KnowledgeSource:
             "exclude": list(self.exclude),
             "max_file_bytes": self.max_file_bytes,
             "classification": self.classification,
+            **({"origin": self.origin.to_dict()} if self.origin else {}),
         }
 
 
@@ -243,6 +256,11 @@ def iter_documents(spec: KnowledgeSource) -> WalkResult:
         for name in sorted(filenames):
             path = here / name
             relative = path.relative_to(root).as_posix()
+            if relative in RESERVED_FILES:
+                # NOVA's own sync marker. Silent rather than reported as skipped: it is not
+                # something the customer put there, so naming it in an ingest report would
+                # be NOVA telling an operator about NOVA.
+                continue
             if not _matches(relative, spec.include):
                 continue
             if spec.exclude and _matches(relative, spec.exclude):

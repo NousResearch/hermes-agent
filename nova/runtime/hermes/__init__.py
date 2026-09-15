@@ -32,3 +32,15 @@ def _register_channel_discovery() -> None:
 
 
 _register_channel_discovery()
+
+
+# Same argument, same injection: the MCP catalogue and the plugin registry belong to the
+# runtime, and nova/extensions may not name it.
+def _register_extension_discovery() -> None:
+    from nova import extensions as _extensions
+    from nova.runtime.hermes import extensions as _discovery
+
+    _extensions.set_discovery(_discovery.discover)
+
+
+_register_extension_discovery()

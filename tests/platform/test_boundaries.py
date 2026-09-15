@@ -69,6 +69,28 @@ def adapter_package(path: Path) -> str | None:
     return None
 
 
+#: Third-party modules a NOVA module may import lazily outside an adapter, each with the
+#: capability that needs it.
+#:
+#: This is NOT a hole in the dependency rule. What that rule protects is the install-time
+#: surface — ``pip install nova`` must need nothing but PyYAML — and a lazy import does not
+#: touch it, which is exactly the reasoning
+#: ``test_only_an_adapter_may_import_the_runtime_lazily`` already states for the runtime.
+#: The reason the adapter confinement exists at all is that a deferred import can still be a
+#: *hidden* requirement: a module that quietly needs something it never declared fails at
+#: the worst possible moment, in a customer's deployment, with an ImportError.
+#:
+#: So an entry here buys nothing on its own. Every module listed is also required by
+#: ``test_optional_capabilities_degrade_instead_of_failing`` to load and to report a usable
+#: refusal when the dependency is absent — a stronger obligation than any module outside
+#: this list carries.
+OPTIONAL_CAPABILITY_IMPORTS = {
+    # Mirroring a knowledge corpus from S3. A deployment with no S3 corpus never calls it,
+    # which is why boto3 is an extra rather than a dependency; the refusal names it.
+    "nova/knowledge/origin.py": "boto3",
+}
+
+
 #: Top-level modules that only exist when the runtime is installed.
 RUNTIME_PACKAGES = {
     "hermes_cli", "hermes_constants", "hermes_state", "hermes_logging",
@@ -153,13 +175,58 @@ def test_lazy_imports_outside_the_stdlib_are_confined_to_adapters():
     for path in nova_python_files():
         if adapter_package(path) is not None:
             continue
+        permitted = OPTIONAL_CAPABILITY_IMPORTS.get(str(path.relative_to(ROOT)))
         for name in imported_modules(path) - module_level_imports(path):
             if name in stdlib or name in allowed_third_party or name == "nova":
+                continue
+            if name == permitted:
                 continue
             offenders.append(f"{path.relative_to(ROOT)}: lazily imports {name}")
     assert not offenders, "unexpected deferred dependency outside an adapter:\n" + "\n".join(
         offenders
     )
+
+
+def test_every_optional_capability_has_a_degradation_proof():
+    """Adding an exemption above must also add the test that pays for it.
+
+    Written as an explicit roster rather than a loop over the dict, because the proof for
+    each capability is specific — "it still imports" is far too weak an obligation to
+    generate. A new entry fails here until somebody writes its own degradation test.
+    """
+    assert set(OPTIONAL_CAPABILITY_IMPORTS) == {"nova/knowledge/origin.py"}, (
+        "a new optional capability dependency was declared; add a test proving that module "
+        "still loads and still answers when the dependency is absent, then list it here"
+    )
+
+
+def test_s3_mirroring_degrades_instead_of_failing_without_boto3(tmp_path):
+    """The obligation that pays for the exemption above.
+
+    A module allowed to reach outside the stdlib must still import, and still answer, on a
+    machine where that dependency is absent. Anything less is a hidden requirement, which is
+    the failure the adapter confinement exists to prevent — it surfaces as an ImportError in
+    a customer's deployment rather than as a message naming what to install.
+
+    Run in a subprocess with the dependency masked out, because importing it in-process
+    here would prove nothing.
+    """
+    probe = (
+        "import sys; sys.modules['boto3'] = None; "
+        "import importlib; m = importlib.import_module('nova.knowledge.origin'); "
+        "from nova.knowledge.sources import KnowledgeSource; "
+        "from nova.knowledge.origin import Origin; "
+        "from pathlib import Path; "
+        f"r = m.sync(KnowledgeSource(id='x', root=Path({str(tmp_path)!r}), "
+        "origin=Origin(kind='s3', bucket='b'))); "
+        "assert not r.ok and 'boto3' in r.error, r.to_dict(); "
+        "print('degraded cleanly')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, cwd=ROOT
+    )
+    assert result.returncode == 0, result.stderr
+    assert "degraded cleanly" in result.stdout
 
 
 def test_runtime_contract_is_free_of_runtime_vocabulary():

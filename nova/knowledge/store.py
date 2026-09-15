@@ -32,6 +32,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from nova.errors import SpecError
+from nova.knowledge.sources import RESERVED_FILES
 
 #: Characters kept in a stored filename. Everything else becomes a hyphen. Deliberately
 #: strict: this name is joined to a filesystem path and later shown in a UI, and the set of
@@ -114,7 +115,7 @@ def list_documents(source) -> tuple[dict[str, Any], ...]:
             relative = path.relative_to(root).as_posix()
         except ValueError:  # pragma: no cover — rglob cannot produce this
             continue
-        if not accepts(source, relative):
+        if relative in RESERVED_FILES or not accepts(source, relative):
             continue
         try:
             stat = path.stat()

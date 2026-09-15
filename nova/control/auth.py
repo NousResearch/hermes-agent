@@ -53,6 +53,11 @@ ROUTE_ROLES: Mapping[str, str] = {
     # What is connected and which agents it may reach. Readable by a viewer: it is
     # operational state, and it contains no credential — only variable names.
     "/channels": "viewer",
+    # What this deployment could grant an agent — the runtime's MCP catalogue and plugin
+    # registry. Same reasoning as /channels: operational state, variable names only, never
+    # a value. A viewer seeing that Linear is available is not a disclosure; a viewer
+    # unable to see why an agent has a tool is an operational problem.
+    "/extensions": "viewer",
     # What runs on a schedule is operational state, like the work board. The prompt an
     # automation carries is NOT returned, so a viewer sees what runs and when, never the
     # instruction text.
@@ -93,6 +98,10 @@ WRITE_ROUTES: Mapping[str, str] = {
     "/agents/archive": "admin",
     "/agents/restore": "admin",
     "/agents/delete": "admin",
+    # Granting an agent an MCP server or a runtime plugin. Admin: both change what the
+    # agent can call and, for MCP, where its data travels.
+    "/agents/mcp": "admin",
+    "/agents/plugins": "admin",
     # The only route in NOVA that writes a secret. Admin, like every other agent write —
     # and the value never comes back out, so there is no matching read to gate.
     "/agents/credentials": "admin",
@@ -107,6 +116,9 @@ WRITE_ROUTES: Mapping[str, str] = {
     "/knowledge/upload": "admin",
     "/knowledge/remove": "admin",
     "/knowledge/reindex": "admin",
+    # Pulling a mirrored corpus down from its bucket. Admin: a sync rewrites what the
+    # corpus holds, including deleting what the bucket no longer has.
+    "/knowledge/sync": "admin",
     # Putting a declared objective's steps on the board.
     "/objectives/submit": "admin",
     # Making the runtime deliver declared conversations to granted agents.
@@ -146,6 +158,10 @@ ROUTE_COLLECTION_PREFIXES: Mapping[str, str] = {
 ROUTE_MEMBER_LEAVES: Mapping[tuple[str, str], str] = {
     # What runs and when is operational state, exactly as the /automations collection is.
     ("agents", "automations"): "viewer",
+    # Which MCP servers and plugins an agent is granted. Operational state, like the
+    # channels list: it names variables, never values, and it is the answer to "why can
+    # this agent do that".
+    ("agents", "extensions"): "viewer",
 }
 
 

@@ -13,6 +13,8 @@ declaration says this agent needs it:
 
 * a channel that grants this agent, contributing its provider manifest's
   ``requires_env`` and ``optional_env``;
+* an MCP server this agent is granted, contributing the variables the runtime's own
+  catalogue says that server authenticates with;
 * the agent's own model credential variable;
 * the deployment's default model credential variable.
 
@@ -110,6 +112,9 @@ def slots_for_agent(bundle, agent_id: str) -> tuple[CredentialSlot, ...]:
                 secret=bool(meta.get("secret", True)),
             ))
 
+    for slot in _mcp_slots(agent):
+        add(slot)
+
     model_env = getattr(getattr(agent, "model", None), "api_key_env", "") or ""
     add(CredentialSlot(
         name=model_env, source="model", required=True,
@@ -126,6 +131,33 @@ def slots_for_agent(bundle, agent_id: str) -> tuple[CredentialSlot, ...]:
     ))
 
     return tuple(slots)
+
+
+def _mcp_slots(agent) -> Iterable[CredentialSlot]:
+    """Credential variables the MCP servers this agent is granted need.
+
+    Derived from the grant, so revoking a server revokes the ability to write its key —
+    the same property the channel slots have, and the reason the allowlist is rebuilt per
+    request rather than cached.
+
+    An OAuth server contributes nothing: its authorization is a browser consent stored by
+    the runtime, not a variable, and offering an empty field for it would invite somebody
+    to paste a token into a file nothing reads.
+    """
+    from nova.extensions import catalogue
+
+    known = catalogue()
+    for server_id in getattr(getattr(agent, "extensions", None), "mcp", ()) or ():
+        entry = known.mcp_server(server_id)
+        if entry is None or entry.auth != "api_key":
+            continue
+        for var in entry.credentials:
+            yield CredentialSlot(
+                name=var.name, source=f"mcp:{server_id}", required=var.required,
+                label=var.prompt or f"{server_id} credential",
+                description=f"Used by the {server_id} MCP server.",
+                secret=var.secret,
+            )
 
 
 def writable_names(bundle, agent_id: str) -> frozenset[str]:

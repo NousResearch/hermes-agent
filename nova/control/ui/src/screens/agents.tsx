@@ -3,6 +3,7 @@ import * as React from "react";
 import { AgentActivity } from "@/screens/agent-activity";
 import { AgentConfigPanel } from "@/screens/agent-config";
 import { AgentCredentials } from "@/screens/agent-credentials";
+import { AgentExtensions } from "@/screens/agent-extensions";
 import { AgentLifecycle } from "@/screens/agent-lifecycle";
 import { AgentSchedules } from "@/screens/agent-schedules";
 import { SoulEditor } from "@/screens/soul";
@@ -167,6 +168,10 @@ export function AgentDetail({
     { id: "activity", label: "Activity" },
     { id: "knowledge", label: "Knowledge", count: corpora.length },
     { id: "channels", label: "Channels", count: reaching.length },
+    // Its own tab rather than a section of Capabilities: an MCP server is a place this
+    // agent's data travels to, which is a different kind of decision from which built-in
+    // tools it may call.
+    { id: "extensions", label: "Extensions" },
     { id: "permissions", label: "Permissions" },
     { id: "usage", label: "Usage" },
   ];
@@ -252,6 +257,7 @@ export function AgentDetail({
       : tab === "capabilities" ? <AgentConfigPanel agentId={agent.id} section="capabilities" onChanged={onChanged} />
       : tab === "schedules" ? <AgentSchedules agentId={agent.id} />
       : tab === "activity" ? <AgentActivity agentId={agent.id} />
+      : tab === "extensions" ? <AgentExtensions agentId={agent.id} />
       : (
       <GlassPanel className="p-5">
         {tab === "work" ? (

@@ -333,6 +333,62 @@ class DelegationSpec:
 
 
 @dataclass(frozen=True)
+class ExtensionsSpec:
+    """MCP servers and runtime plugins this agent is granted.
+
+    Both name things the runtime already ships. ``mcp`` entries are ids from the runtime's
+    curated catalogue and nothing else — a server is a command or a URL that the agent's
+    data flows through, and accepting an arbitrary one from a control plane would be remote
+    code execution with a form around it. ``plugins.enable`` and ``plugins.disable`` are
+    keys from the runtime's own plugin registry, with disable winning, because that is the
+    precedence the runtime's gate already applies.
+
+    Validated against the discovered catalogue at load, so a typo names a missing server at
+    configuration time rather than as a tool that silently never appears.
+    """
+
+    mcp: tuple[str, ...] = ()
+    plugins_enable: tuple[str, ...] = ()
+    plugins_disable: tuple[str, ...] = ()
+
+    @classmethod
+    def parse(cls, doc: Optional[Doc]) -> "ExtensionsSpec":
+        if doc is None:
+            return cls()
+        plugins = doc.child("plugins")
+        spec = cls(
+            mcp=tuple(doc.str_list("mcp")),
+            plugins_enable=tuple(plugins.str_list("enable")) if plugins else (),
+            plugins_disable=tuple(plugins.str_list("disable")) if plugins else (),
+        )
+        if plugins is not None:
+            plugins.reject_unknown()
+        doc.reject_unknown()
+        overlap = sorted(set(spec.plugins_enable) & set(spec.plugins_disable))
+        if overlap:
+            raise SpecError(
+                f"{', '.join(overlap)} appear(s) in both enable and disable — disable wins, "
+                "so remove the enable entry to make the intent explicit",
+                field="extensions.plugins",
+                source=doc.source,
+            )
+        return spec
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        if self.mcp:
+            out["mcp"] = list(self.mcp)
+        plugins = {}
+        if self.plugins_enable:
+            plugins["enable"] = list(self.plugins_enable)
+        if self.plugins_disable:
+            plugins["disable"] = list(self.plugins_disable)
+        if plugins:
+            out["plugins"] = plugins
+        return out
+
+
+@dataclass(frozen=True)
 class AgentSpec:
     """One agent, declared.
 
@@ -355,6 +411,7 @@ class AgentSpec:
     approval: ApprovalSpec = field(default_factory=ApprovalSpec)
     limits: LimitsSpec = field(default_factory=LimitsSpec)
     delegation: DelegationSpec = field(default_factory=DelegationSpec)
+    extensions: ExtensionsSpec = field(default_factory=ExtensionsSpec)
     source: Optional[Path] = None
 
     @classmethod
@@ -397,6 +454,7 @@ class AgentSpec:
             approval=ApprovalSpec.parse(doc.child("approval")),
             limits=LimitsSpec.parse(doc.child("limits")),
             delegation=DelegationSpec.parse(doc.child("delegation")),
+            extensions=ExtensionsSpec.parse(doc.child("extensions")),
             source=source,
         )
         doc.reject_unknown()
@@ -452,6 +510,7 @@ class AgentSpec:
             ("approval", self.approval),
             ("limits", self.limits),
             ("delegation", self.delegation),
+            ("extensions", self.extensions),
         ):
             rendered = section.to_dict()
             if rendered:

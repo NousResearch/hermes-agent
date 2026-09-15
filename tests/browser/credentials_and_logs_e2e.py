@@ -108,6 +108,23 @@ with sync_playwright() as p:
     check("removing clears it from the runtime", SECRET not in ENV.read_text())
 
     # ---- LOGS --------------------------------------------------------------
+    #
+    # Seeded here rather than assumed. These are files the RUNTIME writes, so a test that
+    # waited for one would only pass on a host where an agent had already run — and the
+    # property under test is NOVA's reading of them, which is exactly as testable against
+    # a file this script wrote. `gateway.log` is deliberately NOT written: a stream the
+    # runtime has never produced must be offered and disabled, not hidden.
+    logs = HOME / "profiles" / "operations" / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / "agent.log").write_text(
+        "".join(f"2026-09-15T02:{i // 60:02d}:{i % 60:02d}Z  agent turn {i}\n"
+                for i in range(800)),
+        encoding="utf-8",
+    )
+    (logs / "errors.log").write_text(
+        "2026-09-15T02:14:03Z  provider returned 429, retrying in 2s\n", encoding="utf-8"
+    )
+
     print("\n# Runtime logs and activity")
     goto("/agents/operations")
     page.get_by_role("tab", name="Activity").click()

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from tools.skills_hub_clawhub import ClawHubSource
 from tools.skills_hub_github import GitHubAuth, GitHubSource, _PROVIDER_FILTER_VALUES, _filter_results_by_provider
+from tools.skills_hub_loopskill import LoopSkillSource
 from tools.skills_hub_models import SkillMeta, SkillSource, TRUST_RANK, _dedupe_by_trust
 from tools.skills_hub_official import HermesIndexSource, OptionalSkillSource
 from tools.skills_hub_skillssh import SkillsShSource
@@ -93,6 +94,7 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
         OptionalSkillSource(auth=auth),   # official optional skills (highest priority)
         HermesIndexSource(auth=auth),     # centralized index (search + resolved install paths)
         SkillsShSource(auth=auth),
+        LoopSkillSource(),
         WellKnownSkillSource(),
         UrlSource(),                      # direct HTTP(S) URL to a SKILL.md
         GitHubSource(auth=auth, extra_taps=TapsManager().list_taps()),

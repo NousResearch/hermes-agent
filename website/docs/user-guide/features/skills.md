@@ -686,6 +686,7 @@ hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
 |--------|---------|-------|
 | `official` | `official/security/1password` | Optional skills shipped with Hermes. |
 | `skills-sh` | `skills-sh/vercel-labs/agent-skills/vercel-react-best-practices` | Searchable via `hermes skills search <query> --source skills-sh`. Hermes resolves alias-style skills when the skills.sh slug differs from the repo folder. |
+| `loopskill` | `loopskill/clean-architecture` | Searchable via `hermes skills search <query> --source loopskill`. Free-tier skills fetch full content; `pro`/`pro_plus` skills are listed but locked — install them at [app.loopskill.io](https://app.loopskill.io). |
 | `well-known` | `well-known:https://mintlify.com/docs/.well-known/skills/mintlify` | Skills served directly from `/.well-known/skills/index.json` on a website. Search using the site or docs URL. |
 | `url` | `https://sharethis.chat/SKILL.md` | Direct HTTP(S) URL to `SKILL.md` plus explicitly referenced support files. Name resolution: frontmatter → URL slug → interactive prompt → `--name` flag. |
 | `github` | `openai/skills/k8s` | Direct GitHub repo/path installs and custom taps. |

@@ -39,6 +39,32 @@ if _SCRIPTS_DIR not in sys.path:
 from _hermes_home import get_hermes_home
 from _google_identities import get_google_credentials, UnknownGoogleIdentityError
 
+_DEDICATED_VENV = Path(__file__).resolve().parent / ".venv"
+
+
+def _missing_required_packages() -> bool:
+    """Cheap presence check (not version-pinned like setup.py's) -- this script's own reexec
+    guard just needs to know whether the core googleapiclient import would fail right now."""
+    try:
+        import googleapiclient  # noqa: F401
+        import google.auth  # noqa: F401
+        return False
+    except ImportError:
+        return True
+
+
+def _reexec_under_dedicated_venv_if_needed():
+    """Same rationale as setup.py's twin function -- see there. Kept as a separate, duplicated
+    copy rather than a shared import: this script must not depend on setup.py's own module-level
+    state (REQUIRED_PACKAGES parsing, argparse setup) just to run this one early check."""
+    if sys.prefix != sys.base_prefix:
+        return
+    venv_python = _DEDICATED_VENV / "bin" / "python3"
+    if not venv_python.exists() or not _missing_required_packages():
+        return
+    os.execv(str(venv_python), [str(venv_python)] + sys.argv)
+
+
 HERMES_HOME = get_hermes_home()
 
 # Resolved per-identity at CLI dispatch time (see _resolve_identity / main()).
@@ -1343,6 +1369,7 @@ def _docs_insert_text(doc_id: str, text: str, index: int, tab_id: str | None = N
 
 
 def main():
+    _reexec_under_dedicated_venv_if_needed()
     parser = argparse.ArgumentParser(description="Google Workspace API for Hermes Agent")
     parser.add_argument(
         "--identity",

@@ -170,6 +170,23 @@ def _format_missing_scopes(missing_scopes: list[str]) -> str:
     )
 
 
+_DEDICATED_VENV = Path(__file__).resolve().parent / ".venv"
+
+
+def _reexec_under_dedicated_venv_if_needed():
+    """Transparently switch to a dedicated venv if the interpreter that actually launched us
+    (typically the bare system `python3` a terminal-tool invocation resolves to, not the Hermes
+    managed venv) is missing required packages and can't install them -- e.g. no `pip` and
+    PEP 668 "externally managed" blocking a direct install (see install_deps()'s third tier).
+    A no-op once already running under the dedicated venv, or when it doesn't exist yet."""
+    if sys.prefix != sys.base_prefix:
+        return  # already inside some venv -- never re-exec again, avoids any possible loop
+    venv_python = _DEDICATED_VENV / "bin" / "python3"
+    if not venv_python.exists() or not _missing_required_packages():
+        return
+    os.execv(str(venv_python), [str(venv_python)] + sys.argv)
+
+
 def _missing_required_packages() -> list[str]:
     """Return exact requirements absent or stale in this interpreter.
 
@@ -232,8 +249,36 @@ def install_deps():
             print("Dependencies installed.")
             return True
         except subprocess.CalledProcessError as e:
-            print(f"ERROR: Failed to install dependencies via uv: {e}")
-            print(f"Manually: {uv} pip install --python {sys.executable} {' '.join(REQUIRED_PACKAGES)}")
+            uv_error = e
+
+        # Third choice: sys.executable itself can't take an install (no pip, and PEP 668
+        # "externally managed" blocks a direct write into it -- the common case when this
+        # script is launched as a bare `python3 setup.py ...` and that resolves to the
+        # system interpreter rather than the Hermes managed venv). Create a small dedicated
+        # venv next to this script instead of fighting the OS protection, install there, and
+        # let _reexec_under_dedicated_venv_if_needed() route future runs (this one included,
+        # via install_deps()'s own caller re-running _missing_required_packages after this
+        # returns) through it transparently.
+        try:
+            if not _DEDICATED_VENV.exists():
+                subprocess.check_call(
+                    [uv, "venv", "--python", "3.11", str(_DEDICATED_VENV)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            venv_python = _DEDICATED_VENV / "bin" / "python3"
+            subprocess.check_call(
+                [uv, "pip", "install", "--python", str(venv_python), "--quiet"] + missing,
+                stdout=subprocess.DEVNULL,
+            )
+            print("Dependencies installed into a dedicated venv (system Python has no pip / "
+                  "is externally managed).")
+            print(f"Re-run this command -- it will now transparently use {venv_python}.")
+            return True
+        except subprocess.CalledProcessError as e:
+            print(f"ERROR: Failed to install dependencies via uv (direct): {uv_error}")
+            print(f"ERROR: Dedicated-venv fallback also failed: {e}")
+            print(f"Manually: {uv} venv --python 3.11 {_DEDICATED_VENV} && "
+                  f"{uv} pip install --python {_DEDICATED_VENV}/bin/python3 {' '.join(REQUIRED_PACKAGES)}")
             return False
 
     print(f"ERROR: Failed to install dependencies: {pip_error}")
@@ -562,6 +607,7 @@ def revoke():
 
 
 def main():
+    _reexec_under_dedicated_venv_if_needed()
     parser = argparse.ArgumentParser(description="Google Workspace OAuth setup for Hermes")
     parser.add_argument(
         "--identity",

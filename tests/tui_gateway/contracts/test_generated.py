@@ -23,7 +23,6 @@ from jsonschema import Draft7Validator
 REPO = Path(__file__).resolve().parents[3]
 GEN = REPO / "scripts" / "gen_gateway_contracts.py"
 META_SCHEMA = REPO / "tests" / "tui_gateway" / "contracts" / "fixtures" / "openrpc-meta-schema.json"
-PYTHON = REPO / ".venv" / "bin" / "python"
 
 
 @pytest.fixture(scope="module")
@@ -40,7 +39,7 @@ def gen():
 def _generator(*args: str) -> subprocess.CompletedProcess[str]:
     environment = {**os.environ, "PYTHONPATH": str(REPO)}
     return subprocess.run(
-        [str(PYTHON), str(GEN), *args],
+        [sys.executable, str(GEN), *args],  # the runner's interpreter, whatever venv layout selected it
         cwd=REPO,
         env=environment,
         text=True,
@@ -99,6 +98,14 @@ def sent_server_requests() -> set[str]:
     for src in (REPO / "tui_gateway").glob("*.py"):
         names.update(_LITERAL_REQUEST.findall(_read(src)))
     return names
+
+
+def test_generated_files_are_current(gen):
+    """Both committed artefacts equal an in-memory regeneration (byte-for-byte): the TypeScript and
+    OpenRPC the clients compile against never drift from the models with CI green."""
+    stale = [path.relative_to(REPO) for path, text in gen.render_all().items()
+             if (path.read_text(encoding="utf-8") if path.exists() else None) != text]
+    assert not stale, f"stale generated contract files {stale}: run scripts/gen_gateway_contracts.py"
 
 
 def test_catalog_covers_the_whole_wire():

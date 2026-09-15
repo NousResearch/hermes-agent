@@ -1168,6 +1168,9 @@ export interface Translations {
       appliesDesc: string
       provider: string
       model: string
+      searchProvider: string
+      searchModel: string
+      noResults: string
       applying: string
       defaultsLabel: string
       reasoning: string

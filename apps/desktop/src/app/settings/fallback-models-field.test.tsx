@@ -2,8 +2,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// Radix Select calls scrollIntoView / pointer-capture APIs jsdom lacks.
+import { stubResizeObserver } from '@/test/jsdom'
+
+// Radix Select calls scrollIntoView / pointer-capture APIs jsdom lacks; the
+// searchable selects (cmdk Command) also need ResizeObserver for their list.
 beforeAll(() => {
+  stubResizeObserver()
   Element.prototype.scrollIntoView = vi.fn()
   Element.prototype.hasPointerCapture = vi.fn(() => false)
   Element.prototype.releasePointerCapture = vi.fn()

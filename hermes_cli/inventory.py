@@ -174,7 +174,10 @@ def _strip_aggregator_overlaps(rows: list[dict]) -> None:
         # picker. (#47077)
         original = row.get("models") or []
         filtered = [m for m in original if m.lower() not in user_models]
-        if len(filtered) < len(original):
+        # A fully overlapping built-in catalog still needs a selectable row.
+        # In that case retain its original catalog instead of publishing an
+        # empty picker entry.
+        if filtered and len(filtered) < len(original):
             row["models"] = filtered
             row["total_models"] = len(filtered)
 

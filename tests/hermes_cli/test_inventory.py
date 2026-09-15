@@ -555,6 +555,23 @@ def test_aggregator_dedup_removes_overlapping_models():
     assert or_row["total_models"] == 2
 
 
+def test_aggregator_dedup_preserves_catalog_when_every_model_overlaps():
+    """A built-in routing aggregator must remain selectable after dedup (#111288)."""
+    catalog = ["openai/gpt-5", "anthropic/claude-sonnet-4.6"]
+    rows = [
+        _user_provider_row("openrouter-byok", catalog),
+        _aggregator_row("openrouter", catalog.copy()),
+    ]
+    ctx = _empty_ctx()
+
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    or_row = next(r for r in payload["providers"] if r["slug"] == "openrouter")
+    assert or_row["models"] == catalog
+    assert or_row["total_models"] == len(catalog)
+
+
 
 
 def test_flat_namespace_reseller_keeps_first_party_models_overlapping_user_proxy():
@@ -681,7 +698,6 @@ def _apply_featured_with_dates(rows, dates: dict[str, str]):
 
     with patch("agent.models_dev.get_model_info", side_effect=_fake_get_model_info):
         inventory._apply_featured(rows)
-
 
 
 

@@ -47,6 +47,10 @@ class TestNormalizeUrlForRequest:
         ("https://wttr.in/K%C3%B6ln", "https://wttr.in/K%C3%B6ln"),
         # hostname is IDNA-encoded
         ("https://münich.example/Köln", "https://xn--mnich-kva.example/K%C3%B6ln"),
+        ("https://Köln.de/wetter", "https://xn--kln-sna.de/wetter"),
+        ("https://user:pw@Köln.de:8443/x", "https://user:pw@xn--kln-sna.de:8443/x"),
+        ("https://köln.de@Köln.de:8443/x", "https://köln.de@xn--kln-sna.de:8443/x"),
+        ("https://münich.example:bad/x", "https://xn--mnich-kva.example:bad/x"),
     ])
     def test_encodes_url_parts(self, raw, expected):
         assert normalize_url_for_request(raw) == expected

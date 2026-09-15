@@ -58,7 +58,11 @@ def normalize_url_for_request(url: str) -> str:
         except UnicodeError:
             ascii_host = hostname
         if ascii_host != hostname:
-            netloc = netloc.replace(hostname, ascii_host, 1)
+            # Rebuild the authority so lowercased hostname text cannot replace
+            # userinfo or miss a differently cased host. Preserve the raw port.
+            userinfo, at, host_port = parsed.netloc.rpartition("@")
+            _, colon, port = host_port.partition(":")
+            netloc = userinfo + at + ascii_host + colon + port
     safe = "/%:@!$&'()*+,;="
     return urlunsplit((parsed.scheme, netloc, quote(parsed.path, safe=safe),
                        quote(parsed.query, safe=safe + "?"), quote(parsed.fragment, safe=safe + "?")))

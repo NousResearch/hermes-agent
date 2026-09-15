@@ -2973,3 +2973,36 @@ license and integration-anchor checks passed. The full Desktop UI suite passed
 591 files / 5,669 tests with `--maxWorkers=4`; the integrated Workstation
 Browser E2E passed 2/2. Release promotion still requires the existing
 clean-machine candidate workflow and branch-protection governance.
+
+## 2026-09-15 — Post-implementation security/reliability red-team
+
+Status: IN PROGRESS
+
+Pinned audit base after explicit mainline consolidation:
+`main@ce5d3260c9791eee24a9c07c389e95a6e4d38c57` (equal to `origin/main`).
+The pre-existing dirty `feat/workstation-hybrid-kanban` work was preserved as
+`ab8a269fc2` and merged into main as `ce5d3260c9`; its focused suite passed
+24 tests before this audit resumed.
+
+Initial evidence matrix (classification precedes corrective edits):
+
+| ID | Finding | Initial classification | Current-main evidence / reproduction hypothesis | Required proof |
+| --- | --- | --- | --- | --- |
+| RT-001 | Compaction trust-boundary poisoning | CONFIRMED | `agent/context_compressor.py::_build_operational_reference_envelope` serializes every message/content and promotes regex matches, including `approval_state`, without a trusted structured source check. | Adversarial role/source matrix; structured trusted-runtime refs survive recursive compactions; raw text never becomes authority. |
+| RT-002 | Structured browser errors end-to-end | CONFIRMED | `tools/browser_workstation.py::_request_json` converts HTTP/error JSON into textual `WorkstationBrowserError`, dropping code/retry/state/action/resource/details. | Electron→HTTP→Python→executor model-visible contract for all required codes plus incidental-word adversarial messages. |
+| RT-003 | Bound BrowserTask after Core restart | CONFIRMED | `_BOUND_TASKS` is a process-local set and `_is_bound` consults no BrowserTask/resource projection. After restart, controller loss permits legacy fallback when routing is enabled. | Process-A binding followed by fresh-process/core-state B and controller loss must fail closed. |
+| RT-004 | Persistent worker start overwrite | CONFIRMED | `WorkerRegistry.start_persistent_worker` unconditionally creates/replaces `_PersistentWorkerRecord` when no live in-process worker exists, ignoring a loaded durable record. | Restart then `start` preserves/rehydrates or emits explicit recovery error; lineage mismatch rejected. |
+| RT-005 | Worker multi-process lost updates | CONFIRMED | Persistence uses only `threading.Lock`, writes the registry's in-memory snapshot, and atomically replaces JSON without interprocess locking/generation/merge. | Two real processes, distinct and same worker IDs, crash matrix and 100-item accounting. |
+| RT-006 | Turn-budget spill metadata parity | PENDING | `agent/tool_executor.py` has two `maybe_persist_tool_result` call paths; arguments and security scope require direct comparison/testing. | Forced budget spill retains scope/hash/result/artifact refs. |
+| RT-007 | Cross-turn result economy | PENDING | Content-addressed spill reports hit/miss, but that is not yet evidence of a safe execution cache or duplicate-context suppression. | Explicit cache-safe allowlist, source-version invalidation and session/security isolation or classification as intentionally unimplemented. |
+| RT-008 | Production-path benchmark | PENDING | Existing structural workload baseline and newly consolidated benchmark modules require tracing against production executor/storage/event/worker/compactor paths. | 100-item deterministic scenario with restart, persistence failure, browser stale error, escalation and two compactions. |
+| RT-009 | Controller descriptor recovery | PARTIAL | `_read_control` validates protocol/loopback/token but not PID identity and does not reconcile a stale descriptor; connection errors become textual unavailable errors. | Dead/mismatched PID, refused port, token mismatch and unrelated loopback service produce deterministic recovery or structured `CONTROLLER_DOWN`. |
+| RT-010 | Process ownership vs raw terminal | PENDING | Existing `process_registry`, approval and threat/policy layers must be exercised before changing them. | Owned/unowned same-name process and Windows/POSIX wildcard-kill matrix. |
+| RT-011 | Documentation authority conflict | CONFIRMED | `HERMES_WORKSTATION_INTELLIGENCE.md` claims canonical/single-source authority while `context/README.md` defines a distributed reading order that omits it; `CURRENT_STATE.md` still describes an uncommitted working tree and stale SHAs. | Unambiguous relative authority and final-SHA-only validation claims. |
+| RT-012 | Governance/CI | PENDING | Repository workflows and remote branch protection have not yet been inspected on the pinned head. | Exact local CI coverage plus API-backed protection evidence or explicit manual owner actions. |
+
+Next experiment RT-E001: execute the compactor directly with each untrusted
+origin carrying forged operational labels. Confirming evidence is any forged
+label appearing below the authoritative Operational References heading;
+refuting evidence is complete absence for origins 1–6 with survival only from a
+runtime-authenticated structured envelope.

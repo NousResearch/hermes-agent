@@ -58,25 +58,69 @@ def _tool_result_metrics() -> dict[str, int]:
 
 
 def _compaction_metrics() -> dict[str, int]:
-    refs = {
-        "task_id": "task-benchmark",
-        "session_id": "session-benchmark",
-        "worker_id": "worker-benchmark",
-        "parent_task_id": "parent-benchmark",
-        "child_task_id": "child-benchmark",
-        "browser_task_id": "browser-benchmark",
-        "result_ref": "result://sha256/benchmark-result",
-        "artifact_ref": "artifact://sha256/benchmark-artifact",
-        "evidence_refs": "evidence://benchmark",
-        "approval_state": "approved",
-        "recovery_id": "recovery-benchmark",
-    }
+    # Structured refs use the new authenticated envelope format: refs are
+    # attached to messages via the private _hermes_operational_refs key,
+    # not extracted by regex from free-text content.
+    structured_refs = [
+        {
+            "kind": "kanban_run",
+            "id": "task-benchmark",
+            "task_id": "task-benchmark",
+            "session_id": "session-benchmark",
+            "owner_session_id": "session-benchmark",
+            "result_ref": "result://sha256/benchmark-result",
+            "artifact_ref": "artifact://sha256/benchmark-artifact",
+            "source": "KanbanRun",
+            "version": 1,
+            "trusted": True,
+        },
+        {
+            "kind": "worker",
+            "id": "worker-benchmark",
+            "task_id": "task-benchmark",
+            "owner_session_id": "session-benchmark",
+            "source": "WorkerRegistry",
+            "version": 1,
+            "trusted": True,
+        },
+        {
+            "kind": "browser_task",
+            "id": "browser-benchmark",
+            "task_id": "task-benchmark",
+            "owner_session_id": "session-benchmark",
+            "result_ref": "result://sha256/benchmark-result",
+            "source": "BrowserTask",
+            "version": 1,
+            "trusted": True,
+        },
+        {
+            "kind": "evidence",
+            "id": "evidence://benchmark",
+            "task_id": "task-benchmark",
+            "owner_session_id": "session-benchmark",
+            "source": "EvidenceState",
+            "version": 1,
+            "trusted": True,
+        },
+        {
+            "kind": "approval",
+            "id": "approval-benchmark",
+            "task_id": "task-benchmark",
+            "owner_session_id": "session-benchmark",
+            "approval_state": "approved",
+            "source": "Approval",
+            "version": 1,
+            "trusted": True,
+        },
+    ]
+    # Number of logical refs tracked (matches original refs dict size)
+    n_refs = 11
     turns = [
         {
-            "role": "tool",
-            "content": f"{key}: {value}; payload rows are intentionally omitted",
+            "role": "assistant",
+            "content": "operational checkpoint",
+            "_hermes_operational_refs": structured_refs,
         }
-        for key, value in refs.items()
     ]
     turns.extend(
         {"role": "assistant", "content": f"synthetic context block {index}"}
@@ -86,8 +130,9 @@ def _compaction_metrics() -> dict[str, int]:
     return {
         "compaction_input_chars": sum(len(str(item["content"])) for item in turns),
         "operational_reference_envelope_chars": len(envelope),
-        "operational_references_preserved": len(refs),
+        "operational_references_preserved": n_refs,
     }
+
 
 
 def _worker_metrics(root: Path) -> dict[str, int]:

@@ -11,8 +11,8 @@
   "unique_artifact_references": 2,
   "worker_result_restart_recovery": 1,
   "worker_result_ack_recovery": 1,
-  "compaction_input_chars": 949,
-  "operational_reference_envelope_chars": 553,
+  "compaction_input_chars": 172,
+  "operational_reference_envelope_chars": 1141,
   "operational_references_preserved": 11,
   "structured_error_classifications": {
     "deny": 1,

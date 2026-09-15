@@ -285,6 +285,10 @@ export function ChatBar({
   // Last keystroke in the editor, for the `pause` mode's "have you stopped?"
   // test. Seeded on mount so an untouched composer counts as idle.
   const typedAtRef = useRef(0)
+  // The `hold` mode's threshold timer. Owned by the press (keydown starts it,
+  // keyup cancels it) so the gesture is decided by a value we control rather
+  // than by the operating system's key-repeat delay.
+  const enterHoldTimerRef = useRef<number | undefined>(undefined)
   // Timestamp of the last plain Enter. A second press inside
   // DOUBLE_ENTER_SEND_MS commits the draft; a lone press just breaks the line.
   const lastEnterAtRef = useRef(0)
@@ -483,6 +487,18 @@ export function ChatBar({
   // keystroke would have called, just later.
   const sendPrefs = useStore($composerSendPrefs)
   const sendGrace = useComposerSendGrace({ graceMs: sendPrefs.sendGraceMs, onCommit: submitDraft })
+
+  // Released before the timer fires = a tap, not a hold. Nothing to undo: the
+  // break the press inserted is exactly what a tap was supposed to leave.
+  const cancelEnterHold = useCallback(() => {
+    if (enterHoldTimerRef.current !== undefined) {
+      window.clearTimeout(enterHoldTimerRef.current)
+      enterHoldTimerRef.current = undefined
+    }
+  }, [])
+
+  // A composer that unmounts mid-press must not fire a send into a dead tree.
+  useEffect(() => cancelEnterHold, [cancelEnterHold])
 
   // Resting / reconnecting / starting placeholder text, re-rolled only on a real
   // conversation change.
@@ -767,6 +783,12 @@ export function ChatBar({
       return
     }
 
+    // Read once, at press time: the mode and grace scope must not change
+    // mid-gesture (a settings change while the key is held would otherwise make
+    // the repeat that arrives a few ms later mean something else), and the
+    // handler reads them on paths that run before its own later declaration.
+    const { holdMs: holdMsAtHand, mode: sendModeAtHand, sendGrace: sendGraceAtHand } = $composerSendPrefs.get()
+
     // Undo/redo before anything else — we own the stack (see useComposerUndo),
     // so these never reach Chromium's native history, which has no record of
     // the Range-based edits the rich editor makes.
@@ -1025,6 +1047,29 @@ export function ChatBar({
       return
     }
 
+    // A held key REPEATS, and a repeat is not a press. Auto-repeat produces a
+    // stream of bare Enter keydowns that would otherwise complete a double-tap
+    // (the same key twice inside the window is indistinguishable from a
+    // deliberate gesture), drain the queue a second time, or start a hold — so
+    // holding Enter to add blank lines would commit the draft instead.
+    //
+    // `hold` is the mode where the long press IS the gesture, but even there the
+    // repeat is not what decides: its own timer is (set below, on the press), so
+    // the threshold is a value we control rather than whatever the operating
+    // system's key repeat happens to be — and it still works for anyone with
+    // repeat switched off. So a repeat never reaches the gesture logic below.
+    //
+    // It still falls through UNPREVENTED where Enter breaks the line, so holding
+    // the key keeps inserting them; `enter` and `hold` give a repeat no meaning,
+    // and there it is swallowed rather than leaving stray breaks behind.
+    if (event.key === 'Enter' && event.repeat) {
+      if (sendModeAtHand === 'enter' || sendModeAtHand === 'hold') {
+        event.preventDefault()
+      }
+
+      return
+    }
+
     // Cmd/Ctrl+Enter commits the draft unconditionally: it queues a follow-up
     // while a turn runs, and sends outright when the session is idle. So the
     // chord means "send" in both states, and the plain-Enter double-tap below
@@ -1102,7 +1147,10 @@ export function ChatBar({
         return
       }
 
-      const { doubleEnterMs, mode: sendMode, sendGrace: graceScope, typingIdleMs } = $composerSendPrefs.get()
+      // Mode and grace scope come from the single press-time read above.
+      const { doubleEnterMs, typingIdleMs } = $composerSendPrefs.get()
+      const sendMode = sendModeAtHand
+      const graceScope = sendGraceAtHand
 
       if (!enterBreaksLine(sendMode)) {
         event.preventDefault()
@@ -1121,6 +1169,37 @@ export function ChatBar({
       // `mod-enter`: a bare Enter only ever breaks the line. The ⌘/Ctrl+Enter
       // branch above is the send path.
       if (sendMode === 'mod-enter') {
+        return
+      }
+
+      // `hold`: a tap breaks the line (this path falls through UNPREVENTED, so
+      // the editor inserts it) and a long press replaces that break with a send.
+      // The threshold is `holdMs` and the TIMER below is what enforces it — the
+      // press alone decides, and keyup cancels, so a tap can never send and the
+      // gesture survives a user with key repeat switched off.
+      if (sendMode === 'hold') {
+        cancelEnterHold()
+        enterHoldTimerRef.current = window.setTimeout(() => {
+          enterHoldTimerRef.current = undefined
+
+          const held = editorRef.current
+          const live = held ? composerPlainText(held) : ''
+
+          // Drop the break the press inserted, so a hold sends exactly what a
+          // tap would have left in the box.
+          if (held && live.endsWith('\n')) {
+            renderComposerContents(held, live.replace(/\n+$/, ''))
+          }
+
+          if (graceScope !== 'off' && sendGrace.hold()) {
+            triggerHaptic('submit')
+
+            return
+          }
+
+          submitDraft()
+        }, holdMsAtHand)
+
         return
       }
 
@@ -1211,7 +1290,18 @@ export function ChatBar({
     }
   }
 
-  const handleEditorKeyUp = triggerKeyUpHandler(triggerKeyConsumedRef, refreshTrigger)
+  const triggerKeyUp = triggerKeyUpHandler(triggerKeyConsumedRef, refreshTrigger)
+
+  // Releasing Enter before the hold timer fires means it was a tap: the break
+  // the press inserted stands and nothing is sent. The timer is the ONLY thing
+  // that can turn a press into a send in `hold` mode.
+  const handleEditorKeyUp = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Enter') {
+      cancelEnterHold()
+    }
+
+    triggerKeyUp()
+  }
 
   const {
     dragActive,

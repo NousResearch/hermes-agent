@@ -9,11 +9,14 @@ import {
   $composerSendConfigPath,
   $composerSendPrefs,
   clampDoubleEnterMs,
+  clampHoldMs,
   clampSendGraceMs,
   clampTypingIdleMs,
   type ComposerSendMode,
   DOUBLE_ENTER_MAX_MS,
   DOUBLE_ENTER_MIN_MS,
+  HOLD_MAX_MS,
+  HOLD_MIN_MS,
   SEND_GRACE_MAX_MS,
   SEND_GRACE_MIN_MS,
   type SendGraceScope,
@@ -122,6 +125,7 @@ export function ComposerSendSettings() {
         doubleTap: t.composer.placeholderSendDoubleTap,
         enterSends: t.composer.placeholderSendEnterSends,
         newline: t.composer.placeholderSendNewline,
+        hold: t.composer.placeholderSendHold,
         pause: t.composer.placeholderSendPause
       }),
       title: k.title
@@ -143,6 +147,7 @@ export function ComposerSendSettings() {
               { id: 'enter', label: k.modeEnter },
               { id: 'double-enter', label: k.modeDoubleEnter },
               { id: 'pause', label: k.modePause },
+              { id: 'hold', label: k.modeHold },
               { id: 'mod-enter', label: k.modeModEnter }
             ]}
             value={prefs.mode}
@@ -170,6 +175,25 @@ export function ComposerSendSettings() {
           description={k.doubleTapDescription}
           hint={fileHint}
           title={k.doubleTapTitle}
+        />
+      )}
+
+      {prefs.mode === 'hold' && (
+        <ListRow
+          action={
+            <MsField
+              clamp={clampHoldMs}
+              label={k.holdMsTitle}
+              max={HOLD_MAX_MS}
+              min={HOLD_MIN_MS}
+              onChange={holdMs => void setComposerSendPrefs({ holdMs })}
+              unit={k.holdMsUnit}
+              value={prefs.holdMs}
+            />
+          }
+          description={k.holdMsDescription}
+          hint={fileHint}
+          title={k.holdMsTitle}
         />
       )}
 

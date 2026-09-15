@@ -11,6 +11,7 @@
 
 import {
   clampDoubleEnterMs,
+  clampHoldMs,
   clampSendGraceMs,
   clampTypingIdleMs,
   COMPOSER_SEND_DEFAULT_MODE,
@@ -19,6 +20,8 @@ import {
   DOUBLE_ENTER_DEFAULT_MS,
   DOUBLE_ENTER_MAX_MS,
   DOUBLE_ENTER_MIN_MS,
+  HOLD_MAX_MS,
+  HOLD_MIN_MS,
   normalizeComposerSendPrefs,
   SEND_GRACE_DEFAULT_MS,
   SEND_GRACE_DEFAULT_SCOPE,
@@ -35,6 +38,7 @@ import { notifyError } from '@/store/notifications'
 
 export {
   clampDoubleEnterMs,
+  clampHoldMs,
   clampSendGraceMs,
   clampTypingIdleMs,
   COMPOSER_SEND_DEFAULT_MODE,
@@ -43,6 +47,8 @@ export {
   DOUBLE_ENTER_DEFAULT_MS,
   DOUBLE_ENTER_MAX_MS,
   DOUBLE_ENTER_MIN_MS,
+  HOLD_MAX_MS,
+  HOLD_MIN_MS,
   SEND_GRACE_DEFAULT_MS,
   SEND_GRACE_DEFAULT_SCOPE,
   SEND_GRACE_MAX_MS,

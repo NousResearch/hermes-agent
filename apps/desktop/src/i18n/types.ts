@@ -704,10 +704,14 @@ export interface Translations {
       modeEnter: string
       modeDoubleEnter: string
       modePause: string
+      modeHold: string
       modeModEnter: string
       doubleTapTitle: string
       doubleTapDescription: string
       doubleTapUnit: string
+      holdMsTitle: string
+      holdMsDescription: string
+      holdMsUnit: string
       typingIdleTitle: string
       typingIdleDescription: string
       typingIdleUnit: string
@@ -3196,6 +3200,7 @@ export interface Translations {
     placeholderSendChord: (chord: string) => string
     placeholderSendEnterSends: string
     placeholderSendPause: string
+    placeholderSendHold: string
     sendHold: string
     newSessionPlaceholders: readonly string[]
     followUpPlaceholders: readonly string[]

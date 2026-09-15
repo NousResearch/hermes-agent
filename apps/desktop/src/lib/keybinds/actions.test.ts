@@ -165,7 +165,7 @@ describe('composer send-mode keybind rows', () => {
   })
 
   it('resolves every id the panel labels, so no row renders as a raw id', () => {
-    for (const mode of ['enter', 'double-enter', 'pause', 'mod-enter'] as const) {
+    for (const mode of ['enter', 'double-enter', 'pause', 'hold', 'mod-enter'] as const) {
       for (const row of readonlyShortcuts(mode)) {
         const labelKey = row.labelKey ?? row.id
 
@@ -185,6 +185,11 @@ describe('composer send-mode keybind rows', () => {
     expect(labelFor('double-enter')).toBe('composer.send.double')
     expect(labelFor('pause')).toBe('composer.send.pause')
     expect(labelFor('mod-enter')).toBe('composer.send.mod')
+  })
+
+  it('prints a single Enter for hold, whose send is the long press', () => {
+    expect(keysFor('hold', 'composer.send')).toEqual(['enter'])
+    expect(keysFor('hold', 'composer.newline')).toEqual(['enter', 'shift+enter'])
   })
 
   it('prints a single Enter for the pause mode it only sometimes means', () => {

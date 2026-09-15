@@ -49,18 +49,8 @@ export {
   toHex
 } from './color'
 export {
-  createCronTriggerController,
-  type CronTriggerController,
-  type CronTriggerRunResult
-} from './cron-trigger-controller'
-export {
-  clampDataUrlReadMaxMb,
-  DATA_URL_READ_DEFAULT_MAX_MB,
-  DATA_URL_READ_MAX_MAX_MB,
-  DATA_URL_READ_MIN_MAX_MB
-} from './data-url-read-max'
-export {
   clampDoubleEnterMs,
+  clampHoldMs,
   clampSendGraceMs,
   clampTypingIdleMs,
   COMPOSER_SEND_DEFAULT_MODE,
@@ -70,6 +60,9 @@ export {
   DOUBLE_ENTER_DEFAULT_MS,
   DOUBLE_ENTER_MAX_MS,
   DOUBLE_ENTER_MIN_MS,
+  HOLD_DEFAULT_MS,
+  HOLD_MAX_MS,
+  HOLD_MIN_MS,
   isComposerSendMode,
   isSendGraceScope,
   normalizeComposerSendPrefs,
@@ -83,6 +76,17 @@ export {
   TYPING_IDLE_MAX_MS,
   TYPING_IDLE_MIN_MS
 } from './composer-send'
+export {
+  createCronTriggerController,
+  type CronTriggerController,
+  type CronTriggerRunResult
+} from './cron-trigger-controller'
+export {
+  clampDataUrlReadMaxMb,
+  DATA_URL_READ_DEFAULT_MAX_MB,
+  DATA_URL_READ_MAX_MAX_MB,
+  DATA_URL_READ_MIN_MAX_MB
+} from './data-url-read-max'
 export { compactNumber } from './format'
 export { type FuzzyMatch, fuzzyRank, fuzzyScore, fuzzyScoreMulti, type RankedItem } from './fuzzy'
 export * from './gateway-events'

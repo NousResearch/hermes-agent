@@ -27,6 +27,7 @@ const SEND_ROW_BY_MODE = {
   enter: { id: 'composer.sendNewline' },
   'double-enter': { id: 'composer.sendNewlineDouble' },
   pause: { id: 'composer.sendNewlinePause' },
+  hold: { id: 'composer.sendNewlineHold' },
   'mod-enter': { id: 'composer.sendNewlineMod' }
 } as const
 

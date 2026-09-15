@@ -12,13 +12,17 @@
  * never change what Enter does to someone who never opens Settings.
  */
 
-export const COMPOSER_SEND_MODES = ['enter', 'double-enter', 'pause', 'mod-enter'] as const
+export const COMPOSER_SEND_MODES = ['enter', 'double-enter', 'pause', 'hold', 'mod-enter'] as const
 
 /** - `enter` — Enter sends; Shift+Enter breaks the line.
  *  - `double-enter` — Enter breaks the line; tapping it twice in a row sends.
  *  - `pause` — Enter breaks the line while you're mid-flow, and sends once you
  *    have stopped typing (held briefly, see `sendGraceMs`, so a wrong guess is
  *    cancellable instead of destructive).
+ *  - `hold` — Enter breaks the line; holding the key down sends. The press
+ *    becomes a send once the operating system's key repeat starts, so the
+ *    threshold is the user's own repeat setting rather than a number we invent,
+ *    and a stray tap can never send.
  *  - `mod-enter` — Enter only ever breaks the line; ⌘/Ctrl+Enter sends. */
 export type ComposerSendMode = (typeof COMPOSER_SEND_MODES)[number]
 
@@ -34,6 +38,15 @@ export const DOUBLE_ENTER_DEFAULT_MS = 400
  *  it, breaking two lines in a row starts sending. */
 export const DOUBLE_ENTER_MIN_MS = 120
 export const DOUBLE_ENTER_MAX_MS = 1500
+
+/** `hold` only: how long the key has to stay down before the press becomes a
+ *  send. The TIMER is the threshold, not the operating system's key repeat —
+ *  otherwise it could not be set to a precise value and the gesture would stop
+ *  firing entirely for anyone with key repeat switched off. Comfortably under
+ *  the OS default delay so a hold reads as deliberate without feeling long. */
+export const HOLD_DEFAULT_MS = 350
+export const HOLD_MIN_MS = 150
+export const HOLD_MAX_MS = 1500
 
 /** `pause` only: how long the composer must go without typing before a bare
  *  Enter means "I'm done" rather than "new line". Comfortably above the gap
@@ -66,6 +79,7 @@ export const SEND_GRACE_MAX_MS = 5000
 export interface ComposerSendPrefs {
   mode: ComposerSendMode
   doubleEnterMs: number
+  holdMs: number
   typingIdleMs: number
   sendGrace: SendGraceScope
   sendGraceMs: number
@@ -87,6 +101,16 @@ export function clampDoubleEnterMs(value: unknown): number {
   }
 
   return Math.min(DOUBLE_ENTER_MAX_MS, Math.max(DOUBLE_ENTER_MIN_MS, Math.round(parsed)))
+}
+
+export function clampHoldMs(value: unknown): number {
+  const parsed = Number(value)
+
+  if (!Number.isFinite(parsed)) {
+    return HOLD_DEFAULT_MS
+  }
+
+  return Math.min(HOLD_MAX_MS, Math.max(HOLD_MIN_MS, Math.round(parsed)))
 }
 
 export function clampTypingIdleMs(value: unknown): number {
@@ -117,6 +141,7 @@ export function normalizeComposerSendPrefs(value: unknown): ComposerSendPrefs {
   return {
     mode: isComposerSendMode(record.mode) ? record.mode : COMPOSER_SEND_DEFAULT_MODE,
     doubleEnterMs: clampDoubleEnterMs(record.doubleEnterMs ?? DOUBLE_ENTER_DEFAULT_MS),
+    holdMs: clampHoldMs(record.holdMs ?? HOLD_DEFAULT_MS),
     typingIdleMs: clampTypingIdleMs(record.typingIdleMs ?? TYPING_IDLE_DEFAULT_MS),
     sendGrace: isSendGraceScope(record.sendGrace) ? record.sendGrace : SEND_GRACE_DEFAULT_SCOPE,
     sendGraceMs: clampSendGraceMs(record.sendGraceMs ?? SEND_GRACE_DEFAULT_MS)

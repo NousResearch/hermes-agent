@@ -325,7 +325,7 @@ def _rotate_audit_file(path: Path) -> None:
 def audit(
     direction: str,
     peer: str | None,
-    task_id: str | None,
+    task_id: object,
     summary: str,
     *,
     decision: str | None = None,

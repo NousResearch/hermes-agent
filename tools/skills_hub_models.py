@@ -288,6 +288,8 @@ def _referenced_support_paths(skill_md: str) -> Optional[set[str]]:
             safe = _validate_bundle_rel_path(raw)
         except ValueError:
             return None
+        if candidate.endswith("/") or raw.endswith("/"):
+            continue
         if safe.split("/", 1)[0] in _ALLOWED_SUPPORT_DIRS:
             # Prose placeholders (``references/type-<name>.md``, truncated at ``<`` to
             # ``references/type-``) are instructions, not files: a basename ending in a

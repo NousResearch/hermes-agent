@@ -100,12 +100,14 @@ class TestPathResolution:
         assert p == fresh_home / "kanban" / "boards" / "atm10-server" / "kanban.db"
 
 
-    def test_env_var_db_override_still_wins(self, fresh_home, tmp_path, monkeypatch):
-        """``HERMES_KANBAN_DB`` pins the file regardless of board= arg."""
+    def test_explicit_board_overrides_env_pinned_db(self, fresh_home, tmp_path, monkeypatch):
+        """An explicit board selects its registered DB; implicit calls stay pinned."""
         forced = tmp_path / "custom.db"
         monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
         assert kb.kanban_db_path() == forced
-        assert kb.kanban_db_path(board="ignored") == forced
+        assert kb.kanban_db_path(board="selected") == (
+            fresh_home / "kanban" / "boards" / "selected" / "kanban.db"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -331,18 +333,18 @@ class TestCLI:
         r = _cli(["--board", "projB", "create", "Task B", "--assignee", "dev"], env_extra=env)
         assert r.returncode == 0, r.stderr
 
-        # list on each board only shows its own.
-        listA = _cli(["--board", "projA", "list", "--json"], env_extra=env)
-        listB = _cli(["--board", "projB", "list", "--json"], env_extra=env)
-        listD = _cli(["list", "--json"], env_extra=env)
+        # A worker-style pin remains the implicit default, but explicit board
+        # routing and boards-list aggregation must still inspect each board.
+        env["HERMES_KANBAN_DB"] = str(
+            tmp_path / "kanban" / "boards" / "proja" / "kanban.db"
+        )
+        boards = _cli(["boards", "list", "--json"], env_extra=env)
+        assert boards.returncode == 0, boards.stderr
+        by_slug = {board["slug"]: board for board in json.loads(boards.stdout)}
+        assert by_slug["default"]["total"] == 0
+        assert by_slug["proja"]["counts"] == {"ready": 1}
+        assert by_slug["projb"]["counts"] == {"ready": 1}
 
-        titlesA = [t["title"] for t in json.loads(listA.stdout)]
-        titlesB = [t["title"] for t in json.loads(listB.stdout)]
-        titlesD = [t["title"] for t in json.loads(listD.stdout)]
-
-        assert titlesA == ["Task A"]
-        assert titlesB == ["Task B"]
-        assert titlesD == []
-
-
-
+        listed = _cli(["--board", "projB", "list", "--json"], env_extra=env)
+        assert listed.returncode == 0, listed.stderr
+        assert [task["title"] for task in json.loads(listed.stdout)] == ["Task B"]

@@ -67,25 +67,35 @@ def record_aux_usage(
         from agent.usage_pricing import estimate_usage_cost, normalize_usage
 
         usage = normalize_usage(raw_usage, provider=provider)
-        if not (
-            usage.input_tokens or usage.output_tokens
-            or usage.cache_read_tokens or usage.cache_write_tokens
-            or usage.reasoning_tokens
-        ):
-            return
         model = str(getattr(response, "model", "") or "") or "unknown"
         estimated_cost = None
+        actual_cost = None
+        cost_status = None
+        cost_source = None
         try:
             cost = estimate_usage_cost(model, usage, provider=provider, base_url=base_url)
             if cost.amount_usd is not None:
-                estimated_cost = float(cost.amount_usd)
+                amount = float(cost.amount_usd)
+                if cost.status == "actual":
+                    actual_cost = amount
+                else:
+                    estimated_cost = amount
+                cost_status = cost.status
+                cost_source = cost.source
         except Exception:
             logger.debug("Aux usage cost estimation failed", exc_info=True)
+        if not (
+            usage.input_tokens or usage.output_tokens
+            or usage.cache_read_tokens or usage.cache_write_tokens
+            or usage.reasoning_tokens or estimated_cost is not None or actual_cost is not None
+        ):
+            return
         session_db.record_auxiliary_usage(
             session_id, task, model=model, billing_provider=provider, billing_base_url=base_url,
             input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
             cache_read_tokens=usage.cache_read_tokens, cache_write_tokens=usage.cache_write_tokens,
             reasoning_tokens=usage.reasoning_tokens, estimated_cost_usd=estimated_cost,
+            actual_cost_usd=actual_cost, cost_status=cost_status, cost_source=cost_source,
         )
     except Exception:
         logger.debug("Aux usage recording failed (non-fatal)", exc_info=True)

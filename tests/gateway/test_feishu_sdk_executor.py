@@ -55,5 +55,3 @@ async def test_run_blocking_executes_on_owned_pool():
     # Ran on the adapter-owned pool, not the default executor.
     assert captured["thread"].startswith("hermes-feishu-sdk")
     adapter._shutdown_sdk_executor()
-
-

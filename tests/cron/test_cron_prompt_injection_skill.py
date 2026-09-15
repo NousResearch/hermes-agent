@@ -350,5 +350,3 @@ class TestScriptOutputNotStrictScanned:
         assert prompt is not None
         assert "\u200b" not in prompt
         assert "item oneitem two" in prompt
-
-

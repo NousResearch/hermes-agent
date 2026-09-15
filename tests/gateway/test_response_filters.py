@@ -17,5 +17,3 @@ def test_autonomous_silence_accepts_marker_with_own_line_note():
     assert is_autonomous_silence_response("2 deals filtered\n\n[SILENT]")
     assert is_autonomous_silence_response("no_reply\nduplicate inbound, already handled")
     assert is_autonomous_silence_response("[SILENT] No changes detected")
-
-

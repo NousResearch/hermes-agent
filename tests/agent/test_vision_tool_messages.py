@@ -149,5 +149,3 @@ class TestProviderProfileField:
         profile = get_provider_profile("xiaomi")
         assert profile is not None
         assert profile.supports_vision_tool_messages is False
-
-

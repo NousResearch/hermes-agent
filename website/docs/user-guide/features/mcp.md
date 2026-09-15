@@ -278,6 +278,8 @@ On first connect, Hermes prints an authorize URL, opens your browser when possib
 
 Refresh tokens are bound to the authorization server that granted them: Hermes records the discovered issuer alongside the cached tokens and, if a server's advertised authorization server ever changes (server migration, metadata edit, or hijack), the stored refresh token is dropped instead of being sent to the new issuer. The current access token keeps working until it expires, then a normal re-authorization runs against the new issuer.
 
+The redirect back from the authorization server is checked against RFC 9207: when the server's metadata advertises `authorization_response_iss_parameter_supported`, a redirect without a matching `iss` is rejected. Figma's authorization server (`https://api.figma.com`) advertises that support and then omits `iss`; Hermes fills the missing value from the discovered issuer for that one issuer and logs a warning, so `hermes mcp login figma` completes. A present-but-different `iss` is still rejected, and no other server gets the exemption.
+
 **Remote / headless hosts.** When Hermes runs on a different machine than your browser, the loopback callback can't reach your laptop. Ways to complete the flow:
 
 - **Hermes Desktop (automatic):** when you run the OAuth sign-in from the Desktop app's MCP setup UI against a remote backend, Desktop hosts the callback listener on *your* machine and relays the authorization back to the gateway automatically — no tunnel, paste, or proxy needed. Requires both the Desktop app and the backend to be up to date.

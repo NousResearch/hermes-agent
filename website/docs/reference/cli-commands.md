@@ -67,6 +67,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes approvals` | Approval-prompt tools — mine approval history into allowlist proposals. |
 | `hermes dump` | Copy-pasteable setup summary for support/debugging. |
 | `hermes prompt-size` | Show a byte breakdown of the system prompt + tool schemas (skills index, memory, profile). Runs offline. |
+| `hermes harness-card` | Emit an opt-in, secret-safe **Harness Card** (JSON) describing the effective harness + per-task run usage. Off by default — enable with `hermes config set harness_card.enabled true`. |
 | `hermes debug` | Debug tools — upload logs and system info for support. |
 | `hermes backup` | Back up Hermes home directory to a zip file. |
 | `hermes checkpoints` | Inspect / prune / clear `~/.hermes/checkpoints/` (the shadow store used by `/rollback`). Run with no args for a status overview. |
@@ -1184,6 +1185,68 @@ enabled. To shrink the prompt, disable unused toolsets (`hermes tools`) or
 uninstall skills you don't need (`hermes skills`). Context files (AGENTS.md,
 .cursorrules) in your current directory also count toward the total.
 :::
+
+## `hermes harness-card`
+
+```bash
+hermes harness-card [--platform <name>] [--cwd <path>] [--session <id>]
+                    [--solved true|false] [--failure-class <name>]
+                    [--out <file.json>] [--json]
+```
+
+Emits a deterministic, versioned **Harness Card**: one JSON document describing
+the *effective* harness a run used, so two benchmark arms (or the same arm on a
+different day) can be diffed and reproduced. It exists because a model name, a
+pass rate, and a turn count don't identify a harness.
+
+**Opt-in and local.** Nothing is produced until you enable it:
+
+```bash
+hermes config set harness_card.enabled true   # off by default
+```
+
+With the gate off, the command prints how to enable it and exits non-zero —
+it never writes a half-populated artifact.
+
+The card reports, from live config and state (never guessed):
+
+| Section | Contents |
+|---------|----------|
+| `hermes` | Version, commit + commit source, install method, runtime (Python, OS, arch) |
+| `profile` | Active profile name, `HERMES_HOME`, config path |
+| `model` | Model, provider, billing route, and the **pricing snapshot** identifier |
+| `context` | SHA-256 of the system prompt and of each prompt tier, skill names + index hash, project-context file hashes, memory settings |
+| `toolsets` | Enabled toolsets for the platform, disabled ones, MCP server **names**, declared toolsets |
+| `limits` / `compression` / `delegation` / `retries` | Effective turn, budget, compaction, sub-agent, and retry settings |
+| `evaluator` / `verification` | Verification guidance knobs and the `hermes verify` recipe the run is measured against |
+| `run` | With `--session`: per-task tokens/cost from existing usage accounting, plus a `coverage` map |
+
+`card_id` is a digest of the harness-defining fields only, so it stays stable
+across runs of the same configuration, and changes when the configuration does.
+
+**Secret-safe.** Every string is passed through force-mode redaction before it
+can reach stdout or the file — independent of `security.redact_secrets`. The
+card never contains raw prompts, message content, API keys, or MCP server
+definitions (names only). `--out` writes with owner-only permissions where the
+platform supports it.
+
+**Unavailable vs. reported zero.** Metrics the card cannot source are `null`
+with a matching `coverage` entry saying `unavailable`, so a real `0` is never
+confused with missing telemetry. Pass `--solved true|false` (and optionally
+`--failure-class`) to turn `run.outcome.solved` from unavailable into reported —
+that is the raw material for cost-per-solved-task arithmetic, which the card
+deliberately does not compute for you.
+
+```bash
+# Human-readable summary of the current harness
+hermes harness-card
+
+# Machine-readable card, no session
+hermes harness-card --json
+
+# Card + per-task trace for a finished run, keyed for a paired-arm comparison
+hermes harness-card --session tg-12345 --solved true --out arm-a.json
+```
 
 ## `hermes config`
 

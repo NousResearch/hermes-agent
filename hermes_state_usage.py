@@ -384,6 +384,29 @@ class SessionUsageMixin:
         self._insert_session_row(session_id, "unknown")
         self._execute_write(lambda conn: self._record_model_usage(conn, session_id, task=task, **usage))
 
+    def session_usage_breakdown(self, session_id: str) -> List[Dict[str, Any]]:
+        """Per-(model, provider, task) usage rows for one session, in a stable order.
+
+        This is the per-task token/cost carrier: ``task`` is ``''`` for the main agent loop and the
+        task name for auxiliary calls (``vision``, ``compression``, ...), so a reader can attribute
+        spend without re-deriving it from ``sessions`` (which keeps one mixed route). Ordered by the
+        composite key so the same data always serializes identically. See #110680.
+        """
+        if not session_id:
+            return []
+        self.flush_token_counts()  # queued deltas must be applied or the export under-reports
+        rows = self._read_all(
+            """SELECT model, billing_provider, billing_base_url, billing_mode, task, api_call_count,
+                      input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+                      reasoning_tokens, estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
+                      first_seen, last_seen
+                 FROM session_model_usage
+                WHERE session_id = ?
+                ORDER BY task, model, billing_provider, billing_base_url, billing_mode""",
+            (session_id,),
+        )
+        return [dict(row) for row in rows]
+
     def usage_totals(self, *, min_message_count: int = 1, include_archived: bool = False) -> Dict[str, float]:
         """Tokens and spend across the whole store (one scan), so the sidebar total does not
         shrink with paging. Spend prefers the billed figure over the estimate."""

@@ -350,6 +350,7 @@ from hermes_cli.subcommands.dashboard import build_dashboard_parser, build_serve
 from hermes_cli.subcommands.gui import build_gui_parser
 from hermes_cli.subcommands.logs import build_logs_parser
 from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
+from hermes_cli.subcommands.harness_card import build_harness_card_parser
 from hermes_cli.subcommands.memory import build_memory_parser
 from hermes_cli.subcommands.acp import build_acp_parser
 from hermes_cli.subcommands.tools import build_tools_parser
@@ -1822,6 +1823,7 @@ cmd_import = _forward_command("cmd_import", "hermes_cli.backup", "run_import", d
 cmd_dashboard_register = _forward_command("cmd_dashboard_register", "hermes_cli.dashboard_register", "cmd_dashboard_register", doc='Register a self-hosted dashboard OAuth client with Nous Portal.')
 cmd_gateway_enroll = _forward_command("cmd_gateway_enroll", "hermes_cli.gateway_enroll", "cmd_gateway_enroll", doc='Enroll a self-hosted gateway with a relay connector.')
 cmd_prompt_size = _forward_command("cmd_prompt_size", "hermes_cli.prompt_size", "cmd_prompt_size", doc='Show a byte/char breakdown of the system prompt + tool schemas.')
+cmd_harness_card = _forward_command("cmd_harness_card", "hermes_cli.harness_card", "cmd_harness_card", doc='Emit an opt-in, secret-safe Harness Card (reproducibility record).')
 cmd_pairing = _forward_command("cmd_pairing", "hermes_cli.pairing", "pairing_command")
 cmd_plugins = _forward_command("cmd_plugins", "hermes_cli.plugins_cmd", "plugins_command")
 cmd_mcp = _forward_command("cmd_mcp", "hermes_cli.mcp_config", "mcp_command")
@@ -3307,6 +3309,7 @@ def _build_cli_parser():
     build_gui_parser(subparsers, cmd_gui=cmd_gui)
     build_logs_parser(subparsers, cmd_logs=cmd_logs)
     build_prompt_size_parser(subparsers, cmd_prompt_size=cmd_prompt_size)
+    build_harness_card_parser(subparsers, cmd_harness_card=cmd_harness_card)
     return parser, subparsers
 
 

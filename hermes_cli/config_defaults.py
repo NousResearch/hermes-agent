@@ -998,6 +998,13 @@ DEFAULT_CONFIG = {
     "privacy": {
         "redact_pii": False,  # hash user IDs and strip phone numbers from LLM context
     },
+    # Opt-in Harness Card + machine-readable run export (`hermes harness-card`). OFF by default: a
+    # card is only produced after the operator asks for one, and its content goes through
+    # force-mode redaction (independent of `security.redact_secrets`) before it reaches stdout or
+    # disk. Local only — a card is never uploaded. See #110680.
+    "harness_card": {
+        "enabled": False,
+    },
     # Text-to-speech. Each provider accepts an optional `max_text_length:` override for the
     # per-request input-character cap; omit to use the provider's documented limit (OpenAI 4096, xAI
     # 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware, Gemini 32000, Edge 5000, Mistral 4000,

@@ -100,6 +100,13 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     cc = getattr(agent, "context_compressor", None)
     if cc is None:
         return
+    from agent.context_compressor import ContextCompressor
+    if not isinstance(cc, ContextCompressor):
+        # External context engines (e.g. LCM) own compaction policy: live
+        # compression.* hot-reload never drives the plugin API, so there is
+        # nothing to apply here (agent_init #44439 pattern; construction-time
+        # model_thresholds/update_model in agent_init are untouched).
+        return
     # tail_mode: unknown/absent values land on the ctor default ("lean"), matching agent_init.
     default_tail = str(_compressor_ctor_default("tail_mode", "lean"))
     mode = str(compression.get("tail_mode", default_tail) or default_tail).strip().lower()

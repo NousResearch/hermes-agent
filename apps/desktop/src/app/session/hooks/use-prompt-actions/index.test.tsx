@@ -2115,6 +2115,43 @@ describe('usePromptActions submit / queue drain semantics', () => {
     )
   })
 
+  it('a queued voice-live turn reaches the gateway with its spoken context', async () => {
+    const busyRef = { current: true }
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        busyRef={busyRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    // The composer queue drains it: `fromQueue` forces the backend's queue mode
+    // so a "run after" message never lands as a live-turn correction, and the
+    // voice surface + transcript ride along so the reply is still spoken.
+    const accepted = await handle!.submitText('Do this next', {
+      fromQueue: true,
+      surface: 'voice-live',
+      voiceContext: 'User: Do this next'
+    })
+
+    expect(accepted).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        queued: true,
+        session_id: RUNTIME_SESSION_ID,
+        surface: 'voice-live',
+        text: 'Do this next',
+        voice_context: 'User: Do this next'
+      },
+      1_800_000
+    )
+  })
+
   it('a fromQueue drain sends to its queued session even after the active session changes', async () => {
     $busy.set(false)
 

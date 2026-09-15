@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { ENUM_OPTIONS, FREE_INPUT_KEYS, SECTIONS } from './constants'
+import { ENUM_OPTION_LABELS, ENUM_OPTIONS, FREE_INPUT_KEYS, SECTIONS } from './constants'
 import { voiceProviderKeys } from './voice-provider-fields'
 
 const voiceKeys = SECTIONS.find(s => s.id === 'voice')?.keys ?? []
@@ -58,6 +58,16 @@ describe('voice field option coverage', () => {
     ]) {
       expect(FREE_INPUT_KEYS.has(key), key).toBe(true)
     }
+  })
+
+  it('offers only the supported GPT-Live concurrency policies with user-facing labels', () => {
+    const key = 'voice.gpt_live.busy_delegation_mode'
+
+    expect(ENUM_OPTIONS[key]).toEqual(['interrupt', 'queue'])
+    expect(ENUM_OPTION_LABELS[key]).toEqual({
+      interrupt: 'Interrupt current turn',
+      queue: 'Queue for next turn'
+    })
   })
 
   it('keeps closed enums (devices, providers) out of the free-input set', () => {

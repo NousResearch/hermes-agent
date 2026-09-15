@@ -111,6 +111,13 @@ def voice_chat_mode(voice: Optional[Dict[str, Any]] = None) -> str:
     return GPT_LIVE_MODE if mode in {GPT_LIVE_MODE, "gptlive", "live"} else CHAINED_MODE
 
 
+def busy_delegation_mode(live: Optional[Dict[str, Any]] = None) -> str:
+    """Resolve the profile's GPT-Live busy-turn policy, defaulting safely."""
+    raw = (live if live is not None else _live_section()).get("busy_delegation_mode")
+    mode = str(raw or "interrupt").strip().lower()
+    return mode if mode in {"interrupt", "queue"} else "interrupt"
+
+
 def _resolve_credentials(live: Dict[str, Any]) -> tuple[str, str]:
     """``(api_key, base_url)`` — ``voice.gpt_live.api_key`` first, else the same OpenAI audio
     chain the STT/TTS providers use (``VOICE_TOOLS_OPENAI_KEY`` → ``OPENAI_API_KEY`` → pool).
@@ -141,6 +148,7 @@ def resolve_gpt_live_status() -> Dict[str, Any]:
         "reason": None if api_key else "no OpenAI API key (set OPENAI_API_KEY or voice.gpt_live.api_key)",
         "model": str(live.get("model") or DEFAULT_LIVE_MODEL),
         "voice": str(live.get("voice") or DEFAULT_LIVE_VOICE),
+        "busy_delegation_mode": busy_delegation_mode(live),
     }
 
 

@@ -2,7 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { sanitizeTextForSpeech } from '@/lib/speech-text'
-import { type LiveHistoryMessage, type LiveTranscriptFragment, VoiceLiveSession } from '@/lib/voice-live'
+import {
+  type LiveDelegationWindowDiagnostics,
+  type LiveHistoryMessage,
+  type LiveTranscriptFragment,
+  VoiceLiveSession
+} from '@/lib/voice-live'
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import { notify, notifyError } from '@/store/notifications'
 
@@ -13,6 +18,9 @@ const SUBMIT_SETTLE_GRACE_MS = 15_000
 /** Quiet after the last user transcript fragment before the utterance is judged
  *  as a whole ("stop" ends the chat; "stop the container" is a request). */
 const UTTERANCE_SETTLE_MS = 1_500
+/** Supplemental spoken history is bounded independently from the authoritative
+ *  latest utterance, which is never character-capped. */
+const VOICE_CONTEXT_CHAR_LIMIT = 6_000
 
 interface PendingVoiceResponse {
   id: string
@@ -24,14 +32,17 @@ interface VoiceLiveConversationOptions {
   busy: boolean
   enabled: boolean
   onFatalError?: () => void
-  /** Interrupt the in-flight Hermes turn (Stop-button seam). Fired when a new
-   *  delegation supersedes one still running. */
+  /** Stop-button seam retained for hook-shape parity with chained voice mode.
+   *  Busy GPT-Live routing is handled by prompt.submit's profile policy. */
   onInterrupt?: () => Promise<void> | void
   onStopWord?: () => void
   /** Submit a Hermes turn: `text` is the user's last words (the bubble and the
    *  persisted row), `voiceContext` the recent spoken exchange for the model. */
-  onSubmit: (text: string, voiceContext: string) => Promise<void> | void
+  onSubmit: (text: string, voiceContext: string, queued: boolean, onQueuedDrain: () => void) => Promise<void> | void
   pendingResponse: () => PendingVoiceResponse | null
+  /** Park busy delegations in the visible composer queue instead of using
+   *  Hermes's canonical interrupt/redirect behavior. */
+  queueBusyDelegations: boolean
   consumePendingResponse: () => void
   /** Text turns to seed the live model with when the session opens. */
   seedHistory: () => LiveHistoryMessage[]
@@ -40,10 +51,43 @@ interface VoiceLiveConversationOptions {
   beforeMicOpen?: () => Promise<void> | void
 }
 
-/** Turn transcript fragments into the Hermes turn: `prompt` is what the user
- *  last said (the persisted user row), `context` the recent spoken exchange
- *  that rides the model input only (see tools/voice_live.py). */
-export function delegationPrompt(context: LiveTranscriptFragment[]): { context: string; prompt: string } {
+type DelegationPromptSource = 'authoritative-utterance' | 'missing-user-utterance' | 'window-last-user-recovery'
+
+interface DelegationPromptResult {
+  context: string
+  prompt: string
+  diagnostics: {
+    contextCapApplied: boolean
+    contextChars: number
+    contextTurns: number
+    fragmentCount: number
+    promptChars: number
+    promptSource: DelegationPromptSource
+  }
+}
+
+const cleanTranscriptText = (text: string) => text.replace(/\s+/g, ' ').trim()
+
+const capNewestContext = (context: string): { capApplied: boolean; text: string } => {
+  if (context.length <= VOICE_CONTEXT_CHAR_LIMIT) {
+    return { capApplied: false, text: context }
+  }
+
+  const tail = context.slice(-VOICE_CONTEXT_CHAR_LIMIT)
+  const firstCompleteTurn = tail.indexOf('\n')
+
+  return {
+    capApplied: true,
+    text: firstCompleteTurn >= 0 ? tail.slice(firstCompleteTurn + 1) : tail
+  }
+}
+
+/** Turn transcript fragments into the Hermes turn. The independently captured
+ *  latest user utterance is authoritative and never capped; the bounded window
+ *  is only a recovery source and supplemental history. An absent user utterance
+ *  stays visibly absent rather than silently submitting an arbitrary transcript
+ *  tail as if the user said it. */
+export function delegationPrompt(context: LiveTranscriptFragment[], latestUserUtterance = ''): DelegationPromptResult {
   const turns: Array<{ speaker: 'assistant' | 'user'; text: string }> = []
 
   for (const fragment of context) {
@@ -56,15 +100,45 @@ export function delegationPrompt(context: LiveTranscriptFragment[]): { context: 
     }
   }
 
-  const lastUser = [...turns].reverse().find(turn => turn.speaker === 'user')
-  const prompt = (lastUser?.text ?? '').replace(/\s+/g, ' ').trim()
+  const lastUserIndex = turns.findLastIndex(turn => turn.speaker === 'user')
+  const windowLastUser = lastUserIndex >= 0 ? cleanTranscriptText(turns[lastUserIndex]?.text ?? '') : ''
+  const authoritativePrompt = cleanTranscriptText(latestUserUtterance)
+  // Event streams can be observed at slightly different points. Prefer the
+  // independently accumulated utterance normally, but if the bounded window's
+  // latest user turn is strictly longer it has demonstrably recovered text the
+  // accumulator had not observed yet.
+  const recoveredMoreFromWindow = windowLastUser.length > authoritativePrompt.length
+  const prompt = recoveredMoreFromWindow ? windowLastUser : authoritativePrompt || windowLastUser
 
-  const transcript = turns
-    .map(turn => `${turn.speaker === 'user' ? 'User' : 'Voice assistant'}: ${turn.text.replace(/\s+/g, ' ').trim()}`)
+  const promptSource: DelegationPromptSource = recoveredMoreFromWindow
+    ? 'window-last-user-recovery'
+    : authoritativePrompt
+      ? 'authoritative-utterance'
+      : windowLastUser
+        ? 'window-last-user-recovery'
+        : 'missing-user-utterance'
+
+  const priorTurns = lastUserIndex >= 0 ? turns.slice(0, lastUserIndex) : turns
+
+  const uncappedContext = priorTurns
+    .map(turn => `${turn.speaker === 'user' ? 'User' : 'Voice assistant'}: ${cleanTranscriptText(turn.text)}`)
     .filter(line => !line.endsWith(': '))
     .join('\n')
 
-  return { context: transcript, prompt: prompt || transcript.slice(-400) }
+  const boundedContext = capNewestContext(uncappedContext)
+
+  return {
+    context: boundedContext.text,
+    diagnostics: {
+      contextCapApplied: boundedContext.capApplied,
+      contextChars: boundedContext.text.length,
+      contextTurns: priorTurns.length,
+      fragmentCount: context.length,
+      promptChars: prompt.length,
+      promptSource
+    },
+    prompt
+  }
 }
 
 /**
@@ -83,6 +157,7 @@ export function useVoiceLiveConversation({
   onStopWord,
   onSubmit,
   pendingResponse,
+  queueBusyDelegations,
   consumePendingResponse,
   seedHistory,
   activeToolLabel,
@@ -125,6 +200,7 @@ export function useVoiceLiveConversation({
     onStopWord,
     onSubmit,
     pendingResponse,
+    queueBusyDelegations,
     consumePendingResponse,
     seedHistory
   })
@@ -137,6 +213,7 @@ export function useVoiceLiveConversation({
     onStopWord,
     onSubmit,
     pendingResponse,
+    queueBusyDelegations,
     consumePendingResponse,
     seedHistory
   }
@@ -258,12 +335,38 @@ export function useVoiceLiveConversation({
           latest.current.onFatalError?.()
         }
       },
-      onDelegation: (delegationId, context) => {
+      onDelegation: (
+        delegationId,
+        context,
+        latestUserUtterance,
+        windowDiagnostics: LiveDelegationWindowDiagnostics
+      ) => {
         if (sessionRef.current !== session) {
           return
         }
 
-        const { context: voiceContext, prompt } = delegationPrompt(context)
+        const { context: voiceContext, diagnostics, prompt } = delegationPrompt(context, latestUserUtterance)
+
+        console.debug('[voice-live-delegation]', {
+          ...windowDiagnostics,
+          ...diagnostics,
+          delegationId,
+          fallbackUsed: diagnostics.promptSource !== 'authoritative-utterance'
+        })
+
+        if (!prompt) {
+          console.warn('[voice-live-delegation-recovery]', {
+            ...windowDiagnostics,
+            ...diagnostics,
+            delegationId,
+            outcome: 'refused-missing-user-utterance'
+          })
+          session.speak(delegationId, 'Sorry, I could not recover the complete request. Please say it again.')
+          setDelegation(null)
+          refreshStatus()
+
+          return
+        }
 
         // A spoken stop command ends the conversation instead of becoming a turn.
         if (prompt && isVoiceStopCommand(prompt)) {
@@ -273,25 +376,65 @@ export function useVoiceLiveConversation({
           return
         }
 
-        // A newer request supersedes an in-flight turn: stop it so the answer
-        // the voice speaks is for what the user asked last.
-        if (busyRef.current) {
-          void latest.current.onInterrupt?.()
+        let armed = false
+
+        const armDelegation = () => {
+          if (armed || sessionRef.current !== session) {
+            return
+          }
+
+          const previousDelegationId = delegationRef.current
+          let consumedPreviousResponse = false
+
+          if (previousDelegationId && previousDelegationId !== delegationId) {
+            const previousResponse = latest.current.pendingResponse()
+
+            if (previousResponse) {
+              const spoken = sanitizeTextForSpeech(previousResponse.text)
+
+              if (spokenResponseIdRef.current !== previousResponse.id) {
+                spokenResponseIdRef.current = previousResponse.id
+                spokenLengthRef.current = 0
+              }
+
+              if (spoken.length > spokenLengthRef.current) {
+                session.speak(previousDelegationId, spoken.slice(spokenLengthRef.current))
+              }
+
+              latest.current.consumePendingResponse()
+              consumedPreviousResponse = true
+            }
+          }
+
+          armed = true
+          setDelegation(delegationId)
+          spokenResponseIdRef.current = null
+          spokenLengthRef.current = 0
+          lastToolLabelRef.current = null
+          turnObservedRef.current = false
+          submittedAtRef.current = Date.now()
+
+          if (!consumedPreviousResponse) {
+            latest.current.consumePendingResponse()
+          }
+
+          refreshStatus()
         }
 
-        setDelegation(delegationId)
-        spokenResponseIdRef.current = null
-        spokenLengthRef.current = 0
-        lastToolLabelRef.current = null
-        turnObservedRef.current = false
-        submittedAtRef.current = Date.now()
-        latest.current.consumePendingResponse()
-        refreshStatus()
-        void Promise.resolve(latest.current.onSubmit(prompt, voiceContext)).catch(error => {
+        const queued = busyRef.current && latest.current.queueBusyDelegations
+
+        if (!queued) {
+          armDelegation()
+        }
+
+        void Promise.resolve(latest.current.onSubmit(prompt, voiceContext, queued, armDelegation)).catch(error => {
           notifyError(error, voiceCopy.liveDelegationFailed)
           session.speak(delegationId, 'Sorry, I could not reach Hermes for that request.')
-          setDelegation(null)
-          refreshStatus()
+
+          if (delegationRef.current === delegationId) {
+            setDelegation(null)
+            refreshStatus()
+          }
         })
       },
       onError: (message, fatal) => {

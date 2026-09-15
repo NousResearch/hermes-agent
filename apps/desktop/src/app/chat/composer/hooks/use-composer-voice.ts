@@ -10,6 +10,7 @@ import { toLiveHistory } from '@/lib/voice-live'
 import { clearWakeIndicator, syncWakeIndicatorWithVoice } from '@/lib/wake-indicator'
 import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
+import { enqueueExternalPrompt } from '@/store/composer-queue'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $voiceLiveStatus, refreshVoiceLiveStatus, selectedVoiceChatMode } from '@/store/voice-live'
@@ -38,6 +39,9 @@ interface UseComposerVoiceArgs {
   onInterrupt?: () => Promise<void> | void
   onSubmit: ChatBarProps['onSubmit']
   onTranscribeAudio: ChatBarProps['onTranscribeAudio']
+  /** Composer-scoped key the queue panel is bound to. A busy voice delegation
+   *  parks its turn here so it renders as a queued row instead of a bubble. */
+  queueSessionKey?: string | null
   sessionId: string | null | undefined
   /** This composer's focus-bus key — voice toggles targeting another
    *  composer (or the active one, when not us) are ignored. */
@@ -60,6 +64,7 @@ export function useComposerVoice({
   onInterrupt,
   onSubmit,
   onTranscribeAudio,
+  queueSessionKey,
   sessionId,
   target
 }: UseComposerVoiceArgs) {
@@ -73,6 +78,7 @@ export function useComposerVoice({
   const ownsWakeIndicatorRef = useRef(false)
   const previousSessionIdRef = useRef(sessionId)
   const voiceStartRequest = useStore($voiceConversationStartRequest)
+  const voiceLiveStatus = useStore($voiceLiveStatus)
 
   // eslint-disable-next-line no-restricted-syntax -- session-id adopt token, not an atom mirror
   useEffect(() => {
@@ -142,12 +148,45 @@ export function useComposerVoice({
   }
 
   /** A GPT-Live delegation → Hermes turn. The bubble and the persisted row are
-   *  what the user said; the transcript window rides the model input only. */
-  const submitLiveDelegation = async (text: string, voiceContext: string) => {
+   *  what the user said; the transcript window rides the model input only.
+   *
+   *  While Hermes is mid-turn the delegation is QUEUED instead of fired: it
+   *  lands in the composer queue like a typed "run after" message, so the user
+   *  sees it pending, can edit or send it now, and it drains in order. The
+   *  spoken exchange rides the entry so a bare "yes" still makes sense when it
+   *  finally runs. Previously a busy delegation submitted straight through and
+   *  painted an ordinary user bubble — the queued work looked already-sent and
+   *  the panel showed nothing. */
+  const submitLiveDelegation = async (
+    text: string,
+    voiceContext: string,
+    queued: boolean,
+    onQueuedDrain: () => void
+  ) => {
     triggerHaptic('submit')
     resetBrowseState(sessionId)
     clearDraft()
-    await onSubmit(text, { surface: 'voice-live', voiceContext })
+
+    // Fall back to a direct submit when there is no queue key to park under
+    // (a tile composer that never resolved one) — losing the turn is worse
+    // than showing it as a plain bubble.
+    if (
+      queued &&
+      enqueueExternalPrompt(queueSessionKey || sessionId || null, {
+        onDrain: onQueuedDrain,
+        source: 'voice',
+        text,
+        voiceContext
+      })
+    ) {
+      return
+    }
+
+    if (queued) {
+      onQueuedDrain()
+    }
+
+    await onSubmit(text, { ...(queued && { fromQueue: true }), surface: 'voice-live', voiceContext })
   }
 
   /** Recent text turns of this chat, as GPT-Live startup history. */
@@ -208,6 +247,7 @@ export function useComposerVoice({
     onStopWord: () => setVoiceConversationActive(false),
     onSubmit: submitLiveDelegation,
     pendingResponse: pendingTurnResponse,
+    queueBusyDelegations: voiceLiveStatus?.busyDelegationMode === 'queue',
     seedHistory: seedLiveHistory
   })
 
@@ -218,7 +258,7 @@ export function useComposerVoice({
    *  `enabled`. gpt-live selected but not startable (no OpenAI key on the
    *  gateway) falls back to chained with a notice rather than a dead button. */
   const activateConversation = useCallback(() => {
-    const status = $voiceLiveStatus.get()
+    const status = voiceLiveStatus
     let live = false
 
     if (selectedVoiceChatMode(status) === 'gpt-live') {
@@ -235,7 +275,7 @@ export function useComposerVoice({
 
     setLiveEngineActive(live)
     setVoiceConversationActive(true)
-  }, [t])
+  }, [t, voiceLiveStatus])
 
   useEffect(() => {
     if (!voiceConversationActive) {

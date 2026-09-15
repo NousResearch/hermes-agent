@@ -85,7 +85,23 @@ class TestSessionCreation:
 
         with pytest.raises(ValueError):
             voice_live.create_webrtc_session("v=0 offer")
-        assert voice_live.resolve_gpt_live_status()["available"] is False
+        status = voice_live.resolve_gpt_live_status()
+        assert status["available"] is False
+        assert status["busy_delegation_mode"] == "interrupt"
+
+    def test_status_exposes_validated_profile_busy_policy(self, monkeypatch):
+        monkeypatch.setattr(voice_live, "_voice_section", lambda: {
+            "voice_chat_mode": "gpt-live",
+            "gpt_live": {"busy_delegation_mode": "queue"},
+        })
+        monkeypatch.setattr(voice_live, "_resolve_credentials", lambda live: ("sk-test", voice_live.DEFAULT_LIVE_BASE_URL))
+
+        assert voice_live.resolve_gpt_live_status()["busy_delegation_mode"] == "queue"
+
+        monkeypatch.setattr(voice_live, "_voice_section", lambda: {
+            "gpt_live": {"busy_delegation_mode": "steer"},
+        })
+        assert voice_live.resolve_gpt_live_status()["busy_delegation_mode"] == "interrupt"
 
 
 class TestVoiceLiveTurnNote:
@@ -95,6 +111,103 @@ class TestVoiceLiveTurnNote:
         server._sessions["sid"] = session
         yield session
         server._sessions.pop("sid", None)
+
+    def test_busy_live_surface_queues_when_profile_opts_in_even_if_client_omits_queued(self, busy_session, monkeypatch):
+        class _RedirectingAgent:
+            valid_tool_names = set()
+            _supports_active_turn_redirect = True
+
+            def __init__(self):
+                self.redirected = []
+
+            def redirect(self, text):
+                self.redirected.append(text)
+                return True
+
+        agent = _RedirectingAgent()
+        busy_session["agent"] = agent
+        monkeypatch.setattr(server, "_voice_live_busy_delegation_mode", lambda session: "queue")
+
+        response = server._methods["prompt.submit"](
+            "r1", {"session_id": "sid", "text": "queue me", "surface": "voice-live"})
+
+        assert response["result"]["status"] == "queued"
+        assert agent.redirected == []
+        assert busy_session["queued_prompt"]["text"] == "queue me"
+
+    def test_busy_live_surface_reads_the_session_profiles_real_queue_policy(self, busy_session, tmp_path):
+        class _RedirectingAgent:
+            valid_tool_names = set()
+            _supports_active_turn_redirect = True
+
+            def redirect(self, text):
+                pytest.fail(f"queue policy must not redirect: {text}")
+
+        profile_home = tmp_path / "queue-profile"
+        profile_home.mkdir()
+        (profile_home / "config.yaml").write_text(
+            "voice:\n  gpt_live:\n    busy_delegation_mode: queue\n",
+            encoding="utf-8",
+        )
+        busy_session["agent"] = _RedirectingAgent()
+        busy_session["profile_home"] = str(profile_home)
+
+        response = server._methods["prompt.submit"](
+            "r1", {"session_id": "sid", "text": "profile queue", "surface": "voice-live"})
+
+        assert response["result"]["status"] == "queued"
+        assert busy_session["queued_prompt"]["text"] == "profile queue"
+
+    def test_busy_live_surface_preserves_canonical_interrupt_default(self, busy_session, monkeypatch):
+        class _RedirectingAgent:
+            valid_tool_names = set()
+            _supports_active_turn_redirect = True
+
+            def __init__(self):
+                self.redirected = []
+
+            def redirect(self, text):
+                self.redirected.append(text)
+                return True
+
+        agent = _RedirectingAgent()
+        busy_session["agent"] = agent
+        monkeypatch.setattr(server, "_voice_live_busy_delegation_mode", lambda session: "interrupt")
+
+        response = server._methods["prompt.submit"](
+            "r1", {"session_id": "sid", "text": "replace this", "surface": "voice-live"})
+
+        assert response["result"]["status"] == "redirected"
+        assert agent.redirected == ["replace this"]
+        assert busy_session.get("queued_prompt") is None
+
+    def test_repeated_busy_live_request_is_not_silently_deduplicated(self, busy_session, monkeypatch):
+        monkeypatch.setattr(server, "_voice_live_busy_delegation_mode", lambda session: "queue")
+        busy_session["inflight_turn"] = {"user": "repeat this"}
+
+        server._methods["prompt.submit"](
+            "r1", {"session_id": "sid", "text": "repeat this", "surface": "voice-live"})
+        server._methods["prompt.submit"](
+            "r2", {"session_id": "sid", "text": "repeat this", "surface": "voice-live"})
+
+        assert busy_session["queued_prompt"]["text"] == "repeat this"
+        assert busy_session["queued_prompts"][0]["text"] == "repeat this"
+
+    def test_each_busy_live_delegation_keeps_its_own_surface_context_envelope(self, busy_session, monkeypatch):
+        monkeypatch.setattr(server, "_voice_live_busy_delegation_mode", lambda session: "queue")
+        server._methods["prompt.submit"](
+            "r1", {"session_id": "sid", "text": "first", "surface": "voice-live",
+                   "voice_context": "FIRST-CONTEXT"})
+        server._methods["prompt.submit"](
+            "r2", {"session_id": "sid", "text": "second", "surface": "voice-live",
+                   "voice_context": "SECOND-CONTEXT"})
+
+        first = busy_session["queued_prompt"]
+        second = busy_session["queued_prompts"][0]
+        assert (first["text"], first["client_surface"], first["voice_live_context"]) == (
+            "first", "voice-live", "FIRST-CONTEXT")
+        assert (second["text"], second["client_surface"], second["voice_live_context"]) == (
+            "second", "voice-live", "SECOND-CONTEXT")
 
     def test_live_surface_recorded_and_noted_with_spoken_context(self, busy_session):
         """The persisted row is the user's words; the transcript window reaches the model only."""
@@ -107,6 +220,25 @@ class TestVoiceLiveTurnNote:
         assert note.startswith(voice_live.VOICE_LIVE_TURN_NOTE)
         assert "spoken" in note and "no markdown" in note
         assert "User: what's the weather" in note
+
+    def test_long_prompt_is_untouched_while_context_cap_keeps_the_newest_context(self, busy_session):
+        beginning = "BEGIN-LONG-REQUEST"
+        middle = "MIDDLE-LONG-REQUEST"
+        end = "END-LONG-REQUEST"
+        prompt = f"{beginning} {'alpha ' * 1200}{middle} {'omega ' * 1200}{end}"
+        newest_context = "NEWEST-CONTEXT-MARKER"
+        context = f"OLDEST-CONTEXT-MARKER {'old ' * 2000}\nVoice assistant: {'new ' * 1000}{newest_context}"
+
+        server._methods["prompt.submit"](
+            "r1", {"session_id": "sid", "text": prompt, "queued": True, "surface": "voice-live",
+                   "voice_context": context})
+
+        assert beginning in busy_session["queued_prompt"]["text"]
+        assert middle in busy_session["queued_prompt"]["text"]
+        assert end in busy_session["queued_prompt"]["text"]
+        assert len(busy_session["voice_live_context"]) <= 6000
+        assert newest_context in busy_session["voice_live_context"]
+        assert "OLDEST-CONTEXT-MARKER" not in busy_session["voice_live_context"]
 
     def test_voice_context_ignored_off_the_live_surface(self, busy_session):
         server._methods["prompt.submit"](

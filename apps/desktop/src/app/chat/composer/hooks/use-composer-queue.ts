@@ -14,6 +14,7 @@ import {
   isSteerableEntry,
   MAX_AUTO_DRAIN_ATTEMPTS,
   migrateQueuedPrompts,
+  notifyExternalPromptDraining,
   promoteQueuedPrompt,
   type QueuedPromptEntry,
   removeQueuedPrompt,
@@ -218,11 +219,20 @@ export function useComposerQueue({
       drainingQueueRef.current = true
 
       try {
+        notifyExternalPromptDraining(entry.id)
+
         const accepted = await Promise.resolve(
           onSubmit(entry.text, {
             attachments: entry.attachments,
             ...(entry.displayText ? { displayText: entry.displayText } : {}),
             ...(entry.displayKind ? { displayKind: entry.displayKind } : {}),
+            // A queued voice delegation always keeps the voice-live surface so
+            // its answer is spoken even when there was no earlier conversation
+            // to attach. Supplemental context is optional; the complete request
+            // remains entry.text and is never capped here.
+            ...(entry.source === 'voice'
+              ? { surface: 'voice-live' as const, ...(entry.voiceContext ? { voiceContext: entry.voiceContext } : {}) }
+              : {}),
             fromQueue: true,
             sessionId: drainRuntimeSessionId,
             storedSessionId: drainQueueSessionKey

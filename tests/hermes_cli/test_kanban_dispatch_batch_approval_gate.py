@@ -202,3 +202,25 @@ def test_batch_approval_gate_enabled_defaults_to_false_in_real_config():
     from hermes_cli.config_defaults import DEFAULT_CONFIG
 
     assert DEFAULT_CONFIG["kanban"]["batch_approval_gate_enabled"] is False
+
+
+def test_gate_does_not_crash_on_malformed_kanban_config_section(
+    conn, all_assignees_spawnable, monkeypatch,
+):
+    """A config.yaml with `kanban: true` (or any truthy non-dict scalar
+    under the kanban key) must not crash dispatch_once() with an
+    AttributeError — regression for a real bug found in adversarial
+    review: the old code caught load_config() itself failing, but not the
+    case where it succeeds and returns a non-dict 'kanban' value."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config", lambda: {"kanban": True},
+    )
+
+    tid = kb.create_task(conn, title="t", assignee="alice")
+
+    result = kbd.dispatch_once(conn, spawn_fn=lambda *a, **k: 1)
+
+    # Malformed config must fail safely to "gate disabled" (matching the
+    # real DEFAULT_CONFIG default), not crash the dispatch tick.
+    assert result.batch_approval_blocked is None
+    assert any(row[0] == tid for row in result.spawned)

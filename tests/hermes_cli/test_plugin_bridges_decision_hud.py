@@ -152,3 +152,84 @@ def test_check_batch_approval_unexpected_exception_folds_to_false(tmp_path):
     approved, reason = check_batch_approval(project="proj", batch_id="b1")
     assert approved is False
     assert "batch approval check errored" in reason
+
+
+def test_load_decision_hud_db_reloads_on_mtime_change(tmp_path, monkeypatch):
+    """A live edit to db.py while the process is running (e.g. an operator
+    patches decision-hud's policy) must be picked up on the next call, not
+    silently masked by a stale sys.modules cache — regression for a real
+    bug found in adversarial review: the old code cached by identity only,
+    with no actual mtime check despite its docstring's claim."""
+    import time
+    from hermes_cli.plugin_bridges import decision_hud as bridge
+
+    plugin_dir = tmp_path / "plugins" / "decision-hud"
+    plugin_dir.mkdir(parents=True)
+    db_file = plugin_dir / "db.py"
+    db_file.write_text(
+        "import sqlite3\n"
+        "def db_path():\n"
+        "    return '%s'\n"
+        "def connect():\n"
+        "    return sqlite3.connect(':memory:')\n"
+        "class BatchNotApproved(Exception): pass\n"
+        "def require_batch_approval(conn, *, project_id, batch_id):\n"
+        "    return None  # v1: approves everything\n"
+        % str(tmp_path / "empty.db")
+    )
+    monkeypatch.setattr(
+        "hermes_cli.plugin_bridges.decision_hud._decision_hud_db_path",
+        lambda: db_file,
+    )
+
+    approved, _ = bridge.check_batch_approval(project="p", batch_id="b")
+    assert approved is True  # v1 approves
+
+    time.sleep(0.01)  # ensure a distinct mtime on filesystems with coarse resolution
+    db_file.write_text(
+        "import sqlite3\n"
+        "def db_path():\n"
+        "    return '%s'\n"
+        "def connect():\n"
+        "    return sqlite3.connect(':memory:')\n"
+        "class BatchNotApproved(Exception): pass\n"
+        "def require_batch_approval(conn, *, project_id, batch_id):\n"
+        "    raise BatchNotApproved('v2: rejects everything')\n"
+        % str(tmp_path / "empty.db")
+    )
+
+    approved2, reason2 = bridge.check_batch_approval(project="p", batch_id="b")
+    assert approved2 is False  # v2 picked up, not a stale cached v1
+    assert "v2" in reason2
+
+
+def test_check_batch_approval_never_raises_when_batch_not_approved_class_missing(
+    tmp_path, monkeypatch,
+):
+    """A malformed/partial decision-hud install whose db.py doesn't define
+    BatchNotApproved at all must still fold into (False, reason), never let
+    an AttributeError escape from the except-clause attribute lookup —
+    regression for a real bug found in adversarial review."""
+    from hermes_cli.plugin_bridges import decision_hud as bridge
+
+    plugin_dir = tmp_path / "plugins" / "decision-hud"
+    plugin_dir.mkdir(parents=True)
+    db_file = plugin_dir / "db.py"
+    db_file.write_text(
+        "import sqlite3\n"
+        "def db_path():\n"
+        "    return '%s'\n"
+        "def connect():\n"
+        "    return sqlite3.connect(':memory:')\n"
+        "def require_batch_approval(conn, *, project_id, batch_id):\n"
+        "    raise RuntimeError('no BatchNotApproved class defined at all')\n"
+        % str(tmp_path / "empty.db")
+    )
+    monkeypatch.setattr(
+        "hermes_cli.plugin_bridges.decision_hud._decision_hud_db_path",
+        lambda: db_file,
+    )
+
+    approved, reason = bridge.check_batch_approval(project="p", batch_id="b")
+    assert approved is False
+    assert "errored" in reason

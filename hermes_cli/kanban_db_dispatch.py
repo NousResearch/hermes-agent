@@ -1859,6 +1859,8 @@ def _check_batch_approval_gate(board: Optional[str]) -> Optional[str]:
 
     try:
         kanban_cfg = load_config().get("kanban") or {}
+        if not isinstance(kanban_cfg, dict):
+            kanban_cfg = {}
     except Exception:
         kanban_cfg = {}
     if not kanban_cfg.get("batch_approval_gate_enabled", False):

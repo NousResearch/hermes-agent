@@ -42,15 +42,19 @@ def _assert_supported_schema(module: object) -> None:
 
 
 def _load_decision_hud_db():
-    """Import (no caching by content hash — deferred to the F4 follow-up;
-    this cut only caches by identity+mtime via sys.modules, matching the
-    dispatcher's per-process lifetime)."""
+    """Import, cached by (path, mtime) via sys.modules — a real mtime check,
+    not just identity: an in-place edit to db.py while the dispatcher process
+    is alive invalidates the cache and reloads, so a live-patched decision-hud
+    policy fix is picked up on the next call rather than silently ignored
+    until process restart."""
     db_path = _decision_hud_db_path().expanduser().resolve()
     if not db_path.is_file():
         raise ImportError(f"decision-hud not installed: {db_path} not found")
+    mtime = db_path.stat().st_mtime_ns
     module_cache_key = f"{_MODULE_CACHE_KEY}:{db_path}"
     cached = sys.modules.get(module_cache_key)
-    if cached is not None:
+    cached_mtime = getattr(cached, "_hermes_bridge_cached_mtime_ns", None)
+    if cached is not None and cached_mtime == mtime:
         _assert_supported_schema(cached)
         return cached
     spec = importlib.util.spec_from_file_location(module_cache_key, db_path)
@@ -64,6 +68,7 @@ def _load_decision_hud_db():
     except Exception:
         sys.modules.pop(module_cache_key, None)
         raise
+    module._hermes_bridge_cached_mtime_ns = mtime  # type: ignore[attr-defined]
     return module
 
 
@@ -81,9 +86,17 @@ def check_batch_approval(*, project: str, batch_id: str) -> tuple[bool, str]:
         conn = db.connect()
         db.require_batch_approval(conn, project_id=project, batch_id=batch_id)
         return True, ""
-    except db.BatchNotApproved as exc:
-        return False, str(exc)
     except Exception as exc:
+        # BatchNotApproved is resolved as an attribute on the loaded module,
+        # not imported statically — a genuinely broken/partial decision-hud
+        # install without that class would otherwise let AttributeError
+        # escape from an `except db.BatchNotApproved` clause, breaking this
+        # function's own "never raises" contract. getattr with a sentinel
+        # base class (never matches, since real exceptions never subclass
+        # object() directly) keeps this a plain isinstance check either way.
+        not_approved_cls = getattr(db, "BatchNotApproved", ())
+        if not_approved_cls and isinstance(exc, not_approved_cls):
+            return False, str(exc)
         return False, f"batch approval check errored: {exc}"
     finally:
         if conn is not None:

@@ -4,6 +4,7 @@ import { useEffect } from 'react'
 import { $lastRoster } from './data'
 import type { useRoster } from './data'
 import { displayName } from './labels'
+import { rosterPayloadFingerprint } from './roster-fingerprint'
 import { mergeServerMeta, pullServerAvatars } from './profile-ops'
 import { trackInboundActivity } from './roster-actions'
 import { botRosterMeta, botWorkspaceOwnerKey } from './routing'
@@ -32,7 +33,20 @@ export function usePublishRosterSnapshot({ data, live, roster, allMeta, activeSo
     // feeds merge caching, group membership, creation, and durable sync. These
     // writes must settle after render: other subscribers of the same atoms
     // would otherwise be updated while BotsPane was still rendering.
-    $lastRoster.set(roster.filter(row => !row?.ghost))
+    const snapshot = roster.filter(row => !row?.ghost)
+
+    // The 5s poll refetches unconditionally and React Query hands back a fresh
+    // object graph every time. Republishing it re-renders every shared-atom
+    // subscriber and re-runs the avatar/meta/label side effects below even
+    // when nothing changed — on macOS that pane churn drops IME input-method
+    // focus (SCIM). Compare CONTENT against the last published snapshot and
+    // skip the whole publish when the roster is substantively identical;
+    // $lastRoster still holds that same content, so nothing is lost.
+    if (rosterPayloadFingerprint(snapshot) === rosterPayloadFingerprint($lastRoster.get())) {
+      return
+    }
+
+    $lastRoster.set(snapshot)
     // Tabs caption a bot chat by its bot (#99152); republished with the
     // roster so a rename follows and tiles restored at boot resolve.
     roster.forEach(bot => {

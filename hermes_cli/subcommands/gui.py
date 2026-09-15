@@ -5,7 +5,9 @@ from __future__ import annotations
 from typing import Callable
 
 
-def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
+def build_gui_parser(
+    subparsers, *, cmd_gui: Callable, cmd_gui_install: Callable | None = None
+) -> None:
     """Attach the ``gui`` subcommand to ``subparsers``."""
     gui_parser = subparsers.add_parser(
         "desktop", aliases=["gui"], help="Build and launch the native desktop app",
@@ -52,4 +54,17 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         "--identity", default="Hermes Local Signing",
         help="Certificate name to create/use for --setup-tcc-identity (default: Hermes Local Signing)",
     )
+
+    if cmd_gui_install is not None:
+        gui_subparsers = gui_parser.add_subparsers(dest="desktop_action")
+        install_parser = gui_subparsers.add_parser(
+            "install",
+            help="Create a Windows Desktop shortcut and Start Menu entry",
+            description="Create user-level Windows shortcuts that launch the packaged Hermes Desktop app.",
+        )
+        install_parser.add_argument(
+            "--force", action="store_true",
+            help="Overwrite existing Hermes shortcuts",
+        )
+        install_parser.set_defaults(func=cmd_gui_install)
     gui_parser.set_defaults(func=cmd_gui)

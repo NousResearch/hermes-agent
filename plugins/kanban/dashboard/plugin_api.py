@@ -1019,7 +1019,7 @@ class EstimateBody(BaseModel):
 @router.post("/estimate")
 def estimate_text_endpoint(payload: EstimateBody):
     """Estimate from raw title/body (create dialog, before a task exists)."""
-    return _run_estimate(payload.title, payload.body)
+    return _run_estimate(payload.title, payload.body, task_id=None)
 
 
 @router.post("/tasks/{task_id}/estimate")
@@ -1027,7 +1027,7 @@ def estimate_task_endpoint(task_id: str, board: Optional[str] = Query(None)):
     """Estimate for an existing task; ``{ok, est_tokens, complexity, rationale, model}``."""
     with _board_conn(board) as (board, conn):
         task = _require_task(conn, task_id)
-    return _run_estimate(task.title, task.body)
+    return _run_estimate(task.title, task.body, task_id=task_id)
 
 
 def _cap(s: Optional[str], n: int) -> str:
@@ -1035,7 +1035,7 @@ def _cap(s: Optional[str], n: int) -> str:
     return s if len(s) <= n else s[:n] + "…"
 
 
-def _run_estimate(title: str, body: Optional[str]) -> dict:
+def _run_estimate(title: str, body: Optional[str], *, task_id: Optional[str]) -> dict:
     """Never raises — config/parse/API errors become ``{"ok": False, "reason"}`` so the UI renders them inline."""
     if not (title or "").strip():
         return {"ok": False, "reason": "a title is required to estimate"}
@@ -1044,6 +1044,11 @@ def _run_estimate(title: str, body: Optional[str]) -> dict:
     except Exception:
         return {"ok": False, "reason": "auxiliary client unavailable"}
     user_msg = f"Title: {_cap(title, 400)}\n\nDescription:\n{_cap(body, 4000) or '(none)'}"
+    # Headless like specify/decompose's _call_aux: without a bound affinity scope the relay-affinity
+    # headers are omitted and the OpenCode Go relay answers 400 MissingSessionID (#112043). The
+    # create dialog has no task yet, so it shares one stable key.
+    from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
+    affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task_id or 'estimate'}")
     try:
         resp = call_llm(
             task="kanban_estimator",
@@ -1051,6 +1056,9 @@ def _run_estimate(title: str, body: Optional[str]) -> dict:
             temperature=0.0, max_tokens=300, timeout=60)
     except Exception as exc:
         return {"ok": False, "reason": f"LLM error: {type(exc).__name__}"}
+    finally:
+        if affinity_token is not None:
+            reset_affinity_scope(affinity_token)
     try:
         raw = (resp.choices[0].message.content or "").strip()
         model = getattr(resp, "model", None)

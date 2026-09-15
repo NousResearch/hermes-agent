@@ -4,6 +4,9 @@ relay-affinity key — the OpenCode Go relay rejects a request without ``x-openc
 
 from __future__ import annotations
 
+import importlib.util
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -46,3 +49,27 @@ def test_in_turn_caller_keeps_its_declared_affinity_key():
     finally:
         reset_affinity_scope(token)
     assert seen == ["conversation-root"]
+
+
+def _dashboard_plugin_api():
+    mod_name = "hermes_dashboard_plugin_kanban_aux_affinity_test"
+    if mod_name not in sys.modules:
+        plugin_file = Path(__file__).resolve().parents[2] / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
+        spec = importlib.util.spec_from_file_location(mod_name, plugin_file)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[mod_name] = mod
+        spec.loader.exec_module(mod)
+    return sys.modules[mod_name]
+
+
+def test_dashboard_estimate_declares_an_affinity_key_too():
+    """The dashboard estimate endpoints are the same headless aux call: per task when one exists,
+    one stable key for the create dialog (no task yet)."""
+    from agent.portal_tags import get_affinity_scope
+    api = _dashboard_plugin_api()
+    seen: list = []
+    with patch("agent.auxiliary_client.call_llm", _capturing_call_llm(seen)):
+        api._run_estimate("title", "body", task_id="t_1")
+        api._run_estimate("title", "body", task_id=None)
+    assert seen == ["kanban:t_1", "kanban:estimate"]
+    assert get_affinity_scope() is None

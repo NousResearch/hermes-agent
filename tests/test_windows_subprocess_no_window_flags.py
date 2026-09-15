@@ -189,7 +189,7 @@ def test_shell_hooks_hide_hook_command_windows(monkeypatch):
     assert "process_group" not in captured[0][1]
 
 
-def test_agent_browser_npx_warmup_hides_npx_window(monkeypatch):
+def test_agent_browser_npx_warmup_hides_npx_window(monkeypatch, tmp_path):
     """warm_agent_browser_npx_cache spawns via subprocess.Popen (not .run,
     since the T3 security-hardening rewrite added process-tree containment
     via Popen + communicate()) — the console-hiding flag must still survive
@@ -200,6 +200,8 @@ def test_agent_browser_npx_warmup_hides_npx_window(monkeypatch):
     equality with the whole creationflags value."""
     from tools import browser_tool_install
 
+    # Keep the Popen fake scoped to npx while exercising the real cache lock.
+    monkeypatch.setenv("npm_config_cache", str(tmp_path / "npm-cache"))
     captured = []
 
     class _FakePopen:

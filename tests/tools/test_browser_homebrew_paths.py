@@ -19,8 +19,9 @@ from tools import browser_tool_install as bt_install
 
 
 @pytest.fixture(autouse=True)
-def _clear_browser_caches():
+def _clear_browser_caches(monkeypatch):
     """Clear lru_cache and manual caches between tests."""
+    monkeypatch.setattr(bt_install, "warm_agent_browser_npx_cache", lambda: True)
     _discover_homebrew_node_dirs.cache_clear()
     _bt._cached_agent_browser = None
     _bt._agent_browser_resolved = False

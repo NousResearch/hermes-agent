@@ -25,7 +25,7 @@ from plugins.web.parallel.provider import ParallelWebSearchProvider
 def _no_web_env(monkeypatch):
     """Blank every web credential and neutralize config lookups."""
     for var in (
-        "EXA_API_KEY", "PARALLEL_API_KEY", "KEENABLE_API_KEY", "TAVILY_API_KEY",
+        "EXA_API_KEY", "PARALLEL_API_KEY", "KEENABLE_API_KEY",
         "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "BRAVE_SEARCH_API_KEY",
         "SEARXNG_URL", "TOOL_GATEWAY_USER_TOKEN",
     ):
@@ -289,7 +289,7 @@ class TestResolutionOrder:
 
     def test_keyless_ring_rotates_and_covers_all_vendors(self, fresh_registry, monkeypatch):
         monkeypatch.setattr(registry, "_read_config_key", lambda *p: None)
-        # The ring order always contains all four vendors, starting at the
+        # The ring order always contains all five vendors, starting at the
         # current cursor and wrapping.
         order = registry._keyless_preference()
         assert sorted(order) == sorted(keyless_mcp._KEYLESS_RING)
@@ -302,15 +302,6 @@ class TestResolutionOrder:
         monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda name: name == "keenable")
         assert keyless_mcp._ring_order("keenable")[0] == "keenable"
         assert keyless_mcp._ring_order("keenable")[0] == "keenable"
-
-    def test_tavily_is_not_a_ring_member(self):
-        """Tavily is opt-in keyless; zero-config rotation must not include it."""
-        from plugins.web import keyless_mcp
-
-        assert "tavily" not in keyless_mcp._KEYLESS_RING
-        assert "tavily" not in keyless_mcp._KEYLESS_SEARCHERS
-        assert "tavily" not in keyless_mcp._KEYLESS_EXTRACTORS
-        assert "tavily" not in registry._KEYLESS_PREFERENCE
 
     def test_registry_keyless_disabled_returns_none(self, fresh_registry, monkeypatch):
         monkeypatch.setattr(registry, "_read_config_key", lambda *p: None)
@@ -458,11 +449,12 @@ class TestKeylessFailover:
         assert out["success"] is True
         assert out["data"]["served_by"] == "parallel"
 
-    def test_search_no_failover_on_non_throttle_error(self, monkeypatch):
+    def test_search_no_failover_on_auth_error(self, monkeypatch):
+        """Hard auth failures are vendor-independent: the ring stays put."""
         self._pin(monkeypatch, "exa")
         monkeypatch.setitem(
             keyless_mcp._KEYLESS_SEARCHERS, "exa",
-            lambda q, l: {"success": False, "error": "Unrecognized MCP response shape"},
+            lambda q, l: {"success": False, "error": "Keyless Exa search failed: HTTP 401: unauthorized"},
         )
         called = []
         monkeypatch.setitem(
@@ -472,6 +464,23 @@ class TestKeylessFailover:
         out = keyless_mcp.search_with_failover("exa", "q")
         assert out["success"] is False
         assert not called  # peer never tried
+
+    def test_search_fails_over_on_masked_throttle_shape_error(self, monkeypatch):
+        """Anonymous endpoints sometimes wrap 429s in unparseable bodies:
+        the resulting shape error carries no rate-limit markers but is a
+        vendor failure that must advance the ring (observed live on Exa's
+        keyless MCP endpoint, 2026-08-31)."""
+        self._pin(monkeypatch, "exa")
+        monkeypatch.setitem(
+            keyless_mcp._KEYLESS_SEARCHERS, "exa",
+            lambda q, l: {"success": False, "error": "Unrecognized MCP response shape"},
+        )
+        monkeypatch.setitem(
+            keyless_mcp._KEYLESS_SEARCHERS, "parallel", lambda q, l: self._ok("parallel"),
+        )
+        out = keyless_mcp.search_with_failover("exa", "q")
+        assert out["success"] is True
+        assert out["data"]["served_by"] == "parallel"
 
     def test_search_all_throttled_reports_ring(self, monkeypatch):
         self._pin(monkeypatch, "exa")
@@ -537,18 +546,24 @@ class TestKeylessFailover:
         out = keyless_mcp.extract_with_failover("exa", ["https://a", "https://b"])
         assert out == good
 
-    def test_extract_partial_failure_stays_on_primary(self, monkeypatch):
+    def test_extract_partial_batch_retries_only_retryable_urls(self, monkeypatch):
+        """Per-URL failover: a partial batch re-fetches ONLY the URLs whose
+        errors are vendor-retryable; successes pass through untouched and
+        input order is preserved."""
         self._pin(monkeypatch, "exa")
         partial = [
             {"url": "https://a", "title": "A", "content": "x"},
             {"url": "https://b", "title": "", "content": "", "error": "rate limit"},
         ]
-        called = []
+        seen = []
         monkeypatch.setitem(keyless_mcp._KEYLESS_EXTRACTORS, "exa", lambda urls: partial)
         monkeypatch.setitem(
             keyless_mcp._KEYLESS_EXTRACTORS, "parallel",
-            lambda urls: called.append(1) or [],
+            lambda urls: seen.append(list(urls))
+            or [{"url": "https://b", "title": "B", "content": "y"}],
         )
         out = keyless_mcp.extract_with_failover("exa", ["https://a", "https://b"])
-        assert out == partial
-        assert not called
+        assert seen == [["https://b"]]  # only the retryable URL re-fetched
+        assert out[0] == partial[0]  # success untouched
+        assert out[1]["content"] == "y"
+        assert out[1]["served_by"] == "parallel"

@@ -2448,6 +2448,12 @@ export interface AuxiliaryTaskAssignment {
   provider: string;
   model: string;
   base_url: string;
+  /** Set only on plugin-registered tasks (PluginContext.register_auxiliary_task):
+   *  the plugin's display name / description / owning plugin id. Built-in tasks
+   *  are labelled client-side. Absent on older backends. */
+  label?: string;
+  hint?: string;
+  plugin?: string;
 }
 
 export interface AuxiliaryModelsResponse {

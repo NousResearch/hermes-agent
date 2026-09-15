@@ -103,11 +103,15 @@ function isProviderReady(p?: ModelOptionProvider): boolean {
   return !!p && (p.authenticated !== false || (p.models?.length ?? 0) > 0)
 }
 
-// Mirrors `_AUX_TASK_SLOTS` in hermes_cli/web_server.py. Friendly labels and
-// hints make the assignments readable; raw task keys (vision, mcp, …) are
-// opaque to most users.
+// Built-in auxiliary tasks, in the order `_AUX_TASK_SLOTS` (hermes_cli/web_server_config.py)
+// serves them. Friendly labels and hints come from i18n `m.tasks`; raw task keys (vision,
+// mcp, …) are opaque to most users. Plugin-registered tasks are not listed here: the backend
+// appends them to `/api/model/auxiliary` with their own `label`/`hint` (see `auxTaskRows`).
 interface AuxTaskMeta {
   key: string
+  /** Server-declared copy for a plugin task; built-ins resolve through i18n instead. */
+  label?: string
+  hint?: string
 }
 
 const AUX_TASKS: readonly AuxTaskMeta[] = [
@@ -125,6 +129,20 @@ const AUX_TASKS: readonly AuxTaskMeta[] = [
   { key: 'profile_describer' },
   { key: 'curator' }
 ]
+
+// Rows to render: the built-ins above, then every task the backend reported that is not a
+// built-in — i.e. plugin-registered auxiliary tasks (PluginContext.register_auxiliary_task),
+// which arrive with the plugin's own label/hint. Older backends never send extra rows, so
+// this is a no-op against them. Built-ins stay first so the layout is stable across profiles.
+export function auxTaskRows(tasks: readonly AuxiliaryTaskAssignment[] | undefined): AuxTaskMeta[] {
+  const builtin = new Set(AUX_TASKS.map(meta => meta.key))
+
+  const extra = (tasks ?? [])
+    .filter(entry => !builtin.has(entry.task))
+    .map(entry => ({ key: entry.task, label: entry.label || entry.task, hint: entry.hint || '' }))
+
+  return extra.length ? [...AUX_TASKS, ...extra] : [...AUX_TASKS]
+}
 
 const NO_PROVIDERS: readonly ModelOptionProvider[] = [{ name: '—', slug: '', models: [] }]
 
@@ -263,7 +281,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
   useDeepLinkHighlight({
     elementId: task => `aux-task-${task}`,
     param: 'aux',
-    ready: task => AUX_TASKS.some(meta => meta.key === task)
+    ready: task => auxTaskRows(auxiliary?.tasks).some(meta => meta.key === task)
   })
 
   // Every profile-scoped async here captures this and bails before writing back,
@@ -537,7 +555,12 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
     [m.loadFailed, scopeProfile, setCaughtError]
   )
 
-  const auxiliaryTaskLabel = useCallback((key: string) => m.tasks[key]?.label ?? key, [m.tasks])
+  const auxRows = useMemo(() => auxTaskRows(auxiliary?.tasks), [auxiliary])
+
+  const auxiliaryTaskLabel = useCallback(
+    (key: string) => m.tasks[key]?.label ?? auxRows.find(meta => meta.key === key)?.label ?? key,
+    [m.tasks, auxRows]
+  )
 
   const persistentStaleAux = useMemo<StaleAuxAssignment[]>(
     () => staleAuxAssignments(auxiliary?.tasks ?? [], mainModel?.provider ?? ''),
@@ -1019,8 +1042,8 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
           </div>
         )}
         <div className="grid gap-1">
-          {AUX_TASKS.map(meta => {
-            const copy = m.tasks[meta.key] ?? { label: meta.key, hint: meta.key }
+          {auxRows.map(meta => {
+            const copy = m.tasks[meta.key] ?? { label: meta.label ?? meta.key, hint: meta.hint ?? meta.key }
             const current = auxiliary?.tasks.find(entry => entry.task === meta.key)
             const isAuto = !current || !current.provider || current.provider === 'auto'
             const isEditing = editingAuxTask === meta.key

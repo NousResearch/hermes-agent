@@ -1413,6 +1413,12 @@ export interface AuxiliaryTaskAssignment {
    *  means the task inherits the main agent's effort. */
   reasoning_effort?: null | string
   task: string
+  /** Set only on plugin-registered tasks (PluginContext.register_auxiliary_task):
+   *  the plugin's display name / description / owning plugin id. Built-in tasks
+   *  are labelled client-side via i18n. Absent on older backends. */
+  label?: string
+  hint?: string
+  plugin?: string
 }
 
 export interface AuxiliaryModelsResponse {

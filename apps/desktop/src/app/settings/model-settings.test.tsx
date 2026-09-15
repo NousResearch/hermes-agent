@@ -333,6 +333,35 @@ describe('ModelSettings', () => {
     expect(screen.getAllByText('auto · use main model').length).toBeGreaterThan(0)
   })
 
+  it('renders plugin-registered auxiliary tasks after the built-ins with the server label (#40880)', async () => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'nous', model: 'hermes-4' },
+      tasks: [
+        { task: 'vision', provider: 'auto', model: '', base_url: '' },
+        {
+          task: 'grill_tab',
+          provider: 'openrouter',
+          model: 'openai/gpt-5-mini',
+          base_url: '',
+          label: 'Grill Tab',
+          hint: 'Tab-to-grill questions and brief synthesis',
+          plugin: 'grill-tab'
+        }
+      ]
+    })
+    await renderModelSettings()
+
+    const pluginRow = await screen.findByText('Grill Tab')
+    expect(pluginRow).toBeTruthy()
+    expect(screen.getByText('Tab-to-grill questions and brief synthesis')).toBeTruthy()
+    // Server-declared label is used for the plugin row only; built-ins keep i18n labels.
+    expect(screen.getByText('Vision')).toBeTruthy()
+    // Built-ins render first; the plugin row is appended.
+    const vision = document.getElementById('aux-task-vision')
+    const grill = document.getElementById('aux-task-grill_tab')
+    expect(vision && grill && vision.compareDocumentPosition(grill) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
   it('edits auxiliary reasoning effort below the selected model and applies it with the assignment', async () => {
     getAuxiliaryModels.mockResolvedValueOnce({
       main: { provider: 'nous', model: 'hermes-4' },

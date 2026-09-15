@@ -392,11 +392,42 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
+_WORKTREE_ENVIRONMENT_NAMES = (".venv", "venv")
+
+
+def _bootstrap_worktree_environments(repo_root: Path, target: Path) -> None:
+    """Link project-local ignored environments into a child worktree when absent."""
+    try:
+        source_root = repo_root.resolve(strict=True)
+        target_root = target.resolve(strict=True)
+    except OSError:
+        return
+    for environment_name in _WORKTREE_ENVIRONMENT_NAMES:
+        source = repo_root / environment_name
+        destination = target / environment_name
+        try:
+            if destination.exists() or destination.is_symlink() or not source.exists():
+                continue
+            resolved_source = source.resolve(strict=True)
+            resolved_destination = destination.resolve(strict=False)
+            source_is_project_local = resolved_source.is_relative_to(source_root)
+            destination_is_worktree_local = resolved_destination.is_relative_to(target_root)
+        except (OSError, ValueError):
+            continue
+        if not source_is_project_local or not destination_is_worktree_local or not resolved_source.is_dir():
+            continue
+        try:
+            os.symlink(str(resolved_source), str(destination), target_is_directory=True)
+        except (OSError, NotImplementedError):
+            continue
+
+
 def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
     """Materialize ``target`` as a linked git worktree under ``repo_root``."""
     target = target.expanduser()
     repo_common = _git_common_dir(repo_root)
     if target.exists() and repo_common is not None and _git_common_dir(target) == repo_common:
+        _bootstrap_worktree_environments(repo_root, target)
         return
     target.parent.mkdir(parents=True, exist_ok=True)
     if _git_branch_exists(repo_root, branch_name):
@@ -409,6 +440,7 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
         raise RuntimeError(
             f"git worktree add failed for {target} on branch {branch_name}: {stderr}"
         )
+    _bootstrap_worktree_environments(repo_root, target)
 
 
 def _anchored_worktree(repo_root: Path, task_id: str, branch_name: str) -> tuple[Path, str]:

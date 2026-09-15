@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import secrets
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -21,6 +22,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 
 # ---------------------------------------------------------------------------
@@ -150,5 +152,81 @@ def test_terminate_run_404_unknown_id(client):
     )
     assert r.status_code == 404
     assert "777777" in r.json()["detail"]
+
+
+def _install_successor_run(conn, task_id, *, worker_pid, claim_lock):
+    """Stamp a live successor claim without closing the prior task_runs row."""
+    future = int(time.time()) + 3600
+    cur = conn.execute(
+        "INSERT INTO task_runs "
+        "(task_id, status, claim_lock, claim_expires, worker_pid, started_at) "
+        "VALUES (?, 'running', ?, ?, ?, ?)",
+        (task_id, claim_lock, future, worker_pid, int(time.time())),
+    )
+    run_b = cur.lastrowid
+    conn.execute(
+        "UPDATE tasks SET claim_lock=?, claim_expires=?, worker_pid=?, "
+        "current_run_id=? WHERE id=?",
+        (claim_lock, future, worker_pid, run_b, task_id),
+    )
+    conn.commit()
+    return run_b
+
+
+def test_terminate_stale_run_does_not_reclaim_successor(client):
+    """POST /runs/{A}/terminate must not kill or release successor B.
+
+    Simulates a stale in-memory read of still-open run A after the task has
+    already been re-claimed by B (new lock/pid/current_run_id, A.ended_at NULL).
+    """
+    sleeper = subprocess.Popen(["sleep", "30"])
+    try:
+        conn = kbc.connect()
+        try:
+            task_id, run_a = _setup_running_task_with_run(
+                conn, title="successor-isolation", assignee="w", worker_pid=991001,
+            )
+            # Helper does not stamp current_run_id; CAS is meaningless without it.
+            conn.execute(
+                "UPDATE tasks SET current_run_id=? WHERE id=?",
+                (run_a, task_id),
+            )
+            conn.commit()
+            lock_b = f"{kb._host_prefix()}{secrets.token_hex(8)}"
+            run_b = _install_successor_run(
+                conn, task_id, worker_pid=sleeper.pid, claim_lock=lock_b,
+            )
+        finally:
+            conn.close()
+
+        r = client.post(
+            f"/api/plugins/kanban/runs/{run_a}/terminate",
+            json={"reason": "stale terminate A"},
+        )
+        assert r.status_code == 409, r.text
+
+        conn = kbc.connect()
+        try:
+            row = conn.execute(
+                "SELECT status, claim_lock, worker_pid, current_run_id "
+                "FROM tasks WHERE id=?",
+                (task_id,),
+            ).fetchone()
+            assert row["status"] == "running"
+            assert row["claim_lock"] == lock_b
+            assert row["worker_pid"] == sleeper.pid
+            assert int(row["current_run_id"]) == int(run_b)
+            a_row = conn.execute(
+                "SELECT ended_at FROM task_runs WHERE id=?", (run_a,),
+            ).fetchone()
+            assert a_row["ended_at"] is None
+        finally:
+            conn.close()
+
+        assert sleeper.poll() is None, "terminate(A) must not signal successor B"
+    finally:
+        if sleeper.poll() is None:
+            sleeper.terminate()
+        sleeper.wait(timeout=5)
 
 

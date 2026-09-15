@@ -155,6 +155,27 @@ class TestCheckLintInproc:
         result = ops._check_lint("/tmp/a.json", content='{"a": 1}')
         assert result.success is True
 
+    @pytest.mark.parametrize("path,content", [
+        ("/tmp/bom.json", '{"a": 1}'),
+        ("/tmp/bom.toml", 'k = "v"\n'),
+        ("/tmp/bom.py", "x = 1\n"),
+        ("/tmp/bom.yaml", "a: 1\n"),
+    ])
+    def test_inproc_ignores_leading_bom(self, ops, path, content):
+        """A leading UTF-8 BOM is an encoding marker, not a syntax error. write_file
+        re-prepends the on-disk BOM before linting, so json.loads/tomllib/ast.parse
+        would otherwise flag every BOM-marked file as broken."""
+        result = ops._check_lint(path, content="\ufeff" + content)
+        assert result.success is True, result.output
+        assert result.output == ""
+
+    def test_inproc_mid_content_bom_is_still_data(self, ops):
+        """Only a LEADING BOM is stripped; U+FEFF elsewhere stays and lints as-is."""
+        result = ops._check_lint("/tmp/mid.json", content='{"a": "\ufeff"}')
+        assert result.success is True
+        result = ops._check_lint("/tmp/mid2.json", content='{"a": \ufeff1}')
+        assert result.success is False
+
 
     def test_toml_inproc_error(self, ops):
         result = ops._check_lint("/tmp/b.toml", content='[section\nk = "v"')
@@ -189,6 +210,15 @@ class TestCheckLintDelta:
         # File is still broken — don't lie and claim success — but flag it as pre-existing
         assert r.success is False
         assert "pre-existing" in (r.message or "").lower()
+
+    def test_bom_marked_file_is_not_reported_as_broken(self, ops):
+        """Regression: a BOM-marked JSON edit used to fail both the post and pre lint
+        with "Unexpected UTF-8 BOM", which the delta filter then reported as
+        "pre-existing lint errors — the file is still broken" on a valid file."""
+        r = ops._check_lint_delta("/tmp/bom.json", pre_content='\ufeff{"a": 1}',
+                                  post_content='\ufeff{"a": 2}')
+        assert r.success is True, (r.output, r.message)
+        assert not r.skipped
 
 
 # =========================================================================

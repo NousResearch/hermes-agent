@@ -930,6 +930,32 @@ class TestAuthFailureAborts:
         assert c._last_compress_aborted is False
         assert c._last_summary_fallback_used is True
 
+    def test_provider_overload_aborts_instead_of_dropping_context(self):
+        """A failed overload summary preserves completed work for a later retry."""
+        err = StubProviderError(
+            "Our servers are currently overloaded. Please try again later.",
+            status_code=503,
+        )
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=False,
+            )
+        c.summary_model = "test/auxiliary"
+        msgs = self._msgs(12)
+        with patch("agent.context_compressor.call_llm", side_effect=err) as mock_call:
+            result = c.compress(msgs, current_tokens=999999, force=True)
+
+        assert mock_call.call_count == 2
+        assert result == msgs
+        assert c._last_compress_aborted is True
+        assert c._last_summary_fallback_used is False
+        assert c._last_summary_dropped_count == 0
+        assert c._last_compression_telemetry["failure_class"] == "summary_overload_failure"
+
 
     def test_403_also_flags_auth_failure(self):
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):

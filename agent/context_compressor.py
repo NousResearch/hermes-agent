@@ -557,12 +557,14 @@ class _SummaryFailureKind:
     streaming_closed: bool
     empty_content: bool
     truncated: bool
+    overloaded: bool
 
     def fallback_reason(self) -> str:
         """Reason string for the one-shot main-model retry log line, most specific first."""
         reasons = (
             (self.json_decode, "returned invalid JSON"), (self.truncated, "returned a truncated summary (output token cap)"),
-            (self.empty_content, "returned empty content"), (self.model_not_found, "unavailable"),
+            (self.empty_content, "returned empty content"), (self.overloaded, "was overloaded"),
+            (self.model_not_found, "unavailable"),
             (self.streaming_closed, "closed stream prematurely"), (self.timeout, "timed out"),
         )
         return next((reason for flagged, reason in reasons if flagged), "failed")
@@ -589,6 +591,8 @@ def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
         ),
         # Truncated summary: one main-model retry, then ABORT preserving the session.
         truncated=isinstance(e, RuntimeError) and _TRUNCATED_SUMMARY_MARKER in err,
+        overloaded=classify_api_error(e).reason is FailoverReason.overloaded
+        or any(marker in err for marker in ("overloaded", "at capacity", "over capacity")),
     )
 
 
@@ -622,6 +626,13 @@ _TERMINAL_SUMMARY_FAILURES = (
         "Summary generation failed (LLM returned empty content) — aborting compression. %d message(s) "
         "preserved unchanged; the session was NOT rotated. This indicates upstream provider degradation: "
         "retry with /compress once the provider recovers, or continue the conversation as-is.",
+    ),
+    (
+        "_last_summary_overload_failure",
+        "summary_overload_failure",
+        "Summary generation failed because the provider is overloaded — aborting compression. %d message(s) "
+        "preserved unchanged; the session was NOT rotated. Retry with /compress once capacity recovers, "
+        "or continue the conversation as-is.",
     ),
 )
 
@@ -3544,6 +3555,8 @@ Write only the summary body. Do not include any preamble or prefix."""
             self._last_summary_truncated_failure = True
         elif kind.empty_content:
             self._last_summary_empty_content_failure = True
+        elif kind.overloaded:
+            self._last_summary_overload_failure = True
         logger.warning(
             "Failed to generate context summary: %s. Further summary attempts paused for %d seconds.", e,
             _transient_cooldown,

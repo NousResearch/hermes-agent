@@ -201,3 +201,54 @@ class TestArgparseFlagsRegistered:
         assert args.ignore_user_config is True
         assert args.ignore_rules is True
 
+
+
+class TestIgnoreUserConfigDelegationDefault:
+    """``--ignore-user-config`` must not silently shrink the subagent iteration budget.
+
+    ``tools.delegate_tool_config._load_config()`` documents that
+    ``HERMES_IGNORE_USER_CONFIG=1`` "is only honored by the legacy loader, so it stays
+    authoritative when that flag is set" — i.e. the whole ``delegation`` section comes from
+    ``cli._cli_config_defaults()``, bypassing ``hermes_cli.config.DEFAULT_CONFIG``. Those two
+    default tables have to agree, or an isolated run gets a different cap from every other run.
+    """
+
+    def test_builtin_delegation_default_matches_the_delegate_tool_default(self):
+        """cli.py's built-in default is the value a `--ignore-user-config` run actually uses."""
+        import cli
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+        from tools.delegate_tool import DEFAULT_MAX_ITERATIONS
+
+        assert DEFAULT_MAX_ITERATIONS == DEFAULT_CONFIG["delegation"]["max_iterations"] == 250
+        assert cli._cli_config_defaults()["delegation"]["max_iterations"] == DEFAULT_MAX_ITERATIONS
+
+    def test_ignore_user_config_resolves_the_shared_iteration_cap(self, monkeypatch):
+        """End-to-end through the reader ``delegate_task`` calls (delegate_tool.py:451).
+
+        ``CLI_CONFIG`` is pinned to the built-in defaults so the assertion cannot be flipped by a
+        developer's untracked repo-root ``cli-config.yaml`` (the file ``load_cli_config`` falls back
+        to when the flag is set — see the NOTE on ``_write_user_config`` above).
+        """
+        import cli
+        from tools import delegate_tool_config
+        from tools.delegate_tool import DEFAULT_MAX_ITERATIONS
+
+        monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
+        monkeypatch.setattr(cli, "CLI_CONFIG", cli._cli_config_defaults())
+
+        cfg = delegate_tool_config._load_config()
+
+        assert cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS) == DEFAULT_MAX_ITERATIONS, (
+            "an --ignore-user-config run resolved a different subagent iteration cap than "
+            "delegation.max_iterations; migration 36 raised this to 250 because a smaller cap "
+            "truncated substantial delegated work"
+        )
+
+    def test_example_config_documents_the_same_cap(self):
+        """cli-config.yaml.example:1648 is the user-facing statement of the same number."""
+        from pathlib import Path
+
+        body = (Path(__file__).resolve().parents[2] / "cli-config.yaml.example").read_text(
+            encoding="utf-8")
+        assert "max_iterations: 250" in body
+        assert "(default: 250)" in body

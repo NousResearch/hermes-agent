@@ -361,3 +361,57 @@ def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
 # populated before ``scheduler`` re-exports from it.
 from cron import scheduler as _sched  # noqa: E402
 from cron import scheduler_delivery as _delivery  # noqa: E402
+
+
+def _update_marker_candidates() -> list:
+    """Marker paths to probe, most-specific first.
+
+    ``update_marker_path()`` resolves against the *running process's* Hermes home, but a client
+    profile's gateway has ``HERMES_HOME=<root>/profiles/<name>`` while ``hermes update`` writes the
+    marker at the ROOT home. Probing only the process home would silently no-op for every client
+    profile — the exact case this gate exists for — so the root home is always probed too.
+    """
+    from pathlib import Path
+
+    paths = []
+    try:
+        from hermes_cli.update_lock import MARKER_NAME, update_marker_path
+
+        paths.append(update_marker_path())
+    except Exception:
+        MARKER_NAME = ".hermes-update-in-progress"
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        root_marker = Path(get_default_hermes_root()) / MARKER_NAME
+        if root_marker not in paths:
+            paths.append(root_marker)
+    except Exception:
+        logger.debug("could not resolve the default Hermes root for the update probe", exc_info=True)
+    return paths
+
+
+def update_in_progress() -> bool:
+    """True when a live ``hermes update`` owns this install right now.
+
+    A due job must NOT fire while the updater is mid-swap. ``tick()`` advances ``next_run_at``
+    BEFORE dispatch and the code swap happens after that, so a job firing in the window runs
+    against a tree whose source has moved but whose venv/env has not: the observed failure is an
+    ``ImportError``/``ModuleNotFoundError`` naming a symbol that IS present on disk, or a dead
+    interpreter. The run is wasted, the failure is attributed to the job, and for a weekly job the
+    next real run is a week away.
+
+    The marker is the same cross-process lock every updater already writes
+    (:mod:`hermes_cli.update_lock`) — no new state, and it goes stale-safe: ``read_live_update``
+    returns None for absent/dead-pid/past-ceiling markers and unlinks the stale file. Every probe
+    failure returns False: skipping a fire on a guess is worse than a rare wasted run.
+    """
+    try:
+        from hermes_cli.update_lock import read_live_update
+    except Exception:  # stripped install / import error — fail open
+        return False
+    try:
+        return any(read_live_update(path=p) is not None for p in _update_marker_candidates())
+    except Exception:
+        logger.debug("update-in-progress probe failed — failing open", exc_info=True)
+        return False

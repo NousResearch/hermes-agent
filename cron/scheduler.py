@@ -201,6 +201,22 @@ def _should_yield_tick_to_fresh_gateway() -> tuple[str, str] | None:
     return skew
 
 
+def _log_update_deferral_once() -> None:
+    """Log the update-lock deferral once per episode, not once per 60s tick."""
+    global _last_yield_log
+    now = time.monotonic()
+    reason = "update-in-progress"
+    last_reason = _last_yield_log.get("reason")
+    last_at = _last_yield_log.get("at") or 0.0
+    elapsed = now - last_at if isinstance(last_at, (int, float)) else None
+    if last_reason != reason or elapsed is None or elapsed >= _YIELD_LOG_INTERVAL_SECONDS:
+        logger.warning(
+            "Cron dispatch deferred: a Hermes update holds this install — due jobs will fire "
+            "on the first tick after it completes."
+        )
+    _last_yield_log = {"reason": reason, "at": now}
+
+
 def _log_tick_yield_once(reason: str) -> None:
     """Log the yield at error level once per episode (skew signature)."""
     global _last_yield_log
@@ -3772,11 +3788,23 @@ def tick(
             logger.debug("Cron dispatch paused while gateway drains existing work")
             return 0
 
+        # Update lock gate: a live `hermes update` owns this install. Firing now would run
+        # against a half-swapped tree (source moved, venv/env not yet) — see
+        # scheduler_preflight.update_in_progress. Returning here — BEFORE get_due_jobs() — mutates
+        # nothing, so `next_run_at` is never consumed and the job fires on the next healthy tick.
+        # Runs before the bot-chat drain: it is a cheap file/pid probe and short-circuits the tick.
+        from cron.scheduler_preflight import update_in_progress as _update_in_progress
+
+        if _update_in_progress():
+            _log_update_deferral_once()
+            return 0
+
         from cron.bot_chat_delivery import drain, drain_in_background
         if sync:
             drain()
         else:
             drain_in_background()
+
         _maybe_reap_dead_owners()
         # Periodic worktree GC (6h, threaded) — the only sweep gateway-only boxes get.
         try:

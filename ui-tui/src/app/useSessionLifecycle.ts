@@ -2,7 +2,8 @@ import { writeFileSync } from 'node:fs'
 
 import type { ScrollBoxHandle } from '@hermes/ink'
 import { evictInkCaches } from '@hermes/ink'
-import { type RefObject, useCallback, useEffect, useRef } from 'react'
+import type { InflightTurn, SessionResumeResult, Usage } from '@hermes/shared/gateway-events'
+import { type RefObject, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'
@@ -12,19 +13,20 @@ import type {
   SessionActivateResponse,
   SessionCloseResponse,
   SessionCreateResponse,
-  SessionInflightTurn,
-  SessionResumeResponse,
   SessionTitleResponse,
   SetupStatusResponse
 } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
-import type { Msg, PanelSection, SessionInfo, Usage } from '../types.js'
+import type { Msg, PanelSection, SessionInfo } from '../types.js'
 
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
+import { scheduleResumeScrollToBottom } from './sessionResumeView.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
+
+export { refreshSessionView, scheduleResumeScrollToBottom } from './sessionResumeView.js'
 
 const usageFrom = (info: null | SessionInfo): Usage => (info?.usage ? { ...ZERO, ...info.usage } : ZERO)
 
@@ -52,13 +54,13 @@ export const writeActiveSessionFile = (sessionId: null | string, file = process.
   }
 }
 
-export const liveSessionInflightMessages = (inflight?: null | SessionInflightTurn): Msg[] => {
+export const liveSessionInflightMessages = (inflight?: null | InflightTurn): Msg[] => {
   const user = String(inflight?.user ?? '').trim()
 
   return user ? [{ role: 'user', text: user }] : []
 }
 
-export const hydrateLiveSessionInflight = (inflight?: null | SessionInflightTurn) => {
+export const hydrateLiveSessionInflight = (inflight?: null | InflightTurn) => {
   const assistant = String(inflight?.assistant ?? '')
 
   if (!assistant && !inflight?.streaming) {
@@ -80,35 +82,6 @@ export const signalFreshSessionBoundary = (
   onFreshSessionStarted(nextSid)
 
   return true
-}
-
-export const scheduleResumeScrollToBottom = (
-  scrollRef: RefObject<null | ScrollBoxHandle>,
-  delays: readonly number[] = [0, 80, 240]
-) => {
-  const startedAt = Date.now()
-
-  const timers = delays.map((delay, index) =>
-    setTimeout(() => {
-      const scroll = scrollRef.current
-
-      if (!scroll) {
-        return
-      }
-
-      const manuallyScrolledAfterResume = scroll.getLastManualScrollAt() > startedAt
-
-      if (!manuallyScrolledAfterResume && (index === 0 || scroll.isSticky())) {
-        scroll.scrollToBottom()
-      }
-    }, delay)
-  )
-
-  return () => {
-    for (const timer of timers) {
-      clearTimeout(timer)
-    }
-  }
 }
 
 const trimTail = (items: Msg[]) => {
@@ -178,7 +151,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     setHistoryItems([])
     setLastUserMsg('')
     setStickyPrompt('')
-    composerActions.setPasteSnips([])
+    composerActions.setComposerTokens([])
     // Half-prune: new session has new keys, but keep a warm pool in case
     // the user resumes back to the prior session.
     evictInkCaches('half')
@@ -202,7 +175,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       setHistoryItems(info ? [introMsg(info)] : [])
       setStickyPrompt('')
       setLastUserMsg('')
-      composerActions.setPasteSnips([])
+      composerActions.setComposerTokens([])
       patchTurnState({ activity: [] })
       patchUiState({ info, usage: usageFrom(info) })
     },
@@ -276,6 +249,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
             const nextTitle = (result.title ?? requestedTitle).trim()
             const suffix = result.pending ? ' (queued while session initializes)' : ''
+            patchUiState({ sessionTitle: nextTitle })
             sys(`session title set: ${nextTitle}${suffix}`)
           })
           .catch((err: unknown) => {
@@ -366,9 +340,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
         const previousSid = getUiState().sid
 
-        gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id })
+        gw.request<SessionResumeResult>('session.resume', { cols: colsRef.current, session_id: id })
           .then(raw => {
-            const r = asRpcResult<SessionResumeResponse>(raw)
+            const r = asRpcResult<SessionResumeResult>(raw)
 
             if (!r) {
               sys('error: invalid response: session.resume')
@@ -390,7 +364,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               busy: running,
               info,
               sid: r.session_id,
-              status: statusFromLiveSession(r.status, running),
+              status: statusFromLiveSession(r.status ?? undefined, running),
               usage: usageFrom(info)
             })
             hydrateLiveSessionInflight(r.inflight)
@@ -423,15 +397,28 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     [sys]
   )
 
-  return {
-    activateLiveSession,
-    closeSession,
-    guardBusySessionSwitch,
-    newLiveSession,
-    newSession,
-    resetSession,
-    resetVisibleHistory,
-    resumeById,
-    trimLastExchange: trimTail
-  }
+  return useMemo(
+    () => ({
+      activateLiveSession,
+      closeSession,
+      guardBusySessionSwitch,
+      newLiveSession,
+      newSession,
+      resetSession,
+      resetVisibleHistory,
+      resumeById,
+      trimLastExchange: trimTail
+    }),
+    [
+      activateLiveSession,
+      closeSession,
+      guardBusySessionSwitch,
+      newLiveSession,
+      newSession,
+      resetSession,
+      resetVisibleHistory,
+      resumeById,
+      trimTail
+    ]
+  )
 }

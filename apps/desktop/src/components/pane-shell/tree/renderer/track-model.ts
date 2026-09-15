@@ -9,15 +9,24 @@
 
 import type * as React from 'react'
 
+import type { MenuKit } from '@/components/ui/actions-menu'
 import type { Contribution } from '@/contrib/types'
 
 import type { GroupNode, LayoutNode } from '../model'
 import { allPaneIds } from '../model'
 
-import type { DoubleTapContext } from './drag-session'
 import type { FloatingAnchor } from './floating-rect'
 
 export const MIN_PANE_PX = 80
+
+/**
+ * The floor for a TOOL PANEL zone (terminal / logs) instead of `MIN_PANE_PX`.
+ * A tool panel is meant to be draggable down to nothing — the minimized rail
+ * (its header strip, `h-7`) is the smallest meaningful form, so the sash lets
+ * it shrink to exactly that and then collapses the zone rather than jamming
+ * against an 80px floor with a sliver of unusable content still showing.
+ */
+export const COLLAPSED_ZONE_PX = 28
 
 /** Optional CSS sizing a pane contributes (`data.width` / `data.minWidth`…).
  *  Applied to the pane's GROUP along the axis of the split that contains it —
@@ -38,6 +47,11 @@ export interface PaneSizing {
 interface PaneChrome extends PaneSizing {
   /** Leaves the grid on narrow viewports; revealed as an edge overlay. */
   collapsible?: boolean
+  /** Arrive minimized — a rail tab rather than an open zone. For a pane that
+   *  docks to an edge this is the vertical strip; the user's first expand is
+   *  persisted on the zone and wins from then on. Applied when the pane ENTERS
+   *  the tree, not on every boot, so it is a default and not an invariant. */
+  defaultCollapsed?: boolean
   /** Extra ids accepted from PANE_TOGGLE_REVEAL_EVENT (the real app's pane
    *  ids, e.g. `chat-sidebar` for `sessions`). */
   revealAliases?: string[]
@@ -49,19 +63,34 @@ interface PaneChrome extends PaneSizing {
   /** Spawn corner for `placement: 'floating'` (default `'top-right'`). The
    *  pane also TRACKS that corner's edges when the window resizes. */
   anchor?: FloatingAnchor
+  /** Keep this pane mounted when hidden even after the zone's bounded hot
+   *  cache fills. Reserved for stateful resources whose lifetime must not track
+   *  tab visibility (for example terminal PTYs). */
+  lifecycleKeepAlive?: boolean
   /** No Close in the tab menu — the one surface the app can't lose (the
    *  main workspace). Session tiles share `placement: 'main'` but close. */
   uncloseable?: boolean
+  /** Standing chrome tab (sessions / Bots) with NO close verb at all: no ✕,
+   *  no middle / ⌘-click, no Close menu rows. It is shown/hidden instead (the
+   *  zone menu's Show/Hide rows and a ⌘K toggle, via `setStripTabHidden`).
+   *  Close was too destructive for these: an accidental ✕ removed Bot Mode
+   *  until the next launch. The ✕ follows the verb (see `PaneTab.onClose`),
+   *  so dropping the verb here is what takes the chip off the tab. */
+  hideOnly?: boolean
   /** Wrap this pane's TAB (e.g. in a domain context menu — a session tile's
    *  pin/branch/rename/archive/delete). The wrapper must render `tab` as its
    *  interactive child; the zone's own strip menu still owns non-tab space. */
   tabWrap?: (tab: React.ReactElement) => React.ReactNode
+  /** Extra rows at the top of the zone tab menu. Called when the menu opens
+   *  against the right-clicked pane — a Browser tab's Open-in-external, without
+   *  replacing Reload / Close / the strip. */
+  tabMenuPrefix?: (kit: MenuKit) => React.ReactNode
   /** Override this pane's TAB drag (a session tab drags like a sidebar row —
    *  stack / split / composer-link — not the generic pane move). Given the
-   *  tab's tap (activate) + double-tap (hide header) so those gestures survive.
-   *  Returns whether it took the drag; `false` (or absent) defers to
-   *  `startPaneDrag` — e.g. the workspace tab on a fresh draft, nothing to link. */
-  tabDrag?: (event: React.PointerEvent<HTMLElement>, onTap: () => void, double?: DoubleTapContext) => boolean
+   *  tab's tap (activate) so that gesture survives. Returns whether it took the
+   *  drag; `false` (or absent) defers to `startPaneDrag` — e.g. the workspace
+   *  tab on a fresh draft, nothing to link. */
+  tabDrag?: (event: React.PointerEvent<HTMLElement>, onTap: () => void) => boolean
   /** Suppress the zone header while THIS pane is active — full-page views
    *  (artifacts/skills/plugin pages) are not tab-able surfaces. The flag is
    *  live: the workspace contribution re-registers it on route changes. */
@@ -71,6 +100,17 @@ interface PaneChrome extends PaneSizing {
    *  the tab and the sidebar row render status/color from the ONE primitive
    *  (self-subscribing — it updates without the strip re-registering). */
   tabLead?: () => React.ReactNode
+  /** Mint another tab of THIS pane's kind — the strip's "+" while this pane is
+   *  active. A Browser tab makes another Browser tab; a pane that is one of a
+   *  kind (a file peek) leaves it absent and the strip falls back to the chat
+   *  "+" if the zone holds session tabs. */
+  newTab?: () => void
+  /** This pane's TAB LABEL, when it changes faster than the contribution
+   *  should. A session pane whose draft is being typed renames on every
+   *  debounce beat; re-registering `title` that often would re-render the
+   *  whole panes area, so the label subscribes for itself instead. Absent, or
+   *  returning nothing, falls back to `title`. */
+  tabTitle?: () => React.ReactNode
 }
 
 export const paneChrome = (c: Contribution | undefined) => (c?.data ?? {}) as PaneChrome
@@ -149,6 +189,36 @@ export const cssMax = (values: (string | null | undefined)[]): string | undefine
  *  are both 28px thick. */
 export const MINIMIZED_TRACK = '1.75rem'
 
+/**
+ * In an all-fixed split, the last uncapped track may absorb leftover space
+ * (terminal/logs stacked at 38vh with nothing else to fill the column). A
+ * CAPPED track must never be the absorber: review/files declare maxWidth
+ * 20rem, and promoting them to grow-1 + dropping the clamp made ⌘G / ⌘J open
+ * a half-window rail and ignore sash-remembered sizes (flex-basis alone
+ * can't hold against grow).
+ *
+ * Returns the child index to absorb, or -1 when every fixed track is capped
+ * (leave dead space — better than a ballooned sidebar).
+ */
+export function allFixedAbsorberIndex(
+  growable: readonly number[],
+  maxAlongAxis: (index: number) => string | undefined
+): number {
+  if (growable.length === 0) {
+    return -1
+  }
+
+  for (let i = growable.length - 1; i >= 0; i--) {
+    const index = growable[i]
+
+    if (!maxAlongAxis(index)) {
+      return index
+    }
+  }
+
+  return -1
+}
+
 export function fixedTrackSize(node: LayoutNode, axis: 'row' | 'column', ctx: TrackContext): string | null {
   if (node.type === 'group') {
     // Ancestor splits must size a minimized zone as its strip, not as its
@@ -218,11 +288,27 @@ export function fixedTrackSize(node: LayoutNode, axis: 'row' | 'column', ctx: Tr
   return cssMax(sizes) ?? null
 }
 
-/** True when every pane in the subtree is hidden/narrow-collapsed. */
+/**
+ * True when every pane in the subtree is hidden/narrow-collapsed — the zone
+ * renders `display:none` and its siblings absorb the space.
+ *
+ * MAIN IS THE FLOOR. A subtree that hosts a registered `placement: 'main'`
+ * pane never goes, however many of its tabs are gone: absorbing the main zone
+ * leaves the window with nothing but chrome, and the sidebar stretched across
+ * where the app used to be. (Bot Mode reached exactly that state by filtering
+ * every sessions-scoped tile out of the center and then closing its last bot
+ * chat.) An emptied main zone renders its own placeholder instead. Chrome
+ * toggles over a terminal, a review rail or an unregistered plugin pane still
+ * collapse and still hand their space to their neighbors.
+ */
 export function subtreeGone(node: LayoutNode, ctx: TrackContext): boolean {
   const ids = allPaneIds(node)
 
-  return ids.length > 0 && ids.every(ctx.paneGone)
+  if (ids.length === 0 || !ids.every(ctx.paneGone)) {
+    return false
+  }
+
+  return !ids.some(id => paneChrome(ctx.paneFor(id)).placement === 'main')
 }
 
 /**

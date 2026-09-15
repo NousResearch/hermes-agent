@@ -17,6 +17,8 @@ import pytest
 
 @pytest.fixture()
 def server():
+    # Mocks are scoped to the initial import only (see
+    # tests/tui_gateway/test_protocol.py for the rationale).
     with patch.dict(
         "sys.modules",
         {
@@ -31,12 +33,12 @@ def server():
         import importlib
 
         mod = importlib.import_module("tui_gateway.server")
-        yield mod
-        mod._sessions.clear()
-        mod._pending.clear()
-        mod._answers.clear()
-        mod._child_mirrors.clear()
-        mod._active_child_runs.clear()
+
+    yield mod
+    mod._sessions.clear()
+    __import__("tui_gateway.server_requests", fromlist=["x"]).reset_for_tests()
+    mod._child_mirrors.clear()
+    mod._active_child_runs.clear()
 
 
 @pytest.fixture()

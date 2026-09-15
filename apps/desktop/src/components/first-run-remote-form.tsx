@@ -7,6 +7,7 @@ import type { DesktopConnectionProbeResult } from '@/global'
 import { useI18n } from '@/i18n'
 import { deriveRemoteAuthProviderShape } from '@/lib/desktop-remote-auth'
 import { AlertCircle, Check, Loader2, LogIn } from '@/lib/icons'
+import { coerceRemoteUrlScheme } from '@/lib/remote-url'
 
 type AuthMode = 'oauth' | 'token'
 type ProbeStatus = 'idle' | 'probing' | 'done' | 'error'
@@ -36,7 +37,7 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
   const probeSeq = useRef(0)
   const testSeq = useRef(0)
 
-  const trimmedUrl = remoteUrl.trim()
+  const trimmedUrl = coerceRemoteUrlScheme(remoteUrl)
 
   const invalidateTest = useCallback(() => {
     testSeq.current += 1

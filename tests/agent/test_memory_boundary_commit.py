@@ -66,14 +66,27 @@ def test_boundary_commit_delivers_end_strictly_before_switch():
     mm = _make_manager(provider)
 
     msgs = [{"role": "user", "content": "old turn"}]
-    t0 = time.monotonic()
     mm.commit_session_boundary_async(
         msgs, new_session_id="new-sid", parent_session_id="old-sid"
     )
-    # Caller returns immediately — the slow extraction must not block /new.
-    assert time.monotonic() - t0 < 0.1
+    # DETERMINISTIC non-blocking witness — replaces `assert elapsed < 0.1`.
+    #
+    # The old form timed `commit_session_boundary_async` and required it under
+    # 100ms, which makes the scheduler part of the assertion: thread startup
+    # alone can exceed that on a loaded box, flipping the inequality with
+    # nothing wrong in the code under test.
+    #
+    # The real contract is that the caller returns WITHOUT waiting for the slow
+    # extraction. Assert it directly: the background `on_session_end` sleeps
+    # 0.15s before recording anything, so if the caller had blocked on it, the
+    # provider would already have recorded the "end" call by the time we get
+    # here. An empty call list is a positive witness that /new was not gated.
+    assert provider.calls == [], (
+        "commit_session_boundary_async blocked on the slow extraction: "
+        f"provider already recorded {provider.calls} before the caller returned"
+    )
 
-    assert mm.flush_pending(timeout=5)
+    assert mm.flush_pending(timeout=30)
 
     kinds = [c[0] for c in provider.calls]
     assert kinds == ["end", "switch"], f"ordering violated: {provider.calls}"

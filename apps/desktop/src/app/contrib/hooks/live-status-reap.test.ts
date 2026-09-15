@@ -1,7 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $selectedStoredSessionId, $unreadFinishedSessionIds } from '@/store/session'
-import { $attentionSessionIds, $workingSessionIds, clearAllSessionStates } from '@/store/session-states'
+import { buildToolView } from '@/components/assistant-ui/tool/fallback-model'
+import { createClientSessionState } from '@/lib/chat-runtime'
+import { $activeSessionId, $selectedStoredSessionId, $unreadFinishedSessionIds } from '@/store/session'
+import {
+  $attentionSessionIds,
+  $sessionStates,
+  $workingSessionIds,
+  clearAllSessionStates,
+  publishSessionState
+} from '@/store/session-states'
 
 import { rehydrateLiveSessionStatuses } from './use-background-sync'
 
@@ -25,6 +33,7 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
     vi.useRealTimers()
     clearAllSessionStates()
     $unreadFinishedSessionIds.set([])
+    $activeSessionId.set(null)
   })
 
   it('clears a working session that disappears from the live snapshot', () => {
@@ -75,5 +84,64 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
     rehydrateLiveSessionStatuses({ sessions: [] }, Date.now(), 'default')
 
     expect($workingSessionIds.get()).toEqual(['stored-other'])
+  })
+
+  it('seals open tool parts and clears awaitingResponse when a session vanishes', () => {
+    const openTool = {
+      type: 'tool-call',
+      toolCallId: 'call-1',
+      toolName: 'patch',
+      args: {},
+      argsText: '{}'
+    } as never
+
+    publishSessionState('runtime-tools', {
+      ...createClientSessionState('stored-tools'),
+      busy: true,
+      awaitingResponse: true,
+      messages: [{ id: 'a1', role: 'assistant', parts: [openTool], pending: false } as never]
+    })
+
+    // Keep the runtime referenced so the settled state stays in the store
+    // instead of being evicted as no-longer-needed.
+    $activeSessionId.set('runtime-tools')
+
+    rehydrateLiveSessionStatuses({
+      sessions: [{ id: 'runtime-tools', session_key: 'stored-tools', status: 'working' }]
+    })
+    rehydrateLiveSessionStatuses({ sessions: [] })
+
+    const state = $sessionStates.get()['runtime-tools']
+    const part = state.messages[0].parts[0]
+
+    expect(state.busy).toBe(false)
+    expect(state.awaitingResponse).toBe(false)
+    expect(part.type).toBe('tool-call')
+
+    if (part.type !== 'tool-call') {
+      throw new Error('Missing tool call')
+    }
+
+    // Reaping ends liveness without inventing evidence of a successful result.
+    expect(part.completedAt).toBeDefined()
+    expect(part.result).toBeUndefined()
+    expect(buildToolView(part, '').status).toBe('warning')
+  })
+
+  it('clears a session stuck awaiting a response without the busy flag', () => {
+    publishSessionState('runtime-await', {
+      ...createClientSessionState('stored-await'),
+      awaitingResponse: true,
+      busy: false
+    })
+
+    $activeSessionId.set('runtime-await')
+
+    rehydrateLiveSessionStatuses({
+      sessions: [{ id: 'runtime-await', session_key: 'stored-await', status: 'working' }]
+    })
+    rehydrateLiveSessionStatuses({ sessions: [] })
+
+    expect($sessionStates.get()['runtime-await'].awaitingResponse).toBe(false)
   })
 })

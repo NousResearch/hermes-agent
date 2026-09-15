@@ -111,12 +111,7 @@ const ACCELERATOR_PUNCTUATION = new Set([
 
 /** Why a shortcut string was rejected. The renderer maps these to copy. */
 export type QuickEntryShortcutError =
-  | 'empty'
-  | 'invalid-key'
-  | 'invalid-modifier'
-  | 'no-key'
-  | 'no-modifier'
-  | 'reserved'
+  'empty' | 'invalid-key' | 'invalid-modifier' | 'no-key' | 'no-modifier' | 'reserved'
 
 export type QuickEntryShortcutParse = { ok: false; reason: QuickEntryShortcutError } | { accelerator: string; ok: true }
 

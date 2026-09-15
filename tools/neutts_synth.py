@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
 """Standalone NeuTTS synthesis helper.
 
-Called by tts_tool.py via subprocess to keep the TTS model (~500MB)
-in a separate process that exits after synthesis — no lingering memory.
-
-Usage:
-    python -m tools.neutts_synth --text "Hello" --out output.wav \
-        --ref-audio samples/jo.wav --ref-text samples/jo.txt
-
-Requires: python -m pip install -U neutts[all]
-System:   apt install espeak-ng  (or brew install espeak-ng)
+Called by tts_tool via subprocess so the ~500MB TTS model lives in a process that exits
+after synthesis. Usage:
+    python -m tools.neutts_synth --text "Hello" --out out.wav --ref-audio jo.wav --ref-text jo.txt
+Requires ``pip install -U neutts[all]`` and espeak-ng (apt/brew).
 """
 
 import argparse
@@ -21,31 +16,14 @@ from pathlib import Path
 def _write_wav(path: str, samples, sample_rate: int = 24000) -> None:
     """Write a WAV file from float32 samples (no soundfile dependency)."""
     import numpy as np
-
     if not isinstance(samples, np.ndarray):
         samples = np.array(samples, dtype=np.float32)
-    samples = samples.flatten()
-
-    # Clamp and convert to int16
-    samples = np.clip(samples, -1.0, 1.0)
-    pcm = (samples * 32767).astype(np.int16)
-
-    num_channels = 1
-    bits_per_sample = 16
-    byte_rate = sample_rate * num_channels * (bits_per_sample // 8)
-    block_align = num_channels * (bits_per_sample // 8)
-    data_size = len(pcm) * (bits_per_sample // 8)
-
+    pcm = (np.clip(samples.flatten(), -1.0, 1.0) * 32767).astype(np.int16)
+    data_size = len(pcm) * 2  # 16-bit mono
     with open(path, "wb") as f:
-        f.write(b"RIFF")
-        f.write(struct.pack("<I", 36 + data_size))
-        f.write(b"WAVE")
-        f.write(b"fmt ")
-        f.write(struct.pack("<IHHIIHH", 16, 1, num_channels, sample_rate,
-                            byte_rate, block_align, bits_per_sample))
-        f.write(b"data")
-        f.write(struct.pack("<I", data_size))
-        f.write(pcm.tobytes())
+        f.write(b"RIFF" + struct.pack("<I", 36 + data_size) + b"WAVEfmt ")
+        f.write(struct.pack("<IHHIIHH", 16, 1, 1, sample_rate, sample_rate * 2, 2, 16))
+        f.write(b"data" + struct.pack("<I", data_size) + pcm.tobytes())
 
 
 def main():
@@ -59,50 +37,37 @@ def main():
     parser.add_argument("--device", default="cpu", help="Device (cpu/cuda/mps)")
     args = parser.parse_args()
 
-    # llama_cpp (backbone) offloads to GPU only for the literal string "gpu";
-    # torch (codec) only accepts "cuda". A single --device value can't satisfy
-    # both — "cuda" silently no-ops on the backbone, leaving it on CPU.
-    backbone_device = "gpu" if args.device == "cuda" else args.device
-    codec_device = args.device
-
-    # Validate inputs
     ref_audio = Path(args.ref_audio).expanduser()
     ref_text_path = Path(args.ref_text).expanduser()
-    if not ref_audio.exists():
-        print(f"Error: reference audio not found: {ref_audio}", file=sys.stderr)
-        sys.exit(1)
-    if not ref_text_path.exists():
-        print(f"Error: reference text not found: {ref_text_path}", file=sys.stderr)
-        sys.exit(1)
-
+    for label, p in (("audio", ref_audio), ("text", ref_text_path)):
+        if not p.exists():
+            print(f"Error: reference {label} not found: {p}", file=sys.stderr)
+            sys.exit(1)
     ref_text = ref_text_path.read_text(encoding="utf-8").strip()
 
-    # Import and run NeuTTS
     try:
         from neutts import NeuTTS
     except ImportError:
         print("Error: neutts not installed. Run: python -m pip install -U neutts[all]", file=sys.stderr)
         sys.exit(1)
 
+    # llama_cpp (backbone) offloads to GPU only for the literal string "gpu";
+    # torch (codec) only accepts "cuda". A single --device value can't satisfy
+    # both — "cuda" silently no-ops on the backbone, leaving it on CPU.
     tts = NeuTTS(
         backbone_repo=args.model,
-        backbone_device=backbone_device,
+        backbone_device="gpu" if args.device == "cuda" else args.device,
         codec_repo="neuphonic/neucodec",
-        codec_device=codec_device,
-    )
-    ref_codes = tts.encode_reference(str(ref_audio))
-    wav = tts.infer(args.text, ref_codes, ref_text)
+        codec_device=args.device)
+    wav = tts.infer(args.text, tts.encode_reference(str(ref_audio)), ref_text)
 
-    # Write output
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-
     try:
         import soundfile as sf
         sf.write(str(out_path), wav, 24000)
     except ImportError:
         _write_wav(str(out_path), wav, 24000)
-
     print(f"OK: {out_path}", file=sys.stderr)
 
 

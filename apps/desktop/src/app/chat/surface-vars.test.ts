@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { chatSurfaceRoot, clearSurfaceVar, setSurfaceVar, STATUS_STACK_VAR } from './surface-vars'
+import { chatSurfaceRoot, clearSurfaceVar, COMPOSER_HEIGHT_VAR, setSurfaceVar } from './surface-vars'
 
 /**
  * Regression: the thread's bottom gap going randomly huge and staying huge.
@@ -17,7 +17,7 @@ import { chatSurfaceRoot, clearSurfaceVar, setSurfaceVar, STATUS_STACK_VAR } fro
  */
 describe('surface measured-height vars', () => {
   afterEach(() => {
-    document.documentElement.style.removeProperty(STATUS_STACK_VAR)
+    document.documentElement.style.removeProperty(COMPOSER_HEIGHT_VAR)
     document.body.replaceChildren()
   })
 
@@ -35,10 +35,10 @@ describe('surface measured-height vars', () => {
   it('publishes onto the owning surface, not the document root', () => {
     const { publisher, root } = surface()
 
-    setSurfaceVar(publisher, STATUS_STACK_VAR, '176px')
+    setSurfaceVar(publisher, COMPOSER_HEIGHT_VAR, '176px')
 
-    expect(root.style.getPropertyValue(STATUS_STACK_VAR)).toBe('176px')
-    expect(document.documentElement.style.getPropertyValue(STATUS_STACK_VAR)).toBe('')
+    expect(root.style.getPropertyValue(COMPOSER_HEIGHT_VAR)).toBe('176px')
+    expect(document.documentElement.style.getPropertyValue(COMPOSER_HEIGHT_VAR)).toBe('')
   })
 
   it('never poisons the document root from a detached publisher', () => {
@@ -48,18 +48,18 @@ describe('surface measured-height vars', () => {
     // collapses, orphaning it from its surface, and a pending measurement
     // publishes anyway. `closest()` from an orphan finds nothing.
     publisher.remove()
-    setSurfaceVar(publisher, STATUS_STACK_VAR, '176px')
+    setSurfaceVar(publisher, COMPOSER_HEIGHT_VAR, '176px')
 
-    expect(document.documentElement.style.getPropertyValue(STATUS_STACK_VAR)).toBe('')
+    expect(document.documentElement.style.getPropertyValue(COMPOSER_HEIGHT_VAR)).toBe('')
   })
 
   it('never poisons the document root from a publisher outside any surface', () => {
     const orphan = document.createElement('div')
     document.body.append(orphan)
 
-    setSurfaceVar(orphan, STATUS_STACK_VAR, '176px')
+    setSurfaceVar(orphan, COMPOSER_HEIGHT_VAR, '176px')
 
-    expect(document.documentElement.style.getPropertyValue(STATUS_STACK_VAR)).toBe('')
+    expect(document.documentElement.style.getPropertyValue(COMPOSER_HEIGHT_VAR)).toBe('')
   })
 
   it('reports no owner for an orphaned or unowned node', () => {
@@ -78,12 +78,12 @@ describe('surface measured-height vars', () => {
 
   it('clears from the captured surface and tolerates a missing one', () => {
     const { publisher, root } = surface()
-    setSurfaceVar(publisher, STATUS_STACK_VAR, '176px')
+    setSurfaceVar(publisher, COMPOSER_HEIGHT_VAR, '176px')
 
-    clearSurfaceVar(root, STATUS_STACK_VAR)
-    expect(root.style.getPropertyValue(STATUS_STACK_VAR)).toBe('')
+    clearSurfaceVar(root, COMPOSER_HEIGHT_VAR)
+    expect(root.style.getPropertyValue(COMPOSER_HEIGHT_VAR)).toBe('')
 
-    expect(() => clearSurfaceVar(null, STATUS_STACK_VAR)).not.toThrow()
-    expect(document.documentElement.style.getPropertyValue(STATUS_STACK_VAR)).toBe('')
+    expect(() => clearSurfaceVar(null, COMPOSER_HEIGHT_VAR)).not.toThrow()
+    expect(document.documentElement.style.getPropertyValue(COMPOSER_HEIGHT_VAR)).toBe('')
   })
 })

@@ -351,3 +351,42 @@ def test_evaluate_runtime_unserializable_value(chrome_cdp, supervisor_registry):
     out = supervisor.evaluate_runtime("Infinity")
     assert out["ok"] is True
     assert out["result"] == "Infinity"
+
+
+def test_network_peer_is_recorded_from_real_chrome(chrome_cdp):
+    """Chrome's real response event carries a local peer independently of URL DNS."""
+    import http.server
+    import threading
+    from tools.browser_supervisor import CDPSupervisor
+    from tools.url_safety import ip_address_block_reason
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"observed local response")
+        def log_message(self, *args):
+            pass
+
+    with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler) as httpd:
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        supervisor = CDPSupervisor(task_id="peer-wire", cdp_url=chrome_cdp[0])
+        try:
+            supervisor.start()
+            url = f"http://127.0.0.1:{httpd.server_port}/"
+            _fire_on_page(chrome_cdp[0], f"location.href = {json.dumps(url)}")
+            deadline = time.monotonic() + 5
+            records = ()
+            while time.monotonic() < deadline:
+                records = supervisor.snapshot().network_responses
+                if any(r.url == url for r in records):
+                    break
+                time.sleep(0.05)
+            peer = next(r for r in records if r.url == url)
+            assert peer.remote_ip == "127.0.0.1"
+            assert ip_address_block_reason(peer.remote_ip) == "private/internal address"
+        finally:
+            supervisor.stop()
+            httpd.shutdown()
+            thread.join(timeout=2)

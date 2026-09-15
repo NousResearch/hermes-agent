@@ -1,19 +1,20 @@
-"""web_extract helpers: URL validation, provider resolution, cache-aware dispatch.
+"""web_extract helpers: URL validation, provider resolution, cache-aware dispatch, fallback chain.
 
 Order of controls (each is a gate, never skipped by a cache hit): secret-URL
 refusal -> SSRF filter (in web_tools.web_extract_tool) -> provider resolution
-(strict selection) -> per-URL website policy -> disk cache -> vendor call with
-one-shot keyless rescue. Logs under the origin (tools.web_tools) logger.
+(strict selection; per entry of the ``web.extract_backends`` chain) -> per-URL
+website policy -> disk cache -> vendor call with one-shot keyless rescue (final
+chain entry only). Logs under the origin (tools.web_tools) logger.
 """
 
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from tools.tool_backend_helpers import selection_error, selection_exists
 from tools.url_safety import normalize_url_for_request
-from tools.web_tools_rescue import _rescue_eligible, _rescue_extract
+from tools.web_tools_rescue import _policy_blocked_result, _rescue_eligible, _rescue_extract
 
 logger = logging.getLogger("tools.web_tools")
 
@@ -36,12 +37,14 @@ def _web_extract_url(value: Any) -> Optional[str]:
     return (value.strip() or None) if isinstance(value, str) else None
 
 
-def _disabled_plugin_error(capability: str, disabled_key: str) -> str:
-    """Error text when the configured backend's bundled plugin is disabled in config."""
+def _disabled_plugin_error(capability: str, disabled_key: str, key: Optional[str] = None) -> str:
+    """Error text when the configured backend's bundled plugin is disabled in config. *key* names the
+    config key that selected it (default ``web.<capability>_backend``; chain entries pass
+    ``web.extract_backends``)."""
     vendor = disabled_key.split("/", 1)[-1]
     return (
-        f"web.{capability}_backend is set to '{vendor}', but its plugin ('{disabled_key}') is disabled "
-        f"in config. Re-enable it with `hermes plugins enable {disabled_key}` "
+        f"{key or f'web.{capability}_backend'} is set to '{vendor}', but its plugin ('{disabled_key}') is "
+        f"disabled in config. Re-enable it with `hermes plugins enable {disabled_key}` "
         "(or remove it from plugins.disabled)."
     )
 
@@ -146,11 +149,16 @@ def _extract_timeout_seconds() -> float:
         return _DEFAULT_EXTRACT_TIMEOUT_S
 
 
-async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[str]) -> List[dict]:
+async def _dispatch_extract(
+    provider, fetch_urls: List[str], format: Optional[str], *, rescue: bool = True
+) -> List[dict]:
     """Call ``provider.extract`` (async or sync-in-thread), with one-shot keyless rescue.
 
     Rescue fires on a raised exception — including a dispatch timeout — or when the WHOLE batch
-    failed (backend outage, not per-page problems). Rescued batches are never cached.
+    failed (backend outage, not per-page problems). Rescued batches are never cached. ``rescue=False``
+    withholds it (non-final ``web.extract_backends`` entries: the configured chain, not the free ring,
+    is what such a failure falls through to) — the failure then surfaces raw: the exception propagates,
+    a timeout/all-error batch is returned as-is.
     """
     import inspect
     from tools.web_result_cache import extract_cache_put
@@ -169,15 +177,15 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
                        provider.name, timeout, len(fetch_urls))
         failed = [_result_entry(u, f"Extract timed out after {timeout:.0f}s via {provider.name}")
                   for u in fetch_urls]
-        if not _rescue_eligible(provider):
+        if not (rescue and _rescue_eligible(provider)):
             return failed
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed)
     except Exception as exc:  # noqa: BLE001 — candidate for rescue
-        if not _rescue_eligible(provider):
+        if not (rescue and _rescue_eligible(provider)):
             raise
         failed = [_result_entry(u, str(exc)) for u in fetch_urls]
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, failed)
-    if results and all(r.get("error") for r in results) and _rescue_eligible(provider):
+    if results and all(r.get("error") for r in results) and rescue and _rescue_eligible(provider):
         return await asyncio.to_thread(_rescue_extract, provider.name, fetch_urls, results)
 
     # Cache each successful fetch's full clean text (best-effort; oversized skipped).
@@ -188,13 +196,15 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
     return results
 
 
-async def _extract_safe_urls(provider, safe_urls: List[str], format: Optional[str]) -> List[dict]:
+async def _extract_safe_urls(
+    provider, safe_urls: List[str], format: Optional[str], *, rescue: bool = True
+) -> List[dict]:
     """Serve cache hits, fetch the rest, and merge back in ``safe_urls`` order.
 
     The disk cache (tools/web_result_cache.py) sits AFTER the secret-URL gate, SSRF gate, and provider
     resolution, and is gated per-URL on the website policy — a hit skips only the vendor call, never a
     control; policy-blocked URLs are cache misses. Keys include provider and format, so switching either
-    within the TTL never serves the other's content."""
+    within the TTL never serves the other's content. ``rescue`` is forwarded to :func:`_dispatch_extract`."""
     from tools.web_result_cache import extract_cache_get
     from tools.website_policy import check_website_access as _check_site
     cached_results, fetch_urls, fetch_positions = {}, [], []
@@ -213,7 +223,129 @@ async def _extract_safe_urls(provider, safe_urls: List[str], format: Optional[st
     if not fetch_urls:
         return [cached_results[i] for i in range(len(safe_urls))]
     logger.info("Web extract via %s: %d URL(s)", provider.name, len(fetch_urls))
-    results = await _dispatch_extract(provider, fetch_urls, format)
+    results = await _dispatch_extract(provider, fetch_urls, format, rescue=rescue)
     if not cached_results:
         return results
     return _merge_in_order(len(safe_urls), cached_results, fetch_positions, fetch_urls, results)
+
+
+# ─── Fallback chain (web.extract_backends) ────────────────────────────────────
+
+def _contentless(result: Any) -> bool:
+    """True when a result row carries no usable page text — neither ``content`` nor ``raw_content`` has
+    any non-whitespace. Backends answer an unhydrated SPA, a soft bot wall, or a payload with neither
+    markdown nor HTML with HTTP 200 and an empty body and NO ``error`` (firecrawl's ``_scrape_one`` is
+    one such shape); for the fallback chain that row is as retryable as an explicit failure."""
+    if not isinstance(result, dict):
+        return True
+    return not any(
+        isinstance(result.get(key), str) and result[key].strip() for key in ("content", "raw_content")
+    )
+
+
+def _failed_row(result: Any) -> bool:
+    """A failure-shaped result row: not a dict, carries an ``error``, or is contentless."""
+    return not isinstance(result, dict) or bool(result.get("error")) or _contentless(result)
+
+
+def _batch_failed(results: List[dict]) -> bool:
+    """True when the batch is empty or EVERY row is failure-shaped — the retryable outcome for the chain.
+    Partial success (some pages usable) is a final answer: the batch is not shopped to the next backend."""
+    return not results or all(_failed_row(r) for r in results)
+
+
+def _policy_blocked_batch(results: List[dict]) -> bool:
+    """True when any row is a website-policy refusal — a terminal decision, never re-dispatched."""
+    return any(_policy_blocked_result(r) for r in results if isinstance(r, dict))
+
+
+def _error_text(error_json: Optional[str]) -> str:
+    """The ``error`` field of a ``_extract_error_json`` envelope, for log lines."""
+    try:
+        return str(json.loads(error_json or "{}").get("error") or error_json or "")
+    except (TypeError, ValueError):
+        return str(error_json or "")
+
+
+def _resolve_chain_entry(backend: str):
+    """Resolve one explicit ``web.extract_backends`` entry EXACTLY; returns ``(provider, error_json)``.
+
+    An entry that is unregistered, or registered but search-only, is a typed error — never a silent
+    substitute. In particular the scalar active provider (``get_active_extract_provider`` resolves
+    ``web.extract_backend`` / ``web.backend``, a different key) is never dispatched in an entry's place:
+    that could hit a backend the user never listed in this slot. A disabled bundled plugin is named as
+    the cause when it is one.
+    """
+    from agent.web_search_registry import _disabled_web_plugin_for, get_provider as _wsp_get_provider
+    provider = _wsp_get_provider(backend)
+    if provider is not None and provider.supports_extract():
+        return provider, None
+    if provider is not None:
+        return None, _extract_error_json(
+            f"{provider.display_name} is a search-only backend and cannot extract URL content. "
+            "Set web.extract_backends entries to " + _EXTRACT_BACKENDS_HINT
+        )
+    disabled_key = _disabled_web_plugin_for(configured=backend, capability="extract")
+    if disabled_key:
+        return None, _extract_error_json(_disabled_plugin_error("extract", disabled_key, key="web.extract_backends"))
+    return None, _extract_error_json(
+        f"web.extract_backends entry '{backend}' does not match any registered web extract provider. "
+        "Set it to " + _EXTRACT_BACKENDS_HINT
+    )
+
+
+async def _extract_with_fallback(
+    backends: List[str], safe_urls: List[str], format: Optional[str], *, explicit: bool
+) -> Tuple[List[dict], Optional[str]]:
+    """Walk the extract backends in order; returns ``(results, error_json)`` (at most one is set).
+
+    Each entry is resolved and dispatched through :func:`_extract_safe_urls` (policy, cache, timeout).
+    A retryable outcome hands the batch to the next entry with a logged warning: the entry does not
+    resolve, ``extract()`` raises, or the batch is empty or every row is failure-shaped — an ``error``,
+    OR a contentless body (HTTP 200 + empty content, no error). A ``blocked_by_policy`` row is a
+    terminal decision: the batch is returned as-is and the blocked URL is never re-dispatched. The
+    one-shot keyless rescue is withheld from every entry but the last, so a failing entry falls through
+    to the configured chain rather than the free ring.
+
+    The FINAL entry's outcome is surfaced exactly as a single backend's would be — its rows (per-URL
+    errors included), its raised exception, or ``[]``. Should the final entry fail to *resolve*, the most
+    recent per-URL rows from an earlier entry are returned when there are any (a bad trailing entry must
+    not erase a real fetch outcome), else the resolution error.
+
+    ``explicit=False`` is the pre-chain path unchanged: the single scalar backend resolved via
+    :func:`_resolve_extract_provider` (strict selection, active-provider walk for never-configured
+    installs, rescue on).
+    """
+    resolve = _resolve_chain_entry if explicit else _resolve_extract_provider
+    backends = backends or [""]  # no scalar resolved: let _resolve_extract_provider walk / report
+    results: List[dict] = []  # most recent per-URL rows from an entry that was actually invoked
+    last_error_json: Optional[str] = None
+    for idx, backend in enumerate(backends):
+        final = idx == len(backends) - 1
+        provider, error_json = resolve(backend)
+        if provider is None:
+            last_error_json = error_json
+            if not final or results:  # otherwise the error itself is the tool's answer — no log needed
+                logger.warning("web_extract backend '%s' skipped: %s", backend, _error_text(error_json))
+            continue
+        try:
+            attempt = await _extract_safe_urls(provider, safe_urls, format, rescue=final)
+        except Exception as exc:  # noqa: BLE001 — the next configured backend gets the batch
+            if final:
+                raise
+            logger.warning(
+                "web_extract via %s raised (%s); trying the next configured backend", provider.name, exc
+            )
+            continue
+        if attempt:
+            results = attempt
+        if final or _policy_blocked_batch(attempt) or not _batch_failed(attempt):
+            return attempt, None
+        first = next((r.get("error") for r in attempt if isinstance(r, dict) and r.get("error")), None)
+        logger.warning(
+            "web_extract via %s returned no usable content for %d URL(s) (%s); trying the next configured backend",
+            provider.name, len(safe_urls), first or ("empty response" if not attempt else "contentless rows"),
+        )
+    if results:
+        return results, None
+    return [], last_error_json

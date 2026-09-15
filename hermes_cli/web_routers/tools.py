@@ -390,15 +390,21 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
             if name == "web":
                 # Resolve active backends exactly as the web_search/web_extract
                 # dispatchers do, so badges reflect what a call would hit now.
+                # ``active_extract_backend`` stays the scalar the badge binds to
+                # (the backend a web_extract call hits FIRST); the additive
+                # ``active_extract_backends`` is the full web.extract_backends
+                # fallback chain behind it.
                 try:
-                    from tools.web_tools import _get_extract_backend, _get_search_backend
+                    from tools.web_tools import _get_extract_backends, _get_search_backend
 
                     search_backend = _get_search_backend()
-                    extract_backend = _get_extract_backend()
+                    extract_backends = _get_extract_backends()
+                    extract_backend = extract_backends[0] if extract_backends else None
                 except Exception:
-                    search_backend = extract_backend = None
+                    search_backend = extract_backend = extract_backends = None
                 payload["active_search_backend"] = search_backend
                 payload["active_extract_backend"] = extract_backend
+                payload["active_extract_backends"] = extract_backends
         return payload
 
     return await asyncio.to_thread(_read)

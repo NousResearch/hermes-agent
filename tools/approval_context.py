@@ -171,7 +171,13 @@ def _is_gateway_approval_context() -> bool:
     """
     if _is_cron_approval_context() or _is_unattended_platform_approval_context():
         return False
-    return env_var_enabled("HERMES_GATEWAY_SESSION") or bool(_get_session_platform())
+    if env_var_enabled("HERMES_GATEWAY_SESSION") or bool(_get_session_platform()):
+        return True
+    # TUI/Desktop remote sessions via tui_gateway historically bound only
+    # HERMES_SESSION_SOURCE (desktop/tui) while HERMES_SESSION_PLATFORM stayed
+    # empty; treat those as gateway contexts so approvals.mode=manual prompts
+    # (issue #104138). Source check is fallback only — platform is authoritative.
+    return bool(_session_env("HERMES_SESSION_SOURCE"))
 
 
 def _resolve_cli_approval_callback(approval_callback=None):

@@ -4,6 +4,7 @@ import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn } from "@/lib/utils";
 import { PluginSlot } from "@/plugins";
+import { PersianGuide } from "@/components/PersianGuide";
 
 export const HERMES_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/";
 
@@ -44,6 +45,9 @@ export default function DocsPage() {
       )}
     >
       <PluginSlot name="docs:top" />
+      {/* Persian users get a localized quick-start guide above the (English)
+          upstream docs iframe — the official docs have no fa translation. */}
+      <PersianGuide />
       <iframe
         title={t.app.nav.documentation}
         src={HERMES_DOCS_URL}

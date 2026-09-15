@@ -18,6 +18,7 @@ import { pt } from "./pt";
 import { ru } from "./ru";
 import { hu } from "./hu";
 import { ar } from "./ar";
+import { fa } from "./fa";
 
 const TRANSLATIONS: Record<Locale, Translations> = {
   en,
@@ -37,6 +38,7 @@ const TRANSLATIONS: Record<Locale, Translations> = {
   ru,
   hu,
   ar,
+  fa,
 };
 
 const SUPPORTED_LOCALES = Object.keys(TRANSLATIONS) as Locale[];

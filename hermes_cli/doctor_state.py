@@ -257,6 +257,20 @@ def _state_db_wal(f: Finding, should_fix: bool, state_db_path: Path) -> None:
         if size > 50 * 1024 * 1024:  # 50 MB
             check_warn(f"WAL file is large ({size // (1024*1024)} MB)", "(may indicate missed checkpoints)")
             if not should_fix:
+                # #110054 (doctor ask 2): a large WAL is normal while a gateway, Desktop or cron writer is
+                # running, and `--fix` refuses to checkpoint a held database anyway — so never hand out the
+                # bare suggestion while something holds the file, or while the scan cannot prove that
+                # nothing does. Say what has to stop first; the scan is stat + /proc or lsof, no DB open.
+                from hermes_state_holders import foreign_state_db_holders
+                try:
+                    held = bool(foreign_state_db_holders(state_db_path))
+                except Exception:
+                    held = True
+                if held:
+                    check_info("(normal while a gateway, Desktop or cron writer is running — "
+                               "checkpoint only with them stopped)")
+                    return f.issues.append("Large WAL file — stop the profile's gateway / Desktop / cron first, "
+                                           "then run 'hermes doctor --fix' to checkpoint")
                 return f.issues.append("Large WAL file — run 'hermes doctor --fix' to checkpoint")
             # Checkpoint-lock premise (#40177, #103339): a bare connect runs WAL recovery and the checkpoint
             # joins the live WAL — under a running gateway that second-writer handling corrupts state.db.

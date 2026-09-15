@@ -612,7 +612,14 @@ class GatewayTopicThreadsMixin:
         return "\n".join(lines)
 
     async def _restore_telegram_topic_session(self, event: MessageEvent, raw_session_id: str) -> str:
-        """Restore an existing Telegram-owned Hermes session into this topic."""
+        """Restore through the route owner, retaining paused-command admission until settled."""
+        async with self._paused_recovery_admission(event.source) as (_, refusal):
+            if refusal is not None:
+                return refusal
+            return await self._restore_telegram_topic_session_with_admission(event, raw_session_id)
+
+    async def _restore_telegram_topic_session_with_admission(self, event, raw_session_id):
+        """Validate native topic ownership before committing an explicit route switch."""
         source = event.source
         db = self._session_db
         session_id = await db.resolve_session_id(raw_session_id.strip())
@@ -631,16 +638,34 @@ class GatewayTopicThreadsMixin:
         already_linked = "That session is already linked to another Telegram topic."
         if linked and (not current_binding or current_binding.get("session_id") != session_id):
             return already_linked
-        try:
+        async def commit_restore():
+            current = await self.async_session_store.get_or_create_session(source)
+            expected_id = current.session_id
+            # The native binding write atomically refuses a target linked to another topic.
+            # Once admitted, only the primary route can make this restoration successful.
             await db.bind_telegram_topic(
                 chat_id=str(source.chat_id), thread_id=str(source.thread_id), user_id=str(source.user_id),
-                session_key=self._session_key_for_source(source), session_id=session_id, managed_mode="restored",
+                session_key=current.session_key, session_id=session_id, managed_mode="restored",
                 profile_name=topic_profile,
             )
+            entry = await self.async_session_store.switch_session(
+                current.session_key, session_id, require_primary=True, expected_session_id=expected_id,
+            )
+            if entry is None:
+                raise RuntimeError("Session route changed before topic restoration")
+            if expected_id != session_id:
+                self._clear_conversation_scope(current.session_key, reason="topic-restore")
+                self._evict_cached_agent(current.session_key)
+
+        try:
+            await self._await_session_policy_commit(commit_restore())
         except ValueError as exc:
             if "already linked" in str(exc):
                 return already_linked
             raise
+        except Exception:
+            logger.warning("Topic restoration could not be persisted", exc_info=True)
+            return "Session restoration could not be persisted. Please retry after fixing storage."
         title = await db.get_session_title(session_id) or session_id
         last_assistant = None
         with suppress(Exception):

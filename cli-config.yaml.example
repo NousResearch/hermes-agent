@@ -604,6 +604,11 @@ compression:
   # FAILURE notices + manual /compress feedback are always visible
   # regardless of this setting. (#52995)
   progress_notices: false
+
+  # Gateway terminal exhaustion: reset (default) or pause and preserve the conversation.
+  # Existing pauses survive a missing/invalid setting; only explicit reset or committed
+  # /compress, /new, or an authorized other-session /resume releases them.
+  exhaustion_action: reset
   
   # Trigger compression at this % of model's context limit (default: 0.50 = 50%)
   # Lower values = more aggressive compression, higher values = compress later

@@ -1754,6 +1754,13 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         mark_named_profile_deleted(old_dir)
         _notify_multiplexer(old_canon)
 
+    # 1c. Release this process's cached MCP stderr handle into the old home (same as
+    # delete_profile): Windows refuses to rename a directory holding an open file, and the
+    # handle would otherwise stay cached under the old key after the move.
+    from hermes_constants import hermes_home_key
+    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    shutdown_mcp_servers(scope=hermes_home_key(old_dir))
+
     # 2. Rename directory. If the move fails (cross-device EXDEV, permissions, a racing writer),
     # undo the unroute so the profile is never stranded tombstoned-but-present.
     try:

@@ -109,3 +109,29 @@ export function parseCompare(payload: unknown): { behind: number; commits: Compa
 
   return { behind: ahead, commits }
 }
+
+/**
+ * Decide the passive check's verdict once the compare call has been made.
+ *
+ * The compare endpoint cannot see a commit that exists only on this machine, so
+ * a checkout carrying local patches gets a 404 and `compared === null`. Reading
+ * that silence as "behind" produces a notice no update can ever clear, and its
+ * only suggested action — `hermes update` — is the one that can park the carried
+ * work. Git is the sole party that knows about a local-only commit, so its
+ * ancestry answer decides: a remote tip already reachable from HEAD means we are
+ * AHEAD, not behind. A real count from the payload always wins; a null compare
+ * with no ancestry stays honestly "available, count unknown".
+ */
+export function resolveApiBehindCount({
+  compared,
+  targetIsAncestorOfHead
+}: {
+  compared: { behind: number } | null
+  targetIsAncestorOfHead: boolean
+}): { behind: number | null; updateAvailable: boolean } {
+  if (compared) {
+    return { behind: compared.behind, updateAvailable: compared.behind > 0 }
+  }
+
+  return targetIsAncestorOfHead ? { behind: 0, updateAvailable: false } : { behind: null, updateAvailable: true }
+}

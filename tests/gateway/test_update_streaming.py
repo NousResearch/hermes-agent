@@ -14,6 +14,26 @@ import asyncio
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
+def _finalized_stream(hermes_home):
+    """Create finalized evidence so the post-fix watcher counts the run as successful."""
+    import json as _j, os, time
+    exit_code = hermes_home / ".update_exit_code"
+    if not exit_code.exists():
+        exit_code.write_text("0")
+    (hermes_home / "logs" / "update_receipts").mkdir(parents=True, exist_ok=True)
+    latest = hermes_home / "logs" / "update_receipts" / "latest.json"
+    latest.write_text(_j.dumps({"finished_at": "now"}))
+    try:
+        if latest.stat().st_mtime <= exit_code.stat().st_mtime:
+            t = exit_code.stat().st_mtime + 1
+            os.utime(latest, (t, t))
+    except OSError:
+        pass
+    try:
+        (hermes_home / "fleet_restart_pending").unlink()
+    except OSError:
+        pass
+
 
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
@@ -192,6 +212,7 @@ class TestWatchUpdateProgress:
                 "→ Fetching updates...\n✓ Code updated!\n"
             , encoding="utf-8")
             (hermes_home / ".update_exit_code").write_text("0")
+            _finalized_stream(hermes_home)
 
         with patch("gateway.run._hermes_home", hermes_home):
             task = asyncio.create_task(write_exit_code())
@@ -233,6 +254,7 @@ class TestWatchUpdateProgress:
             (hermes_home / ".update_prompt.json").unlink(missing_ok=True)
             await asyncio.sleep(0.2)
             (hermes_home / ".update_exit_code").write_text("0")
+            _finalized_stream(hermes_home)
 
         with patch("gateway.run._hermes_home", hermes_home):
             task = asyncio.create_task(simulate_prompt_cycle())
@@ -305,6 +327,7 @@ class TestWatchUpdateProgress:
                 (hermes_home / ".update_response").write_text("y")
                 await asyncio.sleep(0.2)
                 (hermes_home / ".update_exit_code").write_text("0")
+                _finalized_stream(hermes_home)
 
             finisher = asyncio.create_task(respond_and_finish())
             await runner2._watch_update_progress(
@@ -397,4 +420,3 @@ class TestCmdUpdateGatewayMode:
 
         assert len(calls) == 1
         assert "Restore" in calls[0]
-

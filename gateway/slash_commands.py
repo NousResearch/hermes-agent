@@ -118,13 +118,63 @@ def _restart_notify_payload(event: MessageEvent) -> dict:
     return data
 
 
+def _systemd_scope_wrap_if_supervised(argv: list) -> tuple[list, dict | None]:
+    """Wrap *argv* in a transient ``systemd-run --user --scope`` unit when this gateway
+    itself runs under systemd; otherwise return (*argv*, None) unchanged. Never raises.
+
+    ``setsid``/``start_new_session`` only leave the POSIX session, not the systemd
+    cgroup: when the updater's own restart phase restarts ``hermes-gateway.service``,
+    ``KillMode=mixed`` SIGKILLs the updater mid-run, before it can write the receipt,
+    clear the pending marker, or refresh the dashboard (#107427). A transient user
+    scope lives outside the service cgroup and survives that restart. Mirrors the
+    recovery spawn in ``hermes_cli.update_abort_recovery`` (plain ``--quiet --collect``,
+    deliberately no ``MemoryMax``: an updater syncing dependencies must not inherit a
+    worker-sized memory cap). Unusable scope (no binary, no reachable user bus,
+    probe failed) degrades to the plain spawn — today's behavior — instead of
+    blocking the update.
+    """
+    try:
+        if sys.platform == "win32":
+            return argv, None
+        supervised = bool(os.environ.get("INVOCATION_ID"))
+        if not supervised:
+            try:
+                from tools.process_registry import _is_supervised_gateway_process
+                supervised = bool(_is_supervised_gateway_process())
+            except Exception:
+                supervised = False
+        if not supervised:
+            return argv, None
+        from tools.process_registry import (
+            _systemd_run_user_scope_available,
+            systemd_user_bus_env,
+        )
+        if not _systemd_run_user_scope_available():
+            return argv, None
+        import shutil
+        binary = shutil.which("systemd-run")
+        if not binary:
+            return argv, None
+        wrapped = [
+            binary, "--user", "--scope", "--quiet", "--collect",
+            "--unit", "hermes-gateway-update.scope",
+            "--", *argv,
+        ]
+        return wrapped, systemd_user_bus_env()
+    except Exception:
+        return argv, None
+
+
 def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
     """Spawn ``hermes update --gateway`` detached so it survives the gateway restart it may trigger.
-    setsid is portable (works where ``systemd-run --user`` lacks a D-Bus session); ``--gateway``
-    enables file-based IPC so interactive prompts are forwarded; PYTHONUNBUFFERED lets the gateway
-    stream output live.  Windows has no setsid: an inline helper runs the updater as a module under
-    this interpreter (not venv\\Scripts\\hermes.exe — that shim holds its own file open, and the
-    update must replace it), redirects both outputs to one file and writes the exit code."""
+    Under systemd the spawn is first placed in a transient user scope (see
+    :func:`_systemd_scope_wrap_if_supervised`): ``setsid`` alone is portable (works where
+    ``systemd-run --user`` lacks a D-Bus session) but cannot escape the service cgroup.
+    ``--gateway`` enables file-based IPC so interactive prompts are forwarded;
+    PYTHONUNBUFFERED lets the gateway stream output live.  Windows has no setsid: an
+    inline helper runs the updater as a module under this interpreter (not
+    venv\\Scripts\\hermes.exe — that shim holds its own file open, and the update must
+    replace it), redirects both outputs to one file and writes the exit code."""
     import shutil
     import subprocess
     if sys.platform == "win32":
@@ -145,7 +195,17 @@ def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
     # calls os.setsid() in the child.
     setsid_bin = shutil.which("setsid")
     argv = [setsid_bin, "bash", "-c", update_cmd] if setsid_bin else ["bash", "-c", update_cmd]
-    subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    scoped_argv, scoped_env = _systemd_scope_wrap_if_supervised(argv)
+    if scoped_env is not None:
+        subprocess.Popen(
+            scoped_argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True, env=scoped_env,
+        )
+    else:
+        subprocess.Popen(
+            scoped_argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
 
 
 def _home_thread_from_source(source) -> Optional[str]:

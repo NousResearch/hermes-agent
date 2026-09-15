@@ -290,17 +290,21 @@ def _check_remote_hosted_admission(authority, ref, row):
         attested = _attest(binding, 'execute', params)
         if attested['owner'] != binding['owner']:
             raise ValueError('owner changed')
-        # Bytes are not re-transferred here: the durable row is compared against the
-        # payload the attested prompt, manifest and source-verified digests commit to.
-        from gateway.session_hosted_attachments import attested_submission_payload, verify_attested_documents
-        if row['payload'] != attested_submission_payload(
-                attested['prompt'], attested['attachments'], attested.get('attachment_digests')):
-            raise ValueError('input changed')
+        if not isinstance(attested.get('attachment_digests'), list):
+            raise ValueError('source digests missing')
     except (ValueError, KeyError, TypeError) as exc:
         raise RuntimeStoreError('permission_denied') from exc
-    # Outside the permission_denied fold: a corrupted or missing retained document is a
-    # storage fault of this destination, not a revoked source binding.
-    verify_attested_documents(attested['attachments'], attested.get('attachment_digests'))
+    # Keep Q's destination storage faults outside the source authorization fold.
+    from gateway.hosted_room_input_preparation import reconstruct_attested_payload
+    try:
+        expected = reconstruct_attested_payload(authority.db, attested['prompt'],
+            attested['attachments'], attested['attachment_digests'], row)
+        if row['payload'] != expected:
+            raise RuntimeStoreError('admission_conflict')
+    except RuntimeStoreError as exc:
+        if exc.reason == 'admission_conflict':
+            raise RuntimeStoreError('permission_denied') from exc
+        raise
     return True
 
 

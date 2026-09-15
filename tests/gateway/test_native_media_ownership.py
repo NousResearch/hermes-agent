@@ -40,6 +40,8 @@ def test_equal_bytes_under_different_basenames_are_fully_released(tmp_path, monk
     nothing under the digest directory may remain."""
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     db = SessionDB(db_path=tmp_path / 'state.db')
+    from gateway.hosted_room_input_custody import initialize_input_custody
+    initialize_input_custody(db)
     db.create_session('s', source='test')
     epoch = begin_runtime_epoch(db, instance_id='current')
     rows = []

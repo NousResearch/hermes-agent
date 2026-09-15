@@ -12,6 +12,8 @@ const THINKING_PREFIX_RE =
   /^\s*(?:\([^)\n]{1,48}\)\s*)?(?:processing|thinking|reasoning|analyzing|pondering|contemplating|musing|cogitating|ruminating|deliberating|mulling|reflecting|computing|synthesizing|formulating|brainstorming)\.\.\.\s*/i
 
 const URL_RE = /\bhttps?:\/\/\S+/gi
+const CLOSED_THINK_BLOCK_RE = /<think[\s>][\s\S]*?<\/think>/g
+const SENTENCE_BOUNDARY_RE = /(?<=[.!?])(?:\s|\n)|(?:\n\n)/
 
 const MARKDOWN_TABLE_DELIMITER_CELL_RE = /^:?-{3,}:?$/
 
@@ -149,6 +151,53 @@ function normalizeLineBreaks(text: string): string {
     .replace(PUNCTUATED_PARAGRAPH_BREAK_RE, '$1$2 ')
     .replace(PARAGRAPH_BREAK_RE, '. ')
     .replace(SOFT_BREAK_RE, ' ')
+}
+
+export class IncrementalSpeechSentenceBuffer {
+  private buffer = ''
+
+  constructor(private readonly minLength = 20) {}
+
+  append(delta: string): string[] {
+    this.buffer = (this.buffer + delta).replace(CLOSED_THINK_BLOCK_RE, '')
+
+    if (this.buffer.includes('<think') && !this.buffer.includes('</think>')) {
+      return []
+    }
+
+    const sentences: string[] = []
+    let searchStart = 0
+
+    while (true) {
+      const match = SENTENCE_BOUNDARY_RE.exec(this.buffer.slice(searchStart))
+
+      if (!match || match.index === undefined) {
+        break
+      }
+
+      const end = searchStart + match.index + match[0].length
+      const head = this.buffer.slice(0, end).trim()
+
+      if (head.length < this.minLength) {
+        searchStart = end
+
+        continue
+      }
+
+      sentences.push(head)
+      this.buffer = this.buffer.slice(end)
+      searchStart = 0
+    }
+
+    return sentences
+  }
+
+  flush(): string[] {
+    const tail = this.buffer.replace(CLOSED_THINK_BLOCK_RE, '').trim()
+    this.buffer = ''
+
+    return tail ? [tail] : []
+  }
 }
 
 export function sanitizeTextForSpeech(text: string): string {

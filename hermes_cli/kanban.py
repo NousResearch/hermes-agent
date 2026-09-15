@@ -104,15 +104,20 @@ def _check_dispatcher_presence(hermes_home: Optional[Path] = None) -> tuple[bool
 
     The dashboard plugin API passes it because the dashboard backend process can be running under a
     different HERMES_HOME than the profile the request targets, which otherwise produced a "no gateway is
-    running" warning against a perfectly healthy profile gateway (#71211). CLI callers leave it ``None`` and
-    keep the existing process-level behavior.
+    running" warning against a perfectly healthy profile gateway (#71211).
+
+    When ``hermes_home`` is ``None`` (the CLI), the probe resolves to the *kanban store's* home
+    (``kanban_home()``), not the active profile's ``HERMES_HOME``: the board is shared at the root home by
+    design (``kanban_db.kanban_home``), so a profile-scoped shell must not warn "no gateway" against a
+    healthy root gateway just because the profile's own ``gateway.pid`` is absent.
     """
     try:
         from gateway.status import resolve_gateway_liveness  # type: ignore
 
         # Same ladder as the dashboard status endpoints so PID-file-less / cross-container gateways
         # aren't misreported; use_cache=False because this one-shot probe must see the state now.
-        liveness = resolve_gateway_liveness(profile_dir=hermes_home, use_cache=False)
+        probe_dir = hermes_home if hermes_home is not None else kb.kanban_home()
+        liveness = resolve_gateway_liveness(profile_dir=probe_dir, use_cache=False)
     except Exception:
         return (True, "")  # can't probe — silent
     if liveness.probe_error:  # resolver swallows per-rung failures; "can't tell" != "no gateway"

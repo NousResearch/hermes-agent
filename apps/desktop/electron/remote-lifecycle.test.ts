@@ -1813,6 +1813,34 @@ test('remote SSH ownership capability requires both secure bootstrap flags', asy
   assert.equal(await remoteSupportsSshOwnership(unsupported, '/x/hermes'), false)
 })
 
+test.skipIf(process.platform === 'win32')('capability probe survives a zsh login shell on the remote (#111949)', async t => {
+  // sshd runs the remote command under the account's LOGIN shell. A bare
+  // `set -m` is fatal in a non-interactive zsh, so the watchdog-wrapped probe
+  // used to return nothing and a current remote was reported as unsupported.
+  const zsh = await exec('command -v zsh || true').then(r => r.stdout.trim())
+
+  // CI installs zsh (js-tests.yml); locally a missing zsh must show as a
+  // skip, not a pass, or a wrapper regression stays green unnoticed.
+  if (!zsh) {
+    t.skip('zsh not installed')
+
+    return
+  }
+
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'hermes-zsh-probe-'))
+
+  try {
+    const hermes = path.join(dir, 'hermes')
+    await writeFile(hermes, '#!/bin/sh\necho "--ssh-session-token-file --ssh-owner-nonce"\n', { mode: 0o700 })
+
+    const ssh = { exec: async (command: string) => (await exec(command, { shell: zsh })).stdout }
+
+    assert.equal(await remoteSupportsSshOwnership(ssh, hermes), true)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('probes run under the remote watchdog so a hung CLI cannot orphan (#110478)', async () => {
   let versionProbe = ''
 

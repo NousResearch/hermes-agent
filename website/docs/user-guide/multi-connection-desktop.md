@@ -130,7 +130,10 @@ authentication; manage sign-in from the registered connection controls.
    - *SSH only:*
      - **SSH host** — one composite field in `user@host:22` form (user and
        port optional). Your SSH key is used; the app adopts a dashboard
-       token over the tunnel.
+       token over the tunnel. Remote probes run under the account's login
+       shell; on a `zsh` login shell the probe watchdog cannot kill the whole
+       process group, so a hung probe's grandchildren may linger on the remote
+       (bash/sh remotes reap them).
 5. Click **Save connection** (or **Cancel**).
 6. Click **Test** on the new row and wait for *"Reachable"*.
 

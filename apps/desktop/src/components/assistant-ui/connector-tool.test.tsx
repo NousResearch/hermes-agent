@@ -12,7 +12,7 @@ import {
   type ConnectionTarget,
   setConnectionRequest
 } from '@/store/connection-request'
-import { $gateway, setPrimaryGateway } from '@/store/gateway'
+import { $gateway, setPrimaryGateway, setPrimaryGatewayConnection } from '@/store/gateway'
 import { $notifications } from '@/store/notifications'
 import { _resetSessionOwnerHintsForTests, setSessionOwnerHint } from '@/store/session'
 
@@ -201,6 +201,11 @@ describe('ConnectorTool operation card', () => {
   it('Continue settles the whole operation', async () => {
     const request = vi.fn().mockResolvedValue({ status: 'ok' })
     // SAFETY: the store calls only `request`; the rest of the client is never touched in these tests.
+    // Continue routes connection.respond through the session's owner connection (this fix's
+    // subject), the same as reissue()'s Try again above — register the primary as that exact
+    // connection so the RPC resolves to the same mocked socket the assertion below reads.
+    setPrimaryGateway({ request } as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: OWNER.connectionId })
     $gateway.set({ request } as never)
 
     renderConnector()

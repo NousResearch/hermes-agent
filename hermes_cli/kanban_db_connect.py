@@ -900,6 +900,15 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                 )
 
     if _table_exists(conn, "task_runs"):
+        if "session_id" not in _column_names(conn, "task_runs"):
+            _add_column_if_missing(conn, "task_runs", "session_id", "session_id TEXT")
+        if "model_override" not in _column_names(conn, "task_runs"):
+            _add_column_if_missing(conn, "task_runs", "model_override", "model_override TEXT")
+        # Historical attempts predate these immutable snapshots.  The task
+        # row is mutable (an operator can reassign it or change its model), so
+        # copying it here would turn an unknown historical provenance into a
+        # false assertion.  Only the separately synthesized *in-flight* run
+        # below may snapshot the task's current dispatch settings.
         _backfill_legacy_inflight_runs(conn)
 
     # One-shot event-kind rename: old names still worked but were awkward on
@@ -924,7 +933,7 @@ def _backfill_legacy_inflight_runs(conn: sqlite3.Connection) -> None:
     with write_txn(conn):
         inflight = conn.execute(
             "SELECT id, assignee, claim_lock, claim_expires, worker_pid, "
-            "       max_runtime_seconds, last_heartbeat_at, started_at "
+            "       max_runtime_seconds, last_heartbeat_at, started_at, session_id, model_override "
             "FROM tasks "
             "WHERE status = 'running' AND current_run_id IS NULL"
         ).fetchall()
@@ -933,14 +942,14 @@ def _backfill_legacy_inflight_runs(conn: sqlite3.Connection) -> None:
             cur = conn.execute(
                 """
                 INSERT INTO task_runs (
-                    task_id, profile, status,
+                    task_id, session_id, model_override, profile, status,
                     claim_lock, claim_expires, worker_pid,
                     max_runtime_seconds, last_heartbeat_at,
                     started_at
-                ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    row["id"], row["assignee"], row["claim_lock"],
+                    row["id"], row["session_id"], row["model_override"], row["assignee"], row["claim_lock"],
                     row["claim_expires"], row["worker_pid"],
                     row["max_runtime_seconds"], row["last_heartbeat_at"],
                     started,
@@ -997,7 +1006,7 @@ _REBUILD_SPECS = {
     "task_runs": (
         "CREATE TABLE task_runs ("
         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        " task_id TEXT NOT NULL, profile TEXT, step_key TEXT,"
+        " task_id TEXT NOT NULL, session_id TEXT, model_override TEXT, profile TEXT, step_key TEXT,"
         " status TEXT NOT NULL, claim_lock TEXT, claim_expires INTEGER,"
         " worker_pid INTEGER, max_runtime_seconds INTEGER,"
         " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"

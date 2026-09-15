@@ -334,7 +334,7 @@ _TASK_FIELDS = tuple(
 _TASK_SUMMARY_FIELDS = tuple(
     "id title assignee status priority tenant workspace_kind workspace_path project_id created_by "
     "created_at started_at completed_at current_run_id model_override provider_override".split())
-_RUN_FIELDS = tuple("id profile status outcome summary error metadata started_at ended_at".split())
+_RUN_FIELDS = tuple("id session_id model_override profile status outcome summary error metadata started_at ended_at".split())
 _COMMENT_FIELDS = ("author", "body", "created_at")
 _EVENT_FIELDS = ("kind", "payload", "created_at", "run_id")
 _ATTACHMENT_FIELDS = tuple(

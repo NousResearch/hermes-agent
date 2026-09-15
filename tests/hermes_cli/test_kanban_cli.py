@@ -59,6 +59,20 @@ def test_kanban_list_json_includes_session_id(kanban_home):
     )
 
 
+def test_kanban_show_json_includes_run_model_provenance(kanban_home):
+    with kbc.connect() as conn:
+        task_id = kb.create_task(
+            conn, title="model provenance", assignee="alice", session_id="acp-x",
+            model_override="gpt-5.6-terra",
+        )
+        kb.claim_task(conn, task_id)
+
+    payload = json.loads(kc.run_slash(f"show {task_id} --json"))
+
+    assert payload["runs"][-1]["session_id"] == "acp-x"
+    assert payload["runs"][-1]["model_override"] == "gpt-5.6-terra"
+
+
 def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     with kbc.connect_closing() as conn:
         parent_id = kb.create_task(conn, title="parent task")
@@ -180,5 +194,4 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 # /kanban help / no-args / unknown-action UX (issue #21794)
 # ---------------------------------------------------------------------------
-
 

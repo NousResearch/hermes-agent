@@ -757,6 +757,8 @@ class Run:
 
     id: int
     task_id: str
+    session_id: Optional[str]
+    model_override: Optional[str]
     profile: Optional[str]
     step_key: Optional[str]
     status: str
@@ -777,7 +779,7 @@ class Run:
         return cls(
             **{
                 col: row[col] for col in (
-                    "task_id", "profile", "step_key", "status", "claim_lock", "claim_expires",
+                    "task_id", "session_id", "model_override", "profile", "step_key", "status", "claim_lock", "claim_expires",
                     "worker_pid", "max_runtime_seconds", "last_heartbeat_at", "outcome", "summary", "error",
                 )
             },
@@ -979,6 +981,12 @@ CREATE TABLE IF NOT EXISTS task_events (
 CREATE TABLE IF NOT EXISTS task_runs (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id             TEXT NOT NULL,
+    -- Originating session copied from tasks when an attempt is claimed, so
+    -- each retry remains auditable independently of the mutable task row.
+    session_id          TEXT,
+    -- Explicit worker model copied from tasks when the attempt is opened.
+    -- NULL deliberately means the worker used its profile's configured model.
+    model_override      TEXT,
     profile             TEXT,
     step_key            TEXT,
     status              TEXT NOT NULL,
@@ -1955,7 +1963,7 @@ def _synthesize_ended_run(
     before the rewrite, so the run names the actor, not the new assignee."""
     now = int(time.time())
     trow = conn.execute(
-        "SELECT assignee, current_step_key FROM tasks WHERE id = ?", (task_id,),
+        "SELECT assignee, session_id, model_override, current_step_key FROM tasks WHERE id = ?", (task_id,),
     ).fetchone()
     if profile is _UNSET:
         profile = trow["assignee"] if trow else None
@@ -1963,14 +1971,16 @@ def _synthesize_ended_run(
     cur = conn.execute(
         """
         INSERT INTO task_runs (
-            task_id, profile, step_key,
+            task_id, session_id, model_override, profile, step_key,
             status, outcome,
             summary, error, metadata,
             started_at, ended_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            task_id, profile, step_key, outcome, outcome, summary, error, _json_or_null(metadata),
+            task_id, trow["session_id"] if trow else None,
+            trow["model_override"] if trow else None, profile, step_key,
+            outcome, outcome, summary, error, _json_or_null(metadata),
             now, now,
         ),
     )
@@ -2126,19 +2136,21 @@ def _claim_and_open_run(
     if cur.rowcount != 1:
         return None
     trow = conn.execute(
-        "SELECT assignee, max_runtime_seconds, current_step_key "
+        "SELECT assignee, session_id, model_override, max_runtime_seconds, current_step_key "
         "FROM tasks WHERE id = ?", (task_id,),
     ).fetchone()
     run_cur = conn.execute(
         """
         INSERT INTO task_runs (
-            task_id, profile, step_key, status,
+            task_id, session_id, model_override, profile, step_key, status,
             claim_lock, claim_expires, max_runtime_seconds,
             started_at
-        ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)
         """,
         (
-            task_id, trow["assignee"] if trow else None, trow["current_step_key"] if trow else None,
+            task_id, trow["session_id"] if trow else None,
+            trow["model_override"] if trow else None,
+            trow["assignee"] if trow else None, trow["current_step_key"] if trow else None,
             lock, expires, trow["max_runtime_seconds"] if trow else None, now,
         ),
     )

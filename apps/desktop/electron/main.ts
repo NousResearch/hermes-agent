@@ -204,6 +204,7 @@ import {
   writeBufferToFile
 } from './gateway-file-download'
 import { startGatewaysAfterUpdateAbort, stopGatewayBeforeUpdate } from './gateway-stop-before-update'
+import { createGatewayWsCookieStore } from './gateway-ws-cookie'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
 import { desktopBackendSpawnEnv, guestOnboardingEnabled, skipIntroEnabled } from './guest-onboarding'
@@ -7624,7 +7625,16 @@ async function hasLiveOauthSession(baseUrl) {
 async function clearOauthSession(baseUrl) {
   const sess = getOauthSessionForUrl(baseUrl)
 
+  // Before anything else: the in-memory snapshot outlives the cookie jar, and
+  // a signed-out session must not keep riding renderer requests. The removal
+  // below is asynchronous, so hold the store's sign-out window open until it
+  // is done — a WS registration racing the cleanup would otherwise snapshot
+  // cookies that are already on their way out.
+  const signOutDone = gatewayWsCookieStore.forget(baseUrl)
+
   if (!sess) {
+    signOutDone()
+
     return
   }
 
@@ -7640,6 +7650,8 @@ async function clearOauthSession(baseUrl) {
     )
   } catch {
     // Best effort — a stale cookie self-expires anyway.
+  } finally {
+    signOutDone()
   }
 }
 
@@ -8285,18 +8297,22 @@ async function freshGatewayWsUrl(profile) {
   // the wrong profile's DB. A null/empty profile resolves to the primary, so
   // legacy callers and single-profile users are unchanged.
   const connection = await ensureBackend(profile)
+  // One consumer per profile: a shared remote keeps a live socket for each.
+  // Keyed exactly as ensureBackend() keys the profile, so a re-mint of the
+  // same socket always retires its own stale ticket url.
+  const consumer = `ws-url:${String(profile ?? '').trim() || primaryProfileKey()}`
 
   if (connection.authMode === 'oauth') {
     const ticket = await mintGatewayWsTicket(connection.baseUrl, connection.headers)
     const wsUrl = buildGatewayWsUrlWithTicket(connection.baseUrl, ticket)
 
-    rememberRemoteWsHeaders(wsUrl, connection.headers)
+    await rememberGatewayWsAuth(wsUrl, connection, consumer)
 
     return wsUrl
   }
 
   // Local/token: the cached wsUrl already carries the (long-lived) token.
-  rememberRemoteWsHeaders(connection.wsUrl, connection.headers)
+  await rememberGatewayWsAuth(connection.wsUrl, connection, consumer)
 
   return connection.wsUrl
 }
@@ -9180,6 +9196,46 @@ function rememberRemoteWsHeaders(wsUrl, headers = {}) {
   remoteWsHeaderStore.remember(wsUrl, headers)
 }
 
+// Forward-auth support for the renderer's gateway WebSocket: the proxy session
+// is attached to the exact freshly-minted upgrade url and nowhere else. See
+// gateway-ws-cookie.ts for the reasoning and the lifetime rules.
+const gatewayWsCookieStore = createGatewayWsCookieStore({
+  readCookies: async baseUrl => {
+    const sess = getOauthSessionForUrl(baseUrl)
+
+    if (!sess) {
+      return null
+    }
+
+    // A `persist:` jar hydrates lazily, so the first read on a fresh boot comes
+    // back empty for a signed-in user -- the same cold-start race
+    // hasOauthSessionCookie guards. Unwarmed, the upgrade went out
+    // unauthenticated on every cold start.
+    await warmOauthCookieStore(baseUrl)
+
+    return await sess.cookies.get({ url: baseUrl })
+  },
+  resolvePartition: resolveOauthPartitionForUrl,
+  onError: message => rememberLog(`[oauth] gateway ws cookie lookup failed: ${message}`)
+})
+
+// Single seam for "the renderer is about to open this gateway socket": bind the
+// static remote headers AND, for a cookie-authed gateway, the proxy session to
+// that exact url. Every mint site goes through here so no path can authorize a
+// url the others don't know about.
+//
+// `consumer` names the caller that re-mints for THIS socket. It matters
+// because one baseUrl can back several live sockets -- a shared remote serves
+// a socket per profile, and a descriptor build mints alongside them -- and a
+// new mint may only retire the url its own consumer registered before.
+async function rememberGatewayWsAuth(wsUrl, connection, consumer?: string) {
+  rememberRemoteWsHeaders(wsUrl, connection?.headers)
+
+  if (connection?.authMode === 'oauth' && connection?.baseUrl) {
+    await gatewayWsCookieStore.register(wsUrl, connection.baseUrl, consumer)
+  }
+}
+
 function headersForRemoteRequest(requestUrl) {
   const exactWsHeaders = remoteWsHeaderStore.headersFor(requestUrl)
 
@@ -9207,7 +9263,17 @@ function installRemoteHeaderRules() {
 
   remoteHeaderRulesInstalled = true
   session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
-    applyRemoteRequestHeaders(details, callback, headersForRemoteRequest)
+    // The gateway cookie is merged in the callback rather than returned by
+    // headersForRemoteRequest so it stays out of the header LRU: that store is
+    // for the static, user-configured remote headers, and a rotating session
+    // credential must never be cached per-URL alongside them.
+    applyRemoteRequestHeaders(
+      details,
+      response => {
+        callback(gatewayWsCookieStore.apply(details, response))
+      },
+      headersForRemoteRequest
+    )
   })
 }
 
@@ -10024,7 +10090,9 @@ async function buildRemoteConnection(
 
     const wsUrl = buildGatewayWsUrlWithTicket(baseUrl, ticket)
 
-    rememberRemoteWsHeaders(wsUrl, remoteHeaders)
+    // The renderer opens this socket on defaultSession, which holds none of the
+    // gateway's cookies; authorize this exact url to carry the proxy session.
+    await rememberGatewayWsAuth(wsUrl, { authMode: 'oauth', baseUrl, headers: remoteHeaders }, `descriptor:${source}`)
 
     return {
       baseUrl,
@@ -15845,7 +15913,24 @@ const registryGatewayWsUrlHandler = createRegistryGatewayWsUrlHandler({
   ensureBackend: ensureRegistryBackend,
   mintTicket: mintGatewayWsTicket,
   buildTicketUrl: buildGatewayWsUrlWithTicket,
-  rememberHeaders: rememberRemoteWsHeaders
+  rememberHeaders: (wsUrl, _headers, connection, consumer) => rememberGatewayWsAuth(wsUrl, connection, consumer),
+  // Mirrors ensureRegistryBackend()'s own rule, so every spelling that selects
+  // one backend produces one cookie-consumer key. Defensive like
+  // resolveOauthPartitionForUrl: a broken registry read must never take the
+  // ws url down with it, and an empty answer just falls back to a coarser key.
+  resolveConnectionId: connectionId => {
+    const requested = String(connectionId || '').trim()
+
+    if (requested) {
+      return requested
+    }
+
+    try {
+      return String(readDesktopConnectionsRegistry().primary || '').trim()
+    } catch {
+      return ''
+    }
+  }
 })
 
 ipcMain.handle('hermes:gateway:ws-url-for', async (_event, payload) => {

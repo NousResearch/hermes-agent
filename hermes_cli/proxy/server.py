@@ -11,6 +11,7 @@ import asyncio
 import logging
 import signal
 from typing import Optional
+from urllib.parse import urlsplit
 
 try:
     import aiohttp
@@ -40,6 +41,9 @@ DEFAULT_HOST = "127.0.0.1"
 # Mirrors api_server's MAX_REQUEST_BYTES (10 MB); client_max_size bounds every read path,
 # including chunked bodies.
 MAX_REQUEST_BYTES = 10_000_000
+# Effective ports for an upstream URL whose port is implicit, so a port-qualified NO_PROXY
+# entry can still decide the target.
+_DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
 def _require_aiohttp() -> None:
@@ -58,6 +62,52 @@ def _filter_headers(headers, drop: frozenset = _HOP_BY_HOP_HEADERS) -> dict:
     return {key: value for key, value in headers.items() if key.lower() not in drop}
 
 
+def _upstream_authority(upstream_url: str) -> str | None:
+    """``host[:port]`` for ``upstream_url``, fully serialized for NO_PROXY matching.
+
+    An implicit http/https port is made explicit — ``NO_PROXY=api.x.ai:443`` must decide an
+    implicit 443 — and an IPv6 literal is bracketed so ``host:port`` stays unambiguous.
+    Userinfo, path, query and fragment never reach the matcher. None when there is no host.
+    """
+    parsed = urlsplit(upstream_url)
+    host = parsed.hostname
+    if not host:
+        return None
+    if ":" in host:  # IPv6 literal: bracket it so host:port cannot be misread
+        host = f"[{host}]"
+    port = parsed.port or _DEFAULT_PORTS.get((parsed.scheme or "").lower())
+    return f"{host}:{port}" if port else host
+
+
+def _upstream_proxy_url(upstream_url: str) -> str | None:
+    """This machine's proxy policy for ``upstream_url``, or None (nothing configured, or
+    NO_PROXY excludes the target).
+
+    Blocking by nature — the macOS system-proxy probe is a ``scutil`` subprocess — so callers
+    run it off the event loop. aiohttp's own ``trust_env`` is deliberately **not** used at this
+    call site: it would additionally enable netrc-derived authentication, which collides with
+    the explicit ``Authorization`` header this proxy sets (``ValueError: Cannot combine
+    AUTHORIZATION header with AUTH argument``).
+    """
+    # Lazy import keeps the CLI import graph unchanged (the same pair, and the same pattern,
+    # the gateway adapters and the other non-gateway aiohttp clients use).
+    from gateway.platforms.base import resolve_proxy_url
+
+    return resolve_proxy_url(target_hosts=_upstream_authority(upstream_url))
+
+
+def _proxy_transport_kwargs(proxy_url: str | None) -> tuple[dict, dict]:
+    """aiohttp ``(session_kwargs, request_kwargs)`` carrying ``proxy_url``.
+
+    MUST run on the serving event loop: with ``aiohttp-socks`` installed this constructs a
+    ``ProxyConnector``, which binds the running loop at construction and fails with
+    ``RuntimeError: no running event loop`` in a worker thread.
+    """
+    from gateway.platforms.base import proxy_kwargs_for_aiohttp
+
+    return proxy_kwargs_for_aiohttp(proxy_url)
+
+
 async def _open_upstream(request: "web.Request", rel_path: str, body: bytes, cred: UpstreamCredential):
     """Send the request upstream with ``cred``; returns ``(session, response)`` or
     ``(error_response, None)``."""
@@ -68,12 +118,18 @@ async def _open_upstream(request: "web.Request", rel_path: str, body: bytes, cre
     fwd_headers["Authorization"] = f"{cred.token_type} {cred.bearer}"
     logger.debug("proxy: forwarding %s %s -> %s (body=%d bytes)", request.method, rel_path, upstream_url, len(body))
     try:
-        session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=300))
-    except Exception as exc:  # pragma: no cover - aiohttp setup issue
+        # Only the resolution is off-loop: it may run the macOS system-proxy probe as a
+        # subprocess. Transport kwargs stay on the loop — with aiohttp-socks installed they
+        # construct a connector, which binds the serving loop at construction.
+        proxy_url = await asyncio.to_thread(_upstream_proxy_url, upstream_url)
+        session_kwargs, request_kwargs = _proxy_transport_kwargs(proxy_url)
+        session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=300), **session_kwargs)
+    except Exception as exc:
         return _json_error(500, f"proxy session init failed: {exc}"), None
     try:
         upstream_resp = await session.request(
-            request.method, upstream_url, data=body if body else None, headers=fwd_headers, allow_redirects=False
+            request.method, upstream_url, data=body if body else None, headers=fwd_headers,
+            allow_redirects=False, **request_kwargs
         )
     except RuntimeError as exc:
         await session.close()
@@ -85,9 +141,14 @@ async def _open_upstream(request: "web.Request", rel_path: str, body: bytes, cre
     except asyncio.TimeoutError:
         await session.close()
         return _json_error(504, "upstream request timed out", code="upstream_timeout"), None
-    except Exception:
+    except Exception as exc:
+        # Every remaining failure here is the upstream leg failing: a proxy connector built by
+        # ``proxy_kwargs_for_aiohttp`` raises its own exception types (aiohttp-socks' errors are
+        # not ``aiohttp.ClientError`` subclasses), so a bare re-raise would leak an unbounded 500
+        # instead of the bounded upstream error the client contract promises.
         await session.close()
-        raise
+        logger.warning("proxy: upstream connection failed: %s: %s", type(exc).__name__, exc)
+        return _json_error(502, f"upstream connection failed: {exc}", code="upstream_unreachable"), None
     return session, upstream_resp
 
 

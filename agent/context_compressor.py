@@ -1289,7 +1289,10 @@ _IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})
 
 def _is_image_part(part: Any) -> bool:
     """True if ``part`` is an image block (``image_url``, ``input_image``, or ``image``)."""
-    return isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
+    if not isinstance(part, dict):
+        return False
+    part_type = part.get("type")
+    return isinstance(part_type, str) and part_type in _IMAGE_PART_TYPES
 
 
 def _content_has_images(content: Any) -> bool:
@@ -1363,7 +1366,7 @@ def _summary_part_text(part: Any) -> str:
     ptype = part.get("type")
     if ptype == "text":
         return part.get("text", "")
-    return _image_part_label(part) if ptype in _IMAGE_PART_TYPES else f"[{ptype or 'attachment'}]"
+    return _image_part_label(part) if isinstance(ptype, str) and ptype in _IMAGE_PART_TYPES else f"[{ptype or 'attachment'}]"
 
 
 def _image_part_label(part: Dict[str, Any]) -> str:

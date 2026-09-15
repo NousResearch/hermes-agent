@@ -288,41 +288,59 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
           <div data-slot="session-control-goal">
             <StatusSection
               accessory={
-                <DropdownMenu onOpenChange={setMenuOpen} open={menuOpen}>
-                  <Tip label={ctrl.goalActions}>
-                    <span className="inline-flex">
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          aria-haspopup="menu"
-                          aria-label={ctrl.goalActions}
-                          className="size-6 rounded-md text-muted-foreground/70 hover:text-foreground/90"
-                          disabled={isBusy}
-                          onClick={event => {
-                            // Radix opens pointer interactions from pointerdown. Keyboard,
-                            // assistive-tech, and programmatic clicks have no pointer sequence.
-                            if (event.detail === 0) {
-                              setMenuOpen(true)
-                            }
-                          }}
-                          onKeyDown={e => {
-                            if (e.key === 'F10' && e.shiftKey) {
-                              e.preventDefault()
-                              setMenuOpen(true)
-                            }
-                          }}
-                          size="icon-xs"
-                          type="button"
-                          variant="ghost"
-                        >
-                          <Codicon name="ellipsis" size="0.8rem" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                    </span>
-                  </Tip>
-                  <DropdownMenuContent align="end" className="w-44">
-                    {renderMenuItems(false)}
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                <>
+                  {/* A paused goal is the one state that needs the user: surface Resume as a
+                      real button in the header instead of hiding it behind the kebab menu
+                      (same `goal.resume` action the menu item runs). */}
+                  {visibleState === 'paused' && (
+                    <Button
+                      className="rounded-[3px] text-[0.7rem]"
+                      disabled={isBusy}
+                      onClick={() => void handleAction('goal.resume')}
+                      size="micro"
+                      type="button"
+                      variant="default"
+                    >
+                      <Codicon name="play" size="0.7rem" />
+                      <span>{ctrl.resumeGoal}</span>
+                    </Button>
+                  )}
+                  <DropdownMenu onOpenChange={setMenuOpen} open={menuOpen}>
+                    <Tip label={ctrl.goalActions}>
+                      <span className="inline-flex">
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            aria-haspopup="menu"
+                            aria-label={ctrl.goalActions}
+                            className="size-6 rounded-md text-muted-foreground/70 hover:text-foreground/90"
+                            disabled={isBusy}
+                            onClick={event => {
+                              // Radix opens pointer interactions from pointerdown. Keyboard,
+                              // assistive-tech, and programmatic clicks have no pointer sequence.
+                              if (event.detail === 0) {
+                                setMenuOpen(true)
+                              }
+                            }}
+                            onKeyDown={e => {
+                              if (e.key === 'F10' && e.shiftKey) {
+                                e.preventDefault()
+                                setMenuOpen(true)
+                              }
+                            }}
+                            size="icon-xs"
+                            type="button"
+                            variant="ghost"
+                          >
+                            <Codicon name="ellipsis" size="0.8rem" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                      </span>
+                    </Tip>
+                    <DropdownMenuContent align="end" className="w-44">
+                      {renderMenuItems(false)}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </>
               }
               icon={<Codicon className={iconClass} name="target" size="0.8rem" />}
               label={headerLabel}

@@ -116,7 +116,7 @@ Goal lifecycle notices (from [goals](../user-guide/features/goals.md)) lead with
 | Symbol | Meaning |
 |--------|---------|
 | `✓` | Goal complete. |
-| `↻` | Goal continuing — another iteration was scheduled. |
+| `↻` | Goal continuing — another iteration was scheduled (includes a progress review granting another turn-budget window). |
 | `⏸` | Goal paused. |
 
 ## See also

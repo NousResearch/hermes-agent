@@ -378,6 +378,54 @@ def test_real_queued_prompt_preempts_goal_compression_retry(
     assert server._GOAL_COMPRESSION_RECOVERY_ATTEMPTS not in session
 
 
+def test_goal_budget_extension_chains_the_continuation(server, turn_env, hermes_home):
+    """#109804 (TUI/Desktop surface): a budget boundary that earns another window emits the
+    'Goal extended' status and chains the continuation prompt, exactly like a 'continue'
+    verdict — the loop keeps going without the user typing /goal resume."""
+    (hermes_home / "config.yaml").write_text("goals:\n  auto_extend: true\n", encoding="utf-8")
+
+    from hermes_cli.goals import GoalManager
+
+    session_key = "goal-progress-extension"
+    mgr = GoalManager(session_key)
+    mgr.set("finish the current task", max_turns=1)
+    continuation = mgr.next_continuation_prompt()
+    seen_prompts = []
+
+    def run_conversation(message, **_kwargs):
+        seen_prompts.append(message)
+        return {"final_response": "edited 3 of 6 pages"}
+
+    agent = types.SimpleNamespace(
+        session_id=session_key,
+        run_conversation=run_conversation,
+        clear_interrupt=lambda: None,
+    )
+    session = _turn_session(agent, session_key)
+
+    with patch(
+        "hermes_cli.goals.judge_goal",
+        return_value=("continue", "more pages left", False, None, False),
+    ), patch(
+        "hermes_cli.goals.review_progress",
+        # First boundary earns a window; the next one is stalled → the loop stops.
+        side_effect=[("extend", "3 of 6 pages edited"), ("stalled", "same status recap, no new evidence")],
+    ):
+        server._run_prompt_submit("rid", "sid", session, "initial work")
+
+    assert seen_prompts == ["initial work", continuation]
+    notices = [
+        p["text"]
+        for event, _sid, p in turn_env
+        if event == "status.update" and p.get("kind") == "goal"
+    ]
+    assert any("Goal extended" in text for text in notices)
+    assert any("Goal paused" in text for text in notices)
+    state = GoalManager(session_key).state
+    assert state.status == "paused"
+    assert state.extensions == 1
+
+
 def test_compression_deferred_is_not_treated_as_exhaustion(server):
     from hermes_cli.goals import GoalManager
 

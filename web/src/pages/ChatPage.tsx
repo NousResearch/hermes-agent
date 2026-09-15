@@ -4,7 +4,7 @@
  *   <div host> (dashboard chrome)                                         .
  *     └─ <div wrapper> (rounded, dark bg, padded — the "terminal window"  .
  *         look that gives the page a distinct visual identity)            .
- *         └─ @xterm/xterm Terminal (WebGL renderer, Unicode 11 widths)    .
+ *         └─ @xterm/xterm Terminal (canvas renderer, Unicode 11 widths)   .
  *              │ onData      keystrokes → WebSocket → PTY master          .
  *              │ onResize    terminal resize → `\x1b[RESIZE:cols;rows]`   .
  *              │ write(data) PTY output bytes → VT100 parser              .
@@ -19,7 +19,6 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -43,6 +42,7 @@ import { shouldRestoreTerminalFocus } from "@/lib/pty-focus";
 import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
 import {
   PTY_CONNECTING_TIMEOUT_MS,
+  PTY_KEEPALIVE_INTERVAL_MS,
   PTY_RECONNECT_INPUT_MESSAGE,
   PTY_RECONNECT_MAX_ATTEMPTS,
   PTY_RESUME_RECONNECT_THROTTLE_MS,
@@ -51,6 +51,7 @@ import {
   type PtyConnectionState,
   ptyReconnectDelayMs,
   shouldBlockPtyInput,
+  shouldSendPtyKeepalive,
   shouldReconnectPtyOnPageResume,
 } from "@/lib/pty-reconnect";
 import {
@@ -195,6 +196,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const isActiveRef = useRef(isActive);
+  useEffect(() => {
+    isActiveRef.current = isActive;
+  }, [isActive]);
   const stickToBottomRef = useRef(true);
   // Exposed to the main metrics-sync effect so it can refit the terminal
   // the moment `isActive` flips back to true (display:none → display:flex
@@ -333,10 +338,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // to misfire on the next activation (#106403: repeated last character).
   useEffect(() => {
     if (!isActive) {
+      clearReconnectTimer();
       ptyInputLineRef.current = "";
       mobileReplacementInputUntilRef.current = 0;
     }
-  }, [isActive]);
+  }, [clearReconnectTimer, isActive]);
   // Raw state for the mobile side-sheet + a derived value that force-
   // closes whenever the chat tab isn't active.  The *derived* value is
   // what side-effects (body-scroll lock, keydown listener, portal render)
@@ -923,24 +929,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       };
     }
 
-    // WebGL draws from a texture atlas sized with device pixels. On phones and
-    // in DevTools device mode that often produces *visually* much larger cells
-    // than `fontSize` suggests — users see "huge" text even at 7–9px settings.
-    // The canvas/DOM renderer tracks `fontSize` faithfully; use it for narrow
-    // hosts.  Wide layouts still get WebGL for crisp box-drawing.
-    const useWebgl = terminalTierWidthPx(host) >= 768;
-    if (useWebgl) {
-      try {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => webgl.dispose());
-        term.loadAddon(webgl);
-      } catch (err) {
-        console.warn(
-          "[hermes-chat] WebGL renderer unavailable; falling back to default",
-          err,
-        );
-      }
-    }
+    // Keep the default canvas renderer. Reconnects recreate the xterm
+    // instance; avoiding WebGL prevents those short-lived instances from
+    // exhausting the browser's limited WebGL context budget.
 
     // Initial fit + resize observer.  fit.fit() reads the container's
     // current bounding box and resizes the terminal grid to match.
@@ -1170,6 +1161,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // attempt cannot open a socket behind the replacement this schedules.
     let ticketSuperseded = false;
     let ticketTimer: ReturnType<typeof setTimeout> | null = null;
+    let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
+    const clearKeepaliveTimer = () => {
+      if (keepaliveTimer) {
+        clearInterval(keepaliveTimer);
+        keepaliveTimer = null;
+      }
+    };
     const clearTicketTimer = () => {
       if (ticketTimer) {
         clearTimeout(ticketTimer);
@@ -1179,6 +1177,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // `code` is null when the attempt died before any socket existed — the
     // banner then omits the "(code N)" suffix rather than inventing one.
     const scheduleReconnect = (code: number | null) => {
+      // ChatPage remains mounted behind other dashboard routes. Do not churn
+      // through reconnect attempts while it is inactive or the document is
+      // hidden; the page-resume listener starts one when the user returns.
+      if (
+        !isActiveRef.current ||
+        (typeof document !== "undefined" && document.visibilityState === "hidden")
+      ) {
+        setPtyState("closed");
+        return;
+      }
       if (reconnectTimerRef.current) {
         return;
       }
@@ -1283,7 +1291,23 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // out against on its first paint.  The double-rAF block above will
       // follow up with the authoritative measurement — at worst Ink
       // reflows once after the PTY boots, which is imperceptible.
-      ws.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
+      const sendTerminalResize = () => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
+        }
+      };
+      sendTerminalResize();
+      keepaliveTimer = setInterval(() => {
+        if (
+          shouldSendPtyKeepalive({
+            isActive: isActiveRef.current,
+            visibilityState: document.visibilityState,
+            socketReadyState: ws.readyState,
+          })
+        ) {
+          sendTerminalResize();
+        }
+      }, PTY_KEEPALIVE_INTERVAL_MS);
       // Resumed sessions replay scrollback over the socket. Start pinned to
       // the bottom so the latest output is in view; released once the user
       // scrolls up (#59591).
@@ -1377,6 +1401,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     };
 
     ws.onclose = (ev) => {
+      clearKeepaliveTimer();
       // Drain buffered sanitizer state. A buffered partial escape is dropped
       // (writing an unterminated CSI would wedge xterm's parser); a buffered
       // newline run is emitted collapsed.
@@ -1554,6 +1579,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       clearReconnectTimer();
       clearConnectingTimer();
       clearTicketTimer();
+      clearKeepaliveTimer();
       ticketSuperseded = true;
       connectInFlightRef.current = false;
       // Phase 5.3: ``ws`` is local to the IIFE that opens it (the gated-mode
@@ -1711,6 +1737,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     window.addEventListener("pageshow", onResume);
     window.addEventListener("focus", onResume);
     window.addEventListener("online", onResume);
+    onResume();
 
     return () => {
       document.removeEventListener("visibilitychange", onResume);

@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest'
 
 import {
   PTY_RECONNECT_BASE_MS,
+  PTY_KEEPALIVE_INTERVAL_MS,
   PTY_RECONNECT_MAX_ATTEMPTS,
   PTY_RECONNECT_MAX_MS,
   ptyReconnectDelayMs,
   shouldBlockPtyInput,
+  shouldSendPtyKeepalive,
   shouldReconnectPtyOnPageResume
 } from './pty-reconnect'
 
@@ -136,6 +138,36 @@ describe('shouldBlockPtyInput', () => {
     expect(shouldBlockPtyInput('reconnecting')).toBe(true)
     expect(shouldBlockPtyInput('closed')).toBe(true)
     expect(shouldBlockPtyInput('ended')).toBe(true)
+  })
+})
+
+describe('shouldSendPtyKeepalive', () => {
+  it('keeps an active, visible PTY socket alive every 20 seconds', () => {
+    expect(PTY_KEEPALIVE_INTERVAL_MS).toBe(20_000)
+    expect(
+      shouldSendPtyKeepalive({
+        isActive: true,
+        visibilityState: 'visible',
+        socketReadyState: 1
+      })
+    ).toBe(true)
+  })
+
+  it('does not send control traffic from hidden tabs or closed sockets', () => {
+    expect(
+      shouldSendPtyKeepalive({
+        isActive: true,
+        visibilityState: 'hidden',
+        socketReadyState: 1
+      })
+    ).toBe(false)
+    expect(
+      shouldSendPtyKeepalive({
+        isActive: true,
+        visibilityState: 'visible',
+        socketReadyState: 3
+      })
+    ).toBe(false)
   })
 })
 

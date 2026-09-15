@@ -1734,6 +1734,16 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
         return True
     if not fb_provider or not fb_model:
         return True
+    pin = getattr(agent, "_fallback_pin_model", None)
+    if isinstance(pin, str):
+        pin = pin.strip() or None
+    else:
+        pin = None
+    if pin and fb_model != pin:
+        logger.info(
+            "Fallback skip: %s/%s differs from pinned model %s",
+            fb_provider, fb_model, pin)
+        return True
     from agent.fallback_cooldown import _is_entitlement_rejected
     if _is_entitlement_rejected(agent, fb_provider, fb_model):
         logger.info("Fallback skip: %s/%s was rejected as unentitled for this account", fb_provider, fb_model)

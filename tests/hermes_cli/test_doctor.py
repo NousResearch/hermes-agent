@@ -1803,73 +1803,42 @@ _KEY_ENV_CONFIG = (
 _KEY_ENV_MESSAGE = "model.provider 'mylocal' reads its API key from MYLOCAL_API_KEY, which is not set"
 
 
-def test_run_doctor_flags_unset_key_env_for_active_custom_provider(monkeypatch, tmp_path):
-    """The registry credential check skips custom providers; the runtime would
-    fail every request with an auth error once key_env resolves to nothing."""
-    monkeypatch.delenv("MYLOCAL_API_KEY", raising=False)
-
-    out = _doctor_output_for_config(monkeypatch, tmp_path, _KEY_ENV_CONFIG)
-
-    assert _KEY_ENV_MESSAGE in out
-    assert "declares key_env: MYLOCAL_API_KEY" in out
-
-
-def test_run_doctor_key_env_check_is_quiet_when_the_variable_is_set(monkeypatch, tmp_path):
-    monkeypatch.setenv("MYLOCAL_API_KEY", "lm-secret")
-
-    out = _doctor_output_for_config(monkeypatch, tmp_path, _KEY_ENV_CONFIG)
-
-    assert "MYLOCAL_API_KEY, which is not set" not in out
+_LEGACY_KEY_ENV_CONFIG = (
+    "model:\n"
+    "  provider: mylocal\n"
+    "  default: gemma-4-e4b-it-mlx\n"
+    "custom_providers:\n"
+    "  - name: mylocal\n"
+    "    base_url: http://127.0.0.1:1234/v1\n"
+    "    key_env: MYLOCAL_API_KEY\n"
+)
 
 
-def test_run_doctor_key_env_check_is_quiet_with_an_inline_api_key(monkeypatch, tmp_path):
-    monkeypatch.delenv("MYLOCAL_API_KEY", raising=False)
-    cfg = _KEY_ENV_CONFIG + "    api_key: inline-secret\n"
+@pytest.mark.parametrize(
+    ("config_text", "env_value", "flagged"),
+    [
+        (_KEY_ENV_CONFIG, None, True),
+        (_LEGACY_KEY_ENV_CONFIG, None, True),
+        (_KEY_ENV_CONFIG, "lm-secret", False),
+        (_KEY_ENV_CONFIG + "    api_key: inline-secret\n", None, False),
+        (_KEY_ENV_CONFIG + "    key_cmd: print-my-token\n", None, False),
+        (_KEY_ENV_CONFIG.replace("provider: mylocal", "provider: nous"), None, False),
+    ],
+    ids=["unset", "legacy-list", "variable-set", "inline-api-key", "key-cmd", "not-the-active-provider"],
+)
+def test_run_doctor_flags_an_unset_key_env_only_when_nothing_else_supplies_the_key(
+    monkeypatch, tmp_path, config_text, env_value, flagged,
+):
+    """The registry credential check skips named custom providers, and the runtime resolves their
+    key as key_env, then inline api_key, then key_cmd: an unset key_env with neither fallback passed
+    doctor and failed every request with an auth error."""
+    if env_value is None:
+        monkeypatch.delenv("MYLOCAL_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("MYLOCAL_API_KEY", env_value)
 
-    out = _doctor_output_for_config(monkeypatch, tmp_path, cfg)
+    out = _doctor_output_for_config(monkeypatch, tmp_path, config_text)
 
-    assert "MYLOCAL_API_KEY, which is not set" not in out
-
-
-def test_run_doctor_key_env_check_is_quiet_with_a_key_cmd(monkeypatch, tmp_path):
-    monkeypatch.delenv("MYLOCAL_API_KEY", raising=False)
-    cfg = _KEY_ENV_CONFIG + "    key_cmd: print-my-token\n"
-
-    out = _doctor_output_for_config(monkeypatch, tmp_path, cfg)
-
-    assert "MYLOCAL_API_KEY, which is not set" not in out
-
-
-def test_run_doctor_key_env_check_covers_the_legacy_custom_providers_list(monkeypatch, tmp_path):
-    monkeypatch.delenv("MYLOCAL_API_KEY", raising=False)
-    cfg = (
-        "model:\n"
-        "  provider: mylocal\n"
-        "  default: gemma-4-e4b-it-mlx\n"
-        "custom_providers:\n"
-        "  - name: mylocal\n"
-        "    base_url: http://127.0.0.1:1234/v1\n"
-        "    key_env: MYLOCAL_API_KEY\n"
-    )
-
-    out = _doctor_output_for_config(monkeypatch, tmp_path, cfg)
-
-    assert _KEY_ENV_MESSAGE in out
-
-
-def test_run_doctor_key_env_check_only_looks_at_the_active_provider(monkeypatch, tmp_path):
-    # An inactive entry with an unset key_env is not this section's business.
-    monkeypatch.delenv("MYLOCAL_API_KEY", raising=False)
-    cfg = (
-        "model:\n"
-        "  provider: nous\n"
-        "  default: hermes-4-70b\n"
-        "providers:\n"
-        "  mylocal:\n"
-        "    base_url: http://127.0.0.1:1234/v1\n"
-        "    key_env: MYLOCAL_API_KEY\n"
-    )
-
-    out = _doctor_output_for_config(monkeypatch, tmp_path, cfg)
-
-    assert "MYLOCAL_API_KEY, which is not set" not in out
+    assert ("MYLOCAL_API_KEY, which is not set" in out) is flagged
+    if flagged:
+        assert _KEY_ENV_MESSAGE in out and "declares key_env: MYLOCAL_API_KEY" in out

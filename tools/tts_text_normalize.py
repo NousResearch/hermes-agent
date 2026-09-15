@@ -15,7 +15,10 @@ import re
 # "Weather." label.
 _HEAD = "\x00"
 
-_MD_CODE_BLOCK_RE = re.compile(r"```[\s\S]*?```")
+_MD_CODE_BLOCK_RE = re.compile(
+    r"```[\s\S]*?```|^ {0,3}(?P<tilde_fence>~{3,})(?!~)[^\r\n]*\r?\n"
+    r"[\s\S]*?^ {0,3}(?P=tilde_fence)~*[ \t]*(?=\r?$)", re.MULTILINE,
+)
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((?:[^()]|\([^)]*\))*\)")
 _MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\((?:[^()]|\([^)]*\))*\)")
 _MD_INLINE_CODE_RE = re.compile(r"`([^`]+)`")

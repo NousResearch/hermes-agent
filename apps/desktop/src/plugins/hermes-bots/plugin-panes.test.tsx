@@ -28,7 +28,8 @@ const mocks = vi.hoisted(() => ({
   botChatOwnsWorkspace: vi.fn(() => false),
   paneVisibility: vi.fn(),
   sessionOwnsWorkspace: vi.fn(() => false),
-  setWorkspaceScope: vi.fn()
+  setWorkspaceScope: vi.fn(),
+  translateNow: vi.fn(() => 'Bots')
 }))
 
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
@@ -41,7 +42,8 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
       onEvent: undefined,
       paneVisibility: mocks.paneVisibility,
       setWorkspaceScope: mocks.setWorkspaceScope
-    }
+    },
+    translateNow: mocks.translateNow
   }
 })
 
@@ -94,6 +96,7 @@ interface Registration {
   area: string
   data?: Record<string, unknown>
   id: string
+  title?: string
 }
 
 /** A recording `PluginContext`: registrations, their disposers, teardown. */
@@ -154,6 +157,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   mocks.botChatOwnsWorkspace.mockReturnValue(false)
   mocks.sessionOwnsWorkspace.mockReturnValue(false)
+  mocks.translateNow.mockReturnValue('Bots')
 })
 
 afterEach(() => {
@@ -161,6 +165,19 @@ afterEach(() => {
 })
 
 describe('the Bots pane dock', () => {
+  it('uses the runtime-localized Bots label for plugin and pane registration', () => {
+    paneStores()
+
+    const harness = recordingContext()
+
+    mocks.translateNow.mockReturnValue('Боты')
+    plugin.register(harness.ctx)
+
+    expect(harness.find('pane')!.title).toBe('Боты')
+
+    harness.dispose()
+  })
+
   it('center-stacks into the sessions zone as a standing invariant', () => {
     paneStores()
 

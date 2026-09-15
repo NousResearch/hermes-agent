@@ -224,6 +224,31 @@ def test_normalize_retain_tags_accepts_csv_and_dedupes():
     ]
 
 
+def test_recall_tags_csv_config_becomes_list(provider_with_config):
+    """Documented recall_tags format is comma-separated; RecallRequest.tags is list[str]."""
+    p = provider_with_config(recall_tags="status:active, scope:user:alex")
+    assert p._recall_tags == ["status:active", "scope:user:alex"]
+
+
+def test_recall_tags_list_config_is_deduped(provider_with_config):
+    p = provider_with_config(recall_tags=["status:active", "status:active", "scope:user:alex"])
+    assert p._recall_tags == ["status:active", "scope:user:alex"]
+
+
+def test_recall_tags_unset_stays_none(provider_with_config):
+    p = provider_with_config()
+    assert p._recall_tags is None
+
+
+def test_recall_tool_sends_tags_as_list(provider_with_config):
+    """Regression: a raw CSV string here 422s Hindsight's RecallRequest.tags."""
+    p = provider_with_config(recall_tags="status:active")
+    p.handle_tool_call("hindsight_recall", {"query": "preferences"})
+    kwargs = p._client.arecall.call_args.kwargs
+    assert kwargs["tags"] == ["status:active"]
+    assert isinstance(kwargs["tags"], list)
+
+
 # ---------------------------------------------------------------------------
 # Schema tests
 # ---------------------------------------------------------------------------

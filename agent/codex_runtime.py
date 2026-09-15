@@ -155,10 +155,6 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
     thread_id, turn_id = getattr(turn, "thread_id", None) or "", getattr(turn, "turn_id", None) or ""
     logger.info("codex app-server compaction observed: session=%s thread=%s turn=%s force=%s",
                 getattr(agent, "session_id", None) or "none", thread_id, turn_id, force)
-    if not force:
-        with suppress(Exception):
-            from agent.conversation_compression import COMPACTION_STATUS
-            agent._emit_status(COMPACTION_STATUS)
     compressor = getattr(agent, "context_compressor", None)
     if compressor is not None:
         compressor.compression_count = getattr(compressor, "compression_count", 0) + 1
@@ -283,7 +279,8 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
     """Build the ``on_event`` callback for ``CodexAppServerSession(on_event=...)``.
 
     Tool items fire ``tool_progress_callback`` plus the stable-ID ``tool_start_callback`` /
-    ``tool_complete_callback`` card hooks; deltas go to ``_fire_stream_delta`` / ``_fire_reasoning_delta``;
+    ``tool_complete_callback`` card hooks; compaction items fire the standard live
+    compacting/compacted status lifecycle; deltas go to ``_fire_stream_delta`` / ``_fire_reasoning_delta``;
     a completed agentMessage goes to ``_emit_interim_assistant_message`` (the gateway's ``already_streamed``
     check dedupes against streamed deltas). Every callback is guarded so a buggy display hook cannot
     tear down the turn loop."""
@@ -335,12 +332,23 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
             agent_cb("_emit_interim_assistant_message", "_emit_interim_assistant_message raised",
                      args=({"role": "assistant", "content": text},))
 
+    def _fire_compaction_status(completed: bool) -> None:
+        from agent.conversation_compression import COMPACTION_DONE_STATUS, COMPACTION_STATUS
+        if completed:
+            agent_cb("status_callback", "status_callback raised on native compaction completion",
+                     args=("compacted", COMPACTION_DONE_STATUS))
+        else:
+            agent_cb("_emit_status", "status callback raised on native compaction start",
+                     args=(COMPACTION_STATUS,))
+
     def _on_item(params: dict, completed: bool) -> None:
         item = params.get("item")
         if not isinstance(item, dict):
             return
         item_type = item.get("type") or ""
-        if item_type in _CODEX_TOOL_ITEM_TYPES:
+        if item_type == "contextCompaction":
+            _fire_compaction_status(completed)
+        elif item_type in _CODEX_TOOL_ITEM_TYPES:
             (_fire_tool_completed if completed else _fire_tool_started)(item)
         elif completed and item_type == "agentMessage":
             _fire_agent_message_completed(item)

@@ -57,6 +57,16 @@ describe('useMessageStream compaction lifecycle', () => {
     expect($compactingSessions.get()).toEqual({ [OTHER_SID]: true })
   })
 
+  it('starts the compaction phase for the manual compression status kind', () => {
+    mountStream()
+
+    emit('status.update', { kind: 'compressing', text: 'compressing context…' })
+    expect($compactingSessions.get()).toEqual({ [SID]: true })
+
+    emit('status.update', { kind: 'status', text: 'ready' })
+    expect($compactingSessions.get()).toEqual({})
+  })
+
   // #97948: a manual /compress whose RPC answered `pending` (the compute host
   // outlived the gateway's wait) has no turn-end hydrate — the `compacted`
   // edge is the only signal the transcript changed.

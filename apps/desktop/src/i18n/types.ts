@@ -2535,6 +2535,7 @@ export interface Translations {
     attachments: (count: number) => string
     editingInComposer: string
     editingQueuedInComposer: string
+    queueDrag: string
     queueEdit: string
     queueSendNext: string
     queueSend: string

@@ -658,6 +658,43 @@ class TestHandleSessionsCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_sessions_admin_all_denies_automation_sources(self, tmp_path):
+        """`/sessions all` shares the automation deny-list: cron/tool/kanban/
+        subagent sessions never surface even to an admin cross-origin listing."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        event = _make_event(text="/sessions all")
+        lane_key = _session_key_for_event(event)
+        db.create_session(
+            "tg_named", "telegram", session_key=lane_key,
+            user_id="12345", chat_id="67890",
+        )
+        db.set_session_title("tg_named", "Telegram Work")
+        db.create_session(
+            "discord_named", "discord",
+            session_key="agent:main:discord:dm:other",
+            user_id="other-user", chat_id="other",
+        )
+        db.set_session_title("discord_named", "Discord Work")
+        for source, sid in (
+            ("cron", "cron_run"), ("tool", "tool_run"),
+            ("kanban", "kanban_run"), ("subagent", "subagent_run"),
+        ):
+            db.create_session(sid, source)
+            db.set_session_title(sid, f"Automation {source}")
+
+        runner = _make_runner(session_db=db, event=event)
+        runner._resume_caller_is_admin = lambda _source: True
+        result = await runner._handle_sessions_command(event)
+
+        assert "Telegram Work" in result
+        assert "Discord Work" in result
+        for source in ("cron", "tool", "kanban", "subagent"):
+            assert f"Automation {source}" not in result, f"{source} leaked into /sessions all"
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_sessions_normalizes_telegram_lobby_source_to_bound_topic(self, tmp_path):
         from hermes_state import SessionDB
 

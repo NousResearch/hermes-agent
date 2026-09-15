@@ -322,3 +322,26 @@ def test_every_dead_attested_profile_is_cold_started_when_nothing_runs(monkeypat
     assert order == ["active", homes["beta"]]
     assert json.loads(beta_marker.read_text(encoding="utf-8"))["generation"] != beta_generation
     assert token["resume_needed"] is False
+
+
+def test_service_supervised_running_profile_is_not_cold_started(monkeypatch, tmp_path):
+    """A profile whose gateway is alive under an SCM service is skipped by the socket pause, so it is
+    absent from ``token["profiles"]``; it must still count as RUNNING for the per-profile probe or its
+    live attestation reads as dead and resume spawns a second, unsupervised gateway beside the
+    restarted service."""
+    from types import SimpleNamespace
+
+    homes = _running_beta_pause_fixture(monkeypatch, tmp_path)
+    svc_proc = SimpleNamespace(pid=900, profile="beta", path=homes["beta"])
+    service = SimpleNamespace(name="HermesGw-beta", profile="beta", service_pid=800, gateway_pid=900,
+                              descendant_identities=(), service_create_time=1.0, gateway_create_time=2.0)
+    monkeypatch.setattr(update_cmd_windows, "_discover_windows_gateways", lambda: ({900: svc_proc}, [service], {900}, [900]))
+    monkeypatch.setattr(update_cmd_windows, "_request_socket_pauses", lambda *a: ({}, [], []))
+    monkeypatch.setattr(update_cmd, "_stop_windows_gateway_service", lambda *a, **k: None)
+    gateway_windows._write_start_attestation([900], "direct spawn (PID 900)", home=homes["beta"])
+
+    token = update_cmd._pause_windows_gateways_for_update()
+
+    assert token["services"] == ["HermesGw-beta"]
+    assert token["profiles"] == {}
+    assert "cold_start_profiles" not in token

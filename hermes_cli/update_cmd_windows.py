@@ -923,7 +923,10 @@ def _pause_windows_gateways_for_update() -> dict | None:
         if any(not u.get("argv") for u in unmapped):  # no recoverable cmdline (psutil missing, denied, gone)
             print("    Restart manually after update: hermes gateway run")
     token = {"resume_needed": True, "profiles": profiles, "unmapped_pids": unmapped_pids, "unmapped": unmapped}
-    _record_attested_cold_start_profiles(token, set(profiles))
+    # Every profile with ANY live gateway at discovery counts as running: service-supervised ones skip the
+    # socket pause (absent from ``profiles``) but the SCM restart brings them back, not a cold-start.
+    running_profiles = set(profiles) | {str(p.profile) for p in profile_processes.values()} | {str(s.profile) for s in service_gateways}
+    _record_attested_cold_start_profiles(token, running_profiles)
     return _pause_windows_gateway_services(service_gateways, token, profiles, unmapped)
 
 

@@ -303,12 +303,14 @@ async def test_reconnect_stop_deadline_does_not_wait_for_cancel_cleanup(monkeypa
     adapter._app = mock_app
     adapter._notify_fatal_error = AsyncMock()
 
-    monkeypatch.setattr(tg_adapter, "_UPDATER_STOP_TIMEOUT", 0.01)
+    # Keep the test deadline short without depending on 10 ms thread-timer
+    # scheduling, which is not reliable on Windows under startup load.
+    monkeypatch.setattr(tg_adapter, "_UPDATER_STOP_TIMEOUT", 0.2)
     with patch("asyncio.sleep", new_callable=AsyncMock):
         recovery = asyncio.create_task(
             adapter._handle_polling_network_error(Exception("Timed out"))
         )
-        done, _ = await asyncio.wait({recovery}, timeout=0.2)
+        done, _ = await asyncio.wait({recovery}, timeout=1.5)
 
     try:
         assert recovery in done, (

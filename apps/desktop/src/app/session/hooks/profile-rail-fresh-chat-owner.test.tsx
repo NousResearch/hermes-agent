@@ -501,9 +501,13 @@ describe('profile rail: a fresh Omar chat keeps its exact registry owner across 
     const desktop = window.hermesDesktop!
 
     await waitFor(() =>
-      expect(desktop.getConnectionFor).toHaveBeenCalledWith({ connectionId: SOURCE_ID, profile: 'omar' })
+      expect(desktop.getConnectionFor).toHaveBeenCalledWith({
+        connectionId: SOURCE_ID,
+        profile: 'omar',
+        priority: 'foreground'
+      })
     )
-    expect(desktop.getConnection).not.toHaveBeenCalledWith('omar')
+    expect(desktop.getConnection).not.toHaveBeenCalled()
     expect($newChatConnectionId.get()).toBe(SOURCE_ID)
   })
 
@@ -522,8 +526,8 @@ describe('profile rail: a fresh Omar chat keeps its exact registry owner across 
 
     const desktop = window.hermesDesktop!
 
-    await waitFor(() => expect(desktop.getConnection).toHaveBeenCalledWith('omar'))
-    expect(desktop.getConnectionFor).not.toHaveBeenCalledWith({ connectionId: 'local', profile: 'omar' })
+    await waitFor(() => expect(desktop.getConnection).toHaveBeenCalledWith('omar', { priority: 'foreground' }))
+    expect(desktop.getConnectionFor).not.toHaveBeenCalled()
     expect($newChatConnectionId.get()).toBeNull()
   })
 
@@ -715,8 +719,16 @@ describe('profile rail: a fresh Omar chat keeps its exact registry owner across 
 
     const desktop = window.hermesDesktop!
 
-    expect(desktop.getConnection).toHaveBeenCalledWith('omar')
-    expect(desktop.getConnectionFor).not.toHaveBeenCalledWith({ connectionId: 'local', profile: 'omar' })
+    expect(desktop.getConnection).toHaveBeenCalledWith('omar', { priority: 'foreground' })
+    // The explicit local *source* was opened above, so getConnectionFor has
+    // a legitimate `local:default` call in its history. The profile choice
+    // itself must still use the legacy v1 resolver rather than opening a
+    // separate `local:omar` registry socket.
+    expect(desktop.getConnectionFor).not.toHaveBeenCalledWith({
+      connectionId: 'local',
+      profile: 'omar',
+      priority: 'foreground'
+    })
 
     const v1Socket = sockets.find(socket => socket.connectUrl?.includes(`:${V1_PORT}`))
     expect(v1Socket, `no v1 socket dialed; dialed: ${sockets.map(s => s.connectUrl).join(', ')}`).toBeDefined()

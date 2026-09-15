@@ -1,10 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import type { HermesGateway } from '@/hermes'
 import { $gateway } from '@/store/gateway'
 import { $approvalRequest, clearAllPrompts, setApprovalRequest } from '@/store/prompts'
-import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 import { $activeSessionId } from '@/store/session'
 
 import { PendingApprovalFallback, PendingToolApproval } from './approval'
@@ -34,18 +33,10 @@ function part(toolName: string): ToolPart {
 function setRequest(
   command = 'rm -rf /tmp/x',
   allowPermanent?: boolean,
-  extra: { choices?: string[]; requestId?: string; serverRequestId?: string; smartDenied?: boolean } = {}
+  extra: { choices?: string[]; smartDenied?: boolean } = {}
 ) {
   $activeSessionId.set('sess-1')
   setApprovalRequest({ allowPermanent, command, description: 'dangerous command', sessionId: 'sess-1', ...extra })
-}
-
-/** A live `approval` server request the card answers synchronously. */
-function liveApproval(id = 'srq-approval') {
-  const respond = vi.fn()
-  rememberServerRequest({ fail: vi.fn(), id, method: 'approval', params: {}, respond })
-
-  return respond
 }
 
 function mockGateway() {
@@ -55,14 +46,9 @@ function mockGateway() {
   return request
 }
 
-beforeEach(() => {
-  resetServerRequestsForTests()
-})
-
 afterEach(() => {
   cleanup()
   clearAllPrompts()
-  resetServerRequestsForTests()
   $activeSessionId.set(null)
   $gateway.set(null)
 })
@@ -97,37 +83,15 @@ describe('PendingToolApproval', () => {
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
   })
 
-  it('answers the live approval request with {choice: "once"} and clears the request on Run', async () => {
+  it('sends approval.respond {choice: "once"} and clears the request on Run', async () => {
     const request = mockGateway()
-    const respond = liveApproval()
-    setRequest('rm -rf /tmp/x', undefined, { requestId: 'apr-1', serverRequestId: 'srq-approval' })
+    setRequest()
     render(<PendingToolApproval part={part('terminal')} />)
 
     fireEvent.click(screen.getByRole('button', { name: /Run/ }))
 
     await waitFor(() => {
-      expect(respond).toHaveBeenCalledWith({ choice: 'once' })
-    })
-    expect(hasOpenServerRequest('srq-approval')).toBe(false)
-    expect(request).not.toHaveBeenCalledWith('approval.respond', expect.anything())
-    expect($approvalRequest.get()).toBeNull()
-  })
-
-  it('falls back to the approval.respond RPC when no live server request is registered', async () => {
-    // A prompt restored from `approval.pending` (no socket carried the frame):
-    // the queue-level RPC is the only way to answer it.
-    const request = mockGateway()
-    setRequest('rm -rf /tmp/x', undefined, { requestId: 'apr-1' })
-    render(<PendingToolApproval part={part('terminal')} />)
-
-    fireEvent.click(screen.getByRole('button', { name: /Run/ }))
-
-    await waitFor(() => {
-      expect(request).toHaveBeenCalledWith('approval.respond', {
-        choice: 'once',
-        request_id: 'apr-1',
-        session_id: 'sess-1'
-      })
+      expect(request).toHaveBeenCalledWith('approval.respond', { choice: 'once', session_id: 'sess-1' })
     })
     expect($approvalRequest.get()).toBeNull()
   })
@@ -145,16 +109,15 @@ describe('PendingToolApproval', () => {
     expect(screen.getByText(longCommand)).toBeTruthy()
   })
 
-  it('answers the live approval request with {choice: "deny"} on Reject', async () => {
-    mockGateway()
-    const respond = liveApproval()
-    setRequest('rm -rf /tmp/x', undefined, { requestId: 'apr-1', serverRequestId: 'srq-approval' })
+  it('sends choice "deny" on Reject', async () => {
+    const request = mockGateway()
+    setRequest()
     render(<PendingToolApproval part={part('terminal')} />)
 
     fireEvent.click(screen.getByRole('button', { name: /Reject/ }))
 
     await waitFor(() => {
-      expect(respond).toHaveBeenCalledWith({ choice: 'deny' })
+      expect(request).toHaveBeenCalledWith('approval.respond', { choice: 'deny', session_id: 'sess-1' })
     })
   })
 

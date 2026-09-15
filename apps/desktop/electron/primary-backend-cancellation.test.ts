@@ -11,7 +11,6 @@ test('quit cancels first-run startup without entering the installer', async () =
   let installed = false
 
   const startup = runPrimaryBackendStartup({
-    assertCurrentAttempt: () => {},
     signal: controller.signal,
     resolveRemote: async () => null,
     connectRemote: async () => ({}),

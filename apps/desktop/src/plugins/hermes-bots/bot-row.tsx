@@ -26,8 +26,10 @@ import {
   SidebarRowLead,
   Tip,
   useI18n,
+  usePrewarmIntent,
   useValue
 } from '@hermes/plugin-sdk'
+import { useCallback } from 'react'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
@@ -185,7 +187,7 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
     .filter(Boolean)
     .join(' · ')
 
-  const warm = () => {
+  const warm = useCallback(() => {
     // Multi-source row: pre-dial the agent's OWN source (feature-detected).
     if (bot.sourceScoped && typeof host.warmAgent === 'function') {
       try {
@@ -206,7 +208,9 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
     } catch {
       /* warm is best-effort */
     }
-  }
+  }, [bot.connectionId, bot.name, bot.sourceScoped])
+
+  const { cancelPrewarm, startPrewarm } = usePrewarmIntent(warm)
 
   // Rows and Active Now share the exact-owner open path; only that path may
   // activate a source and resolve the canonical Bot Chat.
@@ -241,7 +245,8 @@ export function BotRow({ bot, onDelete, onEdit, onGroup, onNewSection, showHandl
         event.dataTransfer.effectAllowed = 'move'
         $draggingBot.set(rosterKey)
       }}
-      onPointerEnter={warm}
+      onPointerEnter={startPrewarm}
+      onPointerLeave={cancelPrewarm}
     >
       <div className={cn('shrink-0', !sourceStatus.available && 'grayscale opacity-60')}>
         <BotFace

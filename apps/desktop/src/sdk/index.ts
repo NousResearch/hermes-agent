@@ -67,6 +67,7 @@ import {
   newSessionInAgent,
   newSessionInProfile,
   normalizeProfileKey,
+  prewarmGatewayAgent,
   prewarmProfileBackend,
   refreshProfiles,
   selectProfile,
@@ -667,17 +668,10 @@ export const host = {
   },
 
   /** Pre-dial a profile's gateway socket in the background — pool-only, no
-   *  activation, no navigation, no scope change. Delegates to
-   *  prewarmProfileBackend so plugin surfaces get the SAME pool-saturation
-   *  guard, hover dwell, and per-profile throttle as the built-in rail
-   *  (#91545): a pointer sweep across a plugin roster (bot-row's
-   *  onPointerEnter fires with no dwell of its own) previously spawned at
-   *  pointer speed, filled the local backend pool past maxBackends, and left
-   *  the next profile's spawn queued until the 30s slot timeout — observed
-   *  as a profile surface that hangs forever while every other profile
-   *  renders. It already no-ops for shared-remote routes and the primary.
-   *  Fire-and-forget: failures are swallowed — the click path re-runs its
-   *  own ensure and surfaces errors properly. */
+   *  activation, no navigation, no scope change. The profile-store seam
+   *  applies the same live pool cap, foreground reservation, and hover
+   *  throttling used by the native profile rail, so a large bot roster cannot
+   *  flood the background spawn queue. */
   warmProfile: (profile: string): void => {
     const name = (profile ?? '').trim()
 
@@ -822,12 +816,12 @@ export const host = {
 
   /** Pre-dial an agent's socket on ITS source — the (connection, profile)
    *  analogue of warmProfile. Fire-and-forget, same semantics, same guarded
-   *  resolver (prewarmProfileBackend): a pointer sweep across a
+   *  resolver (prewarmGatewayAgent): a pointer sweep across a
    *  multi-source roster must not spawn past the pool cap either.
    *  `undefined` is accepted alongside `null` because a roster row's
    *  `connectionId` is optional; both mean "no explicit source". */
   warmAgent: (connectionId: null | string | undefined, profile: string): void => {
-    prewarmProfileBackend((profile ?? '').trim() || 'default', connectionId ?? null)
+    prewarmGatewayAgent(connectionId, (profile ?? '').trim() || 'default')
   },
 
   /** Activate an agent's gateway (dialing it if needed) so subsequent
@@ -1474,6 +1468,8 @@ export { SidebarRowLead } from '@/app/chat/sidebar/chrome'
  *  it, so a connection looks the same wherever it is named. */
 export { ConnectionGlyph } from '@/app/chat/sidebar/connection-glyph'
 export { SIDEBAR_ROW_LEAD, SIDEBAR_TRUNCATED_LEADING } from '@/app/chat/sidebar/row-geometry'
+/** Shared hover-intent debounce for plugin rows that call `host.warm*`. */
+export { usePrewarmIntent } from '@/app/chat/sidebar/use-profile-prewarm'
 export { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
 /** THE master-detail toolkit core uses for list+inspector surfaces (Scheduled
  *  jobs, Kanban, …): a dense left `PanelList` of `PanelListRow`s beside a
@@ -1501,8 +1497,8 @@ export {
   PanelRowMenu,
   PanelSectionLabel
 } from '@/app/overlays/panel'
-export { type RouteContribution, ROUTES_AREA, SIDEBAR_NAV_AREA, type SidebarNavContribution } from '@/app/routes'
 
+export { type RouteContribution, ROUTES_AREA, SIDEBAR_NAV_AREA, type SidebarNavContribution } from '@/app/routes'
 /** THE full per-toolset config panel core Settings renders — provider picker,
  *  env vars / API keys, model catalog picker, and post-setup runners. Route-
  *  decoupled (the "manage keys" deep link is a no-op outside the router); pass
@@ -1627,15 +1623,15 @@ export type {
   PluginRestOptions,
   PluginStorage
 } from '@/contrib/plugin'
+
+// -- contracts ----------------------------------------------------------------
+
 /** Mount-scoped contribution: while the rendering component is mounted, its
  *  children render in the target area's slot; unmount disposes it. Use for
  *  page-owned chrome (a page's titlebar control leaves with the page) —
  *  `ctx.register` stays the door for permanent contributions. Namespace the
  *  id with your plugin slug (`kanban:board-switcher`). */
 export { Contribute, type ContributeProps } from '@/contrib/react/contribute'
-
-// -- contracts ----------------------------------------------------------------
-
 export type { Contribution } from '@/contrib/types'
 /** The live gateway instance type — for typing the `gateway` prop `McpTab`
  *  takes; obtain the instance from `host.getGateway()`. */

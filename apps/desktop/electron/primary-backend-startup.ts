@@ -2,7 +2,6 @@ import { runBackendStartStep } from './backend-start-cancellation'
 import type { FirstRunSetupDecision } from './first-run-setup-gate'
 
 export interface PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, Connection> {
-  assertCurrentAttempt: () => void
   signal?: AbortSignal
   connectRemote: (remote: Remote) => Promise<Connection>
   ensureLocalRuntime: (backend: Backend) => Promise<RuntimeBackend>
@@ -78,7 +77,6 @@ export class FirstRunSetupResetError extends Error {
 // and local backend resolution happen before the setup gate, and a remote Apply
 // re-resolves persisted config without ever entering ensureRuntime/bootstrap.
 export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, Connection>({
-  assertCurrentAttempt,
   connectRemote,
   ensureLocalRuntime,
   prepareLocalBackend,
@@ -89,13 +87,7 @@ export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, 
 }: PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, Connection>): Promise<
   PrimaryBackendStartupResult<RuntimeBackend, Connection>
 > {
-  const step = async <T>(run: () => T | Promise<T>) => {
-    const result = await runBackendStartStep(signal, run)
-    assertCurrentAttempt()
-
-    return result
-  }
-
+  const step = <T>(run: () => T | Promise<T>) => runBackendStartStep(signal, run)
   const savedRemote = await step(resolveRemote)
 
   if (savedRemote) {

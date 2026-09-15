@@ -33,7 +33,7 @@
  * as bootstrap-platform.ts and hardening.ts).
  */
 
-import { spawn } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 
 /** Default probe budget. 5s false-negativeed healthy Windows cold starts (#61764). */
 const DEFAULT_PROBE_TIMEOUT_MS = 15_000
@@ -85,10 +85,10 @@ function isTimeoutError(err: unknown): boolean {
 }
 
 /**
- * Run without blocking the event loop; on timeout only, retry once before failing.
+ * Run execFileSync; on timeout only, retry once before failing.
  * Non-timeout failures (ENOENT, non-zero exit) fail immediately.
  */
-async function execProbe(
+function execProbeSync(
   command: string,
   args: string[],
   options: {
@@ -99,36 +99,16 @@ async function execProbe(
     shell?: boolean
     windowsHide?: boolean
   }
-): Promise<void> {
-  const run = () =>
-    new Promise<void>((resolve, reject) => {
-      const child = spawn(command, args, options)
-      child.once('error', reject)
-      child.once('close', (code, signal) => {
-        // A timed-out probe may handle SIGTERM and exit zero; it is still a timeout.
-        if (code === 0 && !child.killed) {
-          resolve()
-        } else {
-          reject(
-            Object.assign(new Error(`Runtime probe failed: ${command} (${signal || code})`), {
-              code,
-              signal,
-              killed: child.killed
-            })
-          )
-        }
-      })
-    })
-
+): void {
   try {
-    await run()
+    execFileSync(command, args, options)
   } catch (err) {
     if (!isTimeoutError(err)) {
       throw err
     }
 
     // One cold-cache / AV miss should not force hermes-setup --update (#61764).
-    await run()
+    execFileSync(command, args, options)
   }
 }
 
@@ -161,13 +141,13 @@ function hermesRuntimeImportProbe() {
  * @param {object} [opts.env] - Additional environment for the probe.
  * @returns {boolean}
  */
-async function canImportHermesCli(pythonPath: string, opts: { env?: Record<string, string> } = {}) {
+function canImportHermesCli(pythonPath: string, opts: { env?: Record<string, string> } = {}) {
   if (!pythonPath) {
     return false
   }
 
   try {
-    await execProbe(pythonPath, ['-c', hermesRuntimeImportProbe()], {
+    execProbeSync(pythonPath, ['-c', hermesRuntimeImportProbe()], {
       env: { ...process.env, ...(opts.env || {}) },
       stdio: 'ignore',
       timeout: PROBE_TIMEOUT_MS,
@@ -195,7 +175,7 @@ async function canImportHermesCli(pythonPath: string, opts: { env?: Record<strin
  * @param {string} hermesCommand - Resolved absolute path to a hermes
  *   executable (or an interpreter+script wrapper).
  * @param {boolean} [opts.shell] - Whether to run through a shell. For
- *   .cmd/.bat shims on Windows spawn needs shell:true to find
+ *   .cmd/.bat shims on Windows execFileSync needs shell:true to find
  *   the cmd interpreter; mirrors the same flag isCommandScript() drives
  *   in resolveHermesBackend.
  * @returns {boolean}
@@ -210,13 +190,13 @@ function shouldTrustHermesOverride(hermesOverride?: string) {
   return typeof hermesOverride === 'string' && hermesOverride.trim().length > 0
 }
 
-async function verifyHermesCli(hermesCommand: string, opts?: { shell?: boolean }) {
+function verifyHermesCli(hermesCommand: string, opts?: { shell?: boolean }) {
   if (!hermesCommand) {
     return false
   }
 
   try {
-    await execProbe(hermesCommand, ['--version'], {
+    execProbeSync(hermesCommand, ['--version'], {
       stdio: 'ignore',
       timeout: PROBE_TIMEOUT_MS,
       shell: Boolean(opts?.shell),
@@ -232,9 +212,8 @@ async function verifyHermesCli(hermesCommand: string, opts?: { shell?: boolean }
 export {
   canImportHermesCli,
   DEFAULT_PROBE_TIMEOUT_MS,
-  execProbe,
+  execProbeSync,
   hermesRuntimeImportProbe,
-  isTimeoutError,
   PROBE_TIMEOUT_MS,
   resolveProbeTimeoutMs,
   shouldTrustHermesOverride,

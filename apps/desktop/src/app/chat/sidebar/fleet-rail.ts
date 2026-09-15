@@ -1,6 +1,5 @@
 import type { DesktopAgentRoster, DesktopConnectionKind, DesktopRegistryConnection } from '@/global'
 import { sortConnectionsForDisplay } from '@/lib/connection-display'
-import { sortByProfileOrder } from '@/lib/profile-order'
 
 // Pure grouping for the fleet profile rail: which gateways sit "at rest"
 // beside the active one, and which agents each of them carries. Kept free of
@@ -83,11 +82,25 @@ export function buildRestGroups({
 
     const defaultRow = rows.find(row => row.profile === DEFAULT_PROFILE)
 
-    const named = sortByProfileOrder(
-      rows.filter(row => row.profile !== DEFAULT_PROFILE).map(row => toAgent(row.profile, row.handle)),
-      order,
-      agent => agent.profile
-    )
+    const orderIndex = new Map(order.map((profile, index) => [profile, index]))
+    const named = rows
+      .filter(row => row.profile !== DEFAULT_PROFILE)
+      .map(row => toAgent(row.profile, row.handle))
+      .sort((left, right) => {
+        const leftIndex = orderIndex.get(left.profile)
+        const rightIndex = orderIndex.get(right.profile)
+
+        if (leftIndex !== undefined && rightIndex !== undefined) {
+          return leftIndex - rightIndex
+        }
+        if (leftIndex !== undefined) {
+          return -1
+        }
+        if (rightIndex !== undefined) {
+          return 1
+        }
+        return left.profile.localeCompare(right.profile, undefined, { numeric: true, sensitivity: 'base' })
+      })
 
     groups.push({
       connectionId: connection.id,

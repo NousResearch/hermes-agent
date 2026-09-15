@@ -71,15 +71,11 @@ class PtySession:
                 await asyncio.sleep(0)
                 continue
             self.buffer.append(chunk)
-            ws = self._ws
             try:
-                if ws is not None:
-                    await ws.send_bytes(chunk)
+                if self._ws is not None:
+                    await self._ws.send_bytes(chunk)
             except Exception:
-                # The viewer is gone; nothing else observes this failure (the handler's finally
-                # only runs once ws.receive() sees the disconnect). detach() is a no-op when a
-                # replacement socket attached during the send, so the new viewer keeps its session.
-                self.detach(ws)
+                pass                                 # detached mid-send; keep buffering
 
     async def write(self, ws, data: bytes) -> bool:
         """Serialize input and discard bytes from a superseded socket."""
@@ -112,13 +108,7 @@ class PtySession:
         self.attached = True
         self.last_detached_at = None
         if snap := self.buffer.snapshot():
-            try:
-                await ws.send_bytes(snap)
-            except Exception:
-                # Client dropped mid-replay; the caller never reaches its writer loop, so undo the
-                # attach here or reap_idle() can never reclaim this PTY (#110849).
-                self.detach(ws)
-                return False
+            await ws.send_bytes(snap)
         if force_redraw:
             return await self.write(ws, TUI_FORCE_REDRAW)
         return True
@@ -150,10 +140,7 @@ class PtySession:
 
 
 class RegistryFull(Exception):
-    """Every keep-alive slot holds a PTY that some tab is still attached to."""
-
-    def __init__(self, message: str = "Too many chat terminals are open in other tabs; close one and try again.") -> None:
-        super().__init__(message)
+    pass
 
 
 async def run_reaper(registry: "PtySessionRegistry", *, interval: float = 60.0) -> None:

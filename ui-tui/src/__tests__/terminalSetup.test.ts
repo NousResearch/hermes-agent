@@ -1,3 +1,5 @@
+import { join } from 'node:path'
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
@@ -32,10 +34,10 @@ describe('terminalSetup helpers', () => {
 
   it('computes VS Code style config dirs cross-platform', () => {
     expect(getVSCodeStyleConfigDir('Code', 'darwin', {} as NodeJS.ProcessEnv, '/home/me')).toBe(
-      '/home/me/Library/Application Support/Code/User'
+      join('/home/me', 'Library', 'Application Support', 'Code', 'User')
     )
     expect(getVSCodeStyleConfigDir('Code', 'linux', {} as NodeJS.ProcessEnv, '/home/me')).toBe(
-      '/home/me/.config/Code/User'
+      join('/home/me', '.config', 'Code', 'User')
     )
     expect(
       getVSCodeStyleConfigDir(
@@ -44,7 +46,7 @@ describe('terminalSetup helpers', () => {
         { APPDATA: 'C:/Users/me/AppData/Roaming' } as NodeJS.ProcessEnv,
         '/home/me'
       )
-    ).toBe('C:/Users/me/AppData/Roaming/Code/User')
+    ).toBe(join('C:/Users/me/AppData/Roaming', 'Code', 'User'))
   })
 
   it('strips line comments from keybindings JSON', () => {
@@ -340,7 +342,8 @@ describe('configureTerminalKeybindings', () => {
     await expect(
       shouldPromptForTerminalSetup({
         env: { TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv,
-        fileOps: { readFile: readMissing }
+        fileOps: { readFile: readMissing },
+        platform: 'darwin'
       })
     ).resolves.toBe(true)
 
@@ -388,7 +391,8 @@ describe('configureTerminalKeybindings', () => {
     await expect(
       shouldPromptForTerminalSetup({
         env: { TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv,
-        fileOps: { readFile: readComplete }
+        fileOps: { readFile: readComplete },
+        platform: 'darwin'
       })
     ).resolves.toBe(false)
   })
@@ -448,7 +452,8 @@ describe('configureTerminalKeybindings', () => {
     await expect(
       shouldPromptForTerminalSetup({
         env: { TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv,
-        fileOps: { readFile: readLegacy }
+        fileOps: { readFile: readLegacy },
+        platform: 'darwin'
       })
     ).resolves.toBe(true)
   })

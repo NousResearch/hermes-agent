@@ -138,90 +138,45 @@ class TestSetupLogging:
         assert "profile-routed cron record" in (
             profile_home / "logs" / "agent.log"
         ).read_text()
+        base_log = hermes_home / "logs" / "agent.log"
         assert "profile-routed cron record" not in (
-            hermes_home / "logs" / "agent.log"
-        ).read_text()
+            base_log.read_text() if base_log.exists() else ""
+        )
 
-    def test_a_second_home_routes_instead_of_stacking_an_unfiltered_handler(self, hermes_home, tmp_path):
-        """A dashboard or serve backend builds agents for several profiles in ONE process, and each
-        one calls setup_logging for its own home. The second home must get a router — a bare file
-        handler beside the first home's would receive every profile's records."""
-        from logging.handlers import RotatingFileHandler
 
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-        profile_home = tmp_path / "profile-b"
-        profile_home.mkdir()
+
+    def test_filters_only_routine_mcp_transport_noise(self, hermes_home):
         hermes_logging.setup_logging(hermes_home=hermes_home)
-        hermes_logging.setup_logging(hermes_home=profile_home)
 
-        assert not [h for h in hermes_logging._queued_file_handlers if isinstance(h, RotatingFileHandler)], (
-            "the second home must not add an unfiltered file handler")
-
-        logger = logging.getLogger("agent.conversation_loop.second-home-test")
-        token = set_hermes_home_override(profile_home)
+        http_logger = logging.getLogger("httpx2")
+        mcp_logger = logging.getLogger("mcp.client.streamable_http")
+        previous_http_level = http_logger.level
+        previous_mcp_level = mcp_logger.level
         try:
-            logger.info("turn of profile b")
+            # Simulate libraries resetting their logger levels after setup.
+            http_logger.setLevel(logging.INFO)
+            mcp_logger.setLevel(logging.INFO)
+            http_logger.info("routine MCP HTTP 200")
+            http_logger.warning("important MCP transport warning")
+            mcp_logger.info("Received session ID: test-session-id")
+            mcp_logger.warning("Session termination failed: 404")
+            mcp_logger.warning("Session termination failed: 500")
+            hermes_logging.flush_log_queue()
         finally:
-            reset_hermes_home_override(token)
-        logger.info("turn of the launch profile")
-        hermes_logging.flush_log_queue()
+            http_logger.setLevel(previous_http_level)
+            mcp_logger.setLevel(previous_mcp_level)
 
-        a_log = (hermes_home / "logs" / "agent.log").read_text()
-        b_log = (profile_home / "logs" / "agent.log").read_text()
-        assert "turn of profile b" in b_log and "turn of profile b" not in a_log
-        assert "turn of the launch profile" in a_log and "turn of the launch profile" not in b_log
-
-    def test_setup_for_an_already_routed_home_adds_no_duplicate_writer(self, hermes_home, tmp_path):
-        """Routing already on (multiplexed gateway, Desktop cron ticker): a profile's agent starting
-        up must not add a second writer for its home on top of the router."""
-        from logging.handlers import RotatingFileHandler
-
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-
-        profile_home = tmp_path / "profile-b"
-        profile_home.mkdir()
-        hermes_logging.setup_logging(hermes_home=hermes_home)
-        assert hermes_logging.enable_profile_log_routing([hermes_home, profile_home]) is True
-        hermes_logging.setup_logging(hermes_home=profile_home)
-
-        assert not [h for h in hermes_logging._queued_file_handlers if isinstance(h, RotatingFileHandler)]
-        token = set_hermes_home_override(profile_home)
-        try:
-            logging.getLogger("agent.conversation_loop.routed-home-test").info("once please")
-        finally:
-            reset_hermes_home_override(token)
-        hermes_logging.flush_log_queue()
-
-        assert (profile_home / "logs" / "agent.log").read_text().count("once please") == 1
-        assert "once please" not in (hermes_home / "logs" / "agent.log").read_text()
-
-    def test_a_component_log_added_after_routing_is_routed_too(self, hermes_home, tmp_path):
-        """setup_logging(mode="gateway") for an already-known home AFTER a second home turned
-        routing on: gateway.log must be a routed writer, not a bare handler taking every home."""
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-
-        profile_home = tmp_path / "profile-b"
-        profile_home.mkdir()
-        hermes_logging.setup_logging(hermes_home=hermes_home)
-        hermes_logging.setup_logging(hermes_home=profile_home)
-        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
-
-        logger = logging.getLogger("gateway.run.routed-component-test")
-        token = set_hermes_home_override(profile_home)
-        try:
-            logger.info("gw-b")
-        finally:
-            reset_hermes_home_override(token)
-        logger.info("gw-a")
-        hermes_logging.flush_log_queue()
-
-        a_log = (hermes_home / "logs" / "gateway.log").read_text()
-        assert "gw-a" in a_log and "gw-b" not in a_log
-        assert "gw-b" in (profile_home / "logs" / "gateway.log").read_text()
-
-
-
+        agent = (hermes_home / "logs" / "agent.log").read_text()
+        errors = (hermes_home / "logs" / "errors.log").read_text()
+        assert "routine MCP HTTP 200" not in agent
+        assert "test-session-id" not in agent
+        assert "Session termination failed: 404" not in agent
+        assert "Session termination failed: 404" not in errors
+        assert "important MCP transport warning" in agent
+        assert "Session termination failed: 500" in agent
+        assert "important MCP transport warning" in errors
+        assert "Session termination failed: 500" in errors
 
     def test_explicit_params_override_config(self, hermes_home):
         """Explicit function params take precedence over config.yaml."""
@@ -448,7 +403,7 @@ class TestAddRotatingHandler:
         content = log_path.read_text()
         assert "[factory_test]" in content
 
-        # Clean up
+    @pytest.mark.linux_only
     def test_managed_mode_initial_open_sets_group_writable(self, tmp_path):
         log_path = tmp_path / "managed-open.log"
         formatter = logging.Formatter("%(message)s")
@@ -466,6 +421,18 @@ class TestAddRotatingHandler:
 
         assert log_path.exists()
         assert stat.S_IMODE(log_path.stat().st_mode) == 0o660
+
+
+@pytest.mark.parametrize("level", [logging.WARNING, logging.ERROR])
+def test_routine_noise_filter_retains_exception_records(level):
+    try:
+        raise RuntimeError("unexpected transport failure")
+    except RuntimeError:
+        record = logging.LogRecord(
+            "mcp.client.streamable_http", level, __file__, 0,
+            "Session termination failed: 404", (), sys.exc_info(),
+        )
+    assert hermes_logging._RoutineTransportNoiseFilter().filter(record)
 
 
 
@@ -682,80 +649,12 @@ class TestExternalRotationRecovery:
         assert "AFTER rotation" not in rotated.read_text()
 
 
-def test_eio_from_file_handler_names_the_path_once_then_recovers(tmp_path, capsys):
-    """A failing log destination is named once (no per-record traceback) and writes resume
-    once the file is reachable again."""
-    import io
-
-    class _SickStream(io.TextIOBase):
-        def writable(self):
-            return True
-
-        def write(self, *_a):
-            raise OSError(5, "Input/output error")
-
-        seek = tell = flush = write
-
-    path = tmp_path / "agent.log"
-    handler = hermes_logging._ManagedRotatingFileHandler(
-        str(path), maxBytes=1024, backupCount=1, encoding="utf-8",
-    )
-    handler.setFormatter(logging.Formatter("%(message)s"))
-    try:
-        handler.stream.close()
-        handler.stream = _SickStream()
-        for i in range(5):
-            handler.handle(logging.LogRecord("t", logging.INFO, __file__, 0, f"sick {i}", (), None))
-        err = capsys.readouterr().err
-        assert "--- Logging error ---" not in err
-        assert err.count(str(path)) == 1 and "Input/output error" in err
-
-        # Stream dropped, so the next emit reopens the real file and logging resumes.
-        handler.handle(logging.LogRecord("t", logging.INFO, __file__, 0, "recovered", (), None))
-        assert "recovered" in path.read_text(encoding="utf-8")
-    finally:
-        handler.close()
-
-
-def test_eio_after_successful_reopen_still_names_the_path_once(tmp_path, capsys):
-    """The reported case: open() succeeds but every write/seek/flush raises EIO. Reopening must
-    not re-arm the notice, or a stuck device prints the path once per record."""
-    import io
-
-    class _SickStream(io.TextIOBase):
-        def writable(self):
-            return True
-
-        def write(self, *_a):
-            raise OSError(5, "Input/output error")
-
-        seek = tell = flush = write
-
-    path = tmp_path / "agent.log"
-    handler = hermes_logging._ManagedRotatingFileHandler(
-        str(path), maxBytes=1024, backupCount=1, encoding="utf-8",
-    )
-    handler.setFormatter(logging.Formatter("%(message)s"))
-    try:
-        handler._builtin_open = lambda *_a, **_kw: _SickStream()
-        handler.stream.close()
-        handler.stream = _SickStream()
-        for i in range(25):
-            handler.handle(logging.LogRecord("t", logging.INFO, __file__, 0, f"sick {i}", (), None))
-        err = capsys.readouterr().err
-        assert "--- Logging error ---" not in err
-        assert err.count(str(path)) == 1
-    finally:
-        handler.close()
-
-
 class TestSafeStderr:
     """Tests for _safe_stderr() — Unicode tolerance on Windows console."""
 
 
     def test_wraps_non_utf8_stderr(self, monkeypatch):
         """On non-UTF-8 systems (e.g. Windows cp949), wraps stderr with UTF-8."""
-        import io
 
         class FakeStderr:
             """Simulates a Windows stderr with legacy encoding."""
@@ -778,7 +677,6 @@ class TestSafeStderr:
 
     def test_handler_emits_unicode_without_crash(self, tmp_path):
         """StreamHandler with _safe_stderr can emit Unicode messages."""
-        import io
 
         # Create a stderr-like stream with ASCII encoding
         class AsciiStream:

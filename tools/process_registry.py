@@ -81,18 +81,16 @@ WATCH_GLOBAL_COOLDOWN_SECONDS = 30
 # Under a systemd gateway with MemoryMax, local background commands inherit the gateway's
 # cgroup, so a memory-heavy executor can get the ENTIRE gateway killed by systemd-oomd;
 # ``systemd-run --user --scope`` gives the worker its own transient cgroup. Usability is
-# probed and cached for a bounded TTL (binary present but user D-Bus absent in system services/containers).
+# probed once (binary present but user D-Bus absent in system services/containers).
 # A memory-heavy executor (Codex, tests, Node) can push the whole cgroup past MemoryMax and trigger
 # systemd-oomd to kill the ENTIRE gateway — taking down the messaging control plane and silently losing the
-# active turn. We probe whether ``systemd-run --user --scope`` is actually usable (the binary can
+# active turn. We probe *once* whether ``systemd-run --user --scope`` is actually usable (the binary can
 # exist on the PATH while the user D-Bus session is unavailable — common for system services and
-# containers), and cache the verdict for a bounded TTL. See #70716.
+# containers), and cache the result for the process lifetime. See #70716.
 _SYSTEMD_SCOPE_AVAILABLE: Optional[bool] = None
 _SYSTEMD_SCOPE_PROBE_LOCK = threading.Lock()
 _SYSTEMD_SCOPE_PROBED_AT = 0.0
-# Both verdicts expire: the user bus can vanish after a True (session logout without linger,
-# #110803) and reappear after a False (linger enabled later, #104893).
-_SYSTEMD_SCOPE_PROBE_TTL_SECONDS = 60.0
+_SYSTEMD_SCOPE_FAILURE_TTL_SECONDS = 60.0
 _MIN_WORKER_MEMORY_MAX_BYTES = 64 * 1024 * 1024
 _DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
 _WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
@@ -206,11 +204,12 @@ def systemd_user_bus_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str,
 
 
 def _systemd_scope_cached() -> Optional[bool]:
-    """Cached probe verdict, or None when a (re)probe is due."""
-    if _SYSTEMD_SCOPE_AVAILABLE is None:
-        return None
-    stale = time.monotonic() - _SYSTEMD_SCOPE_PROBED_AT >= _SYSTEMD_SCOPE_PROBE_TTL_SECONDS
-    return None if stale else _SYSTEMD_SCOPE_AVAILABLE
+    """Cached probe verdict, or None when a (re)probe is due. True is permanent; False
+    expires after ``_SYSTEMD_SCOPE_FAILURE_TTL_SECONDS`` so a D-Bus blip isn't sticky."""
+    if _SYSTEMD_SCOPE_AVAILABLE is True:
+        return True
+    stale = time.monotonic() - _SYSTEMD_SCOPE_PROBED_AT >= _SYSTEMD_SCOPE_FAILURE_TTL_SECONDS
+    return None if _SYSTEMD_SCOPE_AVAILABLE is None or stale else False
 
 
 def _systemd_run_user_scope_available() -> bool:
@@ -323,27 +322,6 @@ class GatewayChildDispatch(NamedTuple):
 
     mode: Literal["in_process", "scoped", "degraded"]
     argv: List[str]
-
-
-def scoped_spawn_lost_user_bus(spawn_env: Dict[str, str]) -> bool:
-    """After a ``systemd-run --user --scope`` wrapper exits before its child could start: True
-    when the user bus is gone (:func:`systemd_user_bus_env` derives nothing), in which case the
-    cached True verdict is replaced so the next dispatch re-probes and degrades instead of
-    consuming another occurrence on the same dead wrapper (#110803).
-
-    *spawn_env* is the environment the wrapper was launched with: re-deriving from it (minus the
-    bus address it carried) honours a configured ``XDG_RUNTIME_DIR`` exactly as the spawn did, so
-    an unrelated wrapper exit on a host whose bus lives outside ``/run/user/<uid>`` is not
-    misread as a lost bus."""
-    global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT
-    base_env = dict(spawn_env)
-    base_env.pop("DBUS_SESSION_BUS_ADDRESS", None)
-    if "DBUS_SESSION_BUS_ADDRESS" in systemd_user_bus_env(base_env):
-        return False
-    with _SYSTEMD_SCOPE_PROBE_LOCK:
-        _SYSTEMD_SCOPE_AVAILABLE = False
-        _SYSTEMD_SCOPE_PROBED_AT = time.monotonic()
-    return True
 
 
 def restart_safe_gateway_child_argv(
@@ -1183,16 +1161,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
         finally:
             self._finish_reader(
                 session, decoder, _append_chunk, "Process",
-                session.process.wait, lambda: session.process.returncode)
+                lambda: session.process.wait(timeout=5), lambda: session.process.returncode)
 
     def _finish_reader(self, session, decoder, append, label, wait, exit_code) -> None:
         """Reader-thread teardown: flush the decoder (a truncated multibyte tail becomes
-        one U+FFFD instead of vanishing), reap the child (no zombies), record the exit.
-
-        A process may close stdout long before it exits.  The reader owns a dedicated
-        daemon thread, so it must keep waiting rather than publish a false completion
-        and discard the only ``Popen`` handle that can reap the child.
-        """
+        one U+FFFD instead of vanishing), reap the child (no zombies), record the exit."""
         with suppress(Exception):
             tail = decoder.decode(b"", final=True)
             if tail:
@@ -1200,12 +1173,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         try:
             wait()
         except Exception as e:
-            # A PTY child reaped by isalive() already has its exitstatus; only an
-            # unknown status must stay tracked for later reconciliation.
-            if exit_code() is None:
-                logger.warning("%s wait failed; leaving process tracked: %s", label, e)
-                return
-            logger.warning("%s wait failed; recording known exit status: %s", label, e)
+            logger.debug("%s wait timed out or failed: %s", label, e)
         self._finish_exited(session, exit_code())
 
     @staticmethod
@@ -1367,15 +1335,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 save_completed_result(session)
                 self._running.pop(session.id)
             self._finished[session.id] = session
-        # Release the retained Popen/PTY handles now: otherwise every
-        # finished-but-unpruned session keeps its stdout pipe (or PTY master)
-        # FD open until FINISHED_TTL_SECONDS elapses, and heavy background
-        # churn can exhaust the gateway's FD limit. On the reader-thread path
-        # the pipe is already at EOF; on the kill/reconcile paths the reader
-        # may still be draining — its next read raises on the closed stream
-        # and the loop exits, dropping at most the unread tail of a process
-        # that was just killed. poll()/wait()/read_log() serve from the
-        # buffered ``output_buffer``, never from the pipe.
+        # Release drained handles immediately, but let a still-active reader
+        # close its own streams. Closing a BufferedReader from another thread
+        # waits for its read lock; an inherited Windows pipe can hold that lock
+        # after the direct child exits and otherwise block poll()/wait()/list().
         self._release_finished_handles(session)
         self._write_checkpoint()
         if was_running and session.notify_on_complete:
@@ -1410,10 +1373,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
         Best-effort and idempotent: the session may have no local Popen (env
         backends, detached recovery), or the handles may already be closed by
-        the reader loop / kill path. Closing a Popen's stream objects does not
-        kill anything — the child has already exited — it only releases the
-        parent's pipe FDs, which is exactly the retained-resource leak.
+        the reader loop / kill path. A reader still draining an inherited pipe
+        owns handle cleanup: its finally path calls this again after EOF.
+        Status/completion reporting must not wait for that descendant.
         """
+        reader = session._reader_thread
+        if reader is not None and reader is not threading.current_thread() and reader.is_alive():
+            return
         proc = session.process
         if proc is not None:
             for stream in (proc.stdout, proc.stderr, proc.stdin):
@@ -1470,11 +1436,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
             timeout = self._oneshot_completion_wait_seconds()
         result: dict = {"waited": [], "completed": [], "timed_out": []}
         with self._lock:
-            # `_finished` too: `_move_to_finished` pops a session from `_running` and enqueues its completion
-            # only after releasing handles and writing the checkpoint. A parent whose turn ends inside that
-            # window would otherwise see nothing pending, drain nothing and exit without the follow-up turn.
             pending = [
-                s for store in (self._running, self._finished) for s in store.values()
+                s for s in self._running.values()
                 if s.notify_on_complete and not s._completion_event.is_set() and (task_id is None or s.task_id == task_id)
             ]
         if not pending or timeout <= 0:
@@ -2007,10 +1970,20 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def close_stdin(self, session_id: str) -> dict:
         """Close a running process's stdin / send EOF without killing the process."""
+        def via_pty(pty):
+            # WinPTY's sendeof writes Ctrl-D as input; it cannot half-close stdin.
+            # Do not claim success, inject data, or close the PTY (which kills the child).
+            if _IS_WINDOWS:
+                raise NotImplementedError(
+                    "EOF_UNSUPPORTED_FOR_PTY_BACKEND: Windows PTY cannot safely close "
+                    "stdin without killing the process. No input was sent."
+                )
+            pty.sendeof()
+
         session = self.get(session_id)
         msg = "EOF sent" if session is not None and session._pty else "stdin closed"
         return self._stdin_op(
-            session_id, lambda pty: pty.sendeof(), lambda stdin: stdin.close(), {"status": "ok", "message": msg})
+            session_id, via_pty, lambda stdin: stdin.close(), {"status": "ok", "message": msg})
 
     def count_running(self) -> int:
         """O(1) running count for status-bar polling; dict ``len()`` is atomic, no lock."""

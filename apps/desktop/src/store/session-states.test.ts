@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { findGroupOfPane, group, split } from '@/components/pane-shell/tree/model'
-import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
+import { $layoutTree, isPaneVisible, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import {
   $workspaceMode,
   forgetActivePane,
@@ -22,6 +22,7 @@ import type { SessionProfileRoute } from '@/store/session-request-router'
 import type { SessionTile } from '@/store/session-states'
 import type * as SessionStatesModule from '@/store/session-states'
 import {
+  $botChatScopes,
   $focusedStoredSessionId,
   $sessionStates,
   $sessionTiles,
@@ -456,7 +457,9 @@ describe('focusWorkspaceOwnerSessionTile', () => {
 
   afterEach(() => {
     forgetActivePane(workspaceScopeKey('bots', 'bot:a'))
+    $botChatScopes.set({})
     $layoutTree.set(null)
+    $selectedStoredSessionId.set(null)
     $sessionTiles.set([])
   })
 
@@ -505,6 +508,57 @@ describe('focusWorkspaceOwnerSessionTile', () => {
 
     expect(focusWorkspaceOwnerSessionTile('bot:a')).toBeNull()
     expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['other-bot-chat'])
+  })
+
+  it('fronts the exact owner canonical main chat without closing its side thread', () => {
+    $selectedStoredSessionId.set('canonical-chat')
+    $botChatScopes.set({ 'canonical-chat': botA })
+    openSessionTile('side-thread', 'center', 'workspace', undefined, botA)
+    $layoutTree.set(group(['workspace', tilePane('side-thread')], { active: tilePane('side-thread'), id: 'main' }))
+
+    expect(focusWorkspaceOwnerSessionTile('bot:a', undefined, ['canonical-chat'])).toBe('canonical-chat')
+    expect(findGroupOfPane($layoutTree.get()!, 'workspace')?.active).toBe('workspace')
+    expect(isPaneVisible('workspace')).toBe(true)
+    expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['side-thread'])
+  })
+
+  it('keeps an allowed canonical tile ahead of the matching main chat', () => {
+    $selectedStoredSessionId.set('canonical-chat')
+    $botChatScopes.set({ 'canonical-chat': botA })
+    openSessionTile('canonical-chat', 'center', 'workspace', undefined, botA)
+    openSessionTile('side-thread', 'center', 'workspace', undefined, botA)
+    $layoutTree.set(
+      group(['workspace', tilePane('canonical-chat'), tilePane('side-thread')], {
+        active: tilePane('side-thread'),
+        id: 'main'
+      })
+    )
+
+    expect(focusWorkspaceOwnerSessionTile('bot:a', undefined, ['canonical-chat'])).toBe('canonical-chat')
+    expect(findGroupOfPane($layoutTree.get()!, tilePane('canonical-chat'))?.active).toBe(tilePane('canonical-chat'))
+    expect(isPaneVisible('workspace')).toBe(false)
+    expect($sessionTiles.get().map(t => t.storedSessionId)).toEqual(['canonical-chat', 'side-thread'])
+  })
+
+  it('does not front main without an exact owner, allowed canonical id, and revealable workspace', () => {
+    $selectedStoredSessionId.set('canonical-chat')
+    openSessionTile('other-side-thread', 'center', 'workspace', undefined, botB)
+    $layoutTree.set(
+      group(['workspace', tilePane('other-side-thread')], { active: tilePane('other-side-thread'), id: 'main' })
+    )
+
+    expect(focusWorkspaceOwnerSessionTile('bot:a', undefined, ['canonical-chat'])).toBeNull()
+
+    $botChatScopes.set({ 'canonical-chat': botB })
+    expect(focusWorkspaceOwnerSessionTile('bot:a', undefined, ['canonical-chat'])).toBeNull()
+
+    $botChatScopes.set({ 'canonical-chat': botA })
+    expect(focusWorkspaceOwnerSessionTile('bot:a', undefined, ['different-chat'])).toBeNull()
+    expect(focusWorkspaceOwnerSessionTile('bot:a')).toBeNull()
+    expect(findGroupOfPane($layoutTree.get()!, 'workspace')?.active).toBe(tilePane('other-side-thread'))
+
+    $layoutTree.set(null)
+    expect(focusWorkspaceOwnerSessionTile('bot:a', undefined, ['canonical-chat'])).toBeNull()
   })
 
   describe('staleness probe (#90102): the tile bucket reconciles with backend truth before it wins', () => {

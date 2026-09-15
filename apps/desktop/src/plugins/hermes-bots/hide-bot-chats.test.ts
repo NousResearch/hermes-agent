@@ -56,9 +56,7 @@ vi.mock('./group-chat', () => ({ $groupChats: { get: () => groupChats.value } })
 
 vi.mock('./group-membership', () => ({
   groupMemberKey: (member: GroupMember) =>
-    member?.route?.connectionId ? `${member.route.connectionId}::${member.name}` : member?.name,
-  groupSessionMemberKey: (key: string) =>
-    key.startsWith('thread:') ? key.slice(key.indexOf('::', 'thread:'.length) + 2) : key
+    member?.route?.connectionId ? `${member.route.connectionId}::${member.name}` : member?.name
 }))
 
 vi.mock('./routing', () => ({

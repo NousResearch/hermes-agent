@@ -14,14 +14,15 @@
  * the other just learned.
  */
 
+import { getApiRequestConnection } from '@/api/client'
 import { getHermesConfigRecord, type McpTestResult, setMcpServerEnabled, testMcpServer } from '@/hermes'
 import { translateNow } from '@/i18n'
-import { classifyProbe, freshProbe, probeCache, probeKey } from '@/lib/mcp-probe-cache'
+import { classifyProbe, freshProbe, type McpOwnerScope, probeCache, probeKey, resolveMcpOwner } from '@/lib/mcp-probe-cache'
 import { getServers } from '@/lib/mcp-servers'
 import { persistString, storedString } from '@/lib/storage'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { $gatewayState } from '@/store/session'
+import { $connection, $gatewayState } from '@/store/session'
 
 // A constant, not a config knob: the sweep is cheap (a handful of sequential
 // HTTP probes at most) and the notification is transition-gated below, so
@@ -30,16 +31,36 @@ const CHECK_INTERVAL_MS = 30 * 60_000
 
 export type McpHealthStatus = 'error' | 'needs-auth' | 'ok'
 
+/** Capture the active capability owner before the first async read. Local mode
+ * without a registry id stays on the legacy ambient request path; an absent
+ * descriptor is returned as null so the health sweep can fail closed. */
+function captureOwnerScope(): McpOwnerScope | null {
+  return resolveMcpOwner(
+    undefined,
+    normalizeProfileKey($activeGatewayProfile.get()),
+    getApiRequestConnection(),
+    $connection.get()
+  )
+}
+
+function isOwnerCurrent(owner: McpOwnerScope): boolean {
+  const currentProfile = normalizeProfileKey($activeGatewayProfile.get())
+  const currentConnectionId = getApiRequestConnection()
+  const current = resolveMcpOwner(undefined, currentProfile, currentConnectionId, $connection.get())
+
+  return current?.key === owner.key
+}
+
 /**
  * The notify decision, as a pure state machine: nudge on a TRANSITION into a
  * bad state — never for ok. An unknown previous state (first sweep of the
- * session) counts as a transition: an expired token discovered at launch is
- * exactly the case this exists for.
+ * session) counts as a transition unless a persisted future cooldown proves
+ * this is a continuing incident from before a module reload.
  *
  * A server that STAYS broken is nudged again once the daily snooze lapses:
  * a dead OAuth token is a standing problem the user has to act on (sign in
  * again, or disable the server), and a one-shot toast they closed on Monday
- * is forgotten by Wednesday. `snoozedUntil` is the persisted per-server
+ * is forgotten by Wednesday. `snoozedUntil` is the persisted per-owner/server
  * cooldown (set when a toast is shown); the recheck path re-nudges only past
  * it, so an unchanged bad state costs at most one toast per day.
  */
@@ -53,11 +74,15 @@ export function shouldNotify(
     return false
   }
 
-  return previous !== next || now >= snoozedUntil
+  // A recovery is a new incident and must be visible immediately, even when
+  // the old incident's persisted cooldown survived a module reload. For an
+  // ongoing failure, honor that persisted future cooldown across both bad
+  // statuses (error <-> needs-auth) instead of treating the transition as new.
+  return previous === 'ok' || now >= snoozedUntil
 }
 
 // Same time-based snooze the update/skew toasts use (store/updates.ts): a
-// shown toast arms a 24h cooldown for that (profile, server), persisted so an
+// shown toast arms a 24h cooldown for that (connection, profile, server), persisted so an
 // app restart does not re-nudge before the day is up.
 const SNOOZE_KEY_PREFIX = 'hermes:mcp-health-snooze-until:'
 const SNOOZE_MS = 24 * 60 * 60 * 1000
@@ -72,9 +97,12 @@ function snooze(key: string): void {
   persistString(SNOOZE_KEY_PREFIX + key, String(Date.now() + SNOOZE_MS))
 }
 
-// Last-known status per (profile, server) — the transition memory. Keyed by
-// profile so one profile's broken server can't mute or trigger another's
-// (AGENTS.md scope-in-key).
+function clearSnooze(key: string): void {
+  persistString(SNOOZE_KEY_PREFIX + key, null)
+}
+
+// Last-known status per (connection, profile, server) — the transition memory.
+// A profile name is only unique within one gateway connection.
 const lastStatus = new Map<string, McpHealthStatus>()
 
 let started = false
@@ -101,10 +129,16 @@ function openMcpServerPage(name: string): void {
 // listed on the MCP page for a later re-enable). The backend follows the edit
 // on its own — the gateway's config reconcile and the serve backend's next
 // reload both drop a disabled server — so no reload RPC is issued here.
-async function disableServer(profileKey: string, name: string): Promise<void> {
+async function disableServer(owner: McpOwnerScope, name: string): Promise<void> {
+  if (!owner.exact && !isOwnerCurrent(owner)) {
+    return
+  }
+
+  const ownerKey = owner.key
+
   try {
-    await setMcpServerEnabled(name, false)
-    lastStatus.delete(`${profileKey}::${name}`)
+    await setMcpServerEnabled(name, false, owner.request)
+    lastStatus.delete(`${ownerKey}::${name}`)
     notify({
       kind: 'success',
       message: translateNow('notifications.mcp.disabledMessage', name)
@@ -114,10 +148,16 @@ async function disableServer(profileKey: string, name: string): Promise<void> {
   }
 }
 
-function recordResult(profileKey: string, name: string, status: McpHealthStatus): void {
-  const key = `${profileKey}::${name}`
+function recordResult(owner: McpOwnerScope, name: string, status: McpHealthStatus): void {
+  const key = `${owner.key}::${name}`
   const previous = lastStatus.get(key) ?? null
   lastStatus.set(key, status)
+
+  if (status === 'ok') {
+    clearSnooze(key)
+
+    return
+  }
 
   if (!shouldNotify(previous, status, snoozedUntil(key), Date.now())) {
     return
@@ -130,14 +170,18 @@ function recordResult(profileKey: string, name: string, status: McpHealthStatus)
   notify({
     action: {
       label: translateNow(needsAuth ? 'notifications.mcp.signIn' : 'notifications.mcp.view'),
-      onClick: () => openMcpServerPage(name)
+      onClick: () => {
+        if (isOwnerCurrent(owner)) {
+          openMcpServerPage(name)
+        }
+      }
     },
     id: `mcp-health-${key}`,
     kind: 'warning',
     message: translateNow(needsAuth ? 'notifications.mcp.needsAuthMessage' : 'notifications.mcp.errorMessage', name),
     secondaryAction: {
       label: translateNow('notifications.mcp.disable'),
-      onClick: () => void disableServer(profileKey, name)
+      onClick: () => void disableServer(owner, name)
     },
     title: translateNow(needsAuth ? 'notifications.mcp.needsAuthTitle' : 'notifications.mcp.errorTitle')
   })
@@ -148,18 +192,28 @@ const isUrlServer = (server: Record<string, unknown>): boolean =>
 
 async function sweep(): Promise<void> {
   const epoch = sweepEpoch
-  const profileKey = normalizeProfileKey($activeGatewayProfile.get())
+  const owner = captureOwnerScope()
+
+  if (!owner) {
+    return
+  }
+
+  const ownerKey = owner.key
 
   let config: Record<string, unknown>
 
   try {
-    config = await getHermesConfigRecord()
+    config = await getHermesConfigRecord(owner.request)
   } catch {
     // Backend unreachable / mid-restart — the next interval tick retries.
     return
   }
 
   if (epoch !== sweepEpoch) {
+    return
+  }
+
+  if (!owner.exact && !isOwnerCurrent(owner)) {
     return
   }
 
@@ -173,16 +227,16 @@ async function sweep(): Promise<void> {
     }
 
     // A profile switch or gateway drop mid-sweep stops the remaining probes.
-    if (epoch !== sweepEpoch || $gatewayState.get() !== 'open') {
+    if (epoch !== sweepEpoch || $gatewayState.get() !== 'open' || (!owner.exact && !isOwnerCurrent(owner))) {
       return
     }
 
-    const key = probeKey(name, server, profileKey)
+    const key = probeKey(name, server, ownerKey)
     let result = freshProbe(key)
 
     if (!result) {
       try {
-        result = await testMcpServer(name)
+        result = await testMcpServer(name, owner.request)
       } catch (err) {
         result = { ok: false, error: err instanceof Error ? err.message : String(err), tools: [] } as McpTestResult
       }
@@ -191,10 +245,14 @@ async function sweep(): Promise<void> {
         return
       }
 
+      if (!owner.exact && !isOwnerCurrent(owner)) {
+        return
+      }
+
       probeCache.set(key, { at: Date.now(), result })
     }
 
-    recordResult(profileKey, name, classifyProbe(result))
+    recordResult(owner, name, classifyProbe(result))
   }
 }
 

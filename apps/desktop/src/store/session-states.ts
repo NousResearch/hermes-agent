@@ -1639,9 +1639,10 @@ export function focusOpenSession(
 
 /** Front the tab a Bot Mode owner already has open and report its stored id:
  *  the tile the zone last had active for `workspaceOwnerKey` (the same
- *  window-local memory the strip restores on a scope switch), else the most
- *  recently opened one. `null` when that owner has no open tile — the caller
- *  decides what to open then. A roster click consults this FIRST so a bot
+ *  window-local memory the strip restores on a scope switch), else the newest
+ *  tile the caller's canonical allowlist permits. If no such tile exists, an
+ *  exact owner/canonical match may front that Bot Chat from main. `null` means
+ *  the caller decides what to open. A roster click consults this FIRST so a bot
  *  with open tabs comes back to the one the user left, instead of re-opening
  *  its canonical Bot Chat beside them: nothing records a tab close except the
  *  tile bucket forgetting it, so any open path that ignores the open set
@@ -1693,7 +1694,29 @@ export function focusWorkspaceOwnerSessionTile(
   }
 
   if (owned.length === 0) {
-    return null
+    const selectedStoredSessionId = $selectedStoredSessionId.get()
+    const selectedScope = selectedStoredSessionId ? $botChatScopes.get()[selectedStoredSessionId] : undefined
+
+    if (
+      !selectedStoredSessionId ||
+      !onlyStoredIds?.includes(selectedStoredSessionId) ||
+      selectedScope?.workspaceMode !== 'bots' ||
+      selectedScope.workspaceOwnerKey !== workspaceOwnerKey
+    ) {
+      return null
+    }
+
+    revealTreePane('workspace')
+    const tree = $layoutTree.get()
+    const group = tree ? findGroupOfPane(tree, 'workspace') : null
+
+    if (!group || group.active !== 'workspace' || !isPaneVisible('workspace')) {
+      return null
+    }
+
+    noteActiveTreeGroup(null)
+
+    return selectedStoredSessionId
   }
 
   // Most recent first, so the fallback (no remembered pane) is the newest tab.

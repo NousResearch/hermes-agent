@@ -233,12 +233,9 @@ async def get_toolsets(profile: Optional[str] = None):
                 platform: _get_platform_tools(config, platform, include_default_mcp_servers=False)
                 for platform in target_platforms}
             features = get_nous_subscription_features(config)
-            # Credential presence resolves through the profile's secret scope: outside this block
-            # it read the dashboard process env (another profile's keys) or fails closed.
-            configured = {name: _toolset_has_keys(name, config, features=features) for name, _, _ in toolset_rows}
-        return config, toolset_rows, enabled_by_platform, configured
+        return config, toolset_rows, enabled_by_platform, features
 
-    config, toolset_rows, enabled_by_platform, configured = await run_in_threadpool(_read)
+    config, toolset_rows, enabled_by_platform, features = await run_in_threadpool(_read)
     result = []
     for name, label, desc in toolset_rows:
         try:
@@ -259,7 +256,7 @@ async def get_toolsets(profile: Optional[str] = None):
             "platform": target_platform,
             "platform_label": gui_toolset_label(platform_label(target_platform, target_platform)),
             "enabled": is_enabled, "available": is_enabled,
-            "configured": configured[name], "tools": tools})
+            "configured": _toolset_has_keys(name, config, features=features), "tools": tools})
     return result
 
 

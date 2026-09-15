@@ -46,6 +46,26 @@ def test_effective_map_merges_legacy_and_directory():
         assert release.AUTHOR_MAP[email] == login
 
 
+def test_contributor_mapping_paths_are_casefold_unique():
+    proc = subprocess.run(
+        ["git", "ls-files", "contributors/emails"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    by_casefold: dict[str, list[str]] = {}
+    for path in proc.stdout.splitlines():
+        by_casefold.setdefault(path.casefold(), []).append(path)
+    collisions = [sorted(paths) for paths in by_casefold.values() if len(paths) > 1]
+    assert collisions == [], f"case-colliding contributor mappings: {collisions}"
+
+
+def test_case_distinct_agent_identities_keep_exact_attribution():
+    assert release.AUTHOR_MAP["agent@Agents-Mac-mini.local"] == "skip-agent"
+    assert release.AUTHOR_MAP["agent@agents-Mac-mini.local"] == "momomojo"
+
+
 
 
 # ── add_contributor.py CLI behavior ───────────────────────────────────
@@ -157,7 +177,10 @@ def test_add_contributor_refuses_a_case_collision(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "EMAILS_DIR", d)
 
     assert mod.add_contributor("agent@example-host.local", "otherperson") == 1
-    assert not (d / "agent@example-host.local").exists()
+    # On Windows/macOS, the case-folded spelling resolves to the existing
+    # path, so checking ``Path.exists`` would be true even when no write took
+    # place.  Inspect the directory's exact stored names instead.
+    assert sorted(p.name for p in d.iterdir()) == ["agent@Example-Host.local"]
 
 
 def test_add_contributor_refuses_case_collision_even_for_same_login(emails_dir, capsys):

@@ -19,7 +19,7 @@ export const READY_IN_MERGED_OUTPUT_RE = /(?<!\w)HERMES_(?:BACKEND|DASHBOARD)_RE
 // 45s deadline kills a *healthy but still-starting* backend and respawns it,
 // piling up orphaned processes (issue #50209). A roomier default absorbs the
 // cold-start cost; a warm start still announces in well under a second.
-const DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS = 90_000
+const DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS = 180_000
 // Never trust a deadline tighter than the warm-start path needs; floor at 45s
 // (the historical default) so a malformed override can't reintroduce the loop.
 const MIN_PORT_ANNOUNCE_TIMEOUT_MS = 45_000
@@ -61,7 +61,8 @@ function waitForDashboardPort(
   child,
   timeoutMs = resolvePortAnnounceTimeoutMs(),
   describeOutputTail = () => '',
-  bufferedOutput: () => string = () => ''
+  bufferedOutput: () => string = () => '',
+  readyFile: fs.PathOrFileDescriptor | null = null
 ) {
   return new Promise((resolve, reject) => {
     // Seed the line buffer with any output the spawn-time tail already
@@ -74,6 +75,7 @@ function waitForDashboardPort(
     // trailing partial line) makes the listener-attach ordering irrelevant.
     let buf = ''
     let done = false
+    let readyFileInterval = null
 
     function cleanup() {
       if (done) {
@@ -82,6 +84,11 @@ function waitForDashboardPort(
 
       done = true
       clearTimeout(timer)
+
+      if (readyFileInterval) {
+        clearInterval(readyFileInterval)
+      }
+
       child.stdout.off('data', onData)
       child.off('exit', onExit)
       child.off('error', onError)
@@ -115,6 +122,19 @@ function waitForDashboardPort(
       reject(err)
     }
 
+    function checkReadyFile() {
+      if (!readyFile) {
+        return
+      }
+
+      const port = readDashboardReadyFile(readyFile)
+
+      if (port) {
+        cleanup()
+        resolve(port)
+      }
+    }
+
     const timer = setTimeout(() => {
       cleanup()
       reject(new Error(`Timed out waiting for Hermes backend port announcement (${timeoutMs}ms)`))
@@ -138,6 +158,16 @@ function waitForDashboardPort(
         cleanup()
         resolve(parseInt(m[1], 10))
       }
+    }
+
+    if (!done && readyFile) {
+      readyFileInterval = setInterval(checkReadyFile, 50)
+
+      if (typeof readyFileInterval.unref === 'function') {
+        readyFileInterval.unref()
+      }
+
+      checkReadyFile()
     }
   })
 }
@@ -239,11 +269,13 @@ function waitForDashboardPortAnnouncement(
   const timeoutMs = options.timeoutMs ?? resolvePortAnnounceTimeoutMs()
   const describeOutputTail = options.describeOutputTail ?? (() => '')
 
-  if (options.readyFile) {
-    return waitForDashboardReadyFile(options.readyFile, child, timeoutMs, describeOutputTail)
-  }
-
-  return waitForDashboardPort(child, timeoutMs, describeOutputTail, options.bufferedOutput ?? (() => ''))
+  return waitForDashboardPort(
+    child,
+    timeoutMs,
+    describeOutputTail,
+    options.bufferedOutput ?? (() => ''),
+    options.readyFile ?? null
+  )
 }
 
 export {

@@ -167,8 +167,9 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
             captured["prompt"] = prompt
             return {"final_response": "ok", "failed": False, "partial": False}
 
-    def fake_acquire(db_path=None):
-        return sentinel_db
+    class FakeSessionDB:
+        def __new__(cls):
+            return sentinel_db
 
     def mod(name, **attrs):
         module = types.ModuleType(name)
@@ -177,8 +178,7 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
         return module
 
     monkeypatch.setitem(sys.modules, "run_agent", mod("run_agent", AIAgent=FakeAgent))
-    # Oneshot borrows the process-shared registry handle (one writer per state.db path).
-    monkeypatch.setitem(sys.modules, "hermes_state_registry", mod("hermes_state_registry", acquire=fake_acquire))
+    monkeypatch.setitem(sys.modules, "hermes_state", mod("hermes_state", SessionDB=FakeSessionDB))
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.config",

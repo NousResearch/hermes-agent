@@ -69,6 +69,7 @@ export class RealSessionBuilder {
   }> = []
   private readonly stderr: string[] = []
   private closed = false
+  private closePromise: Promise<void> | undefined
 
   private constructor(hermesHome: string) {
     this.child = spawn('uv', ['run', '--active', '--no-sync', 'python', '-m', 'tui_gateway.entry'], {
@@ -84,7 +85,8 @@ export class RealSessionBuilder {
     createInterface({ input: this.child.stdout }).on('line', line => this.handleLine(line))
     createInterface({ input: this.child.stderr }).on('line', line => {
       this.stderr.push(line)
-      if (this.stderr.length > 80) this.stderr.shift()
+
+      if (this.stderr.length > 80) {this.stderr.shift()}
     })
     this.child.once('error', error => this.failAll(new Error(`real-session gateway failed to start: ${error.message}`)))
     this.child.once('exit', (code, signal) => {
@@ -96,8 +98,20 @@ export class RealSessionBuilder {
 
   static async start(hermesHome: string): Promise<RealSessionBuilder> {
     const builder = new RealSessionBuilder(hermesHome)
-    await builder.waitForEvent(frame => frame.params?.type === 'gateway.ready')
-    return builder
+
+    try {
+      await builder.waitForEvent(frame => frame.params?.type === 'gateway.ready')
+
+      return builder
+    } catch (error) {
+      try {
+        await builder.close()
+      } catch (closeError) {
+        throw new AggregateError([error, closeError], 'Real-session startup and owned-child cleanup failed')
+      }
+
+      throw error
+    }
   }
 
   async createSession(spec: RealSessionSpec): Promise<RealSession> {
@@ -111,6 +125,7 @@ export class RealSessionBuilder {
       source: 'desktop',
       title: spec.title,
     })
+
     const runtimeId = requireString(created, 'session_id')
     const sessionId = requireString(created, 'stored_session_id')
 
@@ -124,36 +139,78 @@ export class RealSessionBuilder {
       const completion = this.waitForEvent(
         frame => frame.params?.type === 'message.complete' && frame.params.session_id === runtimeId,
       )
+
       await this.request('prompt.submit', { session_id: runtimeId, text })
       const frame = await completion
       const status = readString(frame.params?.payload, 'status')
+
       if (status !== 'complete') {
         throw new Error(`real session turn failed with status ${status ?? 'unknown'}: ${JSON.stringify(frame.params?.payload)}`)
       }
     }
 
     await this.request('session.close', { session_id: runtimeId })
+
     return { runtimeId, sessionId }
   }
 
   async close(): Promise<void> {
-    if (this.closed) return
+    if (this.closePromise) {return this.closePromise}
     this.closed = true
-    this.child.stdin.end()
-    await new Promise<void>(resolve => {
-      const timeout = setTimeout(() => {
-        this.child.kill('SIGTERM')
-        resolve()
-      }, 5_000)
-      this.child.once('exit', () => {
+
+    if (this.child.exitCode !== null || this.child.signalCode !== null) {return}
+
+    this.closePromise = new Promise<void>((resolve, reject) => {
+      const failures: unknown[] = []
+      let settled = false
+
+      const finish = () => {
+        if (settled) {return}
+        settled = true
         clearTimeout(timeout)
-        resolve()
-      })
+        this.child.off('exit', onExit)
+
+        if (failures.length > 0) {
+          reject(new AggregateError(failures, 'Real-session owned-child exit was not cleanly confirmed'))
+        } else {
+          resolve()
+        }
+      }
+
+      const onExit = () => finish()
+
+      const timeout = setTimeout(() => {
+        // Keep the existing deadline. Signalling is not proof of exit, and
+        // no sandbox may be deleted while this owned lifecycle is uncertain.
+        try {
+          if (!this.child.kill('SIGTERM')) {
+            failures.push(new Error('Could not signal the owned real-session child'))
+          }
+        } catch (error) {
+          failures.push(error)
+        }
+
+        if (!settled) {
+          failures.push(new Error('Owned real-session child exit unconfirmed after 5 seconds'))
+          finish()
+        }
+      }, 5_000)
+
+      this.child.once('exit', onExit)
+
+      try {
+        this.child.stdin.end()
+      } catch (error) {
+        failures.push(error)
+      }
     })
+
+    return this.closePromise
   }
 
   private request<T = unknown>(method: string, params: Record<string, unknown>): Promise<T> {
     const id = ++this.nextRequestId
+
     return this.withTimeout(new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve: value => resolve(value as T), reject })
       this.child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`, error => {
@@ -167,9 +224,11 @@ export class RealSessionBuilder {
 
   private waitForEvent(predicate: (frame: JsonRpcFrame) => boolean): Promise<JsonRpcFrame> {
     const index = this.events.findIndex(predicate)
+
     if (index >= 0) {
       return Promise.resolve(this.events.splice(index, 1)[0])
     }
+
     return this.withTimeout(new Promise<JsonRpcFrame>((resolve, reject) => {
       this.eventWaiters.push({ predicate, resolve, reject })
     }), 'gateway event')
@@ -177,6 +236,7 @@ export class RealSessionBuilder {
 
   private handleLine(line: string): void {
     let frame: JsonRpcFrame
+
     try {
       frame = JSON.parse(line) as JsonRpcFrame
     } catch {
@@ -185,22 +245,28 @@ export class RealSessionBuilder {
 
     if (typeof frame.id === 'number') {
       const pending = this.pending.get(frame.id)
-      if (!pending) return
+
+      if (!pending) {return}
       this.pending.delete(frame.id)
+
       if (frame.error) {
         pending.reject(new Error(`JSON-RPC error ${frame.error.code ?? 'unknown'}: ${frame.error.message ?? 'unknown error'}`))
       } else {
         pending.resolve(frame.result)
       }
+
       return
     }
 
-    if (frame.method !== 'event') return
+    if (frame.method !== 'event') {return}
     const waiter = this.eventWaiters.find(candidate => candidate.predicate(frame))
+
     if (!waiter) {
       this.events.push(frame)
+
       return
     }
+
     this.eventWaiters.splice(this.eventWaiters.indexOf(waiter), 1)
     waiter.resolve(frame)
   }
@@ -219,21 +285,25 @@ export class RealSessionBuilder {
   }
 
   private failAll(error: Error): void {
-    for (const pending of this.pending.values()) pending.reject(error)
+    for (const pending of this.pending.values()) {pending.reject(error)}
     this.pending.clear()
-    for (const waiter of this.eventWaiters) waiter.reject(error)
+
+    for (const waiter of this.eventWaiters) {waiter.reject(error)}
     this.eventWaiters.length = 0
   }
 }
 
 function readString(value: unknown, key: string): string | undefined {
-  if (!value || typeof value !== 'object') return undefined
+  if (!value || typeof value !== 'object') {return undefined}
   const candidate = (value as Record<string, unknown>)[key]
+
   return typeof candidate === 'string' ? candidate : undefined
 }
 
 function requireString(value: unknown, key: string): string {
   const candidate = readString(value, key)
-  if (!candidate) throw new Error(`Gateway response omitted required ${key}: ${JSON.stringify(value)}`)
+
+  if (!candidate) {throw new Error(`Gateway response omitted required ${key}: ${JSON.stringify(value)}`)}
+
   return candidate
 }

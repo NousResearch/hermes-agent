@@ -464,9 +464,11 @@ function Show-ProgressWindow {
 }
 
 function Show-ErrorFinale([string]$Message) {
-    # Terse by design: a title + the debug-share pointer. No error text, no
-    # log tail -- `hermes debug share` uploads the real evidence and the
-    # relaunched Desktop surfaces the result message.
+    # Keep the terminal surface concise, but preserve actionable classification
+    # from the hand-off. A parked dirty checkout is an intentional safety skip,
+    # not a broken install; hiding that distinction behind the generic debug
+    # pointer made every safe update refusal look like a crash.
+    $isSkipped = $Message -match '^Update skipped:'
     if ($script:UiServer) {
         # The shim renders the error state itself; leave the window up for
         # the user to read and close. Nothing to hold for — the page keeps
@@ -480,8 +482,8 @@ function Show-ErrorFinale([string]$Message) {
         $ui = $script:Ui
         if ($ui.Timer) { $ui.Timer.Stop() }
         $ui.Bar.Visible = $false
-        $ui.Title.Text = "Failed to update"
-        $ui.Sub.Text = "Run `"hermes debug share`" in a terminal to send a report."
+        $ui.Title.Text = if ($isSkipped) { "Update skipped" } else { "Failed to update" }
+        $ui.Sub.Text = $Message
         $close = New-Object System.Windows.Forms.Button
         $close.Text = "Close"
         $close.SetBounds(100, 252, 80, 28)
@@ -787,25 +789,60 @@ if ($env:HERMES_UPDATE_STEP_IDLE_SECONDS) {
 # routinely stdout-silent for 40+ minutes while demonstrably progressing. An
 # idle ceiling that watched only stdout/stderr would cancel every healthy
 # large update at StepIdleTimeoutSeconds. The drain therefore also counts
-# growth of this file (size or mtime) as progress before declaring a stall.
-# Overridable so the pipe-drain self-test can point it at its own file; not
-# documented as a user knob.
+# growth of its update log (size or mtime) as progress before declaring a
+# stall. A Desktop can be driving a named profile, whose CLI update log lives
+# at ``%HERMES_HOME%\profiles\<profile>\logs\update.log`` while this hand-off
+# itself writes its own diagnostics at the global ``%HERMES_HOME%\logs`` root.
+# Watch both locations: treating only the hand-off root as authoritative made a
+# healthy profile-scoped Electron build look silent and killed it after 600s.
+#
+# The explicit environment override remains deliberately single-path for the
+# pipe-drain fixture and for targeted diagnostics; it must never accidentally
+# inherit activity from an unrelated profile.
 $script:StepProgressLogPath = Join-Path $LogDir "update.log"
 if ($env:HERMES_UPDATE_PROGRESS_LOG) {
     $script:StepProgressLogPath = $env:HERMES_UPDATE_PROGRESS_LOG
 }
 
-function Get-StepProgressLogStamp {
-    # Size + mtime fingerprint of the update log; $null when absent or
-    # unreadable. Comparing fingerprints between passes is how the idle
-    # watchdog sees a build that streams to update.log instead of stdout.
-    try {
-        $fi = New-Object System.IO.FileInfo($script:StepProgressLogPath)
-        if (-not $fi.Exists) { return $null }
-        return ('{0}:{1}' -f $fi.Length, $fi.LastWriteTimeUtc.Ticks)
-    } catch {
-        return $null
+function Get-StepProgressLogPaths {
+    # Return a deterministic set: the comparison result itself is a progress
+    # fingerprint, so an arbitrary directory enumeration order must not create
+    # false progress. This only runs once the idle ceiling has already elapsed,
+    # never in the hot pipe-drain path.
+    if ($env:HERMES_UPDATE_PROGRESS_LOG) {
+        return @($script:StepProgressLogPath)
     }
+
+    $paths = @($script:StepProgressLogPath)
+    $profilesDir = Join-Path $HermesHome "profiles"
+    try {
+        foreach ($profileDir in @(Get-ChildItem -LiteralPath $profilesDir -Directory -ErrorAction Stop)) {
+            $paths += Join-Path $profileDir.FullName "logs\update.log"
+        }
+    } catch {
+        # A fresh or partial installation may have no profile directory yet;
+        # the global update log remains the compatibility fallback.
+    }
+    return @($paths | Sort-Object -Unique)
+}
+
+function Get-StepProgressLogStamp {
+    # Stable fingerprint of every applicable update log; $null when none are
+    # readable. Comparing fingerprints between passes is how the idle watchdog
+    # sees a build that streams to update.log instead of stdout.
+    $stamps = @()
+    foreach ($path in @(Get-StepProgressLogPaths)) {
+        try {
+            $fi = New-Object System.IO.FileInfo($path)
+            if ($fi.Exists) {
+                $stamps += ('{0}:{1}:{2}' -f $path, $fi.Length, $fi.LastWriteTimeUtc.Ticks)
+            }
+        } catch {
+            # One unreadable profile must not hide progress from the others.
+        }
+    }
+    if ($stamps.Count -eq 0) { return $null }
+    return ($stamps -join '|')
 }
 
 if (-not ("HermesUpdateJob" -as [type])) {
@@ -1260,7 +1297,13 @@ if ($SelfTestPipeDrain) {
     $stallPidFile = Join-Path $TempDir "hermes-step-stall-$stamp.pid"
     $stallGrandchildPidFile = Join-Path $TempDir "hermes-step-stall-grandchild-$stamp.pid"
     $logStallPs1 = Join-Path $TempDir "hermes-step-logstall-$stamp.ps1"
-    $logStallProgress = Join-Path $TempDir "hermes-step-logstall-$stamp.update.log"
+    # Deliberately use a profile-scoped path instead of overriding the
+    # watchdog's global candidate. This reproduces the real Desktop hand-off:
+    # its own log is global while ``hermes update`` writes to the active
+    # profile's update.log.
+    $logStallDir = Join-Path (Join-Path (Join-Path $HermesHome "profiles") "fixture") "logs"
+    $logStallProgress = Join-Path $logStallDir "update.log"
+    New-Item -ItemType Directory -Path $logStallDir -Force -ErrorAction Stop | Out-Null
     # UseShellExecute=$false with no redirection is what makes the grandchild
     # inherit our stdout/stderr -- the whole point of the fixture. Anything
     # that redirects (Start-Process, subprocess with stdout=DEVNULL) would
@@ -1368,20 +1411,14 @@ exit 3
     $stallGrandchildAlive = $stallGrandchildPid -gt 0 -and [bool](Get-Process -Id $stallGrandchildPid -ErrorAction SilentlyContinue)
     if ($stallGrandchildAlive) { Stop-Process -Id $stallGrandchildPid -Force -ErrorAction SilentlyContinue }
 
-    # logstall arm: point the watchdog's progress log at the fixture's file
-    # for exactly this step, restore afterwards so the other arms' contract
-    # (no update.log in play) is untouched.
-    $savedProgressLogPath = $script:StepProgressLogPath
-    $script:StepProgressLogPath = $logStallProgress
+    # logstall arm: write only to a profile-scoped update.log. Completing with
+    # code 3 proves the watchdog discovered profile progress without an
+    # explicit test override.
     $logStallSw = [System.Diagnostics.Stopwatch]::StartNew()
-    try {
-        $logstall = Invoke-HermesStep $powershell @(
-            "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $logStallPs1,
-            "-Hold", [string]$hold, "-ProgressLog", $logStallProgress
-        ) "logstall"
-    } finally {
-        $script:StepProgressLogPath = $savedProgressLogPath
-    }
+    $logstall = Invoke-HermesStep $powershell @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $logStallPs1,
+        "-Hold", [string]$hold, "-ProgressLog", $logStallProgress
+    ) "logstall"
     $logStallSw.Stop()
     $logStallElapsed = [Math]::Round($logStallSw.Elapsed.TotalSeconds, 2)
 
@@ -1615,7 +1652,16 @@ try {
         Write-HandoffLog "retry policy is unavailable after checkout swap; using legacy retry rules"
         $shouldRetry = $res.Code -ne 0 -and $res.Code -ne 2
     }
-    if ($shouldRetry) {
+    # A parked feature branch with uncommitted local repairs is a deterministic
+    # safety refusal. Do not spend another full update cycle producing the same
+    # result; retain the non-zero code so the update is not reported as complete,
+    # but give the user the exact, non-destructive next step.
+    $parkedBranchSkipped = $res.Output -match '(?im)CODE UPDATE SKIPPED'
+
+    if ($parkedBranchSkipped) {
+        $shouldRetry = $false
+        Write-HandoffLog "hermes update skipped (parked dirty checkout); not retrying"
+    } elseif ($shouldRetry) {
         # One retry for update-boundary failures. Most exit-2 safety refusals
         # remain terminal, but self-lock deferral also uses exit 2 and writes
         # .update-incomplete after the code swap. That marker is only a retry
@@ -1626,6 +1672,7 @@ try {
         Publish-UiProgress "Retrying update"
         $res = Invoke-HermesStep $pythonExe $updateArgs "update"
         Write-HandoffLog "retry exit code: $($res.Code)"
+        $parkedBranchSkipped = $res.Output -match '(?im)CODE UPDATE SKIPPED'
     }
 
     # -- 4. Truthful completion: don't trust exit 0 -------------------------
@@ -1662,7 +1709,11 @@ try {
         $finalMsg = "Code and dependencies updated, but the Desktop app REBUILD FAILED - you are running the previous build. Run `hermes desktop --force-build` from a terminal to retry."
     } else {
         $finalCode = $res.Code
-        $finalMsg = "Update failed (exit $($res.Code)). Run `hermes debug share` in a terminal to send a report."
+        $finalMsg = if ($parkedBranchSkipped) {
+            "Update skipped: this checkout is parked on a local repair branch with uncommitted changes. Nothing was overwritten. Save or review the local changes, then explicitly switch to main before retrying the upstream update."
+        } else {
+            "Update failed (exit $($res.Code)). Run `hermes debug share` in a terminal to send a report."
+        }
     }
     exit $finalCode
 } finally {

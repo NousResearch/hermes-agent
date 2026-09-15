@@ -3,7 +3,6 @@
 import json
 import stat
 import sys
-import time
 from io import BytesIO
 from unittest.mock import patch, MagicMock
 from urllib.parse import quote
@@ -38,10 +37,13 @@ async def _wait_for_callback():
     return await mod._make_callback_waiter(mod._oauth_port)()
 
 
-def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
+def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> MagicMock:
+    """Mock console availability without bypassing OAuth suppression or faking the OS."""
     mock_stdin = MagicMock()
     mock_stdin.isatty.return_value = is_tty
     monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+    monkeypatch.setattr("tools.mcp_oauth._stdin_is_console", lambda: is_tty)
+    return mock_stdin
 
 
 def _hit_callback_when_ready(url: str, timeout: float = 15.0) -> None:
@@ -763,9 +765,7 @@ class TestIsInteractive:
     def test_suppress_interactive_oauth_disables_stdin_prompts(self, monkeypatch):
         import tools.mcp_oauth as mod
 
-        mock_stdin = MagicMock()
-        mock_stdin.isatty.return_value = True
-        monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+        _set_interactive_stdin(monkeypatch)
 
         assert _is_interactive() is True
         with mod.suppress_interactive_oauth():
@@ -782,9 +782,7 @@ class TestIsInteractive:
         import threading
         import tools.mcp_oauth as mod
 
-        mock_stdin = MagicMock()
-        mock_stdin.isatty.return_value = True
-        monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+        _set_interactive_stdin(monkeypatch)
 
         loop = asyncio.new_event_loop()
         loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
@@ -801,6 +799,9 @@ class TestIsInteractive:
             def _discovery():
                 nonlocal discovery_thread
                 discovery_thread = threading.current_thread()
+                result["baseline"] = asyncio.run_coroutine_threadsafe(
+                    _probe_on_loop_thread(), loop
+                ).result(timeout=5)
                 with mod.suppress_interactive_oauth():
                     fut = asyncio.run_coroutine_threadsafe(
                         _probe_on_loop_thread(), loop
@@ -813,6 +814,7 @@ class TestIsInteractive:
         finally:
             loop.call_soon_threadsafe(loop.stop)
 
+        assert result["baseline"] == (True, True), "loop-thread probe must start interactive"
         assert result["cross_thread"] is True, "probe must run on the loop thread"
         # The whole point: suppression must hold on the loop thread.
         assert result["interactive"] is False
@@ -1052,9 +1054,8 @@ class TestWaitForCallbackPasteIntegration:
         import tools.mcp_oauth as mod
 
         mod._oauth_port = _find_free_port()
-        mock_stdin = MagicMock()
-        mock_stdin.isatty.return_value = True
-        monkeypatch.setattr(mod.sys, "stdin", mock_stdin)
+        mock_stdin = _set_interactive_stdin(monkeypatch)
+        assert _is_interactive() is True
 
         async def instant_sleep(_):
             pass

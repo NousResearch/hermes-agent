@@ -104,7 +104,8 @@ class TestSaveUrlImage:
         assert path.read_bytes() == PNG_1PX
         # The cache directory must be under HERMES_HOME — gateway cleanup
         # relies on this being the canonical location.
-        assert "cache/images" in str(path)
+        assert path.parent.name == "images"
+        assert path.parent.parent.name == "cache"
         assert path.suffix == ".png"
 
 
@@ -132,4 +133,3 @@ class TestSaveUrlImage:
             save_url_image(f"{base}/oversize", max_bytes=1024 * 1024)
         after = set(cache_dir.glob("*"))
         assert after == before, "partial file leaked into cache after oversize cap"
-

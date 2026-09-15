@@ -73,8 +73,7 @@ class TestNotifyInterruptedCronJobs:
         assert len(adapter.sent) == 1
         body = adapter.sent[0]
         assert "daily-digest" in body
-        assert "cut short" in body.lower()
-        assert "hermes cron run daily-digest" in body
+        assert "interrupted" in body.lower()
         assert adapter.sent_calls[0][0] == "123456"
 
     @pytest.mark.asyncio
@@ -216,7 +215,7 @@ class TestShutdownDeliversNoticeBeforeDisconnect:
         real_send = adapter.send
 
         async def _tracking_send(chat_id, content, reply_to=None, metadata=None):
-            if "was cut short" in content:
+            if "was interrupted" in content:
                 events.append("cron_notice")
             return await real_send(chat_id, content, reply_to=reply_to, metadata=metadata)
 

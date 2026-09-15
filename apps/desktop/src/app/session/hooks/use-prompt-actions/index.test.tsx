@@ -1924,7 +1924,7 @@ describe('usePromptActions desktop slash pickers', () => {
     expect(calls).toContainEqual({
       method: 'handoff.fail',
       params: {
-        error: expect.stringContaining("couldn't reach your messaging connection"),
+        error: expect.stringContaining('Timed out'),
         session_id: RUNTIME_SESSION_ID
       }
     })

@@ -225,7 +225,7 @@ class SubdirectoryHintTracker:
         """Working-dir-relative, else ``~/``-relative (POSIX rendering so Windows
         never shows ``~/AppData\\Local\\...`` chimeras), else absolute."""
         try:
-            return str(hint_path.relative_to(self.working_dir))
+            return hint_path.relative_to(self.working_dir).as_posix()
         except (ValueError, RuntimeError):
             pass
         try:

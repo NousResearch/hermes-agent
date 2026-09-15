@@ -171,6 +171,35 @@ def test_demote_fences_local_room_against_newer_epoch(home):
     assert local_authority_gateway_id() != observed_gateway
 
 
+@pytest.mark.parametrize(
+    ("params", "match"),
+    [
+        (
+            {
+                "room_id": 123,
+                "observed_gateway_id": "install:" + "b" * 32,
+                "observed_epoch": 2,
+            },
+            "room_id must be a string",
+        ),
+        (
+            {
+                "room_id": "missing-room",
+                "observed_gateway_id": "install:" + "b" * 32,
+                "observed_epoch": 2,
+            },
+            "room not found",
+        ),
+    ],
+)
+def test_demote_preserves_domain_validation_errors(home, params, match):
+    envelope = srv._methods["groups.demote"](1, params)
+
+    error = _error(envelope)
+    assert error["code"] == 4119
+    assert match in error["message"]
+
+
 def test_replicate_rejects_gapped_page(home, tmp_path):
     from gateway import hosted_rooms as rooms
 

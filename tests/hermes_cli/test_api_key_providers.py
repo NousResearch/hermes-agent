@@ -306,7 +306,7 @@ class TestResolveProvider:
             lambda env=None: False,
         )
         monkeypatch.setenv("GITHUB_TOKEN", "gh-test-token")
-        with pytest.raises(AuthError, match="not connected to any AI provider"):
+        with pytest.raises(AuthError, match="No inference provider configured"):
             resolve_provider("auto")
 
 

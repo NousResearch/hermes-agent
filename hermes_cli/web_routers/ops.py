@@ -451,10 +451,15 @@ async def get_memory_status():
         active = _normalize_memory_provider_name(mem.get("provider")) if isinstance(mem, dict) else ""
         mem_dir = get_hermes_home() / "memories"
         files = {}  # sizes so the UI can show what a reset would erase
+        paths = {}
         for fname, key in _MEMORY_FILES:
             path = mem_dir / fname
             files[key] = path.stat().st_size if path.exists() else 0
-        return {"active": active, "providers": _discover_memory_provider_statuses(), "builtin_files": files}
+            paths[key] = str(path)
+        return {
+            "active": active, "providers": _discover_memory_provider_statuses(),
+            "builtin_files": files, "builtin_paths": paths,
+        }
 
     return await asyncio.to_thread(_run)
 

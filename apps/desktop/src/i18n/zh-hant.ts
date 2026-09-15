@@ -191,6 +191,7 @@ export const zhHant = defineLocale({
       methodNotAllowed: '桌面後端拒絕了該請求 (405 Method Not Allowed)。請嘗試重新啟動 Hermes Desktop。',
       microphonePermission: '麥克風權限已被拒絕。',
       openaiRejectedApiKey: 'OpenAI 拒絕了該 API 金鑰。',
+      openaiRejectedApiKeyWithStatus: status => `OpenAI 拒絕了該 API 金鑰 (${status} invalid_api_key)。`,
       openaiTtsNeedsKey: 'OpenAI TTS 需要 VOICE_TOOLS_OPENAI_KEY 或 OPENAI_API_KEY。',
       codeSkewRestartRequired: '更新後此後端仍在執行舊程式碼。請重新啟動以載入新程式碼。'
     },
@@ -381,8 +382,8 @@ export const zhHant = defineLocale({
         toggleFailed: '無法更新密碼管理器',
         notInstalled: name => `未偵測到。安裝 ${name} 命令列工具並登入後，Hermes 會自動偵測。`,
         disabledDesc: '已偵測到，但已為 Hermes 關閉。',
-        lockedDesc: '已偵測到。代理需要登入資訊時會請你解鎖，也可立即解鎖。',
-        unlockedDesc: '本工作階段已解鎖。閒置 30 分鐘或關閉 Hermes 後會自動鎖定。',
+        lockedDesc: '目前的設定連線尚未解鎖。在此解鎖可檢視已儲存的登入資訊；每個聊天會單獨請求解鎖。',
+        unlockedDesc: '僅目前的設定連線已解鎖。閒置 30 分鐘或此連線中斷後會自動鎖定。聊天需要單獨解鎖。',
         statusLocked: '已鎖定',
         statusNotDetected: '未偵測到',
         statusOff: '已關閉',
@@ -390,9 +391,10 @@ export const zhHant = defineLocale({
         unlock: '解鎖',
         unlocking: '解鎖中…',
         lock: '鎖定',
-        unlocked: name => `${name} 已在本工作階段解鎖。`,
+        unlocked: name => `${name} 僅在目前的設定連線中解鎖。`,
         unlockTitle: name => `解鎖 ${name}`,
-        unlockDescription: '輸入主密碼。它會交給本機的密碼管理器後立即捨棄，不會被儲存、記錄或顯示給代理。',
+        unlockDescription:
+          '此次解鎖僅適用於目前的設定連線。每個聊天會單獨請求解鎖。主密碼會交給密碼管理器，隨後在本機捨棄，不會被儲存、記錄或顯示給代理。',
         masterPasswordPlaceholder: '主密碼'
       }
     },
@@ -496,12 +498,6 @@ export const zhHant = defineLocale({
       terminalFontPlaceholder: 'MesloLGS NF 或 CSS 字型堆疊',
       terminalFontPreview: '字形預覽',
       terminalFontReset: '使用預設字型',
-      chatFontTitle: '聊天字型',
-      chatFontDesc: '為聊天與應用程式介面選擇已安裝的字型，適合 OpenDyslexic 等易讀字型；留空則使用主題字型。',
-      chatFontPlaceholder: 'OpenDyslexic 或 CSS 字型堆疊',
-      chatFontPreview: '預覽',
-      chatFontSample: '敏捷的棕色狐狸跳過懶狗。0123456789',
-      chatFontReset: '使用主題字型',
       translucencyTitle: '視窗透明',
       translucencyDesc: '讓整個視窗（包括文字）透出桌面。',
       translucencyGlassDesc: '霧面玻璃：桌面以柔和模糊透出，文字保持清晰。',
@@ -547,6 +543,9 @@ export const zhHant = defineLocale({
       embedsReset: (count: number) => `重設 ${count} 個已允許的服務`,
       resumeLastSessionTitle: '啟動時恢復上次會話',
       resumeLastSessionDesc: '開啟後，應用冷啟動時重新打開最近的聊天。關閉則始終從空白新會話開始。',
+      loginStartupTitle: '隨 Windows 啟動 Hermes',
+      loginStartupDesc: '登入時最小化開啟桌面應用程式。使用已儲存的主要設定檔。',
+      loginStartupFailed: 'Windows 未能啟用啟動項目。請在 Windows 設定中檢查「啟動應用程式」。',
       product: '產品',
       productDesc: '易讀的工具活動與精簡摘要。',
       technical: '技術',
@@ -761,7 +760,6 @@ export const zhHant = defineLocale({
       compression: {
         enabled: '自動壓縮',
         threshold: '壓縮閾值',
-        codexGpt55Autoraise: 'Codex 壓縮自動提高',
         targetRatio: '壓縮目標',
         protectLastN: '保護最近訊息'
       },
@@ -826,8 +824,7 @@ export const zhHant = defineLocale({
         engine: '長對話接近上下文上限時的管理策略。'
       },
       compression: {
-        enabled: '對話變大時摘要較早的上下文。',
-        codexGpt55Autoraise: '為支援的 ChatGPT Codex OAuth 模型將壓縮閾值提高到 85%。'
+        enabled: '對話變大時摘要較早的上下文。'
       },
       browser: {
         useRealProfile:
@@ -909,8 +906,9 @@ export const zhHant = defineLocale({
       checking: '檢查中…',
       seeWhatsNew: '查看新增內容',
       updateNow: '立即更新',
+      updateSource: '更新來源',
       releaseNotes: '發行說明',
-      onLatest: '你已是最新版本。',
+      onLatest: '已設定的更新來源已是最新。',
       installing: '正在安裝更新。',
       cantUpdate: '此版本無法從應用程式內自行更新。',
       cantReach: '無法連線到更新伺服器。',
@@ -921,6 +919,8 @@ export const zhHant = defineLocale({
       justNowSuffix: ' · 剛剛',
       automaticUpdates: '自動更新',
       automaticUpdatesDesc: 'Hermes 會在背景自動檢查更新，並在有可用更新時通知你。',
+      updateParked: '更新正在等待安全的工作區。',
+      updateParkedDesc: '本機修復變更已保留。請在安裝上游更新前先檢查或移動這些變更。',
       branchCommit: (branch, commit) => `分支 ${branch} · 提交 ${commit}`,
       never: '從未',
       justNow: '剛剛',
@@ -1189,9 +1189,6 @@ export const zhHant = defineLocale({
         mcp: { label: 'MCP', hint: 'MCP 工具路由' },
         title_generation: { label: '標題生成', hint: '工作階段標題' },
         review: { label: '評審', hint: '/review 評審子代理' },
-        triage_specifier: { label: '分類指定', hint: '看板任務規格補全' },
-        kanban_decomposer: { label: '看板分解', hint: '任務拆解' },
-        profile_describer: { label: '設定檔描述', hint: '自動生成設定檔描述' },
         curator: { label: '策展器', hint: '技能使用審查' }
       }
     },
@@ -1238,7 +1235,8 @@ export const zhHant = defineLocale({
       updateAction: '更新引擎',
       updating: '正在更新引擎…',
       upToDateTitle: '引擎已是最新',
-      upToDateDetail: (tag, backend) => `正在執行 llama.cpp ${tag}（${backend}）——已設定的組建。`,
+      upToDateDetail: (tag, backend) => `正在執行 llama.cpp ${tag}（${backend}）——Hermes 提供的最新組建。`,
+      updateToast: next => `本地引擎有新組建（${next}）。可在 設定 → 本地模型 中更新。`,
       activeDetail: '新對話使用此模型——傳送首條訊息時載入',
       activeNotLoaded: '首條訊息時載入',
       loadedPill: '已載入',
@@ -1441,6 +1439,7 @@ export const zhHant = defineLocale({
   skills: {
     tabSkills: '技能',
     tabToolsets: '工具集',
+    tabHub: '瀏覽技能中心',
     tabMcp: 'MCP',
     all: '全部',
     searchSkills: '搜尋技能...',
@@ -1483,6 +1482,7 @@ export const zhHant = defineLocale({
       bundled: '內建',
       hub: '技能中心'
     },
+    provenanceSummary: (agent, bundled, hub) => `${agent} 個已學習 · ${bundled} 個內建 · ${hub} 個技能中心`,
     emptyNoneFound: noun => `找不到${noun}`,
     emptyNothingMatches: query => `沒有符合「${query}」的內容。`,
     emptyNoneAvailable: noun => `尚無可用的${noun}。`,
@@ -1671,9 +1671,13 @@ export const zhHant = defineLocale({
     actionDone: '完成',
     actionFailed: '失敗',
     actionStartedWaiting: '動作已啟動，等待狀態…',
+    actionTimedOut: '動作仍在執行；請查看最近的紀錄以確認最終狀態。',
     loadingStatus: '正在載入狀態…',
     recentLogs: '最近記錄',
     noLogs: '尚未載入記錄。',
+    allLogLevels: '所有層級',
+    noMatchingLogs: '沒有符合搜尋的記錄行。',
+    logTailHint: count => `顯示所選檔案和層級的最近記錄，最多 ${count} 行。`,
     days: count => `${count} 天`,
     statSessions: '工作階段',
     statApiCalls: 'API 呼叫',
@@ -2626,6 +2630,7 @@ export const zhHant = defineLocale({
   },
 
   updates: {
+    automaticUpdatesSaveFailed: '無法確認設定已儲存。請重試。',
     stages: {
       idle: '準備中…',
       prepare: '準備中…',
@@ -3318,19 +3323,6 @@ export const zhHant = defineLocale({
       copyQuery: '複製查詢',
       copyFile: '複製檔案',
       copyPath: '複製路徑',
-      failedCalls: (count: number) => `${count} 次工具呼叫失敗`,
-      skillActivity: {
-        loading: '正在載入技能',
-        loaded: '已載入技能',
-        loadFailed: '技能載入失敗',
-        readingResource: '正在讀取技能資源',
-        readResource: '已讀取技能資源',
-        resourceFailed: '技能資源讀取失敗',
-        listing: '正在列出技能',
-        listed: '已列出技能',
-        listFailed: '技能清單取得失敗',
-        unavailable: '技能結果無法使用'
-      },
       outputAlt: '工具輸出',
       rawResponse: '原始回應',
       copyActivity: '複製活動',
@@ -3342,7 +3334,6 @@ export const zhHant = defineLocale({
       statusError: '錯誤',
       statusRecovered: '已復原',
       statusDone: '完成',
-      resultUnavailable: '結果無法使用',
       memoryWriteNoted: '已記下記憶寫入',
       actions: {
         read: '已讀取',
@@ -3406,8 +3397,7 @@ export const zhHant = defineLocale({
     sudoSendFailed: '無法傳送 sudo 密碼',
     secretSendFailed: '無法傳送密鑰',
     sudoTitle: '管理員密碼',
-    sudoDesc: '輸入 sudo 密碼前，請先確認指令。密碼會傳送給執行指令的代理，並在本次工作階段中快取。',
-    sudoCommandUnavailable: '此代理未提供指令。如果無法在對話中確認，請取消。',
+    sudoDesc: 'Hermes 需要您的 sudo 密碼來執行特權指令。它只會傳送給您的本機代理。',
     sudoPlaceholder: 'sudo 密碼',
     secretTitle: '需要密鑰',
     secretDesc: 'Hermes 需要一個憑證才能繼續。',
@@ -3562,11 +3552,6 @@ export const zhHant = defineLocale({
       'composer-mentions': {
         title: '附件與指令',
         text: '輸入 @ 把檔案帶入對話，輸入 / 執行指令。'
-      },
-      'local-runtime-update': {
-        title: '本機引擎有可用更新',
-        text: '更新執行本機模型的引擎。進行中的本機請求可能會中斷。',
-        action: '立即更新'
       },
       'local-setup': {
         title: '這台電腦可以本地執行模型',

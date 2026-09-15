@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { BACKEND_BOOT_WAIT_TIMEOUT_MS } from '@/lib/with-timeout'
+
 // Regression suite for #89622: clicking a profile in the rail did nothing.
 // The live-work pruner (pruneSecondaryGateways) disposed the switch target's
 // secondary entry while its socket was still dialing — the target is not yet
@@ -165,21 +167,27 @@ describe('activation lease vs. the live-work pruner (#89622)', () => {
       releaseConnect = resolve
     })
 
-    // Dial starts and never settles (wedged bridge call).
-    void ensureGatewayForProfile('bot')
-    await flushUntilSecondaryRegistered()
-    expect(secondaryGateways).toHaveLength(1)
+    // Observe the eventual timeout rejection while keeping the dial wedged.
+    const startedAt = Date.now()
+    const switching = ensureGatewayForProfile('bot').catch(() => undefined)
 
-    // Inside the lease window: spared.
-    pruneSecondaryGateways(new Set())
-    expect(secondaryGateways[0].close).not.toHaveBeenCalled()
+    try {
+      await flushUntilSecondaryRegistered()
+      expect(secondaryGateways).toHaveLength(1)
 
-    // Past the lease window: reclaimed. (Lease is wall-clock bounded so a
-    // leaked lease cannot pin a dead entry forever.)
-    vi.setSystemTime(Date.now() + 31_000)
-    pruneSecondaryGateways(new Set())
-    expect(secondaryGateways[0].close).toHaveBeenCalled()
+      // The lease covers the complete foreground cold-start budget, including
+      // its final millisecond. Advancing only wall-clock time deliberately
+      // leaves timeout callbacks undelivered to exercise orphan self-healing.
+      vi.setSystemTime(startedAt + BACKEND_BOOT_WAIT_TIMEOUT_MS - 1)
+      pruneSecondaryGateways(new Set())
+      expect(secondaryGateways[0].close).not.toHaveBeenCalled()
 
-    releaseConnect()
+      vi.setSystemTime(startedAt + BACKEND_BOOT_WAIT_TIMEOUT_MS)
+      pruneSecondaryGateways(new Set())
+      expect(secondaryGateways[0].close).toHaveBeenCalled()
+    } finally {
+      releaseConnect()
+      await switching
+    }
   })
 })

@@ -21,12 +21,6 @@ except ImportError:  # pragma: no cover - stripped/scaffold installs only
     psutil = None  # type: ignore[assignment]
 
 
-def read_only_db_uri(db_path) -> str:
-    """``file:`` URI for a ``mode=ro`` open. ``as_uri()`` percent-encodes ``?``/``#`` in the home
-    path; a raw ``f"file:{path}?mode=ro"`` truncates there and opens the wrong (empty) database."""
-    return Path(db_path).resolve().as_uri() + "?mode=ro"
-
-
 logger = logging.getLogger(__name__)
 
 _IS_WINDOWS = sys.platform == "win32"
@@ -194,9 +188,7 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
     if _IS_WINDOWS:
         return []
 
-    # realpath, not abspath: psutil/libproc report the kernel-resolved pathname, so a symlinked
-    # HERMES_HOME would otherwise make every holder invisible and let maintenance proceed.
-    db_path_str = os.path.realpath(os.fspath(db_path))
+    db_path_str = os.path.abspath(os.fspath(db_path))
     watched = {
         canonical_sqlite_path(db_path_str),
         canonical_sqlite_path(db_path_str + "-wal"),
@@ -311,7 +303,7 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
                 continue
             for opened in info.get("open_files") or ():
                 path = getattr(opened, "path", "")
-                if path and canonical_sqlite_path(os.path.realpath(path)) in watched:
+                if path and canonical_sqlite_path(path) in watched:
                     holders.append((pid, path))
     except Exception as exc:
         logger.warning(
@@ -328,14 +320,15 @@ def live_writer_holds_db(
     *,
     connect_repair_durable: Callable[..., sqlite3.Connection],
 ) -> bool:
-    """Return whether repair lacks proven exclusive ownership of ``db_path``.
-
-    ANY foreign process holding the DB or a sidecar is a live holder (#103339): the lock probe below
-    cannot see a DELETE-mode reader (SHARED only) and cannot run at all on a malformed file, and those
-    are exactly the states repair/VACUUM/checkpoint get invoked in. The holder scan is the authority and
-    fails closed on its own failures (unknown/uninspectable sentinels); the probe only adds a positive
-    lock signal on top."""
-    if foreign_state_db_holders(db_path):
+    """Return whether repair lacks proven exclusive ownership of ``db_path``."""
+    foreign_holders = foreign_state_db_holders(db_path)
+    if any(
+        pid < 0
+        or path.startswith("uninspectable holder:")
+        or path.startswith("uninspectable descriptor:")
+        or path.endswith(" (deleted)")
+        for pid, path in foreign_holders
+    ):
         return True
 
     probe = None
@@ -349,7 +342,8 @@ def live_writer_holds_db(
         lowered = str(exc).lower()
         return "locked" in lowered or "busy" in lowered
     except sqlite3.DatabaseError:
-        # Malformed/unreadable with no holder on the scan: nobody else has it open, so repair may run.
+        return False
+    except Exception:
         return False
     finally:
         if probe is not None:

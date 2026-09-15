@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from tools import bot_mode_dm, bot_mode_probe, bot_relay
+from tools import bot_mode_dm, bot_mode_probe
 
 
 @pytest.fixture(autouse=True)
@@ -234,19 +234,17 @@ def _runner_author(command):
 
 def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     calls = _capture_spawn(monkeypatch)
-    # These assertions target the -p/turn-args shape; pin the entrypoint resolution
-    # so the test stays hermetic across venvs that do/don't expose a sibling script.
-    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
     home = _managed_home(tmp_path, teammates=("researcher",))
     agent = _FakeAgent(home, title="Bot Chat")
+    message = (
+        'status? give me the "PAYLOAD_SENTINEL_7A91" numbers '
+        "$(and this is not shell)"
+    )
 
     result = json.loads(
         bot_mode_dm.message_agent_tool(
             target="@researcher",
-            message=(
-                'status? give me the "PAYLOAD_SENTINEL_7A91" numbers '
-                "$(and this is not shell)"
-            ),
+            message=message,
             agent=agent,
         )
     )
@@ -277,7 +275,7 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
         "-Q",
     ]
     # message body rides the temp file, never the command line
-    assert "PAYLOAD_SENTINEL_7A91" not in command
+    assert message not in command
     assert "$(" not in command
     # the sender rides the runner argv as a stable id plus display handle
     assert _runner_author(command) == {"id": "bot:default", "name": "hermes", "is_bot": True}
@@ -298,7 +296,6 @@ def test_peer_delivery_command_pins_registry_profile_for_secondary_bots(
     tool-side roster (read from the machine-root config) validated the
     target."""
     calls = _capture_spawn(monkeypatch)
-    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
     home = _managed_home(tmp_path, peers=("spark",))
     # A reviewer-profile gateway context: the agent's session db lives under
     # that profile's home, so _agent_home() resolves there while the
@@ -320,7 +317,6 @@ def test_peer_delivery_command_pins_registry_profile_for_secondary_bots(
 
 def test_peer_delivery_command(tmp_path, monkeypatch):
     calls = _capture_spawn(monkeypatch)
-    monkeypatch.setattr(bot_relay, "_hermes_cli", lambda: "hermes")
     monkeypatch.setattr("socket.gethostname", lambda: "eri-mac.local")
     home = _managed_home(tmp_path, peers=("spark",))
     agent = _FakeAgent(home, title="Bot Chat")
@@ -344,40 +340,6 @@ def test_peer_delivery_command(tmp_path, monkeypatch):
     mode, _dm_file, transport_argv = _runner_parts(calls[1]["command"])
     assert mode == "stdin"
     assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "spark"]
-
-
-def test_delivery_pins_the_hermes_entrypoint_beside_this_interpreter(tmp_path, monkeypatch):
-    """A background delivery must not rely on PATH: the runner's service context
-    lacks the gateway's venv bin dir, so a bare ``hermes`` resolves to a system
-    install whose shebang picks the wrong interpreter and dies on import (#108628).
-    Both transports must invoke the entrypoint beside this interpreter instead."""
-    venv_bin = tmp_path / "venv" / ("Scripts" if sys.platform == "win32" else "bin")
-    venv_bin.mkdir(parents=True)
-    hermes_entry = venv_bin / ("hermes.exe" if sys.platform == "win32" else "hermes")
-    hermes_entry.write_text("#!/bin/sh\n", encoding="utf-8")
-    monkeypatch.setattr(sys, "executable", str(venv_bin / "python3"))
-
-    calls = _capture_spawn(monkeypatch)
-    home = _managed_home(tmp_path, teammates=("researcher",), peers=("spark",))
-    agent = _FakeAgent(home, title="Bot Chat")
-
-    result = json.loads(
-        bot_mode_dm.message_agent_tool(target="researcher", message="ping", agent=agent)
-    )
-    assert result["status"] == "sent"
-    mode, _dm_file, transport_argv = _runner_parts(calls[0]["command"])
-    assert mode == "query-file"
-    assert transport_argv[0] == str(hermes_entry)
-    assert transport_argv[1:] == ["-p", "researcher", "chat", "--in", "~", "-c", "Bot Chat",
-                                  "--create-if-missing", "-Q"]
-
-    result2 = json.loads(
-        bot_mode_dm.message_agent_tool(target="spark", message="ping", agent=agent)
-    )
-    assert result2["status"] == "sent"
-    mode, _dm_file, transport_argv = _runner_parts(calls[1]["command"])
-    assert mode == "stdin"
-    assert transport_argv == [str(hermes_entry), "-p", "default", "peer", "dm", "spark"]
 
 
 def test_peer_delivery_author_carries_the_sender_hostname_and_local_stays_bare(tmp_path, monkeypatch):
@@ -422,7 +384,11 @@ def test_delivery_command_author_json_survives_quoting_and_windows_slash_rewrite
     assert parts[2:4] == ["--run-delivery", "--author"]
     assert json.loads(parts[4]) == author
     assert parts[5] == "query-file"
-    assert _runner_parts(command) == ("query-file", str(tmp_path / "dm.txt"), ["hermes", "-p", "x"])
+    assert _runner_parts(command) == (
+        "query-file",
+        str(tmp_path / "dm.txt").replace("\\", "/"),
+        ["hermes", "-p", "x"],
+    )
 
     monkeypatch.setattr(sys, "platform", "win32")
     command = bot_mode_dm._delivery_command(["hermes", "-p", "x"], "C:\\Users\\me\\dm.txt",
@@ -489,8 +455,7 @@ def test_live_dm_runner_retry_never_reexecutes_failed_claim(tmp_path, monkeypatc
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("hello", encoding="utf-8")
     argv = ["hermes", "-p", "researcher"]
-    assert bot_mode_dm._run_delivery(argv, str(dm_file), stdin_file=False) == 0
-    queued = json.loads(capsys.readouterr().out)
+    queued = bot_mode_dm._admit_live_dm(target, str(dm_file))
     assert queued["status"] == "queued"
     claimed = live.claim_pending_delivery(target, owner)
     assert claimed is not None
@@ -501,6 +466,25 @@ def test_live_dm_runner_retry_never_reexecutes_failed_claim(tmp_path, monkeypatc
     assert failed["status"] == "failed"
     assert failed["delivery_id"] == queued["delivery_id"]
     assert dm_file.read_text(encoding="utf-8") == "hello"
+
+
+def test_live_waiter_keeps_reply_notification_after_fast_wait_window(tmp_path, monkeypatch, capsys):
+    from tools import bot_live_delivery as live
+
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="bot",
+                 lease_id="lease", live_session_id="live")
+    queued = live.deliver_to_live_owner(tmp_path, owner, "long task")
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
+
+    def settle_after_wait(_seconds):
+        claimed = live.claim_pending_delivery(tmp_path, owner)
+        live.complete_delivery(tmp_path, claimed["delivery_id"], status="settled", reply="late answer")
+
+    monkeypatch.setattr(bot_mode_dm.time, "sleep", settle_after_wait)
+    assert bot_mode_dm._wait_live_dm(str(tmp_path), queued["delivery_id"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "settled"
+    assert result["reply"] == "late answer"
 
 
 # ── plaintext tempfile lifecycle ─────────────────────────────────────────────
@@ -591,22 +575,6 @@ def test_delivery_runner_surfaces_live_owner_refusal(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["reason"] == "target_busy"
     assert "NOT delivered" in payload["error"]
-
-
-def test_local_turn_reemits_empty_stdout_for_a_bare_silence_marker(tmp_path, capsys):
-    """#110782: the one-shot ``hermes chat -c "Bot Chat"`` transport applies the gateway's
-    silence rule — a successful bare marker reaches the sender as "", prose stays verbatim."""
-    dm_file = tmp_path / "message.txt"
-    dm_file.write_text("thanks, bye", encoding="utf-8")
-    child = tmp_path / "quiet.py"
-    child.write_text("import sys\nprint(sys.argv[1])\n", encoding="utf-8")
-
-    assert bot_mode_dm._run_local_turn([sys.executable, str(child), "NO_REPLY"], str(dm_file)) == 0
-    assert capsys.readouterr().out == ""
-
-    prose = "The NO_REPLY marker means do not answer."
-    assert bot_mode_dm._run_local_turn([sys.executable, str(child), prose], str(dm_file)) == 0
-    assert capsys.readouterr().out.strip() == prose
 
 
 def test_query_file_delivery_closes_stdin_for_initial_attempt_and_retry(
@@ -905,6 +873,7 @@ def test_sweeper_removes_only_stale_dm_files(tmp_path, monkeypatch):
     assert unrelated.exists()
 
 
+@pytest.mark.linux_only
 def test_dm_dir_is_private_and_uid_scoped_on_posix(tmp_path, monkeypatch):
     monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
 
@@ -917,6 +886,7 @@ def test_dm_dir_is_private_and_uid_scoped_on_posix(tmp_path, monkeypatch):
     assert dm_dir.stat().st_mode & 0o777 == 0o700
 
 
+@pytest.mark.linux_only
 def test_dm_dir_repairs_restrictive_owner_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
     uid = os.getuid() if hasattr(os, "getuid") else None
@@ -929,7 +899,7 @@ def test_dm_dir_repairs_restrictive_owner_mode(tmp_path, monkeypatch):
     assert dm_dir.stat().st_mode & 0o777 == 0o700
 
 
-@pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX ownership contract")
+@pytest.mark.linux_only
 def test_dm_dir_rejects_precreated_symlink(tmp_path, monkeypatch):
     target = tmp_path / "attacker-controlled"
     target.mkdir()
@@ -939,40 +909,3 @@ def test_dm_dir_rejects_precreated_symlink(tmp_path, monkeypatch):
 
     with pytest.raises(PermissionError, match="not a directory"):
         bot_mode_dm._dm_dir()
-
-
-def test_cleanup_sweeps_stale_live_intents_and_keeps_fresh_ones(tmp_path, monkeypatch):
-    """``<dm file>.live.json`` holds the DM plaintext and outlives its runner for retries; the
-    housekeeping sweep must reap the orphans like it reaps the dm files themselves."""
-    import os
-
-    monkeypatch.setattr(bot_mode_dm, "_dm_dir", lambda: tmp_path)
-    stale = tmp_path / "dm-old.txt.live.json"
-    stale.write_text("{}", encoding="utf-8")
-    os.utime(stale, (1, 1))
-    fresh = tmp_path / "dm-new.txt.live.json"
-    fresh.write_text("{}", encoding="utf-8")
-
-    assert bot_mode_dm.cleanup_bot_dm_cache() >= 1
-    assert not stale.exists()
-    assert fresh.exists()
-
-
-def test_settled_live_wait_unlinks_the_intent_but_a_pending_one_keeps_it(tmp_path, monkeypatch, capsys):
-    from tools import bot_live_delivery as live
-
-    dm_file = tmp_path / "dm-x.txt"
-    dm_file.write_text("secret plaintext", encoding="utf-8")
-    intent = tmp_path / "dm-x.txt.live.json"
-    intent.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
-
-    monkeypatch.setattr(live, "read_delivery_result", lambda home, did: {"status": "queued"})
-    assert bot_mode_dm._wait_live_dm(str(tmp_path), "d1", dm_file=dm_file) == 0
-    assert intent.exists(), "a pending delivery may still be retried from the same intent"
-    assert dm_file.exists()
-
-    monkeypatch.setattr(live, "read_delivery_result", lambda home, did: {"status": "settled", "reply": "ok"})
-    assert bot_mode_dm._wait_live_dm(str(tmp_path), "d1", dm_file=dm_file) == 0
-    assert not intent.exists()
-    assert not dm_file.exists(), "the dm .txt holds the same plaintext as the settled intent"

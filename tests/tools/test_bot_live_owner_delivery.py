@@ -3,8 +3,36 @@ import json
 import os
 import subprocess
 import sys
+import logging
 
 import pytest
+
+
+@pytest.mark.parametrize("title", ["Bot Chat", "Other chat"])
+def test_lazy_bot_owner_is_advertised_before_first_persisted_turn(tmp_path, title):
+    from tui_gateway import session_lifecycle
+    from tui_gateway.method_ctx import rebind
+    from tools.bot_live_delivery import find_canonical_live_owner
+
+    claim = rebind(session_lifecycle._claim_active_session_slot, {
+        "_load_cfg": lambda: {}, "logger": logging.getLogger(__name__),
+    })
+    ensure = rebind(session_lifecycle._ensure_active_session_slot, {
+        "_claim_active_session_slot": claim, "_session_source": lambda session: "tui",
+    })
+    session = dict(session_key="fresh", pending_title=title, profile_home=str(tmp_path))
+    assert ensure("live", session) is None
+    try:
+        owner = find_canonical_live_owner(tmp_path)
+        if title == "Bot Chat":
+            assert owner is not None
+            assert owner["session_id"] == "fresh"
+            assert owner["lease_id"] == session["active_session_lease"].lease_id
+        else:
+            assert owner is None
+        assert not (tmp_path / "state.db").exists()
+    finally:
+        session["active_session_lease"].release()
 
 
 @pytest.mark.parametrize("terminal_status", ["settled", "failed", "cancelled"])

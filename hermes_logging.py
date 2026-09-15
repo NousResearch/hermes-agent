@@ -81,17 +81,9 @@ def _is_windows_concurrent_log_lock_timeout(exc: BaseException | None) -> bool:
     )
 
 
-def _is_unavailable_log_stream(exc: BaseException | None) -> bool:
-    """True when a file handler lost its backing stream during teardown or I/O."""
-    return (
-        (isinstance(exc, OSError) and exc.errno == 5)
-        or (isinstance(exc, ValueError) and "closed file" in str(exc).lower())
-    )
-
-
 # Third-party loggers that are noisy at DEBUG/INFO level.
 _NOISY_LOGGERS = (
-    "openai", "openai._base_client", "httpx", "httpcore", "asyncio", "hpack", "hpack.hpack",
+    "openai", "openai._base_client", "httpx", "httpx2", "httpcore", "asyncio", "hpack", "hpack.hpack",
     "grpc", "modal", "urllib3", "urllib3.connectionpool", "websockets", "charset_normalizer",
     "markdown_it",
 )
@@ -155,6 +147,29 @@ class _ComponentFilter(logging.Filter):
         return record.name.startswith(self._prefixes)
 
 
+class _RoutineTransportNoiseFilter(logging.Filter):
+    """Drop routine MCP transport chatter while preserving real failures."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.exc_info:
+            return True
+        if record.name == "httpx2" and record.levelno <= logging.INFO:
+            return False
+
+        if record.name == "mcp.client.streamable_http":
+            message = record.getMessage()
+            if record.levelno <= logging.INFO and message.startswith(
+                "Received session ID:"
+            ):
+                return False
+            if record.levelno <= logging.WARNING and message.startswith(
+                "Session termination failed: 404"
+            ):
+                return False
+
+        return True
+
+
 # Logger name prefixes per component; used by _ComponentFilter and ``hermes logs --component``.
 COMPONENT_PREFIXES = {
     # ``plugins.platforms``: messaging adapters that migrated out of
@@ -167,37 +182,6 @@ COMPONENT_PREFIXES = {
     "cron": ("cron",),
     "gui": ("hermes_cli.web_server", "hermes_cli.pty_bridge", "tui_gateway", "uvicorn"),
 }
-
-
-def _known_log_homes() -> set[Path]:
-    """Homes the queued file handlers already serve: static handlers by their file, routers by
-    their default home plus every profile home they route. Caller holds ``_queue_state_lock``."""
-    homes: set[Path] = set()
-    for handler in _queued_file_handlers:
-        if isinstance(handler, _ProfileRoutingFileHandler):
-            homes.add(handler._default_home)
-            homes.update(handler._profile_homes)
-        elif isinstance(handler, RotatingFileHandler):
-            try:
-                homes.add(Path(handler.baseFilename).resolve().parent.parent)
-            except (TypeError, ValueError, OSError):
-                continue
-    return homes
-
-
-def _adopt_secondary_home(home: Path) -> bool:
-    """Route *home*'s records to its own files when this process already logs for another home.
-    Enables profile routing for the union of homes (or widens the live routers); False when
-    *home* is the first home seen or is already served."""
-    try:
-        resolved = Path(home).expanduser().resolve()
-    except (TypeError, ValueError, OSError):
-        return False
-    with _queue_state_lock:
-        known = _known_log_homes()
-    if not known or resolved in known:
-        return False
-    return enable_profile_log_routing([*sorted(known), resolved])
 
 
 def setup_logging(
@@ -218,13 +202,6 @@ def setup_logging(
     global _logging_initialized
     home = hermes_home or get_hermes_home()
     log_dir = mkdir_under_hermes_home(home / "logs")
-    # A second Hermes home in a process that already logs for another one — a dashboard or
-    # ``hermes serve`` backend building agents for several profiles, a multiplexed gateway —
-    # gets routed by record home. Stacking another file handler here would hand it EVERY
-    # profile's records (the handlers carry no home filter), and a duplicate writer on top of
-    # an existing router.
-    if _adopt_secondary_home(home):
-        return log_dir
     cfg_level, cfg_max_size, cfg_backup = _read_logging_config()
     level_name = (log_level or cfg_level or "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
@@ -274,6 +251,7 @@ def setup_verbose_logging() -> None:
     handler = logging.StreamHandler(_safe_stderr())
     handler.setLevel(logging.DEBUG)
     handler.setFormatter(RedactingFormatter(_LOG_FORMAT_VERBOSE, datefmt="%H:%M:%S"))
+    handler.addFilter(_RoutineTransportNoiseFilter())
     handler._hermes_verbose = True  # type: ignore[attr-defined]
     root.addHandler(handler)
 
@@ -305,7 +283,6 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
     def __init__(self, *args, **kwargs):
         from hermes_cli.config import is_managed
         self._managed = is_managed()
-        self._unavailable_reported = False
         super().__init__(*args, **kwargs)
         self._record_stream_stat()
 
@@ -363,11 +340,6 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         if self.stream is not None or os.path.exists(self.baseFilename):
             self._reopen_if_externally_rotated()
         super().emit(record)
-        # A record actually reached the file: only now has the destination recovered. Resetting
-        # in _open() is wrong — open() succeeds on a device whose write/flush still raise EIO,
-        # which re-armed the report and printed the path once per record.
-        if self.stream is not None:
-            self._unavailable_reported = False
 
     def handleError(self, record: logging.LogRecord) -> None:
         """Suppress the known Windows ``concurrent-log-handler`` lock timeout.
@@ -376,23 +348,8 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         silence it before stdlib prints to stderr (which the Desktop slash-worker
         captures into chat output).
         """
-        exc = sys.exc_info()[1]
-        if _is_windows_concurrent_log_lock_timeout(exc):
-            return
-        if _is_unavailable_log_stream(exc):
-            # The QueueListener must not turn a failing log destination into a traceback for
-            # every queued record. Name the path once, drop the stale stream; the next emit
-            # reopens it if the destination has recovered.
-            if not self._unavailable_reported:
-                self._unavailable_reported = True
-                _quietly(lambda: print(
-                    f"hermes_logging: {self.baseFilename} unavailable ({exc}); "
-                    "file logging paused until it recovers", file=_safe_stderr()))
-            if self.stream is not None:
-                _quietly(self.stream.close)
-            self.stream = None  # type: ignore[assignment]
-            return
-        super().handleError(record)
+        if not _is_windows_concurrent_log_lock_timeout(sys.exc_info()[1]):
+            super().handleError(record)
 
     def _open(self):
         stream = super()._open()
@@ -539,6 +496,7 @@ def _register_queued_handler(handler: logging.Handler) -> None:
         if _log_queue is None:
             _log_queue = queue.SimpleQueue()
             qh = _NonFormattingQueueHandler(_log_queue)
+            qh.addFilter(_RoutineTransportNoiseFilter())
             qh._hermes_queue = True  # type: ignore[attr-defined]
             # Always on the root logger so records from any logger reach the queue.
             logging.getLogger().addHandler(qh)
@@ -653,15 +611,10 @@ def _add_rotating_handler(
     """Register a queued ``RotatingFileHandler`` for *path*; idempotent per resolved path."""
     resolved = path.resolve()
     for existing in _queued_file_handlers:
-        # Already attached directly, or already covered by the profile router — for its default
-        # home or any profile home it routes (a bare handler beside it would take every record).
+        # Already attached directly, or already covered by the profile router.
         if getattr(existing, "_hermes_routed_log_path", None) == resolved or (
             isinstance(existing, RotatingFileHandler)
             and Path(getattr(existing, "baseFilename", "")).resolve() == resolved
-        ):
-            return
-        if isinstance(existing, _ProfileRoutingFileHandler) and existing._filename == resolved.name and (
-            resolved.parent.parent == existing._default_home or resolved.parent.parent in existing._profile_homes
         ):
             return
     handler = _new_file_handler(
@@ -669,17 +622,6 @@ def _add_rotating_handler(
     )
     if log_filter is not None:
         handler.addFilter(log_filter)
-    # Routing already on (a second home adopted earlier): a component log added now —
-    # ``mode="gateway"`` after the fact — must route too, or it takes every home's records.
-    routers = [h for h in _queued_file_handlers if isinstance(h, _ProfileRoutingFileHandler)]
-    if routers:
-        homes: set[Path] = set()
-        for router in routers:
-            homes.add(router._default_home)
-            homes.update(router._profile_homes)
-        routed = _ProfileRoutingFileHandler(handler, sorted(homes))
-        _quietly(handler.close)
-        handler = routed
     # Queue, not ``addHandler``: the rotation-lock wait never runs on the caller's thread.
     _register_queued_handler(handler)
 

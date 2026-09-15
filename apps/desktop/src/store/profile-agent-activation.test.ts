@@ -96,7 +96,7 @@ describe('ensureGatewayAgent → $connection / $activeGatewayProfile sync', () =
     await ensureGatewayAgent('homelab', 'research')
 
     expect(ensureGatewayForAgent).toHaveBeenCalledWith('homelab', 'research')
-    expect(getConnectionFor).toHaveBeenCalledWith({ connectionId: 'homelab', profile: 'research' })
+    expect(getConnectionFor).toHaveBeenCalledWith({ connectionId: 'homelab', profile: 'research', priority: 'foreground' })
     expect($activeGatewayProfile.get()).toBe('research')
     expect($connection.get()?.mode).toBe('remote')
     expect($connection.get()?.profile).toBe('research')
@@ -195,6 +195,7 @@ describe('ensureGatewayAgent → $connection / $activeGatewayProfile sync', () =
     expect(ensureGatewayForProfile).toHaveBeenCalledWith('research')
     expect(ensureGatewayForAgent).not.toHaveBeenCalled()
     expect(getConnectionFor).not.toHaveBeenCalled()
+    expect(getConnection).toHaveBeenCalledWith('research', { priority: 'foreground' })
   })
 
   it('keeps an explicit local registry id on the registry-aware path', async () => {
@@ -204,7 +205,7 @@ describe('ensureGatewayAgent → $connection / $activeGatewayProfile sync', () =
 
     expect(ensureGatewayForAgent).toHaveBeenCalledWith('local', 'research')
     expect(ensureGatewayForProfile).not.toHaveBeenCalled()
-    expect(getConnectionFor).toHaveBeenCalledWith({ connectionId: 'local', profile: 'research' })
+    expect(getConnectionFor).toHaveBeenCalledWith({ connectionId: 'local', profile: 'research', priority: 'foreground' })
   })
 })
 

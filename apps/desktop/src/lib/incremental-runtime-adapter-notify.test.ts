@@ -84,6 +84,40 @@ describe('IncrementalExternalStoreThreadRuntimeCore adapter swap notifications',
     expect(notifications).toBe(0)
   })
 
+  it('does NOT notify when a fresh repository wrapper carries the same normalized tree', () => {
+    const messages = [message('a', 'one'), message('b', 'two')]
+    const core = new IncrementalExternalStoreRuntimeCore(adapterWith(repositoryOf(messages)))
+    const thread = core.threads.getMainThreadRuntimeCore()
+
+    let notifications = 0
+    thread.subscribe(() => {
+      notifications += 1
+    })
+
+    // `useRuntimeMessageRepository` may receive a freshly allocated source
+    // array while all normalized messages are unchanged. The exported wrapper
+    // is new too, but the runtime must not feed that identity churn back into
+    // React as a store update.
+    core.setAdapter(adapterWith(repositoryOf(messages)))
+
+    expect(notifications).toBe(0)
+  })
+
+  it('accepts a repository after a legacy adapter omitted one', () => {
+    const repo = repositoryOf([message('a', 'one')])
+    const core = new IncrementalExternalStoreRuntimeCore(adapterWith(repo))
+
+    // `ExternalStoreAdapter` supports an older no-repository form. A later
+    // modern adapter must take the normal incremental path rather than trying
+    // to compare the missing legacy repository.
+    core.setAdapter({
+      isRunning: false,
+      messages: repo.messages.map(({ message }) => message)
+    } as ExternalStoreAdapter)
+
+    expect(() => core.setAdapter(adapterWith(repo))).not.toThrow()
+  })
+
   it('still notifies when the message repository actually changes', () => {
     const repo = repositoryOf([message('a', 'one')])
     const core = new IncrementalExternalStoreRuntimeCore(adapterWith(repo))

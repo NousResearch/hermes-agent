@@ -44,6 +44,8 @@ PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 # This dict is kept only so existing history keeps resolving; the effective
 # AUTHOR_MAP below merges it with the directory (directory wins).
 LEGACY_AUTHOR_MAP = {
+    # Kept here because the directory filename collides by case on Windows.
+    "agent@Agents-Mac-mini.local": "skip-agent",
     "declanbatesmith@outlook.com": "cat-thats-fat",  # PR #60489 (desktop: first-run remote connection option)
     "drbs2004@me.com": "cat-thats-fat",  # PR #60489 (desktop: first-run remote connection option; historical merge email)
     "122438640+ragingbulld@users.noreply.github.com": "ragingbulld",  # PR #65606 salvage (non-finite API wait deadlines; #65746)
@@ -2244,6 +2246,22 @@ def update_version_files(semver: str, calver_date: str):
         )
         installer_pkg.write_text(pkg_text, encoding="utf-8")
 
+    # npm workspaces mirror each package version in the root lockfile. Keep
+    # this metadata in sync with the released apps without regenerating
+    # dependency resolutions or contacting the registry.
+    package_lock = REPO_ROOT / "package-lock.json"
+    if package_lock.exists():
+        lock_data = json.loads(package_lock.read_text(encoding="utf-8"))
+        packages = lock_data.get("packages", {})
+        changed = False
+        for workspace in ("apps/desktop", "apps/bootstrap-installer"):
+            entry = packages.get(workspace)
+            if isinstance(entry, dict) and "version" in entry and entry["version"] != semver:
+                entry["version"] = semver
+                changed = True
+        if changed:
+            package_lock.write_text(json.dumps(lock_data, indent=2) + "\n", encoding="utf-8")
+
     installer_tauri = (
         REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "tauri.conf.json"
     )
@@ -2279,6 +2297,7 @@ def version_files_to_stage() -> list[str]:
         PYPROJECT_FILE,
         REPO_ROOT / "apps" / "desktop" / "package.json",
         REPO_ROOT / "apps" / "bootstrap-installer" / "package.json",
+        REPO_ROOT / "package-lock.json",
         REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "tauri.conf.json",
         REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "Cargo.toml",
     ]

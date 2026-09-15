@@ -42,6 +42,25 @@ export function isBackgroundSlotWaitTimeout(error: unknown): boolean {
   return error instanceof LocalBackendSlotWaitTimeoutError && error.silent
 }
 
+/**
+ * A speculative background dial did not enter the queue because every
+ * background slot is busy (or a user request is already waiting). This is an
+ * expected, retryable outcome: background hydration must never turn a full
+ * pool into a long-lived queue that delays foreground navigation.
+ */
+export class LocalBackendBackgroundCapacityError extends Error {
+  readonly silent = true
+
+  constructor(key: string) {
+    super(`Local backend start for "${key}" was skipped because no background slot is currently free.`)
+    this.name = 'LocalBackendBackgroundCapacityError'
+  }
+}
+
+export function isBackgroundCapacitySkip(error: unknown): boolean {
+  return error instanceof LocalBackendBackgroundCapacityError && error.silent
+}
+
 export async function releaseLocalBackendSlotAfterExit(
   release: ReleaseLocalBackendSlot,
   waitForExit: () => Promise<void>
@@ -101,6 +120,21 @@ export class LocalBackendSpawnCoordinator {
     return this.#queue.length
   }
 
+  /**
+   * Grant a slot only when it is available now. Background hydration uses this
+   * instead of queueing: it can retry later, while a foreground request keeps
+   * the normal priority queue and its reserved slot.
+   */
+  tryRequest(key: string, options: { priority?: LocalBackendSpawnPriority } = {}): LocalBackendSpawnRequest | undefined {
+    const priority: LocalBackendSpawnPriority = options.priority === 'background' ? 'background' : 'foreground'
+
+    if (this.#queue.length > 0 || !this.#canGrant(priority)) {
+      return undefined
+    }
+
+    return this.#grantedRequest(priority)
+  }
+
   request(
     key: string,
     options: { timeoutMs?: number; priority?: LocalBackendSpawnPriority } = {}
@@ -112,12 +146,7 @@ export class LocalBackendSpawnCoordinator {
     const priority: LocalBackendSpawnPriority = options.priority === 'background' ? 'background' : 'foreground'
 
     if (this.#queue.length === 0 && this.#canGrant(priority)) {
-      return {
-        acquired: Promise.resolve(this.#grant(priority)),
-        cancel: () => false,
-        promote: () => false,
-        queued: false
-      }
+      return this.#grantedRequest(priority)
     }
 
     let waiter!: Waiter
@@ -155,6 +184,15 @@ export class LocalBackendSpawnCoordinator {
     }
 
     return new Error(SLOT_WAIT_TIMEOUT_MESSAGE(waiter.key))
+  }
+
+  #grantedRequest(priority: LocalBackendSpawnPriority): LocalBackendSpawnRequest {
+    return {
+      acquired: Promise.resolve(this.#grant(priority)),
+      cancel: () => false,
+      promote: () => false,
+      queued: false
+    }
   }
 
   #backgroundLimit(): number {

@@ -88,13 +88,21 @@ def hermes_home(tmp_path, monkeypatch):
     from hermes_cli import goals
 
     goals._DB_CACHE.clear()
-    # Pre-warm the SessionDB cache from this sync (non-loop) context so the
-    # async tests' GoalManager.set() never races the bounded loop-thread
-    # bootstrap window on loaded CI runners (goal silently not persisted →
-    # continuation never enqueued; flaked on main run 33455779041).
+    # GoalManager.set() is called from an event-loop test.  Its runtime guard
+    # intentionally refuses to bootstrap SessionDB inline, so on a loaded CI
+    # worker the short background-bootstrap window can drop this test's goal
+    # before the continuation hook reads it.  Warm the test-local cache from
+    # this synchronous fixture context, matching the production-safe path.
     goals._get_session_db()
     yield home
     goals._DB_CACHE.clear()
+
+
+async def _wait_until(condition, timeout=2.0):
+    """Yield until an adapter-side task publishes its result (bounded)."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not condition() and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.01)
 
 
 @pytest.mark.asyncio
@@ -195,7 +203,7 @@ async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(hermes_
             source=src,
             final_response="partial progress",
         )
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: adapter_key in adapter._pending_messages)
 
     assert adapter_key in adapter._pending_messages, (
         "continuation enqueued under a different key than the adapter "

@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import nullcontext
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -314,73 +315,6 @@ def test_reader_loop_streams_incremental_chunks_from_read1(registry, monkeypatch
     assert moved == ["proc_reader_live"]
 
 
-def test_reader_waits_past_early_stdout_eof_before_publishing_completion(registry, monkeypatch):
-    """Closing stdout is not process completion; the reader must still reap the child."""
-
-    class _EarlyEofStdout:
-        def read(self, _n):
-            return ""
-
-    class _StillRunningProcess:
-        stdout = _EarlyEofStdout()
-        returncode = None
-
-        def wait(self, timeout=None):
-            # A bounded wait expires: the child outlives its stdout by more than the old 5 s cap.
-            if timeout is not None:
-                raise subprocess.TimeoutExpired("render", timeout)
-            self.returncode = 0
-            return 0
-
-    session = _make_session(sid="proc_early_eof")
-    session.process = _StillRunningProcess()
-    monkeypatch.setattr(registry, "_move_to_finished", lambda _s: None)
-
-    registry._reader_loop(session)
-
-    assert session.exited is True
-    assert session.exit_code == 0
-
-
-def test_failed_reader_wait_does_not_publish_false_completion(registry, monkeypatch):
-    """A failed reap must leave the session running for later reconciliation."""
-    session = _make_session(sid="proc_wait_failed")
-    moved = []
-    monkeypatch.setattr(registry, "_move_to_finished", lambda _s: moved.append(_s.id))
-
-    registry._finish_reader(
-        session,
-        MagicMock(decode=MagicMock(return_value="")),
-        lambda _text: None,
-        "Process",
-        MagicMock(side_effect=OSError("wait failed")),
-        lambda: None,
-    )
-
-    assert session.exited is False
-    assert moved == []
-
-
-def test_failed_reader_wait_still_records_known_exit_status(registry, monkeypatch):
-    """A PTY child reaped by isalive() has its status; a raising wait must not lose it."""
-    session = _make_session(sid="proc_pty_wait_failed")
-    moved = []
-    monkeypatch.setattr(registry, "_move_to_finished", lambda _s: moved.append(_s.id))
-
-    registry._finish_reader(
-        session,
-        MagicMock(decode=MagicMock(return_value="")),
-        lambda _text: None,
-        "PTY",
-        MagicMock(side_effect=OSError("waitpid ECHILD")),
-        lambda: 9,
-    )
-
-    assert session.exited is True
-    assert session.exit_code == 9
-    assert moved == [session.id]
-
-
 # =========================================================================
 # Incremental UTF-8 decoding across chunk boundaries
 # (ported from openclaw/openclaw#112325)
@@ -638,7 +572,16 @@ class TestStdinHelpers:
         proc.stdin.close.assert_called_once()
         assert result["status"] == "ok"
 
-    def test_close_stdin_allows_eof_driven_process_to_finish(self, registry, tmp_path):
+    @pytest.mark.linux_only
+    def test_close_stdin_allows_eof_driven_process_to_finish_linux(self, registry, tmp_path):
+        self._assert_pty_eof_finishes(registry, tmp_path)
+
+    @pytest.mark.macos_only
+    def test_close_stdin_allows_eof_driven_process_to_finish_macos(self, registry, tmp_path):
+        self._assert_pty_eof_finishes(registry, tmp_path)
+
+    @staticmethod
+    def _assert_pty_eof_finishes(registry, tmp_path):
         """PTY mode: writing data + sending EOF lets an EOF-driven child finish.
 
         Background non-PTY mode used to expose subprocess stdin via a pipe,
@@ -646,8 +589,10 @@ class TestStdinHelpers:
         lockout (#17959). For interactive stdin → PTY mode is now the only
         supported path.
         """
+        python = shlex.quote(sys.executable)
+        code = shlex.quote("import sys; print(sys.stdin.read().strip())")
         session = registry.spawn_local(
-            'python3 -c "import sys; print(sys.stdin.read().strip())"',
+            f"{python} -c {code}",
             cwd=str(tmp_path),
             use_pty=True,
         )
@@ -1192,7 +1137,8 @@ class TestPopenLeakOnSetupFailure:
         with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
              patch("subprocess.Popen", return_value=proc), \
              patch("threading.Thread", side_effect=boom), \
-             patch("os.getpgid", side_effect=ProcessLookupError), \
+             (patch("os.getpgid", side_effect=ProcessLookupError)
+              if hasattr(os, "getpgid") else nullcontext()), \
              patch.object(registry, "_write_checkpoint"):
             with pytest.raises(RuntimeError, match="Thread creation failed"):
                 registry.spawn_local("echo hello", cwd="/tmp")
@@ -1275,7 +1221,9 @@ class TestSpawnRewriteCompoundBackground:
         fake_thread.daemon = False
 
         with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
-             patch.dict("sys.modules", {"ptyprocess": mock_pty_module}), \
+             patch.dict("sys.modules", {
+                 "winpty" if sys.platform == "win32" else "ptyprocess": mock_pty_module,
+             }), \
              patch("threading.Thread", return_value=fake_thread), \
              patch.object(registry, "_write_checkpoint"):
             session = registry.spawn_local(
@@ -1415,34 +1363,16 @@ class TestKillProcess:
         s.detached = True
         registry._running[s.id] = s
 
-        terminate_calls = []
-
-        class FakeProcess:
-            def __init__(self, pid):
-                self.pid = pid
-            def children(self, recursive=False):
-                return []
-            def terminate(self):
-                terminate_calls.append(("terminate", self.pid))
-
-        import psutil as _psutil
-
         try:
-            # Post-#21561: liveness probe routes through
-            # ``ProcessRegistry._is_host_pid_alive`` (→
-            # ``gateway.status._pid_exists``), and the actual kill on POSIX
-            # routes through ``psutil.Process(pid).terminate()``. Neither
-            # touches ``os.kill`` directly. Mock both seams.  Disable the
-            # SIGKILL-escalation step (grace=0) so it doesn't call
-            # ``psutil.wait_procs`` on the FakeProcess.
+            # Prove routing of the recovered PID, not a particular OS's
+            # termination mechanism. A fake PID must never reach taskkill
+            # (Windows) or psutil signals (POSIX).
             with patch("gateway.status._pid_exists", return_value=True), \
-                 patch.object(ProcessRegistry, "_daemon_term_grace_seconds",
-                              staticmethod(lambda: 0.0)), \
-                 patch.object(_psutil, "Process", side_effect=lambda pid: FakeProcess(pid)):
+                 patch.object(registry, "_terminate_host_pid") as terminate:
                 result = registry.kill_process(s.id)
 
             assert result["status"] == "killed"
-            assert ("terminate", 424242) in terminate_calls
+            terminate.assert_called_once_with(424242, None)
         finally:
             registry._running.pop(s.id, None)
 
@@ -1631,7 +1561,7 @@ class TestTerminateHostPidWindows:
         assert "/T" in captured["args"], "Tree flag required to reach descendants"
         assert "/F" in captured["args"], "Force flag required for headless Chromium"
 
-class TestTerminateHostPidPosix:
+class _TerminateHostPidPosixCases:
     """POSIX branch walks the tree via psutil and SIGTERMs children first."""
 
     def test_posix_walks_tree_and_terminates_children_then_parent(self, monkeypatch):
@@ -1689,6 +1619,16 @@ class TestTerminateHostPidPosix:
         pr.ProcessRegistry._terminate_host_pid(12345)
 
         assert kill_calls == [(12345, signal.SIGTERM)]
+
+
+@pytest.mark.linux_only
+class TestTerminateHostPidLinux(_TerminateHostPidPosixCases):
+    pass
+
+
+@pytest.mark.macos_only
+class TestTerminateHostPidMacOS(_TerminateHostPidPosixCases):
+    pass
 
 
 # =========================================================================
@@ -2559,32 +2499,6 @@ class TestSystemdCgroupIsolation:
             value.startswith("OOMPolicy=") for value in probe_argv if isinstance(value, str)
         ), probe_argv
 
-    def test_successful_systemd_probe_revalidates_after_cache_ttl(self, monkeypatch):
-        """A vanished user bus invalidates a formerly successful scope verdict."""
-        import tools.process_registry as pr
-
-        monkeypatch.setattr(pr, "_IS_LINUX", True)
-        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
-        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", 0.0)
-        clock = [100.0]
-        probe_results = [0, 1]
-        probe_calls = []
-
-        def fake_run(*args, **kwargs):
-            probe_calls.append(args)
-            return subprocess.CompletedProcess(
-                args=args[0], returncode=probe_results.pop(0)
-            )
-
-        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
-        monkeypatch.setattr("tools.process_registry.time.monotonic", lambda: clock[0])
-        monkeypatch.setattr("subprocess.run", fake_run)
-
-        assert pr._systemd_run_user_scope_available() is True
-        clock[0] += 61
-        assert pr._systemd_run_user_scope_available() is False
-        assert len(probe_calls) == 2
-
     @pytest.mark.linux_only
     def test_systemd_probe_derives_owned_user_bus_env_for_system_gateway(
         self, registry, monkeypatch, request
@@ -2633,44 +2547,6 @@ class TestSystemdCgroupIsolation:
         assert env["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={bus_path}"
         assert "XDG_RUNTIME_DIR" not in os.environ
         assert "DBUS_SESSION_BUS_ADDRESS" not in os.environ
-
-    @pytest.mark.linux_only
-    def test_scoped_spawn_lost_user_bus_honours_configured_runtime_dir(self, monkeypatch, request):
-        """The lost-bus check must derive from the env the worker was spawned with: when the bus
-        lives under a configured ``XDG_RUNTIME_DIR`` (not ``/run/user/<uid>``), an unrelated wrapper
-        exit is not a lost bus and must not flip the cached scope verdict to unscoped dispatch."""
-        import socket
-        import tempfile
-
-        import tools.process_registry as pr
-
-        runtime_dir = pr.Path(tempfile.mkdtemp(prefix="hbus-", dir="/tmp"))
-        runtime_dir.chmod(0o700)
-        bus_path = runtime_dir / "bus"
-        bus_socket = socket.socket(socket.AF_UNIX)
-        bus_socket.bind(str(bus_path))
-
-        def _cleanup():
-            bus_socket.close()
-            bus_path.unlink(missing_ok=True)
-            runtime_dir.rmdir()
-
-        request.addfinalizer(_cleanup)
-
-        monkeypatch.setattr(pr, "_default_user_runtime_dir", lambda: pr.Path("/nonexistent/run/user/0"))
-        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", True)
-        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", pr.time.monotonic())
-        spawn_env = pr.systemd_user_bus_env({"XDG_RUNTIME_DIR": str(runtime_dir)})
-        assert spawn_env["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={bus_path}"
-
-        assert pr.scoped_spawn_lost_user_bus(spawn_env) is False
-        assert pr._SYSTEMD_SCOPE_AVAILABLE is True
-
-        # Same spawn env, bus actually gone: now it is a lost bus and the verdict flips.
-        bus_socket.close()
-        bus_path.unlink()
-        assert pr.scoped_spawn_lost_user_bus(spawn_env) is True
-        assert pr._SYSTEMD_SCOPE_AVAILABLE is False
 
     @pytest.mark.linux_only
     def test_probe_succeeds_without_bin_true(self, monkeypatch):

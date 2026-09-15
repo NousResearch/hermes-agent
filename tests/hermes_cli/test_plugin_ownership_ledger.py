@@ -451,14 +451,14 @@ def test_shared_entrypoint_module_uses_the_active_profile_scope(tmp_path):
     """One pip module can serve A and B without becoming process-global."""
     import pytest
 
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
     from tools.registry import ToolRegistry
 
     registry = ToolRegistry()
     module_name = "third_party.shared_hermes_plugin"
-    home_a = str((tmp_path / "entrypoint-a").resolve())
-    home_b = str((tmp_path / "entrypoint-b").resolve())
-    home_c = str((tmp_path / "entrypoint-c").resolve())
+    home_a = hermes_home_key(tmp_path / "entrypoint-a")
+    home_b = hermes_home_key(tmp_path / "entrypoint-b")
+    home_c = hermes_home_key(tmp_path / "entrypoint-c")
     policy_a = registry.register_plugin_override_policy(
         module_name, False, scope=home_a
     )
@@ -657,7 +657,7 @@ def test_provider_overlay_switches_profiles_and_reveals_fresh_global_fallback(
     """Provider consumers see A→B→A, and unload never pins a stale base."""
     from agent.image_gen_provider import ImageGenProvider
     import agent.image_gen_registry as image_registry
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
     from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
     class Provider(ImageGenProvider):
@@ -677,8 +677,8 @@ def test_provider_overlay_switches_profiles_and_reveals_fresh_global_fallback(
     global_b = Provider("global-b")
     provider_a = Provider("profile-a")
     provider_b = Provider("profile-b")
-    home_a = str((tmp_path / "provider-a").resolve())
-    home_b = str((tmp_path / "provider-b").resolve())
+    home_a = hermes_home_key(tmp_path / "provider-a")
+    home_b = hermes_home_key(tmp_path / "provider-b")
     manager_a = PluginManager(scope_key=home_a)
     manager_b = PluginManager(scope_key=home_b)
     context_a = PluginContext(PluginManifest(name="provider_a", key="provider_a"), manager_a)
@@ -1114,10 +1114,10 @@ def test_unload_cancels_a_deferred_platform_before_module_load():
 def test_direct_plugin_platform_registration_infers_immutable_scope(tmp_path):
     """The documented direct registry API cannot leak into another profile."""
     from gateway.platform_registry import PlatformEntry, platform_registry
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
     from tools.registry import registry as tool_registry
 
-    home_a = str((tmp_path / "direct-a").resolve())
+    home_a = hermes_home_key(tmp_path / "direct-a")
     home_b = tmp_path / "direct-b"
     module_name = "company.hermes.direct_platform_probe"
     policy = tool_registry.register_plugin_override_policy(

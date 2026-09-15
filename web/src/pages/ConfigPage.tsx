@@ -51,7 +51,6 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
-import { errorMessage } from "@/lib/api-error";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -284,7 +283,7 @@ export default function ConfigPage() {
       await api.saveConfig(config);
       showToast(t.config.configSaved, "success");
     } catch (e) {
-      showToast(`${t.config.failedToSave}: ${errorMessage(e)}`, "error");
+      showToast(`${t.config.failedToSave}: ${e}`, "error");
     } finally {
       setSaving(false);
     }
@@ -300,7 +299,7 @@ export default function ConfigPage() {
         .then(setConfig)
         .catch(() => {});
     } catch (e) {
-      showToast(`${t.config.failedToSaveYaml}: ${errorMessage(e)}`, "error");
+      showToast(`${t.config.failedToSaveYaml}: ${e}`, "error");
     } finally {
       setYamlSaving(false);
     }

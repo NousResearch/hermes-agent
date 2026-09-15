@@ -8,9 +8,8 @@ import type {
 
 import { capabilityScoped, hermesApi, type ProfileScope, STARTUP_REQUEST_TIMEOUT_MS } from './client'
 
-export function getProfiles(scope?: ProfileScope): Promise<ProfilesResponse> {
+export function getProfiles(): Promise<ProfilesResponse> {
   return hermesApi<ProfilesResponse>({
-    ...(scope === undefined ? {} : capabilityScoped(scope)),
     path: '/api/profiles',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })

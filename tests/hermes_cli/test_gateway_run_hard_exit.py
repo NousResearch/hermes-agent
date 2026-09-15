@@ -27,6 +27,7 @@ def _prepare(monkeypatch):
     monkeypatch.setattr(gateway_cli, "_guard_named_profile_under_multiplexer", lambda force=False: None)
     monkeypatch.setattr(gateway_cli, "_guard_supervised_gateway_conflict", lambda force=False: None)
     monkeypatch.setattr(gateway_cli, "_guard_existing_gateway_process_conflict", lambda replace=False: None)
+    monkeypatch.setattr(gateway_cli, "_guard_fragile_foreground_gateway", lambda replace=False, force=False: None)
     monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
     monkeypatch.setattr(gateway_cli.sys, "stdin", types.SimpleNamespace(isatty=lambda: False))
     monkeypatch.setenv("HERMES_GATEWAY_EXIT_DIAG", "0")

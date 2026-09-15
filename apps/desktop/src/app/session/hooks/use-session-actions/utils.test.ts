@@ -13,7 +13,7 @@ import {
   setSelectedStoredSessionId,
   workspaceCwdBelongsToSelectedSession
 } from '@/store/session'
-import type { SessionInfo, SessionResumeResult } from '@/types/hermes'
+import type { SessionInfo, SessionResumeResponse } from '@/types/hermes'
 
 import {
   appendLiveSessionProjection,
@@ -1545,7 +1545,7 @@ describe('resolveResumedBusy', () => {
   })
 })
 
-const runningProjection = (user: string): SessionResumeResult =>
+const runningProjection = (user: string): SessionResumeResponse =>
   ({
     session_id: 'runtime-1',
     session_key: 'stored-1',
@@ -1554,7 +1554,7 @@ const runningProjection = (user: string): SessionResumeResult =>
     messages: [],
     running: true,
     inflight: { user, assistant: 'partial answer', streaming: true }
-  }) as SessionResumeResult
+  }) as SessionResumeResponse
 
 describe('dedupeInflightUserAgainstTranscript', () => {
   it('retains the in-flight user source only when it already exists after the runtime anchor', () => {

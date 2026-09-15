@@ -30,38 +30,99 @@ describe('restorePendingClarifyFromSnapshot', () => {
     $clarifyRequests.set({})
   })
 
-  it('hands back the card the request handler already parked for a replayed open clarify request', () => {
-    $clarifyRequests.set({
-      'sess-1': {
-        choices: null,
-        multiSelect: false,
-        question: 'Proceed?',
-        receivedAt: resumeStartedAt + 5,
-        requestId: 'rid1',
-        sessionId: 'sess-1'
-      }
-    })
-
+  it('restores a batch clarify snapshot (questions, no top-level question)', () => {
     const state = restorePendingClarifyFromSnapshot(
-      { open_requests: [{ id: 'rid1', method: 'clarify', params: { question: 'Proceed?' } }] },
+      {
+        pending_clarify: {
+          request_id: 'rid1',
+          questions: [
+            { choices: ['Yes', 'No'], multi_select: false, qid: 'q0', question: 'Proceed?' },
+            { qid: 'q1', question: 'Which region?' }
+          ]
+        }
+      },
       'sess-1',
       resumeStartedAt
     )
 
-    expect(state.authoritativeAbsent).toBe(false)
-    expect(state.request?.requestId).toBe('rid1')
-    expect(clearClarifyRequestMock).not.toHaveBeenCalled()
+    expect(state.request).not.toBeNull()
+    expect(setClarifyRequestMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        multiSelect: false,
+        question: '',
+        requestId: 'rid1',
+        sessionId: 'sess-1',
+        questions: [
+          { choices: ['Yes', 'No'], multiSelect: false, qid: 'q0', question: 'Proceed?' },
+          { multiSelect: false, qid: 'q1', question: 'Which region?', choices: null }
+        ]
+      })
+    )
   })
 
-  it('reports an open request the handler declined (no card parked) without inventing one', () => {
+  it('carries server-locked answers into the replayed batch card', () => {
+    restorePendingClarifyFromSnapshot(
+      {
+        pending_clarify: {
+          answers: { q0: 'Yes', junk: 42 },
+          request_id: 'rid2',
+          questions: [{ qid: 'q0', question: 'Proceed?' }]
+        }
+      },
+      'sess-2',
+      resumeStartedAt
+    )
+
+    expect(setClarifyRequestMock).toHaveBeenCalledWith(
+      expect.objectContaining({ lockedAnswers: { q0: 'Yes' }, requestId: 'rid2' })
+    )
+  })
+
+  it('still restores the single-question form', () => {
     const state = restorePendingClarifyFromSnapshot(
-      { open_requests: [{ id: 'rid4', method: 'clarify', params: {} }] },
+      {
+        pending_clarify: {
+          choices: ['A', 'B'],
+          multi_select: true,
+          question: 'Pick one',
+          request_id: 'rid3'
+        }
+      },
+      'sess-3',
+      resumeStartedAt
+    )
+
+    expect(state.request).not.toBeNull()
+    expect(setClarifyRequestMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        choices: ['A', 'B'],
+        multiSelect: true,
+        question: 'Pick one',
+        requestId: 'rid3'
+      })
+    )
+  })
+
+  it('rejects a payload with neither form (no request restored)', () => {
+    const state = restorePendingClarifyFromSnapshot(
+      { pending_clarify: { request_id: 'rid4' } },
       'sess-4',
       resumeStartedAt
     )
 
-    expect(state.authoritativeAbsent).toBe(false)
     expect(state.request).toBeNull()
+    expect(setClarifyRequestMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects a payload with no request id', () => {
+    const state = restorePendingClarifyFromSnapshot(
+      { pending_clarify: { question: 'Orphaned prompt' } },
+      'sess-5',
+      resumeStartedAt
+    )
+
+    expect(state.request).toBeNull()
+    expect(state.authoritativeAbsent).toBe(true)
     expect(setClarifyRequestMock).not.toHaveBeenCalled()
   })
 

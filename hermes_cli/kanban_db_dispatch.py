@@ -256,30 +256,6 @@ def _pid_alive(pid: Optional[int]) -> bool:
     return True
 
 
-def _worker_alive(pid: Optional[int], started_at: Optional[int]) -> bool:
-    """True when ``pid`` is live AND is still the worker we spawned. ``started_at`` is the start-time
-    fingerprint recorded by ``_set_worker_pid``; after a reboot (or any PID recycle) an unrelated
-    process can own the number, so bare existence is never enough to extend a claim or to signal.
-    A legacy row without a fingerprint keeps the existence answer: killing it is the pre-fingerprint
-    behaviour and the row is rewritten with a fingerprint on its next spawn."""
-    return _kb._pid_alive(pid) and not _pid_recycled(pid, started_at)
-
-
-def _pid_recycled(pid: Optional[int], started_at: Optional[int]) -> bool:
-    """True when a live ``pid`` is NOT the process fingerprinted at spawn (or the fingerprint can no
-    longer be read). Signalling it would hit a stranger. ``None`` fingerprint = legacy row, never recycled."""
-    if started_at is None or not pid:
-        return False
-    from gateway.status import _start_times_agree, get_process_start_time
-    current = get_process_start_time(int(pid))
-    if current is None:
-        return True
-    try:
-        return not _start_times_agree(current, started_at)
-    except (TypeError, ValueError):
-        return True
-
-
 def _kill_fn(signal_fn) -> Optional[Callable[[int, int], None]]:
     """``signal_fn`` test hook, else ``os.kill`` when the platform has one."""
     if signal_fn is not None:
@@ -287,10 +263,10 @@ def _kill_fn(signal_fn) -> Optional[Callable[[int, int], None]]:
     return os.kill if hasattr(os, "kill") else None
 
 
-def _poll_worker_exit(pid: int, started_at: Optional[int] = None) -> bool:
+def _poll_worker_exit(pid: int) -> bool:
     """Poll ~5 s (10 x 0.5 s) for ``pid`` to die; True once it is gone."""
     for _ in range(10):
-        if not _worker_alive(pid, started_at):
+        if not _kb._pid_alive(pid):
             return True
         time.sleep(0.5)
     return False
@@ -311,11 +287,8 @@ def _terminate_reclaimed_worker(
     claim_lock: Optional[str],
     *,
     signal_fn=None,
-    started_at: Optional[int] = None,
 ) -> dict[str, Any]:
-    """Best-effort host-local worker termination for reclaim paths. ``started_at`` is the spawn-time
-    fingerprint: when the live process no longer matches it, the PID was recycled and nothing is
-    signalled — the worker is gone, which is what the reclaim wanted (``terminated`` = True)."""
+    """Best-effort host-local worker termination for reclaim paths."""
     info: dict[str, Any] = {
         "prev_pid": int(pid) if pid else None,
         "host_local": False,
@@ -332,10 +305,6 @@ def _terminate_reclaimed_worker(
     kill = _kill_fn(signal_fn)
     if kill is None:
         return info
-    if _kb._pid_alive(pid) and _pid_recycled(pid, started_at):
-        info["terminated"] = True
-        info["pid_recycled"] = True
-        return info
 
     info["termination_attempted"] = True
     try:
@@ -348,14 +317,14 @@ def _terminate_reclaimed_worker(
     except OSError:
         return info
 
-    if _poll_worker_exit(pid, started_at):
+    if _poll_worker_exit(pid):
         info["terminated"] = True
         return info
-    if _worker_alive(pid, started_at):
+    if _kb._pid_alive(pid):
         if not _sigkill(kill, pid):
             return info
         info["sigkill"] = True
-    info["terminated"] = not _worker_alive(pid, started_at)
+    info["terminated"] = not _kb._pid_alive(pid)
     return info
 
 
@@ -458,7 +427,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
     host_prefix = _kb._host_prefix()
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, t.worker_started_at, "
+        "SELECT t.id, t.worker_pid, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
         "       t.max_runtime_seconds, t.claim_lock "
         "FROM tasks t "
@@ -480,18 +449,16 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
 
         pid = int(row["worker_pid"])
         tid = row["id"]
-        started_at = _kb._row_get(row, "worker_started_at")
         # SIGTERM then SIGKILL after 5 s grace; workers wanting a cleaner
-        # shutdown install their own SIGTERM handler. A recycled PID (fingerprint
-        # mismatch) is never signalled: the worker is already gone.
+        # shutdown install their own SIGTERM handler.
         killed = False
         kill = _kill_fn(signal_fn)
-        if kill is not None and not (_kb._pid_alive(pid) and _pid_recycled(pid, started_at)):
+        if kill is not None:
             with contextlib.suppress(ProcessLookupError, OSError):
                 kill(pid, signal.SIGTERM)
             # Short polling wait — no time.sleep on the write txn.
-            _poll_worker_exit(pid, started_at)
-            if _worker_alive(pid, started_at):
+            _poll_worker_exit(pid)
+            if _kb._pid_alive(pid):
                 killed = _sigkill(kill, pid)
 
         error = f"elapsed {int(elapsed)}s > limit {limit}s"
@@ -562,7 +529,7 @@ def detect_stale_running(
     reclaimed: list[str] = []
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, t.worker_started_at, t.last_heartbeat_at, t.claim_lock, "
+        "SELECT t.id, t.worker_pid, t.last_heartbeat_at, t.claim_lock, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
@@ -585,8 +552,7 @@ def detect_stale_running(
         tid = row["id"]
         lock = row["claim_lock"] or ""
 
-        termination = _kb._terminate_reclaimed_worker(
-            pid, lock, signal_fn=signal_fn, started_at=_kb._row_get(row, "worker_started_at"))
+        termination = _kb._terminate_reclaimed_worker(pid, lock, signal_fn=signal_fn)
 
         # Never release a claim while our own worker is still alive: that would
         # spawn a duplicate beside it. Hold the claim and retry next tick.
@@ -649,14 +615,14 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
     now = int(time.time())
     reconciled: list[str] = []
     rows = conn.execute(
-        "SELECT id, claim_lock, claim_expires, worker_pid, worker_started_at FROM tasks "
+        "SELECT id, claim_lock, claim_expires, worker_pid FROM tasks "
         "WHERE status = 'running' "
         "  AND (claim_lock IS NULL OR claim_expires IS NULL)"
     ).fetchall()
     for row in rows:
         tid = row["id"]
         pid = row["worker_pid"]
-        if pid and _worker_alive(pid, _kb._row_get(row, "worker_started_at")):
+        if pid and _kb._pid_alive(pid):
             # Never requeue beside a live process. Retry next tick.
             _kb._log.debug(
                 "kanban reconcile: task %s has broken claim bookkeeping but "
@@ -841,7 +807,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
     sweep = _CrashSweep()
     with _kb.write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, assignee "
+            "SELECT id, worker_pid, claim_lock, started_at, assignee "
             "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
@@ -855,7 +821,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
             started_at = _kb._row_get(row, "started_at")
             if started_at is not None and time.time() - started_at < _kb._resolve_crash_grace_seconds():
                 continue
-            if _worker_alive(row["worker_pid"], _kb._row_get(row, "worker_started_at")):
+            if _kb._pid_alive(row["worker_pid"]):
                 continue
 
             pid = int(row["worker_pid"])
@@ -1132,18 +1098,13 @@ def _record_task_failure(
 
 
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
-    """Record the spawned child's pid + its start-time fingerprint, and emit a ``spawned`` event
-    carrying them. The fingerprint is what lets every later liveness/kill decision tell OUR worker
-    from a process that recycled the PID after a reboot."""
-    from gateway.status import get_process_start_time
-    started_at = get_process_start_time(int(pid))
+    """Record the spawned child's pid + emit a ``spawned`` event carrying it."""
     with _kb.write_txn(conn):
-        conn.execute("UPDATE tasks SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
-                     (int(pid), started_at, task_id))
+        conn.execute("UPDATE tasks SET worker_pid = ? WHERE id = ?", (int(pid), task_id))
         run_id = _kb._current_run_id(conn, task_id)
         if run_id is not None:
             conn.execute("UPDATE task_runs SET worker_pid = ? WHERE id = ?", (int(pid), run_id))
-        _kb._append_event(conn, task_id, "spawned", {"pid": int(pid), "started_at": started_at}, run_id=run_id)
+        _kb._append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
@@ -1257,62 +1218,12 @@ def check_respawn_guard(
 def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
     """``hermes_cli.profiles.profile_exists``, or ``None`` when it cannot be
     imported (local import avoids a cycle; callers fall back to trusting the
-    assignee).
-
-    When ``kanban.dispatch_profiles`` is set (#110995) the returned predicate
-    additionally requires the assignee to be listed, fail-closed — so a card
-    assigned to ``default`` is only claimable by homes that opted into it.
-    Foreign assignees land in the existing ``skipped_nonspawnable`` bucket.
-    """
+    assignee)."""
     try:
-        from hermes_cli.profiles import normalize_profile_name, profile_exists
+        from hermes_cli.profiles import profile_exists
     except Exception:
         return None
-    allowlist = _dispatch_profile_allowlist(normalize_profile_name)
-    if allowlist is None:
-        return profile_exists
-
-    def _gated(name: str) -> bool:
-        try:
-            canon = normalize_profile_name(name)
-        except ValueError:
-            return False
-        return canon in allowlist and bool(profile_exists(name))
-
-    return _gated
-
-
-def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
-    """Per-home claim allowlist ``kanban.dispatch_profiles`` (#110995).
-
-    On a shared board (one ``kanban.db`` mounted across several Hermes homes),
-    every home's ``profile_exists`` returns True for ``default`` — the root
-    profile every home has — so a card assigned to ``default`` is claimable by
-    every home's dispatcher. A home opts out of foreign claims by declaring
-    which assignees it may claim::
-
-        kanban:
-          dispatch_profiles: ["sage", "researcher"]   # or "sage,researcher"
-
-    Returns ``None`` when the key is unset (upstream behavior: any existing
-    profile is claimable). A set value is fail-closed: an empty list claims
-    nothing. Config read is fail-open like the sibling ``kanban.*`` readers.
-    """
-    try:
-        from hermes_cli.config import load_config_readonly
-        raw = (load_config_readonly() or {}).get("kanban", {}).get("dispatch_profiles")
-    except Exception:
-        return None
-    if raw is None:
-        return None
-    names = [str(n) for n in raw] if isinstance(raw, (list, tuple)) else str(raw).split(",")
-    allowed = set()
-    for n in names:
-        try:
-            allowed.add(normalize_profile_name(n))
-        except ValueError:
-            continue
-    return frozenset(allowed)
+    return profile_exists
 
 
 def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
@@ -1723,7 +1634,7 @@ def _run_reclaim_phase(
 ) -> None:
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
     reap_worker_zombies()
-    result.reclaimed = _kb.release_stale_claims(conn, failure_limit=failure_limit)
+    result.reclaimed = _kb.release_stale_claims(conn)
     if reconcile_orphans:
         result.reconciled_orphans = reconcile_orphaned_running(conn)
     result.stale = detect_stale_running(conn, stale_timeout_seconds=stale_timeout_seconds)
@@ -1818,17 +1729,18 @@ def _any_spawnable_review(review_rows: list[sqlite3.Row]) -> bool:
 
 
 def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
-    """``kanban.default_assignee`` when it names a real profile this home may
-    claim (``kanban.dispatch_profiles`` gated, same predicate as the spawn
-    gate). Otherwise ``None`` so an unassigned shared-board card is never
-    written to. When the profiles module isn't importable trust the
-    operator's config: the downstream check still buckets a missing profile
-    as nonspawnable."""
+    """``kanban.default_assignee`` when it names a real profile. When the
+    profiles module isn't importable trust the operator's config: the
+    downstream profile_exists check still buckets a missing profile as
+    nonspawnable."""
     name = (default_assignee or "").strip() or None
     if name:
-        profile_exists = _profile_exists_fn()
-        if profile_exists is not None and not profile_exists(name):
-            return None
+        try:
+            from hermes_cli.profiles import profile_exists
+            if not profile_exists(name):
+                return None
+        except Exception:
+            pass
     return name
 
 
@@ -2168,15 +2080,13 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
     if workspaces_root_path in _retagged_workspace_roots:
         return
     try:
-        from hermes_state_registry import acquire, release_or_close
+        from hermes_state import SessionDB
 
-        # Inside the gateway the dispatcher shares the process's registry handle; a bare
-        # SessionDB() here was one more writer connection on the same state.db (#100896).
-        db = acquire()
+        db = SessionDB()
         try:
             db.retag_kanban_worker_sessions(workspaces_root_path)
         finally:
-            release_or_close(db)
+            db.close()
         _retagged_workspace_roots.add(workspaces_root_path)
     except Exception as exc:
         _kb._log.debug("kanban worker: legacy session retag skipped (%s)", exc)

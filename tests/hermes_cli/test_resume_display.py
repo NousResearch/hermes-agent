@@ -320,8 +320,7 @@ class TestPreloadResumedSession:
         result = cli._preload_resumed_session()
 
         assert result is False
-        assert "too long to reload safely" in output.getvalue()
-        assert "limit 20000" in output.getvalue()
+        assert "safe resume limit is 20000" in output.getvalue()
         mock_db.get_resume_conversations.assert_not_called()
 
     def test_tip_only_guard_goes_through_the_shared_resume_guard(self):
@@ -343,7 +342,7 @@ class TestPreloadResumedSession:
             20_001, 20_000, scope="in its tip segment"
         )
         error = cli._resume_history_limit_error(tip_only=True)
-        assert error and "20001" in error and "too long to reload safely" in error
+        assert error and "in its tip segment" in error
 
 
 

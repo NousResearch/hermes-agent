@@ -63,9 +63,9 @@ import { $marketplaceInstalls, isUserTheme, removeUserTheme } from '@/themes/use
 
 import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
 
-import { ChatFontSetting } from './chat-font-setting'
 import { MODE_OPTIONS } from './constants'
 import { setNested } from './helpers'
+import { LoginStartupSettings } from './login-startup-settings'
 import { PetSettings } from './pet-settings'
 import { ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitives'
 import { APPEARANCE_SETTING_IDS } from './settings-search'
@@ -90,9 +90,7 @@ function ResumeLastSessionSetting() {
 
     const next = setNested(config, 'display.resume_last_session', on)
     setHermesConfigCache(next)
-    // Sparse patch: PUT /api/config deep-merges, and echoing the cached
-    // snapshot would overwrite keys other surfaces changed since it loaded.
-    void saveHermesConfig(setNested({}, 'display.resume_last_session', on))
+    void saveHermesConfig(next)
       .then(result => {
         if (!result.ok) {
           throw new Error(t.settings.config.autosaveFailed)
@@ -643,8 +641,6 @@ export function AppearanceSettings() {
             title={a.uiScaleTitle}
           />
 
-          <ChatFontSetting />
-
           <TerminalFontSetting />
 
           <ListRow
@@ -841,6 +837,7 @@ export function AppearanceSettings() {
           />
 
           <ResumeLastSessionSetting />
+          <LoginStartupSettings />
 
           <ListRow
             action={

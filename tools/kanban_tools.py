@@ -895,10 +895,7 @@ def _handle_create(args: dict, **kw) -> str:
             initial_status=str(args.get("initial_status") or "running"),
             created_by=os.environ.get("HERMES_PROFILE") or "worker", session_id=session_id)
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
-        wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
-        gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}
-        return _ok(task_id=new_tid, **landed, **gate,
-                   subscribed=_maybe_auto_subscribe(conn, new_tid))
+        return _ok(task_id=new_tid, **landed, subscribed=_maybe_auto_subscribe(conn, new_tid))
 
 
 def _resolve_notify_target() -> Optional[dict[str, Any]]:
@@ -999,9 +996,8 @@ def _handle_link(args: dict, **kw) -> str:
     child_id = args.get("child_id")
     _check(parent_id and child_id, "both parent_id and child_id are required")
     with _board(args.get("board")) as (kb, conn):
-        gated = kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)
-        return _ok(parent_id=parent_id, child_id=child_id, gated=gated,
-                   **({"gated_by": parent_id} if gated else {}))
+        kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)
+        return _ok(parent_id=parent_id, child_id=child_id)
 
 
 # --- Registration (order preserved: it is the order tools appear in the schema) ---

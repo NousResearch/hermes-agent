@@ -62,7 +62,7 @@ function runWindows(installRoot: string, startedAt?: string) {
       '-NoMarkerCleanup',
       '-SelfTestMarker'
     ],
-    { env, encoding: 'utf8' }
+    { env, encoding: 'utf8', windowsHide: true, timeout: 15_000 }
   )
 }
 
@@ -103,5 +103,6 @@ test.skipIf(process.platform === 'win32')('POSIX hand-off preserves the Desktop 
 })
 
 test.skipIf(process.platform !== 'win32')('PowerShell hand-off preserves the Desktop marker acquisition time', () => {
+  // This exercises three real PowerShell starts, each with its own bounded timeout.
   assertScriptHandoff(runWindows)
-})
+}, 50_000)

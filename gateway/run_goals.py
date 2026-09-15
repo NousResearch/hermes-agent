@@ -80,7 +80,8 @@ class GatewayGoalsMixin:
         session_entry = await self._session_entry_for_manager(event, f"{kind} manager")
         if session_entry is None:
             return None, None
-        return factory(session_entry.session_id), session_entry
+        manager = await self._run_in_executor_with_context(factory, session_entry.session_id)
+        return manager, session_entry
 
     async def _get_goal_manager_for_event(self, event: "MessageEvent"):
         """Return ``(GoalManager, session_entry)`` for this event, or ``(None, None)``."""
@@ -257,7 +258,7 @@ class GatewayGoalsMixin:
         if not sid:
             return None
         await self._warm_goals_session_db(label)
-        return factory(sid)
+        return await self._run_in_executor_with_context(factory, sid)
 
     async def _post_turn_goal_continuation(
         self, *, session_entry: Any, source: Any, final_response: str,

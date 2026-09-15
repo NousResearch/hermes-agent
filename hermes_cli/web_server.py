@@ -173,15 +173,18 @@ async def _lifespan(app: "FastAPI"):
     from tui_gateway import methods_groups as _hosted_groups
     import tui_gateway.server  # noqa: F401
 
-    hosted_room_start_cancel = threading.Event()
+    hosted_room_start_allowed = threading.Event()
+    hosted_room_start_allowed.set()
 
     def _start_hosted_rooms() -> None:
         try:
-            _hosted_groups.start_hosted_room_service()
+            _hosted_groups.start_hosted_room_service(
+                start_allowed=hosted_room_start_allowed,
+            )
         except Exception:
             _log.exception("Hosted Group Chat recovery failed during backend startup")
         finally:
-            if hosted_room_start_cancel.is_set():
+            if not hosted_room_start_allowed.is_set():
                 _hosted_groups.stop_hosted_room_service(timeout=1.0)
 
     hosted_room_start_thread = threading.Thread(
@@ -251,9 +254,18 @@ async def _lifespan(app: "FastAPI"):
     try:
         yield
     finally:
-        hosted_room_start_cancel.set()
-        _hosted_groups.stop_hosted_room_service(timeout=5.0)
-        hosted_room_start_thread.join(timeout=1.0)
+        hosted_room_start_allowed.clear()
+        await asyncio.to_thread(hosted_room_start_thread.join, timeout=1.0)
+        if hosted_room_start_thread.is_alive():
+            _log.warning(
+                "Hosted Group Chat startup is still settling during shutdown; "
+                "its startup thread will stop the service when recovery returns"
+            )
+        else:
+            await asyncio.to_thread(
+                _hosted_groups.stop_hosted_room_service,
+                timeout=5.0,
+            )
         if cron_stop is not None:
             cron_stop.set()
         pty_reaper_task.cancel()

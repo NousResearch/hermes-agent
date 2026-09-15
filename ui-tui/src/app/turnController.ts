@@ -578,9 +578,7 @@ class TurnController {
     // `display.final_response_markdown: render` because raw ANSI escapes
     // pass through into the React tree.  Prefer raw text and fall back
     // only when the gateway elected not to send any (#16391).
-    // `text` is `str | JsonValue` on the wire (structured parts stay possible); only a string renders here.
-    const wireText = typeof payload.text === 'string' ? payload.text : undefined
-    const rawText = (wireText ?? payload.rendered ?? this.bufRef).trimStart()
+    const rawText = (payload.text ?? payload.rendered ?? this.bufRef).trimStart()
     const split = splitReasoning(rawText)
     // Only dedupe segments AFTER the interim boundary — interim-sealed
     // segments are preserved even if the final text includes them.
@@ -677,7 +675,7 @@ class TurnController {
     return { finalMessages, finalText, wasInterrupted }
   }
 
-  recordMessageDelta({ text }: { rendered?: string | null; text?: string }) {
+  recordMessageDelta({ text }: { rendered?: string; text?: string }) {
     if (this.interrupted || !text) {
       return
     }
@@ -1008,12 +1006,12 @@ class TurnController {
       }
 
       const base: SubagentProgress = existing ?? {
-        delegationId: p.delegation_id ?? undefined,
+        delegationId: p.delegation_id,
         depth: p.depth ?? 0,
         goal: p.goal,
         id,
         index: p.task_index,
-        model: p.model ?? undefined,
+        model: p.model,
         notes: [],
         parentId: p.parent_id ?? null,
         startedAt: Date.now(),
@@ -1022,7 +1020,7 @@ class TurnController {
         thinking: [],
         toolCount: p.tool_count ?? 0,
         tools: [],
-        toolsets: p.toolsets ?? undefined
+        toolsets: p.toolsets
       }
 
       // Map snake_case payload keys onto camelCase state.  Only overwrite

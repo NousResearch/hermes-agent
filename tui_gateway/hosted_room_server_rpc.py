@@ -7,10 +7,22 @@ from __future__ import annotations
 import itertools
 import threading
 from collections.abc import Mapping, Sequence
+from dataclasses import asdict
 from types import ModuleType
 from typing import Any, Callable
 
 from gateway import hosted_room_driver as state
+from tui_gateway.transport import bind_transport, reset_transport
+
+
+class _InternalDropTransport:
+    """Accept internal frames without publishing private room traffic."""
+
+    def write(self, _obj: dict) -> bool:
+        return True
+
+    def close(self) -> None:
+        return None
 
 _LockType = type(threading.Lock())
 
@@ -30,9 +42,15 @@ class HostedRoomServerRPC:
     def __init__(self, server: ModuleType) -> None:
         self.server = server
         self._ids = itertools.count(1)
+        self._transport = _InternalDropTransport()
 
     def _call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
-        envelope = self.server._methods[method](f"hosted-room-{next(self._ids)}", params)
+        handler = self.server._methods[method]
+        token = bind_transport(self._transport)
+        try:
+            envelope = handler(f"hosted-room-{next(self._ids)}", params)
+        finally:
+            reset_transport(token)
         if not isinstance(envelope, dict):
             envelope = {}
         error = envelope.get("error")
@@ -46,9 +64,8 @@ class HostedRoomServerRPC:
         return result
 
     def resolve_exact(self, *, profile: str, title: str, source: str) -> Mapping[str, Any] | None:
-        del source
         result = self._call(
-            "session.list", {"profile": profile, "title": title, "include_hidden": True})
+            "session.list", {"profile": profile, "title": title, "include_hidden": True, "source": source})
         rows = result.get("sessions")
         if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
             return None
@@ -108,7 +125,8 @@ class HostedRoomServerRPC:
         with lock:
             task = record.get("_hosted_room_task")
             result = {"active": bool(record.get("running")),
-                      "task_id": task.get("task_id") if isinstance(task, dict) else None}
+                      "task_id": task.get("task_id") if isinstance(task, dict) else None,
+                      "hosted_task": dict(task) if isinstance(task, dict) else None}
             pending_reader = getattr(self.server, "_pending_approval_request_payload", None)
             if callable(pending_reader) and (pending := pending_reader(str(record.get("session_key") or ""))):
                 result["status"] = "waiting_for_approval"
@@ -121,9 +139,13 @@ class HostedRoomServerRPC:
             "session_id": session_id, "request_id": request_id, "choice": choice, "all": False})
 
     def interrupt(
-        self, *, profile: str, session_id: str, source: str, expected_task_id: str
+        self, *, profile: str, session_id: str, source: str, expected_task_id: str,
+        expected_task: state.TaskIdentity, expected_execution_generation: int, expected_member_id: str,
     ) -> Mapping[str, Any] | None:
         del source
         return self._call("session.interrupt", {
             "profile": profile, "session_id": session_id,
-            "expected_hosted_task_id": expected_task_id})
+            "expected_hosted_task_id": expected_task_id,
+            "_expected_hosted_task": {
+                **asdict(expected_task), "execution_generation": expected_execution_generation,
+                "member_id": expected_member_id}})

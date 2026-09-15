@@ -13,7 +13,6 @@ from tools.registry import (
     _MAX_LOGGED_ERROR_CHARS,
     _MAX_TOOL_ERROR_CHARS,
     _module_registers_tools,
-    _tool_module_candidates,
     discover_builtin_tools,
     tool_error,
 )
@@ -327,6 +326,25 @@ class TestCheckFnExceptionHandling:
         # Should return False, not raise
         assert reg.is_toolset_available("broken") is False
 
+    def test_check_fn_exception_remains_a_warning(self, caplog):
+        reg = ToolRegistry()
+
+        def broken_check():
+            raise RuntimeError("probe failed")
+
+        reg.register(
+            name="t",
+            toolset="broken-warning",
+            schema=_make_schema(),
+            handler=_dummy_handler,
+            check_fn=broken_check,
+        )
+
+        with caplog.at_level(logging.INFO, logger="tools.registry"):
+            assert reg.is_toolset_available("broken-warning") is False
+
+        assert any(record.levelno == logging.WARNING and "raised" in record.message for record in caplog.records)
+
 
     def test_check_tool_availability_survives_raising_check(self):
         reg = ToolRegistry()
@@ -354,8 +372,8 @@ class TestBuiltinDiscovery:
     def test_discovers_all_real_self_registering_builtin_tool_modules(self):
         tools_dir = Path(__file__).resolve().parents[2] / "tools"
         expected = [
-            ".".join(("tools", *path.relative_to(tools_dir).with_suffix("").parts))
-            for path in _tool_module_candidates(tools_dir)
+            f"tools.{path.stem}"
+            for path in sorted(tools_dir.glob("*.py"))
             if path.name not in {"__init__.py", "registry.py", "mcp_tool.py"}
             and _module_registers_tools(path)
         ]
@@ -384,64 +402,6 @@ class TestBuiltinDiscovery:
 
         assert imported == ["tools.alpha"]
         mock_import.assert_called_once_with("tools.alpha")
-
-
-_REGISTERING_SOURCE = (
-    "from tools.registry import registry\n"
-    "registry.register(name='conn', toolset='x', schema={}, handler=lambda *_a, **_k: '{}')\n"
-)
-
-
-class TestPackageToolDiscovery:
-    """A package under tools/ registers its model tool from ``<pkg>/tool.py`` and nothing else."""
-
-    @staticmethod
-    def _make_pkg(tmp_path, *, init=True):
-        tools_dir = tmp_path / "tools"
-        pkg = tools_dir / "connectors"
-        pkg.mkdir(parents=True)
-        (tools_dir / "__init__.py").write_text("", encoding="utf-8")
-        if init:
-            (pkg / "__init__.py").write_text("", encoding="utf-8")
-        (pkg / "tool.py").write_text(_REGISTERING_SOURCE, encoding="utf-8")
-        return tools_dir, pkg
-
-    def test_package_tool_py_is_imported_under_its_dotted_name(self, tmp_path):
-        tools_dir, _ = self._make_pkg(tmp_path)
-        with patch("tools.registry.importlib.import_module") as mock_import:
-            imported = discover_builtin_tools(tools_dir)
-        assert imported == ["tools.connectors.tool"]
-        mock_import.assert_called_once_with("tools.connectors.tool")
-
-    def test_package_siblings_are_libraries_not_scanned(self, tmp_path):
-        tools_dir, pkg = self._make_pkg(tmp_path)
-        # Registers at module level, but is not the package's tool.py: discovery must not import it.
-        (pkg / "operation.py").write_text(_REGISTERING_SOURCE, encoding="utf-8")
-        with patch("tools.registry.importlib.import_module") as mock_import:
-            imported = discover_builtin_tools(tools_dir)
-        assert imported == ["tools.connectors.tool"]
-        assert {c.args[0] for c in mock_import.call_args_list} == {"tools.connectors.tool"}
-
-    def test_package_without_init_is_skipped_loudly(self, tmp_path, caplog):
-        tools_dir, _ = self._make_pkg(tmp_path, init=False)
-        with patch("tools.registry.importlib.import_module") as mock_import, caplog.at_level(
-            logging.WARNING, logger="tools.registry"
-        ):
-            imported = discover_builtin_tools(tools_dir)
-        assert imported == []
-        mock_import.assert_not_called()
-        assert any("__init__.py" in rec.getMessage() for rec in caplog.records)
-
-    def test_cache_round_trips_the_nested_verdict(self, tmp_path):
-        tools_dir, _ = self._make_pkg(tmp_path)
-        with patch("tools.registry.importlib.import_module"):
-            discover_builtin_tools(tools_dir)
-            with patch(
-                "tools.registry._module_registers_tools",
-                side_effect=AssertionError("nested file was re-scanned despite a cache hit"),
-            ):
-                imported = discover_builtin_tools(tools_dir)
-        assert imported == ["tools.connectors.tool"]
 
 
 class TestEmojiMetadata:

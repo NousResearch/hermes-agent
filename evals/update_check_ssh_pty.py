@@ -151,4 +151,3 @@ result = {'platform': sys.platform, 'production': banner.__file__, 'rows': rows,
           'server_stopped': server.poll() is not None, 'agent_stopped': agent is None or agent.poll() is not None}
 (BASE/'result.json').write_text(json.dumps(result, indent=2))
 print(json.dumps(result, indent=2))
-

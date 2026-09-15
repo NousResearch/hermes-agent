@@ -242,11 +242,10 @@ maintains directly:
 cua-driver skills install
 ```
 
-The command links the pack into `~/.hermes/skills/cua-driver` (Hermes is one
-of the agents `cua-driver skills status` reports). The wrapper remains the
-workflow layer: the pack documents the driver's own MCP vocabulary
-(`get_window_state`, `element_token`, `snapshot_id`), which the `computer_use`
-wrapper translates to for you — keep calling `computer_use(action=...)`. The
+The command installs the pack under `~/.cua-driver/skills/cua-driver`. Hermes
+autodetection is a planned cua-driver follow-up, so currently point Hermes at
+that directory or symlink it into your skill space. The wrapper remains the
+workflow layer and points to Cua's installed skill for driver behavior. The
 pack contains:
 
 | File | Topic |
@@ -408,14 +407,6 @@ of screenshot context, not ~600K.
   affects every Windows automation stack. To drive elevated windows,
   run the Hermes agent itself at High integrity (launch from an
   elevated terminal); otherwise target non-elevated windows.
-- **Windows: `hermes computer-use doctor` fails with "Access is denied"
-  while the tool works.** A cua-driver installed under
-  `C:\Program Files\WindowsApps` cannot be executed by the Hermes venv
-  interpreter (WinError 5 from `CreateProcess`), even though the shell
-  resolves the same binary fine. The doctor now reports this as a
-  diagnosis instead of a traceback. Fix once: reinstall with the upstream
-  installer (lands under your user profile) or set
-  `HERMES_CUA_DRIVER_CMD` to a copy outside `WindowsApps`.
 - **Platform-specific deployment gotchas:**
   - **macOS** uses private SkyLight SPIs. Apple can change them in any
     OS update. Hermes warns when the installed cua-driver is older than

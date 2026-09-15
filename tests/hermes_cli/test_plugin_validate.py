@@ -136,4 +136,3 @@ class TestRequiresHermesSpec:
         assert any(
             "requires_hermes" in f and "does not parse" in f for f in report.failures
         ), report.failures
-

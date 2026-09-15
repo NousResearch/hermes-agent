@@ -40,8 +40,7 @@ def format_session_stall_notification(idle_seconds: float) -> str:
     See #72016.
     """
     mins = max(1, int(idle_seconds // 60))
-    return (f"⚠️ I seem to be stuck (no activity for {mins} min). Send /stop to cancel the current "
-            "task, or /new to start a fresh conversation.")
+    return f"⚠️ Agent session appears stalled (last activity {mins} min ago). Try /new to reset."
 
 
 def _finite_float(value: Any) -> Optional[float]:

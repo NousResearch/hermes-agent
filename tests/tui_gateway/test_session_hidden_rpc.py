@@ -32,8 +32,16 @@ def _call(method: str, params: dict) -> dict:
     return srv._methods[method](1, params)
 
 
-def _seed(db, sid: str) -> None:
-    db.create_session(sid, source="desktop")
+def _seed(
+    db,
+    sid: str,
+    *,
+    source: str = "desktop",
+    title: str | None = None,
+) -> None:
+    db.create_session(sid, source=source)
+    if title is not None:
+        db.set_session_title(sid, title)
     db._conn.execute("UPDATE sessions SET message_count = 1 WHERE id = ?", (sid,))
     db._conn.commit()
 
@@ -69,3 +77,57 @@ def test_session_list_include_hidden(db):
 
     all_rows = _call("session.list", {"include_hidden": True})["result"]["sessions"]
     assert {s["id"] for s in all_rows} == {"plain-chat", "bot-chat"}
+
+
+def test_hosted_room_lookup_is_source_scoped_resurrected_and_pinned(db):
+    title = "Group: room-1"
+    _seed(db, "ordinary", source="desktop", title=title)
+    wrong_source = _call(
+        "session.list",
+        {"title": title, "source": "bot_room", "include_hidden": True},
+    )
+    assert wrong_source["result"]["sessions"] == []
+
+    assert db.set_session_title("ordinary", "Ordinary chat")
+    _seed(db, "canonical-room", source="bot_room", title=title)
+    assert db.set_session_archived("canonical-room", True)
+
+    envelope = _call(
+        "session.list",
+        {
+            "title": title,
+            "source": "bot_room",
+            "include_hidden": True,
+        },
+    )
+
+    assert envelope["result"]["sessions"][0]["id"] == "canonical-room"
+    canonical = db.get_session("canonical-room")
+    assert canonical["archived"] == 0
+    assert canonical["pinned"] == 1
+    ordinary = db.get_session("ordinary")
+    assert ordinary["archived"] == 0
+    assert ordinary["pinned"] == 0
+
+
+def test_first_hosted_room_persist_is_pinned_but_ordinary_session_is_not(
+    db,
+    monkeypatch,
+):
+    monkeypatch.setattr(srv, "_resolve_model", lambda: "test/model")
+
+    for session_key, source in (
+        ("room-first-prompt", "bot_room"),
+        ("plain-first-prompt", "desktop"),
+    ):
+        srv._ensure_session_db_row({
+            "session_key": session_key,
+            "source": source,
+            "model_override": {"model": "test/model"},
+            "profile_home": None,
+            "explicit_cwd": False,
+            "cwd": None,
+        })
+
+    assert db.get_session("room-first-prompt")["pinned"] == 1
+    assert db.get_session("plain-first-prompt")["pinned"] == 0

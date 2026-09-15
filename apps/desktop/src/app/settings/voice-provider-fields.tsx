@@ -1,22 +1,16 @@
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import {
-  getElevenLabsVoices,
-  getHermesConfigSchema,
-  type ProfileScope,
-  profileScopeKey,
-  saveHermesConfigRecord
-} from '@/hermes'
+import { getElevenLabsVoices, getHermesConfigSchema, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
 import type { HermesConfigRecord } from '@/types/hermes'
 
-import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
+import { setHermesConfigCache, useHermesConfigRecord } from '../hooks/use-config-record'
 
 import { ConfigField } from './config-field'
 import { SECTIONS } from './constants'
-import { diffConfig, enumOptionsFor, getNested, inferFieldSchema, setNested } from './helpers'
+import { enumOptionsFor, getNested, inferFieldSchema, setNested } from './helpers'
 
 // The curated voice keys (Settings → Voice) are the single source of which
 // per-provider fields exist; both the Voice settings page and the
@@ -36,31 +30,10 @@ export function voiceProviderKeys(section: 'tts' | 'stt', providerKey: string): 
  * Settings → Voice (shared ConfigField renderer + enum/free-input rules), with
  * the same debounced autosave through the shared config cache.
  */
-export function VoiceProviderFields({
-  section,
-  providerKey,
-  profile
-}: {
-  section: 'tts' | 'stt'
-  providerKey: string
-  /** Profile whose config these fields read AND write. The Capabilities panel
-   *  is profile-scoped (its scope selector can target another profile, even on
-   *  another gateway); rendering these fields unscoped read and autosaved the
-   *  ACTIVE profile's whole config record while the UI claimed to configure
-   *  profile B — a silent cross-profile clobber. Omitted = active profile,
-   *  which keeps the Settings → Voice page's behavior unchanged. */
-  profile?: ProfileScope
-}) {
+export function VoiceProviderFields({ section, providerKey }: { section: 'tts' | 'stt'; providerKey: string }) {
   const { t } = useI18n()
   const keys = useMemo(() => voiceProviderKeys(section, providerKey), [section, providerKey])
-  const { data: loadedConfig } = useHermesConfigRecord(profile)
-  // Parents pass `profile` as a fresh object literal each render; keying the
-  // writer and the autosave effect on its identity would re-arm the 550ms
-  // timer on every unrelated re-render. Key on the scope string instead
-  // (null when unscoped, which maps to the bare cache row).
-  const scopeKey = profile == null ? null : profileScopeKey(profile)
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- scopeKey is the identity of `profile`
-  const writeConfigCache = useMemo(() => hermesConfigCacheWriter(profile), [scopeKey])
+  const { data: loadedConfig } = useHermesConfigRecord()
 
   const { data: schemaResponse } = useQuery({
     queryKey: ['hermes-config-schema'],
@@ -72,18 +45,12 @@ export function VoiceProviderFields({
   // refetches must not clobber in-progress edits) — the same shape as
   // config-settings.tsx's autosave loop.
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
-  // Autosave sends only what changed against this baseline (config-settings.tsx
-  // pattern): the seeded record is a default-expanded snapshot, and echoing it
-  // whole would overwrite keys other surfaces changed since it loaded. The
-  // baseline advances to each successfully saved draft.
-  const [baseline, setBaseline] = useState<HermesConfigRecord | null>(null)
   const seeded = useRef(false)
 
   // eslint-disable-next-line no-restricted-syntax -- one-shot config seed flag, not an atom mirror
   useEffect(() => {
     if (loadedConfig && !seeded.current) {
       seeded.current = true
-      setBaseline(loadedConfig)
       setConfig(loadedConfig)
     }
   }, [loadedConfig])
@@ -97,17 +64,14 @@ export function VoiceProviderFields({
     }
 
     const timeout = window.setTimeout(() => {
-      void saveHermesConfigRecord(diffConfig(baseline ?? {}, config), profile)
-        .then(() => {
-          setBaseline(config)
-          writeConfigCache(config)
-        })
+      void saveHermesConfig(config)
+        .then(() => setHermesConfigCache(config))
         .catch(err => notifyError(err, t.settings.config.autosaveFailed))
     }, 550)
 
     return () => window.clearTimeout(timeout)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- copy is stable; `profile` is keyed by scopeKey; avoid re-scheduling autosave on locale change
-  }, [config, scopeKey, saveVersion, writeConfigCache])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- copy is stable; avoid re-scheduling autosave on locale change
+  }, [config, saveVersion])
 
   // ElevenLabs cloned/library voices from the live account, when available —
   // mirrors the Settings → Voice dynamic voice list.

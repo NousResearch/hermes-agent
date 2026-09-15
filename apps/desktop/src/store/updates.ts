@@ -14,9 +14,16 @@ import type {
   DesktopUpdateStatus,
   DesktopVersionInfo
 } from '@/global'
-import { checkHermesUpdate, getActionStatus, updateHermes } from '@/hermes'
+import {
+  checkHermesUpdate,
+  getActionStatus,
+  getHermesConfigRecord,
+  saveHermesConfigRecord,
+  updateHermes
+} from '@/hermes'
 import { translateNow } from '@/i18n'
 import { persistString, storedString } from '@/lib/storage'
+import { withTimeout } from '@/lib/with-timeout'
 import { $connectionsRegistry, refreshConnectionsRegistry } from '@/store/connections'
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import { dismissNotification, notify } from '@/store/notifications'
@@ -53,6 +60,13 @@ export const $updateApply = atom<UpdateApplyState>(IDLE)
 export const $updateChecking = atom<boolean>(false)
 export const $updateOverlayOpen = atom<boolean>(false)
 export const $updateStatus = atom<DesktopUpdateStatus | null>(null)
+
+// Background update checks are opt-out. This preference controls checking and
+// notifications only; applying a code update remains an explicit action so a
+// dirty checkout can never be overwritten silently.
+const AUTO_UPDATE_CHECKS_CONFIG_KEY = 'automatic_update_checks'
+const AUTO_UPDATE_CHECKS_DEFAULT = true
+export const $automaticUpdateChecksEnabled = atom(AUTO_UPDATE_CHECKS_DEFAULT)
 
 // Client and backend are independently updatable; each keeps its own state.
 export const $backendUpdateStatus = atom<DesktopUpdateStatus | null>(null)
@@ -102,10 +116,7 @@ function isUpdateToastSnoozed(): boolean {
 // v5: requires raised WebSocket frame size for large one-shot file.attach.
 // v6: requires key-addressed plugins.manage rows (keyless rows render
 //     read-only in Capabilities → Plugins).
-// v7: requires JSON-RPC server->client requests for every blocking prompt
-//     (approval/clarify/sudo/secret/vault/MCP setup); a v6 backend's
-//     `<kind>.request` notifications would never render a card.
-export const REQUIRED_BACKEND_CONTRACT = 7
+const REQUIRED_BACKEND_CONTRACT = 6
 const SKEW_TOAST_ID = 'backend-contract-skew'
 // The contract check runs on every session.resume (applyRuntimeInfo), so
 // without a snooze the warning re-popped on every thread the user opened, even
@@ -1007,9 +1018,197 @@ function ingestProgress(payload: DesktopUpdateProgress): void {
 }
 
 let pollerStarted = false
+let lastFocusAt = 0
 let backgroundTimer: ReturnType<typeof setInterval> | null = null
 let connectionUnsub: (() => void) | null = null
 let lastConnectionMode: string | undefined
+let lastPreferenceConnection = ''
+let automaticUpdatePreferenceLoaded = false
+let automaticUpdatePreferenceRevision = 0
+let automaticUpdateSaveChain: Promise<void> = Promise.resolve()
+let confirmedAutomaticUpdateChecks: boolean | undefined
+let preferenceRead: Promise<void> | null = null
+let preferenceReadGeneration = 0
+let preferenceRetryTimer: ReturnType<typeof setTimeout> | null = null
+let preferenceRetryAttempt = 0
+const PREFERENCE_READ_TIMEOUT_MS = 5000
+const PREFERENCE_RETRY_DELAYS_MS = [1000, 3000, 10_000] as const
+
+function clearPreferenceRetry(): void {
+  if (preferenceRetryTimer !== null) {
+    clearTimeout(preferenceRetryTimer)
+    preferenceRetryTimer = null
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function configuredAutomaticUpdateChecks(config: Record<string, unknown>): boolean | undefined {
+  const desktop = isRecord(config.desktop) ? config.desktop : null
+
+  if (desktop && typeof desktop[AUTO_UPDATE_CHECKS_CONFIG_KEY] === 'boolean') {
+    return desktop[AUTO_UPDATE_CHECKS_CONFIG_KEY]
+  }
+
+  // Accept a flat value from older config writers while always writing the
+  // setting under `desktop`, which is the canonical config.yaml section.
+  return typeof config[AUTO_UPDATE_CHECKS_CONFIG_KEY] === 'boolean' ? config[AUTO_UPDATE_CHECKS_CONFIG_KEY] : undefined
+}
+
+function hydrateAutomaticUpdateChecks(restartRetries = false): void {
+  if (!pollerStarted || automaticUpdatePreferenceLoaded) {
+    return
+  }
+
+  if (restartRetries) {
+    clearPreferenceRetry()
+    preferenceRetryAttempt = 0
+  }
+
+  if (preferenceRead) {
+    return
+  }
+
+  const revision = automaticUpdatePreferenceRevision
+  const generation = preferenceReadGeneration
+
+  const isCurrent = () =>
+    pollerStarted && generation === preferenceReadGeneration && revision === automaticUpdatePreferenceRevision
+
+  preferenceRead = (async () => {
+    try {
+      const config = await withTimeout(
+        Promise.resolve().then(() => getHermesConfigRecord()),
+        PREFERENCE_READ_TIMEOUT_MS,
+        'Update preference read timed out'
+      )
+
+      if (!isCurrent()) {
+        return
+      }
+
+      const value = configuredAutomaticUpdateChecks(config) ?? AUTO_UPDATE_CHECKS_DEFAULT
+
+      confirmedAutomaticUpdateChecks = value
+      automaticUpdatePreferenceLoaded = true
+      $automaticUpdateChecksEnabled.set(value)
+      clearPreferenceRetry()
+      syncBackgroundTimer()
+    } catch {
+      if (!isCurrent()) {
+        return
+      }
+
+      // Unknown is not opt-in. A cold backend must not silently override a
+      // saved opt-out with the default. Retry a bounded burst, then wait for
+      // a new connection or a throttled focus event instead of polling forever.
+      $automaticUpdateChecksEnabled.set(confirmedAutomaticUpdateChecks ?? false)
+      const delay = PREFERENCE_RETRY_DELAYS_MS[preferenceRetryAttempt++]
+
+      if (delay !== undefined) {
+        preferenceRetryTimer = setTimeout(() => {
+          preferenceRetryTimer = null
+          hydrateAutomaticUpdateChecks()
+        }, delay)
+      }
+    } finally {
+      if (generation === preferenceReadGeneration) {
+        preferenceRead = null
+      }
+    }
+  })()
+}
+
+function runBackgroundChecks(): void {
+  if (!automaticUpdatePreferenceLoaded || !$automaticUpdateChecksEnabled.get()) {
+    return
+  }
+
+  runPassiveChecks()
+}
+
+function syncBackgroundTimer(): void {
+  if (!pollerStarted) {
+    return
+  }
+
+  if (backgroundTimer !== null) {
+    clearInterval(backgroundTimer)
+    backgroundTimer = null
+  }
+
+  if (!automaticUpdatePreferenceLoaded || !$automaticUpdateChecksEnabled.get()) {
+    return
+  }
+
+  runBackgroundChecks()
+  backgroundTimer = setInterval(runBackgroundChecks, BACKGROUND_UPDATE_CHECK_MS)
+}
+
+export function setAutomaticUpdateChecksEnabled(enabled: boolean): void {
+  automaticUpdatePreferenceRevision += 1
+  automaticUpdatePreferenceLoaded = true
+  clearPreferenceRetry()
+  $automaticUpdateChecksEnabled.set(enabled)
+  syncBackgroundTimer()
+
+  if (typeof window === 'undefined' || !window.hermesDesktop?.api) {
+    return
+  }
+
+  const revision = automaticUpdatePreferenceRevision
+
+  // Serialize read-modify-write operations so a rapid toggle cannot lose a
+  // newer value to an older config response. Stale queued writes are skipped
+  // before PUT, while the latest toggle remains authoritative in the atom.
+  automaticUpdateSaveChain = automaticUpdateSaveChain
+    .then(async () => {
+      if (revision !== automaticUpdatePreferenceRevision) {
+        return
+      }
+
+      const config = await getHermesConfigRecord()
+
+      if (revision !== automaticUpdatePreferenceRevision) {
+        return
+      }
+
+      const desktop = isRecord(config.desktop) ? config.desktop : {}
+      confirmedAutomaticUpdateChecks = configuredAutomaticUpdateChecks(config) ?? AUTO_UPDATE_CHECKS_DEFAULT
+
+      const result = await saveHermesConfigRecord({
+        ...config,
+        desktop: {
+          ...desktop,
+          [AUTO_UPDATE_CHECKS_CONFIG_KEY]: enabled
+        }
+      })
+
+      if (!result.ok) {
+        throw new Error('Update preference was not saved')
+      }
+
+      // A completed older write is still the last confirmed server value,
+      // but it must never repaint over a newer optimistic choice.
+      confirmedAutomaticUpdateChecks = enabled
+    })
+    .catch(() => {
+      if (revision !== automaticUpdatePreferenceRevision) {
+        return
+      }
+
+      automaticUpdatePreferenceLoaded = confirmedAutomaticUpdateChecks !== undefined
+      $automaticUpdateChecksEnabled.set(confirmedAutomaticUpdateChecks ?? false)
+      syncBackgroundTimer()
+      notify({
+        kind: 'error',
+        title: translateNow('settings.about.automaticUpdates'),
+        message: translateNow('updates.automaticUpdatesSaveFailed')
+      })
+    })
+}
 
 // Passive checks run at most once per day per client. The main process and the
 // backend each keep a 24h cache, so a tick or focus that lands inside the window
@@ -1044,30 +1243,62 @@ export function startUpdatePoller(): void {
   }
 
   pollerStarted = true
-  runPassiveChecks()
+  const connection = $connection.get()
+  lastPreferenceConnection = connection
+    ? JSON.stringify([connection.mode, connection.baseUrl, connection.connectionId, connection.profile])
+    : ''
   void refreshDesktopVersion()
+
+  if (!automaticUpdatePreferenceLoaded) {
+    void hydrateAutomaticUpdateChecks()
+  } else {
+    syncBackgroundTimer()
+  }
+
   bridge.onProgress(ingestProgress)
 
   // The poller starts at mount, before the gateway connects — so the first
   // backend check above sees mode≠remote and no-ops. Re-check once the
   // connection resolves to remote.
   connectionUnsub = $connection.subscribe(conn => {
+    const preferenceConnection = conn ? JSON.stringify([conn.mode, conn.baseUrl, conn.connectionId, conn.profile]) : ''
+
+    if (preferenceConnection !== lastPreferenceConnection) {
+      lastPreferenceConnection = preferenceConnection
+
+      if (!automaticUpdatePreferenceLoaded) {
+        // Invalidate the old source even if its request has not settled.
+        // A late response must not opt this new connection into checks.
+        preferenceReadGeneration += 1
+        preferenceRead = null
+        clearPreferenceRetry()
+
+        if (conn) {
+          hydrateAutomaticUpdateChecks(true)
+        }
+      }
+    }
+
     if (conn?.mode === lastConnectionMode) {
       return
     }
 
     lastConnectionMode = conn?.mode
 
-    if (conn?.mode === 'remote') {
+    if (conn?.mode === 'remote' && automaticUpdatePreferenceLoaded && $automaticUpdateChecksEnabled.get()) {
       void checkBackendUpdates()
     }
   })
 
   window.addEventListener('focus', onFocus)
-  backgroundTimer = setInterval(runPassiveChecks, BACKGROUND_UPDATE_CHECK_MS)
 }
 
 export function stopUpdatePoller(): void {
+  clearPreferenceRetry()
+  preferenceReadGeneration += 1
+  preferenceRead = null
+  preferenceRetryAttempt = 0
+
   if (backgroundTimer !== null) {
     clearInterval(backgroundTimer)
     backgroundTimer = null
@@ -1076,14 +1307,29 @@ export function stopUpdatePoller(): void {
   connectionUnsub?.()
   connectionUnsub = null
   lastConnectionMode = undefined
+  lastPreferenceConnection = ''
   window.removeEventListener('focus', onFocus)
   pollerStarted = false
 }
 
 function onFocus() {
+  const now = Date.now()
+
+  if (now - lastFocusAt < 5 * 60 * 1000) {
+    return
+  }
+
+  lastFocusAt = now
+
   void refreshDesktopVersion()
 
-  if (passiveCheckDue(Date.now())) {
-    runPassiveChecks()
+  if (!automaticUpdatePreferenceLoaded) {
+    hydrateAutomaticUpdateChecks(true)
+
+    return
+  }
+
+  if ($automaticUpdateChecksEnabled.get() && passiveCheckDue(now)) {
+    runBackgroundChecks()
   }
 }

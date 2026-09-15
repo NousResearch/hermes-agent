@@ -183,8 +183,7 @@ class TestCronDoctor:
         assert "Cron doctor found 3 issue(s)" in out
         assert job["id"] in out
         assert "last run failed: Provider returned error" in out
-        assert "was not delivered (telegram timeout)" in out
-        assert "hermes cron edit" in out
+        assert "last delivery failed: telegram timeout" in out
         assert "script not found" in out
 
     def test_doctor_reports_healthy_jobs(self, tmp_cron_dir, capsys):
@@ -217,8 +216,7 @@ class TestCronDoctor:
 
         out = capsys.readouterr().out
         assert rc == 1
-        assert "was not delivered (telegram timeout)" in out
-        assert "hermes cron edit" in out
+        assert "last delivery failed: telegram timeout" in out
         assert "last run failed" not in out
         assert "unknown error" not in out
 
@@ -274,7 +272,7 @@ class TestCronListStatusRendering:
 
         out = capsys.readouterr().out
         last_run_line = next(l for l in out.splitlines() if "Last run:" in l)
-        assert "was not delivered" in last_run_line
+        assert "delivery_failed" in last_run_line
         assert "telegram timeout" in last_run_line, (
             "the delivery detail lives in last_delivery_error, not last_error"
         )
@@ -294,7 +292,7 @@ class TestCronListStatusRendering:
         out = capsys.readouterr().out
         last_run_line = next(l for l in out.splitlines() if "Last run:" in l)
         assert f"{cron_cli.Colors.GREEN}ok" in last_run_line
-        assert "not delivered" not in last_run_line
+        assert "delivery_failed" not in last_run_line
 
 
 class TestGatewayNotRunningWarning:

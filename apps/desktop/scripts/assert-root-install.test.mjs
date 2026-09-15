@@ -6,6 +6,12 @@ import { test } from 'vitest'
 
 import { BUILD_CRITICAL_PACKAGES as BUILD_CRITICAL, checkRootInstall, requiredPackages } from '../scripts/assert-root-install.mjs'
 
+function writePackage(root, name, version) {
+  const dir = path.join(root, 'node_modules', name)
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name, version }), 'utf8')
+}
+
 // Build a throwaway repo shaped like this one: an app workspace whose
 // dependencies are hoisted to the repo root, which is what the guard walks.
 // `manifest` is merged into the app's package.json so tests can declare
@@ -16,14 +22,9 @@ function makeTree({ rootPackages = BUILD_CRITICAL, react = '19.2.7', reactDom = 
   fs.mkdirSync(appDir, { recursive: true })
   fs.writeFileSync(path.join(appDir, 'package.json'), JSON.stringify({ name: 'desktop', ...manifest }), 'utf8')
 
-  const writePackage = (name, version) => {
-    const dir = path.join(tempRoot, 'node_modules', name)
-    fs.mkdirSync(dir, { recursive: true })
-    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name, version }), 'utf8')
-  }
-  for (const name of rootPackages) writePackage(name, '1.0.0')
-  if (react !== null) writePackage('react', react)
-  if (reactDom !== null) writePackage('react-dom', reactDom)
+  for (const name of rootPackages) writePackage(tempRoot, name, '1.0.0')
+  if (react !== null) writePackage(tempRoot, 'react', react)
+  if (reactDom !== null) writePackage(tempRoot, 'react-dom', reactDom)
 
   return { tempRoot, appDir }
 }
@@ -51,6 +52,29 @@ test('checkRootInstall fails when katex is missing but vite is present', () => {
     assert.match(result.error, /npm ci/)
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('checkRootInstall ignores dependencies above the declared repository root', () => {
+  const outerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-assert-root-boundary-'))
+  const tempRoot = path.join(outerDir, 'repo')
+  const appDir = path.join(tempRoot, 'apps', 'desktop')
+  fs.mkdirSync(appDir, { recursive: true })
+  fs.writeFileSync(path.join(appDir, 'package.json'), JSON.stringify({ name: 'desktop' }), 'utf8')
+
+  for (const name of BUILD_CRITICAL.filter(name => name !== 'katex')) {
+    writePackage(tempRoot, name, '1.0.0')
+  }
+  writePackage(tempRoot, 'react', '19.2.7')
+  writePackage(tempRoot, 'react-dom', '19.2.7')
+  writePackage(outerDir, 'katex', '1.0.0')
+
+  try {
+    const result = checkRootInstall(appDir, tempRoot)
+    assert.equal(result.ok, false)
+    assert.match(result.error, /katex/)
+  } finally {
+    fs.rmSync(outerDir, { recursive: true, force: true })
   }
 })
 

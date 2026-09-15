@@ -28,7 +28,6 @@ import { setSessionYolo } from '@/lib/yolo-session'
 import { $clarifyRequests } from '@/store/clarify'
 import { migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
-import { $connectionRequests } from '@/store/connection-request'
 import {
   openGatewayForAgent,
   openGatewayForProfile,
@@ -51,7 +50,7 @@ import {
   resolveNewChatOwnerRoute
 } from '@/store/profile'
 import { $projectScope, resolveNewSessionCwd } from '@/store/projects'
-import { receiveApprovalRequest } from '@/store/prompts'
+import { setApprovalRequest } from '@/store/prompts'
 import { clearStoredTranscriptReadOnly, markStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
   $activeSessionStoredIdRotation,
@@ -127,7 +126,7 @@ import { $archivedSessions } from '@/store/sidebar-archive'
 import { restoreSessionTodosFromSnapshot } from '@/store/todos'
 import { dropTranscriptTail, dropTranscriptTailEverywhere, saveTranscriptTail } from '@/store/transcript-tail-cache'
 import { isWatchWindow } from '@/store/windows'
-import type { SessionCreateResponse, SessionMessage, SessionResumeResult, UsageStats } from '@/types/hermes'
+import type { SessionCreateResponse, SessionMessage, SessionResumeResponse, UsageStats } from '@/types/hermes'
 
 import { navigateToWorkspacePage, NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
@@ -138,7 +137,6 @@ import { sessionCreateOverrideParams, type SessionCreateOverrides, type SessionS
 import { captureDisplayHydration } from './display-hydration'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
 import { pendingClarifyToolPayload, restorePendingClarifyFromSnapshot } from './restore-pending-clarify'
-import { projectPendingConnection, restorePendingConnectionFromSnapshot } from './restore-pending-connection'
 import {
   createPersistedDisplayTranscriptProvenance,
   hasPersistedDisplayTranscriptProvenance,
@@ -257,7 +255,7 @@ function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?
 function reconcileAuthoritativeChatMessages(
   authoritativeMessages: ChatMessage[],
   previousMessages: ChatMessage[],
-  liveProjection?: Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id'>
+  liveProjection?: Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id'>
 ): ChatMessage[] {
   const withLiveProjection = liveProjection
     ? appendLiveSessionProjection(authoritativeMessages, liveProjection)
@@ -270,9 +268,9 @@ function reconcileAuthoritativeChatMessages(
 }
 
 function reconcileAuthoritativeMessages(
-  authoritativeMessages: SessionResumeResult['messages'],
+  authoritativeMessages: SessionResumeResponse['messages'],
   previousMessages: ChatMessage[],
-  liveProjection?: Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id'>
+  liveProjection?: Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id'>
 ): ChatMessage[] {
   return reconcileAuthoritativeChatMessages(toChatMessages(authoritativeMessages), previousMessages, liveProjection)
 }
@@ -337,26 +335,14 @@ interface FreshSessionDraftOptions {
   workspaceTarget?: NewChatWorkspaceTarget
 }
 
-/** Session-state patch for a restored blocking prompt row; the first non-null projection is used. */
-function livePromptStreamId(
-  ...projections: ({ streamId: string } | null)[]
-): { awaitingResponse: false; sawAssistantPayload: true; streamId: string } | Record<string, never> {
-  const live = projections.find(Boolean)
-
-  return live ? { awaitingResponse: false, sawAssistantPayload: true, streamId: live.streamId } : {}
-}
-
-function restorePendingApproval(response: SessionResumeResult, sessionId: string): boolean {
+function restorePendingApproval(response: SessionResumeResponse, sessionId: string): boolean {
   const pending = response.pending_approval
 
   if (!pending) {
     return false
   }
 
-  // The live `approval` server request (re-delivered from `open_requests`
-  // before this ran) already parked itself with the same queue id; don't
-  // clobber it with a copy that can only answer through the RPC fallback.
-  void receiveApprovalRequest(null, {
+  setApprovalRequest({
     allowPermanent: pending.allow_permanent !== false,
     choices: pending.choices,
     command: pending.command ?? '',
@@ -1216,14 +1202,13 @@ export function useSessionActions({
           setSessionStartedAt(Date.now())
 
           try {
-            let activated: SessionResumeResult | null = null
+            let activated: SessionResumeResponse | null = null
             const activateStartedAt = Date.now() / 1000
             const activateBaselineState = sessionStateByRuntimeIdRef.current.get(cachedRuntimeId) ?? cachedViewState
             const clarifyRequestIdAtActivateStart = $clarifyRequests.get()[cachedRuntimeId]?.requestId
-            const connectionOpIdAtActivateStart = $connectionRequests.get()[cachedRuntimeId]?.opId
 
             try {
-              activated = await requestForSession<SessionResumeResult>('session.activate', {
+              activated = await requestForSession<SessionResumeResponse>('session.activate', {
                 session_id: cachedRuntimeId,
                 cols: 96,
                 omit_messages: true
@@ -1270,13 +1255,6 @@ export function useSessionActions({
               )
 
               const pendingClarify = pendingClarifyState.request
-
-              const pendingConnection = restorePendingConnectionFromSnapshot(
-                activated,
-                cachedRuntimeId,
-                activateStartedAt,
-                connectionOpIdAtActivateStart
-              ).request
 
               const clarifyAuthoritativelyAbsent =
                 pendingClarifyState.authoritativeAbsent && !$clarifyRequests.get()[cachedRuntimeId]
@@ -1343,7 +1321,6 @@ export function useSessionActions({
                   needsInput:
                     pendingApproval ||
                     Boolean(pendingClarify) ||
-                    Boolean(pendingConnection) ||
                     (clarifyAuthoritativelyAbsent ? false : state.needsInput),
                   // Adopting someone else's turn: we'll stream its reply
                   // without ever having received its prompt, so the settle
@@ -1467,16 +1444,8 @@ export function useSessionActions({
                   )
                 : null
 
-              const pendingConnectionProjection = projectPendingConnection(
-                pendingClarifyProjection?.messages ?? clearedClarifyProjection?.messages ?? activatedMessages,
-                pendingConnection
-              )
-
               const visibleActivatedMessages =
-                pendingConnectionProjection?.messages ??
-                pendingClarifyProjection?.messages ??
-                clearedClarifyProjection?.messages ??
-                activatedMessages
+                pendingClarifyProjection?.messages ?? clearedClarifyProjection?.messages ?? activatedMessages
 
               releaseTranscriptView()
 
@@ -1497,7 +1466,13 @@ export function useSessionActions({
                     acceptedPersistedDisplayTranscript || hasValidProvenance
                       ? (expectedProvenance ?? undefined)
                       : undefined,
-                  ...livePromptStreamId(pendingConnectionProjection, pendingClarifyProjection),
+                  ...(pendingClarifyProjection
+                    ? {
+                        awaitingResponse: false,
+                        sawAssistantPayload: true,
+                        streamId: pendingClarifyProjection.streamId
+                      }
+                    : {}),
                   ...(clearedClarifyProjection
                     ? {
                         streamId: state.busy ? (clearedClarifyProjection.streamId ?? state.streamId) : null
@@ -1648,7 +1623,7 @@ export function useSessionActions({
         const resumeStartedAt = Date.now() / 1000
 
         const resumePromise = singleFlightSessionResume(storedSessionId, () =>
-          requestForSession<SessionResumeResult>('session.resume', {
+          requestForSession<SessionResumeResponse>('session.resume', {
             session_id: storedSessionId,
             cols: 96,
             source: 'desktop',
@@ -1864,12 +1839,6 @@ export function useSessionActions({
         const pendingClarifyState = restorePendingClarifyFromSnapshot(resumed, resumed.session_id, resumeStartedAt)
         const pendingClarify = pendingClarifyState.request
 
-        const pendingConnection = restorePendingConnectionFromSnapshot(
-          resumed,
-          resumed.session_id,
-          resumeStartedAt
-        ).request
-
         const clarifyAuthoritativelyAbsent =
           pendingClarifyState.authoritativeAbsent && !$clarifyRequests.get()[resumed.session_id]
 
@@ -1897,16 +1866,8 @@ export function useSessionActions({
             )
           : null
 
-        const pendingConnectionProjection = projectPendingConnection(
-          pendingClarifyProjection?.messages ?? clearedClarifyProjection?.messages ?? messagesForView,
-          pendingConnection
-        )
-
         const visibleMessagesForView =
-          pendingConnectionProjection?.messages ??
-          pendingClarifyProjection?.messages ??
-          clearedClarifyProjection?.messages ??
-          messagesForView
+          pendingClarifyProjection?.messages ?? clearedClarifyProjection?.messages ?? messagesForView
 
         // The eagerly painted REST page is persisted-display authority: stamp
         // its provenance so the next warm switch to this session paints it
@@ -1932,10 +1893,7 @@ export function useSessionActions({
             // Backend reported this turn running at resume time — live proof.
             turnLive: state.turnLive || resumedRunning,
             needsInput:
-              pendingApproval ||
-              Boolean(pendingClarify) ||
-              Boolean(pendingConnection) ||
-              (clarifyAuthoritativelyAbsent ? false : state.needsInput),
+              pendingApproval || Boolean(pendingClarify) || (clarifyAuthoritativelyAbsent ? false : state.needsInput),
             adoptedRunningTurn: state.adoptedRunningTurn || resumedRunning,
             ...(inFlightRecovery.applied
               ? {
@@ -1948,7 +1906,13 @@ export function useSessionActions({
               : {
                   turnStartedAt: resumedRunning && resumedTurnStartedAt !== null ? resumedTurnStartedAt : null
                 }),
-            ...livePromptStreamId(pendingConnectionProjection, pendingClarifyProjection),
+            ...(pendingClarifyProjection
+              ? {
+                  awaitingResponse: false,
+                  sawAssistantPayload: true,
+                  streamId: pendingClarifyProjection.streamId
+                }
+              : {}),
             ...(clearedClarifyProjection
               ? {
                   streamId: resumedRunning ? (clearedClarifyProjection.streamId ?? state.streamId) : null

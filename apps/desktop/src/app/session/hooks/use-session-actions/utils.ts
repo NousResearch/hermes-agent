@@ -46,7 +46,7 @@ import { sessionTileOwnerRoute } from '@/store/session-states'
 export { sessionMatchesStoredId }
 import { sessionOwnerRouteFromRow, type SessionOwnerScope } from '@/store/session-request-router'
 import { reportBackendContract, reportInstallMethodWarning } from '@/store/updates'
-import type { SessionCreateResponse, SessionInfo, SessionResumeResult, SessionRuntimeInfo } from '@/types/hermes'
+import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, SessionRuntimeInfo } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -747,11 +747,11 @@ export function preserveLocalPendingTurnMessages(
  */
 const safelyPersistedInflightUser = Symbol('safelyPersistedInflightUser')
 
-type LiveSessionProjection = Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id'> & {
+type LiveSessionProjection = Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id'> & {
   [safelyPersistedInflightUser]?: true
 }
 
-type ReconciledSessionResumeResult = SessionResumeResult & {
+type ReconciledSessionResumeResponse = SessionResumeResponse & {
   [safelyPersistedInflightUser]?: true
 }
 
@@ -1005,8 +1005,8 @@ function transcriptAnchorMatches(a: ChatMessage, b: ChatMessage): boolean {
 export function dedupeInflightUserAgainstTranscript(
   persistedMessages: ChatMessage[],
   runtimeMessages: ChatMessage[],
-  projection: SessionResumeResult
-): ReconciledSessionResumeResult {
+  projection: SessionResumeResponse
+): ReconciledSessionResumeResponse {
   const inflightUser = projection.inflight?.user?.replace(/\s+/g, ' ').trim() ?? ''
 
   if (!inflightUser) {
@@ -1054,7 +1054,7 @@ export function dedupeInflightUserAgainstTranscript(
  */
 export function removeRepresentedLocalLiveProjection(
   previousMessages: ChatMessage[],
-  projection: Pick<SessionResumeResult, 'inflight' | 'queued'>
+  projection: Pick<SessionResumeResponse, 'inflight' | 'queued'>
 ): ChatMessage[] {
   const inflightUser = projection.inflight?.user?.replace(/\s+/g, ' ').trim() ?? ''
   const inflightAssistant = projection.inflight?.assistant?.replace(/\s+/g, ' ').trim() ?? ''

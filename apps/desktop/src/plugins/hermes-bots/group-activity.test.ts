@@ -153,25 +153,46 @@ describe('turn arc', () => {
 })
 
 describe('epoch scoping', () => {
-  it('queues follow-ups without cancelling the active turn or losing its reply delta', async () => {
-    let release!: (reply: string) => void
-    const first = new Promise<string>(resolve => { release = resolve })
-    const room = await loadRoom({ turn: ({ n }) => n === 1 ? first : '(pass)' })
+  it('a newer send interrupts the previous run and records cancelled in the CURRENT epoch', async () => {
+    const gates = new Map<number, { promise: Promise<string>; resolve: (value: string) => void }>()
+
+    const gate = (n: number) => {
+      const existing = gates.get(n)
+
+      if (existing) {
+        return existing.promise
+      }
+
+      let resolve!: (value: string) => void
+
+      const promise = new Promise<string>(settle => {
+        resolve = settle
+      })
+
+      gates.set(n, { promise, resolve })
+
+      return promise
+    }
+
+    const room = await loadRoom({ turn: ({ n }) => gate(n) })
     const member: GroupMember[] = [{ name: 'research', title: '' }]
-    const thread = room.rounds.sendToGroupChat('Busy', member, 'first ask')!
+
+    room.rounds.sendToGroupChat('Busy', member, 'first ask')
     await drain(() => room.gateway.calls.length < 1, 50)
-    const epoch = room.chat.$groupChats.get().Busy.epoch
-    room.rounds.sendToGroupChat('Busy', member, 'follow-up', thread)
-    await drain(() => false)
-    expect(room.gateway.calls).toHaveLength(1)
-    expect(room.chat.$groupChats.get().Busy.epoch).toBe(epoch)
-    release('first reply')
-    await drain(() => room.gateway.calls.length < 2)
+    room.rounds.sendToGroupChat('Busy', member, 'second ask, supersede')
+    await drain(() => room.gateway.calls.length < 2, 50)
+
+    gates.get(2)?.resolve('from the new run')
     await drain(() => Boolean(room.chat.$groupChats.get().Busy?.running))
-    expect(room.gateway.calls).toHaveLength(2)
-    expect(room.gateway.calls[1].prompt).toMatch(/follow-up[\s\S]*first reply/)
-    expect(room.gateway.calls[1].prompt).not.toContain('first ask')
-    expect(feed(room, 'Busy').some(event => event.kind === 'cancelled')).toBe(false)
+    gates.get(1)?.resolve('late from the old run')
+    await drain(() => false)
+
+    const epoch = room.chat.$groupChats.get().Busy?.epoch || 0
+
+    expect(feed(room, 'Busy').some(event => event.kind === 'cancelled')).toBe(true)
+    // The view shows only the current run: every visible event is this epoch.
+    expect(room.activity.currentGroupActivity('Busy').every(event => (event.epoch || 0) === epoch)).toBe(true)
+    expect(room.activity.currentGroupActivity('Busy').some(event => event.kind === 'cancelled')).toBe(true)
   })
 
   it('epoch filtering drops events from a superseded run', async () => {

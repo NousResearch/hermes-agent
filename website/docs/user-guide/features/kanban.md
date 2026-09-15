@@ -1225,7 +1225,9 @@ Runs are exposed on the dashboard (Run History section in the drawer, one colour
 
 ### Forward compatibility
 
-Two nullable columns on `tasks` are reserved for v2 workflow routing: `workflow_template_id` (which template this task belongs to) and `current_step_key` (which step in that template is active). The v1 kernel ignores them for routing but lets clients write them, so a v2 release can add the routing machinery without another schema migration.
+Two nullable columns on `tasks` support workflow classification: `workflow_template_id` and `current_step_key`. They remain reserved except for the narrow `hermes:review_child_v1` contract. At creation, the Python `create_task` API and `kanban_create` tool accept `review_child_step="review"` or `"release"`, requiring at least one existing parent. This stores the namespace and step atomically with the dependency links and records them in the creation event. Omit it for implementation tasks. The CLI and dashboard do not expose this opt-in.
+
+Explicitly classified children with a remaining parent edge skip only `active_pr` suppression: a fresh PR comment is their review input, not evidence of duplicate implementation. Parent readiness, auth, rate-limit cooldown, recent-success, claim and capacity gates remain unchanged. Profiles, titles, skills and PR wording never infer classification. Unknown/partial workflow pairs and unlinked tasks retain suppression. The contract does not verify or approve a PR SHA; the child must perform its declared exact-SHA validation normally. No schema migration or automatic classification/backfill of existing cards occurs.
 
 ## Event reference
 

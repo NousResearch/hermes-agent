@@ -33,7 +33,7 @@ export function voiceProviderKeys(section: 'tts' | 'stt', providerKey: string): 
 export function VoiceProviderFields({ section, providerKey }: { section: 'tts' | 'stt'; providerKey: string }) {
   const { t } = useI18n()
   const keys = useMemo(() => voiceProviderKeys(section, providerKey), [section, providerKey])
-  const { data: loadedConfig } = useHermesConfigRecord()
+  const { data: loadedConfig, writeScope } = useHermesConfigRecord()
 
   const { data: schemaResponse } = useQuery({
     queryKey: ['hermes-config-schema'],
@@ -70,11 +70,12 @@ export function VoiceProviderFields({ section, providerKey }: { section: 'tts' |
     }
 
     const timeout = window.setTimeout(() => {
-      void saveHermesConfig(diffConfig(baseline ?? {}, config))
+      void saveHermesConfig(diffConfig(baseline ?? {}, config), writeScope)
         .then(() => {
           setBaseline(config)
           setHermesConfigCache(config)
         })
+
         .catch(err => notifyError(err, t.settings.config.autosaveFailed))
     }, 550)
 

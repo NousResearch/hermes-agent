@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -7,6 +7,7 @@ import {
   deleteSession,
   getHermesConfigRecord,
   listAllProfileSessions,
+  peekConfigReadOrigin,
   saveHermesConfig,
   setSessionArchived
 } from '@/hermes'
@@ -192,6 +193,7 @@ function AutoArchiveSetting() {
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
   const [enabled, setEnabled] = useState(false)
   const [days, setDays] = useState(DEFAULT_AUTO_ARCHIVE_DAYS)
+  const writeScopeRef = useRef<ReturnType<typeof peekConfigReadOrigin>>(undefined)
 
   useEffect(() => {
     // Config REST is only reachable through the Electron bridge; skip in
@@ -210,6 +212,7 @@ function AutoArchiveSetting() {
 
         const sessions = (record.sessions ?? {}) as Record<string, unknown>
         const parsedDays = Number(sessions.auto_archive_days)
+        writeScopeRef.current = peekConfigReadOrigin(record)
         setConfig(record)
         setEnabled(Boolean(sessions.auto_archive))
         setDays(Number.isFinite(parsedDays) && parsedDays > 0 ? Math.round(parsedDays) : DEFAULT_AUTO_ARCHIVE_DAYS)
@@ -241,7 +244,8 @@ function AutoArchiveSetting() {
       try {
         // Sparse patch: PUT /api/config deep-merges, and echoing the cached
         // snapshot would overwrite keys other surfaces changed since it loaded.
-        await saveHermesConfig({ sessions: { auto_archive: autoArchive, auto_archive_days: archiveDays } })
+        await saveHermesConfig({ sessions: { auto_archive: autoArchive, auto_archive_days: archiveDays } }, writeScopeRef.current)
+
       } catch (err) {
         notifyError(err, s.autoArchiveFailed)
       }

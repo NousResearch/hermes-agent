@@ -4,6 +4,7 @@ import { useCallback, useEffect } from 'react'
 
 import type { HermesGateway } from '@/hermes'
 import { sessionTitle } from '@/lib/chat-runtime'
+import { useI18n } from '@/i18n'
 import {
   type CommandsCatalogLike,
   desktopSkinSlashCompletions,
@@ -66,6 +67,7 @@ export function useSlashCompletions(options: {
   loading: boolean
 } {
   const { gateway, skinThemes, activeSkin } = options
+  const { locale } = useI18n()
   const enabled = Boolean(gateway)
   const epoch = useStore($slashCompletionsEpoch)
 
@@ -75,14 +77,14 @@ export function useSlashCompletions(options: {
       return
     }
 
-    void cachedSlashCompletion('catalog', () => gateway.request<CommandsCatalogLike>('commands.catalog'))
+    void cachedSlashCompletion(`catalog:${locale}`, () => gateway.request<CommandsCatalogLike>('commands.catalog', { language: locale }))
       .then(catalog => {
         filterDesktopCommandsCatalog(catalog)
       })
       .catch(() => {
         // Next keystroke retries; don't block the composer on a warm-up miss.
       })
-  }, [gateway, epoch])
+  }, [gateway, epoch, locale])
 
   const fetcher = useCallback(
     async (query: string): Promise<CompletionPayload> => {
@@ -154,7 +156,7 @@ export function useSlashCompletions(options: {
       try {
         if (!query) {
           const catalog = filterDesktopCommandsCatalog(
-            await cachedSlashCompletion('catalog', () => gateway.request<CommandsCatalogLike>('commands.catalog'))
+            await cachedSlashCompletion(`catalog:${locale}`, () => gateway.request<CommandsCatalogLike>('commands.catalog', { language: locale }))
           )
 
           // Prefer the categorized layout so the popover renders section headers
@@ -194,8 +196,8 @@ export function useSlashCompletions(options: {
           return { items, query }
         }
 
-        const result = await cachedSlashCompletion(`slash:${text.toLowerCase()}`, () =>
-          gateway.request<{ items?: CompletionEntry[]; replace_from?: number }>('complete.slash', { text })
+        const result = await cachedSlashCompletion(`slash:${locale}:${text.toLowerCase()}`, () =>
+          gateway.request<{ items?: CompletionEntry[]; replace_from?: number }>('complete.slash', { text, language: locale })
         )
 
         // Arg-completion items (replace_from > 1) carry just the arg stub —

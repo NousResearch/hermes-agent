@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import types
+import warnings
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
@@ -616,6 +617,53 @@ class TestOSSBackend:
         assert "hermes_openai" not in factory.provider_to_class
         assert state.clients == []
         assert raw == before
+
+    def _qdrant_oss_config(self):
+        return {
+            "llm": {"provider": "ollama", "config": {"model": "llama3.1:8b"}},
+            "embedder": {"provider": "ollama", "config": {}},
+            "vector_store": {"provider": "qdrant", "config": {}},
+        }
+
+    def test_qdrant_insecure_warning_opt_in_silences_only_that_message(self, monkeypatch):
+        state, Memory, factory = _install_fake_mem0(monkeypatch)
+        monkeypatch.setenv("HERMES_QDRANT_ALLOW_INSECURE", "1")
+
+        with warnings.catch_warnings():
+            OSSBackend(self._qdrant_oss_config())
+            with warnings.catch_warnings(record=True) as caught:
+                # Append so the message-targeted filter registered by the backend stays
+                # first and wins over this catch-all.
+                warnings.simplefilter("always", append=True)
+                warnings.warn("Api key is used with an insecure connection", UserWarning)
+                warnings.warn("some unrelated warning", UserWarning)
+
+        assert [str(w.message) for w in caught] == ["some unrelated warning"]
+        assert len(Memory.instances) == 1
+
+    def test_qdrant_insecure_warning_still_fires_without_opt_in(self, monkeypatch):
+        state, Memory, factory = _install_fake_mem0(monkeypatch)
+        monkeypatch.delenv("HERMES_QDRANT_ALLOW_INSECURE", raising=False)
+
+        with warnings.catch_warnings():
+            OSSBackend(self._qdrant_oss_config())
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                warnings.warn("Api key is used with an insecure connection", UserWarning)
+
+        assert [str(w.message) for w in caught] == ["Api key is used with an insecure connection"]
+
+    def test_qdrant_insecure_warning_opt_in_requires_truthy_value(self, monkeypatch):
+        state, Memory, factory = _install_fake_mem0(monkeypatch)
+        monkeypatch.setenv("HERMES_QDRANT_ALLOW_INSECURE", "0")
+
+        with warnings.catch_warnings():
+            OSSBackend(self._qdrant_oss_config())
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                warnings.warn("Api key is used with an insecure connection", UserWarning)
+
+        assert [str(w.message) for w in caught] == ["Api key is used with an insecure connection"]
 
 
 httpx = pytest.importorskip("httpx")

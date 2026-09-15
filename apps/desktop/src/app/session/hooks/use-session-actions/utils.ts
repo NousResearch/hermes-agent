@@ -1,3 +1,4 @@
+import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
 import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
@@ -15,6 +16,9 @@ import {
   $messagingSessions,
   $sessions,
   commitWorkspaceCwdForSelectedSession,
+  getSessionOwnerHint,
+  knownSessionOwner,
+  ownerLookupSessionRows,
   releaseWorkspaceCwdOwner,
   sessionMatchesStoredId,
   setCronSessions,
@@ -30,17 +34,19 @@ import {
   setMessagingSessions,
   setSessionOwnerHint,
   setSessions,
+  setUnlistedSessionOwnerRows,
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
+import { sessionTileOwnerRoute } from '@/store/session-states'
 
 // Re-exported for the many session-actions/tile call sites that already import
 // it from here; the canonical definition lives in @/store/session.
 export { sessionMatchesStoredId }
 import { sessionOwnerRouteFromRow, type SessionOwnerScope } from '@/store/session-request-router'
 import { reportBackendContract, reportInstallMethodWarning } from '@/store/updates'
-import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, SessionRuntimeInfo } from '@/types/hermes'
+import type { SessionCreateResponse, SessionInfo, SessionResumeResult, SessionRuntimeInfo } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -741,11 +747,11 @@ export function preserveLocalPendingTurnMessages(
  */
 const safelyPersistedInflightUser = Symbol('safelyPersistedInflightUser')
 
-type LiveSessionProjection = Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id'> & {
+type LiveSessionProjection = Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id'> & {
   [safelyPersistedInflightUser]?: true
 }
 
-type ReconciledSessionResumeResponse = SessionResumeResponse & {
+type ReconciledSessionResumeResult = SessionResumeResult & {
   [safelyPersistedInflightUser]?: true
 }
 
@@ -999,8 +1005,8 @@ function transcriptAnchorMatches(a: ChatMessage, b: ChatMessage): boolean {
 export function dedupeInflightUserAgainstTranscript(
   persistedMessages: ChatMessage[],
   runtimeMessages: ChatMessage[],
-  projection: SessionResumeResponse
-): ReconciledSessionResumeResponse {
+  projection: SessionResumeResult
+): ReconciledSessionResumeResult {
   const inflightUser = projection.inflight?.user?.replace(/\s+/g, ' ').trim() ?? ''
 
   if (!inflightUser) {
@@ -1048,7 +1054,7 @@ export function dedupeInflightUserAgainstTranscript(
  */
 export function removeRepresentedLocalLiveProjection(
   previousMessages: ChatMessage[],
-  projection: Pick<SessionResumeResponse, 'inflight' | 'queued'>
+  projection: Pick<SessionResumeResult, 'inflight' | 'queued'>
 ): ChatMessage[] {
   const inflightUser = projection.inflight?.user?.replace(/\s+/g, ' ').trim() ?? ''
   const inflightAssistant = projection.inflight?.assistant?.replace(/\s+/g, ' ').trim() ?? ''
@@ -1270,6 +1276,53 @@ export function upsertOptimisticSession(
   lastActive?: number,
   owner?: null | SessionProfileRoute
 ) {
+  const session = buildOptimisticSession(created, id, title, preview, parentSessionId, lastActive, owner)
+
+  if (owner) {
+    setSessionOwnerHint(id, owner)
+  }
+
+  // A real row supersedes any unlisted-draft stub for the same id (first send
+  // on a ⌘T tab lists it); drop the stub so the atom stays bounded. The
+  // lookup shadow-filter covers any path that lists without passing here.
+  setUnlistedSessionOwnerRows(prev => (prev.some(s => s.id === id) ? prev.filter(s => s.id !== id) : prev))
+
+  setSessions(prev => [session, ...prev.filter(s => s.id !== id)])
+}
+
+/**
+ * Record the owner of an UNLISTED draft tile without touching the visible
+ * sidebar list (see `openNewSessionTile` with `listed: false`, #102792). The
+ * stub carries the same stamps an optimistic row would — ambient profile for
+ * an unrouted create, exact connection tag for a routed one — and rides only
+ * the owner-lookup path, never the sidebar render path. A later real row for
+ * the same id shadows it; the first send replaces it outright.
+ */
+export function upsertUnlistedSessionOwner(
+  created: SessionCreateResponse,
+  id: string,
+  owner?: null | SessionProfileRoute
+) {
+  const stub = buildOptimisticSession(created, id, null, null, null, undefined, owner)
+  setSessionOwnerHintForStub(id, owner)
+  setUnlistedSessionOwnerRows(prev => [stub, ...prev.filter(s => s.id !== id)])
+}
+
+function setSessionOwnerHintForStub(id: string, owner?: null | SessionProfileRoute): void {
+  if (owner) {
+    setSessionOwnerHint(id, owner)
+  }
+}
+
+function buildOptimisticSession(
+  created: SessionCreateResponse,
+  id: string,
+  title: string | null = null,
+  preview: string | null = null,
+  parentSessionId: string | null = null,
+  lastActive?: number,
+  owner?: null | SessionProfileRoute
+): SessionInfo {
   const now = lastActive ?? Date.now() / 1000
   // Stamp the profile the session was just created on so the scoped sidebar
   // shows the new row immediately instead of filtering it out as "default"
@@ -1308,11 +1361,7 @@ export function upsertOptimisticSession(
     ...(connectionId ? { connection_id: connectionId } : {})
   }
 
-  if (owner) {
-    setSessionOwnerHint(id, owner)
-  }
-
-  setSessions(prev => [session, ...prev.filter(s => s.id !== id)])
+  return session
 }
 
 export function patchSessionWorkspace(sessionId: string, cwd: string | undefined) {
@@ -1360,6 +1409,7 @@ export function dropListedSession(storedSessionId: string): void {
   setSessions(prev => prev.filter(keep))
   setMessagingSessions(prev => prev.filter(keep))
   setCronSessions(prev => prev.filter(keep))
+  setUnlistedSessionOwnerRows(prev => prev.filter(keep))
 }
 
 export function restoreListedSession(session: SessionInfo, slice?: ListedSessionSlice): void {
@@ -1568,6 +1618,17 @@ export async function resolveSessionProfile(storedSessionId: null | string): Pro
 export async function resolveSessionOwner(storedSessionId: null | string): Promise<SessionOwnerScope> {
   if (!storedSessionId) {
     return undefined
+  }
+
+  const owner = resolveSessionRpcOwner({
+    routingSessionId: storedSessionId,
+    tileOwnerRoute: sessionTileOwnerRoute,
+    sessionOwnerHint: getSessionOwnerHint,
+    sessionRowOwner: id => knownSessionOwner(ownerLookupSessionRows(), id)
+  })
+
+  if (owner) {
+    return owner
   }
 
   const row = await resolveStoredSession(storedSessionId)

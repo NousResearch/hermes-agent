@@ -5,6 +5,8 @@ globals at install time (method_ctx.bind_module), so they reference server.py gl
 
 from __future__ import annotations
 
+import logging
+
 import contextlib
 
 from .method_ctx import bind_module
@@ -193,12 +195,24 @@ def _lifecycle_own_sid(session: dict, sid_hint: str = "") -> str:
     return own_sid
 
 
+def _lock_vault_managers(session: dict) -> None:
+    """A per-session unlock ends with the session that made it; siblings in the same profile keep theirs."""
+    try:
+        from agent.vault_backends import unlock
+
+        if sid := session.get("_sid"):
+            unlock.release_session(sid)
+    except Exception:
+        logging.getLogger(__name__).debug("vault manager lock on session end failed", exc_info=True)
+
+
 def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> None:
     """Best-effort finalize hook + memory commit; mirrors the CLI exit path so a force-quit mid-turn (double
     Ctrl-C, terminal close, SIGHUP) loses nothing."""
     if not session or session.get("_finalized"):
         return
     session["_finalized"] = True
+    _lock_vault_managers(session)
     if (history_ready := session.get("resume_history_ready")) is not None and not history_ready.is_set():
         session["resume_history_error"] = "session resume cancelled"
         history_ready.set()
@@ -218,17 +232,22 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     if hasattr(agent, "_persist_session") and (snapshot := getattr(agent, "_session_messages", None)):
         with contextlib.suppress(Exception):
             agent._persist_session(snapshot)
-    # interrupted=True so crash-recovery plugins can flush state (mirrors cli.py atexit).
-    if agent is not None:
-        with contextlib.suppress(Exception):
-            from hermes_cli.lifecycle import invoke_hook
-            invoke_hook(
-                "on_session_end", completed=False, interrupted=True,
-                session_id=getattr(agent, "session_id", None) or session.get("session_key", ""),
-                model=getattr(agent, "model", "unknown"), platform=getattr(agent, "platform", None) or "tui")
-    if agent is not None and history and hasattr(agent, "commit_memory_session"):
-        with contextlib.suppress(Exception):
-            agent.commit_memory_session(history)
+    # interrupted=True so crash-recovery plugins can flush state (mirrors cli.py atexit). The end-of-session
+    # hooks and the memory commit read the provider's config/credentials at call time; every caller of this
+    # chokepoint is an unscoped reaper/Timer/atexit/pool thread, so bind the SESSION's profile here — unscoped
+    # they fail closed under multiplex (tail never committed) or, on the Desktop backend serving a named
+    # profile, commit a secondary's transcript to the launch profile's memory tenant (same class as #110622).
+    with _session_profile_runtime_scope(session):
+        if agent is not None:
+            with contextlib.suppress(Exception):
+                from hermes_cli.lifecycle import invoke_hook
+                invoke_hook(
+                    "on_session_end", completed=False, interrupted=True,
+                    session_id=getattr(agent, "session_id", None) or session.get("session_key", ""),
+                    model=getattr(agent, "model", "unknown"), platform=getattr(agent, "platform", None) or "tui")
+        if agent is not None and history and hasattr(agent, "commit_memory_session"):
+            with contextlib.suppress(Exception):
+                agent.commit_memory_session(history)
 
     session_key = session.get("session_key")
     session_id = getattr(agent, "session_id", None) or session_key
@@ -297,7 +316,9 @@ def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") ->
         from tools.approval import unregister_gateway_notify
         if key := session.get("session_key"):
             unregister_gateway_notify(key)
-    with contextlib.suppress(Exception):
+    # agent.close() → shutdown_memory_provider reads the provider's config/credentials at call time; same
+    # scope rule as _finalize_session (every caller here is an unscoped reaper/atexit/pool thread).
+    with contextlib.suppress(Exception), _session_profile_runtime_scope(session):
         if hasattr(agent := session.get("agent"), "close"):
             agent.close()
 
@@ -391,6 +412,18 @@ def _interrupt_session_turn(sid: str, session: dict, *, request_id: str | None =
         session["queued_prompt"] = None
         session.pop("queued_prompts", None)
         session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
+    if should_interrupt:
+        # Sibling of gateway/run_agent_cache.py::_interrupt_and_clear_session: a user-initiated stop of a
+        # live TUI/desktop turn is the same "loop is gone" event for plugins holding per-turn external
+        # resources. Observer-only; dispatch failures never break the interrupt.
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "agent_loop_stopped", session_key=session.get("session_key", ""), platform="tui",
+                reason="user_stop", invalidation_reason="session_interrupt",
+            )
+        except Exception:
+            logger.debug("agent_loop_stopped hook dispatch failed", exc_info=True)
     if not use_compute_host:
         if should_interrupt:
             from agent.interrupt_compat import request_hard_interrupt
@@ -424,8 +457,9 @@ def _session_has_active_delegations(sid: str, session: dict | None = None) -> bo
     if session_id:
         # Only when this session may end its durable row by key — never for gateway-originated sessions (TUI is a
         # viewer there). Unknown DB state -> assume ownership.
-        with contextlib.suppress(Exception):
-            db = _get_db()
+        # The row lives in the session's OWN store (a named-profile session's row is invisible to
+        # the launch handle, which would leave this guard permanently dead).
+        with contextlib.suppress(Exception), _session_db(session) as db:
             if db is not None and _is_gateway_owned_source((db.get_session(session_id) or {}).get("source", "")):
                 owned_session_key = ""
     if not own_sid and not owned_session_key:
@@ -465,18 +499,10 @@ def _reattach_refusal(rid, sid: str, session: dict) -> dict | None:
 
 
 def _rebind_live_transport(sid: str, session: dict, transport: Transport) -> None:
-    """Attach a live peer without displacing existing subscribers (caller holds ``history_lock``)."""
-    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
-
-    # Transfer only this exact live generation's capabilities at the authenticated
-    # attachment seam, including records spawned through an older dispatch context.
-    with _active_subagents_lock:
-        _attach_session_transport(session, transport)
-        for record in _active_subagents.values():
-            if (record.get("owner_session_id") == sid
-                    and record.get("owner_session_record") is session
-                    and record.get("owner_transport") is not None):
-                record["owner_transport"] = session["transport"]
+    """Attach a live peer without displacing existing subscribers (caller holds ``history_lock``).
+    Subagent control authority needs no bookkeeping here: it resolves against ``session["transport"]``
+    at RPC time (``tools.delegate_tool_registry._subagent_transport_matches``)."""
+    _attach_session_transport(session, transport)
     # Every transport that showed this session (pop-outs resume the same sid); on disconnect the last
     # viewer becomes the transport instead of the drop sentinel.
     session.setdefault("viewers", {})[transport] = time.time()

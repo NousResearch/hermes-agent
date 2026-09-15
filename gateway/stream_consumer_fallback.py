@@ -374,8 +374,8 @@ class StreamFallbackMixin:
     # completed response (#71643/#95382 content-vs-flag contract).
     async def _suppress_silence_marker(self) -> None:
         """Retract any streamed preview when the final reply is a bare silence marker.  Flags
-        stay False: the gateway's whole-response filter turns the marker into "" so no
-        fallback send happens either."""
+        stay False so the gateway's whole-response filter owns what goes out next: "" for a
+        machinery turn, the visible fallback for a human one."""
         # A native-stream bubble isn't a deletable message — close an open one
         # (e.g. from an eager re-seed) with an empty finalize so it doesn't hang.
         if self._native_stream_opened:

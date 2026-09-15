@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable
 
-from plugins.memory.honcho.oauth import redact_tokens as _redact_tokens
+from agent.redact import redact_sensitive_text as _redact_sensitive_text
 
 logger = logging.getLogger("plugins.memory.honcho.session")
 
@@ -48,7 +48,7 @@ _REAUTH_REQUIRED_MESSAGE = (
 
 
 def _auth_error_message(exc: BaseException) -> str:
-    return (f"Honcho rejected our credentials and a forced token refresh did not recover: {_redact_tokens(str(exc))}. "
+    return (f"Honcho rejected our credentials and a forced token refresh did not recover: {_redact_sensitive_text(str(exc), force=True)}. "
             "Re-authenticate with 'hermes honcho setup'.")
 
 
@@ -56,7 +56,7 @@ class SessionAuthMixin:
     """Auth state + ``_authed_call`` for HonchoSessionManager (state lives in __init__)."""
 
     def _record_auth_failure(self, exc: BaseException) -> None:
-        detail = _redact_tokens(str(exc))
+        detail = _redact_sensitive_text(str(exc), force=True)
         if self._auth_failure is None:
             logger.error("Honcho authentication failed and token refresh did not recover; "
                          "memory sync and recall are paused until the user re-authenticates: %s", detail)
@@ -94,9 +94,10 @@ class SessionAuthMixin:
         except Exception:
             return False
 
-    def _force_reauth(self) -> bool:
+    def _force_reauth(self, failed_access_token: str | None = None) -> bool:
         """Rotate the token after a 401 and rebind the client. False for a static API key, a dead
-        grant, or a failed exchange."""
+        grant, or a failed exchange. ``failed_access_token`` is the bearer the operation sent; sibling
+        waiters rotate the live client's ``api_key`` in place, so it cannot be read back here."""
         try:
             from plugins.memory.honcho import oauth
             from plugins.memory.honcho.client import reset_honcho_client
@@ -104,7 +105,7 @@ class SessionAuthMixin:
             host = getattr(self._config, "host", "") or ""
             if not host:
                 return False
-            token = oauth.force_refresh_token(self._bound_config_path(), host)
+            token = oauth.force_refresh_token(self._bound_config_path(), host, failed_access_token=failed_access_token)
             if not token:
                 return False
             if not oauth.apply_token_to_client(self.honcho, token):
@@ -127,6 +128,11 @@ class SessionAuthMixin:
             exc = HonchoAuthError(_REAUTH_REQUIRED_MESSAGE)
             self._record_auth_failure(exc)
             raise exc
+        # Snapshot the bearer first: after a 401 the client's api_key may already hold a sibling's rotation.
+        try:
+            failed_token = getattr(getattr(self.honcho, "_http", None), "api_key", None)
+        except Exception:
+            failed_token = None
         try:
             result = operation()
         except HonchoAuthError:
@@ -135,8 +141,8 @@ class SessionAuthMixin:
             if not _is_auth_error(e):
                 raise
             logger.warning("Honcho %s hit an auth error; forcing token refresh and retrying once: %s",
-                           op_name, _redact_tokens(str(e)))
-            if not self._force_reauth():
+                           op_name, _redact_sensitive_text(str(e), force=True))
+            if not self._force_reauth(failed_access_token=failed_token):
                 self._record_auth_failure(e)
                 raise HonchoAuthError(_auth_error_message(e)) from e
             try:

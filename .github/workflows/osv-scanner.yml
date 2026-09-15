@@ -58,6 +58,11 @@ jobs:
   emit-status:
     name: Emit review status
     runs-on: ubuntu-latest
+    # Downloads one small SARIF artifact and runs two inline python snippets —
+    # minutes of work. Bound it so a wedged artifact download can't hold a
+    # runner for GitHub's 6-hour default (the only unbounded job left in
+    # .github/workflows; every other workflow already sets timeout-minutes).
+    timeout-minutes: 10
     needs: scan
     if: always()
     outputs:

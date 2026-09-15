@@ -142,6 +142,30 @@ def _receipt_reports_stale_runtime(expected_sha: str | None = None) -> bool:
     )
 
 
+def _receipt_owed_gateways() -> set[tuple[str, str]] | None:
+    """``(kind, profile)`` identities ``latest.json`` owes a current successor.
+
+    Empty when the receipt records no runtimes; ``None`` when any recorded runtime is one
+    the gateway matrix cannot vouch for (serve/dashboard, unknown profile).
+    """
+    from hermes_cli.update_receipt import read_latest_receipt
+
+    receipt = read_latest_receipt() or {}
+    plan = receipt.get("plan") or {}
+    entries: list[tuple[object, str | None]] = [(entry, None) for entry in plan.get("runtimes") or []]
+    entries.extend((entry, "gateway") for entry in receipt.get("fleet") or [])
+    owed: set[tuple[str, str]] = set()
+    for entry, default_kind in entries:
+        if not isinstance(entry, dict):
+            return None
+        kind = entry.get("kind", default_kind)
+        profile = entry.get("profile")
+        if kind != "gateway" or not profile or profile == "unknown":
+            return None
+        owed.add((kind, profile))
+    return owed
+
+
 def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
     """Require current successors for every recorded runtime, not just any live row.
 
@@ -151,24 +175,10 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
     """
     if not expected_sha:
         return False
-    from hermes_cli.update_receipt import collect_fleet_versions, read_latest_receipt
+    from hermes_cli.update_receipt import collect_fleet_versions
 
     try:
-        receipt = read_latest_receipt() or {}
-        plan = receipt.get("plan") or {}
-        runtimes = plan.get("runtimes") or []
-        recorded_fleet = receipt.get("fleet") or []
-        owed = set()
-        entries: list[tuple[object, str | None]] = [(entry, None) for entry in runtimes]
-        entries.extend((entry, "gateway") for entry in recorded_fleet)
-        for entry, default_kind in entries:
-            if not isinstance(entry, dict):
-                return False
-            kind = entry.get("kind", default_kind)
-            profile = entry.get("profile")
-            if kind != "gateway" or not profile or profile == "unknown":
-                return False
-            owed.add((kind, profile))
+        owed = _receipt_owed_gateways()
         if not owed:
             return False
         fleet = collect_fleet_versions()
@@ -183,6 +193,73 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
         return False
 
 
+def _read_fleet_marker_expected_sha() -> str:
+    """``expected_sha`` recorded in the pending marker ("" when absent/unreadable)."""
+    with suppress(OSError):
+        for line in _fleet_restart_pending_marker_path().read_text(encoding="utf-8").splitlines():
+            if line.startswith("expected_sha="):
+                return line.split("=", 1)[1].strip()
+    return ""
+
+
+def _marker_only_restart_obsolete() -> bool:
+    """True when the pending marker is a leftover: the fleet already runs the expected code.
+
+    A supervisor-level restart (``systemctl --user restart``, launchctl, ops scripts) never
+    goes through this module's clear path, so the marker survives a restart that DID bring
+    every live gateway to the pulled code — and every later CLI call then prints the
+    interrupted-update warning forever (false positive).
+
+    The marker is not an *unknown* obligation: it records its own ``expected_sha``, so it can
+    be checked against the live fleet directly — no receipt required. Hold it to the same
+    evidence bar ``_live_fleet_covers_receipt`` applies to one: at least one row, and every
+    row a ``current`` gateway under a known profile whose ``code_sha`` equals that
+    ``expected_sha``, with the checkout HEAD not moved past the marker.
+
+    Keep the marker on stale/down rows, on an all-``unknown`` fleet (pre-code-identity
+    gateways cannot prove currency — same conservatism as the silent-failure class
+    #88848/#74973), on a marker with no ``expected_sha``, when a newer pull moved the
+    checkout, and when the probe fails or answers empty.
+
+    A gateway the restart phase stopped and never brought back yields NO row at startup
+    (no ``pre_restart_pids`` → no ``down`` classification), so rows alone cannot prove the
+    whole fleet is back. When ``latest.json`` names the gateways the update owed, every one
+    of them must also be covered by a current row; the rows-only rule applies only when the
+    receipt names none.
+    """
+    expected_sha = _read_fleet_marker_expected_sha()
+    if not expected_sha:
+        return False  # pre-expected_sha marker: nothing to verify against
+    checkout_sha = _current_checkout_sha()
+    if checkout_sha and checkout_sha != expected_sha:
+        return False  # a newer pull moved HEAD; it owns a fresh obligation
+    try:
+        from hermes_cli.update_receipt import collect_fleet_versions
+        fleet = collect_fleet_versions()
+        owed = _receipt_owed_gateways()
+    except Exception as exc:
+        logger.debug("Fleet probe failed; keeping fleet-restart-pending marker: %s", exc)
+        return False
+    if not fleet:
+        return False  # probe answered empty: no proof either way
+    for row in fleet:
+        if not isinstance(row, dict):
+            return False
+        profile = row.get("profile")
+        if not profile or profile == "unknown":
+            return False  # unidentified runtime: the matrix cannot vouch for it
+        if row.get("state") != "current" or str(row.get("code_sha")) != expected_sha:
+            return False  # stale / down / unknown-identity row still owes the restart
+    if owed is None or not owed <= {("gateway", row.get("profile")) for row in fleet}:
+        return False  # a gateway the receipt owes is absent (down) or unidentifiable
+    _clear_fleet_restart_pending_marker()
+    logger.debug(
+        "Fleet-restart-pending marker discharged: %d gateway(s) already serve %s",
+        len(fleet), expected_sha[:10],
+    )
+    return True
+
+
 def _pending_fleet_restart_needed() -> bool:
     """Reconcile old restart obligations against current, identity-matched gateways."""
     from hermes_cli.update_cmd import _current_checkout_sha
@@ -191,6 +268,8 @@ def _pending_fleet_restart_needed() -> bool:
     # than latest.json. An older receipt cannot discharge that unknown obligation.
     with suppress(OSError):
         if _fleet_restart_pending_marker_path().is_file():
+            if _marker_only_restart_obsolete():
+                return False
             return True
     if not _receipt_reports_stale_runtime():
         return False
@@ -602,7 +681,10 @@ def _restart_macos_launchd_gateways(
             graceful_ok = False
             if old_pid is not None and old_pid > 0:
                 print(f"  → {label}: draining (up to {int(drain_budget)}s)...")
-                graceful_ok = _graceful_restart_via_sigusr1(old_pid, drain_timeout=drain_budget)
+                from hermes_cli.update_cmd_drain_report import drain_progress_reporter
+                graceful_ok = _graceful_restart_via_sigusr1(
+                    old_pid, drain_timeout=drain_budget,
+                    on_progress=drain_progress_reporter(_gateway_home_for_pid(old_pid), budget_s=drain_budget))
             if graceful_ok and _wait_for_launchd_service_pid(label, old_pid=old_pid, timeout=10.0, domain=domain):
                 # KeepAlive already respawned it on new code — a kickstart would kill it.
                 restarted_services.append(label)
@@ -753,7 +835,39 @@ def _drain_or_signal_gateway_for_update(pid: int, drain_budget: float, label: st
         _escalate_wedged_gateway(pid)
         return True
     print(f"  → {label}: draining (up to {int(drain_budget)}s)...")
-    return _graceful_restart_via_sigusr1(pid, drain_timeout=drain_budget)
+    from hermes_cli.update_cmd_drain_report import drain_progress_reporter
+    return _graceful_restart_via_sigusr1(
+        pid, drain_timeout=drain_budget,
+        on_progress=drain_progress_reporter(_gateway_home_for_pid(pid), budget_s=drain_budget))
+
+
+def _gateway_home_for_pid(pid: int):
+    """HERMES_HOME of the gateway ``pid`` per the fleet inventory, else None (own profile's file)."""
+    with suppress(Exception):
+        from hermes_cli.update_receipt import _profile_homes
+        from gateway.status import read_runtime_status
+        for _profile, home in _profile_homes():
+            record = read_runtime_status(home / "gateway_state.json") or {}
+            if record.get("pid") == pid:
+                return home
+    return None
+
+
+def _sudo_noninteractive_ok(targeted_probe: list) -> bool:
+    """True when this user can elevate without a prompt.
+
+    ``sudo -n true`` first; a refusal is inconclusive because a NOPASSWD sudoers entry scoped
+    to one command (the hardened shape) rejects the blanket probe, so fall back to running
+    ``sudo -n <targeted_probe>`` — callers pass a non-destructive stand-in for the argv they
+    are about to elevate.
+    """
+    try:
+        if subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=5).returncode == 0:
+            return True
+        # Blanket sudo refused — a targeted NOPASSWD sudoers entry may still work.
+        return subprocess.run(["sudo", "-n", *targeted_probe], capture_output=True, timeout=5).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def _resolve_manage_cmd(cache: dict, scope_: str, scope_cmd_: list, svc_name_: str):
@@ -771,16 +885,7 @@ def _resolve_manage_cmd(cache: dict, scope_: str, scope_cmd_: list, svc_name_: s
     cmd = scope_cmd_ + ["--no-ask-password"]
     if _needs_sudo(scope_):
         sudo_cmd = ["sudo", "-n"] + cmd
-        try:
-            sudo_ok = subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=5).returncode == 0
-            if not sudo_ok:
-                # Blanket sudo refused — a targeted NOPASSWD sudoers entry may still work.
-                sudo_ok = subprocess.run(
-                    sudo_cmd + ["reset-failed", svc_name_], capture_output=True, timeout=5
-                ).returncode == 0
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            sudo_ok = False
-        cmd = sudo_cmd if sudo_ok else None
+        cmd = sudo_cmd if _sudo_noninteractive_ok(cmd + ["reset-failed", svc_name_]) else None
     cache[scope_] = cmd
     return cmd
 
@@ -1400,6 +1505,11 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         # doesn't treat the fleet as healthy; leave the pending marker for catch-up.
         sys.exit(1)
     _clear_fleet_restart_pending_marker()
+    # Fleet is healthy on the new code: fold per-profile gateways into one multiplexer when nothing
+    # blocks it (deterministic; never prompts), else print the blockers and the one-liner to run later.
+    with _best_effort('Multiplex auto-migration after update failed: %s'):
+        from hermes_cli.gateway_migrate import maybe_auto_migrate_after_update
+        maybe_auto_migrate_after_update()
 
 
 def _restart_phase_failure_is_incomplete(surviving, pre_restart_pids) -> bool:

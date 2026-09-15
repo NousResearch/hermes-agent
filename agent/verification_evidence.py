@@ -10,11 +10,10 @@ import shlex
 import sqlite3
 import tempfile
 import threading
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 
@@ -111,41 +110,24 @@ def _db_path() -> Path:
     return get_hermes_home() / "verification_evidence.db"
 
 
+def _ledger_enabled() -> bool:
+    """The ledger exists only to feed verify-on-stop; when that guard is off nothing may
+    record, read, or even create the database (an unconsumed ledger is pure disk churn)."""
+    from agent.verification_stop import verify_on_stop_enabled
+
+    return verify_on_stop_enabled()
+
+
 def _connect() -> sqlite3.Connection:
-    from hermes_state_wal import apply_wal_with_fallback
+    from hermes_cli.sqlite_util import open_db
 
-    path = _db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    try:
-        apply_wal_with_fallback(conn, db_label="verification_evidence.db")
-        conn.execute("PRAGMA busy_timeout=5000")
-        _ensure_schema(conn)
-    except Exception:
-        # A PRAGMA/DDL failure after connect() must not leak the open connection.
-        conn.close()
-        raise
-    return conn
+    return open_db(_db_path(), db_label="verification_evidence.db", initialize=_ensure_schema)
 
 
-@contextmanager
-def _transaction() -> Iterator[sqlite3.Connection]:
-    """Open a connection, commit/rollback on exit, and ALWAYS close it.
+def _transaction():
+    from hermes_cli.sqlite_util import transaction
 
-    ``sqlite3.Connection`` as a context manager only commits/rolls back; without
-    the close, each call leaks a connection (and WAL/SHM fds) until GC runs.
-
-    Using ``with _connect()`` alone therefore leaks a connection — and its WAL/SHM file descriptors — on
-    every call, deferring the close to the garbage collector, which over a long-running process can exhaust
-    ``RLIMIT_NOFILE`` (the cron-ledger sibling of this bug was #69567 / PR #69594).
-    """
-    conn = _connect()
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
+    return transaction(_connect())
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -451,6 +433,8 @@ def record_terminal_result(
     *, command: str, cwd: str | Path | None, session_id: str | None, exit_code: int, output: str = ""
 ) -> Optional[dict[str, Any]]:
     """Record a foreground terminal result when it is verification evidence."""
+    if not _ledger_enabled():
+        return None
     evidence = classify_verification_command(command, cwd=cwd, session_id=session_id, exit_code=exit_code, output=output)
     return None if evidence is None else _insert_evidence(evidence)
 
@@ -465,6 +449,8 @@ def record_verify_run(
     canonical test command would. ``root`` is re-resolved through project facts
     so it matches what :func:`verification_status` derives later.
     """
+    if not _ledger_enabled():
+        return None
     resolved = str(Path(root).resolve())
     return _insert_evidence(VerificationEvidence(
         command=command, canonical_command="hermes verify", kind="verify",
@@ -511,6 +497,8 @@ def mark_workspace_edited(
     *, session_id: str | None, cwd: str | Path | None, paths: list[str] | tuple[str, ...] | None = None
 ) -> Optional[dict[str, Any]]:
     """Mark verification evidence stale after a successful file edit."""
+    if not _ledger_enabled():
+        return None
     facts = _project_facts(cwd)
     if not facts:
         return None
@@ -547,6 +535,8 @@ def verification_status(*, session_id: str | None, cwd: str | Path | None) -> di
 
     Evidence recorded before the latest edit is reported as ``stale``.
     """
+    if not _ledger_enabled():
+        return {"status": "disabled", "evidence": None}
     facts = _project_facts(cwd)
     if not facts:
         return {"status": "not_applicable", "evidence": None}

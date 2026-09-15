@@ -73,14 +73,15 @@ def maybe_grow_window(model_id: str, *, base_url: str, session_tokens: int,
         get_supervisor, refresh_local_runtime, staged_models)
     from hermes_cli.local_runtime.context_policy import growth_decision
     from hermes_cli.local_runtime.estimator import profile_from_gguf
-    from hermes_cli.local_runtime.gguf import read_gguf_header
+    from hermes_cli.local_runtime.gguf import model_id_from_stem, read_gguf_header
     from hermes_cli.local_runtime.hardware import probe_budget
+    from hermes_cli.local_runtime.presets import preset_for_model, read_preset_decisions
 
     sup = get_supervisor()
     if sup is None or not is_managed_endpoint(base_url):
         return None
 
-    gguf = next((p for p in staged_models() if p.stem.startswith(model_id) or model_id in p.stem), None)
+    gguf = next((p for p in staged_models() if model_id_from_stem(p.stem) == model_id), None)
     if gguf is None:
         return None
 
@@ -95,11 +96,12 @@ def maybe_grow_window(model_id: str, *, base_url: str, session_tokens: int,
     except Exception:  # noqa: BLE001
         server_idle = False
 
+    budget = probe_budget(planning=True)
     decision = growth_decision(
         # Capacity budget, not live-free: growth executes via a server bounce, so the grown
         # instance loads onto a freed card. Live-free is distorted by the very model being grown
         # — it reads its own residency as unavailable and vetoes rungs that fit.
-        profile, probe_budget(planning=True),
+        profile, budget,
         current_window=current_window,
         session_tokens=session_tokens,
         measured_decode_tok_s=measured_decode_tok_s,
@@ -113,6 +115,11 @@ def maybe_grow_window(model_id: str, *, base_url: str, session_tokens: int,
         logger.debug("growth %s: %s (%s)", model_id, decision.action, decision.reason)
         return None
 
+    plan = preset_for_model(gguf, budget, set(), requested_window=decision.next_window)
+    if plan is None or plan.refusal or plan.window < decision.next_window:
+        logger.debug("growth %s: complete launch footprint does not admit the next rung", model_id)
+        return None
+
     logger.info("context growth %s: %s", model_id, decision.reason)
     save_window_override(model_id, decision.next_window)
     if not refresh_local_runtime():
@@ -120,4 +127,8 @@ def maybe_grow_window(model_id: str, *, base_url: str, session_tokens: int,
         # compresses instead of overflowing a stale window.
         logger.warning("growth %s: server refresh failed; compression proceeds", model_id)
         return None
-    return decision.next_window
+    materialized = read_preset_decisions().get(model_id)
+    if materialized is None or materialized.window < decision.next_window:
+        logger.warning("growth %s: refreshed preset did not grant the requested window", model_id)
+        return None
+    return materialized.window

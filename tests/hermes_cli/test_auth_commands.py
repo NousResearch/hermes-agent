@@ -1166,3 +1166,84 @@ def test_qwen_oauth_login_marks_active_through_moved_owner(monkeypatch):
 
     assert auth_commands._qwen_oauth_login(None) is creds
     assert marked == [creds]
+
+
+def test_auth_add_openrouter_oauth_persists_pkce_key_without_touching_api_key_default(tmp_path, monkeypatch):
+    """`hermes auth add openrouter --type oauth` stores the PKCE-minted key as an ``api_key`` pool row
+    (OpenRouter returns a plain key, no refresh pair) that ``resolve_provider("auto")`` picks up with no
+    env var — same as a pasted key; the bare `--api-key` path keeps its API-key default."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    monkeypatch.setattr("hermes_cli.auth._openrouter_pkce_login", lambda **kw: {"api_key": "sk-or-v1-from-pkce"})
+
+    from hermes_cli.auth import resolve_provider
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Oauth:
+        provider = "openrouter"
+        auth_type = "oauth"
+        api_key = None
+        label = "browser-login"
+        timeout = None
+        no_browser = True
+
+    class _Plain:
+        provider = "openrouter"
+        auth_type = None  # no --type: must NOT fall into the OAuth flow
+        api_key = "sk-or-v1-pasted"
+        label = "pasted"
+
+    auth_add_command(_Oauth())
+    # No env var, no config.yaml provider: the pooled PKCE key alone must make openrouter resolvable.
+    assert resolve_provider("auto") == "openrouter"
+    auth_add_command(_Plain())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    by_source = {e["source"]: e for e in payload["credential_pool"]["openrouter"]}
+    assert by_source["manual:openrouter_pkce"]["auth_type"] == "api_key"
+    assert by_source["manual:openrouter_pkce"]["access_token"] == "sk-or-v1-from-pkce"
+    assert by_source["manual:openrouter_pkce"]["base_url"] == "https://openrouter.ai/api/v1"
+    assert by_source["manual"]["access_token"] == "sk-or-v1-pasted"
+
+
+def test_openrouter_loopback_callback_binds_nonce_path_and_rejects_forged_redirect(monkeypatch):
+    """The CSRF nonce lives in the callback PATH (OpenRouter echoes no ``state``): a redirect that
+    knows the port but not the nonce is a 404 and never yields a code; the genuine path does."""
+    import threading
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    import hermes_cli.auth_openrouter as orm
+
+    seen: dict = {}
+
+    def _browser(url):
+        callback = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["callback_url"][0]
+        seen["callback"] = callback
+        forged = callback.rsplit("/", 1)[0] + "/forged-nonce?code=evil"
+
+        def _redirects():
+            try:
+                urllib.request.urlopen(forged, timeout=5)
+            except urllib.error.HTTPError as exc:
+                seen["forged_status"] = exc.code
+            with urllib.request.urlopen(f"{callback}?code=good-code", timeout=5) as resp:
+                seen["genuine_status"] = resp.status
+
+        threading.Thread(target=_redirects, daemon=True).start()
+        return True
+
+    monkeypatch.setattr(orm, "_can_open_graphical_browser", lambda: True)
+    monkeypatch.setattr(orm.webbrowser, "open", _browser)
+
+    code = orm._openrouter_loopback_code(
+        {"code_challenge": "c", "code_challenge_method": "S256"}, open_browser=True, timeout_seconds=10)
+
+    parsed = urllib.parse.urlparse(seen["callback"])
+    assert parsed.hostname == "127.0.0.1" and parsed.path.startswith("/callback/") and len(parsed.path) > 20
+    assert seen["forged_status"] == 404
+    assert seen["genuine_status"] == 200
+    assert code == "good-code"

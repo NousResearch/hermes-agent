@@ -68,7 +68,19 @@ export function generatedImageFromResult(result: unknown): string | null {
 
 /** Every path/URL a generated image might appear as in prose, for de-duping. */
 export function generatedImageEchoSources(parts: readonly ToolLike[]): string[] {
-  return unique(parts.flatMap(part => stringFields(imageResult(part) ?? {}, ECHO_KEYS)))
+  // Runs on every streamed tool event over the whole timeline; skip the
+  // per-part array allocations for the (usual) rows that are not image results.
+  const sources: string[] = []
+
+  for (const part of parts) {
+    const result = imageResult(part)
+
+    if (result) {
+      sources.push(...stringFields(result, ECHO_KEYS))
+    }
+  }
+
+  return unique(sources)
 }
 
 /** Strip a generated image out of prose so it only ever shows in the tool slot.
@@ -94,11 +106,13 @@ export function stripGeneratedImageEchoes(text: string, sources: readonly string
 
 /** Strip generated-image echoes from text parts, dropping any part left empty.
  *  The image lives in the tool slot; prose keeps the agent's actual words. */
-export function dedupeGeneratedImageEchoesInParts<T extends TextLike & ToolLike>(parts: readonly T[]): T[] {
+export function dedupeGeneratedImageEchoesInParts<T extends TextLike & ToolLike>(parts: T[]): T[] {
   const sources = generatedImageEchoSources(parts)
 
+  // No echoes to strip: hand back the same array so React and the streaming
+  // reducer see a no-op instead of a fresh identity on every tool event.
   if (!sources.length) {
-    return [...parts]
+    return parts
   }
 
   return parts

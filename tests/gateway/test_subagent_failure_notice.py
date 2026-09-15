@@ -65,7 +65,8 @@ class TestFormatSubagentFailureLine:
         assert line.startswith("⚠️ Subagent failed")
         assert '"research competitor pricing"' in line
         assert "404" in line
-        assert "(after 12s)" in line
+        assert "after 12s" in line
+        assert "/agents" in line
 
     def test_timeout_verb(self):
         line = format_subagent_failure_line("do a thing", "timeout")
@@ -78,7 +79,8 @@ class TestFormatSubagentFailureLine:
 
     def test_no_goal_no_error(self):
         line = format_subagent_failure_line(None, "error")
-        assert line == "⚠️ Subagent failed"
+        assert line.startswith("⚠️ Subagent failed. ")
+        assert '"' not in line  # no empty goal quotes
 
     def test_multiline_goal_flattened(self):
         line = format_subagent_failure_line("a\nb", "failed")
@@ -129,8 +131,13 @@ class TestGatewayFailureNotice:
         )
         assert len(captured) == 1
         assert "Subagent" in captured[0]
-        assert "404" in captured[0]
         assert '"scan the repo"' in captured[0]
+        if status == "timeout":
+            # A timeout's error text is scheduler boilerplate; the notice says the outcome and the knob.
+            assert "timed out" in captured[0]
+            assert "delegation.child_timeout_seconds" in captured[0]
+        else:
+            assert "404" in captured[0]
 
     @pytest.mark.parametrize("status", ["completed", "interrupted", None])
     def test_non_failure_statuses_stay_silent(self, monkeypatch, status):

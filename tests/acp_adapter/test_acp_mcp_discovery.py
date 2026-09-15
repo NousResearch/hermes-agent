@@ -64,10 +64,10 @@ def _reset_mcp_startup_state():
     """Ensure each test starts with a clean discovery thread state."""
     saved_started = mcp_startup._mcp_discovery_started
     saved_thread = mcp_startup._mcp_discovery_thread
-    mcp_startup._mcp_discovery_started = False
-    mcp_startup._mcp_discovery_thread = None
+    mcp_startup._mcp_discovery_started = set()
+    mcp_startup._mcp_discovery_thread = {}
     yield
-    thread = mcp_startup._mcp_discovery_thread
+    thread = mcp_startup._current_home_thread()
     if thread is not None and thread.is_alive():
         thread.join(timeout=2.0)
     mcp_startup._mcp_discovery_started = saved_started
@@ -113,10 +113,11 @@ def test_acp_background_discovery_does_not_block_startup(monkeypatch):
     elapsed = time.monotonic() - start
 
     assert elapsed < 0.2, "start_background_mcp_discovery blocked for {:.3f}s".format(elapsed)
-    assert mcp_startup._mcp_discovery_thread is not None
-    assert mcp_startup._mcp_discovery_thread.is_alive()
+    thread = mcp_startup._current_home_thread()
+    assert thread is not None
+    assert thread.is_alive()
     block.set()
-    mcp_startup._mcp_discovery_thread.join(timeout=2.0)
+    thread.join(timeout=2.0)
 
 
 # ---------------------------------------------------------------------------

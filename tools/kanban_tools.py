@@ -895,7 +895,10 @@ def _handle_create(args: dict, **kw) -> str:
             initial_status=str(args.get("initial_status") or "running"),
             created_by=os.environ.get("HERMES_PROFILE") or "worker", session_id=session_id)
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
-        return _ok(task_id=new_tid, **landed, subscribed=_maybe_auto_subscribe(conn, new_tid))
+        wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
+        gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}
+        return _ok(task_id=new_tid, **landed, **gate,
+                   subscribed=_maybe_auto_subscribe(conn, new_tid))
 
 
 def _resolve_notify_target() -> Optional[dict[str, Any]]:

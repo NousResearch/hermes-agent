@@ -1141,6 +1141,38 @@ def test_link_tasks_no_dependency_wait_when_parent_done(kanban_home):
         assert "dependency_wait" not in kinds
 
 
+def test_create_task_with_open_parent_emits_dependency_wait(kanban_home):
+    """create-with-parents is the incident path: a card parked in todo behind an
+    unfinished parent must carry the same dependency_wait as a link-time gate."""
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="blocked parent")
+        kb.block_task(conn, parent, reason="waiting on files")
+
+        child = kb.create_task(conn, title="support card", parents=(parent,))
+
+        assert kb.get_task(conn, child).status == "todo"
+        wait = [e for e in kb.list_events(conn, child) if e.kind == "dependency_wait"]
+        assert wait, "parking behind an open parent must be recorded"
+        assert wait[-1].payload["reason"] == "parent_not_done"
+        assert wait[-1].payload["parent"] == parent
+
+
+def test_link_tasks_archived_parent_is_terminal_no_gate(kanban_home):
+    """archived is terminal for recompute_ready, so linking under an archived
+    parent must not demote a ready child (it would only flap back to ready)."""
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="archived parent")
+        kb.archive_task(conn, parent)
+        child = kb.create_task(conn, title="child")
+        assert kb.get_task(conn, child).status == "ready"
+
+        gated = kb.link_tasks(conn, parent, child)
+
+        assert gated is False
+        assert kb.get_task(conn, child).status == "ready"
+        assert "dependency_wait" not in [e.kind for e in kb.list_events(conn, child)]
+
+
 def test_unlink_tasks_triggers_recompute_ready(kanban_home):
     """Regression test for issue #22459.
 

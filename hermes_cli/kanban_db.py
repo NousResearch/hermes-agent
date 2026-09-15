@@ -1375,6 +1375,17 @@ def create_task(
                         "blocked",
                         {"reason": "initial_status", "status": "blocked", "actor": created_by or "user"},
                     )
+                if task_status == "todo":
+                    # Parked behind an open parent: record why, exactly as
+                    # link_tasks does, so the board never shows an unexplained todo.
+                    gating = [p for p in parents if _task_status(conn, p) not in ("done", "archived")]
+                    if gating:
+                        _append_event(
+                            conn,
+                            task_id,
+                            "dependency_wait",
+                            {"reason": "parent_not_done", "parent": gating[0]},
+                        )
                 # ACK-edge: the originating channel hears a child BLOCK, not just the fan-in.
                 inherit_creator_origin(conn, task_id, creator_task_id, created_at=now)
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
@@ -1595,8 +1606,9 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
         if _would_cycle(conn, parent_id, child_id):
             raise ValueError(f"linking {parent_id} -> {child_id} would create a cycle")
         _link(conn, parent_id, child_id)
-        # If child was ready but parent is not yet done, demote child to todo.
-        if _task_status(conn, parent_id) != "done":
+        # If child was ready but parent is not yet terminal, demote child to todo
+        # (archived counts as terminal, matching _parents_satisfied/recompute_ready).
+        if _task_status(conn, parent_id) not in ("done", "archived"):
             cur = conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
                 (child_id,),

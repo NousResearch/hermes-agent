@@ -570,6 +570,66 @@ def _swap_node_tree(target: Path, staged: Path) -> bool | None:
     return True
 
 
+def _windows_native_machine_code() -> int | None:
+    """Raw ``IMAGE_FILE_MACHINE_*`` code for the true host CPU, from ``IsWow64Process2``'s
+    ``pNativeMachine`` out-parameter, or ``None`` when the query is unavailable.
+
+    ``GetNativeSystemInfo`` looks like the obvious fit here but is a trap: per Microsoft's own docs,
+    when called from an x86 or x64 process on a 64-bit system that lacks an Intel64/x64 processor --
+    i.e. an x64 process running under Prism emulation on ARM64, exactly #108893's scenario -- it
+    "will return information as if the system is x86 [...] (or x64 if x64 emulation is also
+    supported)": the *emulated* view, not the real host. ``IsWow64Process2`` was added in Windows 10
+    1709 specifically to give callers a way to see past that; its ``pNativeMachine`` out-param always
+    reports the true host architecture, regardless of emulation.
+
+    ``GetCurrentProcess``'s and ``IsWow64Process2``'s HANDLE types are bound explicitly on both ends
+    (restype on the former, argtypes on the latter): ctypes' default ``c_int`` for an untyped HANDLE
+    truncates the ``(HANDLE)-1`` pseudo-handle to 32 bits, which fails ``IsWow64Process2`` with
+    ``ERROR_INVALID_HANDLE`` on Win64 -- the same pitfall ``hermes_cli/main_desktop.py``'s
+    ``_windows_native_machine_from_iswow64`` documents (#71218).
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.GetCurrentProcess.argtypes = []
+        kernel32.IsWow64Process2.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.USHORT),
+            ctypes.POINTER(wintypes.USHORT),
+        ]
+        kernel32.IsWow64Process2.restype = wintypes.BOOL
+        process_machine = wintypes.USHORT()
+        native_machine = wintypes.USHORT()
+        ok = kernel32.IsWow64Process2(
+            kernel32.GetCurrentProcess(),
+            ctypes.pointer(process_machine),
+            ctypes.pointer(native_machine),
+        )
+        if not ok:
+            return None
+    except (OSError, AttributeError, ValueError):
+        return None
+    return native_machine.value
+
+
+# IMAGE_FILE_MACHINE_* values (winnt.h), as reported by IsWow64Process2's pNativeMachine.
+_WINDOWS_NATIVE_MACHINE_ARCH = {
+    0x014C: "x86",
+    0x8664: "amd64",
+    0xAA64: "arm64",
+}
+
+
+def _windows_native_arch() -> str | None:
+    """Emulation-invariant host arch (``"x86"``/``"amd64"``/``"arm64"``), mirroring ``install.ps1``'s
+    ``Get-WindowsArch``; ``None`` when the native query is unavailable and callers should fall back
+    to the env-var pair."""
+    return _WINDOWS_NATIVE_MACHINE_ARCH.get(_windows_native_machine_code())
+
+
 def _heal_managed_node_windows(home: Path | None = None) -> bool | None:
     """Redownload the portable Node zip into ``%HERMES_HOME%\\node`` on Windows.
 
@@ -588,7 +648,9 @@ def _heal_managed_node_windows(home: Path | None = None) -> bool | None:
     """
     import time
 
-    arch = (os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE", "")).lower()
+    arch = _windows_native_arch() or (
+        os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE", "")
+    ).lower()
     node_arch = {"amd64": "x64", "x86_64": "x64", "arm64": "arm64", "x86": "x86"}.get(arch)
     if node_arch is None:
         return False
@@ -667,8 +729,24 @@ def heal_hermes_managed_node() -> bool:
     return bool(result)
 
 
+def _windows_node_arch_mismatched(node_path: Path) -> bool:
+    """True when an existing Windows managed-node binary's compiled arch doesn't match the real
+    host arch (#108893). ``process.arch`` reflects how the binary was built, not the emulated
+    process view ``PROCESSOR_ARCHITECTURE`` reports under Prism, so a wrong-arch node from a prior
+    heal is caught here even though it runs fine under emulation."""
+    expected = _windows_native_arch()
+    if expected is None:
+        return False
+    expected_node_arch = {"amd64": "x64", "arm64": "arm64", "x86": "x86"}[expected]
+    result = _run_version_probe([str(node_path), "-p", "process.arch"])
+    if result is None:
+        return False
+    return result.stdout.decode().strip() != expected_node_arch
+
+
 def _managed_node_tree_outdated(home: Path | None = None) -> bool:
-    """True when the managed node runs but is below the target major (heals like a broken tree)."""
+    """True when the managed node runs but is below the target major, is a pre-release, or (Windows
+    only) was provisioned for the wrong CPU arch (heals like a broken tree)."""
     for candidate in _iter_managed_node_candidates(_candidate_node_command_names("node"), home):
         result = _run_version_probe([str(candidate), "--version"])
         if result is None:
@@ -682,7 +760,9 @@ def _managed_node_tree_outdated(home: Path | None = None) -> bool:
         # final releases, so node-gyp cannot build node-pty. Mirrors node_satisfies_build() in install.sh.
         if "-" in version:
             return True
-        return major < _HERMES_NODE_TARGET_MAJOR
+        if major < _HERMES_NODE_TARGET_MAJOR:
+            return True
+        return sys.platform == "win32" and _windows_node_arch_mismatched(candidate)
     return False
 
 

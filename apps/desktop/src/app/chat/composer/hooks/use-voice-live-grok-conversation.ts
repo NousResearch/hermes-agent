@@ -232,7 +232,18 @@ export function useVoiceLiveGrokConversation({
     try {
       // The voice session must ride the open chat's real Hermes session id —
       // the backend routes voice.grok.* events and the delegation seam by it.
-      session.useSessionId(latest.current.chatSessionId?.())
+      // A wake-triggered fresh draft has NO id yet at this moment, so poll
+      // briefly for it (the composer's sessionId prop arrives a beat after
+      // startFreshSessionDraft); falling back to the synthetic id would route
+      // every event to stdio and no-op the delegation — the wake path's
+      // original silent-failure mode.
+      const deadline = Date.now() + 10_000
+      let sid = latest.current.chatSessionId?.()
+      while (!sid && Date.now() < deadline && startEpochRef.current === epoch) {
+        await new Promise(resolve => setTimeout(resolve, 150))
+        sid = latest.current.chatSessionId?.()
+      }
+      session.useSessionId(sid)
       await session.start()
 
       if (sessionRef.current !== session || startEpochRef.current !== epoch) {

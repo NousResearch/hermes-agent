@@ -987,13 +987,33 @@ export function useGatewayBoot({
 
     const onOnline = () => void forceReconnectNow()
 
+    // Debounce the wake nudge (500ms) to avoid rapid blur/focus/visibility
+    // cycles causing black blink + focus loss from React subtree remounts.
+    // Distinct from the backoff `scheduleReconnect` above: this only collapses
+    // bursts of OS wake signals into one reconnect attempt. Shared by focus and
+    // visibilitychange so neither path can storm.
+    let wakeNudgeTimer: ReturnType<typeof setTimeout> | null = null
+
+    const scheduleWakeNudge = () => {
+      if (wakeNudgeTimer !== null) {
+        clearTimeout(wakeNudgeTimer)
+      }
+
+      wakeNudgeTimer = setTimeout(() => {
+        wakeNudgeTimer = null
+        void reconnectNow()
+      }, 500)
+    }
+
     const onVisible = () => {
       if (document.visibilityState === 'visible') {
-        void reconnectNow()
+        scheduleWakeNudge()
       }
     }
 
-    const onFocus = () => void reconnectNow()
+    const onFocus = () => {
+      scheduleWakeNudge()
+    }
 
     window.addEventListener('online', onOnline)
     document.addEventListener('visibilitychange', onVisible)
@@ -1280,6 +1300,11 @@ export function useGatewayBoot({
       window.removeEventListener('online', onOnline)
       document.removeEventListener('visibilitychange', onVisible)
       window.removeEventListener('focus', onFocus)
+
+      if (wakeNudgeTimer !== null) {
+        clearTimeout(wakeNudgeTimer)
+      }
+
       offPowerResume?.()
       offConnectionApplied?.()
       offConnectionsChanged?.()

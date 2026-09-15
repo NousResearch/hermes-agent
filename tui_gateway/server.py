@@ -1276,28 +1276,38 @@ def _session_for_key(session_key: str) -> dict | None:
 
 def _set_session_context(session_key: str, cwd: str | None = None, *, ui_session_id: str = "") -> list:
     with contextlib.suppress(Exception):
-        from gateway.session_context import set_session_vars
+        from gateway.session_context import set_session_vars, bound_identity_for_session
         sess = _session_for_key(session_key) if session_key else None
         # Ephemeral task ids aren't in `_sessions` (reverse-map → "" would clear the cwd override);
         # callers that know the workspace pass it.
         resolved = cwd if cwd is not None else (str(sess.get("cwd") or "") if sess is not None else "")
         source = _resolve_session_platform()
-        browser_control_principal = browser_control_transport_family = ""
+        browser_control_principal = browser_control_transport_family = user_id = ""
         # Live conversation id for subprocess HERMES_SESSION_ID: an explicitly empty contextvar is authoritative
         # (no os.environ fallback), so never leave it "" — agent's durable session_id, then session_key.
         session_id = session_key
         if sess is not None:
             source = _session_source(sess)
             session_id = getattr(sess.get("agent"), "session_id", None) or session_key
+        # Nested re-entry for the SAME session_key within an already-admitted turn (e.g.
+        # _persist_live_session_system_prompt / model_switch calling this again before the
+        # turn's own _clear_session_context runs): keep the admitting principal immutable for
+        # the rest of the turn — never re-derive it from sess["transport"], which may have been
+        # reattached to a different principal in the meantime (#SRL-4543).
+        already_admitted = bound_identity_for_session(session_key) if session_key else None
+        if already_admitted is not None:
+            user_id, browser_control_principal, browser_control_transport_family = already_admitted
+        elif sess is not None:
             identity = getattr(sess.get("transport"), "auth_identity", None)
             if _methods_browser_control._is_authenticated_identity(identity):
                 browser_control_principal = _methods_browser_control._principal_digest(identity)
                 browser_control_transport_family = _methods_browser_control._CLOUD_TRANSPORT_FAMILY
+                user_id = identity.get("user_id", "")
         return set_session_vars(
             session_key=session_key, session_id=session_id, source=source,
             browser_control_principal=browser_control_principal,
             browser_control_transport_family=browser_control_transport_family, cwd=resolved,
-            ui_session_id=ui_session_id, cron_session="")
+            ui_session_id=ui_session_id, cron_session="", user_id=user_id)
     return []
 
 

@@ -44,6 +44,26 @@ def clear_session_cwd() -> None:
     _SESSION_CWD.set("")
 
 
+def restore_or_clear_session_cwd(token: Token | None) -> None:
+    """Unwind a ``set_session_cwd`` call via its token (SRL-4543 upstream review,
+    andrexibiza): a NESTED ``set_session_vars`` call binds its own cwd token on top of an
+    already-admitted outer scope's cwd. Unconditionally calling ``clear_session_cwd()`` on
+    the inner clear stomps the outer turn's logical cwd to ``""`` instead of restoring it —
+    a later cwd consumer in the still-active outer turn then falls through to
+    ``TERMINAL_CWD``/launch dir and can operate in the wrong workspace. ``token=None`` (no
+    token captured, e.g. ``agent.runtime_cwd`` was unavailable at bind time) clears to ``""``,
+    matching the pre-existing top-level contract."""
+    if token is None:
+        _SESSION_CWD.set("")
+        return
+    try:
+        _SESSION_CWD.reset(token)
+    except (ValueError, RuntimeError):
+        # Token minted in a different Context than this reset call (should not happen on the
+        # single-task set/clear pairs this is used for, but never crash the unwind over it).
+        _SESSION_CWD.set("")
+
+
 def scope_terminal_cwd() -> str:
     """Scope-aware TERMINAL_CWD value (may be empty) — every cwd consumer reads through this.
 

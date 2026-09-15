@@ -5,10 +5,13 @@ Replaces the old ``os.environ``-based ``HERMES_SESSION_*`` state with task-local
 other's routing ids.  ``get_session_env`` is a drop-in for ``os.getenv``.
 """
 
+import logging
 import os
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from typing import Any, Iterator
+
+logger = logging.getLogger(__name__)
 
 # "Never set here" (falls back to os.environ for CLI/cron) vs "" = explicitly cleared (no fallback).
 _UNSET: Any = object()
@@ -78,6 +81,34 @@ def _runtime_cwd(func: str, *args: Any) -> None:
         pass
 
 
+# Sentinel for the runtime-cwd token slot: distinguishes "agent.runtime_cwd was unavailable
+# at bind time" (never attempt a reset) from "bound a real Token" (SRL-4543 upstream review).
+_CWD_TOKEN_UNAVAILABLE: Any = object()
+
+
+def _set_runtime_cwd(cwd: str) -> Any:
+    """Best-effort call of ``agent.runtime_cwd.set_session_cwd``; returns the ``Token`` so the
+    matching ``clear_session_vars`` can restore (not stomp) an outer nested scope's cwd, or
+    ``_CWD_TOKEN_UNAVAILABLE`` if the module import/call itself failed."""
+    try:
+        from agent import runtime_cwd
+        return runtime_cwd.set_session_cwd(cwd)
+    except Exception:
+        return _CWD_TOKEN_UNAVAILABLE
+
+
+def _restore_runtime_cwd(token: Any) -> None:
+    """Unwind the runtime cwd via its token (SRL-4543 upstream review, andrexibiza): restores
+    the outer scope's cwd on a nested clear instead of always stomping to ``""``."""
+    if token is _CWD_TOKEN_UNAVAILABLE:
+        return
+    try:
+        from agent import runtime_cwd
+        runtime_cwd.restore_or_clear_session_cwd(token)
+    except Exception:
+        pass
+
+
 def set_current_session_id(session_id: str) -> None:
     """Synchronize ``HERMES_SESSION_ID`` across ContextVar and ``os.environ`` (tools read it
     with an os.environ fallback).  Delegated subagent children (built in the parent process)
@@ -140,21 +171,103 @@ def set_session_vars(
     tokens = [var.set(value) for var, value in zip(_SESSION_VARS, values)]
     tokens.append(_SESSION_ASYNC_DELIVERY.set(bool(async_delivery)))
     tokens.append(_SESSION_HISTORY_DELIVERY.set(_UNSET if session_history_delivery is None else session_history_delivery))
-    _runtime_cwd("set_session_cwd", cwd)
+    # SRL-4543 upstream review (andrexibiza): the cwd token is captured and returned in the
+    # SAME tokens list so clear_session_vars can restore (not stomp) a nested outer scope's
+    # cwd — see _restore_runtime_cwd. Always the LAST slot; clear_session_vars slices it off
+    # by position, never by counting _SESSION_VARS-derived length against it.
+    tokens.append(_set_runtime_cwd(cwd))
     return tokens
 
 
+def _restore_or_baseline(var: ContextVar, token: Any, baseline: Any) -> None:
+    """``var.reset(token)`` when this ``set_session_vars`` call was NESTED inside an
+    already-admitted outer scope (``token.old_value`` is the outer value, restored exactly —
+    an outer turn's identity must survive an inner set/clear pair, e.g. bot-capability sync or
+    ``_persist_live_session_system_prompt`` re-deriving context mid-turn).  Otherwise — this was
+    the first bind in this task/context (``token.old_value is Token.MISSING``), OR the var was
+    only ever explicitly reset to the raw ``_UNSET`` sentinel before this call (e.g.
+    ``reset_session_vars()`` at a fresh task's top, or a test fixture's teardown) — explicitly
+    set *baseline*, matching the pre-existing top-level "cleared" contract.  Both cases mean
+    "nothing was genuinely admitted here before"; only a real bound value counts as an outer
+    scope worth restoring."""
+    old = token.old_value
+    if old is Token.MISSING or old is _UNSET:
+        var.set(baseline)
+    else:
+        var.reset(token)
+
+
 def clear_session_vars(tokens: list) -> None:
-    """Mark session context variables as explicitly cleared (``""``, not ``_UNSET``), so
-    ``get_session_env`` returns empty instead of stale ``os.environ`` values.  Async-delivery
-    goes back to ``_UNSET``: a cleared context is default-supported, not opted-out.  Wake
-    capability goes back to ``_UNSET`` too — but for the opposite reason: a cleared context has
-    declared nothing, and an undeclared capability FAILS CLOSED (#98619)."""
-    for var in _SESSION_VARS:
-        var.set("")
-    _SESSION_ASYNC_DELIVERY.set(_UNSET)
-    _SESSION_HISTORY_DELIVERY.set(_UNSET)
-    _runtime_cwd("clear_session_cwd")
+    """Unwind a ``set_session_vars`` call via its tokens.  A NESTED call (this task already had
+    an outer session bound — ``token.old_value`` is not ``Token.MISSING``) restores the outer
+    values exactly via ``var.reset(token)``, so an inner set/clear pair never disturbs a
+    still-active outer admission.  A top-level call (nothing bound before it in this task)
+    explicitly clears to ``""`` (not ``_UNSET``) so ``get_session_env`` returns empty instead of
+    falling back to a stale ``os.environ`` value.  Async-delivery's top-level baseline is
+    ``_UNSET``: a cleared context is default-supported, not opted-out.  Wake capability's
+    top-level baseline is ``_UNSET`` too — but for the opposite reason: a cleared context has
+    declared nothing, and an undeclared capability FAILS CLOSED (#98619).
+
+    ``tokens`` MUST have exactly ``len(_SESSION_VARS) + 3`` entries (the shape
+    ``set_session_vars`` always returns: the identity vars, async/history-delivery, then the
+    runtime-cwd token last) — SRL-4543 Gate B rodada 1 (Kimi): a plain
+    ``zip(_SESSION_VARS, tokens)`` silently truncates on a shorter/malformed list, leaving every
+    ContextVar past the truncation point (INCLUDING identity vars — ``HERMES_SESSION_USER_ID``,
+    ``HERMES_SESSION_KEY``, ``HERMES_BROWSER_CONTROL_PRINCIPAL``) holding the PREVIOUS turn's
+    value, leaking identity across turns on the same task/thread. Every var is therefore always
+    reset by explicit index over the full ``_SESSION_VARS`` + async/history-delivery set — never
+    positional ``zip`` against the caller-supplied ``tokens`` — before any mismatch is reported,
+    so the reset happens unconditionally and a malformed ``tokens`` degrades to "loud error", not
+    "silent leak".
+
+    SRL-4543 upstream review (andrexibiza): a genuinely malformed non-empty ``tokens`` (e.g. a
+    truncated capture from a NESTED bind, where ``token.old_value`` is a real outer value, not
+    ``Token.MISSING``/``_UNSET``) must be validated for shape BEFORE any token is applied — an
+    earlier version of this function raised only AFTER the loop, by which point
+    ``_restore_or_baseline`` had already restored real outer identity/session values from the
+    tokens that WERE present, silently granting that stale authority before the exception ever
+    surfaced (and ``tui_gateway``'s ``_clear_session_context`` swallows cleanup exceptions, so
+    nothing downstream ever saw it). A malformed non-empty ``tokens`` therefore resets
+    EVERYTHING to baseline first (never applies a single real token), THEN raises."""
+    all_vars = _SESSION_VARS + (_SESSION_ASYNC_DELIVERY, _SESSION_HISTORY_DELIVERY)
+    expected = len(all_vars) + 1  # +1 for the runtime-cwd token, always the last slot.
+    # SRL-4543 Gate B rodada 2 (Kimi): ``tokens`` can arrive as ``None`` (an admission that
+    # raised before `set_session_vars` returned, or a caller that never admitted). `len(None)`
+    # raises TypeError BEFORE any reset runs, leaving every identity ContextVar holding the
+    # PREVIOUS turn's value -- the exact concurrent-identity leak this issue exists to close.
+    # None/empty is therefore a VALID "nothing was admitted" state: reset everything to its
+    # safe baseline first, then log the anomaly. Never silently swallowed -- callers that
+    # relied on the old TypeError as a signal (grep confirms none do; both real call sites
+    # in gateway/run.py and gateway/platforms/api_server.py always pass their own
+    # set_session_vars() tokens) still see the reset happen and can observe the log line.
+    if not tokens:
+        logger.warning(
+            "clear_session_vars: tokens was %r (falsy) -- resetting every ContextVar to its "
+            "safe baseline anyway. This means a turn admitted no identity or its "
+            "set_session_vars() call failed before returning tokens; investigate the caller.",
+            tokens,
+        )
+        for i, var in enumerate(all_vars):
+            var.set("" if i < len(_SESSION_VARS) else _UNSET)
+        _restore_runtime_cwd(None)
+        return
+    # A genuinely non-empty but malformed (wrong-length) tokens list: validate the SHAPE
+    # before touching a single ContextVar, so a truncated nested capture can never restore
+    # real outer identity/session values ahead of the error being raised (see docstring).
+    if len(tokens) != expected:
+        for i, var in enumerate(all_vars):
+            var.set("" if i < len(_SESSION_VARS) else _UNSET)
+        _restore_runtime_cwd(None)
+        raise ValueError(
+            f"clear_session_vars: tokens length mismatch \u2014 got {len(tokens)}, expected "
+            f"{expected} (the shape set_session_vars always returns). All ContextVars were "
+            f"still reset to their safe baseline before this error was raised; this exception "
+            f"only flags that the caller's tokens list was malformed, e.g. from a truncated "
+            f"capture or an exception swallowed mid-admission.")
+    for i, var in enumerate(all_vars):
+        baseline = "" if i < len(_SESSION_VARS) else _UNSET
+        _restore_or_baseline(var, tokens[i], baseline)
+    _restore_runtime_cwd(tokens[-1])
 
 
 def reset_session_vars() -> None:
@@ -168,6 +281,27 @@ def reset_session_vars() -> None:
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
     _SESSION_HISTORY_DELIVERY.set(_UNSET)
     _runtime_cwd("clear_session_cwd")
+
+
+def bound_identity_for_session(session_key: str) -> tuple[str, str, str] | None:
+    """If THIS task already has a session bound for ``session_key`` (a NESTED
+    ``set_session_vars`` call within an already-admitted turn, not a fresh admission), return
+    its ``(user_id, browser_control_principal, browser_control_transport_family)`` so the
+    caller can keep the admitting principal immutable for the rest of the turn instead of
+    re-deriving it from a live transport that may have been reattached to a different
+    principal in the meantime.  ``None`` means this is a fresh admission — no session bound yet
+    in this task, or it's for a DIFFERENT session_key — and the caller should derive fresh from
+    the current transport."""
+    if _SESSION_KEY.get() is _UNSET or _SESSION_KEY.get() != session_key:
+        return None
+    # SRL-4543 Gate B rodada 1 (Kimi): normalize the raw _UNSET sentinel to "" here so it can
+    # never flow as a literal user_id/principal into set_session_vars — a caller passing this
+    # tuple straight through must never see the internal sentinel object leak into a session var.
+    def _normalize(value: Any) -> str:
+        return "" if value is _UNSET else value
+    return (
+        _normalize(_SESSION_USER_ID.get()), _normalize(_BROWSER_CONTROL_PRINCIPAL.get()),
+        _normalize(_BROWSER_CONTROL_TRANSPORT_FAMILY.get()))
 
 
 def get_session_env(name: str, default: str = "") -> str:

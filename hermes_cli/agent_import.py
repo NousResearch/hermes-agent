@@ -15,7 +15,7 @@ import sys
 import time
 import tomllib
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import yaml
 
@@ -236,7 +236,7 @@ class AgentImporter:
 
     def __init__(self, agent: str, source_root: Path, target_root: Path,
                  execute: bool = False, overwrite: bool = False,
-                 sync_skills: Sequence[str] = ()) -> None:
+                 sync_skills: Mapping[str, Optional[str]] | Sequence[str] = ()) -> None:
         if agent not in SUPPORTED_AGENTS:
             raise ValueError(f"Unsupported agent: {agent!r}")
         self.agent = agent
@@ -244,9 +244,11 @@ class AgentImporter:
         self.target_root = Path(target_root)
         self.execute = execute
         self.overwrite = overwrite
-        # Skills a previous import-agent run copied (from the sync manifest): Hermes owns those
-        # destinations, so --sync refreshes them in place; anything else keeps conflict semantics.
-        self.sync_skills = frozenset(sync_skills)
+        # Skills a previous import-agent run copied (from the sync manifest), name → digest of the copy
+        # it wrote (None = pre-digest manifest, trusted). --sync refreshes a destination in place only
+        # while it still matches that digest; a locally edited copy keeps conflict semantics.
+        self.sync_skills: Dict[str, Optional[str]] = (dict(sync_skills) if isinstance(sync_skills, Mapping)
+                                                       else {name: None for name in sync_skills})
         self.items: List[Dict[str, Any]] = []
         self.stripped_secrets: List[str] = []
 
@@ -497,13 +499,18 @@ class AgentImporter:
             self.record("skills", source_root, destination_root, "skipped",
                         "No skills with SKILL.md found")
             return
+        from hermes_cli.agent_import_sync import skill_tree_digest
         for skill_dir in skill_dirs:
             destination = destination_root / skill_dir.name
-            may_replace = self.overwrite or skill_dir.name in self.sync_skills
-            if destination.exists() and not may_replace:
-                self.record("skill", skill_dir, destination, "conflict",
-                            "Destination skill already exists")
-                continue
+            if destination.exists() and not self.overwrite:
+                if skill_dir.name not in self.sync_skills:
+                    self.record("skill", skill_dir, destination, "conflict", "Destination skill already exists")
+                    continue
+                expected = self.sync_skills[skill_dir.name]
+                if expected is not None and skill_tree_digest(destination) != expected:
+                    self.record("skill", skill_dir, destination, "conflict",
+                                "Imported skill was modified locally — not refreshed")
+                    continue
 
             def copy(skill_dir=skill_dir, destination=destination) -> None:
                 destination.parent.mkdir(parents=True, exist_ok=True)

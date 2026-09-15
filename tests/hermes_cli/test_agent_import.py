@@ -749,7 +749,7 @@ class TestSyncManifest:
         self._run_command("claude-code", claude_tree)
         entry = load_sync_manifest(hermes_home)["agents"]["claude-code"]
         assert entry["source"] == str(claude_tree.resolve())
-        assert "deploy-helper" in entry["imported_skills"]
+        assert "deploy-helper" in entry["imported_skills"]  # name → digest of the copy we wrote
         # A token refresh in the credential file is invisible to the digest.
         (claude_tree / ".credentials.json").write_text(
             json.dumps({"api_key": "rotated-token"}), encoding="utf-8")
@@ -781,6 +781,14 @@ class TestSyncManifest:
             hermes_home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
         assert "Deploy v2." in (imports / "deploy-helper" / "SKILL.md").read_text(encoding="utf-8")
         assert (user_skill / "SKILL.md").read_text(encoding="utf-8") == "user content"
+
+        # An imported skill the user then EDITED locally is no longer Hermes-owned: the next sync
+        # records a conflict for it instead of overwriting the edit (the docs promise this).
+        (imports / "deploy-helper" / "SKILL.md").write_text("my local tweaks", encoding="utf-8")
+        (claude_tree / "skills" / "deploy-helper" / "SKILL.md").write_text(
+            "---\nname: deploy-helper\n---\n\nDeploy v3.\n", encoding="utf-8")
+        self._run_command(None, None, sync=True)
+        assert (imports / "deploy-helper" / "SKILL.md").read_text(encoding="utf-8") == "my local tweaks"
 
     def test_sync_dry_run_previews_without_writing(self, claude_tree, hermes_home, capsys):
         from hermes_cli.agent_import_sync import load_sync_manifest

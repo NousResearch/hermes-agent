@@ -161,6 +161,13 @@ _BARE_MEDIA_RE = re.compile(_MEDIA_URL_PATTERN, re.IGNORECASE)
 _MEDIA_PATH_RE = re.compile(r"^/media/(?P<sha>[0-9a-f]{64})(?P<ext>\.[a-z0-9]{1,10})?/?$", re.IGNORECASE)
 
 
+def _consume_ws_read_task(task: asyncio.Task) -> None:
+    """Retrieve a detached stalled receive task's result without blocking recovery."""
+    if not task.cancelled():
+        with contextlib.suppress(Exception):
+            task.exception()
+
+
 def _effective_port(parsed) -> Optional[int]:
     try:
         if parsed.port is not None:
@@ -1117,12 +1124,30 @@ class BuzzAdapter(BasePlatformAdapter):
         """Read frames until the relay closes; an idle read raises ConnectionError to reconnect."""
         frame_iter = websocket.__aiter__()
         while True:
+            read_task = asyncio.ensure_future(frame_iter.__anext__())
             try:
-                raw = await asyncio.wait_for(frame_iter.__anext__(), timeout=_WS_READ_IDLE_TIMEOUT)
+                done, _ = await asyncio.wait(
+                    {read_task}, timeout=_WS_READ_IDLE_TIMEOUT, return_when=asyncio.FIRST_COMPLETED
+                )
+                if not done:
+                    # wait_for() cancels and then waits for its awaitable to acknowledge the cancellation.
+                    # A transport receive stuck below asyncio can ignore that cancellation forever, leaving the
+                    # adapter healthy-looking. Detach the read instead so the outer loop can close and reconnect.
+                    self._mark_degraded()
+                    logger.warning(
+                        "Buzz: WebSocket read watchdog expired after %.0fs; receive task remained parked; reconnecting",
+                        _WS_READ_IDLE_TIMEOUT,
+                    )
+                    raise ConnectionError(
+                        f"no WebSocket frame for {_WS_READ_IDLE_TIMEOUT:.0f}s; assuming the connection went silent"
+                    )
+                raw = read_task.result()
             except StopAsyncIteration:
                 return
-            except asyncio.TimeoutError:
-                raise ConnectionError(f"no WebSocket frame for {_WS_READ_IDLE_TIMEOUT:.0f}s; assuming the connection went silent") from None
+            finally:
+                if not read_task.done():
+                    read_task.cancel()
+                    read_task.add_done_callback(_consume_ws_read_task)
             try:
                 message = json.loads(raw)
             except (ValueError, TypeError):

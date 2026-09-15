@@ -9,6 +9,7 @@ import — must run without opening ``SessionDB()``, which a malformed schema pr
 import json
 import os
 import shutil
+import sqlite3
 import sys
 from functools import partial
 from pathlib import Path
@@ -994,6 +995,13 @@ def cmd_sessions(args, sessions_parser=None):
         if handler is None:
             sessions_parser.print_help()
             return
-        return handler(db, args)
+        try:
+            return handler(db, args)
+        except sqlite3.OperationalError as e:
+            if not observational:
+                raise
+            # A read-only opener skips schema migration, so a store from an older release can lack a column.
+            print(f"Error: session database needs migration — run any writing hermes command first ({e})")
+            return 1
     finally:
         db.close()

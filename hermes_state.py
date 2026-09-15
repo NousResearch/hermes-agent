@@ -27,7 +27,9 @@ from pathlib import Path
 from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, cast
 
-from hermes_state_common import escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity
+from hermes_state_common import (
+    escape_like as _escape_like, read_only_db_uri, stat_db_file_identity as _stat_db_file_identity,
+)
 from hermes_state_errors import (
     _DELETED_WAL_GENERATION_MSG, _DISK_IO_ERROR_MARKER, _STATE_DB_CORRUPT_MSG, _STATE_DB_GENERATION_KEY,
     _STATE_DB_REPLACED_MSG, DeletedWalGenerationError, SessionCompressionInProgressError, StateDbCorruptError,
@@ -642,9 +644,8 @@ class SessionDB(
     def _connect_read_only(self, timeout: float) -> sqlite3.Connection:
         """``mode=ro`` tracked connection with Row factory. check_same_thread=False: pooled connections
         are borrowed by whichever thread reads next; exclusive ownership is enforced by pool checkout."""
-        # as_uri() percent-encodes '?' / '#' in the home path; a raw f-string URI truncates there.
         conn = _connect_tracked_db(
-            Path(self.db_path).resolve().as_uri() + "?mode=ro", tracking_path=self.db_path, uri=True,
+            read_only_db_uri(self.db_path), tracking_path=self.db_path, uri=True,
             check_same_thread=False, timeout=timeout, isolation_level=None,
         )
         conn.row_factory = sqlite3.Row

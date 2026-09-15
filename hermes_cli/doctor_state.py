@@ -10,7 +10,7 @@ from hermes_cli.doctor_report import (
     warn_on_error,
 )
 from hermes_cli.sizefmt import format_bytes as _human_bytes
-from hermes_state_common import FTS_STORAGE_VERSION
+from hermes_state_common import FTS_STORAGE_VERSION, read_only_db_uri
 
 
 def _honcho_is_configured_for_doctor() -> bool:
@@ -151,39 +151,40 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
 def _session_count(state_db_path: Path):
     import sqlite3
     # mode=ro: doctor is a reader; a writable open of a gateway-held WAL DB is the second-writer class (#103339).
-    # as_uri() percent-encodes '?' / '#' in the home path; a raw f-string URI truncates there.
-    conn = sqlite3.connect(Path(state_db_path).resolve().as_uri() + "?mode=ro", uri=True)
+    conn = sqlite3.connect(read_only_db_uri(state_db_path), uri=True)
     try:
         return conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
     finally:
         conn.close()
 
 
-def _write_health_reason(state_db_path: Path, *, isolate: bool):
-    """FTS/write-health probe. Isolated copies never join the live store WAL lifecycle."""
+# Above this the snapshot copy a held store needs costs more than the probe is worth; --fix still probes.
+_WRITE_PROBE_SNAPSHOT_MAX_BYTES = 1 << 30
+
+
+def _write_health_reason(state_db_path: Path, *, should_fix: bool):
+    """FTS/write-health probe (a rolled-back BEGIN IMMEDIATE). Against a store a live writer holds,
+    that probe is the second-writer class (#103339), so probe a read-only snapshot instead; a quiet
+    store is probed in place. Returns the failure reason, or None when healthy or skipped."""
     from hermes_state_repair import _connect_repair_durable, _db_opens_cleanly
     from hermes_state_holders import live_writer_holds_db
-    # Even under --fix the probe's BEGIN IMMEDIATE is a second writer against a gateway-held DB (#103339):
-    # only probe the live file when the holder scan proves it quiet, else fall back to a snapshot.
-    if not isolate and not live_writer_holds_db(state_db_path, connect_repair_durable=_connect_repair_durable):
+    if not live_writer_holds_db(state_db_path, connect_repair_durable=_connect_repair_durable):
         return _db_opens_cleanly(state_db_path)
+    if not should_fix and state_db_path.stat().st_size > _WRITE_PROBE_SNAPSHOT_MAX_BYTES:
+        check_info("state.db write-health probe skipped: store is held by a live writer and larger than 1 GB "
+                   "(run 'hermes doctor --fix' to probe it)")
+        return None
     import sqlite3
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
         snapshot = Path(tmp) / "state.db"
-        try:
-            # as_uri() percent-encodes '?' / '#' in the home path; a raw f-string URI truncates there.
-            src = sqlite3.connect(Path(state_db_path).resolve().as_uri() + "?mode=ro", uri=True, timeout=1.0)
-        except sqlite3.Error as exc:
-            return str(exc)
+        src = sqlite3.connect(read_only_db_uri(state_db_path), uri=True, timeout=1.0)
         try:
             dest = sqlite3.connect(str(snapshot))
             try:
                 src.backup(dest)
             finally:
                 dest.close()
-        except sqlite3.Error as exc:
-            return str(exc)
         finally:
             src.close()
         return _db_opens_cleanly(snapshot)
@@ -256,11 +257,10 @@ def _state_db_health(f: Finding, should_fix: bool, state_db_path: Path, _DHH: st
     from hermes_state_repair import state_db_has_structural_damage
     try:
         check_ok(f"{_DHH}/state.db exists ({_session_count(state_db_path)} sessions)")
+        # COUNT(*) succeeds even when the FTS index is corrupt and every write fails through the triggers.
+        _write_reason = _write_health_reason(state_db_path, should_fix=should_fix)
     except Exception as e:
         return _classify_unreadable_state_db(f, should_fix, state_db_path, _DHH, e)
-    # COUNT(*) succeeds even when the FTS index is corrupt and every write fails through the triggers.
-    # Non-fixing doctor snapshots first so the write probe cannot join the live WAL lifecycle (#50502).
-    _write_reason = _write_health_reason(state_db_path, isolate=not should_fix)
     if _write_reason is not None:
         if state_db_has_structural_damage(state_db_path):
             check_warn(f"{_DHH}/state.db has structural corruption (canonical tables/indexes damaged, "

@@ -626,12 +626,30 @@ _TERMINAL_SUMMARY_FAILURES = (
 )
 
 # Timeouts escalate 60s -> 300s -> 900s: structural repeat offenders back off longer.
+# After the last rung, automatic compression stays blocked (give-up) until /compress or /new.
 _TIMEOUT_COOLDOWN_LADDER = (60, 300, 900)
+_TIMEOUT_GIVEUP_PREFIX = "giveup:timeout:"
+_TIMEOUT_GIVEUP_REASON = (
+    "giveup:timeout: consider raising auxiliary.compression.timeout"
+)
+
+
+def _is_timeout_giveup_error(error: object) -> bool:
+    """True when the durable cooldown error is the exhausted-timeout give-up sentinel."""
+    return str(error or "").startswith(_TIMEOUT_GIVEUP_PREFIX)
+
+
+def _timeout_giveup_armed(compressor: Any) -> bool:
+    """True after ``_consecutive_timeout_failures`` exhausts ``_TIMEOUT_COOLDOWN_LADDER`` (#107516)."""
+    if getattr(compressor, "_consecutive_timeout_failures", 0) >= len(_TIMEOUT_COOLDOWN_LADDER):
+        return True
+    return _is_timeout_giveup_error(getattr(compressor, "_last_summary_error", None))
 
 
 def _next_timeout_cooldown(compressor: Any) -> int:
     """Bump ``compressor._consecutive_timeout_failures`` and return the ladder rung for it.
-    Module-level (not a method) so callers that bind a single real method onto a stub still exercise the ladder."""
+    Module-level (not a method) so callers that bind a single real method onto a stub still exercise the ladder.
+    The third consecutive timeout exhausts the ladder and arms give-up; callers persist ``giveup:timeout:``."""
     n = compressor._consecutive_timeout_failures = getattr(compressor, "_consecutive_timeout_failures", 0) + 1
     return _TIMEOUT_COOLDOWN_LADDER[min(n, len(_TIMEOUT_COOLDOWN_LADDER)) - 1]
 
@@ -2114,8 +2132,12 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             # Local cooldown never reached the DB, so an empty row is not evidence it was cleared; keep local.
             if refresh and local_state is not None and self._cooldown_persist_failed:
                 return local_state
-            if refresh:
+            # Expired cooldown still carries give-up on the same error column; peek the unfiltered row.
+            self._restore_timeout_giveup_from_durable_row()
+            if refresh and not _timeout_giveup_armed(self):
                 self._summary_failure_cooldown_until, self._last_summary_error = 0.0, None
+            elif refresh:
+                self._summary_failure_cooldown_until = 0.0
             return None
         # Hygiene-only cooldowns share the column but are not a 429/aux fault; the in-agent compressor may run.
         # A hygiene write may have overwritten an aux-model row; drop the in-memory cooldown too.
@@ -2127,6 +2149,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             return None
         self._summary_failure_cooldown_until = now_mono + remaining_seconds
         self._last_summary_error = state.get("error")
+        self._restore_timeout_giveup_from_error(self._last_summary_error)
         self._cooldown_persist_failed = False
         return {
             "cooldown_until": float(state.get("cooldown_until") or 0.0), "remaining_seconds": remaining_seconds,
@@ -2148,9 +2171,44 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         )
 
     def record_timeout_failure(self, error: str, failure_kind: str = "timeout") -> None:
-        """Consecutive timeout/stall via the ladder; error persisted as ``backoff:<kind>:strategy=<tail_mode>`` for restarts."""
-        stamped = f"backoff:{failure_kind or 'timeout'}:strategy={getattr(self, 'tail_mode', None) or 'unknown'}: {error}"
-        self._record_compression_failure_cooldown(float(_next_timeout_cooldown(self)), stamped)
+        """Consecutive timeout/stall via the ladder; error persisted as ``backoff:<kind>:strategy=<tail_mode>`` for restarts.
+        The third consecutive timeout persists ``giveup:timeout:...`` so auto-compress stays blocked after the 900s rung."""
+        cooldown = float(_next_timeout_cooldown(self))
+        if _timeout_giveup_armed(self):
+            stamped = (
+                f"{_TIMEOUT_GIVEUP_PREFIX}strategy={getattr(self, 'tail_mode', None) or 'unknown'}: {error}"
+            )
+            logger.warning(
+                "Automatic context compression gave up after consecutive timeouts; "
+                "consider raising auxiliary.compression.timeout"
+            )
+        else:
+            stamped = f"backoff:{failure_kind or 'timeout'}:strategy={getattr(self, 'tail_mode', None) or 'unknown'}: {error}"
+        self._record_compression_failure_cooldown(cooldown, stamped)
+
+    def _restore_timeout_giveup_from_error(self, error: object) -> None:
+        """Re-arm the in-memory timeout streak from a durable ``giveup:timeout:`` sentinel."""
+        if not _is_timeout_giveup_error(error):
+            return
+        self._consecutive_timeout_failures = max(
+            getattr(self, "_consecutive_timeout_failures", 0),
+            len(_TIMEOUT_COOLDOWN_LADDER),
+        )
+        self._last_summary_error = error if isinstance(error, str) else str(error)
+
+    def _restore_timeout_giveup_from_durable_row(self) -> None:
+        """Peek the unfiltered cooldown row so give-up survives remaining_seconds=0."""
+        session_db = getattr(self, "_session_db", None)
+        raw_getter = getattr(session_db, "get_compression_failure_cooldown_row", None) if session_db else None
+        if not getattr(self, "_session_id", "") or raw_getter is None:
+            return
+        try:
+            raw = raw_getter(self._session_id)
+        except Exception as exc:
+            if isinstance(exc, sqlite3.Error):
+                logger.debug("compression timeout give-up row lookup failed: %s", exc)
+            return
+        self._restore_timeout_giveup_from_error((raw or {}).get("error"))
 
     def _clear_compression_failure_cooldown(self) -> None:
         # Fence check BEFORE cooldown-clear: a late cancelled worker must not undo the host's timeout cooldown.
@@ -2499,13 +2557,15 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         return True, None
 
     def _compression_block_reason(self) -> "str | None":
-        """Block reason: ``"cooldown:<s>"``, ``"structural_backoff:<s>"``, ``"ineffective"``, or None."""
+        """Block reason: ``"cooldown:<s>"``, ``"structural_backoff:<s>"``, ``"giveup:timeout:..."``, ``"ineffective"``, or None."""
         for label, until in (
             ("cooldown", self._summary_failure_cooldown_until), ("structural_backoff", self._structural_no_op_backoff_until),
         ):
             remaining = until - time.monotonic()
             if remaining > 0:
                 return f"{label}:{remaining:.0f}"
+        if _timeout_giveup_armed(self):
+            return _TIMEOUT_GIVEUP_REASON
         return "ineffective" if self._tripped() else None
 
     def _tripped(self) -> bool:
@@ -2546,6 +2606,15 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 if not self.quiet_mode:
                     logger.debug("Compression deferred — %s for %.0fs more", what, remaining)
                 return True
+        # Timeout-ladder give-up: stay blocked after the 900s rung expires. ignore_cooldown
+        # (manual /compress force=True / overflow bypass_cooldown) may still retry (#107516).
+        if not ignore_cooldown and _timeout_giveup_armed(self):
+            if not self.quiet_mode:
+                logger.warning(
+                    "Automatic compression blocked after consecutive timeouts; "
+                    "consider raising auxiliary.compression.timeout"
+                )
+            return True
         # Anti-thrash back-off must not be permanent: after _ANTI_THRASH_RECOVERY_SECONDS blocked, allow ONE
         # probe by dropping counters to 1 strike (persisted). Deadline is armed lazily and persisted on the row.
         if self._tripped():
@@ -3301,12 +3370,20 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         if self._compression_cancelled():
             raise AuxiliaryExplicitCancellation()
         # bypass_cooldown: provider-proven overflow gets ONE real attempt while armed.
-        if prompt_started_at < self._summary_failure_cooldown_until and not bypass_cooldown:
-            logger.debug(
-                # See #100661.
-                "Skipping context summary during cooldown (%.0fs remaining)",
-                self._summary_failure_cooldown_until - prompt_started_at,
-            )
+        if not bypass_cooldown and (
+            prompt_started_at < self._summary_failure_cooldown_until or _timeout_giveup_armed(self)
+        ):
+            if _timeout_giveup_armed(self) and prompt_started_at >= self._summary_failure_cooldown_until:
+                logger.warning(
+                    "Skipping context summary: timeout ladder exhausted; "
+                    "consider raising auxiliary.compression.timeout"
+                )
+            else:
+                logger.debug(
+                    # See #100661.
+                    "Skipping context summary during cooldown (%.0fs remaining)",
+                    self._summary_failure_cooldown_until - prompt_started_at,
+                )
             return None
         # Strict-redact inputs that bypass _serialize_for_summary (focus string, prior summary).
         if focus_topic:
@@ -3529,6 +3606,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         else:
             _transient_cooldown = 30 if (kind.json_decode or kind.streaming_closed or kind.empty_content or kind.truncated) else 60
         err_text = _short_error_text(e)
+        if kind.timeout and _timeout_giveup_armed(self):
+            err_text = f"{_TIMEOUT_GIVEUP_PREFIX}{err_text}"
         self._record_compression_failure_cooldown(_transient_cooldown, err_text)
         self._last_summary_error = err_text
         # Terminal network/empty-content failure after any fallback: flag so compress() ABORTS
@@ -3544,10 +3623,17 @@ Write only the summary body. Do not include any preamble or prefix."""
             self._last_summary_truncated_failure = True
         elif kind.empty_content:
             self._last_summary_empty_content_failure = True
-        logger.warning(
-            "Failed to generate context summary: %s. Further summary attempts paused for %d seconds.", e,
-            _transient_cooldown,
-        )
+        if kind.timeout and _timeout_giveup_armed(self):
+            logger.warning(
+                "Failed to generate context summary: %s. Automatic compression gave up after "
+                "consecutive timeouts; consider raising auxiliary.compression.timeout.",
+                e,
+            )
+        else:
+            logger.warning(
+                "Failed to generate context summary: %s. Further summary attempts paused for %d seconds.", e,
+                _transient_cooldown,
+            )
         return None
 
     @staticmethod

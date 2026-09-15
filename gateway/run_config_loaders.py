@@ -401,6 +401,31 @@ class GatewayConfigLoadersMixin:
         return mode
 
     @staticmethod
+    def _load_agent_inject_mute_chats() -> set:
+        """Per-chat mute list for background-process agent injection.
+
+        For chats in the list, a *successful* background process completion
+        neither injects a wake-up message nor emits a user-facing push; the
+        watcher just ends (failures still inject as before). Chats outside
+        the list are unaffected. Sources: env
+        HERMES_AGENT_INJECT_MUTE_CHATS (comma-separated) or config
+        display.background_process_agent_inject_mute_chats (list).
+        Background: after a muted-injection success the agent woke up and
+        hallucinated progress updates, spamming the chat; a global
+        log-level fix would break other chats' "report on completion"
+        flow, so this is per-chat.
+        """
+        from gateway.platforms._shared import platform_gate_env as _platform_gate_env
+        from gateway.run import _load_gateway_config
+        raw_env = _platform_gate_env("HERMES_AGENT_INJECT_MUTE_CHATS")
+        if raw_env:
+            return {c.strip() for c in str(raw_env).split(",") if c.strip()}
+        raw = cfg_get(_load_gateway_config(), "display", "background_process_agent_inject_mute_chats")
+        if isinstance(raw, (list, tuple, set)):
+            return {str(c) for c in raw}
+        return set()
+
+    @staticmethod
     def _load_provider_routing() -> dict:
         """OpenRouter provider routing preferences (canonical fail-open loader: managed overlay + ${VAR})."""
         from gateway.run import _load_gateway_config

@@ -1761,6 +1761,16 @@ class GatewayNotificationsMixin:
             has_new_output = current_output_len > last_output_len
             last_output_len = current_output_len
             if session.exited:
+                # Muted chats: on *successful* completion, neither inject a
+                # wake-up message nor deliver a user-side push — just end the
+                # watcher (failures still take the original path). List loaded
+                # by _load_agent_inject_mute_chats.
+                if (
+                    agent_notify
+                    and chat_id in self._load_agent_inject_mute_chats()  # type: ignore[attr-defined]
+                    and session.exit_code in (0, None)
+                ):
+                    break
                 # Agent-notify: inject a synthetic message unless the agent already consumed the result via
                 # wait/log (poll() is read-only and deliberately does NOT mark consumed).
                 if agent_notify and not process_registry.is_completion_consumed(session_id):

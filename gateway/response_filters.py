@@ -94,6 +94,37 @@ def is_partial_silence_marker(text: Any) -> bool:
     )
 
 
+# Notification-dump detection (used by per-chat outbound suppression in the
+# feishu adapter). Incident: a woken-up agent pasted ~11K chars of its
+# supervisor notification backlog into a group chat, delivered as streaming
+# edits. Heuristic: >=3 lines matching the pipeline-notification shape
+# `[tag] <emoji> ...` count as a dump; quoting 1-2 lines in a normal reply
+# does not trip it.
+import re as _re
+
+_NOTIFICATION_LINE_RE = _re.compile(
+    r"^\s*[【\[][^\]】\n]{1,60}[】\]]\s*(⏳|✅|❌|⚠️|🔍|✨|📦|🗑️|▶️)"
+)
+NOTIFICATION_DUMP_MIN_LINES = 3
+
+
+def is_notification_dump(text: Any) -> bool:
+    """Return True when ``text`` is a dump of supervisor-style notifications.
+
+    Counts lines matching the pipeline-notification shape
+    ``[tag] <emoji> …`` (⏳/✅/❌/⚠️/🔍/✨/📦/🗑️/▶️); at least
+    ``NOTIFICATION_DUMP_MIN_LINES`` such lines means the agent regurgitated
+    its notification backlog instead of answering. Non-strings, blanks, and
+    ordinary prose quoting one or two notification lines return False.
+    """
+    if not isinstance(text, str):
+        return False
+    hits = sum(
+        1 for line in text.splitlines() if _NOTIFICATION_LINE_RE.match(line)
+    )
+    return hits >= NOTIFICATION_DUMP_MIN_LINES
+
+
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
 # Names external plugins imported from this module before the Sep 2026 decomposition.
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).

@@ -2649,6 +2649,22 @@ class BasePlatformAdapter(ABC):
             text = f"❓ {question}"
         return await self.send(chat_id=chat_id, content=text, metadata=metadata)
 
+    async def send_suggested_actions(
+        self, chat_id: str, message: str, actions: list, set_id: str,
+        session_key: str, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        """Suggested-actions prompt; button-capable adapters SHOULD override with native tappable
+        buttons. Default: a numbered-list text fallback with no tap affordance — the user can copy
+        an action's label/payload back as a normal message. Buttons that DO render must resolve via
+        ``tools.suggested_actions_gateway.resolve(set_id, index)`` and inject the result as a new
+        user turn (this is non-blocking, unlike ``send_clarify``: there is no pending agent thread
+        to unblock)."""
+        numbered = []
+        for i, action in enumerate(actions, start=1):
+            label = action.get("label", "") if isinstance(action, dict) else str(action)
+            numbered.append(f"  {i}. {label}")
+        text = "\n".join([message, "", *numbered]) if numbered else message
+        return await self.send(chat_id=chat_id, content=text, metadata=metadata)
+
     async def send_private_notice(
         self, chat_id: str, user_id: Optional[str], content: str, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:

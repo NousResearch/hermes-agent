@@ -191,6 +191,10 @@ INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
         ("questions", "questions"),
         callback=lambda agent, ctx: agent.clarify_callback,
     ),
+    "suggest_actions": _callback_tool(
+        "tools.suggest_actions_tool", "suggest_actions_tool", "suggest_actions_callback",
+        ("message", "message", ""), ("actions", "actions"),
+    ),
     "read_terminal": _callback_tool(
         "tools.read_terminal_tool", "read_terminal_tool", "read_terminal_callback",
         ("start_line", "start_line"), ("count", "count"),

@@ -8,6 +8,7 @@ import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
 import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { useContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
+import { useModelUsageStatusbarItem } from '@/app/shell/model-usage-statusbar'
 import { useSystemResourcesStatusbarItem } from '@/app/shell/system-resources-statusbar'
 import { $paneVisible, togglePaneVisible } from '@/components/pane-shell/tree/store'
 import { Badge } from '@/components/ui/badge'
@@ -45,6 +46,8 @@ import {
   $busy,
   $connection,
   $currentCwd,
+  $currentModel,
+  $currentProvider,
   $currentUsage,
   $selectedStoredSessionId,
   $sessions,
@@ -120,6 +123,8 @@ export function useStatusbarItems({
   // own cwd in `$sessionStates` and must not paint the primary's workspace.
   const primaryCwd = useStore($currentCwd)
   const primaryUsage = useStore($currentUsage)
+  const currentModel = useStore($currentModel)
+  const currentProvider = useStore($currentProvider)
   const gatewayRestarting = useStore($gatewayRestarting)
   const primarySessionStartedAt = useStore($sessionStartedAt)
   const primaryTurnStartedAt = useStore($turnStartedAt)
@@ -302,6 +307,14 @@ export function useStatusbarItems({
 
   const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestGateway)
   const systemResourcesItem = useSystemResourcesStatusbarItem()
+
+  const modelUsageItem = useModelUsageStatusbarItem({
+    activeSessionId,
+    currentModel,
+    currentProvider,
+    currentUsage,
+    requestGateway
+  })
 
   const gatewayMenuContent = useMemo(
     () => (close: () => void) => (
@@ -610,6 +623,7 @@ export function useStatusbarItems({
         toggleLabel: copy.toggleRunningTimer,
         variant: 'text'
       },
+      modelUsageItem,
       {
         detail: contextBar || undefined,
         // Never self-hide: the user opted this item in (it's hidden-by-
@@ -685,6 +699,7 @@ export function useStatusbarItems({
       contextUsage,
       copy,
       gaugeUsage,
+      modelUsageItem,
       sessionStartedAt,
       gatewayState,
       systemResourcesItem,

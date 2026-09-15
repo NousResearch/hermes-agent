@@ -629,6 +629,36 @@ class TestSessionLifecycle:
 
 
 
+    def test_get_session_model_usage_returns_each_accounted_route(self, db):
+        """The public read surface preserves model/provider attribution so
+        clients can render a real per-model usage breakdown after a switch.
+        """
+        db.create_session(session_id="statusbar", source="desktop", model="deepseek-v4-pro")
+        db.update_token_counts(
+            "statusbar", input_tokens=40_000, output_tokens=8_000,
+            model="deepseek-v4-pro", billing_provider="deepseek",
+            billing_mode="api_key", estimated_cost_usd=0.12,
+            cost_status="estimated", api_call_count=2,
+        )
+        db.update_token_counts(
+            "statusbar", input_tokens=50_000, output_tokens=4_000,
+            model="claude-opus-4.8", billing_provider="openrouter",
+            billing_mode="api_key", estimated_cost_usd=0.34,
+            cost_status="estimated", api_call_count=3,
+        )
+
+        rows = db.get_session_model_usage("statusbar")
+
+        assert [(row["model"], row["billing_provider"]) for row in rows] == [
+            ("claude-opus-4.8", "openrouter"),
+            ("deepseek-v4-pro", "deepseek"),
+        ]
+        assert rows[0]["input_tokens"] == 50_000
+        assert rows[0]["output_tokens"] == 4_000
+        assert rows[0]["api_call_count"] == 3
+        assert rows[0]["estimated_cost_usd"] == pytest.approx(0.34)
+        assert db.get_session_model_usage("missing") == []
+
     def test_first_accounted_route_replaces_all_route_fields_atomically(self, db):
         db.create_session(session_id="route", source="cli", model="primary")
         db.update_session_billing_route(

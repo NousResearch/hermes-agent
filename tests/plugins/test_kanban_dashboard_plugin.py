@@ -595,7 +595,7 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
     # is flaky. The assertion that matters is: no CancelledError escaped.
 
 
-def test_ws_task_event_projects_linked_human_card_without_waiting_for_poll(client, monkeypatch):
+def test_ws_task_event_projects_linked_human_card_without_waiting_for_poll(kanban_home, monkeypatch):
     """The established task-event socket is also the Hybrid invalidation path."""
     module = _load_plugin_module()
     monkeypatch.setattr(module, "_EVENT_POLL_SECONDS", 0.01)
@@ -625,6 +625,7 @@ def test_ws_task_event_projects_linked_human_card_without_waiting_for_poll(clien
         conn.close()
 
     assert any(event["task_id"] == task_id for event in frame["events"])
+    assert "hybrid_events" in frame, frame
     progress = next(event for event in frame["hybrid_events"] if event["kind"] == "delegation_progressed")
     assert progress["card_id"] == card["id"]
     assert progress["payload"]["state"] == "waiting"

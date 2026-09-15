@@ -58,6 +58,26 @@ const CLI_TIPS: Array<{ cmd: string; desc: string }> = [
   { cmd: "hermes update", desc: "به‌روزرسانی Hermes" },
 ];
 
+/**
+ * عیب‌یابی — mirrors the standalone guide.html troubleshooting table (the
+ * (-6) dist error, the misleading WS "session token" boot failure, and the
+ * pip-environment drift checklist). Keep in sync with guide.html بخش ۱۷.
+ */
+const TROUBLESHOOTING: Array<{ problem: string; fix: string }> = [
+  {
+    problem: "«Hermes couldn't start the desktop UI» با کد (-6) و مسیر apps\\desktop\\dist\\index.html",
+    fix: "برنامه بدون متغیر محیطیِ سرور توسعه اجرا شده: الکترون به‌دنبال باندل ساخته‌شده (dist) می‌گردد که در مخزن توسعه وجود نیست (-6 = فایل پیدا نشد). برنامه را با cd apps/desktop و سپس npm run dev اجرا کنید؛ اجرای مستقیم electron . دقیقاً همین خطا را می‌دهد. گزینه hermes desktop --force-build فقط برای نسخه نصب‌شده کاربرد دارد.",
+  },
+  {
+    problem: "«Backend exited before it became ready» همراه با «rejected the session token»",
+    fix: "پیامِ توکن گمراه‌کننده است — علت واقعی تقریباً همیشه ناهم‌خوانی وابستگی‌های پایتون است (uvicorn قدیمی، websockets ناسازگار یا نبودن concurrent_log_handler). در desktop.log دنبال Traceback واقعی بگردید و روی همان مفسر باک‌اند pip install -e \".[web]\" (یا uv sync --extra web) را اجرا کنید.",
+  },
+  {
+    problem: "چک‌لیست ناهم‌خوانی محیط پایتون (خطاهای import یا نسخه)",
+    fix: "۱) pip check باید «No broken requirements found» بدهد. ۲) نسخه‌ها را با پین‌های pyproject.toml بسنجید و با pip install -e \".[web]\" هم‌تراز کنید. ۳) اگر pip هشدار «Ignoring invalid distribution ~xyz» داد، پوشه‌های «~...» را در Lib/site-packages حذف کنید (خرده‌نصب خراب). ۴) آزمون نهایی: python -c \"import uvicorn, fastapi, websockets; from tui_gateway.ws import handle_ws\" — بدون خطا یعنی محیط سالم است.",
+  },
+];
+
 export function PersianGuide() {
   const { locale } = useI18n();
   const [open, setOpen] = useState(true);
@@ -128,6 +148,24 @@ export function PersianGuide() {
               </li>
             ))}
           </ol>
+
+          <div className="mt-3 rounded-sm border border-current/10 bg-background/40 px-3 py-2">
+            <div className="mb-1.5 text-xs font-bold text-foreground">
+              🛠 عیب‌یابی رایج
+            </div>
+            <dl className="grid gap-2">
+              {TROUBLESHOOTING.map((item) => (
+                <div key={item.problem} className="rounded-sm bg-background/40 px-2 py-1.5">
+                  <dt className="text-[11px] font-bold text-foreground">
+                    {item.problem}
+                  </dt>
+                  <dd className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+                    {item.fix}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </div>
 
           <div className="mt-3 rounded-sm border border-current/10 bg-background/40 px-3 py-2">
             <div className="mb-1.5 text-xs font-bold text-foreground">

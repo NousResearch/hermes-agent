@@ -49,6 +49,13 @@ load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).parent.p
 # ── Panic logger: crashes otherwise leave no forensics (stdout is the JSON-RPC pipe, stderr doesn't
 # flush before exit) → append every unhandled exception to the crash log + one-line stderr summary.
 _CRASH_LOG = os.path.join(_hermes_home, "logs", "tui_gateway_crash.log")
+# A turn can be handed a session record whose deferred agent build finished WITHOUT attaching an
+# agent (the record was replaced while the build ran).  The prompt gate and the turn body share one
+# stable reason string for that state so the client gets a retryable error frame instead of a turn
+# thread dying on ``None.interim_assistant_callback``.
+_NO_AGENT_TURN_ERROR = "agent initialization failed for this session — the prompt was not run"
+_RECORD_REPLACED_BUILD_ERROR = (
+    "agent build aborted: the session record was replaced before the build finished")
 
 
 def _record_crash(kind: str, exc_type, exc_value, exc_tb, *, thread_name: str | None = None) -> None:
@@ -928,6 +935,15 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
     ready = session.get("agent_ready")
     if ready is None:
         return None
+    if ready.is_set() and session.get("agent") is None:
+        # ``agent_ready`` set with no agent attached is a COMPLETED build that attached nothing (its
+        # record was replaced while the build ran — see ``_await_resume_history``).  Readiness alone
+        # must not green-light the turn: the turn body dereferences ``session["agent"]`` to wire
+        # callbacks, so this state used to end in an AttributeError that killed the turn thread and
+        # dropped the prompt silently.  Report the recorded cause (or a generic init failure) so the
+        # client gets a retryable error frame.
+        return _err(rid, 5032, session.get("agent_error")
+                    or "agent initialization failed before completing")
     start, cap, notified_slow = time.monotonic(), _agent_build_wait_cap(), False
     while not ready.wait(timeout=_AGENT_BUILD_WAIT_SLICE):
         with session["history_lock"]:
@@ -1112,6 +1128,11 @@ def _start_agent_build(sid: str, session: dict) -> None:
         profile_home = current.get("profile_home")
         try:
             if not _await_resume_history(sid, current):
+                # The record was replaced while this build ran, so nothing will attach an agent to
+                # THIS one — yet the finally below still sets its ``agent_ready``.  Record why, so a
+                # prompt still waiting on this record fails with a real reason instead of running a
+                # turn against ``session["agent"] is None``.
+                current["agent_error"] = _RECORD_REPLACED_BUILD_ERROR
                 return
             tokens = _set_session_context(key)
             # Global-remote: bind the session profile's HERMES_HOME and hand the agent that profile's db —

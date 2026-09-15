@@ -830,6 +830,23 @@ def _run_prompt_submit(
         st.marker_key = _record_turn_marker(session, text, auto_continue=terminal_callback is None)
         goal_followup = None
         try:
+            if st.agent is None:
+                # A session record can lose its agent while a prompt is already in flight.  The
+                # deferred build leaves ``agent_ready`` SET without an attached agent when the
+                # record was replaced mid-build (``_await_resume_history`` -> False), and
+                # ``_wait_agent_for_prompt`` decides readiness from ``agent_ready``/``agent_error``
+                # alone, so the turn is handed straight through.  Dereferencing the agent here used
+                # to raise AttributeError twice (here and in the finally below), which killed the
+                # turn thread and dropped the prompt with no frame the client could show.  Fail the
+                # turn with a retryable runtime error instead — the prompt stays retryable.
+                _emit_terminal_turn_error(
+                    sid, session, _NO_AGENT_TURN_ERROR,
+                    error_surface={"layer": "runtime", "code": "agent_init_failed", "retryable": True},
+                    retire_marker=st.receipt_committed)
+                st.error_retained = True
+                st.error_detail = _turn_failure_detail(
+                    _NO_AGENT_TURN_ERROR, "NoneAgent", st.prompt_text)
+                return
             prepared = _prepare_turn_input(sid, session, st, text, images)
             if prepared is None:
                 if st.terminal_callback is not None and not st.receipt_attempted:
@@ -858,8 +875,10 @@ def _run_prompt_submit(
             _finish_turn(sid, session, st)
             _current_runtime_session_record.reset(runtime_session_token)
             reset_transport(transport_token)
-            # A stale interim closure must not fire during a later turn.
-            st.agent.interim_assistant_callback = None
+            # A stale interim closure must not fire during a later turn.  ``st.agent`` can be None
+            # on the guard path above (the session record never got an agent attached).
+            if st.agent is not None:
+                st.agent.interim_assistant_callback = None
             with session["history_lock"]:
                 session["running"] = False
                 session["last_active"] = time.time()

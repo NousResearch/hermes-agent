@@ -27,6 +27,22 @@ _DEFAULT_WINDOWS_PIPE_NAME = r"\\.\pipe\cua-driver"
 _FRAME_HEADER_BYTES = 4
 
 
+class PipeTransportError(Exception):
+    """Base exception for native named pipe transport errors."""
+
+
+class PipePreDispatchError(RuntimeError, PipeTransportError):
+    """Failure occurred before bytes were written to the pipe (e.g. connection refused, busy, or timed out)."""
+
+
+class PipePostDispatchError(RuntimeError, PipeTransportError):
+    """Failure occurred during or after dispatching bytes to the pipe. Mutating tools must not be automatically replayed."""
+
+
+class PipePostDispatchTimeoutError(PipePostDispatchError, TimeoutError):
+    """Timeout occurred waiting for response after bytes were dispatched to the pipe."""
+
+
 def get_computer_use_pipe_path(embedded_daemon: Optional[Any] = None) -> Optional[str]:
     """Resolve the Windows Named Pipe path for cua-driver.
 
@@ -164,11 +180,11 @@ class NativePipeComputerUseTransport:
                     wait_time_ms = int(min(1000, max(50, (deadline - time.monotonic()) * 1000)))
                     ctypes.windll.kernel32.WaitNamedPipeW(self.pipe_path, wait_time_ms)
                     continue
-                raise RuntimeError(
+                raise PipePreDispatchError(
                     f"Failed to connect to cua-driver named pipe {self.pipe_path}: {exc}"
                 ) from exc
 
-        raise TimeoutError(
+        raise PipePreDispatchError(
             f"Timed out connecting to cua-driver named pipe {self.pipe_path} after {timeout_sec:.1f}s"
         )
 
@@ -307,28 +323,51 @@ class NativePipeComputerUseTransport:
                 req_payload["session_id"] = session_to_use
 
             deadline = time.monotonic() + timeout
-            handle = self._open_handle(timeout_sec=min(5.0, timeout))
+            try:
+                handle = self._open_handle(timeout_sec=min(5.0, timeout))
+            except Exception as exc:
+                if isinstance(exc, PipePreDispatchError):
+                    raise
+                raise PipePreDispatchError(
+                    f"Failed opening handle for {name} on pipe {self.pipe_path}: {exc}"
+                ) from exc
+
             try:
                 encoded_str = json.dumps(req_payload)
                 use_length_prefix = (
                     self.framing == "length_prefix"
                     or (self.framing == "auto" and bool(os.environ.get("SKY_CUA_NATIVE_PIPE_DIRECTORY")))
                 )
-                if use_length_prefix:
-                    frame = encode_message_frame(encoded_str.encode("utf-8"), "le")
-                    _winapi.WriteFile(handle, frame)
-                    raw_resp = self._read_length_prefix(handle, deadline=deadline)
-                else:
-                    data = (encoded_str + "\n").encode("utf-8")
-                    _winapi.WriteFile(handle, data)
-                    raw_resp = self._read_all_line(handle, deadline=deadline)
+                try:
+                    if use_length_prefix:
+                        frame = encode_message_frame(encoded_str.encode("utf-8"), "le")
+                        _winapi.WriteFile(handle, frame)
+                        raw_resp = self._read_length_prefix(handle, deadline=deadline)
+                    else:
+                        data = (encoded_str + "\n").encode("utf-8")
+                        _winapi.WriteFile(handle, data)
+                        raw_resp = self._read_all_line(handle, deadline=deadline)
+                except TimeoutError as exc:
+                    raise PipePostDispatchTimeoutError(
+                        f"Timed out waiting for response from cua-driver pipe {self.pipe_path} for tool {name}: {exc}"
+                    ) from exc
+                except Exception as exc:
+                    raise PipePostDispatchError(
+                        f"Post-dispatch transport error on cua-driver pipe {self.pipe_path} for tool {name}: {exc}"
+                    ) from exc
 
                 if not raw_resp:
-                    raise RuntimeError(
+                    raise PipePostDispatchError(
                         f"cua-driver named pipe returned empty response for tool {name}"
                     )
 
-                parsed = json.loads(raw_resp.decode("utf-8", errors="replace").strip())
+                try:
+                    parsed = json.loads(raw_resp.decode("utf-8", errors="replace").strip())
+                except Exception as exc:
+                    raise PipePostDispatchError(
+                        f"cua-driver named pipe returned unparseable JSON for tool {name}: {exc}"
+                    ) from exc
+
                 return self._normalize_response(parsed, name, shot_file)
             finally:
                 with contextlib.suppress(Exception):

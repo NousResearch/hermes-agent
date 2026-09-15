@@ -1,3 +1,4 @@
+import type { GatewayEvent } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -7,7 +8,6 @@ import {
   clearAllComputerUseStates,
   COMPLETED_DISMISS_DELAY_MS
 } from '@/store/computer-use'
-import type { RpcEvent } from '@/types/hermes'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
@@ -21,8 +21,8 @@ function mountStream() {
   stream = renderMessageStream(SID, { states: sessionStates })
 }
 
-function emit(type: RpcEvent['type'], payload: RpcEvent['payload'] = {}, sessionId = SID) {
-  act(() => stream.handleEvent({ payload, session_id: sessionId, type }))
+function emit(type: GatewayEvent['type'] | string, payload: any = {}, sessionId = SID) {
+  act(() => stream.handleEvent({ payload, session_id: sessionId, type: type as GatewayEvent['type'] }))
 }
 
 describe('computer_use gateway event lifecycle', () => {
@@ -366,4 +366,55 @@ describe('computer_use gateway event lifecycle', () => {
     // Computer use state must STILL be running, not marked completed prematurely
     expect($computerUseBySession.get()[SID]?.phase).toBe('running')
   })
+
+  it('prevents stale tool.complete from completing a newer active call (Call A start -> Call B start -> Call A complete -> Call B remains running)', () => {
+    mountStream()
+
+    // 1. Call A starts
+    emit('tool.start', {
+      args: { action: 'click', app: 'Chrome', element: 1 },
+      name: 'computer_use',
+      tool_id: 'call-a'
+    })
+    expect($computerUseBySession.get()[SID]?.phase).toBe('running')
+    expect($computerUseBySession.get()[SID]?.toolId).toBe('call-a')
+    expect($computerUseBySession.get()[SID]?.app).toBe('Chrome')
+
+    // 2. Call B starts
+    emit('tool.start', {
+      args: { action: 'type', app: 'Terminal', text: 'npm test' },
+      name: 'computer_use',
+      tool_id: 'call-b'
+    })
+    expect($computerUseBySession.get()[SID]?.phase).toBe('running')
+    expect($computerUseBySession.get()[SID]?.toolId).toBe('call-b')
+    expect($computerUseBySession.get()[SID]?.app).toBe('Terminal')
+
+    // 3. Stale Call A named complete arrives
+    emit('tool.complete', {
+      duration_s: 0.15,
+      name: 'computer_use',
+      result: 'Clicked element 1',
+      tool_id: 'call-a'
+    })
+
+    // Call B must REMAIN running, not completed by Call A
+    const activeState = $computerUseBySession.get()[SID]
+    expect(activeState?.phase).toBe('running')
+    expect(activeState?.toolId).toBe('call-b')
+    expect(activeState?.app).toBe('Terminal')
+
+    // 4. Call B named complete arrives
+    emit('tool.complete', {
+      duration_s: 0.45,
+      name: 'computer_use',
+      result: 'Typed text',
+      tool_id: 'call-b'
+    })
+
+    // Now it completes successfully
+    expect($computerUseBySession.get()[SID]?.phase).toBe('completed')
+    expect($computerUseBySession.get()[SID]?.durationSeconds).toBe(0.45)
+  })
 })
+

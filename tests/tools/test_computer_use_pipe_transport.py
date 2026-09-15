@@ -253,3 +253,131 @@ def test_read_all_line_times_out(monkeypatch):
         with pytest.raises(TimeoutError):
             transport._read_all_line(MagicMock(), deadline=0.0)
 
+
+def test_call_tool_healthy_windows_chooses_pipe_directly(monkeypatch):
+    """(a) On Windows, healthy requests in call_tool() take the direct named pipe transport fast path."""
+    if sys.platform != "win32":
+        pytest.skip("Windows pipe test")
+
+    session = _CuaDriverSession(_AsyncBridge())
+    session._started = True
+
+    mock_pipe = MagicMock()
+    mock_pipe.call_tool.return_value = {
+        "data": "from-pipe",
+        "images": [],
+        "structuredContent": {"success": True},
+        "isError": False,
+    }
+    monkeypatch.setattr(session, "_get_pipe_transport", lambda: mock_pipe)
+
+    mock_mcp = MagicMock()
+    monkeypatch.setattr(session._bridge, "run", mock_mcp)
+
+    res = session.call_tool("click", {"element": 5}, timeout=10.0)
+    assert res["data"] == "from-pipe"
+    mock_pipe.call_tool.assert_called_once_with("click", {"element": 5}, timeout=10.0)
+    mock_mcp.assert_not_called()
+
+
+def test_call_tool_unavailable_or_pre_send_pipe_falls_back_to_mcp(monkeypatch):
+    """(b) When pipe is unavailable or fails before sending bytes (or for replay-safe tools), next transport (MCP) is chosen."""
+    if sys.platform != "win32":
+        pytest.skip("Windows pipe test")
+
+    from tools.computer_use.cua_backend_pipe import PipePreDispatchError
+
+    # Sub-case 1: Pipe is unavailable (_get_pipe_transport returns None)
+    session1 = _CuaDriverSession(_AsyncBridge())
+    session1._started = True
+    monkeypatch.setattr(session1, "_get_pipe_transport", lambda: None)
+    mock_mcp1 = MagicMock(return_value={"data": "from-mcp-1", "images": [], "structuredContent": {}, "isError": False})
+    monkeypatch.setattr(session1._bridge, "run", mock_mcp1)
+
+    res1 = session1.call_tool("click", {"element": 1}, timeout=5.0)
+    assert res1["data"] == "from-mcp-1"
+    mock_mcp1.assert_called_once()
+
+    # Sub-case 2: Pipe connect fails pre-dispatch (proven pre-send)
+    session2 = _CuaDriverSession(_AsyncBridge())
+    session2._started = True
+    mock_pipe2 = MagicMock()
+    mock_pipe2.call_tool.side_effect = PipePreDispatchError("Failed to connect to pipe")
+    monkeypatch.setattr(session2, "_get_pipe_transport", lambda: mock_pipe2)
+    mock_mcp2 = MagicMock(return_value={"data": "from-mcp-2", "images": [], "structuredContent": {}, "isError": False})
+    monkeypatch.setattr(session2._bridge, "run", mock_mcp2)
+
+    res2 = session2.call_tool("click", {"element": 2}, timeout=5.0)
+    assert res2["data"] == "from-mcp-2"
+    mock_pipe2.call_tool.assert_called_once()
+    mock_mcp2.assert_called_once()
+
+    # Sub-case 3: Tool is in _TRANSPORT_REPLAY_SAFE_TOOLS (e.g. list_windows) and pipe fails
+    session3 = _CuaDriverSession(_AsyncBridge())
+    session3._started = True
+    mock_pipe3 = MagicMock()
+    mock_pipe3.call_tool.side_effect = RuntimeError("Broken pipe stream")
+    monkeypatch.setattr(session3, "_get_pipe_transport", lambda: mock_pipe3)
+    mock_mcp3 = MagicMock(return_value={"data": "windows-mcp", "images": [], "structuredContent": {}, "isError": False})
+    monkeypatch.setattr(session3._bridge, "run", mock_mcp3)
+
+    res3 = session3.call_tool("list_windows", {}, timeout=5.0)
+    assert res3["data"] == "windows-mcp"
+    mock_pipe3.call_tool.assert_called_once()
+    mock_mcp3.assert_called_once()
+
+
+def test_call_tool_post_dispatch_failure_on_mutation_fails_closed_without_replay(monkeypatch):
+    """(c) Post-dispatch timeout or broken response on a mutation yields *_outcome_unknown and is NOT replayed."""
+    if sys.platform != "win32":
+        pytest.skip("Windows pipe test")
+
+    from tools.computer_use.cua_backend_pipe import PipePostDispatchError, PipePostDispatchTimeoutError
+
+    # Sub-case 1: Post-dispatch timeout yields timeout_outcome_unknown and does NOT call MCP
+    session1 = _CuaDriverSession(_AsyncBridge())
+    session1._started = True
+    mock_pipe1 = MagicMock()
+    mock_pipe1.call_tool.side_effect = PipePostDispatchTimeoutError("Pipe response timed out after bytes were sent")
+    monkeypatch.setattr(session1, "_get_pipe_transport", lambda: mock_pipe1)
+    mock_mcp1 = MagicMock()
+    monkeypatch.setattr(session1._bridge, "run", mock_mcp1)
+
+    res1 = session1.call_tool("click", {"element": 10}, timeout=5.0)
+    assert res1["isError"] is True
+    assert res1["structuredContent"]["code"] == "timeout_outcome_unknown"
+    mock_pipe1.call_tool.assert_called_once()
+    mock_mcp1.assert_not_called()
+    assert session1._timeout_suspect is True
+
+    # Sub-case 2: Generic TimeoutError on mutation also yields timeout_outcome_unknown without replay
+    session2 = _CuaDriverSession(_AsyncBridge())
+    session2._started = True
+    mock_pipe2 = MagicMock()
+    mock_pipe2.call_tool.side_effect = TimeoutError("Deadline reached waiting for pipe")
+    monkeypatch.setattr(session2, "_get_pipe_transport", lambda: mock_pipe2)
+    mock_mcp2 = MagicMock()
+    monkeypatch.setattr(session2._bridge, "run", mock_mcp2)
+
+    res2 = session2.call_tool("type", {"text": "hello"}, timeout=5.0)
+    assert res2["isError"] is True
+    assert res2["structuredContent"]["code"] == "timeout_outcome_unknown"
+    mock_pipe2.call_tool.assert_called_once()
+    mock_mcp2.assert_not_called()
+
+    # Sub-case 3: Post-dispatch transport error (broken pipe / empty response) yields transport_outcome_unknown without replay
+    session3 = _CuaDriverSession(_AsyncBridge())
+    session3._started = True
+    mock_pipe3 = MagicMock()
+    mock_pipe3.call_tool.side_effect = PipePostDispatchError("cua-driver named pipe returned empty response for tool click")
+    monkeypatch.setattr(session3, "_get_pipe_transport", lambda: mock_pipe3)
+    mock_mcp3 = MagicMock()
+    monkeypatch.setattr(session3._bridge, "run", mock_mcp3)
+
+    res3 = session3.call_tool("click", {"element": 12}, timeout=5.0)
+    assert res3["isError"] is True
+    assert res3["structuredContent"]["code"] == "transport_outcome_unknown"
+    mock_pipe3.call_tool.assert_called_once()
+    mock_mcp3.assert_not_called()
+
+

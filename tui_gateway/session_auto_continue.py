@@ -39,11 +39,37 @@ def _session_home(session: dict) -> Path:
 def _retire_turn_marker(session: dict, *keys: str) -> None:
     """Drop the crash marker right before the terminal frame (not at turn-thread end: post-turn work outlives the
     client's answer, and quitting in that window would leave a marker that re-runs a finished turn). Extra ``keys``
-    cover a session_key that compression rotated mid-turn."""
+    cover a session_key that compression rotated mid-turn.
+
+    The clear is writer-identified (preemptible leases) with the identity RECORDED at turn
+    start (``_turn_marker_writer``): mid-turn compression can rotate the lease (the
+    re-anchor fallback claims a NEW lease_id), and comparing with retire-time identity
+    would no-op forever on the rotated key's marker. Falls back to the current lease when
+    no turn recorded one (e.g. a marker retired at resume time)."""
     home = _session_home(session)
+    writer = session.pop("_turn_marker_writer", None)
+    if writer is None:
+        lease = session.get("active_session_lease")
+        writer = (
+            {"lease_id": lease.lease_id, "epoch": int(getattr(lease, "epoch", 1) or 1)}
+            if lease is not None else None)
     for key in dict.fromkeys((*keys, str(session.get("session_key") or ""))):
         if key:
-            clear_turn_marker(home, key)
+            clear_turn_marker(home, key, writer=writer)
+
+
+def _auto_continue_still_valid(sid: str, session: dict, home, session_key: str, marker: dict) -> bool:
+    """Post-admission re-check for a scheduled auto-continue (preemptible leases): the
+    durable marker must still be the one this kickoff read (same started_at — a steal
+    force-clears or replaces foreign markers), and the admission must still hold (an
+    epoch-fenced revalidate; a displaced lease closes the session and returns False).
+    Bailing leaves the marker to the resume that legitimately owns it."""
+    with contextlib.suppress(Exception):
+        current = read_turn_marker(home, session_key)
+        if current is None or marker.get("started_at") != current.get("started_at"):
+            return False
+        return _lease_admission_check(sid, session) is None
+    return False
 
 
 def _auto_continue_note(prompt: str) -> str:
@@ -104,14 +130,34 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
                 session["running"] = False
                 session["_auto_continue_scheduled"] = False
             return
+        # Preemptible leases: re-check AFTER admission and BEFORE dispatch — a steal that
+        # landed in between force-cleared the marker (or bumped the lease epoch), and
+        # running the cached crashed prompt anyway would auto-continue the DISPLACED
+        # surface's in-flight prompt on the new owner's surface (the observed 01:32:10
+        # double-submit shape).
+        if not _auto_continue_still_valid(sid, session, home, session_key, marker):
+            logger.info("auto-continue for %s bailed: marker vanished or lease moved after admission", session_key)
+            with session["history_lock"]:
+                session["running"] = False
+                session["_auto_continue_scheduled"] = False
+            return
         with session["history_lock"]:
             # Marker inputs read back by _run_prompt_submit: attempt count (crash breaker) and the ORIGINAL prompt (no
             # nested notes). Set here, not at schedule time, so a bail above leaves nothing for a racing user turn.
             session["_auto_continue_attempt"], session["_auto_continue_prompt"] = attempt, marker["prompt"]
         try:
             _emit("status.update", sid, {"kind": "process", "text": "Resuming interrupted turn…"})
-            _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, text, display_kind="auto_continue")
+            # ``is False``: explicit not-admitted; legacy None-returning stubs keep
+            # their old treated-as-admitted behavior.
+            if _run_prompt_submit(rid, sid, session, text, display_kind="auto_continue") is False:
+                # Not admitted (displaced/closing): the marker deliberately STAYS (the next
+                # resume retries — the payload is not consumed), but the scheduled latch
+                # must clear or no later resume may schedule again. No message.start was
+                # emitted: the submit emits its own only after admission.
+                with session["history_lock"]:
+                    session["running"] = False
+                    session["_auto_continue_scheduled"] = False
+                return
         except Exception as exc:
             _notif_log_failure("auto-continue dispatch failed", exc)
             _notif_release_turn(session)  # rebound from session_notifications
@@ -317,7 +363,26 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     dispatch_failed = False
     try:
         if not use_compute_host:
-            _run_prompt_submit(rid, sid, session, queued["text"], **kwargs, **author_kwargs)
+            if _run_prompt_submit(rid, sid, session, queued["text"], **kwargs, **author_kwargs) is False:
+                # Not admitted (displaced/closing): the envelope must NOT be consumed —
+                # restore it exactly like the generation-bump restore above so a
+                # legitimate follow-up is never silently dropped (False is a refusal,
+                # not a delivery).
+                with session["history_lock"]:
+                    advanced = session.get("queued_prompt")
+                    _ac_set_queue(session, [queued, *([advanced] if advanced else []), *(session.get("queued_prompts") or [])])
+                    session["running"] = False
+                return True
+        elif (_lease_refusal := _lease_admission_check(sid, session)) is not None:
+            # Preemptible leases: the isolated compute-host stream bypasses _run_prompt_submit's
+            # admission gate — fence it HERE so the turn publishes busy_kind='user' like every
+            # other visible turn, and a session displaced mid-queue drops the envelope instead
+            # of streaming on the new owner's session (the queued-drain bypass hole).
+            with session["history_lock"]:
+                session["running"] = False
+                _clear_inflight_turn(session)
+            _emit("error", sid, {"message": str(_lease_refusal)})
+            dispatch_failed = True
         elif (resp := _submit_prompt_to_compute_host(rid, sid, session, queued["text"], **kwargs)).get("error"):
             with session["history_lock"]:
                 session["running"] = False

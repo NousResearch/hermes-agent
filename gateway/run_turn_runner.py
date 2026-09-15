@@ -69,6 +69,32 @@ class TurnRunner:
     def __init__(self, runner: "GatewayRunner", ctx: TurnContext) -> None:
         self._runner = runner
         self._ctx = ctx
+        # Preemptible leases: throttle stamp for the turn's lease-activity piggyback (one
+        # registry write per HERMES_LEASE_ACTIVITY_REFRESH_MIN_S at most, from the agent's
+        # worker thread — the gateway's lease lives outside tui_gateway's session registry,
+        # so nothing else keeps its activity clock fresh during a long messaging turn).
+        self._lease_activity_last_monotonic = 0.0
+
+    def touch_active_session_lease_activity(self) -> None:
+        """Refresh the gateway turn's lease activity clock (throttled, non-blocking,
+        identity-fenced inside refresh_lease_activity). Called from the streaming-delta
+        and tool-progress callbacks — the same visible-activity sources the TUI turn
+        thread uses — so a really-streaming 175-495s messaging turn is never
+        stall-stolen, while a genuinely silent one degrades on the normal stall clock."""
+        now = time.monotonic()
+        try:
+            from hermes_cli.active_sessions import HERMES_LEASE_ACTIVITY_REFRESH_MIN_S
+            if now - self._lease_activity_last_monotonic < HERMES_LEASE_ACTIVITY_REFRESH_MIN_S:
+                return
+        except Exception:
+            return
+        self._lease_activity_last_monotonic = now
+        with suppress(Exception):
+            from hermes_cli.active_sessions import refresh_lease_activity
+            state = self._runner._peek_session_state(self._ctx.session_key)
+            lease = getattr(getattr(state, "turn", None), "lease", None) if state is not None else None
+            if lease is not None:
+                refresh_lease_activity(lease, activity_at=time.time())
 
     # ── shared thread→loop plumbing ─────────────────────────────────────────────────────────
 
@@ -115,6 +141,10 @@ class TurnRunner:
     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
         ctx = self._ctx
+        # Preemptible leases: tool lifecycle events are visible activity too (a turn can
+        # legitimately go minutes between stream deltas while working) — keep the lease's
+        # activity clock fresh, throttled + non-blocking inside.
+        self.touch_active_session_lease_activity()
         # Failed subagent → one clean user-facing notice, handled FIRST, before every progress-queue
         # gate: platforms with tool_progress off must still hear about a dead delegation.
         if event_type == "subagent.complete":
@@ -1199,6 +1229,19 @@ class TurnRunner:
         agent.request_overrides = overrides
         agent._gateway_turn_request_overrides = turn_overrides
 
+    def _wrap_stream_delta_with_lease_touch(self, stream_delta_cb):
+        """Tee the platform delta sink through the lease-activity piggyback. ``None`` in
+        means streaming is off for this platform — the returned callback then touches the
+        lease only (throttled inside; the agent calls it per delta regardless)."""
+        touch = self.touch_active_session_lease_activity
+
+        def _delta_with_lease_touch(text: str) -> None:
+            touch()
+            if stream_delta_cb is not None:
+                stream_delta_cb(text)
+
+        return _delta_with_lease_touch
+
     def _wire_turn_agent_callbacks(self, agent, turn_route, reasoning_config,
                                    stream_delta_cb, interim_assistant_cb, want_interim_messages):
         """Per-message state — callbacks and reasoning config change every turn, so they aren't
@@ -1216,7 +1259,10 @@ class TurnRunner:
         )
         agent.tool_complete_callback = ctx.native_tool_complete_callback if ctx._native_slack_task_cards else None
         agent.step_callback = ctx._step_callback_sync if ctx._hooks_ref.loaded_hooks else None
-        agent.stream_delta_callback = stream_delta_cb
+        # Preemptible leases: the delta callback ALWAYS exists (wrapping the platform sink
+        # when there is one, lease-touch-only when streaming is off) — the piggyback must
+        # fire for every visibly-streaming turn even on platforms that never render deltas.
+        agent.stream_delta_callback = self._wrap_stream_delta_with_lease_touch(stream_delta_cb)
         agent.interim_assistant_callback = interim_assistant_cb if want_interim_messages else None
         agent.status_callback, agent.notice_callback = ctx._status_callback_sync, self._notice_callback_sync
         agent.notice_clear_callback = None  # sends can't be retracted

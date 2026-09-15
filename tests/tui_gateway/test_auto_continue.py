@@ -181,12 +181,12 @@ def test_interrupt_racing_marker_write_cannot_leave_recovery_state(
     session = _session(agent=agent, running=True)
     _patch_local_interrupt(monkeypatch, session)
 
-    def write_after_stop(home, key, prompt, *, attempts=0, auto_continue=True):
+    def write_after_stop(home, key, prompt, *, attempts=0, auto_continue=True, writer=None):
         response = server._methods["session.interrupt"](
             "stop-during-write", {"session_id": "runtime-race"}
         )
         assert response["result"]["status"] == "interrupted"
-        record_turn_start(home, key, prompt, attempts=attempts, auto_continue=auto_continue)
+        record_turn_start(home, key, prompt, attempts=attempts, auto_continue=auto_continue, writer=writer)
 
     monkeypatch.setattr(server, "record_turn_start", write_after_stop)
 
@@ -384,7 +384,12 @@ def test_fresh_marker_schedules_continuation(emits, schedule_env, marker_home):
     assert text.startswith("[System note: Your previous turn was interrupted")
     assert "fix the flaky test" in text
     assert kwargs["display_kind"] == "auto_continue"
-    assert ("message.start", "sid", None) in [(e, s, p) for e, s, p in emits]
+    # message.start is the SUBMIT's to emit (after admission) — the kickoff no longer
+    # pre-emits it, so a refused kickoff leaves no phantom turn bubble. With the submit
+    # stubbed here, only the status notice is emitted.
+    assert ("status.update", "sid", {"kind": "process", "text": "Resuming interrupted turn…"}) in [
+        (e, s, p) for e, s, p in emits]
+    assert ("message.start", "sid", None) not in [(e, s, p) for e, s, p in emits]
 
 
 def test_hosted_room_marker_is_left_to_the_driver(schedule_env, marker_home):

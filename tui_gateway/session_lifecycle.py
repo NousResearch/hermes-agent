@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 
 import contextlib
+import time
 
 from .method_ctx import bind_module
 
@@ -23,18 +24,28 @@ def _notify_session_boundary(event_type: str, session_id: str | None, platform: 
 
 
 _SESSION_OWNERSHIP_UNAVAILABLE = "Hermes could not safely reserve this session. Try again."
-_AUTOMATIC_SESSION_END_REASONS = frozenset({"ws_orphan_reap", "ws_disconnect", "idle_timeout", "lru_evict", "tui_shutdown"})
+_AUTOMATIC_SESSION_END_REASONS = frozenset({
+    "ws_orphan_reap", "ws_disconnect", "idle_timeout", "lru_evict", "tui_shutdown",
+    # Preemptible leases: the backend's own maintenance watcher closes a session whose
+    # lease was stolen — automatic (the user never asked), and the client must learn the
+    # session moved (session.reclaimed broadcast below).
+    "lease_preempted"})
 
 
 def _claim_active_session_slot(
-    session_key: str, *, live_session_id: str, surface: str = "tui", profile_home: str | Path | None = None
+    session_key: str, *, live_session_id: str, surface: str = "tui", profile_home: str | Path | None = None,
+    mark_busy: bool = True,
 ) -> tuple[Any, str | None]:
     try:
         from hermes_cli.active_sessions import try_acquire_active_session
         return try_acquire_active_session(
             session_id=session_key, surface=surface, config=_load_cfg(), registry_home=profile_home,
             metadata={"live_session_id": live_session_id, "bot_live_delivery_consumer": True},
-            track_liveness=str(surface or "").strip().lower() == "desktop")
+            track_liveness=str(surface or "").strip().lower() == "desktop",
+            # Every gateway claim is a turn admission (or a mid-turn compression re-anchor):
+            # publishing busy from the first instant prevents two requesters ping-ponging a
+            # stolen lease inside the first turn (preemptible leases).
+            mark_busy=mark_busy)
     except Exception as exc:
         logger.warning("Failed to claim active session slot: %s", exc)
         # Fail CLOSED: an errored claim has NOT proven the session unowned; lease-less = silent double-writer hole.
@@ -45,18 +56,294 @@ def _claim_active_session_slot(
         return (None, _SESSION_OWNERSHIP_UNAVAILABLE)
 
 
+def _yield_local_desktop_owner(session_key: str) -> bool:
+    """Auto-yield (#auto-yield patch): when a cross-surface send (Relay) is fenced out by a
+    lease THIS process holds for the desktop UI, and that desktop session is idle, close it
+    locally so the other surface can take over. Same teardown the WS-orphan reaper performs;
+    the desktop tab receives ``session.reclaimed`` and reloads from the DB on next use.
+    Returns True when a local owner existed and was closed."""
+    wanted = str(session_key or "")
+    if not wanted:
+        return False
+    with _sessions_lock:
+        candidates = [
+            (sid, sess) for sid, sess in _sessions.items()
+            if str(sess.get("session_key") or "") == wanted
+            and (sess.get("active_session_lease") is not None)
+            and not sess.get("running")
+        ]
+        if not candidates:
+            return False
+        sid, _ = candidates[0]
+    return _close_session_by_id(
+        sid, end_reason="ws_orphan_reap",
+        predicate=lambda sess: (
+            str(sess.get("session_key") or "") == wanted
+            and not sess.get("running")))
+
+
+# Preemptible leases (#auto-yield -> preemptible leases): requester-side bounded retry.
+# A SESSION_BUSY refusal retries ONLY while the fresh holder entry shows work that is about
+# to become stealable (auto inside its grace window, or a user turn approaching the stall
+# threshold); a user-fresh or legacy refusal returns immediately — ~50-150ms instead of the
+# retired 8s/1.0s yield-request poll that produced the 1.08s x9 refusal bursts.
+_LEASE_BUSY_RETRY_INTERVAL_S = 0.25
+_LEASE_BUSY_RETRY_WINDOW_S = 2.0
+
+
+def _busy_refusal_worth_retry(refusal) -> bool:
+    """Whether a SESSION_BUSY refusal describes a holder whose busy state is ABOUT to
+    lapse, making a short bounded retry cheaper for the user than an immediate error."""
+    from hermes_cli import active_sessions as _as
+    holder = getattr(refusal, "holder_entry", None)
+    if not isinstance(holder, dict) or not holder.get("busy"):
+        return False  # legacy/idle holder: nothing is about to change
+    now = time.time()
+    kind = holder.get("busy_kind")
+    if kind == "auto":
+        since = _as._optional_float(holder.get("busy_since"))
+        return since is None or (now - since) <= _as.HERMES_LEASE_AUTO_BUSY_GRACE_S
+    if kind == "user":
+        activity = _as._optional_float(holder.get("activity_at"))
+        stall = _as.HERMES_LEASE_STALL_ACTIVITY_S
+        # Only when one more retry window crosses the stall threshold: a fresh user turn
+        # must never burn retries (it may legitimately run for minutes).
+        return (activity is not None and stall > 0
+                and (now - activity) + _LEASE_BUSY_RETRY_WINDOW_S > stall)
+    return False
+
+
+def _note_submit_busy_mark(session: dict) -> None:
+    """Handoff flag (preemptible leases): the slot gate just published busy='user' for
+    THIS submit in its own flock critical section, so prompt.submit's lock-in step can
+    skip a second revalidate (the epoch fence still runs at _admit_prompt_turn, right
+    before the turn thread starts — the strongest position). Popped by the consumer;
+    never survives past one submit."""
+    session["_lease_busy_marked_for_submit"] = True
+
+
+def _unsettle_submit_busy_mark(session: dict) -> None:
+    """Unwind the slot gate's busy='user' mark when a submit refuses BEFORE any turn
+    starts (watch-child fence, malformed truncation, hosted+isolation, persist failure):
+    only a turn thread's finally ever clears it otherwise, so the session would read
+    mid-turn forever — false 'no visible progress' refusals and a 61s stall-steal window
+    for a turn that never existed. Also drops the submit handoff flag: a later submit
+    must never inherit this one's skip-admission-revalidate pass."""
+    session.pop("_lease_busy_marked_for_submit", None)
+    with contextlib.suppress(Exception):
+        _lease_turn_settled(session)
+
+
+def _lease_admission_check(sid: str, session: dict) -> str | None:
+    """Epoch-fenced admission mark for a session that already holds its lease: one
+    revalidate-under-flock that both proves the lease is still ours and publishes
+    busy_kind='user' (the lock-serialized point making steal-vs-admit mutually
+    exclusive). None when admitted; on displacement the session is gracefully closed
+    (end_reason 'lease_preempted' → session.reclaimed broadcast, DB row preserved via
+    _other_runtime_lease_guard) and the taken-over refusal is returned so the
+    submitting surface learns immediately.
+
+    The revalidate itself can raise (registry flock unavailable, ENOSPC, …) — that must
+    surface as a fail-closed REFUSAL, never an exception into a caller sitting between
+    running=True and the turn start (a wedged session nothing ever unwinds)."""
+    lease = session.get("active_session_lease")
+    if lease is None:
+        return None  # unleased (empty-key no-op lease path): nothing to fence
+    from hermes_cli.active_sessions import revalidate_active_session, SESSION_DISPLACED
+    try:
+        refreshed, refusal = revalidate_active_session(lease, mark_busy=True, busy_kind="user")
+    except Exception as exc:
+        # Fail closed (#94595 rule): an errored check has NOT proven the lease ours.
+        logger.warning("Lease admission check failed; refusing the turn (fail closed): %s", exc)
+        from hermes_cli.active_sessions import ActiveSessionRefusal, SESSION_COORDINATION_UNAVAILABLE
+        return ActiveSessionRefusal(
+            "Hermes could not confirm this session's lease. Try again.",
+            SESSION_COORDINATION_UNAVAILABLE)
+    if refusal is None:
+        _install_lease_busy_hook(sid, session)
+        _note_submit_busy_mark(session)
+        return None
+    reason = getattr(refusal, "reason", None)
+    if reason == SESSION_DISPLACED:
+        logger.info(
+            "lease_preempted sid=%s: admission fenced (lease taken by pid=%s); closing",
+            sid, (getattr(refusal, "holder_entry", None) or {}).get("pid"))
+        with contextlib.suppress(Exception):
+            _close_session_by_id(sid, end_reason="lease_preempted")
+        from hermes_cli.active_sessions import ActiveSessionRefusal
+        return ActiveSessionRefusal(
+            "Session taken over by another surface; reload to continue",
+            SESSION_DISPLACED,
+            holder_entry=getattr(refusal, "holder_entry", None))
+    return refusal  # e.g. SESSION_COORDINATION_UNAVAILABLE: fail closed, keep the session
+
+
+def _session_lease_busy(sid: str, session: dict, kind: str | None, detail: str) -> None:
+    """Holder-side auto-busy token bookkeeping (bg-review): registers invisible work on
+    the session's lease. ``kind='auto'`` marks, ``kind=None`` clears. The registry write
+    is epoch-fenced and identity-matched inside revalidate_active_session — a displaced
+    holder can never mutate the new owner's entry."""
+    from hermes_cli.active_sessions import revalidate_active_session
+    lease = session.get("active_session_lease")
+    if lease is None:
+        return
+    tokens = session.get("_lease_auto_busy_tokens")
+    with contextlib.suppress(Exception), session["history_lock"]:
+        if kind == "auto":
+            tokens = (set(tokens) if isinstance(tokens, set) else set()) | {str(detail or "auto")}
+            session["_lease_auto_busy_tokens"] = tokens
+        else:
+            tokens = (set(tokens) if isinstance(tokens, set) else set()) - {str(detail or "auto")}
+            session["_lease_auto_busy_tokens"] = tokens
+    remaining = sorted(session.get("_lease_auto_busy_tokens") or ())
+    with contextlib.suppress(Exception):
+        if remaining:
+            revalidate_active_session(
+                lease, mark_busy=True, busy_kind="auto", busy_detail=remaining[0])
+        elif session.get("running"):
+            # Conditional auto-clear only: a live turn owns the mark (its settle converts
+            # or clears it) — the review-end must never downgrade a foreground turn.
+            revalidate_active_session(lease, mark_busy=False, busy_kind="auto")
+        else:
+            # No token left and no live turn: a plain clear, so a stale 'user' mark (a
+            # settle that never ran — process crash between turn end and finally) cannot
+            # outlive the review that spawned it.
+            revalidate_active_session(lease, mark_busy=False)
+
+
+def _install_lease_busy_hook(sid: str, session: dict) -> None:
+    """Expose the session's lease-busy channel to its agent so agent-level invisible work
+    (bg-review) can publish busy_kind='auto' for its lifetime. The closure binds the
+    SESSION dict (not the agent object), so it survives agent rebuilds mid-session."""
+    agent = session.get("agent")
+    if agent is None:
+        return
+    with contextlib.suppress(Exception):
+        agent._session_lease_busy_hook = (
+            lambda kind, detail: _session_lease_busy(sid, session, kind, detail))
+
+
+def _lease_turn_settled(session: dict) -> None:
+    """Turn-thread finally: clear the published busy mark beside running=False, BEFORE
+    the finished log and post-turn followups — the registry reads idle in the
+    inter-turn gap, so a steal there breaks a followup chain at its next admission
+    instead of stranding the phone. An active auto token (bg-review) CONVERTS the mark
+    (busy_kind='user' → 'auto' with a fresh busy_since) in the same critical section:
+    a plain auto-mark could not overwrite the settling turn's own 'user' mark, which
+    would strand it with a frozen activity clock for the review's whole lifetime."""
+    from hermes_cli.active_sessions import revalidate_active_session
+    lease = session.get("active_session_lease")
+    if lease is None:
+        return
+    tokens = session.get("_lease_auto_busy_tokens") or ()
+    with contextlib.suppress(Exception):
+        if tokens:
+            refreshed, refusal = revalidate_active_session(
+                lease, mark_busy=True, busy_kind="auto", busy_detail=sorted(tokens)[0],
+                convert_user_to_auto=True)
+        else:
+            refreshed, refusal = revalidate_active_session(lease, mark_busy=False)
+        if refusal is not None and getattr(refusal, "reason", None) == "SESSION_DISPLACED":
+            # The turn's tail raced a steal: the new owner's registry state is untouched
+            # by this write (identity-fenced inside revalidate) — nothing to do here.
+            logger.debug("lease settled after displacement; registry left to the new owner")
+
+
+def _touch_lease_activity(session: dict) -> None:
+    """Turn-path activity piggyback (streaming/tool touch): throttled, non-blocking,
+    epoch-fenced refresh of activity_at + heartbeat_at so a visibly streaming turn keeps
+    itself protected EVEN when the maintenance watcher thread is dead. Skips on flock
+    contention — the next touch retries."""
+    lease = session.get("active_session_lease")
+    if lease is None:
+        return
+    from hermes_cli.active_sessions import HERMES_LEASE_ACTIVITY_REFRESH_MIN_S
+    now = time.monotonic()
+    if now - float(session.get("_lease_activity_refresh_monotonic") or 0.0) < HERMES_LEASE_ACTIVITY_REFRESH_MIN_S:
+        return
+    session["_lease_activity_refresh_monotonic"] = now
+    with contextlib.suppress(Exception):
+        from hermes_cli.active_sessions import refresh_lease_activity
+        refresh_lease_activity(lease, activity_at=time.time())
+
+
 def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
     """Claim this session's cap slot on its first real turn; None when ok. session.create/resume deliberately
     do NOT claim: tile paints, reconnect-resumes and abandoned drafts would hold invisible slots (no DB row)
-    that starve the messaging gateway sharing the cap. Anything holding a slot must be user-visible."""
+    that starve the messaging gateway sharing the cap. Anything holding a slot must be user-visible.
+
+    Preemptible leases: a cached lease is epoch-fenced-revalidated (displacement closes the
+    session as 'lease_preempted'); a fresh claim either STEALS atomically inside the
+    registry flock or refuses fast — the cooperative yield-request dance is retired on the
+    requester side (new requesters never write request files to acquire)."""
     if session.get("active_session_lease") is not None:
-        return None
-    lease, limit_message = _claim_active_session_slot(
-        str(session.get("session_key") or ""), live_session_id=sid,
-        surface=_session_source(session), profile_home=session.get("profile_home"))
+        return _lease_admission_check(sid, session)
+
+    def _claim():
+        return _claim_active_session_slot(
+            str(session.get("session_key") or ""), live_session_id=sid,
+            surface=_session_source(session), profile_home=session.get("profile_home"))
+
+    lease, limit_message = _claim()
     if limit_message is None:
         session["active_session_lease"] = lease
+        _install_lease_busy_hook(sid, session)
+        _note_submit_busy_mark(session)
+        _clear_stolen_turn_marker(sid, session, lease)
+        return None
+    refusal_reason = getattr(limit_message, "reason", None)
+    # #auto-yield patch (kept): a same-process desktop tab holds the lease and is idle ->
+    # close it and retry, so a phone send takes over in single-process topologies. Under
+    # preemption the registry steal usually wins first; this stays as the local fast path.
+    from hermes_cli.active_sessions import SESSION_NOT_OWNED, SESSION_BUSY
+    if refusal_reason == SESSION_NOT_OWNED and _yield_local_desktop_owner(
+            str(session.get("session_key") or "")):
+        lease, limit_message = _claim()
+        if limit_message is None:
+            logger.info(
+                "Auto-yield: closed local desktop owner for session %s; cross-surface turn admitted",
+                session.get("session_key") or sid)
+            session["active_session_lease"] = lease
+            _install_lease_busy_hook(sid, session)
+            _note_submit_busy_mark(session)
+            _clear_stolen_turn_marker(sid, session, lease)
+            return None
+        refusal_reason = getattr(limit_message, "reason", None)
+    # Bounded busy-retry: only while the holder's published state is about to lapse (auto
+    # inside grace / user approaching stall). User-fresh and legacy refusals return
+    # immediately — worst case ~2.3s, user-fresh ~50-150ms.
+    if refusal_reason in (SESSION_BUSY, SESSION_NOT_OWNED):
+        deadline = time.monotonic() + _LEASE_BUSY_RETRY_WINDOW_S
+        while _busy_refusal_worth_retry(limit_message) and time.monotonic() < deadline:
+            time.sleep(min(_LEASE_BUSY_RETRY_INTERVAL_S, max(0.0, deadline - time.monotonic())))
+            lease, limit_message = _claim()
+            if limit_message is None:
+                logger.info(
+                    "Preemptible lease: holder for %s became stealable; turn admitted after bounded retry",
+                    session.get("session_key") or sid)
+                session["active_session_lease"] = lease
+                _install_lease_busy_hook(sid, session)
+                _note_submit_busy_mark(session)
+                _clear_stolen_turn_marker(sid, session, lease)
+                return None
+            refusal_reason = getattr(limit_message, "reason", None)
+            if refusal_reason not in (SESSION_BUSY, SESSION_NOT_OWNED):
+                break  # a different problem appeared; surface it
     return limit_message
+
+
+def _clear_stolen_turn_marker(sid: str, session: dict, lease) -> None:
+    """After a successful STEAL (epoch > 1), force-clear any durable turn marker for this
+    session key in its home BEFORE the new owner's first admission — the displaced
+    surface's in-flight prompt must not auto-continue on the new owner's surface (the
+    observed 01:32:10 double-submit hazard)."""
+    if int(getattr(lease, "epoch", 1) or 1) <= 1:
+        return
+    with contextlib.suppress(Exception):
+        from tui_gateway.turn_marker import clear_turn_marker
+        key = str(session.get("session_key") or "")
+        if key:
+            clear_turn_marker(_session_home(session), key, force=True)
 
 
 def _lease_retry(attempts: int, fn) -> Exception | None:
@@ -149,9 +436,11 @@ def _transfer_active_session_slot(sid: str, session: dict, *, new_session_id: st
         return False
     # Fallback (entry pruned / pid-check transiently failed): reserve the new slot BEFORE releasing the old one so
     # a gateway at the cap can't grab the freed slot and leave this session lease-less; on failure KEEP the old lease.
-    # See #49041.
+    # See #49041. mark_busy=True: compression re-anchors MID-TURN, so the new lease publishes the
+    # same busy state the continuing turn already owns (its finally clears it).
     new_lease, limit_message = _claim_active_session_slot(
-        new_session_id, live_session_id=sid, surface=_session_source(session), profile_home=session.get("profile_home"))
+        new_session_id, live_session_id=sid, surface=_session_source(session),
+        profile_home=session.get("profile_home"), mark_busy=True)
     if new_lease is None:
         if limit_message:
             logger.warning("Compression session lease re-anchor failed (kept old lease): sid=%s new_session_id=%s reason=%s",
@@ -206,9 +495,12 @@ def _lock_vault_managers(session: dict) -> None:
         logging.getLogger(__name__).debug("vault manager lock on session end failed", exc_info=True)
 
 
-def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> None:
+def _finalize_session(session: dict | None, end_reason: str = "tui_close", *, skip_persist: bool = False) -> None:
     """Best-effort finalize hook + memory commit; mirrors the CLI exit path so a force-quit mid-turn (double
-    Ctrl-C, terminal close, SIGHUP) loses nothing."""
+    Ctrl-C, terminal close, SIGHUP) loses nothing. ``skip_persist`` (preemptible leases): a
+    lease_preempted teardown whose displaced run thread survived the settle join skips the
+    transcript persist AND the memory commit — the new owner owns the row, and a lost
+    displaced tail beats a corrupted row."""
     if not session or session.get("_finalized"):
         return
     session["_finalized"] = True
@@ -229,7 +521,7 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     # Persist via ``_persist_session``'s marker-based dedup (gateway-shutdown flush contract). Do NOT pass
     # ``conversation_history``: ``session["history"]`` and ``_session_messages`` alias the SAME list after a turn, so
     # the flush would treat every message as durable and skip it — data loss when finalize is the sole persist path.
-    if hasattr(agent, "_persist_session") and (snapshot := getattr(agent, "_session_messages", None)):
+    if not skip_persist and hasattr(agent, "_persist_session") and (snapshot := getattr(agent, "_session_messages", None)):
         with contextlib.suppress(Exception):
             agent._persist_session(snapshot)
     # interrupted=True so crash-recovery plugins can flush state (mirrors cli.py atexit).
@@ -240,7 +532,7 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
                 "on_session_end", completed=False, interrupted=True,
                 session_id=getattr(agent, "session_id", None) or session.get("session_key", ""),
                 model=getattr(agent, "model", "unknown"), platform=getattr(agent, "platform", None) or "tui")
-    if agent is not None and history and hasattr(agent, "commit_memory_session"):
+    if not skip_persist and agent is not None and history and hasattr(agent, "commit_memory_session"):
         with contextlib.suppress(Exception):
             agent.commit_memory_session(history)
 
@@ -252,8 +544,13 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     # Fix for #20001.
     if _desktop_automatic_cleanup and not session_id:
         _release_active_session_slot(session)
+    # The lifecycle guard applies to every automatic DESKTOP cleanup, AND to every
+    # lease_preempted close REGARDLESS of surface (preemptible leases): a displaced
+    # phone/webui session must not end the state.db row the new desktop owner now holds
+    # (C4 symmetry — the row is shared state, the surface is not).
+    _guard_warranted = bool(session_id) and (_desktop_automatic_cleanup or end_reason == "lease_preempted")
     _lifecycle_guard = (_other_runtime_lease_guard(session_id, session)
-                        if _desktop_automatic_cleanup and session_id else contextlib.nullcontext(False))
+                        if _guard_warranted else contextlib.nullcontext(False))
     with _lifecycle_guard as _other_runtime_owns_lifecycle:
         _tui_owns_lifecycle = not _other_runtime_owns_lifecycle
         if _other_runtime_owns_lifecycle:
@@ -283,7 +580,11 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
 
 # End reasons where the BACKEND reclaimed a session the client never asked to close (else its next prompt fails
 # against a forgotten id). Client-initiated reasons (``tui_close`` etc.) are deliberately absent.
-_RECLAIM_END_REASONS = frozenset({"idle_timeout", "lru_evict", "ws_orphan_reap"})
+_RECLAIM_END_REASONS = frozenset({
+    "idle_timeout", "lru_evict", "ws_orphan_reap",
+    # Preemptible leases: another surface stole this session — the displaced client must
+    # reload from the DB instead of continuing against its stale in-memory copy.
+    "lease_preempted"})
 
 
 def _announce_session_reclaimed(session: dict, end_reason: str) -> None:
@@ -300,12 +601,12 @@ def _announce_session_reclaimed(session: dict, end_reason: str) -> None:
         logger.debug("session.reclaimed broadcast failed", exc_info=True)
 
 
-def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") -> None:
+def _teardown_session(session: dict | None, *, end_reason: str = "tui_close", skip_persist: bool = False) -> None:
     """Fully tear down a session: finalize, unregister notifier, close agent (``session.close`` + WS reaper). The
     slash-worker is closed in ``_finalize_session`` (the single chokepoint), NOT here. Idempotent via ``_finalized``."""
     if not session:
         return
-    _finalize_session(session, end_reason=end_reason)
+    _finalize_session(session, end_reason=end_reason, skip_persist=skip_persist)
     _announce_session_reclaimed(session, end_reason)
     with contextlib.suppress(Exception):
         from tools.approval import unregister_gateway_notify
@@ -350,16 +651,32 @@ def _teardown_popped_session(session: dict | None, *, end_reason: str = "tui_clo
     if session is None:
         return False
     run_thread = session.get("_run_thread")
+    thread_alive_after_settle = False
     if end_reason != "tui_shutdown" and run_thread is not None and run_thread is not threading.current_thread():
         try:
             if run_thread.is_alive():
                 run_thread.join(timeout=_TURN_SETTLE_BEFORE_CLOSE_SECONDS)
-            if run_thread.is_alive():
+            thread_alive_after_settle = run_thread.is_alive()
+            if thread_alive_after_settle:
                 logger.warning(
                     "session turn thread still alive after %.1fs teardown grace", _TURN_SETTLE_BEFORE_CLOSE_SECONDS)
         except Exception:
             logger.debug("failed waiting for session turn thread", exc_info=True)
-    _teardown_session(session, end_reason=end_reason)
+    # Preemptible leases: a lease_preempted teardown whose displaced work is STILL LIVE
+    # skips finalize's persist + memory commit — the new owner owns the row now, and a
+    # lost displaced tail beats a corrupted row (the displaced turn's writes stopped at
+    # the interrupt and must never reach the DB through teardown). "Still live" covers
+    # BOTH shapes: a local run thread that survived the settle join, AND a displaced
+    # compute-host turn (running=True with no local thread — the interrupt deliberately
+    # leaves the flag for the child's done-callback, which never comes now).
+    displaced_work_alive = thread_alive_after_settle or bool(
+        end_reason == "lease_preempted"
+        and (session.get("running") or session.get("_compute_host_active")))
+    skip_persist = displaced_work_alive
+    if skip_persist and end_reason == "lease_preempted":
+        logger.warning(
+            "lease_preempted teardown: run thread alive after settle; skipping persist (new owner owns the row)")
+    _teardown_session(session, end_reason=end_reason, skip_persist=skip_persist)
     return True
 
 

@@ -7,8 +7,11 @@ knobs _SESSION_TTL_S, _REAPER_SCAN_S, _EXIT_FLUSH_BUDGET_S and _INCREMENTAL_FLUS
 from __future__ import annotations
 
 import contextlib
+import logging
+import os
 import secrets
 import threading
+import time
 
 from tui_gateway._env import env_float
 
@@ -283,6 +286,178 @@ def _schedule_session_cap_enforcement() -> None:
     _reaper_daemon_timer(0.1, _enforce_session_cap, "session cap enforcement failed")
 
 
+# ── Lease maintenance watcher (#auto-yield -> preemptible leases) ────────
+# Per tick: (1) heartbeat every lease this process holds — a DISPLACED result means a
+# requester stole the session, so interrupt any live turn (in-flight approvals resolve
+# as deny) and close with end_reason='lease_preempted' (session.reclaimed broadcast,
+# state.db row preserved for the new owner); (2) LEGACY COMPAT: honor yield-request
+# files from OLD-code requesters, whose 8s write-and-poll dance now works for the
+# first time (the module-namespace NameError that silently ate every request ever
+# written is dead — see server.py's _lease_maintenance_tick for the binding contract).
+#
+# The tick BODY comes from server.py (a closure over the fully-rebound server module);
+# passing it in is the structural fix: this module's own namespace lacks _sessions /
+# _sessions_lock / _close_session_by_id, and a loop resolving those names HERE is the
+# exact seam that killed the old watcher.
+_LEASE_WATCH_INTERVAL_S = max(
+    0.25, env_float("HERMES_LEASE_WATCH_INTERVAL_S", env_float("HERMES_YIELD_WATCH_INTERVAL_S", 1.5)))
+# 60s INFO liveness line: a dead watcher thread is a VISIBILITY bug now (it was silently
+# fatal before) — this makes it visible in every backend log within a minute.
+_LEASE_ALIVE_LOG_S = 60.0
+# Rate limit for tick-failure WARNINGs (each still logged at debug): a persistent
+# failure must not flood the log, but must never be silent again.
+_LEASE_ERROR_LOG_S = 30.0
+_lease_watcher_started = False
+_lease_watcher_lock = threading.Lock()
+
+# Module-local logger: these loop helpers must never resolve the SERVER ``logger``
+# global bare — in this module's namespace it does not exist (the old watcher's
+# NameError). Copied onto server by bind_module alongside the functions.
+_reaper_logger = logging.getLogger(__name__)
+
+
+def _run_lease_tick_safely(tick, state: dict) -> None:
+    """One maintenance tick with LOGGED (never suppressed) failures + the periodic alive
+    line. The retired contextlib.suppress(Exception) is what hid the original NameError:
+    zero 'Auto-yield: honored' lines across all homes, all commits, all days, while the
+    test suite stayed green because it only ever called the server-rebound copy."""
+    try:
+        tick()
+        now = time.time()
+        if now - state.get("alive", 0.0) >= _LEASE_ALIVE_LOG_S:
+            state["alive"] = now
+            with contextlib.suppress(Exception):
+                _reaper_logger.info("lease maintenance alive homes=%d", len(_yield_watch_homes()))
+    except Exception:
+        now = time.time()
+        if now - state.get("error", 0.0) >= _LEASE_ERROR_LOG_S:
+            state["error"] = now
+            _reaper_logger.warning("lease maintenance tick failed", exc_info=True)
+        else:
+            _reaper_logger.debug("lease maintenance tick failed (rate-limited)", exc_info=True)
+
+
+def _yield_watch_homes() -> list:
+    """Root home + every profile home (mirrors release_orphaned_leases' sweep)."""
+    from hermes_constants import get_default_hermes_root
+    root = get_default_hermes_root()
+    homes = [root]
+    with contextlib.suppress(OSError):
+        homes.extend(p for p in (root / "profiles").iterdir()
+                     if p.is_dir() and not p.name.startswith("."))
+    return homes
+
+
+def _honor_yield_requests() -> None:
+    from hermes_cli.active_sessions import poll_yield_requests
+    for home in _yield_watch_homes():
+        try:
+            requests = poll_yield_requests(registry_home=home)
+        except Exception:
+            continue
+        for req in requests:
+            _yield_session_for_request(home, req)
+
+
+def _yield_session_for_request(home, req: dict) -> None:
+    """Close the idle session a yield request names, if this process still owns it idle."""
+    wanted = str(req.get("session_id") or "")
+    if not wanted:
+        return
+    # The lease must still exist in THIS registry and still belong to this process:
+    # the request carries the holder identity from claim time, and a session whose
+    # ownership moved on since must not be closed by a stale request.
+    try:
+        from hermes_cli.active_sessions import _read_entries, _state_path, _pid_liveness
+    except Exception:
+        return
+    state_path = _state_path(home)
+    try:
+        entries = [e for e in _read_entries(state_path)
+                   if str(e.get("session_id") or "") == wanted
+                   and int(e.get("pid") or 0) == os.getpid()]
+    except Exception:
+        return
+    if not entries:
+        return
+    holder_start = req.get("holder_process_start_time")
+    if holder_start is not None:
+        if _pid_liveness(os.getpid(), float(holder_start)) is not True:
+            return  # request was minted for a previous incarnation of this pid
+    closed = False
+    with _sessions_lock:
+        idle_candidates = [
+            (sid, sess) for sid, sess in _sessions.items()
+            if str(sess.get("session_key") or "") == wanted
+            and not sess.get("running")
+        ]
+        still_busy = any(
+            str(sess.get("session_key") or "") == wanted and sess.get("running")
+            for sess in _sessions.values())
+    for sid, _sess in idle_candidates:
+        if _close_session_by_id(
+                sid, end_reason="ws_orphan_reap",
+                predicate=lambda sess, w=wanted: (
+                    str(sess.get("session_key") or "") == w
+                    and not sess.get("running"))):
+            closed = True
+            logger.info(
+                "Auto-yield: honored cross-surface yield request for session %s (closed idle tab %s)",
+                wanted, sid)
+    if closed:
+        return
+    if still_busy:
+        # The named session exists here but is mid-turn: requeue the request so the next
+        # watcher poll retries once the turn ends. Dropping it here is what stranded a
+        # requester whose send landed during turn finalization. The requeue passes the
+        # ORIGINAL requested_at (987d564112 repair: a fresh mint silently extended a busy
+        # chain's TTL on every hop) AND this process's real incarnation identity (the old
+        # call dropped holder_process_start_time, weakening the stale-request guard).
+        try:
+            from hermes_cli.active_sessions import (
+                _process_start_time, request_cross_surface_yield)
+            request_cross_surface_yield(
+                wanted,
+                {"pid": os.getpid(), "process_start_time": _process_start_time(os.getpid())},
+                registry_home=home, requested_at=req.get("requested_at"))
+        except Exception:
+            pass
+        return
+    # No idle local session for a request addressed to our pid: either the session
+    # already closed, or a foreign session in a shared home — neither is ours to touch.
+    _reaper_logger.info(
+        "Auto-yield: request for session %s matched no idle local session (holder pid=%s)",
+        wanted, os.getpid())
+
+
+def _start_lease_maintenance_watcher(tick=None) -> None:
+    """Start the once-per-process lease maintenance daemon. ``tick`` MUST be a body whose
+    ``__globals__`` resolve the SERVER namespace — server.py passes its own
+    ``_lease_maintenance_tick`` defined AFTER the split-module register loop (the
+    structural fix for the auto-yield watcher that NameError'd forever). A module-global
+    tick (written back by ``register``) is the fallback for direct module callers."""
+    global _lease_watcher_started
+    if tick is None:
+        tick = globals().get("_lease_maintenance_tick")
+    if not callable(tick):
+        _reaper_logger.warning(
+            "lease maintenance watcher not started: no server-bound tick provided")
+        return
+    with _lease_watcher_lock:
+        if _lease_watcher_started:
+            return
+        _lease_watcher_started = True
+
+    def _loop() -> None:
+        import time as _time
+        state: dict = {}
+        while True:
+            _time.sleep(_LEASE_WATCH_INTERVAL_S)
+            _run_lease_tick_safely(tick, state)
+
+    threading.Thread(target=_loop, daemon=True, name="lease-maintenance-watcher").start()
+
+
 # ── Startup sweep for orphaned session rows ──────────────────────────────
 # The WS-orphan reaper is an in-process Timer: a gateway restart kills it before it fires, leaving the row
 # `ended_at IS NULL` forever. Scheduled once per process from both gateway entry points (stdio `entry.main`, WS
@@ -428,5 +603,19 @@ def _schedule_startup_orphan_sweep() -> None:
 
 
 def register(server) -> None:
-    """Publish this module's helpers onto ``server``, rebound to its globals."""
+    """Publish this module's helpers onto ``server``, rebound to its globals.
+
+    Belt-and-braces (preemptible leases): write the server-rebound honor chain back into
+    THIS module's namespace, so even a directly-imported module path
+    (``session_reaper._honor_yield_requests``) resolves server globals after registration
+    instead of NameError-ing on _sessions/_close_session_by_id — the seam that silently
+    killed the auto-yield watcher for the feature's entire life. ``_lease_maintenance_tick``
+    is written back the same way, but on the FIRST (production) registration the def does
+    not exist on the server module yet — server.py pins it explicitly right before it
+    starts the watcher, which is what makes the module-default fallback in
+    ``_start_lease_maintenance_watcher`` true."""
     bind_module(globals(), server, skip=("_",))
+    for _n in ("_honor_yield_requests", "_yield_session_for_request", "_lease_maintenance_tick"):
+        _rebound = getattr(server, _n, None)
+        if callable(_rebound):
+            globals()[_n] = _rebound

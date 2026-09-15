@@ -331,7 +331,9 @@ class TestNotificationPollerLoopKanbanWiring:
 
         status_texts = [p["text"] for e, p in emits if e == "status.update" and p]
         assert any(tid in t for t in status_texts), status_texts
-        assert any(e == "message.start" for e, _ in emits)
+        # message.start is the (stubbed) submit's to emit after admission — _notif_submit
+        # no longer pre-emits it, so a refused dispatch leaves no phantom turn bubble.
+        assert not any(e == "message.start" for e, _ in emits)
         assert any(tid in text for text in submits), submits
         assert session["running"] is True  # poller claimed the turn
         assert not session.get("_kanban_pending")

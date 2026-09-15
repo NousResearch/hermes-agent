@@ -4,8 +4,11 @@
 `mcp_servers` published by an administrator via Managed Scope
 (`/etc/hermes/config.yaml`) — present in the effective config and honored at
 connect time — never started discovery: zero MCP servers on every surface,
-no warning. The gate now applies `managed_scope.apply_managed_overlay()`,
-the shared helper every other self-built config reader already uses.
+no warning. The gate now reads through the canonical effective loader
+(``load_user_config_effective()``: user file, ``${VAR}`` expansion, managed
+overlay, no defaults — hermes_cli/AGENTS.md), so the tests drive the real
+loader off disk (``HERMES_HOME`` + ``HERMES_MANAGED_DIR``) instead of
+monkeypatching the config readers.
 """
 
 import textwrap
@@ -16,14 +19,21 @@ from hermes_cli.mcp_startup import _has_configured_mcp_servers
 
 
 @pytest.fixture
-def managed(tmp_path, monkeypatch):
+def homes(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
     md = tmp_path / "managed"
     md.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_MANAGED_DIR", str(md))
     from hermes_cli import managed_scope
 
     managed_scope.invalidate_managed_cache()
-    return md
+    return home, md
+
+
+def _write_user(home, body):
+    (home / "config.yaml").write_text(textwrap.dedent(body), encoding="utf-8")
 
 
 def _write_managed(md, body):
@@ -33,48 +43,46 @@ def _write_managed(md, body):
     managed_scope.invalidate_managed_cache()
 
 
-def test_managed_scope_mcp_servers_enable_discovery(managed, monkeypatch):
+def test_managed_scope_mcp_servers_enable_discovery(homes, monkeypatch):
     """The #91073 shape: user config has no mcp_servers, the administrator
-    publishes one via Managed Scope — the gate must answer True."""
+    publishes one (env-substituted, as managed configs do) — the gate must
+    answer True through the real loader pipeline."""
+    monkeypatch.setenv("MCP_GATE_CMD", "fs-server")
     _write_managed(
-        managed,
+        homes[1],
         """
         mcp_servers:
           managed-fs:
-            command: fs-server
+            command: ${MCP_GATE_CMD}
             args: ["--stdio"]
         """,
     )
-    # User config stays empty of MCP servers.
-    import hermes_cli.config as config_mod
-
-    monkeypatch.setattr(config_mod, "read_raw_config", lambda: {})
+    # No user config.yaml at all: the managed layer still applies.
     assert _has_configured_mcp_servers() is True
 
 
-def test_user_config_mcp_servers_still_enable_discovery(managed, monkeypatch):
+def test_user_config_mcp_servers_still_enable_discovery(homes):
     """Regression: the pre-existing path (raw user config carries servers)
     keeps answering True; the managed dir exists but is empty."""
-    import hermes_cli.config as config_mod
-
-    monkeypatch.setattr(
-        config_mod,
-        "read_raw_config",
-        lambda: {"mcp_servers": {"user-server": {"command": "x"}}},
+    _write_user(
+        homes[0],
+        """
+        mcp_servers:
+          user-server:
+            command: x
+        """,
     )
     assert _has_configured_mcp_servers() is True
 
 
-def test_no_servers_anywhere_keeps_gate_closed(managed, monkeypatch):
+def test_no_servers_anywhere_keeps_gate_closed(homes):
     """Fail-closed on the decision itself: with no servers in either scope
     the gate stays False so non-MCP users still skip the MCP stack import."""
-    import hermes_cli.config as config_mod
-
-    monkeypatch.setattr(config_mod, "read_raw_config", lambda: {"display": {}})
+    _write_user(homes[0], "display: {}\n")
     assert _has_configured_mcp_servers() is False
 
 
-def test_gate_and_connect_share_the_deep_merge_contract(managed, monkeypatch):
+def test_gate_and_connect_share_the_deep_merge_contract(homes):
     """Pin the merge contract the gate relies on (review on #91073):
     ``apply_managed_overlay`` deep-merges ``mcp_servers`` per server name,
     so a config carrying servers in BOTH scopes resolves to the UNION —
@@ -84,7 +92,7 @@ def test_gate_and_connect_share_the_deep_merge_contract(managed, monkeypatch):
     fails, turning the shared-helper assumption into an enforced
     invariant instead of a trust."""
     _write_managed(
-        managed,
+        homes[1],
         """
         mcp_servers:
           managed-fs:
@@ -92,17 +100,38 @@ def test_gate_and_connect_share_the_deep_merge_contract(managed, monkeypatch):
             args: ["--stdio"]
         """,
     )
-    import hermes_cli.config as config_mod
-    from hermes_cli import managed_scope
-
-    monkeypatch.setattr(
-        config_mod,
-        "read_raw_config",
-        lambda: {"mcp_servers": {"user-server": {"command": "x"}}},
+    _write_user(
+        homes[0],
+        """
+        mcp_servers:
+          user-server:
+            command: x
+        """,
     )
     assert _has_configured_mcp_servers() is True
+
+    from hermes_cli import managed_scope
 
     merged = managed_scope.apply_managed_overlay(
         {"mcp_servers": {"user-server": {"command": "x"}}}
     )
     assert set(merged["mcp_servers"]) == {"user-server", "managed-fs"}
+
+
+def test_torn_user_config_keeps_user_declared_servers(homes):
+    """The increment the canonical loader adds over raw-read + overlay
+    (review on #91076): ``read_raw_config()`` serves ``{}`` on a torn
+    user config, which dropped user-declared servers from the gate;
+    ``load_user_config_effective`` replays the last-known-good user layer
+    instead, so the gate stays open."""
+    _write_user(
+        homes[0],
+        """
+        mcp_servers:
+          user-server:
+            command: x
+        """,
+    )
+    assert _has_configured_mcp_servers() is True  # seeds the parse cache
+    (homes[0] / "config.yaml").write_text("mcp_servers: [torn", encoding="utf-8")
+    assert _has_configured_mcp_servers() is True

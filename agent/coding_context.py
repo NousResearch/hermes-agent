@@ -280,16 +280,16 @@ def _detect_profile(mode: str, platform: str, cwd: Path) -> ContextProfile:
 def _enabled_mcp_servers(config: Optional[dict[str, Any]]) -> list[str]:
     """Names of MCP servers the user has enabled — kept in the coding posture."""
     try:
-        from hermes_cli.config import read_raw_config
         from hermes_cli.tools_config import _parse_enabled_flag
 
-        raw_config = read_raw_config() or {}
-        # Same Managed-Scope overlay as the discovery gate (#91073): an admin-published
-        # server must also stay in this session-toolset allowlist, or it is filtered back
-        # out of the session even once discovery starts it. Fail-open like the overlay.
-        from hermes_cli import managed_scope
+        # Same effective config as the discovery gate (#91073): an admin-published
+        # server must also stay in this session-toolset allowlist, or it is filtered
+        # back out of the session even once discovery starts it. The canonical
+        # effective loader (no-defaults, fail-open) instead of hand-rolled
+        # raw-read + overlay, per hermes_cli/AGENTS.md.
+        from hermes_cli.config_effective import load_user_config_effective
 
-        raw_config = managed_scope.apply_managed_overlay(raw_config)
+        raw_config = load_user_config_effective()
         servers = raw_config.get("mcp_servers") or {}
         return [
             str(name) for name, cfg in servers.items()

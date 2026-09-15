@@ -236,3 +236,40 @@ class TestErrorPathResourceText:
         ))
         data = json.loads(handler({}))
         assert data["error"] == "MCP tool returned an error"
+
+
+class TestResourceFooterAgentVisiblePath:
+    """The '[MCP resource saved to … read it with read_file]' footer is read by the
+    AGENT, whose read_file runs INSIDE the active backend (#72389 class): under
+    docker/modal it must carry the /root/.hermes mount, not the host path. The
+    MEDIA: tags are intercepted by the host-side renderer and stay host-side."""
+
+    @pytest.fixture()
+    def home_cache(self, tmp_path, monkeypatch):
+        """A temp HERMES_HOME whose document cache is the writer's target, so the
+        footer path lands under a real mount-list root."""
+        home = tmp_path / ".hermes"
+        (home / "cache" / "documents").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        import gateway.platforms.base as base
+
+        monkeypatch.setattr(base, "DOCUMENT_CACHE_DIR", home / "cache" / "documents")
+        return home
+
+    def test_docker_backend_footer_carries_container_path(self, home_cache, monkeypatch):
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        from tools.mcp_tool_content import _render_mcp_resource_block
+
+        out = _render_mcp_resource_block(_embedded(_blob_resource(PDF_BYTES)), "slack")
+        assert "saved to /root/.hermes/cache/documents" in out, f"footer not translated: {out}"
+        assert "read it with read_file" in out
+
+    def test_local_backend_footer_keeps_host_path(self, home_cache, monkeypatch):
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        from tools.mcp_tool_content import _render_mcp_resource_block
+
+        out = _render_mcp_resource_block(_embedded(_blob_resource(PDF_BYTES)), "slack")
+        path = out.split("saved to ", 1)[1].split(" (", 1)[0]
+        assert str(home_cache) in path, "local backend must keep the host path"
+        with open(path, "rb") as fh:
+            assert fh.read() == PDF_BYTES

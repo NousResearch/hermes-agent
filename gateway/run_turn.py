@@ -1294,10 +1294,7 @@ class GatewayTurnMixin:
             pass
         except Exception as e:
             logger.warning("Session hygiene auto-compress failed: %s", e)
-        # Fail-closed (#111988): any path that leaves hygiene unlanded (turn-hold
-        # release, timeout unwind, summary error) still bounds the in-context
-        # transcript — setup head + newest tail, total <= the limit. Disk history
-        # untouched; availability unchanged.
+        # Fail-closed (#111988): unlanded hygiene still bounds the in-context transcript (setup head + newest tail).
         return self._hmwa_hygiene_failclosed_bound(attempt.history, _hyg_limit)
 
     async def _hmwa_first_contact_notes(self, source, history, turn_sidecar_notes):

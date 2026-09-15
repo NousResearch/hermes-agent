@@ -172,10 +172,32 @@ class TestClassifier:
             res = classify_login_control(_ctrl(autocomplete=token))
             assert res is not None and res.score == 100 and res.token == token
 
-    def test_new_password_autocomplete_excluded(self):
+    def test_generic_password_label_overrides_misdeclared_new_password(self):
+        res = classify_login_control(
+            _ctrl(
+                autocomplete="new-password",
+                type="password",
+                name="password",
+                label="Password",
+            )
+        )
+        assert res is not None and res.score == 90 and res.token == "current-password"
+
+    def test_new_password_autocomplete_excluded_without_generic_password_label(self):
         assert classify_login_control(
             _ctrl(autocomplete="new-password", type="password")
         ) is None
+
+    def test_new_password_autocomplete_preserves_creation_exclusions(self):
+        for label in ("New password", "Confirm Password", "Create password", "Repeat password"):
+            assert classify_login_control(
+                _ctrl(
+                    autocomplete="new-password",
+                    type="password",
+                    name="password",
+                    label=label,
+                )
+            ) is None, label
 
     def test_one_time_code_excluded(self):
         assert classify_login_control(_ctrl(autocomplete="one-time-code")) is None

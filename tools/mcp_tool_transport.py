@@ -21,6 +21,18 @@ _PROBE_INITIALIZE_BODY = (  # JSON-RPC ``initialize`` body for the content-type 
     '"capabilities":{},"clientInfo":{"name":"hermes-probe","version":"0.1"}}}')
 
 
+def _hermes_client_info():
+    """``Implementation(name="hermes-agent", version=<shipped version>)`` for the MCP handshake, or
+    ``None`` on SDK builds without the type. Without this, servers that key behavior or logs on
+    ``clientInfo`` see the SDK default ("mcp"/"0.1.0") instead of who is actually connecting."""
+    try:
+        from mcp.types import Implementation
+    except ImportError:
+        return None
+    from hermes_cli import __version__ as hermes_version
+    return Implementation(name="hermes-agent", version=hermes_version)
+
+
 def _content_type_base(resp) -> str:
     """``content-type`` header of *resp* without parameters, lowercased."""
     return resp.headers.get("content-type", "").split(";")[0].strip().lower()
@@ -62,7 +74,7 @@ class MCPServerTransportMixin:
         return caps is None or getattr(caps, "tools", None) is not None
 
     def _session_kwargs(self) -> dict:
-        """ClientSession kwargs: sampling, elicitation, notification + logging callbacks."""
+        """ClientSession kwargs: client identity, sampling, elicitation, notification + logging callbacks."""
         kwargs = {}
         for handler in (self._sampling, self._elicitation):
             if handler:
@@ -71,6 +83,9 @@ class MCPServerTransportMixin:
             kwargs["message_handler"] = self._make_message_handler()
         if _core._MCP_LOGGING_CALLBACK_SUPPORTED:
             kwargs["logging_callback"] = self._make_logging_callback()
+        client_info = _hermes_client_info()
+        if client_info is not None and _core._client_session_accepts("client_info"):
+            kwargs["client_info"] = client_info
         return kwargs
 
     async def _negotiate_session(self, session, connect_timeout: float):

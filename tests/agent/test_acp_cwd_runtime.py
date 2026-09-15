@@ -41,16 +41,25 @@ def _agent(**kwargs):
 
 
 @pytest.mark.parametrize("resolved", [True, False])
-def test_config_cwd_reaches_real_acp_session(acp_config, resolved):
+@pytest.mark.parametrize("explicit_cwd", [False, True])
+def test_config_cwd_reaches_real_acp_session(acp_config, tmp_path, resolved, explicit_cwd):
+    from pathlib import Path
+
     from hermes_cli.runtime_provider import resolve_runtime_provider
     config, _ = acp_config
     runtime = resolve_runtime_provider(requested="copilot-acp")
     kwargs = {key: runtime.get(key) for key in
               ("provider", "api_key", "base_url", "api_mode", "command", "args", "acp_cwd")} if resolved else {"provider": "copilot-acp"}
+    expected = config["model"]["acp_cwd"]
+    if explicit_cwd:
+        expected = str(tmp_path / "explicit-remote-only" / "workspace")
+        kwargs["acp_cwd"] = expected
     agent = _agent(**kwargs)
     try:
-        assert agent.client.list_models(timeout_seconds=5) == [config["model"]["acp_cwd"]]
-        assert agent.acp_cwd == config["model"]["acp_cwd"]
+        assert agent.client.list_models(timeout_seconds=5) == [expected]
+        assert agent.acp_cwd == expected
+        assert not Path(expected).exists()
+        assert not Path(config["model"]["acp_cwd"]).exists()
     finally:
         agent.close()
 

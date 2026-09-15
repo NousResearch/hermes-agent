@@ -934,6 +934,9 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
 
     agent._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
     if agent.provider == "copilot-acp":
+        # Routing supplies defaults, but must not replace the caller's cwd.
+        if agent.acp_cwd is not None:
+            client_kwargs["acp_cwd"] = agent.acp_cwd
         agent.acp_command = client_kwargs.get("command")
         agent.acp_args = list(client_kwargs.get("args") or [])
         agent.acp_cwd = client_kwargs.get("acp_cwd")
@@ -2185,7 +2188,7 @@ _CALLBACK_PARAMS = (
 def init_agent(
     agent, base_url: str = None, api_key: str = None, provider: str = None, api_mode: str = None,
     acp_command: str = None, acp_args: list[str] | None = None, command: str = None,
-    args: list[str] | None = None, acp_cwd: str = None, model: str = "", max_iterations: int = sys.maxsize,
+    args: list[str] | None = None, model: str = "", max_iterations: int = sys.maxsize,
     enabled_toolsets: List[str] = None, disabled_toolsets: List[str] = None,
     save_trajectories: bool = False, verbose_logging: bool = False, quiet_mode: bool = False,
     tool_progress_mode: str = "all", ephemeral_system_prompt: str = None,
@@ -2217,6 +2220,7 @@ def init_agent(
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
     requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None,
+    *, acp_cwd: str = None,
 ):
     """Initialize the AI Agent (body of :meth:`AIAgent.__init__`).
 

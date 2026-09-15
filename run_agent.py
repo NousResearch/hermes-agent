@@ -234,7 +234,7 @@ class AIAgent(
         self,
         base_url: str = None, api_key: str = None, provider: str = None, api_mode: str = None,
         acp_command: str = None, acp_args: list[str] | None = None, command: str = None, args: list[str] | None = None,
-        acp_cwd: str = None, model: str = "",
+        model: str = "",
         max_iterations: int = sys.maxsize,  # unlimited tool-calling iterations by default (shared with subagents)
         tool_delay: float = None,  # deprecated: accepted for compatibility, ignored
         enabled_toolsets: List[str] = None, disabled_toolsets: List[str] = None,
@@ -270,6 +270,7 @@ class AIAgent(
         checkpoint_max_total_size_mb: int = 500, checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False, requested_provider: str = None,
         capabilities: Dict[str, bool] | None = None,
+        *, acp_cwd: str = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``)."""
         init_kwargs = {k: v for k, v in locals().items() if k not in ("self", "tool_delay")}

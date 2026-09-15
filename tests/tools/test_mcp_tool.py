@@ -1134,6 +1134,42 @@ class TestMCPServerTask:
 
         asyncio.run(_test())
 
+    @pytest.mark.parametrize(
+        ("config_args", "expected_args"),
+        [
+            (None, []),  # YAML ``args:`` with no value
+            ("__missing__", []),
+            (["--port", "0"], ["--port", "0"]),
+        ],
+    )
+    def test_start_stdio_null_args_spawns_like_omitted_args(self, config_args, expected_args):
+        """Regression for #80652 / #80437: ``config.get("args", [])`` defaults
+        only a *missing* key, so ``args:`` with no value reached the stdio spawn
+        as ``None`` and every connection attempt failed (StdioServerParameters
+        rejects a non-list), parking the server. A null ``args`` must spawn
+        exactly like an omitted one, and a real list must pass through."""
+        from tools.mcp_tool import MCPServerTask
+
+        mock_session = MagicMock()
+        mock_session.initialize = AsyncMock()
+        mock_session.list_tools = AsyncMock(
+            return_value=SimpleNamespace(tools=[_make_mcp_tool("echo")])
+        )
+        config = {"command": "my-mcp-server"}
+        if config_args != "__missing__":
+            config["args"] = config_args
+        p_stdio, p_cs, _, _ = self._mock_stdio_and_session(mock_session)
+
+        async def _test():
+            with patch("tools.mcp_tool.StdioServerParameters") as params, p_stdio, p_cs:
+                server = MCPServerTask("null_args_srv")
+                await server.start(config)
+                assert server.session is mock_session
+                assert params.call_args.kwargs["args"] == expected_args
+                await server.shutdown()
+
+        asyncio.run(_test())
+
 
     def test_stdio_recycle_deadline_pauses_while_rpc_active(self):
         from tools.mcp_tool import MCPServerTask

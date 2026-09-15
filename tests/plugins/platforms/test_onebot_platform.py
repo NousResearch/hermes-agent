@@ -8,6 +8,8 @@ rendering, and a live reverse-WS round trip against a fake NapCat client.
 import asyncio
 import base64
 import json
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -1122,7 +1124,8 @@ def test_inbound_file_falls_back_to_get_file_base64(monkeypatch) -> None:
 
     asyncio.run(run())
     assert "[文件:" in captured[0].text
-    assert "/tmp/hermes_onebot/" in captured[0].text
+    # adapter 落盘目录随平台（Windows 是 %LOCALAPPDATA%\Temp），用 gettempdir() 断言
+    assert str(Path(tempfile.gettempdir()) / "hermes_onebot") in captured[0].text
 
 
 def test_inbound_file_download_failure_keeps_name(monkeypatch) -> None:
@@ -1397,15 +1400,18 @@ def test_api_send_media_bad_kind() -> None:
 
 
 def test_ink_check_reports_font_chain() -> None:
-    """墨水自检：返回链状态，CJK 字体存在时 ok=True。"""
+    """墨水自检：返回链状态；CJK 字体存在时 ok=True，缺失时优雅降级。"""
     from plugins.platforms.onebot.t2i_render import ink_check
 
     result = ink_check()
     assert "ok" in result
     assert "loaded" in result
-    # 本机装了 Noto CJK → 应通过
-    assert result["cjk"] is True
-    assert result["ok"] is True
+    if result["cjk"]:
+        # 本机装了 Noto CJK → 必须通过
+        assert result["ok"] is True
+    else:
+        # 无 CJK 字体（部分 Windows/macOS）：长回复降级为纯文本，只记警告，不算失败
+        assert result["ok"] is False
 
 
 # ---------------------------------------------------------------------------

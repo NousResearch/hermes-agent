@@ -698,6 +698,8 @@ def _cmd_focus(rid, params, session, name, arg):
         return _exec_out(rid, fv.format_focus_status(cur, saved))
     res = invoke("config.set", ConfigSetParams(
         key="focus", value="on" if target else "off", session_id=params.session_id))
+    if isinstance(res, dict):
+        return res  # config.set's own error frame (4001/4002/5001/5032)
     tool_progress = res.tool_progress or "all"
     return _exec_out(rid, fv.format_focus_toggle_message(bool(target), tool_progress))
 
@@ -912,7 +914,9 @@ def _(rid, params) -> SlashExecResult | dict:
     if target is not None:
         dispatched = invoke("command.dispatch", CommandDispatchParams(
             name=target.lstrip("/"), arg=arg, session_id=sid))
-        return SlashExecResult(**dispatched.model_dump())
+        if isinstance(dispatched, dict):
+            return dispatched  # command.dispatch's own error frame
+        return SlashExecResult(warning=None, **dispatched.model_dump())
     if _is_profile_skill_command(session, base):
         return _err(rid, 4018, f"skill command: use command.dispatch for /{base}")
     if plugin_handler := _plugin_command_handler(base) if base else None:

@@ -12,6 +12,7 @@ freshness check is a no-op and the OOM rebuild always runs.
 """
 
 import os
+import sys
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -19,6 +20,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli.main_web_build import _build_web_ui, _run_npm_install_deterministic
+from hermes_cli.main_web_build import _WEB_INSTALL_IDLE_TIMEOUT_SECONDS
 from hermes_cli.main_web_build import _web_ui_build_needed, _compute_web_ui_content_hash, _missing_web_build_tool, _web_ui_stamp_path, _write_web_ui_build_stamp
 from hermes_cli.update_cmd import _web_build_toolchain_ready, _web_toolchain_roots
 
@@ -138,18 +140,19 @@ class TestBuildWebUISkipsWhenFresh:
         install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-             patch("hermes_cli.main.subprocess.run", return_value=install_cp) as mock_run, \
-             patch("hermes_cli.main_web_build._run_with_idle_timeout", return_value=build_cp) as mock_build:
+             patch("hermes_cli.main.subprocess.run", return_value=install_cp), \
+             patch("hermes_cli.main_web_build._run_with_idle_timeout", return_value=build_cp) as mock_helper:
             result = _build_web_ui(web_dir)
 
         assert result is True
-        args, kwargs = mock_run.call_args
+        # The install command line is assembled on the idle-helper call (issue #109794).
+        args, kwargs = mock_helper.call_args_list[0]
         assert "--workspace" not in args[0]
         assert Path(args[0][0]).name in {"npm", "npm.cmd"}
         assert args[0][1:] == ["ci", "--include=dev", "--silent", "--prefer-offline"]
         assert kwargs["cwd"] == web_dir
         assert "ESBUILD_BINARY_PATH" not in kwargs["env"]
-        assert "ESBUILD_BINARY_PATH" not in mock_build.call_args.kwargs["env"]
+        assert "ESBUILD_BINARY_PATH" not in mock_helper.call_args_list[1].kwargs["env"]
 
     def test_workspace_root_install_names_update_closure(self, tmp_path, monkeypatch):
         """From the workspace root, _build_web_ui must install the SAME
@@ -171,12 +174,12 @@ class TestBuildWebUISkipsWhenFresh:
         install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-             patch("hermes_cli.main.subprocess.run", return_value=install_cp) as mock_run, \
-             patch("hermes_cli.main_web_build._run_with_idle_timeout", return_value=build_cp):
+             patch("hermes_cli.main.subprocess.run", return_value=install_cp), \
+             patch("hermes_cli.main_web_build._run_with_idle_timeout", return_value=build_cp) as mock_helper:
             result = _build_web_ui(web_dir)
 
         assert result is True
-        args, kwargs = mock_run.call_args
+        args, kwargs = mock_helper.call_args_list[0]  # the install invocation
         cmd = args[0]
         assert "--include-workspace-root" in cmd
         assert cmd.count("--workspace") == 2
@@ -194,22 +197,21 @@ class TestBuildWebUISkipsWhenFresh:
         install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
-             patch("hermes_cli.main.subprocess.run", return_value=install_cp) as mock_run, \
-             patch("hermes_cli.main_web_build._run_with_idle_timeout", return_value=build_cp):
+             patch("hermes_cli.main.subprocess.run", return_value=install_cp), \
+             patch("hermes_cli.main_web_build._run_with_idle_timeout", return_value=build_cp) as mock_helper:
             result = _build_web_ui(web_dir)
 
         assert result is True
-        cmd = mock_run.call_args[0][0]
+        cmd = mock_helper.call_args_list[0][0][0]  # the install invocation
         assert "ui-tui" not in cmd
         assert "--include-workspace-root" in cmd
         assert "web" in cmd
 
     def test_web_build_uses_idle_timeout_helper(self, tmp_path):
-        """npm run build now goes through _run_with_idle_timeout (issue #33788).
-
-        The install step keeps its capture_output behavior (the existing
-        retry-on-EPERM contract depends on it); only the long-running build
-        step is streamed + idle-killed.
+        """npm run build goes through _run_with_idle_timeout (issue #33788), and the
+        install step does too with a wider budget (issue #109794): a silently
+        stalled `npm ci` under capture_output wedges `hermes update` at
+        "Building web UI..." forever. Both steps are now streamed + idle-killed.
         """
         web_dir, _ = _make_web_dir(tmp_path)
 
@@ -217,16 +219,22 @@ class TestBuildWebUISkipsWhenFresh:
         build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
              patch("hermes_cli.main.subprocess.run", return_value=install_cp), \
-             patch("hermes_cli.main_web_build._run_with_idle_timeout", return_value=build_cp) as mock_idle:
+             patch("hermes_cli.main_web_build._run_with_idle_timeout", side_effect=[install_cp, build_cp]) as mock_idle:
             result = _build_web_ui(web_dir)
 
         assert result is True
-        # Build was invoked through the idle-timeout helper, not subprocess.run.
-        mock_idle.assert_called_once()
-        args, kwargs = mock_idle.call_args
-        # Positional: [npm, "run", "build"]; cwd passed as kwarg.
-        assert args[0] == ["/usr/bin/npm", "run", "build"]
-        assert kwargs["cwd"] == web_dir
+        # Both the install and the build were invoked through the idle-timeout helper.
+        assert mock_idle.call_count == 2
+        install_args, install_kwargs = mock_idle.call_args_list[0]
+        build_args, build_kwargs = mock_idle.call_args_list[1]
+        # Install: [npm, <subcommand>, ...] with the wider 300s idle budget
+        # (no lockfile in this fixture, so the subcommand is `install --no-save`).
+        assert install_args[0][0] == "/usr/bin/npm"
+        assert install_kwargs["idle_timeout_seconds"] == _WEB_INSTALL_IDLE_TIMEOUT_SECONDS
+        assert install_kwargs["step_label"] == "npm install"
+        # Build: [npm, "run", "build"] on the streamed 180s default.
+        assert build_args[0] == ["/usr/bin/npm", "run", "build"]
+        assert build_kwargs["cwd"] == web_dir
 
 
 class TestBuildWebUIRetryAndStaleFallback:
@@ -243,11 +251,11 @@ class TestBuildWebUIRetryAndStaleFallback:
              patch("hermes_cli.main_web_build._time.sleep") as mock_sleep, \
              patch("hermes_cli.main.subprocess.run", return_value=install_ok), \
              patch("hermes_cli.main_web_build._run_with_idle_timeout",
-                   side_effect=[build_fail, build_ok]) as mock_idle:
+                   side_effect=[install_ok, build_fail, build_ok]) as mock_idle:
             result = _build_web_ui(web_dir)
 
         assert result is True
-        assert mock_idle.call_count == 2  # build + retry
+        assert mock_idle.call_count == 3  # install + build + retry
         mock_sleep.assert_called_once_with(3)
 
     def test_falls_back_to_stale_dist_when_retry_also_fails(self, tmp_path, capsys):
@@ -263,7 +271,7 @@ class TestBuildWebUIRetryAndStaleFallback:
              patch("hermes_cli.main_web_build._time.sleep"), \
              patch("hermes_cli.main.subprocess.run", return_value=install_ok), \
              patch("hermes_cli.main_web_build._run_with_idle_timeout",
-                   side_effect=[build_fail, build_fail]):
+                   side_effect=[install_ok, build_fail, build_fail]):
             result = _build_web_ui(web_dir, fatal=True)
 
         # MUST return True (serve stale) — issue #23817 — even with fatal=True,
@@ -272,6 +280,73 @@ class TestBuildWebUIRetryAndStaleFallback:
         out = capsys.readouterr().out
         assert "serving stale dist as fallback" in out
         assert "vite ENOMEM" in out  # combined output surfaced to user
+
+
+class TestNpmInstallIdleWatchdog:
+    """Issue #109794: a silently stalled ``npm ci`` under ``capture_output`` is
+    indistinguishable from a hang, so ``hermes update`` used to wedge at
+    "Building web UI..." with no output until something killed it from outside."""
+
+    def test_idle_killed_install_skips_fallback_and_engine_repair(self, tmp_path):
+        """rc 124 (idle kill) returns immediately — the ci→install fallback and the
+        engine repair would re-run the same stalled environment and stall again."""
+        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+        idle_killed = __import__("subprocess").CompletedProcess(
+            [], 124, stdout="\n  ⚠ npm install produced no output for 300s — terminated.\n", stderr="")
+        with patch("hermes_cli.main_web_build._run_with_idle_timeout", return_value=idle_killed) as mock_idle, \
+             patch("hermes_cli.main_web_build._run_npm_watching_for_engine_failure") as mock_captured, \
+             patch("hermes_cli.npm_engine.maybe_repair_npm_engine", return_value=None) as mock_repair:
+            result = _run_npm_install_deterministic("/usr/bin/npm", tmp_path, idle_timeout_seconds=300)
+
+        assert result.returncode == 124
+        assert "terminated" in result.stdout
+        mock_idle.assert_called_once()      # npm ci ran once and was idle-killed
+        mock_captured.assert_not_called()   # no captured re-run path was taken
+        mock_repair.assert_not_called()     # no engine repair on an idle kill
+
+    def test_idle_watchdog_opt_in_only(self, tmp_path):
+        """Default callers (e.g. the desktop npm install) keep the captured behavior."""
+        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+        ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main_web_build._run_with_idle_timeout") as mock_idle, \
+             patch("hermes_cli.main_web_build._run_npm_watching_for_engine_failure", return_value=ok) as mock_captured:
+            result = _run_npm_install_deterministic("/usr/bin/npm", tmp_path)
+
+        assert result.returncode == 0
+        mock_idle.assert_not_called()
+        mock_captured.assert_called_once()
+
+    def test_web_build_install_failure_is_observable(self, tmp_path, capsys):
+        """An idle-killed install surfaces through the standard failure block
+        instead of printing nothing after '→ Building web UI...' (issue #109794)."""
+        web_dir, _ = _make_web_dir(tmp_path)
+        idle_killed = __import__("subprocess").CompletedProcess(
+            [], 124, stdout="  ⚠ npm install produced no output for 300s — terminated.\n", stderr="")
+        with patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main_web_build._run_with_idle_timeout", return_value=idle_killed), \
+             patch("hermes_cli.main_web_build._web_ui_build_needed", return_value=True):
+            result = _build_web_ui(web_dir, fatal=True)
+
+        assert result is False
+        out = capsys.readouterr().out
+        assert "Web UI npm install failed" in out
+        assert "terminated" in out
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell script as the fake npm")
+    def test_stalled_install_process_is_killed(self, tmp_path):
+        """End-to-end: a real child that never outputs is terminated, not waited on."""
+        fake_npm = tmp_path / "fake-npm"
+        fake_npm.write_text("#!/bin/sh\nsleep 60\n", encoding="utf-8")
+        fake_npm.chmod(0o755)
+        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+
+        started = time.monotonic()
+        result = _run_npm_install_deterministic(str(fake_npm), tmp_path, idle_timeout_seconds=1)
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 30  # killed by the watchdog, not by the 60s sleep
+        assert result.returncode == 124
+        assert "npm install produced no output" in result.stdout
 
 
 class TestBuildWebUIFlock:

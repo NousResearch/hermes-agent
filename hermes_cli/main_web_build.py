@@ -205,12 +205,22 @@ def _console_print(text: str) -> None:
         print(text.encode(encoding, errors="replace").decode(encoding, errors="replace"))
 
 
+# Idle watchdog for the web UI dependency install (``npm ci --silent`` emits almost no
+# output on a healthy run — deleting and re-linking node_modules can sit silent for
+# ~10 minutes on a slow disk, see the heartbeat discussion in #101850 — so the budget
+# is far looser than the streamed build's 180s): longer than this with zero streamed
+# output is a stall, not slowness, and the run is terminated instead of wedging
+# ``hermes update`` forever (issue #109794).
+_WEB_INSTALL_IDLE_TIMEOUT_SECONDS = 900
+
+
 def _run_with_idle_timeout(
     cmd: list[str], cwd: Path, *, idle_timeout_seconds: int = 180, indent: str = "    ",
-    env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    env: dict[str, str] | None = None, step_label: str = "Build") -> subprocess.CompletedProcess:
     """Stream a subprocess, killing it after *idle_timeout_seconds* of silence (a silent captured
     Vite build on a low-memory host looks like a hang and users reboot mid-install). Returns merged
-    stdout, empty stderr, rc 124 if terminate raced a clean exit; never raises on idle timeout.
+    stdout, empty stderr, and rc 124 whenever the idle watchdog terminated the child; never raises
+    on idle timeout.
 
     Issue #33788: ``npm run build`` (Vite) was invoked with ``capture_output=True`` and no timeout. On
     low-memory hosts (notably WSL2 with the default 4 GB cap) the build can stall or sit silent for minutes;
@@ -270,12 +280,14 @@ def _run_with_idle_timeout(
     combined = "".join(merged_chunks)
     if idle_killed:
         combined += (
-            f"\n  ⚠ Build produced no output for {idle_timeout_seconds}s — terminated.\n"
+            f"\n  ⚠ {step_label} produced no output for {idle_timeout_seconds}s — terminated.\n"
             "    Common causes: out-of-memory on a low-RAM host (WSL/container),\n"
             "    a stuck Node process, or an antivirus scan stalling I/O.\n"
         )
-        if rc == 0:
-            rc = 124  # GNU `timeout` convention
+        # Always report the timeout as rc 124 (GNU `timeout` convention), whether the
+        # child exited 0 in a race with the terminate, or died from the signal itself
+        # (-15 / 1): callers treat "killed by the watchdog" as one outcome.
+        rc = 124
     return subprocess.CompletedProcess(cmd, rc, stdout=combined, stderr="")
 
 
@@ -312,7 +324,8 @@ def _nixos_build_env() -> dict[str, str] | None:
 
 def _run_npm_install_deterministic(
     npm: str, cwd: Path, *, extra_args: tuple[str, ...] = (), capture_output: bool = True,
-    env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    env: dict[str, str] | None = None,
+    idle_timeout_seconds: int | None = None) -> subprocess.CompletedProcess:
     """Deterministic npm install that never mutates ``package-lock.json``.
 
     ``npm ci`` when a lockfile exists, else/on failure ``npm install --no-save``
@@ -325,23 +338,34 @@ def _run_npm_install_deterministic(
     ``package-lock.json``. Without it, an out-of-sync lockfile gets rewritten by the fallback, which drifts
     the committed lockfile and makes every future ``npm ci`` fail — a self-reinforcing cycle where web
     devDeps never install and a stale dist is served on every update (PR #65595).
+
+    ``idle_timeout_seconds`` routes the install through :func:`_run_with_idle_timeout` instead of a
+    captured ``subprocess.run``: under ``capture_output`` a silently stalled ``npm ci`` is
+    indistinguishable from a hang, and ``hermes update`` then wedges at "Building web UI..." with no
+    output, no receipt, and no recovery until something kills it (issue #109794). An idle kill (rc 124,
+    the ``timeout`` convention) skips both the ci→install fallback and the engine repair — a stalled npm
+    retried in the same environment stalls the same way.
     """
     # CI=1 no-ops unicode-animations' postinstall that animates to /dev/tty.
     run_env = _npm_lifecycle_env(env)
 
     def _attempt(npm_exe: str) -> subprocess.CompletedProcess:
         def _run(args: list[str]) -> subprocess.CompletedProcess:
-            return _run_npm_watching_for_engine_failure(
-                [npm_exe, *args, "--include=dev", *extra_args], cwd=cwd, env=run_env, capture_output=capture_output,
-            )
+            cmd = [npm_exe, *args, "--include=dev", *extra_args]
+            if idle_timeout_seconds is None:
+                return _run_npm_watching_for_engine_failure(
+                    cmd, cwd=cwd, env=run_env, capture_output=capture_output)
+            return _run_with_idle_timeout(
+                cmd, cwd=cwd, idle_timeout_seconds=idle_timeout_seconds, env=run_env,
+                step_label="npm install")
         if (cwd / "package-lock.json").exists():
             ci_result = _run(["ci"])
-            if ci_result.returncode == 0:
+            if ci_result.returncode in (0, 124):
                 return ci_result
         return _run(["install", "--no-save"])
 
     result = _attempt(npm)
-    if result.returncode == 0:
+    if result.returncode in (0, 124):
         return result
 
     from hermes_cli.npm_engine import maybe_repair_npm_engine
@@ -494,7 +518,9 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
 
     def _install_web_deps(*, silent: bool) -> subprocess.CompletedProcess:
         extra = (*npm_workspace_args, "--silent", "--prefer-offline") if silent else (*npm_workspace_args, "--prefer-offline")
-        return _run_npm_install_deterministic(npm, npm_cwd, extra_args=extra, env=build_env)
+        return _run_npm_install_deterministic(
+            npm, npm_cwd, extra_args=extra, env=build_env,
+            idle_timeout_seconds=_WEB_INSTALL_IDLE_TIMEOUT_SECONDS)
 
     def _build() -> subprocess.CompletedProcess:
         # Streamed + idle-killed (never capture_output on a long Vite build: it

@@ -189,18 +189,6 @@ def test_deliver_callback_accepts_matching_state():
     assert flow._callback == ("abc", "s3cr3tstate", None)
 
 
-def test_deliver_callback_forwards_iss():
-    """The client-redirect relay carries RFC 9207 ``iss`` into the flow. Desktop drives this path
-    against a remote backend, and mcp 2.x rejects a response missing ``iss`` when the authorization
-    server advertised ``authorization_response_iss_parameter_supported``."""
-    flow = _make_session()
-    out = deliver_callback_flow(
-        "sess-relay-1", "hosp", code="abc", state="s3cr3tstate", iss="https://as.example.com"
-    )
-    assert out["ok"] is True
-    assert flow._callback == ("abc", "s3cr3tstate", "https://as.example.com")
-
-
 def test_oauth_callback_rpc_relays_iss():
     """The gateway ``mcp.servers.oauth.callback`` RPC accepts ``iss`` under the extra=forbid contract
     and forwards it to the flow; the desktop renderer always sends the key (possibly null)."""

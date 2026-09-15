@@ -49,6 +49,8 @@ def _validate_client_redirect_uri(uri: str) -> str:
 def _start_loopback_listener(flow) -> "http.server.HTTPServer":
     """Bind a loopback callback listener feeding ``flow.deliver_callback``; returns the
     HTTPServer already serving on a daemon thread (caller pins ``flow.redirect_uri`` from it)."""
+    from tools.mcp_oauth import _parse_redirect_query
+
     class _Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802 — stdlib naming
             parsed = urlparse(self.path)
@@ -56,8 +58,6 @@ def _start_loopback_listener(flow) -> "http.server.HTTPServer":
                 self.send_response(404)
                 self.end_headers()
                 return
-            from tools.mcp_oauth import _parse_redirect_query
-
             body = b"<h1>Authorization received</h1><p>You can close this tab and return to Hermes.</p>"
             status = 200
             try:

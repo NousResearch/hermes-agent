@@ -71,6 +71,10 @@ const STATUS_GLYPH: Record<string, { icon: string; tone: string }> = {
   '?': { icon: 'diff-added', tone: 'text-muted-foreground/60' }
 }
 
+// Untracked directories come through as a single collapsed `dir/` row; they read
+// as folders, not as the new file the '?' glyph implies.
+const DIR_ROW_GLYPH = { icon: 'folder', tone: 'text-(--ui-text-tertiary)' }
+
 // Review paths are repo-relative; the composer drop expects absolute paths, so
 // join against the pane's repo (its pinned scope, else the active session cwd).
 function absolutePath(relative: string): string {
@@ -315,7 +319,11 @@ function ReviewFileRow({ node, depth }: { node: ReviewTreeNode; depth: number })
   const selectedPath = useStore($reviewSelectedPath)
   const file = node.file!
   const selected = file.path === selectedPath
-  const glyph = STATUS_GLYPH[file.status] ?? STATUS_GLYPH.M
+  // An untracked directory arrives as one collapsed `dir/` row. It still opens
+  // a diff (of everything git sees underneath), so it stays a leaf row — but it
+  // gets a folder glyph instead of the untracked-file one it used to borrow.
+  const isDirRow = file.path.endsWith('/')
+  const glyph = isDirRow ? DIR_ROW_GLYPH : (STATUS_GLYPH[file.status] ?? STATUS_GLYPH.M)
   const dragPath = absolutePath(file.path)
   // Reactive mirror of reviewRepoCwd(): the pinned scope wins, else the
   // active session's cwd (subscribing to both keeps the row live either way).

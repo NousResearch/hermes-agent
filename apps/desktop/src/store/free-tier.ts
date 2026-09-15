@@ -126,7 +126,7 @@ export function friendlyWait(seconds: number): string {
  */
 export async function provisionFreeTier(requestGateway: FreeTierRequester): Promise<FreeTierStatus | null> {
   try {
-    await requestGateway('free_tier.provision')
+    await requestGateway('free_tier.provision', {})
   } catch {
     // The status read below still reports what the backend knows.
   }

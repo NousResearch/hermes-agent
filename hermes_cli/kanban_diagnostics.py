@@ -13,6 +13,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Iterable, Optional
 import json
+import re
+import shlex
 import time
 
 
@@ -678,6 +680,239 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+# Title/body shapes that mean "this card's job is to make something cheaper
+# or faster" — optimization, cost-reduction, or latency work. Deliberately
+# broad (title AND body, not title-only like the review-intent rule): a
+# card's optimization intent is usually stated in the body's problem
+# framing, not just the title.
+#
+# No pre-existing board/skill convention for tagging optimization cards was
+# found before this rule was written (checked: no "optimization" skill
+# directory under any profile's skills/, no board column or tag convention
+# referencing it on any of the four live board DBs) — so the skill tag
+# "optimization" is a new, additive convention, checked here alongside the
+# regex fallback rather than relied on exclusively.
+OPTIMIZATION_INTENT_PATTERN = (
+    r"\b(?:optimi[sz]e[sd]?|optimi[sz]ation|routing|cach(?:e|ing)|"
+    r"speed[- ]?up|reduce\s+(?:cost|latency|spend)|cut\s+cost|"
+    r"cost[- ]?reduc\w*)\b"
+)
+
+# A "measured baseline cost" field: a keyword phrase for what the status quo
+# costs TODAY, with a number within reach (time, money, error rate) — a
+# guess ("probably slow") doesn't count, a quantified value does. English
+# and Norwegian variants both accepted since cards on this board are
+# sometimes written in Norwegian (see t_2f9851d5's own card body).
+_COST_BASELINE_KEYWORDS = (
+    r"(?:measured|current|baseline|status.?quo|today'?s?)\s+cost|"
+    r"m[aå]lt\s+kostnad"
+)
+# A "savings threshold" field: an explicit "must save at least N to be worth
+# it" bar, meant to be set BEFORE any instrument gets built.
+_SAVINGS_THRESHOLD_KEYWORDS = (
+    r"must\s+save|worth\s+it|savings?\s+threshold|break.?even|"
+    r"krever\s+spart|verdt\s+seg"
+)
+
+# Terminal statuses: the work already ran (or never will), flagging is moot.
+_OPTIMIZATION_COST_GATE_DEAD_STATUSES = frozenset({"done", "archived"})
+
+
+def _has_numeric_field_near(
+    text: str, keyword_pattern: str, *, window: int = 80, other_pattern: Optional[str] = None,
+) -> bool:
+    """True if a complete number appears within ``window`` chars of a
+    keyword-pattern match in ``text`` AND that number is strictly closer to
+    this match than to any match of ``other_pattern`` — a guess doesn't
+    satisfy the field, only an actual quantified value tied to THIS field
+    does. Ties (equidistant from both fields) count for neither, since the
+    number can't be confidently attributed. Matches whole numeric tokens
+    (``\\d+`` with optional decimal), not lone digits, so "10" is one
+    candidate, not two (flagged by coderabbit review on this exact rule)."""
+    if not text:
+        return False
+    other_matches = list(re.finditer(other_pattern, text, re.IGNORECASE)) if other_pattern else []
+    for m in re.finditer(keyword_pattern, text, re.IGNORECASE):
+        start = max(0, m.start() - window)
+        end = min(len(text), m.end() + window)
+        for nm in re.finditer(r"(?<!\w)\d+(?:\.\d+)?(?!\w)", text[start:end]):
+            abs_start, abs_end = start + nm.start(), start + nm.end()
+            dist_this = min(abs(abs_start - m.start()), abs(abs_end - m.end()))
+            dist_other = min(
+                (min(abs(abs_start - om.start()), abs(abs_end - om.end())) for om in other_matches),
+                default=float("inf"),
+            )
+            if dist_this < dist_other:
+                return True
+    return False
+
+
+def _rule_optimization_missing_cost_baseline(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """A card that reads as optimization/cost-reduction/speed-up/routing/
+    caching work (by skill tag "optimization" or by title+body regex) but
+    whose body never quantifies (a) what the status quo costs today and
+    (b) how much the change must save to be worth doing. Modeled directly on
+    _rule_review_intent_untagged (t_38792276): same shape, same severity,
+    same config-disable escape hatch.
+
+    Rationale (see t_2f9851d5): the model-routing card t_678289cc ran three
+    full instrumentation rounds — corpus, five blind labelers, kappa scoring,
+    multiple adversarial reviews — before anyone asked whether the work was
+    worth starting, because the card model had no field to ask for that in.
+    Heuristic by construction, hence ``warning``, not a hard block; set
+    ``cfg["optimization_intent_pattern"] = ""`` to disable entirely.
+    """
+    pattern = cfg.get("optimization_intent_pattern", OPTIMIZATION_INTENT_PATTERN)
+    if not pattern:
+        return []
+    status = _task_field(task, "status")
+    if status in _OPTIMIZATION_COST_GATE_DEAD_STATUSES:
+        return []
+
+    skills = _task_field(task, "skills") or ()
+    if isinstance(skills, str):
+        try:
+            skills = json.loads(skills) or ()
+        except Exception:
+            skills = ()
+    tagged_optimization = "optimization" in skills
+
+    title = _task_field(task, "title") or ""
+    body = _task_field(task, "body") or ""
+    title_body_match = re.search(pattern, f"{title}\n{body}", re.IGNORECASE)
+    if not (tagged_optimization or title_body_match):
+        return []
+
+    has_baseline = _has_numeric_field_near(
+        body, _COST_BASELINE_KEYWORDS, other_pattern=_SAVINGS_THRESHOLD_KEYWORDS,
+    )
+    has_threshold = _has_numeric_field_near(
+        body, _SAVINGS_THRESHOLD_KEYWORDS, other_pattern=_COST_BASELINE_KEYWORDS,
+    )
+    if has_baseline and has_threshold:
+        return []
+
+    missing = []
+    if not has_baseline:
+        missing.append("a measured baseline cost (a number for what the status quo costs today, not a guess)")
+    if not has_threshold:
+        missing.append("a savings threshold (how much this must save to be worth it, set before building anything)")
+
+    task_id = str(_task_field(task, "id") or "")
+    actions = [
+        DiagnosticAction(
+            kind="comment",
+            label="Add the missing cost-gate field(s) to the card body",
+            payload={"task_id": task_id},
+            suggested=True,
+        ),
+    ]
+    if not has_baseline and not has_threshold:
+        title = "Optimization card has no cost baseline or savings threshold"
+    elif not has_baseline:
+        title = "Optimization card has no cost baseline — status quo spend never quantified"
+    else:
+        title = "Optimization card has no savings threshold — no bar for \"worth it\""
+    created_at = int(_task_field(task, "created_at", default=0) or 0) or int(now)
+    return [Diagnostic(
+        kind="optimization_missing_cost_baseline", severity="warning",
+        title=title,
+        detail=(
+            "This card reads as optimization/cost-reduction/routing/caching work but its body "
+            "is missing " + " and ".join(missing) + ". Without a quantified baseline, "
+            "instrumentation work can run for multiple rounds before anyone asks whether it was "
+            "worth starting in the first place. Add the field(s) to the body, or dismiss this if "
+            "the card is not actually optimization work."
+        ),
+        actions=actions,
+        first_seen_at=created_at, last_seen_at=created_at, count=1,
+        data={
+            "tagged_optimization": tagged_optimization,
+            "matched_text": title_body_match.group(0).strip() if title_body_match else None,
+            "has_baseline": has_baseline, "has_threshold": has_threshold, "status": status,
+        },
+    )]
+
+
+# Matches action-language a worker leaves in its LAST comment on a card it
+# then marked done — Norwegian + English. Heuristic by construction (same
+# caveat as REVIEW_INTENT_PATTERN below it in spirit): a done card with no
+# child card tracking the recommendation buries the finding the moment it
+# scrolls off the active board view. Set cfg["done_action_language_pattern"]
+# = "" to disable.
+DONE_ACTION_LANGUAGE_PATTERN = (
+    r"\b(?:anbefaler|recommends?|recommended|flagger|flagget|flags?|flagged|"
+    r"b(?:o|\u00f8)r bygges|should be built|handling(?:s)? p\u00e5krevd|"
+    r"handling needed|action needed)\b"
+)
+
+
+def _rule_done_action_language_unaddressed(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """A ``done`` card whose LAST comment reads as an unaddressed finding
+    (\"anbefaler\", \"recommend\", \"flagger\", \"should be built\", \"action
+    needed\", ...) and which has NO child card at all. Done cards drop out of
+    the active board view, so a finding buried in a closing comment is only
+    ever rediscovered by someone manually querying that exact card — this
+    happened twice independently in one evening (t_e99491e0, t_b3079eb0) with
+    nothing linking the two. Heuristic regex, hence ``warning``; deliberately
+    does NOT create a follow-up card itself — flag only, same low-intervention
+    level as ``_rule_review_intent_untagged``. Requires both ``comments`` and
+    ``graph`` context; either missing means unprovable, so it stays silent
+    rather than risk a false positive."""
+    if _task_field(task, "status") != "done":
+        return []
+    pattern = cfg.get("done_action_language_pattern", DONE_ACTION_LANGUAGE_PATTERN)
+    if not pattern:
+        return []
+
+    graph = cfg.get("_graph")
+    if not isinstance(graph, dict):
+        return []
+    if graph.get("children"):
+        return []  # a child already exists to carry the follow-up.
+
+    comments = cfg.get("_comments")
+    if not comments:
+        return []
+    last_comment = comments[-1]
+    body = str(_task_field(last_comment, "body") or "")
+    if not body.strip():
+        return []
+    match = re.search(pattern, body, re.IGNORECASE)
+    if not match:
+        return []
+
+    task_id = str(_task_field(task, "id") or "")
+    actions: list[DiagnosticAction] = []
+    if task_id:
+        actions.append(_cli_hint(
+            "Create a follow-up card for the recommendation",
+            f"hermes kanban create --parents {shlex.quote(task_id)} --assignee <profile> "
+            f"{shlex.quote('<title>')}",
+            suggested=True,
+        ))
+        actions.append(DiagnosticAction(
+            kind="comment", label="Or note here why no follow-up is needed",
+            payload={"task_id": task_id},
+        ))
+
+    comment_ts = int(_task_field(last_comment, "created_at", default=0) or 0) or int(now)
+    detail_body = body.strip()
+    snippet = detail_body[:300] + ("\u2026" if len(detail_body) > 300 else "")
+    return [Diagnostic(
+        kind="done_action_language_unaddressed", severity="warning",
+        title="Done card's last comment reads as an unaddressed finding",
+        detail="This card is done and has no child card, but its last comment contains "
+               "action language (e.g. 'anbefaler'/'recommend'/'flagger'/'should be built'/"
+               "'action needed') that nothing downstream tracks. Once a card leaves the active "
+               "board view its findings are only found by someone manually querying this exact "
+               "card. Create a follow-up card, or comment here if the finding was a dead end.",
+        actions=actions,
+        first_seen_at=comment_ts, last_seen_at=comment_ts, count=1,
+        data={"matched_text": match.group(0).strip(), "comment_snippet": snippet},
+    )]
+
+
 # Order matters: earlier rules render first on severity ties.
 _RULES: list[RuleFn] = [
     _rule_hallucinated_cards,
@@ -689,6 +924,8 @@ _RULES: list[RuleFn] = [
     _rule_stuck_in_blocked,
     _rule_block_unblock_cycling,
     _rule_stranded_in_ready,
+    _rule_optimization_missing_cost_baseline,
+    _rule_done_action_language_unaddressed,
 ]
 
 
@@ -703,6 +940,9 @@ DEFAULT_CONFIG = {
     # Below 30 min the signal is dominated by tasks about to be claimed on
     # the next dispatcher tick.
     "stranded_threshold_seconds": 30 * 60,
+    # Empty string disables the optimization-cost-baseline heuristic
+    # (``kanban.diagnostics.optimization_intent_pattern: ""``).
+    "optimization_intent_pattern": OPTIMIZATION_INTENT_PATTERN,
 }
 
 
@@ -751,14 +991,20 @@ def compute_task_diagnostics(
     now: Optional[int] = None,
     config: Optional[dict] = None,
     graph: Optional[dict] = None,
+    comments: Optional[list] = None,
 ) -> list[Diagnostic]:
     """Run every rule for one task; critical first, then error, warning; ties
-    broken by most-recent ``last_seen_at``."""
+    broken by most-recent ``last_seen_at``. ``comments`` is optional context
+    (only ``_rule_done_action_language_unaddressed`` reads it) — omitting it
+    just keeps that one rule silent, same graceful-degradation contract as
+    ``graph``."""
     now_ts = int(now if now is not None else time.time())
     config = config or {}
     cfg = {**DEFAULT_CONFIG, **config}
     if graph is not None:
         cfg["_graph"] = graph
+    if comments is not None:
+        cfg["_comments"] = comments
     if not _has_explicit_threshold(config) and "failure_limit" in config:
         cfg["failure_threshold"] = _positive_int(
             config.get("failure_limit"), DEFAULT_CONFIG["failure_threshold"],
@@ -790,5 +1036,7 @@ DIAGNOSTIC_KINDS = (
     "stuck_in_blocked",
     "block_unblock_cycling",
     "stranded_in_ready",
+    "optimization_missing_cost_baseline",
+    "done_action_language_unaddressed",
 )
 # ---- END PLUGIN-COMPAT ----

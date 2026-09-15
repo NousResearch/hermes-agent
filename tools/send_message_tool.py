@@ -537,7 +537,7 @@ _PLUGIN_STANDALONE_MEDIA = {"discord": ("Discord", False, True, [], False), "fei
 
 
 async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files, *, thread_id,
-                                  max_len, force_document):
+                                  max_len, force_document, send_metadata=None):
     """Chunked send through a plugin's standalone_sender_fn; one captionable file + short text
     rides as the media caption."""
     label, discover, captionable, empty_media, pass_force = _PLUGIN_STANDALONE_MEDIA[platform_name]
@@ -545,6 +545,8 @@ async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chun
     if err:
         return err
     extra = {"force_document": force_document} if pass_force else {}
+    if platform_name == "feishu" and send_metadata is not None:
+        extra["metadata"] = send_metadata
     if captionable:
         # Cap on the platform's own message limit so the caption is deliverable.
         caption, _ = _media_caption_split(message, media_files, max_caption_len=(max_len or _DEFAULT_CAPTION_LIMIT))
@@ -587,7 +589,8 @@ _TEXT_SENDERS = {
 _MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack"
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None,
+                            *, send_metadata=None):
     """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
     Weixin first (its native helper must not be blocked by unrelated optional imports such as
     lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
@@ -604,9 +607,14 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.platforms.base import BasePlatformAdapter
     max_len = _platform_max_length(platform)
     chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]
+    if platform_name == "feishu" and send_metadata is None:
+        from gateway.channel_directory import lookup_channel_metadata
+        target_id = f"{chat_id}:{thread_id}" if thread_id else str(chat_id)
+        send_metadata = lookup_channel_metadata(platform_name, target_id) or None
     if platform_name == "discord" or (media_files and platform_name in _PLUGIN_STANDALONE_MEDIA):
         return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files,
-                                             thread_id=thread_id, max_len=max_len, force_document=force_document)
+                                             thread_id=thread_id, max_len=max_len, force_document=force_document,
+                                             send_metadata=send_metadata)
     route = _CHUNKED_ROUTES.get(platform_name)
     if route is not None and (media_files or not route[0]):
         _, empty_media, sender = route
@@ -623,7 +631,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                    f"native send_message media delivery is currently only supported for {_MEDIA_PLATFORMS_NOTE}")
     text_sender = _TEXT_SENDERS.get(platform_name)
     if text_sender is not None:
-        send_one = lambda chunk, is_last: text_sender(pconfig, chat_id, chunk, thread_id)  # noqa: E731
+        extra = {"metadata": send_metadata} if platform_name == "feishu" and send_metadata is not None else {}
+        send_one = lambda chunk, is_last: text_sender(pconfig, chat_id, chunk, thread_id, **extra)  # noqa: E731
     else:
         from gateway.platform_registry import platform_registry
         entry = platform_registry.get(platform_name)

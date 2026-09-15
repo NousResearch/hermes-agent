@@ -289,6 +289,9 @@ export const fa = defineLocale({
     toolCalls: "فراخوانی‌های ابزار",
     noModelsData: "برای این بازه داده مدلی وجود ندارد",
     startSession: "برای دیدن داده مدل‌ها نشستی شروع کنید",
+    change: "تغییر",
+    configure: "پیکربندی",
+    setMainModel: "تنظیم مدل اصلی",
   },
 
   logs: {
@@ -496,6 +499,9 @@ export const fa = defineLocale({
     currentProfile: "فعلی ({name})",
     managingProfile:
       "پروفایل «{name}» در حال مدیریت است — تغییر وضعیت‌ها روی همان پروفایل اعمال می‌شود، نه داشبورد فعلی.",
+    browseHub: "مرور مرکز مهارت‌ها",
+    learnASkill: "آموزش مهارت",
+    newSkill: "مهارت جدید",
   },
 
   config: {

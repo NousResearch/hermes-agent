@@ -434,7 +434,7 @@ export default function SkillsPage() {
                 />
                 <PanelItem
                   icon={Search}
-                  label="Browse hub"
+                  label={t.skills.browseHub}
                   active={view === "hub"}
                   onClick={() => {
                     setView("hub");
@@ -549,7 +549,7 @@ export default function SkillsPage() {
                       onClick={openLearn}
                       prefix={<Sparkles />}
                     >
-                      Learn a skill
+                      {t.skills.learnASkill}
                     </Button>
                     <Button
                       size="sm"
@@ -557,7 +557,7 @@ export default function SkillsPage() {
                       onClick={openCreateEditor}
                       prefix={<Plus />}
                     >
-                      New skill
+                      {t.skills.newSkill}
                     </Button>
                   </div>
                 </div>
@@ -704,7 +704,7 @@ export default function SkillsPage() {
       <Dialog open={learnOpen} onOpenChange={setLearnOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Learn a skill</DialogTitle>
+            <DialogTitle>{t.skills.learnASkill}</DialogTitle>
             <DialogDescription>
               Point Hermes at anything and it will distill a reusable skill —
               following the house authoring standards. Fill in any combination
@@ -828,7 +828,7 @@ function PanelItem({ active, icon: Icon, label, onClick }: PanelItemProps) {
 interface PanelItemProps {
   active: boolean;
   icon: React.ComponentType<{ className?: string }>;
-  label: string;
+  label: string | undefined;
   onClick: () => void;
 }
 

@@ -3,9 +3,10 @@ minimal. Config: ``display.runtime_footer: {enabled: bool, fields: [model, conte
 (order shown; drop any to hide), per-platform override ``display.platforms.<p>.runtime_footer``,
 toggled by ``/footer on|off``. Fields: ``model`` (vendor prefix dropped), ``context_pct`` (last-call
 occupancy), ``latency`` (turn wall-clock, opt-in — NOT in the default set so an unset ``fields``
-renders exactly as before), ``cwd`` (home-relative). ``gateway/run.py`` appends the footer to the
-final response only (never to tool-progress or streaming partials); when streaming already
-delivered the text, it goes out as a trailing message via ``send_trailing_footer()``."""
+renders exactly as before), ``cwd`` (home-relative). Plugins may append a display-only fragment via
+the fail-open ``append_runtime_footer`` hook. ``gateway/run.py`` appends the footer to the final
+response only (never to tool-progress or streaming partials); when streaming already delivered the
+text, it goes out as a trailing message via ``send_trailing_footer()``."""
 
 from __future__ import annotations
 
@@ -14,6 +15,49 @@ from typing import Any, Iterable, Optional
 
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
 _SEP = " · "
+_MAX_PLUGIN_FRAGMENT_CHARS = 160
+
+
+def _normalize_plugin_fragment(fragment: object) -> str:
+    """Return one bounded display line, rejecting non-string or empty plugin output."""
+    if not isinstance(fragment, str):
+        return ""
+    normalized = " ".join(fragment.split())
+    return normalized[:_MAX_PLUGIN_FRAGMENT_CHARS].rstrip()
+
+
+def _append_plugin_fragments(footer: str, *, model: Optional[str], provider: Optional[str],
+                             context_tokens: int, context_length: Optional[int], cwd: Optional[str],
+                             turn_seconds: Optional[float], platform_key: Optional[str]) -> str:
+    """Append registered display-only footer fragments without exposing config or credentials.
+
+    The hook is invoked only after an enabled built-in footer has rendered. That preserves the
+    existing footer opt-in as a single privacy/display control. The completed string is consumed by
+    ordinary and streamed final delivery alike.
+    """
+    try:
+        from hermes_cli.lifecycle import has_hook, invoke_hook
+
+        if not has_hook("append_runtime_footer"):
+            return footer
+        fragments = invoke_hook(
+            "append_runtime_footer",
+            footer=footer,
+            model=model,
+            provider=provider,
+            context_tokens=context_tokens,
+            context_length=context_length,
+            cwd=cwd,
+            turn_seconds=turn_seconds,
+            platform=platform_key,
+        )
+    except Exception:
+        # Plugin discovery/invocation must never suppress a completed agent response.
+        return footer
+
+    rendered = [_normalize_plugin_fragment(fragment) for fragment in fragments]
+    rendered = [fragment for fragment in rendered if fragment]
+    return _SEP.join((footer, *rendered)) if rendered else footer
 
 
 def _home_relative_cwd(cwd: str) -> str:
@@ -94,7 +138,8 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
 
 def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str | None,
                       model: Optional[str], context_tokens: int, context_length: Optional[int],
-                      cwd: Optional[str] = None, turn_seconds: Optional[float] = None) -> str:
+                      cwd: Optional[str] = None, turn_seconds: Optional[float] = None,
+                      provider: Optional[str] = None) -> str:
     """Entry point for gateway/run.py: footer text, or "" when disabled / no data. Callers append it
     to the final response themselves, preserving a single blank line of separation.
     ``turn_seconds`` is the caller-measured (``time.monotonic()``) run duration; ``None`` skips the
@@ -102,6 +147,12 @@ def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str |
     cfg = resolve_footer_config(user_config, platform_key)
     if not cfg.get("enabled"):
         return ""
-    return format_runtime_footer(model=model, context_tokens=context_tokens,
-                                 context_length=context_length, cwd=cwd, turn_seconds=turn_seconds,
-                                 fields=cfg.get("fields") or _DEFAULT_FIELDS)
+    footer = format_runtime_footer(model=model, context_tokens=context_tokens,
+                                   context_length=context_length, cwd=cwd, turn_seconds=turn_seconds,
+                                   fields=cfg.get("fields") or _DEFAULT_FIELDS)
+    if not footer:
+        return ""
+    return _append_plugin_fragments(
+        footer, model=model, provider=provider, context_tokens=context_tokens,
+        context_length=context_length, cwd=cwd, turn_seconds=turn_seconds, platform_key=platform_key,
+    )

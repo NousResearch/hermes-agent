@@ -952,6 +952,7 @@ Each hook is documented in full on the **[Event Hooks reference](/user-guide/fea
 | [`on_session_finalize`](/user-guide/features/hooks#on_session_finalize) | CLI/gateway tears down an active session | `session_id: str \| None, platform: str` | ignored |
 | [`on_session_reset`](/user-guide/features/hooks#on_session_reset) | Gateway swaps in a new session key (`/new`, `/reset`) | `session_id: str, platform: str` | ignored |
 | [`gateway_platform_event`](/user-guide/features/hooks#gateway_platform_event) | An authorized platform-native event is normalized at the gateway boundary (Telegram reactions currently) | `platform: str, event_type: str, payload: dict` | ignored |
+| `append_runtime_footer` | After an enabled gateway runtime footer has rendered | `footer: str, model: str \| None, provider: str \| None, context_tokens: int, context_length: int \| None, cwd: str \| None, turn_seconds: float \| None, platform: str \| None, telemetry_schema_version: str` | optional display fragment appended to the footer |
 | `kanban_task_claimed` | A kanban task is claimed (dispatcher process, before the worker spawns) | `task_id: str, board: str \| None, assignee: str \| None, run_id: int \| None, profile_name: str` | ignored |
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
 | `kanban_task_blocked` | A kanban task is blocked (worker process) | `task_id, board, assignee, run_id, profile_name, reason: str \| None` | ignored |
@@ -959,6 +960,8 @@ Each hook is documented in full on the **[Event Hooks reference](/user-guide/fea
 Most hooks are fire-and-forget observers — their return values are ignored. The exceptions are `pre_llm_call`, which can inject context into the conversation, and `pre_tool_call`, which can return a block/approve directive.
 
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
+
+`append_runtime_footer` is an append-only, Python-plugin-only display hook for standalone observability plugins. It fires only when the user has enabled `display.runtime_footer` and Hermes has rendered a non-empty built-in footer; it receives no config object, credentials, adapter handle, or transcript. A callback may return only a string fragment. Hermes collapses its whitespace to one line and caps it at 160 characters; non-string, empty, failed, timed-out, or suppressed results are omitted. Plugins should read precomputed local state rather than making network requests while rendering a reply. This hook is not available to shell hooks, so a missing provider metric cannot suppress the normal footer or the response.
 
 The kanban lifecycle hooks fire **after** the board DB change commits, so a callback always sees durable state and can never hold the SQLite write lock. Because kanban workers run as separate `hermes -p <profile> chat -q` subprocesses, `kanban_task_claimed` fires in the **dispatcher** process while `kanban_task_completed` / `kanban_task_blocked` fire in the **worker** process — hook in the dispatcher to observe every transition centrally, or in the worker for per-task in-session context.
 

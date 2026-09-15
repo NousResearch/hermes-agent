@@ -101,6 +101,62 @@ class TestCronRunJobGuard:
         assert "Refusing non-interactive startup" not in (error or "")
 
 
+class TestAcpGuard:
+    """`hermes acp` / `hermes-acp`: driven by an IDE over stdio JSON-RPC, no
+    human present to repair a corrupt config.yaml. Same policy as gateway/
+    serve/cron (issue #81952)."""
+
+    def test_acp_refuses_corrupt_config(self, tmp_path, capsys):
+        from acp_adapter.entry import _guard_corrupt_user_config
+
+        _write_corrupt_config(tmp_path)
+
+        with pytest.raises(SystemExit) as exc_info:
+            _guard_corrupt_user_config()
+
+        assert exc_info.value.code == 2
+        assert "Refusing non-interactive startup" in capsys.readouterr().err
+
+    def test_acp_allows_valid_config(self, tmp_path):
+        from acp_adapter.entry import _guard_corrupt_user_config
+
+        (tmp_path / "config.yaml").write_text("model:\n  default: local/test\n")
+        _guard_corrupt_user_config()  # must not raise
+
+    def test_acp_allows_missing_config(self, tmp_path):
+        from acp_adapter.entry import _guard_corrupt_user_config
+
+        _guard_corrupt_user_config()  # first-run state: must not raise
+
+    def test_acp_escape_hatch(self, monkeypatch, tmp_path):
+        from acp_adapter.entry import _guard_corrupt_user_config
+
+        _write_corrupt_config(tmp_path)
+        monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
+        _guard_corrupt_user_config()  # must not raise
+
+    def test_acp_main_exits_before_agent_server_starts(self, tmp_path, monkeypatch, capsys):
+        """`main()` must fail closed before touching HermesACPAgent/asyncio."""
+        from acp_adapter import entry as entry_mod
+
+        _write_corrupt_config(tmp_path)
+        monkeypatch.setattr(entry_mod, "_setup_logging", lambda: None)
+        monkeypatch.setattr(entry_mod, "_load_env", lambda: None)
+
+        sentinel = RuntimeError("reached agent construction")
+
+        def _fail_if_reached(*args, **kwargs):
+            raise sentinel
+
+        monkeypatch.setattr(entry_mod.asyncio, "run", _fail_if_reached)
+
+        with pytest.raises(SystemExit) as exc_info:
+            entry_mod.main([])
+
+        assert exc_info.value.code == 2
+        assert "Refusing non-interactive startup" in capsys.readouterr().err
+
+
 class TestServeGuard:
     def test_serve_headless_refuses_corrupt_config(self, tmp_path, capsys):
         """The `hermes serve` headless path fails closed before startup."""

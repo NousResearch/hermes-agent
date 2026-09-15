@@ -84,6 +84,30 @@ def _load_env() -> None:
         log.info("No .env found at %s, using system env", hermes_home / ".env")
 
 
+def _guard_corrupt_user_config() -> None:
+    """Fail closed when the active profile's config.yaml cannot be parsed.
+
+    The ACP server is a fully non-interactive surface: it is driven by an
+    IDE/editor over stdio JSON-RPC, not a human at a terminal, so nobody is
+    present to repair a corrupt ``config.yaml``. Silently continuing on
+    built-in defaults lets provider auto-detection adopt credentials from
+    ``.env`` that the config never named (issue #81952) — every new ACP
+    session builds a fresh ``AIAgent`` (``acp_adapter/session.py``'s
+    ``create_session``/``_make_agent``) subject to exactly that risk. Same
+    policy and escape hatch (``HERMES_IGNORE_USER_CONFIG=1``) as the
+    non-interactive CLI guard (``hermes_cli/main.py``) and the gateway/serve/
+    cron surfaces (``gateway/run.py::_guard_corrupt_user_config``,
+    ``hermes_cli/main.py::cmd_dashboard``, ``cron/scheduler.py::run_job``).
+    """
+    from hermes_cli.config import InvalidUserConfigError, require_parseable_user_config
+
+    try:
+        require_parseable_user_config()
+    except InvalidUserConfigError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="hermes-acp", description="Run Hermes Agent as an ACP stdio server.")
     parser.add_argument("--version", action="store_true", help="Print Hermes version and exit")
@@ -170,6 +194,7 @@ def main(argv: list[str] | None = None) -> None:
 
     _setup_logging()
     _load_env()
+    _guard_corrupt_user_config()
 
     logger = logging.getLogger(__name__)
     logger.info("Starting hermes-agent ACP adapter")

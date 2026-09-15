@@ -1348,6 +1348,51 @@ describe('collectUnspokenTurnSpeech', () => {
     expect(collectUnspokenTurnSpeech(messages, 'a1')?.text).toBe('Live reply only.')
   })
 
+  it('speaks only the remainder when a later bubble re-sends the spoken text as its prefix', () => {
+    // Providers continuing a turn after a tool call re-send the previous
+    // assistant text as the next bubble's prefix (see
+    // dedupeRepeatedTextInParts). Speech reads ACROSS bubbles, so without
+    // cross-bubble dedupe the whole earlier paragraph was spoken again.
+    const messages = [
+      user('u1', 'what time is it?'),
+      assistant('a1', 'Let me check the clock.'),
+      assistant('a2', 'Let me check the clock. It is 9 PM.')
+    ]
+
+    const speech = collectUnspokenTurnSpeech(messages, null)
+
+    expect(speech?.text).toBe('Let me check the clock.\n\nIt is 9 PM.')
+  })
+
+  it('consumes a pure repeat bubble without re-speaking it', () => {
+    const messages = [
+      user('u1', 'go'),
+      assistant('a1', 'Let me check the clock.'),
+      assistant('a2', 'Let me check the clock.')
+    ]
+
+    const speech = collectUnspokenTurnSpeech(messages, null)
+
+    expect(speech?.text).toBe('Let me check the clock.')
+  })
+
+  it('keeps the append-only aggregation invariant under prefix dedupe', () => {
+    const turnStart = [user('u1', 'go'), assistant('a1', 'Let me check.', { interim: true })]
+    const first = collectUnspokenTurnSpeech(turnStart, null)
+
+    const turnLater = [
+      ...turnStart,
+      // Provider resends the interim text as the prefix of the next bubble —
+      // the later snapshot's text must STILL start with the earlier one
+      // (the live session appends by length).
+      assistant('a2', 'Let me check. Still work', { pending: true })
+    ]
+    const later = collectUnspokenTurnSpeech(turnLater, null)
+
+    expect(later?.text.startsWith(first?.text ?? '')).toBe(true)
+    expect(later?.text).toBe('Let me check.\n\nStill work')
+  })
+
   it('bounds to a hidden user turn too (widget intents render no bubble)', () => {
     const messages = [
       user('u1', 'old question'),

@@ -93,6 +93,14 @@ export function collectUnspokenTurnSpeech(
   let pending = false
   const parts: string[] = []
 
+  // Providers that continue a turn after a tool call re-send the previous
+  // assistant text as the next bubble's prefix (same failure mode
+  // dedupeRepeatedTextInParts fixes within ONE message — but that runs at
+  // render per-message, while speech reads ACROSS the turn's bubbles). Dedupe
+  // at the bubble boundary: if a bubble starts with everything already
+  // collected this turn, speak only the remainder.
+  let spokenSoFar = ''
+
   for (const message of messages.slice(spokenIndex + 1)) {
     if (message.role !== 'assistant' || message.hidden) {
       continue
@@ -106,7 +114,22 @@ export function collectUnspokenTurnSpeech(
     }
 
     id ??= message.id
-    parts.push(text)
+
+    if (spokenSoFar && text.startsWith(spokenSoFar)) {
+      const remainder = text.slice(spokenSoFar.length).trim()
+
+      if (remainder) {
+        parts.push(remainder)
+        spokenSoFar = text
+      } else {
+        // Pure repeat of what was already spoken — nothing new to say, but
+        // still consume the bubble so pending state tracks it.
+        spokenSoFar = text
+      }
+    } else {
+      parts.push(text)
+      spokenSoFar += (spokenSoFar ? '\n\n' : '') + text
+    }
   }
 
   if (!id) {

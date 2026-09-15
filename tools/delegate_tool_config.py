@@ -354,6 +354,16 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
         f"'{pinned_command}' command, which was not found on PATH. "
         f"Install it or choose a different delegation provider.",
     )
+    # A provider override is assembled into the child as one bundle (see _resolve_child_runtime), so it must
+    # carry its own endpoint. ACP transports are addressed by command and native-SDK providers by their SDK,
+    # so neither needs a URL; anything else without one would otherwise be built with no endpoint at all.
+    if (not runtime.get("base_url") and not pinned_command
+            and configured_provider.strip().lower() not in _NATIVE_SDK_PROVIDERS):
+        raise ValueError(
+            f"Delegation provider '{configured_provider}' resolved without a base_url. "
+            f"Refusing to build a subagent with an incomplete credential bundle — check the provider's "
+            f"configuration / auth, or set delegation.base_url for a direct endpoint."
+        )
     return _credential_bundle(
         v["model"] or runtime.get("model") or None,
         configured_provider if runtime.get("provider") == _RUNTIME_PROVIDER_CUSTOM else runtime.get("provider"),
@@ -446,8 +456,17 @@ def _resolve_child_runtime(
     ``override_provider`` clears the parent's ACP transport, fallback chain and OpenRouter routing filters so the
     pinned provider is actually honoured."""
     effective_model = model or parent_agent.model
-    effective_provider = override_provider or getattr(parent_agent, "provider", None)
-    effective_base_url = override_base_url or _inherit_parent_base_url(parent_agent, parent_agent.base_url)
+    # provider/base_url are one bundle: all from the override, or all from the parent. Per-field fallback built
+    # children like an override provider pointed at the PARENT's endpoint (e.g. copilot credentials on the
+    # parent's Codex URL), which 404s on every request and can't be rescued by the fallback chain, whose dedup
+    # matches provider+model and so skips the entry as a self-loop. _inherit_parent_base_url recovers the
+    # parent's live endpoint, which is meaningless for a different provider.
+    if override_provider:
+        effective_provider = override_provider
+        effective_base_url = override_base_url
+    else:
+        effective_provider = getattr(parent_agent, "provider", None)
+        effective_base_url = override_base_url or _inherit_parent_base_url(parent_agent, parent_agent.base_url)
     # api_mode: each provider has its own wire, so a different provider re-derives (None) instead of inheriting (404s
     # otherwise). Nous Portal is dual-wire within one provider (anthropic/* → Messages, else chat_completions), so
     # same-provider inheritance would pin the child on the wrong wire — re-derive.

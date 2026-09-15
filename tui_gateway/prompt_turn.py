@@ -534,8 +534,19 @@ def _invoke_agent(
     turn_author: dict | None = None) -> None:
     """Wire the streaming callbacks and run the conversation into ``st.result``."""
     agent = st.agent
+    # Bot Chat mirrors gateway.stream_consumer: deltas are withheld while the streamed buffer
+    # could still resolve to a silence marker ("NO"->"NO_REPLY"), so a bare marker is never
+    # shown and then retracted (the client keeps streamed text when message.complete is "").
+    hold = {"buf": "", "held": ""} if _is_bot_mode_session(session) else None
 
     def _stream(delta):
+        if hold is not None and isinstance(delta, str):
+            from gateway.response_filters import is_partial_silence_marker
+            hold["buf"] += delta
+            if is_partial_silence_marker(hold["buf"]):
+                hold["held"] += delta
+                return
+            delta, hold["held"] = hold["held"] + delta, ""
         with session["history_lock"]:
             _append_inflight_delta(session, delta)
         payload = {"text": delta}

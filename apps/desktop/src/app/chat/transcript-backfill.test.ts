@@ -159,6 +159,37 @@ describe('graftRefreshedTailOntoBackfill', () => {
   })
 })
 
+describe('mergeOlderTranscriptPage tool resource identity', () => {
+  const tool = (id: string, rowId: number, toolCallId: string): ChatMessage => ({
+    id,
+    rowId,
+    role: 'assistant',
+    parts: [
+      {
+        type: 'tool-call',
+        toolCallId,
+        toolName: 'read_file',
+        args: {},
+        argsText: '{}',
+        result: {},
+        isError: false
+      } as never
+    ]
+  })
+
+  it('renames a toolCallId duplicated across separately hydrated pages', () => {
+    const existing = [tool('tail', 200, 'call-duplicate')]
+    const older = [tool('older', 100, 'call-duplicate')]
+    const merged = mergeOlderTranscriptPage(existing, older)
+    const ids = merged.flatMap(message =>
+      message.parts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : []))
+    )
+
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(ids).toEqual(['call-duplicate-older-0', 'call-duplicate'])
+  })
+})
+
 describe('backfillOlderTranscriptPage', () => {
   beforeEach(() => {
     $transcriptTailBySessionId.set({})

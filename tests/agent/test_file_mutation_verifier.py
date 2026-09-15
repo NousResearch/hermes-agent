@@ -114,6 +114,10 @@ def _bare_agent() -> AIAgent:
     return agent
 
 
+def _mutation_identity(agent: AIAgent, path: str) -> str:
+    return agent._file_mutation_path_identity(path, None)
+
+
 class TestRecordFileMutationResult:
     def test_non_mutating_tool_ignored(self):
         agent = _bare_agent()
@@ -130,9 +134,10 @@ class TestRecordFileMutationResult:
             result, is_error=True,
         )
         state = agent._turn_failed_file_mutations
-        assert "/tmp/a.md" in state
-        assert state["/tmp/a.md"]["tool"] == "patch"
-        assert "Could not find old_string" in state["/tmp/a.md"]["error_preview"]
+        identity = _mutation_identity(agent, "/tmp/a.md")
+        assert identity in state
+        assert state[identity]["tool"] == "patch"
+        assert "Could not find old_string" in state[identity]["error_preview"]
 
     def test_success_removes_prior_failure(self):
         agent = _bare_agent()
@@ -141,7 +146,7 @@ class TestRecordFileMutationResult:
             "patch", {"mode": "replace", "path": "/tmp/a.md", "old_string": "x", "new_string": "y"},
             json.dumps({"error": "not found"}), is_error=True,
         )
-        assert "/tmp/a.md" in agent._turn_failed_file_mutations
+        assert _mutation_identity(agent, "/tmp/a.md") in agent._turn_failed_file_mutations
         # Second attempt with corrected old_string succeeds
         agent._record_file_mutation_result(
             "patch", {"mode": "replace", "path": "/tmp/a.md", "old_string": "real", "new_string": "fixed"},
@@ -171,7 +176,7 @@ class TestRecordFileMutationResult:
             json.dumps({"error": "write failed"}),
             is_error=True,
         )
-        assert "/tmp/a.py" in agent._turn_failed_file_mutations
+        assert _mutation_identity(agent, "/tmp/a.py") in agent._turn_failed_file_mutations
 
         result = json.dumps({
             "bytes_written": 24,
@@ -195,7 +200,7 @@ class TestRecordFileMutationResult:
             json.dumps({"error": "Could not find old_string"}),
             is_error=True,
         )
-        assert "/tmp/a.py" in agent._turn_failed_file_mutations
+        assert _mutation_identity(agent, "/tmp/a.py") in agent._turn_failed_file_mutations
 
         result = json.dumps({
             "success": True,
@@ -213,7 +218,7 @@ class TestRecordFileMutationResult:
 
         assert agent._turn_failed_file_mutations == {}
 
-    def test_repeated_failure_keeps_first_error(self):
+    def test_repeated_failure_keeps_latest_error(self):
         agent = _bare_agent()
         agent._record_file_mutation_result(
             "patch", {"mode": "replace", "path": "/tmp/a.md", "old_string": "v1", "new_string": "y"},
@@ -223,9 +228,49 @@ class TestRecordFileMutationResult:
             "patch", {"mode": "replace", "path": "/tmp/a.md", "old_string": "v2", "new_string": "y"},
             json.dumps({"error": "second error"}), is_error=True,
         )
-        # Keep the original error — swapping to the latest would obscure
-        # the initial root cause.
-        assert "first error" in agent._turn_failed_file_mutations["/tmp/a.md"]["error_preview"]
+        identity = _mutation_identity(agent, "/tmp/a.md")
+        assert "second error" in agent._turn_failed_file_mutations[identity]["error_preview"]
+
+    def test_receiptless_outcomes_are_unverified_then_latest_error_wins(self):
+        agent = _bare_agent()
+        args = {"path": "/tmp/a.md", "content": "new"}
+        agent._record_file_mutation_result(
+            "write_file", args, json.dumps({"error": "first error"}), is_error=True,
+        )
+        agent._record_file_mutation_result(
+            "write_file", args, json.dumps({"status": "ok"}), is_error=False,
+        )
+        identity = _mutation_identity(agent, "/tmp/a.md")
+        state = agent._turn_failed_file_mutations[identity]
+        assert state["certainty"] == "unverified"
+        assert state["error_preview"] == "No verified write receipt was returned."
+
+        agent._record_file_mutation_result(
+            "write_file", args, json.dumps({"error": "latest error"}), is_error=True,
+        )
+        state = agent._turn_failed_file_mutations[identity]
+        assert state["certainty"] == "failed"
+        assert "latest error" in state["error_preview"]
+
+    def test_canonical_success_path_cleans_up_prior_failure(self, monkeypatch):
+        from pathlib import Path
+        import tools.file_tools_paths as file_paths
+
+        def resolve(path, task_id):
+            return Path("/" + str(path).replace("\\", "/").lower().lstrip("/")).resolve()
+
+        monkeypatch.setattr(file_paths, "_resolve_path_for_task", resolve)
+        agent = _bare_agent()
+        agent._record_file_mutation_result(
+            "patch", {"mode": "replace", "path": "SRC\\APP.PY"},
+            json.dumps({"error": "not found"}), is_error=True, task_id="task-1",
+        )
+        agent._record_file_mutation_result(
+            "patch", {"mode": "replace", "path": "/src/app.py"},
+            json.dumps({"success": True, "files_modified": ["/src/app.py"]}),
+            is_error=False, task_id="task-1",
+        )
+        assert agent._turn_failed_file_mutations == {}
 
 
 
@@ -244,7 +289,8 @@ class TestFormatFooter:
         out = AIAgent._format_file_mutation_failure_footer(
             {"/tmp/a.md": {"tool": "patch", "error_preview": "Could not find old_string"}},
         )
-        assert "1 file(s) were NOT modified" in out
+        assert "latest file-mutation attempt for 1 target(s)" in out
+        assert "does not prove that no bytes changed earlier" in out
         assert "/tmp/a.md" in out
         assert "Could not find old_string" in out
         assert "git status" in out  # user-actionable hint
@@ -255,7 +301,7 @@ class TestFormatFooter:
             for i in range(15)
         }
         out = AIAgent._format_file_mutation_failure_footer(failed)
-        assert "15 file(s) were NOT modified" in out
+        assert "latest file-mutation attempt for 15 target(s)" in out
         assert "… and 5 more" in out
         # Ten file bullets + header + "and X more" line
         lines = out.split("\n")

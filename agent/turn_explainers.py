@@ -209,12 +209,37 @@ def _display_flag_enabled(agent, *, env_var: str, config_key: str, cache_attr: s
 class TurnExplainersMixin:
     """File-mutation failure footer + turn-completion explainer (see module docstring)."""
 
+    @staticmethod
+    def _file_mutation_path_identity(path: str, task_id: Optional[str]) -> str:
+        """Return the file tool's task-resolved, OS-normalized path identity.
+
+        The verifier is observational: failures may report a relative spelling while a
+        later write receipt uses an absolute spelling.  Resolve both through the file
+        tool's task-aware resolver so a Docker/worktree cwd cannot leave stale entries.
+        If resolution is unavailable, retain a normalized spelling rather than losing
+        an otherwise useful warning.
+        """
+        try:
+            from tools.file_tools_paths import _resolve_path_for_task
+
+            path = str(_resolve_path_for_task(path, task_id or "default"))
+        except Exception:
+            path = os.path.expanduser(path)
+        return os.path.normcase(os.path.normpath(path))
+
     def _record_file_mutation_result(
-        self, tool_name: str, args: Dict[str, Any], result: Any, is_error: bool
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        result: Any,
+        is_error: bool,
+        *,
+        task_id: Optional[str] = None,
     ) -> None:
         """Record a ``write_file`` / ``patch`` outcome for the turn-end verifier.
 
-        Failures store ``{path: {error_preview, tool}}``; a later success on the same path removes the entry.
+        The latest unverified outcome is stored by task-resolved path identity; a later
+        verified success for that identity removes the entry.
         No-op when the per-turn state dict is not initialised (tool dispatched outside ``run_conversation``).
         """
         if tool_name not in _FILE_MUTATING_TOOLS:
@@ -228,6 +253,9 @@ class TurnExplainersMixin:
         landed = file_mutation_result_landed(tool_name, result)
         if landed:
             landed_paths = _extract_landed_file_mutation_paths(tool_name, args, result)
+            landed_identities = {
+                self._file_mutation_path_identity(path, task_id) for path in landed_paths
+            }
             changed = getattr(self, "_turn_file_mutation_paths", None)
             if changed is not None:
                 changed.update(landed_paths)
@@ -238,14 +266,26 @@ class TurnExplainersMixin:
                 for _p in landed_paths:
                     with suppress(Exception):
                         mgr.record_agent_write(_p)
-        if is_error and not landed:
-            # Keep the FIRST error per path unless a later success replaces it.
-            preview = _extract_error_preview(result)
-            for path in targets:
-                state.setdefault(path, {"tool": tool_name, "error_preview": preview})
-        else:
-            for path in targets:
-                state.pop(path, None)
+            for identity in landed_identities:
+                state.pop(identity, None)
+            return
+
+        # Absence of a recognized receipt does not establish that no bytes changed.
+        # Keep explicit dispatch errors distinct from receipt-less outcomes, and let
+        # each later unresolved outcome replace an earlier one for the same target.
+        certainty = "failed" if is_error else "unverified"
+        preview = (
+            _extract_error_preview(result)
+            if is_error
+            else "No verified write receipt was returned."
+        )
+        for path in targets:
+            identity = self._file_mutation_path_identity(path, task_id)
+            state[identity] = {
+                "tool": tool_name,
+                "error_preview": preview,
+                "certainty": certainty,
+            }
 
     def _file_mutation_verifier_enabled(self) -> bool:
         """``display.file_mutation_verifier`` / ``HERMES_FILE_MUTATION_VERIFIER`` (a patchable seam)."""
@@ -281,7 +321,7 @@ class TurnExplainersMixin:
     def _format_file_mutation_failure_footer(cls, failed: Dict[str, Dict[str, Any]]) -> str:
         """Render the per-turn failed-mutation dict as a user-facing footer.
 
-        Up to 10 paths with their first error preview, then an overflow count; "" when nothing failed.
+        Up to 10 paths with their latest unresolved outcome, then an overflow count; "" when nothing failed.
         Every path is backtick-wrapped via ``_neutralize_footer_paths`` so protected files cannot be
         auto-delivered.
         """
@@ -289,15 +329,21 @@ class TurnExplainersMixin:
             return ""
         lines = [
             "⚠️ File-mutation verifier: "
-            f"{len(failed)} file(s) were NOT modified this turn despite any "
-            "wording above that may suggest otherwise. Run `git status` or "
-            "`read_file` to confirm."
+            f"the latest file-mutation attempt for {len(failed)} target(s) did not "
+            "provide a verified successful receipt this turn. This does not prove "
+            "that no bytes changed earlier. Run `git status` or `read_file` to "
+            "confirm the current contents."
         ]
         shown = list(failed.items())[:10]
         for path, info in shown:
             preview = (info.get("error_preview") or "").strip()
             tool = info.get("tool") or "patch"
-            lines.append(f"  • `{path}` — [{tool}] {preview or 'failed'}")
+            outcome = (
+                "latest attempt failed"
+                if info.get("certainty", "failed") == "failed"
+                else "outcome unverified"
+            )
+            lines.append(f"  • `{path}` — [{tool}] {outcome}: {preview or 'failed'}")
         remaining = len(failed) - len(shown)
         if remaining > 0:
             lines.append(f"  • … and {remaining} more")

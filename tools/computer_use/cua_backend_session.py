@@ -77,6 +77,11 @@ _UNKNOWN_OUTCOME_MESSAGES = {
         "taken effect on the remote screen. The session has been marked suspect and will be "
         "recreated before the next computer-use call. Take fresh state before deciding "
         "whether to act again."),
+    "remote_transport_outcome_unknown": (
+        "remote cua-driver transport failed during {name}; the action outcome is unknown and "
+        "may still have taken effect on the remote screen. Remote sessions have no local CLI "
+        "fallback, so Hermes did not replay it. Take fresh state before deciding whether to "
+        "act again."),
 }
 
 def _outcome_unknown(name: str, exc: Exception, code: str) -> Dict[str, Any]:
@@ -167,6 +172,30 @@ def _is_ended_session_result(result: Any) -> bool:
             and ("has ended" in message or "session ended" in message))
 
 
+def _remote_http_client_kwargs(token: str) -> dict:
+    """AsyncClient kwargs for the remote CUA transport (indexed streams path).
+
+    The SDK sends its requests through its own httpx (httpx2 on mcp >= 2.0), so the
+    caller-owned client MUST come from the SDK's module (see
+    mcp_tool_transport.py::_streamable_http_transport). trust_env=False/proxy=None:
+    env proxies must never receive the bearer token; read=None keeps long tool calls
+    (screenshots, UI waits) alive past httpx2's 5s default read timeout. The seeded
+    mcp-protocol-version header keeps the handshake-era initialize on the envelope
+    ladder's accepted path.
+    """
+    from tools.mcp_tool_common import _core
+    return {
+        "headers": {
+            "Authorization": f"Bearer {token}",
+            "mcp-protocol-version": _core.LATEST_HANDSHAKE_VERSION,
+        },
+        "follow_redirects": False,
+        "trust_env": False,
+        "proxy": None,
+        "timeout": _core.sdk_httpx().Timeout(30.0, read=None, write=30.0, pool=10.0),
+    }
+
+
 class _CuaDriverSession:
     """Holds the mcp ClientSession. Spawned lazily; re-entered on drop. Lifecycle ownership: one long-running
     coroutine (`_lifecycle_coro`) opens the stdio_client + ClientSession contexts, populates capabilities, sets
@@ -185,8 +214,10 @@ class _CuaDriverSession:
     # See #74799.
     _timeout_suspect = False
 
-    def __init__(self, bridge: _AsyncBridge, embedded_daemon: Optional[Any] = None) -> None:
+    def __init__(self, bridge: _AsyncBridge, embedded_daemon: Optional[Any] = None,
+                 remote_config: Optional[Any] = None) -> None:
         self._bridge, self._embedded_daemon, self._session = bridge, embedded_daemon, None
+        self._remote_config = remote_config
         self._lock, self._started = threading.Lock(), False
         # Per-tool capability-token sets from `tools/list` (read via supports_capability). Raw input schemas are
         # the source of truth for action properties: 0.9-era drivers advertise delivery_mode in inputSchema
@@ -222,6 +253,47 @@ class _CuaDriverSession:
         # reports HOW FAR it got instead of an opaque "never reached ready".
         self._startup_phase = "binary-check"
         try:
+            # Remote CUA transport: connect to a remote cua-driver host bridge over
+            # MCP streamable HTTP instead of spawning a local stdio process. The remote
+            # host runs host_bridge.py (an authenticated MCP server wrapping a local
+            # cua-driver session). Config is validated fail-closed in remote.py.
+            remote_config = getattr(self, "_remote_config", None)
+            if remote_config is not None:
+                from mcp.client.streamable_http import streamable_http_client
+                from tools.mcp_tool_common import _core
+                # The SDK sends its requests through its own httpx (httpx2 on mcp >= 2.0),
+                # so the caller-owned client MUST come from the SDK's module (see
+                # mcp_tool_transport.py::_streamable_http_transport).
+                httpx = _core.sdk_httpx()
+
+                async def _reject_redirect(response: Any) -> None:
+                    if response.is_redirect:
+                        raise RuntimeError("remote computer use refused an HTTP redirect")
+
+                self._startup_phase = "remote-connect"
+                # trust_env=False/proxy=None: env proxies must never receive the bearer
+                # token; read=None keeps long tool calls (screenshots, UI waits) alive.
+                async with httpx.AsyncClient(
+                    **_remote_http_client_kwargs(remote_config.token),
+                    event_hooks={"response": [_reject_redirect]},
+                ) as http_client:
+                    # Index the streams: mcp 2.x yields (read, write), 1.x yields
+                    # (read, write, get_session_id) — a fixed-arity unpack fails on one
+                    # of the two (same class of bug as the _run_http arity fix).
+                    async with streamable_http_client(
+                        remote_config.url,
+                        http_client=http_client,
+                        terminate_on_close=True,
+                    ) as streams:
+                        read, write = streams[0], streams[1]
+                        self._startup_phase = "mcp-initialize"
+                        async with ClientSession(read, write) as session:
+                            await self._start_with_deadline(session, _t0)
+                            logger.info("remote cua-driver session ready in %.1fs",
+                                        _time.monotonic() - _t0)
+                            await self._shutdown_event.wait()
+                return
+
             driver_cmd = _driver.resolve_cua_driver_cmd()
             if not driver_cmd:
                 raise RuntimeError(_driver.cua_driver_install_hint())
@@ -236,15 +308,10 @@ class _CuaDriverSession:
             async with stdio_client(params) as (read, write):
                 self._startup_phase = "mcp-initialize"
                 async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    _t_init = _time.monotonic()
-                    # Capabilities BEFORE exposing the session: the first call sees them.
-                    self._startup_phase = "capability-discovery"
-                    await self._populate_capabilities(session)
-                    self._session, self._startup_phase = session, "ready"
-                    self._ready_event.set()
+                    await self._start_with_deadline(session, _t0, _t_manifest)
                     logger.info("cua-driver session ready in %.1fs (manifest=%.1fs, mcp_init=%.1fs)",
-                                _time.monotonic() - _t0, _t_manifest - _t0, _t_init - _t_manifest)
+                                _time.monotonic() - _t0, _t_manifest - _t0,
+                                _time.monotonic() - _t_manifest)
                     await self._shutdown_event.wait()
         except BaseException as e:
             # Ordinary errors and anyio CancelledError alike: start() surfaces this.
@@ -255,6 +322,38 @@ class _CuaDriverSession:
             # A session that dies for ANY reason must be re-enterable: the next call sees _started False and
             # rebuilds. Atomic bool write — stop() may hold _lock.
             self._session, self._started = None, False
+
+    # M2: bound the startup handshake (initialize + capability discovery) INSIDE the
+    # owning coroutine with a deadline slightly larger than start()'s ready-wait (30s).
+    # Without this, a hung session.initialize() blocks forever inside _lifecycle_coro;
+    # setting _shutdown_event is useless (the coro only checks it AFTER initialize), and
+    # the outer failure path's fut.result(timeout=5.0) times out, leaving the coro pending
+    # inside a closing loop with its transport context managers never unwound. With the
+    # in-coroutine deadline, anyio raises TimeoutError INSIDE the coro, the finally runs
+    # (unwinds the transport CMs), and the future completes normally — start() sees a
+    # finished future instead of abandoning a pending one. The anyio invariant is
+    # preserved: fail_after wraps only startup work in the SAME task that owns the
+    # transport, not across task boundaries.
+    _STARTUP_DEADLINE_S = 35.0  # 5s slack past the 30s ready-wait in _start_lifecycle_locked
+
+    async def _start_with_deadline(self, session: Any, _t0: float, _t_manifest: Optional[float] = None) -> None:
+        """Run initialize()+capability discovery inside an anyio.fail_after deadline."""
+        import time as _time
+        import anyio
+        try:
+            with anyio.fail_after(self._STARTUP_DEADLINE_S):
+                await session.initialize()
+                _t_init = _time.monotonic()
+                self._startup_phase = "capability-discovery"
+                await self._populate_capabilities(session)
+                self._session, self._startup_phase = session, "ready"
+                self._ready_event.set()
+        except TimeoutError as e:
+            # anyio.fail_after raises TimeoutError on deadline; surface as a setup
+            # error so start() reports the stuck phase, then unwind the transport CMs.
+            raise RuntimeError(
+                f"cua-driver startup handshake exceeded {self._STARTUP_DEADLINE_S:.0f}s "
+                f"(stuck in phase: {getattr(self, '_startup_phase', 'unknown')})") from e
 
     # Reset _started so a session that dies for ANY reason (MCP connection drop, driver crash, unexpected
     # coro exit) is re-enterable: the next start()/call sees _started False and rebuilds the session instead
@@ -287,7 +386,14 @@ class _CuaDriverSession:
         with self._lock:
             if not self._started:
                 self._bridge.start()
-                self._start_lifecycle_locked()
+                try:
+                    self._start_lifecycle_locked()
+                except Exception:
+                    try:
+                        self._stop_lifecycle_locked()
+                    finally:
+                        self._bridge.stop()
+                    raise
                 self._started = True
 
     def _start_lifecycle_locked(self) -> None:
@@ -338,7 +444,27 @@ class _CuaDriverSession:
             if fut is not None:
                 fut.result(timeout=5.0)
         except concurrent.futures.TimeoutError:
-            logger.warning("cua-driver session shutdown timed out (5s)")
+            # M2 backstop: the in-coroutine startup deadline (anyio.fail_after) makes a
+            # hung initialize() unwind on its own, so this branch should be rare. But if
+            # the transport CM *exit* itself hangs (or shutdown_event.wait never returns),
+            # do not abandon the coro pending inside a closing loop — cancel the task so
+            # anyio's cancel scopes raise CancelledError inside _lifecycle_coro, its
+            # finally unwinds the transport, and the future completes. Only fall through
+            # to the warning if the loop is gone or cancellation itself cannot be
+            # scheduled (loop closed/stopped).
+            loop = self._bridge._loop
+            if fut is not None and loop is not None and loop.is_running():
+                with contextlib.suppress(RuntimeError):
+                    fut.cancel()  # cancels the asyncio task the future wraps
+                try:
+                    fut.result(timeout=5.0)
+                except (concurrent.futures.TimeoutError, concurrent.futures.CancelledError):
+                    logger.warning("cua-driver session shutdown timed out (10s) "
+                                   "after cancel; coroutine abandoned")
+                except Exception as e:
+                    logger.debug("cua-driver shutdown completed after cancel: %s", e)
+            else:
+                logger.warning("cua-driver session shutdown timed out (5s)")
         except Exception as e:
             logger.warning("cua-driver shutdown error: %s", e)
 
@@ -384,13 +510,37 @@ class _CuaDriverSession:
         return self._capability_version
 
     # ── Error classification (instance-patchable seams; result-shape checks live at module level) ──
+    # mcp 2.0.0 streamable_http.py surfaces a 404 "Session not found" from the server-side
+    # streamable_http_manager (idle-expiry, default session_idle_timeout 1800s) as
+    # MCPError(code=INVALID_REQUEST, message="Session terminated") (verified against
+    # mcp 2.0.0: mcp.shared.exceptions.MCPError.__init__(code, message, data); str() ==
+    # message == "Session terminated"). This is a recoverable closed-session condition —
+    # the bridge expired an idle session and the next call must invalidate+rebuild the
+    # transport exactly as ClosedResourceError/EOF already do. Match by message text so
+    # the classifier is robust to the SDK's exception-class identity (defensive import —
+    # the file already late-imports mcp; MCPError may be unavailable in stubs/tests).
+    # A generic MCPError (e.g. INVALID_PARAMS) does NOT carry session-expiry semantics
+    # and must propagate — only session-expiry messages trigger a rebuild.
+    _MCP_CLOSED_SESSION_MESSAGES = ("session terminated", "session not found", "session expired")
+
     @staticmethod
     def _is_closed_session_error(exc: Exception) -> bool:
         """True for MCP/stdio failures that are recoverable by reconnecting."""
         name, module = exc.__class__.__name__, getattr(exc.__class__, "__module__", "")
-        return (name in {"ClosedResourceError", "BrokenResourceError", "EndOfStream"}
+        if (name in {"ClosedResourceError", "BrokenResourceError", "EndOfStream"}
                 or (module.startswith("anyio") and "Resource" in name)
-                or isinstance(exc, (BrokenPipeError, EOFError)))
+                or isinstance(exc, (BrokenPipeError, EOFError))):
+            return True
+        # mcp 2.0.0: bridge idle-expiry surfaces as MCPError("Session terminated"). Only
+        # session-expiry messages qualify — a generic MCPError (INVALID_PARAMS, etc.)
+        # is a genuine error that must propagate, not a recoverable closed-session.
+        # Match the message text (str(MCPError) == message) against the known phrases;
+        # the defensive import lets us also confirm the type when the SDK is present.
+        msg_lower = str(exc).lower()
+        if any(needle in msg_lower
+               for needle in _CuaDriverSession._MCP_CLOSED_SESSION_MESSAGES):
+            return True
+        return False
 
     @staticmethod
     def _is_transient_daemon_error(exc: Exception) -> bool:
@@ -440,6 +590,8 @@ class _CuaDriverSession:
         working. Output is remapped to the ``_extract_tool_result`` shape. ``get_window_state`` routes its
         screenshot to a temp file (``screenshot_out_file``) so the daemon returns a tiny JSON body, not the
         multi-megabyte base64 blob that congests the socket; ``_cli_result`` reads it back."""
+        if getattr(self, "_remote_config", None) is not None:
+            raise RuntimeError("local CLI fallback is unavailable for remote cua-driver sessions")
         import tempfile as _tempfile
         from tools.computer_use import cua_backend as _cb
         from tools.environments.local import _sanitize_subprocess_env
@@ -495,6 +647,13 @@ class _CuaDriverSession:
                 if name not in self._TRANSPORT_REPLAY_SAFE_TOOLS:
                     self._notify_transport_reset()
                     return _outcome_unknown(name, e, "transport_outcome_unknown")
+                if self._remote_config is not None:
+                    # A remote session must never spawn a LOCAL cua-driver — the
+                    # fallback would drive this machine's desktop instead of the
+                    # remote one.
+                    logger.warning("remote cua-driver transport failed on %s (%s); "
+                                   "no local CLI fallback for remote sessions", name, e)
+                    return _outcome_unknown(name, e, "remote_transport_outcome_unknown")
                 logger.warning("cua-driver MCP transport failed on %s (%s); "
                                "falling back to CLI transport", name, e)
                 return self._call_tool_via_cli(name, args, timeout)

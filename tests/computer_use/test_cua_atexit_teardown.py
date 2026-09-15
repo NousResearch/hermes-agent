@@ -26,7 +26,7 @@ class TestAtexitTeardown:
     def test_shutdown_stops_a_live_backend(self):
         """A cached backend is stopped when the interpreter exits."""
         fake = MagicMock()
-        with patch.object(cu_tool, "_backend", fake):
+        with patch.object(cu_tool, "_backend", {cu_tool.hermes_home_key(): fake}):
             cu_tool._shutdown_backend_atexit()
             fake.stop.assert_called_once()
 
@@ -37,8 +37,9 @@ class TestAtexitTeardown:
         """Session-scoped caches are all drained, not only the legacy slot."""
         first = MagicMock()
         second = MagicMock()
-        with patch.object(cu_tool, "_backend", None), \
-             patch.object(cu_tool, "_backends", {"one": first, "two": second}), \
+        with patch.object(cu_tool, "_backend", {}), \
+             patch.object(cu_tool, "_backends", {cu_tool._backend_owner_key("one"): first,
+                                                  cu_tool._backend_owner_key("two"): second}), \
              patch.object(cu_tool, "_backend_call_locks", {}):
             cu_tool._shutdown_backend_atexit()
             first.stop.assert_called_once()
@@ -54,7 +55,8 @@ class TestAtexitTeardown:
         """
         atexit.unregister(cu_tool._shutdown_backend_atexit)
         try:
-            with patch.object(cu_tool, "_backend", MagicMock()) as fake:
+            fake = MagicMock()
+            with patch.object(cu_tool, "_backend", {cu_tool.hermes_home_key(): fake}):
                 # Re-register and fire the full atexit chain the way the
                 # interpreter would, then confirm our hook ran.
                 atexit.register(cu_tool._shutdown_backend_atexit)

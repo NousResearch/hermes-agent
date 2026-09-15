@@ -97,8 +97,15 @@ class FileOperations(ABC):
     """Abstract interface for file operations across terminal backends."""
 
     @abstractmethod
-    def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
-        """Read a file with pagination support."""
+    def read_file(
+        self,
+        path: str,
+        offset: int = 1,
+        limit: int = 2000,
+        *,
+        line_numbers: bool = True,
+    ) -> ReadResult:
+        """Read a file with pagination; ``line_numbers=False`` skips the gutter."""
 
     @abstractmethod
     def read_file_raw(self, path: str) -> ReadResult:
@@ -565,7 +572,28 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             content=self._add_line_numbers(content, offset), total_lines=total_lines,
             file_size=file_size, truncated=truncated, hint=" ".join(hint_parts))
 
-    def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
+    def _clamp_read_file_lines(self, content: str) -> str:
+        """Apply the same per-line truncation as ``_add_line_numbers`` but
+        without the ``LINE|`` gutter — used by ``read_file(line_numbers=False)``
+        so both construction paths produce identical raw content.
+        """
+        from tools.tool_output_limits import get_max_line_length
+        max_line_length = get_max_line_length()
+        return "\n".join(
+            line[:max_line_length] + "... [truncated]"
+            if len(line) > max_line_length
+            else line
+            for line in content.split("\n")
+        )
+
+    def read_file(
+        self,
+        path: str,
+        offset: int = 1,
+        limit: int = 2000,
+        *,
+        line_numbers: bool = True,
+    ) -> ReadResult:
         """Read a file with pagination, binary detection, and line numbers.
 
         ``offset`` is 1-indexed; ``limit`` is clamped by ``normalize_read_pagination``.
@@ -579,12 +607,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         offset, limit = normalize_read_pagination(offset, limit)
 
         if self._native_read_enabled():
-            return self._read_file_native(path, offset, limit)
+            return self._read_file_native(path, offset, limit, line_numbers=line_numbers)
 
         # Images / known-binary extensions never inline content; the sequential
         # path stops at the probes for them, so don't stream their bytes.
         if self._is_image(path) or os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS:
-            return self._read_file_sequential(path, offset, limit)
+            return self._read_file_sequential(path, offset, limit, line_numbers=line_numbers)
 
         from tools.tool_output_limits import get_max_line_length
         line_clamp_bytes = 4 * get_max_line_length() + 1
@@ -604,7 +632,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                 "read_file: compound probe reply for %s has no sentinel "
                 "(exit %s, %d chars); falling back to sequential probes",
                 path, probe.exit_code, len(output))
-            return self._read_file_sequential(path, offset, limit)
+            return self._read_file_sequential(path, offset, limit, line_numbers=line_numbers)
 
         segments = _split_segments(output, sentinel)
         if probe.exit_code != 0 or len(segments) != 6:
@@ -612,7 +640,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                 "read_file: compound probe for %s returned exit %s with %d "
                 "segments (want 6); falling back to sequential probes",
                 path, probe.exit_code, len(segments))
-            return self._read_file_sequential(path, offset, limit)
+            return self._read_file_sequential(path, offset, limit, line_numbers=line_numbers)
         size_seg, sample_seg, page_seg, wc_seg, tail_seg, status_seg = segments
 
         status = _strip_terminal_fence_leaks(status_seg).split()
@@ -622,7 +650,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             logger.debug(
                 "read_file: compound probe for %s has unparseable status %r; "
                 "falling back to sequential probes", path, status_seg[-40:])
-            return self._read_file_sequential(path, offset, limit)
+            return self._read_file_sequential(path, offset, limit, line_numbers=line_numbers)
 
         try:
             file_size = int(_strip_terminal_fence_leaks(size_seg).strip())
@@ -654,7 +682,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         file_ends_with_newline = tail_flag == "1" if tail_flag in ("0", "1") else None
         return self._assemble_read_result(
             read_output, offset=offset, end_line=end_line, total_lines=total_lines,
-            file_size=file_size, file_ends_with_newline=file_ends_with_newline)
+            file_size=file_size, file_ends_with_newline=file_ends_with_newline,
+            line_numbers=line_numbers)
 
     def _native_read_enabled(self) -> bool:
         """Whether ``read_file`` and ``search_files`` may bypass the shell: only POSIX + ``LocalEnvironment``
@@ -668,7 +697,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # microseconds and self.env is never rebound, so nothing to memoize.
         return sys.platform != "win32" and self._lsp_local_only()
 
-    def _read_file_native(self, path: str, offset: int, limit: int) -> ReadResult:
+    def _read_file_native(self, path: str, offset: int, limit: int, *, line_numbers: bool = True) -> ReadResult:
         """``read_file`` without a shell — same contract as the shell path, byte for
         byte. ``os.stat`` is the ``[ -f ]`` guard (a stat, never an open, so FIFOs and
         devices are refused before anything touches them); the first 1000 bytes drive
@@ -687,7 +716,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         except (FileNotFoundError, NotADirectoryError):
             return self._read_file_missing(path, offset, limit)
         except OSError:
-            return self._read_file_sequential(path, offset, limit)
+            return self._read_file_sequential(path, offset, limit, line_numbers=line_numbers)
         if not _stat.S_ISREG(st.st_mode):
             return self._not_regular_error(path)
         file_size = st.st_size
@@ -741,7 +770,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                         lineno += 1
                         pos = nl + 1
         except OSError:
-            return self._read_file_sequential(path, offset, limit)
+            return self._read_file_sequential(path, offset, limit, line_numbers=line_numbers)
         if have_partial and offset <= lineno <= end_line:
             # ``sed`` prints a final line that lacks a newline; ``cut`` adds one.
             page.append(bytes(kept) + b"\n")
@@ -750,7 +779,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         return self._assemble_read_result(
             read_output, offset=offset, end_line=end_line, total_lines=total_lines,
             file_size=file_size,
-            file_ends_with_newline=(last_byte == b"\n") if file_size else None)
+            file_ends_with_newline=(last_byte == b"\n") if file_size else None,
+            line_numbers=line_numbers)
 
     @staticmethod
     def _image_redirect_result(file_size: int) -> ReadResult:
@@ -819,7 +849,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             is_binary=True, file_size=file_size,
             error=describe_binary_file(sample_bytes, file_size))
 
-    def _read_file_sequential(self, path: str, offset: int, limit: int) -> ReadResult:
+    def _read_file_sequential(self, path: str, offset: int, limit: int, *, line_numbers: bool = True) -> ReadResult:
         """One-probe-per-call read: the pre-compound form, kept as fallback for
         image / known-binary extensions and unparseable compound replies. ``path`` is
         already expanded and ``offset``/``limit`` normalized."""
@@ -867,11 +897,13 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                 file_ends_with_newline = _strip_terminal_fence_leaks(tail_result.stdout).strip() != "0"
         return self._assemble_read_result(
             read_output, offset=offset, end_line=end_line, total_lines=total_lines,
-            file_size=file_size, file_ends_with_newline=file_ends_with_newline)
+            file_size=file_size, file_ends_with_newline=file_ends_with_newline,
+            line_numbers=line_numbers)
 
     def _assemble_read_result(self, read_output: str, *, offset: int, end_line: int,
                               total_lines: int, file_size: int,
-                              file_ends_with_newline: Optional[bool]) -> ReadResult:
+                              file_ends_with_newline: Optional[bool],
+                              line_numbers: bool = True) -> ReadResult:
         """Turn a raw ``sed | cut`` page into the final ``ReadResult``. Shared by every
         read path so the BOM strip, pagination hint, ``cut`` newline-artifact fix and
         the ambiguous-silence guards never drift apart. ``file_ends_with_newline`` is
@@ -905,7 +937,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                     f"({total_lines} lines total). Retry with offset <= "
                     f"{total_lines}."))
         return ReadResult(
-            content=self._add_line_numbers(read_output, offset), total_lines=total_lines,
+            content=(
+                self._add_line_numbers(read_output, offset)
+                if line_numbers
+                else self._clamp_read_file_lines(read_output)
+            ),
+            total_lines=total_lines,
             file_size=file_size, truncated=truncated, hint=hint)
 
     # Confusable characters seen in real filenames, collapsed after NFC.

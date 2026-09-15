@@ -15,7 +15,8 @@ import re
 import stat
 import threading
 import time
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from agent.file_safety import get_read_block_error
@@ -41,6 +42,17 @@ logger = logging.getLogger(__name__)
 
 
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
+_programmatic_read = ContextVar("programmatic_read", default=False)
+
+
+@contextmanager
+def programmatic_read_context():
+    """Select stable raw read results for one standard dispatcher call."""
+    token = _programmatic_read.set(True)
+    try:
+        yield
+    finally:
+        _programmatic_read.reset(token)
 
 # Read-size guard. Model-agnostic, so characters proxy tokens: 100K chars is
 # ~25-35K tokens across typical tokenisers. Configurable: file_read_max_chars.
@@ -405,7 +417,7 @@ def _special_file_kind(path) -> str | None:
                 "a special (non-regular) file")
 
 
-def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task_id: str) -> str | None:
+def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task_id: str, *, line_numbers: bool = True) -> str | None:
     """Render an extractable document (.docx/.xlsx/.pdf/...) as paginated text.
 
     Returns the JSON result, a tool_error for an actionable extraction failure
@@ -443,9 +455,17 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     lines = extracted_text.splitlines()
     total_lines = len(lines)
     end_line = offset + limit - 1
+    # Terminate the raw page with a newline, matching the
+    # native file_ops read path (sed/cut always newline-
+    # terminate their output). With line_numbers=True the
+    # gutter join reproduces that shape anyway; with
+    # line_numbers=False the raw page must be byte-identical
+    # to the same window served through file_ops.
     page_text = "\n".join(lines[offset - 1:end_line])
+    if lines[offset - 1:end_line] and not page_text.endswith("\n"):
+        page_text += "\n"
     result_dict = {
-        "content": file_ops._add_line_numbers(page_text, offset) if page_text else "",
+        "content": (file_ops._add_line_numbers(page_text.rstrip("\n"), offset) if page_text and line_numbers else page_text),
         "total_lines": total_lines,
         "file_size": binary.file_size,
         "truncated": total_lines > end_line,
@@ -533,7 +553,7 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     return count
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default") -> str:
+def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default", *, line_numbers: bool = True, deduplicate: bool = True) -> str:
     """Read a file with pagination and line numbers.
 
     Guard order: device-path blocklist (no I/O) → stat-based special-file
@@ -563,7 +583,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                         "attempted. Use terminal utilities if you need to "
                         "interact with it.")})
 
-        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id)
+        extracted = _read_extracted_document(path, _resolved, offset, limit, task_id, line_numbers=line_numbers)
         if extracted is not None:
             return extracted
 
@@ -595,14 +615,14 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             # First unchanged read after a compaction boundary serves full content
             # (the summary may have dropped exact bytes); later ones get the stub.
             content_served_in_generation = dedup_key in task_data["dedup_generation_reads"]
-        if cached_mtime is not None:
+        if deduplicate and cached_mtime is not None:
             try:
                 if os.path.getmtime(resolved_str) == cached_mtime and content_served_in_generation:
                     return _dedup_stub_or_block(task_data, dedup_key, path)
             except OSError:
                 pass  # stat failed — fall through to full read
 
-        result = _get_file_ops(task_id).read_file(path, offset, limit)
+        result = _get_file_ops(task_id).read_file(path, offset, limit, line_numbers=line_numbers)
         result_dict = result.to_dict()
 
         # Cache a not-found result for retries. Deliberately NO early return:
@@ -631,8 +651,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 "Consider reading only the section you need with offset and limit "
                 "to keep context usage efficient."))
 
-        count = _record_successful_read(task_data, task_id, path, resolved_str, offset, limit,
+        count = (_record_successful_read(task_data, task_id, path, resolved_str, offset, limit,
                                         dedup_key, partial=(offset > 1) or bool(result_dict.get("truncated")))
+                 if deduplicate else 0)
         if count >= 4:
             return tool_error(
                 f"BLOCKED: You have read this exact file region {count} times in a row. "
@@ -648,6 +669,32 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))
+
+
+def read_file_programmatic_tool(
+    path: str,
+    offset: int = 1,
+    limit: int = DEFAULT_READ_LIMIT,
+    task_id: str = "default",
+) -> str:
+    """Return stable raw ``read_file`` data for execute_code RPC callers."""
+    result = read_file_tool(
+        path=path,
+        offset=offset,
+        limit=limit,
+        task_id=task_id,
+        line_numbers=False,
+        deduplicate=False,
+    )
+    try:
+        payload = json.loads(result)
+    except (TypeError, ValueError):
+        return tool_error("read_file returned an invalid programmatic result")
+    if not isinstance(payload, dict):
+        return tool_error("read_file returned an invalid programmatic result")
+    payload.setdefault("content", "")
+    payload.setdefault("success", not bool(payload.get("error")))
+    return json.dumps(payload, ensure_ascii=False)
 
 
 # ── Shared write/patch plumbing ──────────────────────────────────────────
@@ -1173,7 +1220,13 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid)
+    read = read_file_programmatic_tool if _programmatic_read.get() else read_file_tool
+    return read(
+        path=args.get("path", ""),
+        offset=args.get("offset", 1),
+        limit=args.get("limit", DEFAULT_READ_LIMIT),
+        task_id=tid,
+    )
 
 
 def _handle_write_file(args, **kw):

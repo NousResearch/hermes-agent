@@ -664,6 +664,7 @@ def _emit(event: str, sid: str, payload: "Payload | None" = None) -> bool:
 
 from tui_gateway import server_requests as _server_requests  # noqa: E402
 
+# Late-bound on purpose: tests (and transports) swap write_json / _emit on this module after import.
 _server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload),
                             lambda sid: _session_client_answers_requests(sid))
 

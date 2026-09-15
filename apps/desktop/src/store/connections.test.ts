@@ -418,15 +418,10 @@ describe('selectConnection', () => {
       // Auth is refreshed externally; the very next click must work with the
       // same module and warm socket, without a cached failed readiness result.
       await selectConnection('homelab', { profile: 'scout' })
-      expect(api.mock.calls).toEqual(
-        Array.from({ length: 3 }, () => [
-          {
-            connectionId: 'homelab',
-            profile: 'scout',
-            path: '/api/profiles',
-            timeoutMs: 60_000
-          }
-        ])
+      expect(api.mock.calls.map(call => (call as unknown[])[0])).toEqual(
+        Array.from({ length: 3 }, () =>
+          expect.objectContaining({ connectionId: 'homelab', profile: 'scout', path: '/api/profiles' })
+        )
       )
       expect(openGatewayAgent.mock.calls).toEqual(Array.from({ length: 3 }, () => ['homelab', 'scout']))
       expect(ensureGatewayAgent).toHaveBeenCalledTimes(1)

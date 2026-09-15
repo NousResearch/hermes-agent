@@ -243,8 +243,9 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
  * never probes or opens remote gateways.
  *
  * Two phases, same commit contract as a Settings → Gateway apply (softSwitch):
- *  1. Prove target socket/REST readiness WITHOUT activating it. The previous
- *     source stays fully bound and painted, so a dead target loses nothing.
+ *  1. Dial the target — and for OAuth remotes prove a protected REST read —
+ *     WITHOUT activating it. The previous source stays fully bound and
+ *     painted, so a dead target loses nothing.
  *  2. Commit: beginGatewaySwitch() — barrier up, machine-context reset,
  *     session bindings wiped — then activate the already-open socket. The
  *     wipe runs inside the activation's serialized section, synchronously
@@ -355,9 +356,9 @@ export async function selectConnection(connectionId: string, options: SelectConn
       targetConnection.authMode === 'oauth' &&
       (targetConnection.kind === 'remote' || targetConnection.kind === 'cloud')
     ) {
-      // Retained sockets can outlive cookie/native OAuth REST auth. Prove a
-      // protected read on the destination before wiping. Keep the exact
-      // failure for caller UX (network failures must not become sign-in errors).
+      // Retained sockets can outlive cookie/native OAuth REST auth. Prove the
+      // cheapest protected read the target always serves before wiping. Keep
+      // the exact failure for caller UX (network failures are not sign-in errors).
       await withTimeout(
         getProfiles({ connectionId, profile: targetProfile }),
         SWITCH_DIAL_TIMEOUT_MS,

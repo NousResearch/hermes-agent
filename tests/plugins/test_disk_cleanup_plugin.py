@@ -14,6 +14,7 @@ Covers the bundled plugin at ``plugins/disk-cleanup/``:
 
 import importlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -325,6 +326,36 @@ class TestPostToolCallHook:
         # read_file should never trigger tracking.
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
         assert not tracked_file.exists() or tracked_file.read_text().strip() == "[]"
+
+    def test_unreadable_path_never_aborts_the_hook(self, _isolate_env, tmp_path):
+        """A path the process cannot stat must not escape the hook.
+
+        ``Path.exists()`` only swallows ENOENT/ENOTDIR/EBADF/ELOOP — a
+        PermissionError from an unreadable parent directory (typically a
+        container path such as ``/root/.local/share/uv/...`` mentioned in a
+        ``docker exec ...`` command line) used to propagate out of
+        ``_on_post_tool_call`` and abort the observer hook for the tool call
+        it followed. The hook contract is best-effort: never raise.
+        """
+        if os.geteuid() == 0:
+            pytest.skip("permission checks are not enforceable as root")
+        pi = _load_plugin_init()
+        blocked = tmp_path / "blocked"
+        blocked.mkdir()
+        target = blocked / "test_hidden.py"
+        target.write_text("x")
+        blocked.chmod(0o000)
+        try:
+            with pytest.raises(PermissionError):
+                Path(target).exists()  # the precondition the fix must survive
+            pi._on_post_tool_call(  # must not raise
+                tool_name="terminal",
+                args={"command": f"docker exec ctr rm {target}"},
+                result="",
+                task_id="t5", session_id="s5",
+            )
+        finally:
+            blocked.chmod(0o755)
 
 
 class TestOnSessionEndHook:

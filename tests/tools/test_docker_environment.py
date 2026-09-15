@@ -56,6 +56,8 @@ def _make_dummy_env(**kwargs):
         persist_across_processes=kwargs.get("persist_across_processes", True),
         shared_container_key=kwargs.get("shared_container_key", ""),
         shm_size=kwargs.get("shm_size", docker_env._DEFAULT_SHM_SIZE),
+        workspace_tmpfs_size=kwargs.get("workspace_tmpfs_size", docker_env._DEFAULT_WORKSPACE_TMPFS_SIZE),
+        home_tmpfs_size=kwargs.get("home_tmpfs_size", docker_env._DEFAULT_HOME_TMPFS_SIZE),
         snap_compat=kwargs.get("snap_compat", False),
     )
 
@@ -1809,3 +1811,62 @@ def test_docker_env_warnings_never_echo_values(caplog):
     with caplog.at_level(logging.WARNING, logger="tools.environments.docker"):
         docker_env._normalize_env_dict({"TOKEN": ["sk-live-value"], "OK": "1"})
     assert "TOKEN" in caplog.text and "sk-live-value" not in caplog.text
+
+
+# ── tmpfs size tests (non-persistent /workspace, /home, /root) ───────────────
+
+
+def _tmpfs_specs(run_args):
+    return [run_args[i + 1] for i, a in enumerate(run_args) if a == "--tmpfs"]
+
+
+def test_tmpfs_sizes_default(monkeypatch):
+    """Non-persistent sandboxes keep the historical 10g workspace / 1g home ceilings by default."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(persistent_filesystem=False)
+
+    specs = _tmpfs_specs(_shm_run_args(calls))
+    assert f"/workspace:rw,exec,size={docker_env._DEFAULT_WORKSPACE_TMPFS_SIZE}" in specs
+    assert f"/home:rw,exec,size={docker_env._DEFAULT_HOME_TMPFS_SIZE}" in specs
+    assert f"/root:rw,exec,size={docker_env._DEFAULT_HOME_TMPFS_SIZE}" in specs
+
+
+def test_tmpfs_sizes_custom(monkeypatch):
+    """Operators running small/multi-tenant sandboxes can lower the tmpfs ceilings; the home
+    value applies to both /home and /root."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(persistent_filesystem=False, workspace_tmpfs_size="512m", home_tmpfs_size="128m")
+
+    specs = _tmpfs_specs(_shm_run_args(calls))
+    assert "/workspace:rw,exec,size=512m" in specs
+    assert "/home:rw,exec,size=128m" in specs
+    assert "/root:rw,exec,size=128m" in specs
+    assert not any(s.endswith("size=10g") or s.startswith("/home:rw,exec,size=1g") for s in specs)
+
+
+@pytest.mark.parametrize("empty", ["", "0", None, "  "])
+def test_tmpfs_sizes_empty_falls_back_to_default(monkeypatch, empty):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(persistent_filesystem=False, workspace_tmpfs_size=empty, home_tmpfs_size=empty)
+
+    specs = _tmpfs_specs(_shm_run_args(calls))
+    assert f"/workspace:rw,exec,size={docker_env._DEFAULT_WORKSPACE_TMPFS_SIZE}" in specs
+    assert f"/root:rw,exec,size={docker_env._DEFAULT_HOME_TMPFS_SIZE}" in specs
+
+
+def test_tmpfs_sizes_ignored_in_persistent_mode(monkeypatch, tmp_path):
+    """Persistent sandboxes bind-mount host dirs; no tmpfs for /workspace or /root."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(tmp_path))
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(persistent_filesystem=True, workspace_tmpfs_size="512m", home_tmpfs_size="128m")
+
+    specs = _tmpfs_specs(_shm_run_args(calls))
+    assert not any(s.startswith(("/workspace:", "/root:", "/home:")) for s in specs)

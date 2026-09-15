@@ -256,6 +256,22 @@ _DEFAULT_PIDS_LIMIT = "256"  # applied only when the pids cgroup controller is a
 # Docker's 64 MB default. Ported from nanocoai/nanoclaw#2748.
 _DEFAULT_SHM_SIZE = "1g"
 
+# Non-persistent sandboxes back /workspace, /home and /root with tmpfs. tmpfs is lazily allocated,
+# so these are ceilings, not reservations — but they are also the only per-container disk cap on
+# hosts where ``--storage-opt`` is unavailable (macOS, ext4 without pquota), and tmpfs pages count
+# against ``--memory``. Operators running many small sandboxes (multi-tenant, 512 MB-1 GB memory
+# caps) need to lower them; ``terminal.docker_workspace_tmpfs_size`` / ``docker_home_tmpfs_size``
+# in config.yaml do that. Docker size syntax ("512m", "2g"); the home value applies to both /home
+# and /root.
+_DEFAULT_WORKSPACE_TMPFS_SIZE = "10g"
+_DEFAULT_HOME_TMPFS_SIZE = "1g"
+
+
+def _tmpfs_size(value, default: str) -> str:
+    """Normalise a configured tmpfs size; empty/None falls back to ``default``."""
+    size = str(value or "").strip()
+    return size if size and size != "0" else default
+
 
 def _extra_args_set_shm_size(extra_args: list) -> bool:
     """True when docker_extra_args already set ``--shm-size`` (then our default is skipped)."""
@@ -513,6 +529,8 @@ class DockerEnvironment(BaseEnvironment):
         extra_args: list = None,
         persist_across_processes: bool = True,
         shm_size: str = _DEFAULT_SHM_SIZE,
+        workspace_tmpfs_size: str = _DEFAULT_WORKSPACE_TMPFS_SIZE,
+        home_tmpfs_size: str = _DEFAULT_HOME_TMPFS_SIZE,
         shared_container_key: str = "",
         snap_compat: bool = False):
         if cwd == "~":
@@ -531,6 +549,8 @@ class DockerEnvironment(BaseEnvironment):
         self._init_env_values: dict[str, str] = {}
         self._workspace_dir: Optional[str] = None
         self._home_dir: Optional[str] = None
+        self._workspace_tmpfs_size = _tmpfs_size(workspace_tmpfs_size, _DEFAULT_WORKSPACE_TMPFS_SIZE)
+        self._home_tmpfs_size = _tmpfs_size(home_tmpfs_size, _DEFAULT_HOME_TMPFS_SIZE)
         logger.info("DockerEnvironment volumes: %s", volumes)
         if volumes is not None and not isinstance(volumes, list):
             logger.warning("docker_volumes config is not a list: %r", volumes)
@@ -704,8 +724,10 @@ class DockerEnvironment(BaseEnvironment):
                 os.makedirs(self._workspace_dir, exist_ok=True)
                 writable_args += ["-v", f"{self._workspace_dir}:/workspace"]
         else:
-            writable_args += ["--tmpfs", "/workspace:rw,exec,size=10g"] if mount_workspace else []
-            writable_args += ["--tmpfs", "/home:rw,exec,size=1g", "--tmpfs", "/root:rw,exec,size=1g"]
+            ws_size, home_size = self._workspace_tmpfs_size, self._home_tmpfs_size
+            writable_args += ["--tmpfs", f"/workspace:rw,exec,size={ws_size}"] if mount_workspace else []
+            writable_args += ["--tmpfs", f"/home:rw,exec,size={home_size}",
+                              "--tmpfs", f"/root:rw,exec,size={home_size}"]
 
         if bind_host_cwd:
             logger.info("Mounting configured host cwd to /workspace: %s", host_cwd_abs)

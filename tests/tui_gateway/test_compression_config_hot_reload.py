@@ -53,6 +53,9 @@ def test_live_threshold_tokens_applies_on_next_turn_without_rebuild(monkeypatch)
             "compression": {
                 "threshold_tokens": 100_000,
                 "proactive_prune_tokens": 48_000,
+                "tool_arg_head_chars": 1200,
+                "tool_arg_tail_chars": 800,
+                "tool_arg_truncate_threshold": 10_000,
                 "idle_compact_after_seconds": 1800,
                 "tail_mode": "lean",
             },
@@ -65,6 +68,8 @@ def test_live_threshold_tokens_applies_on_next_turn_without_rebuild(monkeypatch)
     assert session["agent"] is live_agent
     assert compressor.threshold_tokens == 100_000
     assert compressor.proactive_prune_tokens == 48_000
+    assert (compressor.tool_arg_head_chars, compressor.tool_arg_tail_chars) == (1200, 800)
+    assert compressor.tool_arg_truncate_threshold == 10_000
     assert compressor.tail_mode == "lean"
     assert live_agent.compression_idle_compact_after_seconds == 1800
 
@@ -202,11 +207,31 @@ def test_removing_proactive_prune_keys_restores_defaults(monkeypatch):
         proactive_prune_tokens=48_000,
         proactive_prune_min_result_chars=30_000,
         proactive_prune_min_reclaim_tokens=1,
+        tool_arg_head_chars=1200,
+        tool_arg_tail_chars=800,
+        tool_arg_truncate_threshold=10_000,
     )
     _sync_with_cfg(monkeypatch, session, {"compression": {}})
     assert compressor.proactive_prune_tokens == 0
     assert compressor.proactive_prune_min_result_chars == 8000
     assert compressor.proactive_prune_min_reclaim_tokens == 4096
+    assert (compressor.tool_arg_head_chars, compressor.tool_arg_tail_chars) == (1000, 1000)
+    assert compressor.tool_arg_truncate_threshold == 4000
+
+
+def test_invalid_tool_arg_window_values_restore_defaults(monkeypatch):
+    session, compressor = _neutral_session(
+        tool_arg_head_chars=1200,
+        tool_arg_tail_chars=800,
+        tool_arg_truncate_threshold=10_000,
+    )
+    _sync_with_cfg(monkeypatch, session, {"compression": {
+        "tool_arg_head_chars": True,
+        "tool_arg_tail_chars": "invalid",
+        "tool_arg_truncate_threshold": 10.5,
+    }})
+    assert (compressor.tool_arg_head_chars, compressor.tool_arg_tail_chars) == (1000, 1000)
+    assert compressor.tool_arg_truncate_threshold == 4000
 
 
 def test_removing_min_tail_user_messages_restores_default(monkeypatch):

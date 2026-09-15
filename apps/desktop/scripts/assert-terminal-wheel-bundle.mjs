@@ -18,8 +18,8 @@ if (!text.includes('[5~') || !text.includes('[6~')) {
   throw new Error(`${index} is missing Page Up/Down CSI`)
 }
 
-if (!text.includes('data-tui-scrollbar') || !text.includes('Scroll conversation')) {
-  throw new Error(`${index} is missing the conversation scrollbar rail`)
+if (text.includes('data-tui-scrollbar') || text.includes('Scroll conversation')) {
+  throw new Error(`${index} still ships the removed conversation scrollbar rail`)
 }
 
 if (text.includes('[9001~') || text.includes('\\x1b[9001')) {

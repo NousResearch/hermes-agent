@@ -445,29 +445,9 @@ export function useTerminalSession({
   const { latestFontFamilyRef, mountedRef } = useTerminalFontController({ fitRef, termRef, webglRef })
   const [status, setStatus] = useState<TerminalStatus>('starting')
   const [selection, setSelection] = useState('')
-  // Always show a rail: xterm's native scrollbar is CSS-hidden, so without this
-  // rail a missed TUI latch looks like "no scrolling at all".
-  const [showConversationScrollbar, setShowConversationScrollbar] = useState(true)
   const [selectionStyle, setSelectionStyle] = useState<CSSProperties | null>(null)
   const [shellName, setShellName] = useState('shell')
   const tuiScrollRef = useRef(Boolean(resumeOnCreate || cursorChatId))
-  /** Rail / Page keys: always Ink Page Up/Down to the PTY. Never xterm scrollPages —
-   *  TUI scrollback is 0 so scrollPages is a silent no-op, which is what the owner
-   *  saw with the “new scrollbar that does nothing”. */
-  const scrollConversation = useCallback((direction: -1 | 1) => {
-    const id = sessionIdRef.current
-    const term = termRef.current
-
-    if (!id) {
-      term?.scrollPages(direction)
-
-      return
-    }
-
-    tuiScrollRef.current = true
-    // One click = three pages so a short Cursor pane actually moves.
-    void window.hermesDesktop?.terminal?.write(id, inkPageKey(direction).repeat(3))
-  }, [])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -801,7 +781,6 @@ export function useTerminalSession({
       const isTui =
         cursorSticky || shouldSendTuiWheelToPty(term.buffer.active.type, windowTitle, false, tuiLatched, allowUnlatch)
       tuiScrollRef.current = isTui || Boolean(resumeOnCreate || cursorChatId)
-      setShowConversationScrollbar(true)
       const nextScrollback = tuiXtermScrollback(tuiScrollRef.current)
 
       if (term.options.scrollback !== nextScrollback) {
@@ -1225,10 +1204,8 @@ export function useTerminalSession({
   return {
     addSelectionToChat,
     hostRef,
-    scrollConversation,
     selection,
     selectionStyle,
-    showConversationScrollbar,
     shellName,
     status
   }

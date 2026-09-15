@@ -1443,6 +1443,10 @@ export const host = {
 
 // -- react bridge -------------------------------------------------------------
 
+export { type BotChatDragPayload, startBotChatDrag } from '@/app/chat/bot-drag'
+
+// -- ui: the design language --------------------------------------------------
+
 // Every contribution surface, plugin-reachable: register keybinds, palette
 // commands, routes, themes, panes, composer extensions, and bar items with
 // the same area ids + payload types core uses.
@@ -1453,9 +1457,6 @@ export {
   type ComposerAttachmentProvider,
   type ComposerMiddleware
 } from '@/app/chat/composer/contrib'
-
-// -- ui: the design language --------------------------------------------------
-
 /** THE session status dot — the one primitive the sidebar row, the pane tabs
  *  and the session switcher render, so a session's status can never disagree
  *  between surfaces. Pass the STORED session id and it resolves the rest

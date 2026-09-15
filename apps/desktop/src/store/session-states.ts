@@ -1481,9 +1481,17 @@ export function openSessionTile(
   // No scope on an already-open tile is a MOVE (a split drag re-docking a tab),
   // not a re-scope: keep the workspace it lives in instead of re-bucketing it
   // into Sessions — a Bot tab used to vanish from the Bot workspace on drop.
-  const workspaceScope: SessionTileWorkspaceScope = explicitScope ?? {
-    workspaceMode: existing?.workspaceMode ?? 'sessions'
-  }
+  // A bot chat dragged out of MAIN has no tile (Bot Mode has no main/tile
+  // distinction) and no explicit scope — the tab it rides on is the bot
+  // workspace itself. Left on the sessions fallback, the "loaded in MAIN never
+  // opens as a tile" guard below swallowed the drop silently. The remembered
+  // bot-chat scope is the discriminator: restore it so the drop mints a real
+  // tile, which the drop hint's reveal then adopts and fronts. An existing-tile
+  // move keeps the tile's own scope.
+  const rememberedBotScope = !explicitScope && !existing ? $botChatScopes.get()[storedSessionId] : undefined
+
+  const workspaceScope: SessionTileWorkspaceScope = explicitScope ??
+    rememberedBotScope ?? { workspaceMode: existing?.workspaceMode ?? 'sessions' }
 
   // Opening a session in a tab/tile is "reading" it — clear its unread dot
   // exactly like main-thread resume does. Previously only

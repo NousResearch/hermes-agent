@@ -163,6 +163,57 @@ describe('useModelControls', () => {
     expect($currentProvider.get()).toBe('deepseek')
   })
 
+  it('unpicks a manual draft and immediately reseeds it from the profile default', async () => {
+    setCurrentModel('manual-model')
+    setCurrentProvider('manual-provider')
+    setCurrentModelSource('manual')
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'default-model', provider: 'default-provider' })
+    const requestGateway = vi.fn()
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient: new QueryClient(),
+        requestGateway
+      })
+    )
+
+    await act(() => result.current.useProfileDefault())
+
+    expect($currentModel.get()).toBe('default-model')
+    expect($currentProvider.get()).toBe('default-provider')
+    expect(getCurrentModelSource()).toBe('')
+    expect(window.localStorage.getItem('hermes.desktop.composer.model')).toBeNull()
+    expect(window.localStorage.getItem('hermes.desktop.composer.provider')).toBeNull()
+    expect(window.localStorage.getItem('hermes.desktop.composer.model-source')).toBeNull()
+    expect(getGlobalModelInfo).toHaveBeenCalledWith('default')
+    expect(requestGateway).not.toHaveBeenCalled()
+  })
+
+  it('unpins a live session without changing the model it is running', async () => {
+    $activeSessionId.set('runtime-1')
+    setCurrentModel('running-model')
+    setCurrentProvider('running-provider')
+    setCurrentModelSource('manual')
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'default-model', provider: 'default-provider' })
+    vi.mocked(getGlobalModelInfo).mockClear()
+    const requestGateway = vi.fn()
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient: new QueryClient(),
+        requestGateway
+      })
+    )
+
+    await act(() => result.current.useProfileDefault())
+
+    expect($currentModel.get()).toBe('running-model')
+    expect($currentProvider.get()).toBe('running-provider')
+    expect(getCurrentModelSource()).toBe('')
+    expect(getGlobalModelInfo).not.toHaveBeenCalled()
+    expect(requestGateway).not.toHaveBeenCalled()
+  })
+
   it('keeps a live session authoritative when Settings saves a new profile default', async () => {
     const queryClient = new QueryClient()
     $activeSessionId.set('runtime-1')

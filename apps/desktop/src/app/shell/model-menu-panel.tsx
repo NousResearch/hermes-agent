@@ -1,14 +1,16 @@
 import type { ModelOptionsResult } from '@hermes/shared'
+import { useStore } from '@nanostores/react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useContext, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { DropdownMenuItem, dropdownMenuRow } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { cn } from '@/lib/utils'
+import { $currentModelSource } from '@/store/session'
 
-import { ModelCatalogMenu } from './model-catalog-menu'
+import { ModelCatalogMenu, ModelMenuCloseContext } from './model-catalog-menu'
 import { type ModelMenuHostProps, useModelMenuController } from './use-model-menu-controller'
 
 export { ModelMenuCloseContext } from './model-catalog-menu'
@@ -19,12 +21,14 @@ export type { ModelSelection } from './use-model-menu-controller'
  * controller that gives a selection its meaning HERE (`useModelMenuController`).
  */
 export function ModelMenuPanel(props: ModelMenuHostProps) {
-  const { gateway, ownerConnectionId, profile = 'default', requestGateway } = props
+  const { gateway, onUseProfileDefault, ownerConnectionId, profile = 'default', requestGateway } = props
   const { t } = useI18n()
   const copy = t.shell.modelMenu
   const [refreshing, setRefreshing] = useState(false)
   const queryClient = useQueryClient()
-  const { activeSessionId, controller } = useModelMenuController(props)
+  const currentModelSource = useStore($currentModelSource)
+  const closeMenu = useContext(ModelMenuCloseContext)
+  const { activeSessionId, controller, touchesPrimary } = useModelMenuController(props)
 
   // Explicit "Refresh Models": re-fetch the catalog with refresh:true so the
   // backend busts its 1h provider-model disk cache and re-pulls each provider's
@@ -64,17 +68,32 @@ export function ModelMenuPanel(props: ModelMenuHostProps) {
     <ModelCatalogMenu
       controller={controller}
       footer={
-        <DropdownMenuItem
-          className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
-          disabled={refreshing}
-          onSelect={event => {
-            event.preventDefault()
-            void refreshModels()
-          }}
-        >
-          <Codicon className={cn(refreshing && 'animate-spin')} name="sync" size="0.75rem" />
-          {copy.refreshModels}
-        </DropdownMenuItem>
+        <>
+          {touchesPrimary && currentModelSource === 'manual' && onUseProfileDefault ? (
+            <DropdownMenuItem
+              className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
+              data-testid="composer-use-profile-default"
+              onSelect={() => {
+                void onUseProfileDefault()
+                closeMenu()
+              }}
+            >
+              <Codicon name="discard" size="0.75rem" />
+              {copy.useProfileDefault}
+            </DropdownMenuItem>
+          ) : null}
+          <DropdownMenuItem
+            className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
+            disabled={refreshing}
+            onSelect={event => {
+              event.preventDefault()
+              void refreshModels()
+            }}
+          >
+            <Codicon className={cn(refreshing && 'animate-spin')} name="sync" size="0.75rem" />
+            {copy.refreshModels}
+          </DropdownMenuItem>
+        </>
       }
       gateway={gateway}
       includeMoa

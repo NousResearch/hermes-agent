@@ -14,6 +14,7 @@ import {
   $activeSessionId,
   $currentModel,
   $currentProvider,
+  clearComposerModelOverride,
   getComposerSelectionGeneration,
   getCurrentModelSource,
   markComposerSelectionManual,
@@ -110,7 +111,7 @@ export function useModelControls({
   // only fills an EMPTY selection so a user's pick (plain UI state in
   // $currentModel) survives the lifecycle refreshes that fire on boot / fresh
   // draft / session events. A live session owns the footer, so skip entirely.
-  const refreshCurrentModel = useCallback(async (force = false) => {
+  const refreshCurrentModel = useCallback(async (force = false, persistSelection = true) => {
     // A forced profile swap opens a new intent epoch; an older in-flight
     // response for a previous profile must stand down when it resolves.
     if (force) {
@@ -150,20 +151,42 @@ export function useModelControls({
       }
 
       if (typeof result.model === 'string') {
-        setCurrentModel(result.model)
+        if (persistSelection) {
+          setCurrentModel(result.model)
+        } else {
+          $currentModel.set(result.model)
+        }
       }
 
       if (typeof result.provider === 'string') {
-        setCurrentProvider(result.provider)
+        if (persistSelection) {
+          setCurrentProvider(result.provider)
+        } else {
+          $currentProvider.set(result.provider)
+        }
       }
 
-      if (typeof result.model === 'string' || typeof result.provider === 'string') {
+      if (persistSelection && (typeof result.model === 'string' || typeof result.provider === 'string')) {
         setCurrentModelSource('default')
       }
     } catch {
       // The delayed session.info event still updates this once the agent is ready.
     }
   }, [])
+
+  const useProfileDefault = useCallback(async () => {
+    clearComposerModelOverride()
+
+    // Unpinning a live session affects future drafts only. Its renderer and
+    // session-scoped catalog remain authoritative until the runtime ends.
+    if ($activeSessionId.get()) {
+      return
+    }
+
+    // Paint the default into this draft without recreating any of the three
+    // scoped persistence keys that were just removed.
+    await refreshCurrentModel(true, false)
+  }, [refreshCurrentModel])
 
   // Returns whether the switch was applied so callers can await it before
   // applying follow-up changes. `true` means applied (or deferred/busy-queued
@@ -344,5 +367,5 @@ export function useModelControls({
     ]
   )
 
-  return { applySavedMainModel, refreshCurrentModel, selectModel }
+  return { applySavedMainModel, refreshCurrentModel, selectModel, useProfileDefault }
 }

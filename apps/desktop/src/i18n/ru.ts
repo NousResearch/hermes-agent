@@ -3222,6 +3222,7 @@ export const ru = defineLocale({
       noModels: 'Модели не найдены',
       editModels: 'Изменить модели…',
       refreshModels: 'Обновить модели',
+      useProfileDefault: 'Использовать модель профиля по умолчанию',
       fast: 'Быстрая'
     },
     modelOptions: {

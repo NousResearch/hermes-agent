@@ -77,6 +77,48 @@ def test_prepares_run_scoped_artifact_and_recovers_only_that_run(tmp_path):
     assert str(stale) not in recovered
 
 
+def test_recovery_fails_closed_when_only_narration():
+    messages = [
+        {"role": "assistant", "content": "Verified. The file exists at the media path."},
+    ]
+    assert S._recover_pre_narration_deliverable(messages) == ""
+
+
+def test_recovery_prefers_media_deliverable_superseded_by_narration():
+    deliverable = (
+        "📡 Daily Research Brief — 15/09/26\n"
+        "12 items · top pick: X\n\n"
+        "MEDIA:/home/kensei/.hermes/runbooks/research-digest/research-brief-2026-09-15.html"
+    )
+    narration = (
+        "Verification status noted: the only change this turn was a generated HTML digest "
+        "artifact, not source code. `run_tests.sh` does not apply to `.html` report files.\n\n"
+        "Round-trip clean. The file exists and is well-formed HTML; parsed cleanly."
+    )
+    messages = [
+        {"role": "user", "content": "run the digest"},
+        {"role": "assistant", "content": deliverable, "finish_reason": "verification_required"},
+        {"role": "user", "content": "[verify-on-stop nudge]"},
+        {"role": "assistant", "content": narration, "finish_reason": "stop"},
+    ]
+    recovered = S._recover_pre_narration_deliverable(messages)
+    assert "MEDIA:/home/kensei/.hermes/runbooks/research-digest/research-brief-2026-09-15.html" in recovered
+    assert "Daily Research Brief" in recovered
+
+
+def test_recovery_handles_silent_marker():
+    messages = [{"role": "assistant", "content": "[SILENT]"}]
+    assert S._recover_pre_narration_deliverable(messages) == "[SILENT]"
+
+
+def test_recovery_ignores_tool_call_rows():
+    messages = [
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]},
+        {"role": "tool", "content": "done"},
+    ]
+    assert S._recover_pre_narration_deliverable(messages) == ""
+
+
 def test_rejects_non_html_artifact_for_html_template(tmp_path):
     """A .html template that received non-HTML content must not be delivered."""
     job = {

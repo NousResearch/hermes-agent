@@ -2396,6 +2396,17 @@ def run_job(
         if stripped != final_response:
             logger.info("Job '%s': verification leakage stripped from final response", job_name)
             final_response = stripped
+            # KENSEI CUSTOM — verify-on-stop continuation recovery (2026-09-15 sweep):
+            # when the strip empties the response, the real deliverable (summary + MEDIA: /
+            # [SILENT] / prose report) is an earlier assistant message the verification nudge
+            # superseded. Recover it rather than failing the run closed on an empty response;
+            # an empty fallback preserves fail-closed behaviour for genuinely empty runs.
+            if not final_response.strip():
+                _recovered = _recover_pre_narration_deliverable(result.get("messages") or [])
+                if _recovered:
+                    logger.info(
+                        "Job '%s': recovered deliverable from pre-narration message", job_name)
+                    final_response = _recovered
         # KENSEI CUSTOM — run-scoped artifact contract. When this fire reserved a
         # delivery artifact, the reserved file is the deliverable: a valid artifact
         # replaces the model's final response with a compact scheduler-generated
@@ -2808,6 +2819,36 @@ def _strip_inline_verification(text: str) -> str:
     # Return empty string so the delivery layer suppresses it (should_deliver
     # check + soft-failure marking handle the rest).
     return "\n".join(cleaned).rstrip()
+
+def _recover_pre_narration_deliverable(messages: list, *, scan_limit: int = 12) -> str:
+    """KENSEI CUSTOM — recover the deliverable from before a verify-on-stop continuation.
+
+    The verify-on-stop gate (agent.turn_stop_gates) can end a cron turn on narration
+    (interim answers marked ``finish_reason="verification_required"``), leaving the final
+    assistant message as pure verification commentary. When leak-stripping empties that
+    response, walk the run's messages backwards and collect assistant messages whose
+    stripped form still has content. Prefer explicit deliverable markers (``MEDIA:`` /
+    ``[SILENT]``); otherwise return the newest surviving candidate. Returns "" when
+    nothing survives so callers keep failing closed.
+    """
+    candidates: list[str] = []
+    scanned = 0
+    for msg in reversed(messages or []):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue  # tool-call-only rows and empty interim flushes
+        scanned += 1
+        if scanned > scan_limit:
+            break
+        candidate = _strip_verification_leak(content)
+        if candidate.strip():
+            candidates.append(candidate)
+    for cand in candidates:
+        if "MEDIA:" in cand or _is_cron_silence_response(cand):
+            return cand
+    return candidates[0] if candidates else ""
 
 def _prepare_delivery_artifact(job: dict, execution_id: str) -> tuple[Optional[Path], Optional[str]]:
     """Reserve a unique report path and tell the current run to write it."""

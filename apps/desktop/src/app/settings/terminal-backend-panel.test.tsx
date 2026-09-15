@@ -7,8 +7,8 @@ const getTerminalBackends = vi.fn()
 const selectTerminalBackend = vi.fn()
 
 vi.mock('@/hermes', () => ({
-  getTerminalBackends: () => getTerminalBackends(),
-  selectTerminalBackend: (backend: string) => selectTerminalBackend(backend)
+  getTerminalBackends: (profile?: string) => getTerminalBackends(profile),
+  selectTerminalBackend: (backend: string, profile?: string) => selectTerminalBackend(backend, profile)
 }))
 
 vi.mock('@/store/notifications', () => ({
@@ -96,7 +96,7 @@ describe('TerminalBackendPanel', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /SSH/ }))
 
-    await waitFor(() => expect(selectTerminalBackend).toHaveBeenCalledWith('ssh'))
+    await waitFor(() => expect(selectTerminalBackend).toHaveBeenCalledWith('ssh', undefined))
     await waitFor(() => expect(onConfiguredChange).toHaveBeenCalled())
     // Active highlight moves without a refetch.
     const ssh = screen.getByRole('button', { name: /SSH/ })
@@ -110,7 +110,7 @@ describe('TerminalBackendPanel', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /Docker/ }))
 
-    await waitFor(() => expect(selectTerminalBackend).toHaveBeenCalledWith('docker'))
+    await waitFor(() => expect(selectTerminalBackend).toHaveBeenCalledWith('docker', undefined))
     // The guidance detail stays visible on the now-active row.
     expect(screen.getByText(/Docker daemon not reachable/)).toBeTruthy()
   })
@@ -123,5 +123,16 @@ describe('TerminalBackendPanel', () => {
 
     await new Promise(resolve => setTimeout(resolve, 50))
     expect(selectTerminalBackend).not.toHaveBeenCalled()
+  })
+
+  it('reads and writes the profile currently selected by Capabilities', async () => {
+    const { TerminalBackendPanel } = await import('./terminal-backend-panel')
+    render(<TerminalBackendPanel onConfiguredChange={vi.fn()} profile="research" />)
+
+    await waitFor(() => expect(getTerminalBackends).toHaveBeenCalledWith('research'))
+
+    fireEvent.click(await screen.findByRole('button', { name: /SSH/ }))
+
+    await waitFor(() => expect(selectTerminalBackend).toHaveBeenCalledWith('ssh', 'research'))
   })
 })

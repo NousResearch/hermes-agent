@@ -408,7 +408,7 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
 # Chat/Responses. Gemini is gated on model: only 3.x supports multimodal functionResponse.
 _TOOL_RESULT_MEDIA_PROVIDERS = frozenset({
     "openrouter", "nous", "vertex", "bedrock", "anthropic-vertex", "google-vertex",
-    "anthropic", "claude", "anthropic-direct",
+    "anthropic", "claude", "anthropic-direct", "minimax-oauth",
     "openai", "openai-chat", "openai-codex", "azure-openai",
 })
 _GEMINI_PROVIDERS = frozenset({"google", "gemini", "google-gemini", "google-vertex-gemini"})

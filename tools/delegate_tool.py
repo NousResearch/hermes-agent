@@ -303,12 +303,13 @@ def _run_single_child(
       status      ∈ {completed, interrupted, failed} — a structured failure
                     (failed=True / non-empty error) or an invalid terminal state
                     is "failed" even when a summary exists.
-      exit_reason ∈ {completed, max_iterations, interrupted, error} —
+      exit_reason ∈ {completed, max_iterations, interrupted, error, guardrail_halt} —
                     "max_iterations" only for genuine budget exhaustion
                     (completed=False with no failure fields), never for errors.
       truncated   == (exit_reason == "max_iterations").
 
     * ``"completed"``       — normal finish. See #97655.
+    * ``"guardrail_halt"``  — hard tool-guardrail stop (block/halt); never a success (#102694).
     """
     child_progress_cb = getattr(child, "tool_progress_callback", None)
     child_pool, leased_cred_id = _lease_child_credential(child)

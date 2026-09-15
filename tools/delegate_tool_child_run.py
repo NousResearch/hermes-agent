@@ -485,8 +485,15 @@ def _build_result_entry(
     # "(empty)" is run_agent's give-up sentinel after repeated empty LLM
     # responses (usually a transport bug) — a failure, not a success.
     usable_summary = bool(summary) and summary.strip() != "(empty)"
+    # Hard tool-guardrail halt (e.g. loop_web_search_cap): controlled halt
+    # message, not usable output. Must WIN over the summary heuristic (#102694);
+    # warnings (action=warn) never halt and never land in result["guardrail"].
+    _guardrail = result.get("guardrail")
+    _guardrail_halt = isinstance(_guardrail, dict) and _guardrail.get("action") in ("block", "halt")
     if result.get("interrupted", False):
         status, exit_reason = "interrupted", "interrupted"
+    elif _guardrail_halt:
+        status, exit_reason = "failed", "guardrail_halt"
     elif result.get("failed") or result.get("error"):
         # The loop returns the error text as final_response, which would otherwise read as "completed". Never report a
         # provider rejection as "max_iterations" — that is only truthful for real budget exhaustion.
@@ -530,7 +537,14 @@ def _build_result_entry(
     entry["cost_usd"] = round(entry["_child_cost_usd"], 6)
     entry["cost_status"] = _cost_status if isinstance(_cost_status, str) and _cost_status else "unknown"
     if status == "failed":
-        entry["error"] = result.get("error", "Subagent did not produce a response.")
+        if _guardrail_halt:
+            # Name the public guardrail code so coordinators need not parse
+            # prose. entry["guardrail"] carries decision metadata verbatim.
+            _guardrail_code = _guardrail.get("code") or "unknown"
+            entry["error"] = f"Subagent stopped by tool guardrail: {_guardrail_code}."
+            entry["guardrail"] = dict(_guardrail)
+        else:
+            entry["error"] = result.get("error", "Subagent did not produce a response.")
         # Classified reason from the child loop (e.g. "rate_limit", "billing")
         # lets the parent tell a quota wall from a task error without parsing prose.
         _failure_reason = result.get("failure_reason")

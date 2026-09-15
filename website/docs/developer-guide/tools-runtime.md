@@ -205,6 +205,13 @@ The terminal tool integrates a dangerous-command approval system defined in `too
 
 5. **Permanent allowlist** — the "allow permanently" option writes the pattern to `config.yaml`'s `command_allowlist`, persisting across sessions.
 
+### Plugin escalation: `approve` vs. `require_exact_action`
+
+A `pre_tool_call` hook can escalate ANY tool call (not just terminal commands matching `DANGEROUS_PATTERNS`) into a human decision, via two directives resolved in `hermes_cli/plugins.py::_resolve_block_from_details`:
+
+- **`approve`** (`tools/approval.py::request_tool_approval`) reuses the exact gate above — session/permanent allowlist, `--yolo`, `approvals.mode: off`, and cron/single-query/unattended auto-approve config can all satisfy it, same as a dangerous shell command. It is resolved from the hook's `message`, computed for the args the hook was called with; if a *different* `pre_tool_call` hook returns a `modify` directive after it in the hook list, that modify is not visible to `approve`'s message (see `TestPreToolCallModify.test_modify_after_block_is_invisible` and its `approve` analogue in `tests/hermes_cli/test_plugins.py` — this is long-standing, unchanged behavior, appropriate for reversible/recoverable actions).
+- **`require_exact_action`** (`tools/approval_exact_action.py::request_exact_action_approval`) is the high-assurance path for consequential, hard-to-reverse actions (send mail, financial transfers, destructive cloud operations). `_get_pre_tool_call_directive_details` finishes collecting every `modify` directive from every hook before resolving it, so it is always bound to the true final dispatch args. It never consults `--yolo`, `approvals.mode: off`, or any allowlist, and it fails closed with no human present rather than following cron/single-query/unattended config. On approval it mints a one-time, in-process receipt that the tool's own handler must explicitly verify and consume (`consume_exact_action_approval`) before mutating anything — see the `pre_tool_call` section of `website/docs/user-guide/features/hooks.md` for the full contract and a minimal safe plugin example, and the module docstring of `tools/approval_exact_action.py` for the design/limitations note.
+
 ## Terminal/runtime environments
 
 The terminal system supports multiple backends:

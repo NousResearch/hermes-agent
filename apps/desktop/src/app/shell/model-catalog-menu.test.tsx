@@ -5,6 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $localRuntimeJobs } from '@/store/local-runtime-jobs'
+import { $pinnedModelKeys, pinModel } from '@/store/model-pinned'
 import {
   $modelVisibilityOpen,
   $visibleModels,
@@ -42,6 +43,7 @@ vi.mock('@/hermes', () => ({
 beforeEach(() => {
   $visibleModels.set(null)
   $localRuntimeJobs.set([])
+  $pinnedModelKeys.set([])
   // These suites exercise the local-models rows, which ship behind --local.
   $localModelsEnabled.set(true)
   setModelVisibilityOpen(false)
@@ -55,6 +57,7 @@ afterEach(() => {
   // The backend mock echoes this snapshot; retire fixture jobs before jsdom
   // disappears so an in-flight app-level poll cannot schedule another tick.
   $localRuntimeJobs.set([])
+  $pinnedModelKeys.set([])
   vi.clearAllMocks()
 })
 
@@ -131,6 +134,89 @@ describe('the catalog owns model curation', () => {
     fireEvent.click(screen.getByText('Edit models…'))
 
     expect($modelVisibilityOpen.get()).toBe(true)
+  })
+})
+
+describe('pinned models', () => {
+  it('renders a Pinned section above the provider groups, and does not duplicate the row', async () => {
+    pinModel(modelVisibilityKey('google', 'gemini-3.1-pro'))
+
+    renderMenu()
+
+    await screen.findByText('Pinned')
+    // Exactly one "Gemini 3.1 Pro" row — pinned, not also under Google.
+    expect(screen.getAllByText(/Gemini 3\.1 Pro/i).length).toBe(1)
+  })
+
+  it('shows no Pinned section when nothing is pinned', async () => {
+    renderMenu()
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+
+    expect(screen.queryByText('Pinned')).toBeNull()
+  })
+
+  it('pinning a model outside the Edit Models shortlist still surfaces it via the Pinned section', async () => {
+    // Only gemini-2.5-flash is in the curated shortlist; pin the OTHER model.
+    setVisibleModels(new Set([modelVisibilityKey('google', 'gemini-2.5-flash')]))
+    pinModel(modelVisibilityKey('google', 'gemini-3.1-pro'))
+
+    renderMenu()
+
+    await screen.findByText('Pinned')
+    expect(screen.getByText(/Gemini 3\.1 Pro/i)).toBeTruthy()
+  })
+
+  it('clicking the pin toggle pins a model without selecting it', async () => {
+    const select = renderMenu()
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+
+    const row = screen.getByText(/Gemini 3\.1 Pro/i).closest('[role="menuitem"]')
+    const pinButton = row?.querySelector('button[aria-label="Pin model"]')
+
+    expect(pinButton).toBeTruthy()
+    fireEvent.click(pinButton!)
+
+    expect($pinnedModelKeys.get()).toContain(modelVisibilityKey('google', 'gemini-3.1-pro'))
+    // The click must not have committed the model.
+    expect(select).not.toHaveBeenCalled()
+  })
+
+  it('clicking an already-pinned toggle unpins it', async () => {
+    pinModel(modelVisibilityKey('google', 'gemini-3.1-pro'))
+    renderMenu()
+
+    await screen.findByText('Pinned')
+    const pinButton = screen.getByRole('button', { name: 'Unpin model' })
+    fireEvent.click(pinButton)
+
+    expect($pinnedModelKeys.get()).not.toContain(modelVisibilityKey('google', 'gemini-3.1-pro'))
+  })
+
+  it('a stale pin (model no longer in the catalog) is silently dropped, no crash', async () => {
+    pinModel(modelVisibilityKey('google', 'gemini-retired-model'))
+
+    renderMenu()
+
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+    expect(screen.queryByText('Pinned')).toBeNull()
+  })
+
+  it('search still narrows the Pinned section like any other row', async () => {
+    pinModel(modelVisibilityKey('google', 'gemini-3.1-pro'))
+    pinModel(modelVisibilityKey('google', 'gemini-2.5-flash'))
+
+    renderMenu()
+    await screen.findByText('Pinned')
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    fireEvent.change(input, { target: { value: '2.5' } })
+
+    await waitFor(() => {
+      expect(screen.queryByText(/Gemini 3\.1 Pro/i)).toBeNull()
+      // The fold makes this id-style query highlight the spaced label: the
+      // row renders as <mark>2.5</mark> inside "Gemini 2.5 flash".
+      expect(screen.getByText('2.5', { selector: 'mark' })).toBeTruthy()
+    })
   })
 })
 

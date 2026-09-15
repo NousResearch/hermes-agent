@@ -242,6 +242,40 @@ hermes profile rename mybot assistant
 # ~/.local/bin/mybot → ~/.local/bin/assistant
 ```
 
+The rename also migrates the profile's persisted session/routing identity — session keys
+(`agent:<old>:*`), `sessions.profile_name`, heartbeats, and routing/delivery rows — to the new
+name. A live multiplexed gateway owns that migration (it holds the routing index in memory), so
+when it is running the CLI delegates to it.
+
+## `hermes profile migrate-identity`
+
+```bash
+hermes profile migrate-identity <old-name> <new-name>
+```
+
+Retries the identity migration of a rename that already completed. Run it if `hermes profile
+rename` warned that the live gateway could not migrate session identity: restart the gateway
+(it reloads the routing index from the database, so the migration lands), or stop it — with no
+gateway holding the store the command performs the durable rewrite itself.
+
+The migration is driven by the rows that still name `<old>`, so `profiles/<old>` does not have
+to exist; only `<new>` is checked. Idempotent — re-running a completed migration succeeds with
+nothing left to rekey. Exits non-zero when a live gateway refuses the migration, when a
+database rejects the rewrite (a routing collision, a lock, or one of the two databases failing
+while the other succeeds), naming the database and error.
+
+**Example:**
+
+```bash
+hermes profile rename mybot assistant
+# ⚠ Profile was renamed, but the live gateway could not migrate session identity (…).
+#   Restart the gateway, then run:
+#     hermes profile migrate-identity mybot assistant
+
+hermes profile migrate-identity mybot assistant
+# ✓ Session/routing identity migrated: mybot → assistant
+```
+
 ## `hermes profile export`
 
 ```bash

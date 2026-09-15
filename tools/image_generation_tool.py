@@ -662,13 +662,12 @@ def _dispatch_to_plugin_provider(
 
 # Native ``krea-2-*`` ids are served by the Krea managed gateway (managed mode only —
 # direct/BYO users keep their pipeline); ``fal-ai/krea/v2/*`` catalog ids stay on FAL.
-_KREA_NATIVE_MODELS = {"krea-2-medium", "krea-2-large", "krea-2-medium-turbo"}
-
-
 def _normalize_krea_model(model_id: Optional[str]) -> Optional[str]:
     """Return the native Krea plugin model id when ``model_id`` is ``krea-2-*``."""
+    from plugins.image_gen.krea import KREA_MODEL_IDS
+
     candidate = model_id.strip() if isinstance(model_id, str) else None
-    return candidate if candidate in _KREA_NATIVE_MODELS else None
+    return candidate if candidate in KREA_MODEL_IDS else None
 
 
 def _maybe_route_managed_krea(

@@ -35,6 +35,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
@@ -122,6 +123,26 @@ def load_gate_config(delegation_cfg: Any) -> Optional[GateConfig]:
         argv = tuple(command)
     else:
         errors.append("delegation.quality_gate.command must be a non-empty list of strings")
+    if argv:
+        # argv[0] is never resolved relative to the child's own (possibly attacker-influenced)
+        # cwd: a path-separator-bearing argv[0] must already be absolute, and a bare name is
+        # resolved against PATH once here, at config-load time, not at spawn time.
+        program = argv[0]
+        if os.sep in program or (os.altsep and os.altsep in program):
+            if not os.path.isabs(program):
+                errors.append(
+                    "delegation.quality_gate.command[0] must be an absolute path or a bare executable "
+                    "name resolved on PATH"
+                )
+        else:
+            resolved = shutil.which(program)
+            if resolved is None:
+                errors.append(
+                    "delegation.quality_gate.command[0] must be an absolute path or a bare executable "
+                    "name resolved on PATH"
+                )
+            else:
+                argv = (resolved,) + argv[1:]
     passthrough_raw = raw.get("env_passthrough")
     passthrough: tuple[str, ...] = ()
     if isinstance(passthrough_raw, (list, tuple)):

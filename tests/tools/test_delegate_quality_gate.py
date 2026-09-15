@@ -9,6 +9,8 @@ child without a gate keeps a byte-identical result entry (wire-shape pinning, as
 
 import hashlib
 import json
+import os
+import shutil
 import sys
 import time
 from unittest.mock import MagicMock, patch
@@ -673,6 +675,27 @@ class TestGateErrors:
         assert entry["quality_gate"]["verdict"] == "error"  # never "pass": the string was not run
         assert entry["quality_gate"]["reason"] == "judge_misconfigured"
 
+    def test_relative_command_is_refused(self):
+        """A relative argv[0] would resolve against the CHILD's cwd, not a trusted location — refuse it
+        instead of silently letting the child's own worktree pick the judge that grades it."""
+        gate = load_gate_config({"quality_gate": {"command": ["./scripts/judge.py"], "on_error": "closed"}})
+        assert "absolute path" in gate.config_error
+        child = _StubChild([GOOD], gate=gate)
+        entry = _run(child)
+        assert entry["status"] == "failed"
+        assert entry["quality_gate"]["verdict"] == "error"
+        assert entry["quality_gate"]["reason"] == "judge_misconfigured"
+
+    def test_bare_name_is_path_resolved(self):
+        """A bare executable name (no path separator) is resolved against PATH once at config-load time,
+        and the resolved absolute path is what actually gets executed."""
+        bare_name = os.path.basename(sys.executable)
+        resolved = shutil.which(bare_name)
+        assert resolved is not None  # sanity: the interpreter running this test must itself be on PATH
+        gate = load_gate_config({"quality_gate": {"command": [bare_name]}})
+        assert gate.config_error is None
+        assert gate.command[0] == resolved
+
     def test_missing_executable_is_a_gate_error(self):
         child = _StubChild([GOOD], gate=load_gate_config({"quality_gate": {"command": ["/nonexistent/hermes-gate"]}}))
         entry = _run(child)
@@ -719,20 +742,24 @@ class TestVerdictParsing:
 
 class TestConfig:
     def test_defaults_are_open_with_one_retry(self):
-        cfg = load_gate_config({"quality_gate": {"command": ["hermes-gate", "delegate-judge"]}})
-        assert cfg.command == ("hermes-gate", "delegate-judge")
+        # Bare names are resolved against PATH at load time (#below); use an already-absolute
+        # command so this test stays about the defaults, not about PATH resolution.
+        cfg = load_gate_config({"quality_gate": {"command": [sys.executable, "-m", "my_judge"]}})
+        assert cfg.command == (sys.executable, "-m", "my_judge")
         assert cfg.fail_closed is False
         assert cfg.max_retries == 1
         assert cfg.timeout_seconds > 0
         assert cfg.config_error is None
 
     def test_unknown_on_error_fails_closed_with_config_error(self):
-        cfg = load_gate_config({"quality_gate": {"command": ["judge"], "on_error": "close"}})
+        cfg = load_gate_config({"quality_gate": {"command": [sys.executable], "on_error": "close"}})
         assert cfg.fail_closed is True
         assert "on_error" in cfg.config_error
 
     def test_invalid_numbers_fall_back_to_defaults(self):
-        cfg = load_gate_config({"quality_gate": {"command": ["judge"], "timeout_seconds": "soon", "max_retries": -2}})
+        cfg = load_gate_config(
+            {"quality_gate": {"command": [sys.executable], "timeout_seconds": "soon", "max_retries": -2}}
+        )
         assert cfg.timeout_seconds > 0
         assert cfg.max_retries == 1
         assert cfg.config_error is None

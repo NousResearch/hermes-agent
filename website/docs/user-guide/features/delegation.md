@@ -89,6 +89,8 @@ delegation:
     # env_passthrough: ["HERMES_GATE_PROFILE"]    # extra env vars the judge may see (secrets are scrubbed)
 ```
 
+`command[0]` is resolved once, at config-load time: an absolute path is used as-is, and a bare executable name is looked up on `PATH` — arguments are never resolved against the child's own (possibly attacker-influenced) working directory, so a script path must be given absolute.
+
 The judge reads one JSON request on **stdin**:
 
 ```json

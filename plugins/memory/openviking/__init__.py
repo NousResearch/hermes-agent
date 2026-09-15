@@ -72,6 +72,68 @@ _READ_BATCH_FULL_LIMIT = 2500
 _LEVEL_ENDPOINTS = {"abstract": "/api/v1/content/abstract", "overview": "/api/v1/content/overview", "full": "/api/v1/content/read"}
 _LEVEL_MAX_CHARS = {"abstract": 1200, "overview": 4000}
 _RECALL_SUMMARY_KEYS = ("abstract", "overview", "text", "content")
+_NAMESPACE_ROOT_TAILS = (".abstract.md", ".overview.md")
+_NAMESPACE_ROOT_RE = re.compile(
+    r"^viking://resources/(?P<ns>[^/]+)/(?:" + "|".join(re.escape(t) for t in _NAMESPACE_ROOT_TAILS) + r")$"
+)
+
+
+def _is_namespace_root_uri(uri: Any) -> bool:
+    """True for a whole-namespace summary (``resources/<ns>/.abstract.md``).
+
+    A leaf's own ``<doc>.md/.overview.md`` is real content and must NOT match:
+    demoting those was measured to help nothing.
+    """
+    return bool(_NAMESPACE_ROOT_RE.match(str(uri or "").strip()))
+
+
+def _namespace_of(uri: Any) -> str:
+    match = _NAMESPACE_ROOT_RE.match(str(uri or "").strip())
+    return match.group("ns") if match else ""
+
+
+def _strip_namespace_tokens(query: str, items: List[Dict[str, Any]] | List[str]) -> str:
+    """Drop namespace names (taken from the hits themselves) out of ``query``.
+
+    The namespace list is never hardcoded: it comes from whatever namespace
+    roots the server actually returned, so new corpora need no code change.
+    """
+    names = set()
+    for item in items or []:
+        uri = item.get("uri") if isinstance(item, dict) else item
+        name = _namespace_of(uri)
+        if name:
+            names.add(name)
+    stripped = query or ""
+    for name in sorted(names, key=len, reverse=True):
+        stripped = re.sub(re.escape(name), " ", stripped, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", stripped).strip()
+
+
+def _should_retry_without_namespace(query: str, items: List[Dict[str, Any]]) -> bool:
+    """Retry only when a namespace root leads AND its name is in the query.
+
+    That pairing is the measured failure mode: the query repeats the namespace
+    name, the namespace abstract absorbs the similarity, and the leaf document
+    never makes the result set.
+    """
+    if not items:
+        return False
+    top = items[0].get("uri") if isinstance(items[0], dict) else items[0]
+    name = _namespace_of(top)
+    return bool(name) and name.lower() in (query or "").lower()
+
+
+def _merge_retry_items(original: List[Dict[str, Any]], retry: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Append retry hits behind the originals, dropping URIs already present."""
+    seen = {str(item.get("uri")) for item in original if isinstance(item, dict)}
+    merged = list(original)
+    for item in retry or []:
+        uri = str(item.get("uri")) if isinstance(item, dict) else ""
+        if uri and uri not in seen:
+            seen.add(uri)
+            merged.append(item)
+    return merged
 
 
 def _cfg_field(key: str, description: str, **extra) -> dict:
@@ -1603,6 +1665,27 @@ class OpenVikingMemoryProvider(MemoryProvider):
             if not isinstance(result, dict):
                 return ""
             candidates = [item for ctx_type in ("memories", "resources") for item in (result.get(ctx_type, []) or []) if isinstance(item, dict)]
+            # A query that repeats a namespace name can be swallowed by that
+            # namespace's root abstract, leaving the real leaf out of the
+            # result set entirely. Retry once without the namespace token.
+            if _should_retry_without_namespace(query_text, candidates):
+                retry_query = _strip_namespace_tokens(query_text, candidates)
+                if retry_query and retry_query != query_text:
+                    try:
+                        retry_result = self._unwrap_result(self._post_prefetch_search(
+                            client, retry_query, session_id, limit=max(cfg["limit"] * 4, 20),
+                            context_type=["memory", "resource"] if cfg["resources"] else "memory",
+                            deadline=deadline, request_timeout=cfg["request_timeout_seconds"],
+                        ))
+                        if isinstance(retry_result, dict):
+                            candidates = _merge_retry_items(candidates, [
+                                item for ctx_type in ("memories", "resources")
+                                for item in (retry_result.get(ctx_type, []) or []) if isinstance(item, dict)
+                            ])
+                    except TimeoutError:
+                        pass  # Budget spent; the original candidates still stand.
+                    except Exception as e:
+                        logger.debug("OpenViking namespace-stripped retry failed: %s", e)
             selected = self._select_recall_candidates(candidates, query_text, limit=cfg["limit"], score_threshold=cfg["score_threshold"])
             return "\n".join(self._build_prefetch_entries(
                 client, selected, prefer_abstract=cfg["prefer_abstract"], max_injected_chars=cfg["max_injected_chars"],

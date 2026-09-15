@@ -556,3 +556,155 @@ def test_agent_init_suppresses_micro_compaction_under_checkpoint_gate():
     )
     assert assign_idx != -1
     assert suppress_idx < assign_idx
+
+
+def _warn_text(caplog) -> str:
+    return "\n".join(r.getMessage() for r in caplog.records)
+
+
+def test_startup_warns_when_checkpoint_required_and_legacy_provider(caplog):
+    """Fail-closed compress is correct, but operators need a startup hint.
+
+    holographic-style v1 providers do not implement checkpoint API v2; with
+    ``compression.checkpoint_required`` armed, init must warn with the config
+    key, the active provider name, and how to recover.
+    """
+    import logging
+    from types import SimpleNamespace
+
+    from agent.conversation_compression import (
+        _warn_checkpoint_required_without_capable_provider,
+    )
+
+    manager = MemoryManager()
+    manager.add_provider(_BaseStubProvider("holographic"))
+    agent = SimpleNamespace(
+        compression_checkpoint_required=True,
+        _memory_manager=manager,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="agent.conversation_compression"):
+        _warn_checkpoint_required_without_capable_provider(agent)
+
+    text = _warn_text(caplog)
+    assert "compression.checkpoint_required" in text
+    assert "holographic" in text
+    assert "false" in text.lower()
+
+
+def test_pre_compress_blocked_error_includes_checkpoint_required_remediation():
+    """Compress-time block must name the flag, not just the missing API."""
+    from types import SimpleNamespace
+
+    from agent.conversation_compression import _pre_compress_memory_context
+
+    manager = MemoryManager()
+    manager.add_provider(_BaseStubProvider("legacy"))
+    agent = SimpleNamespace(_memory_manager=manager)
+
+    with pytest.raises(CompressionCheckpointUnavailable) as excinfo:
+        _pre_compress_memory_context(
+            agent, [{"role": "user", "content": "evidence"}], True
+        )
+
+    msg = str(excinfo.value)
+    assert "BLOCKED_MISSING_PREREQUISITE" in msg
+    assert "compression.checkpoint_required" in msg
+
+
+def test_startup_does_not_warn_when_provider_is_checkpoint_capable(caplog):
+    import logging
+    from types import SimpleNamespace
+
+    from agent.conversation_compression import (
+        _warn_checkpoint_required_without_capable_provider,
+    )
+
+    manager = MemoryManager()
+    manager.add_provider(_CheckpointProvider("durable"))
+    agent = SimpleNamespace(
+        compression_checkpoint_required=True,
+        _memory_manager=manager,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="agent.conversation_compression"):
+        _warn_checkpoint_required_without_capable_provider(agent)
+
+    assert "compression.checkpoint_required" not in _warn_text(caplog)
+
+
+def test_startup_does_not_warn_when_checkpoint_required_is_false(caplog):
+    import logging
+    from types import SimpleNamespace
+
+    from agent.conversation_compression import (
+        _warn_checkpoint_required_without_capable_provider,
+    )
+
+    manager = MemoryManager()
+    manager.add_provider(_BaseStubProvider("holographic"))
+    agent = SimpleNamespace(
+        compression_checkpoint_required=False,
+        _memory_manager=manager,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="agent.conversation_compression"):
+        _warn_checkpoint_required_without_capable_provider(agent)
+
+    assert "compression.checkpoint_required" not in _warn_text(caplog)
+
+
+def test_startup_warns_when_checkpoint_required_and_no_memory_manager(caplog):
+    """skip_memory leaves no manager; compress still blocks, so init must warn."""
+    import logging
+    from types import SimpleNamespace
+
+    from agent.conversation_compression import (
+        _warn_checkpoint_required_without_capable_provider,
+    )
+
+    agent = SimpleNamespace(
+        compression_checkpoint_required=True,
+        _memory_manager=None,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="agent.conversation_compression"):
+        _warn_checkpoint_required_without_capable_provider(agent)
+
+    text = _warn_text(caplog)
+    assert "compression.checkpoint_required" in text
+    assert "no active provider" in text.lower() or "none" in text.lower()
+
+
+def test_startup_probe_exception_fails_open_without_crash_or_warning(caplog):
+    """A broken capability probe must not refuse init (micro_compact-style)."""
+    import logging
+    from types import SimpleNamespace
+
+    from agent.conversation_compression import (
+        _warn_checkpoint_required_without_capable_provider,
+    )
+
+    class _ExplodingManager:
+        providers = []
+
+        def supports_pre_compress_checkpoint(self, api_version):
+            raise RuntimeError("probe exploded")
+
+    agent = SimpleNamespace(
+        compression_checkpoint_required=True,
+        _memory_manager=_ExplodingManager(),
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="agent.conversation_compression"):
+        _warn_checkpoint_required_without_capable_provider(agent)
+
+    warnings = "\n".join(
+        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+    )
+    debugs = "\n".join(
+        r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG
+    )
+    assert "compression.checkpoint_required" not in warnings
+    assert "probe exploded" in debugs
+    assert "capability probe failed" in debugs

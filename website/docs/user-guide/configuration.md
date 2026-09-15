@@ -2719,7 +2719,7 @@ delegation:
   max_spawn_depth: 1                        # Delegation tree depth cap (1-3, clamped). 1 = flat (default): parent spawns leaves that cannot delegate. 2 = orchestrator children can spawn leaf grandchildren. 3 = three levels.
   orchestrator_enabled: true                # Global kill switch. When false, role="orchestrator" is ignored and every child is forced to leaf regardless of max_spawn_depth.
   # quality_gate:                           # Opt-in external judge on every finished child (off unless command is set)
-  #   command: ["hermes-gate", "delegate-judge"]   # argv list, never a shell string
+  #   command: ["/usr/local/bin/my-judge"]  # argv list, never a shell string
   #   timeout_seconds: 120                  # hard cap per verdict
   #   max_retries: 1                        # correction turns on a "retry" verdict
   #   on_error: open                        # open = deliver unchanged when the judge fails; closed = reject

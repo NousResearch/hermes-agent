@@ -25,8 +25,8 @@ explicit "not an instruction" framing and a length bound. Children that failed, 
 produced no text, or violated their output_schema are never judged. A judge that delivers no
 verdict (timeout, bad exit, malformed output, misconfiguration) or reports its own error follows ``on_error``: ``open``
 (default) delivers the child's result unchanged with ``quality_gate.verdict: error``; ``closed``
-quarantines it. The contract is provider-neutral — Hermes Gate (``hermes-gate delegate-judge``)
-and Hermes Rubric plug in like any other executable that speaks it.
+quarantines it. The contract is provider-neutral — any executable that reads the result on stdin
+and prints a verdict on stdout plugs in.
 """
 
 from __future__ import annotations
@@ -116,7 +116,7 @@ def load_gate_config(delegation_cfg: Any) -> Optional[GateConfig]:
     argv: tuple[str, ...] = ()
     if isinstance(command, str):
         errors.append(
-            "delegation.quality_gate.command must be an argv list (e.g. [\"hermes-gate\", \"delegate-judge\"]), "
+            "delegation.quality_gate.command must be an argv list (e.g. [\"/usr/local/bin/my-judge\"]), "
             "not a shell string"
         )
     elif isinstance(command, (list, tuple)) and command and all(isinstance(a, str) and a.strip() for a in command):

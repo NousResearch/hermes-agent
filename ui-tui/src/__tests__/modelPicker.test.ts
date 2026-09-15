@@ -1,7 +1,7 @@
 import type { ModelOptionProvider } from '@hermes/shared/gateway-events'
 import { describe, expect, it } from 'vitest'
 
-import { providerIndexAfterClearingFilter } from '../components/modelPicker.js'
+import { buildModelHopRows, filterModelHopRows, providerIndexAfterClearingFilter } from '../components/modelPicker.js'
 
 const provider = (slug: string, name = slug): ModelOptionProvider => ({ name, slug })
 
@@ -48,5 +48,33 @@ describe('ModelPicker provider filtering', () => {
     ]
 
     expect(providerIndexAfterClearingFilter(rows, p)).toBe(0)
+  })
+})
+
+describe('ModelPicker hop catalog', () => {
+  const nous = provider('nous', 'Nous Portal')
+  const openrouter = provider('openrouter', 'OpenRouter')
+  nous.models = ['claude-sonnet-4.6', 'hermes-4']
+  openrouter.models = ['anthropic/claude-sonnet-4.6']
+
+  it('lists every model as provider/id', () => {
+    const rows = buildModelHopRows([nous, openrouter], ['Nous Portal', 'OpenRouter'])
+    expect(rows.map(row => row.selector)).toEqual([
+      'nous/claude-sonnet-4.6',
+      'nous/hermes-4',
+      'openrouter/anthropic/claude-sonnet-4.6'
+    ])
+  })
+
+  it('filters like omp /switch: provider then / then model', () => {
+    const rows = buildModelHopRows([nous, openrouter], ['Nous Portal', 'OpenRouter'])
+    expect(filterModelHopRows(rows, 'nous/').map(row => row.selector)).toEqual([
+      'nous/claude-sonnet-4.6',
+      'nous/hermes-4'
+    ])
+    expect(filterModelHopRows(rows, 'nous/hermes').map(row => row.model)).toEqual(['hermes-4'])
+    expect(filterModelHopRows(rows, 'openrouter/').map(row => row.selector)).toEqual([
+      'openrouter/anthropic/claude-sonnet-4.6'
+    ])
   })
 })

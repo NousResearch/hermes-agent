@@ -167,11 +167,74 @@ def _handoff_completions(sub_text: str, sub_lower: str):
             name, partial, name, f"→ {home_name}" if home_name else "send this session here")
 
 
+_MODEL_COMPLETION_TTL_S = 5.0
+_model_completion_memo: tuple[float, dict[str, list[tuple[str, str]]]] | None = None
+
+
+def _model_completion_catalog() -> dict[str, list[tuple[str, str]]]:
+    """Authenticated provider slugs + `slug/id` rows, memoised a few seconds so /model
+    completions don't rebuild inventory on every keystroke."""
+    global _model_completion_memo
+    now = time.monotonic()
+    if _model_completion_memo and now - _model_completion_memo[0] < _MODEL_COMPLETION_TTL_S:
+        return _model_completion_memo[1]
+    from hermes_cli.inventory import build_models_payload, load_picker_context
+    payload = build_models_payload(
+        load_picker_context(), picker_hints=False, pricing=False, capabilities=False,
+        featured=False, max_models=80)
+    providers: list[tuple[str, str]] = []
+    models: list[tuple[str, str]] = []
+    for row in payload.get("providers") or []:
+        slug = str(row.get("slug") or "").strip()
+        if not slug:
+            continue
+        name = str(row.get("name") or slug)
+        providers.append((slug, name))
+        for model in row.get("models") or []:
+            mid = str(model).strip()
+            if mid:
+                models.append((f"{slug}/{mid}", name))
+    catalog = {"providers": providers, "models": models}
+    _model_completion_memo = (now, catalog)
+    return catalog
+
+
+@_quiet
+def _model_completions(sub_text: str, sub_lower: str):
+    """/model — flags like /reasoning, provider slugs after --provider, else slug/id hops."""
+    from hermes_constants import VALID_REASONING_EFFORTS
+    completed, partial = _split_args(sub_text)
+    last = completed[-1].lower() if completed else ""
+    catalog = _model_completion_catalog()
+    flag_rows = (
+        ("--provider", "filter by provider"),
+        ("--reasoning", "reasoning effort"),
+        ("--global", "persist to config"),
+        ("--session", "this session only"),
+        ("--refresh", "reload model catalog"),
+    )
+    used = {c.lower() for c in completed if c.startswith("--")}
+    if last == "--provider":
+        yield from _prefix_completions(catalog["providers"], partial, skip_exact=False)
+        return
+    if last == "--reasoning":
+        rows = [(e, "reasoning effort") for e in ("none", *VALID_REASONING_EFFORTS)]
+        yield from _prefix_completions(rows, partial, skip_exact=False)
+        return
+    has_model = any(not c.startswith("-") for c in completed)
+    if partial.startswith("-") or not has_model:
+        yield from _prefix_completions(
+            ((name, meta) for name, meta in flag_rows if name not in used), partial, skip_exact=False)
+    if not has_model:
+        yield from _prefix_completions(catalog["models"], partial, skip_exact=False)
+
+
 # base command -> (handler(sub_text, sub_lower), single_word_only). Single-word handlers only
 # run while the first argument is typed; /tools and /handoff parse multi-word input themselves.
 _DYNAMIC_COMPLETIONS: dict[str, tuple[Callable[..., Any], bool]] = {
     "/skin": (_skin_completions, True),
     "/personality": (_personality_completions, True),
+    "/model": (_model_completions, False),
     "/tools": (_tools_completions, False),
     "/handoff": (_handoff_completions, False)}
 

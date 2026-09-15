@@ -1651,6 +1651,36 @@ def test_shared_url_different_display_names_are_separate_rows(monkeypatch):
     assert by_name["Perplexity"] == ["sonar-pro"]
 
 
+def test_same_endpoint_alias_entries_share_one_discovered_catalog(monkeypatch):
+    """#102552: alias-prefix custom_providers entries (ds-web/deepseek-web style) on one
+    endpoint+credential with discovery on both return the same full upstream catalog, so the
+    picker must list it once, not once per alias row."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    upstream = ["ds-web/gpt-5.2", "deepseek-web/gpt-5.2", "oc/codex-mini", "solo-model"]
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *_a, **_kw: list(upstream))
+
+    providers = list_authenticated_providers(
+        current_provider="omniroute-ds",
+        user_providers={},
+        custom_providers=[
+            {"name": "ds-web", "base_url": "http://localhost:20128/v1", "api_key": "sk-or",
+             "models": ["ds-web/gpt-5.2", "oc/codex-mini"], "discover_models": True},
+            {"name": "deepseek-web", "base_url": "http://localhost:20128/v1", "api_key": "sk-or",
+             "models": ["deepseek-web/gpt-5.2"], "discover_models": True},
+        ],
+        max_models=50,
+        probe_custom_providers=True,
+    )
+
+    rows = [p for p in providers if p.get("is_user_defined")]
+    assert len(rows) == 1, (
+        f"alias entries duplicated the discovered catalog across {len(rows)} rows"
+    )
+    assert rows[0]["models"] == upstream
+    assert rows[0]["total_models"] == len(upstream)
+
+
 def test_excluded_providers_hides_builtin_row(monkeypatch):
     """``excluded_providers`` must hide a built-in provider row that would
     otherwise surface when its credentials are present."""

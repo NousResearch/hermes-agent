@@ -58,6 +58,16 @@ class ProviderProfile:
     # False → fetch_models returns None without a network call (catalog comes from an SDK/subprocess).
     supports_model_listing: bool = True
 
+    # ── Provider-owned interactive auth (optional) ────────────
+    # Lets a `kind: model-provider` plugin own its own login flow instead of
+    # shipping a second command plugin. When set, `hermes auth <action> <name>`
+    # (action ∈ add|status|logout|refresh) calls it FIRST as
+    # ``auth_handler(action, args)`` — ``args`` is the parsed CLI namespace — and
+    # only falls back to the built-in credential-pool flow when the handler
+    # returns falsy. Sync or async (a returned awaitable is awaited). The
+    # handler owns its own credential storage; Hermes passes no secrets to it.
+    auth_handler: Any = None
+
     # ── Vision support ────────────────────────────────────────
     # True when the provider's API accepts image content inside
     # tool-result messages natively.  Set on providers that expose

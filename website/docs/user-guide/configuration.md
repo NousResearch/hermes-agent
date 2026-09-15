@@ -2592,6 +2592,8 @@ timezone: "America/New_York"   # IANA timezone (default: "" = server-local time)
 
 Supported values: any IANA timezone identifier (e.g. `America/New_York`, `Europe/London`, `Asia/Kolkata`, `UTC`). Leave empty or omit for server-local time.
 
+`hermes doctor` (and the startup config check) reports a value the runtime cannot load — a typo such as `Asia/Tokio` would otherwise silently put the agent clock and every cron schedule on server-local time. `HERMES_TIMEZONE` overrides this key when set.
+
 ## Discord
 
 Configure Discord-specific behavior for the messaging gateway:

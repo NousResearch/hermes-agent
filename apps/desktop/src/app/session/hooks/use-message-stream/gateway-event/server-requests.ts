@@ -274,13 +274,29 @@ const previewRead: Handler = ({ request }) => {
   )
 }
 
-const previewAct: Handler = ({ isActiveSession, request, sessionId }) => {
+const previewAct: Handler = ctx => {
+  const { deps, isActiveSession, request, sessionId } = ctx
+
   // drive_preview tool: click/type/scroll/press inside the guest page. Active
   // session only: a background turn must never reach into the page the user is
   // working in (desktop AGENTS.md: offer, don't hijack). Every mounted window can
   // observe the same request; a scoped mismatch belongs to another window, so
   // answering here would race the owner — stay silent.
   if (sessionId && !isActiveSession) {
+    // session.resume replays an already-open server request while its RPC response
+    // is still unwinding. In a remote Desktop connection that can arrive before
+    // the response continuation stores the resumed runtime id in this ref. Give
+    // that continuation one turn, but only retry from an unbound renderer: a
+    // renderer that is already showing another session must remain silent so it
+    // cannot steal the owning window's response (#107498).
+    if (!deps.activeSessionIdRef.current) {
+      window.setTimeout(() => {
+        if (deps.activeSessionIdRef.current === sessionId) {
+          previewAct({ ...ctx, isActiveSession: true })
+        }
+      }, 0)
+    }
+
     return
   }
 

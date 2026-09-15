@@ -60,6 +60,29 @@ describe('preview action request routing', () => {
       })
     })
   })
+
+  it('answers a replayed remote-session action after resume binds its runtime id', async () => {
+    vi.useFakeTimers()
+    const previous = deps.activeSessionIdRef.current
+    deps.activeSessionIdRef.current = null
+
+    try {
+      const { respond } = deliver('preview.act', { action: 'elements', session_id: 'remote-runtime' }, null)
+
+      // session.resume replays server requests before its promise continuation
+      // records the remote runtime as active in the renderer.
+      deps.activeSessionIdRef.current = 'remote-runtime'
+      await vi.runAllTimersAsync()
+      await vi.dynamicImportSettled()
+
+      // The page may not be mounted in this unit harness, but the request must
+      // reach the preview handler and answer instead of exhausting its RPC deadline.
+      expect(respond).toHaveBeenCalledTimes(1)
+    } finally {
+      deps.activeSessionIdRef.current = previous
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('tour request routing', () => {

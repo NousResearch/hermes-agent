@@ -312,11 +312,17 @@ def refresh_xai_oauth_pure(
     # that would otherwise receive every future refresh_token.
     _xai_validate_oauth_endpoint(endpoint, field="token_endpoint")
     timeout = httpx.Timeout(max(5.0, float(timeout_seconds)))
-    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}) as client:
-        response = client.post(
-            endpoint, headers={"Content-Type": "application/x-www-form-urlencoded"},
-            data={"grant_type": "refresh_token", "client_id": XAI_OAUTH_CLIENT_ID, "refresh_token": refresh_token},
-        )
+    try:
+        with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}) as client:
+            response = client.post(
+                endpoint, headers={"Content-Type": "application/x-www-form-urlencoded"},
+                data={"grant_type": "refresh_token", "client_id": XAI_OAUTH_CLIENT_ID, "refresh_token": refresh_token},
+            )
+    except httpx.RequestError as exc:
+        raise _xai_err(
+            f"xAI token refresh failed (network error): {exc}",
+            "xai_refresh_network_error", relogin=False,
+        ) from exc
     if response.status_code != 200:
         detail = response.text.strip()
         suffix = f" Response: {detail}" if detail else ""

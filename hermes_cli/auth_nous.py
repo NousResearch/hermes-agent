@@ -1291,7 +1291,8 @@ def _pool_first_oauth_status(
             "auth_mode": creds.get("auth_mode"), "source": creds.get("source"),
             "api_key": creds.get("api_key")}
     except AuthError as exc:
-        return {"logged_in": False, "auth_store": str(_auth_file_path()), "error": str(exc)}
+        return {"logged_in": False, "auth_store": str(_auth_file_path()),
+                "error": str(exc), "error_code": exc.code}
 
 
 def _nous_device_code_login(

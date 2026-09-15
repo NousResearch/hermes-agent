@@ -81,6 +81,13 @@ TOOLSETS = {
         "X (Twitter) Search.",
         ["x_search"],
     ),
+    "open_codereview": _ts(
+        "Open Code Review (open-codereview.ai) bridge: reviews a diff through the local review "
+        "tool and mirrors Hermes's active provider/model into it, so switching models no longer "
+        "means hand-editing that tool's configuration. Off by default; requires the review "
+        "command to be installed (`open_codereview.command` in config.yaml).",
+        ["open_codereview"],
+    ),
     "vision": _ts("Image analysis and vision tools", ["vision_analyze"]),
     "video": _ts("Video analysis and understanding tools (opt-in, not in default toolset)", ["video_analyze"]),
     "image_gen": _ts("Creative generation tools (images)", ["image_generate"]),

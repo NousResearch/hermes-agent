@@ -245,6 +245,9 @@ class TestSpawnEnvIsolation:
         monkeypatch.setattr(subprocess, "Popen", FakePopen)
         monkeypatch.setenv("HOME", "/users/alice")
         monkeypatch.setenv("HERMES_HOME", "/users/alice/.hermes/profiles/backend-worker")
+        monkeypatch.setattr(subprocess, "run", lambda cmd, **kwargs: subprocess.CompletedProcess(
+            cmd, 1, stdout="", stderr="not a repo"
+        ))
         monkeypatch.setenv("HERMES_KANBAN_TASK", "t_smoke")
         monkeypatch.setenv(
             "HERMES_KANBAN_DB",
@@ -257,12 +260,143 @@ class TestSpawnEnvIsolation:
         cmd = captured["cmd"]
         assert cmd[:2] == ["codex", "app-server"]
         assert 'sandbox_mode="workspace-write"' in cmd
-        assert (
-            'sandbox_workspace_write.writable_roots=["/users/alice/.hermes/kanban/boards/smoke"]'
-            in cmd
-        )
+        roots_arg = next(part for part in cmd if part.startswith("sandbox_workspace_write.writable_roots="))
+        assert "/users/alice/.hermes/kanban/boards/smoke" in roots_arg
         assert "sandbox_workspace_write.network_access=false" in cmd
         assert all("danger" not in part for part in cmd)
+
+    def test_worktree_worker_adds_resolved_git_common_dir(self, monkeypatch, tmp_path):
+        """A linked worktree gets only its resolved shared Git directory too."""
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        workspace = tmp_path / "repo" / ".worktrees" / "task"
+        workspace.mkdir(parents=True)
+        common_dir = tmp_path / "repo" / ".git"
+        common_dir.mkdir(parents=True)
+        (common_dir / "HEAD").write_text("ref: refs/heads/main\n")
+        (common_dir / "config").write_text("[core]\n")
+        (common_dir / "objects").mkdir()
+        (common_dir / "refs").mkdir()
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                captured["cmd"] = list(cmd)
+                self.stdin = self.stdout = self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        def fake_run(cmd, **kwargs):
+            assert kwargs["timeout"] == 5
+            assert cmd[-2:] == ["--show-toplevel", "--git-common-dir"]
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=f"{workspace.parent.parent}\n{common_dir}\n", stderr=""
+            )
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worktree")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "board" / "kanban.db"))
+
+        client = cas.CodexAppServerClient(codex_bin="codex")
+        client._closed = True
+
+        roots_arg = next(
+            part for part in captured["cmd"]
+            if part.startswith("sandbox_workspace_write.writable_roots=")
+        )
+        assert str(common_dir) in roots_arg
+        assert 'sandbox_mode="workspace-write"' in captured["cmd"]
+        assert "sandbox_workspace_write.network_access=false" in captured["cmd"]
+        assert all("danger-full-access" not in part for part in captured["cmd"])
+
+    def test_git_common_dir_probe_rejects_unrelated_output(self, monkeypatch, tmp_path):
+        """Git output cannot widen the sandbox to an unrelated or malformed directory."""
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        workspace = tmp_path / "repo" / ".worktrees" / "task"
+        workspace.mkdir(parents=True)
+        outside = tmp_path / "outside" / ".git"
+        outside.mkdir(parents=True)
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                captured["cmd"] = list(cmd)
+                self.stdin = self.stdout = self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self): return None
+            def terminate(self): pass
+            def wait(self, timeout=None): return 0
+            def kill(self): pass
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setattr(subprocess, "run", lambda cmd, **kwargs: subprocess.CompletedProcess(
+            cmd, 0, stdout=f"{workspace}\n{outside}\n", stderr=""
+        ))
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_outside")
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(workspace))
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "board" / "kanban.db"))
+        monkeypatch.setenv("GIT_DIR", str(outside))
+
+        cas.CodexAppServerClient(codex_bin="codex")._closed = True
+
+        roots_arg = next(
+            part for part in captured["cmd"]
+            if part.startswith("sandbox_workspace_write.writable_roots=")
+        )
+        assert str(outside) not in roots_arg
+
+    def test_git_common_dir_probe_is_bounded_when_git_hangs(self, monkeypatch):
+        """A broken Git installation cannot create an unbounded nested retry."""
+        import subprocess
+        from agent.transports import codex_app_server as cas
+
+        class FakePopen:
+            def __init__(self, cmd, *args, **kwargs):
+                self.stdin = self.stdout = self.stderr = None
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        def hanging_git(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+
+        monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setattr(subprocess, "run", hanging_git)
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_timeout")
+        monkeypatch.setenv("HERMES_KANBAN_DB", "/tmp/kanban/board.db")
+
+        client = cas.CodexAppServerClient(codex_bin="codex")
+        client._closed = True
 
 
 class TestSpawnEnvSecretStripping:
@@ -339,4 +473,3 @@ class TestSpawnEnvSecretStripping:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-codex-needs-this")
         env = self._capture_spawn_env(monkeypatch)
         assert env.get("OPENAI_API_KEY") == "sk-codex-needs-this"
-

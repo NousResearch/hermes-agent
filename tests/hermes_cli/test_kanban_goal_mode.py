@@ -129,6 +129,31 @@ def test_loop_stops_when_worker_already_completed(monkeypatch):
     assert turns == []  # no extra turns
 
 
+def test_loop_blocks_when_nested_worker_turn_fails(monkeypatch):
+    """A failed runtime/Git turn must terminate the card, not leave it retrying."""
+    _patch_judge(monkeypatch, ["continue"])
+    blocked = []
+    secret = "ghp_" + "S" * 40
+
+    res = goals.run_kanban_goal_loop(
+        task_id="t_nested_failure",
+        goal_text="deliver the change",
+        run_turn=lambda _prompt: (_ for _ in ()).throw(RuntimeError(f"git delivery timed out ({secret})")),
+        task_status_fn=lambda: "running",
+        block_fn=blocked.append,
+        max_turns=10,
+        first_response="not finished",
+    )
+
+    assert res["outcome"] == "blocked_turn_error"
+    assert len(blocked) == 1
+    assert secret not in blocked[0]
+    assert "Kanban goal worker turn failed" in blocked[0]
+    assert "RuntimeError" in blocked[0]
+    assert "git delivery timed out" in blocked[0]
+    assert secret not in res["reason"]
+
+
 
 
 

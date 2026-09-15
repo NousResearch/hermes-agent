@@ -851,4 +851,3 @@ o `WorkstationBrowserRuntime`; não introduzem transaction manager, SessionDB,
 page store ou control plane adicional. A prova de integração deve permanecer
 junto dos testes C1/C2/C3, para que uma futura alteração do ordering de saves
 não volte a ser mascarada por mocks isolados.
-

@@ -241,8 +241,8 @@ class TestRealNaClWithDAVE:
         assert 100 in receiver._buffers
         assert len(receiver._buffers[100]) > 0
 
-    def test_dave_real_error_drops(self):
-        """DAVE raises non-Unencrypted error → packet dropped."""
+    def test_dave_real_error_falls_through_to_opus(self):
+        """DAVE raises non-Unencrypted error → keep NaCl payload, decode Opus."""
         key = _make_secret_key()
         dave = MagicMock()
         dave.decrypt.side_effect = Exception("KeyRotationFailed")
@@ -252,7 +252,9 @@ class TestRealNaClWithDAVE:
         packet = _build_encrypted_rtp_packet(key, b'\xf8\xff\xfe', ssrc=100)
         receiver._on_packet(packet)
 
-        assert len(receiver._buffers.get(100, b"")) == 0
+        dave.decrypt.assert_called_once()
+        assert 100 in receiver._buffers
+        assert len(receiver._buffers[100]) > 0
 
 
 class TestRTPPaddingStrip:

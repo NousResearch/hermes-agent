@@ -50,6 +50,12 @@ class MixerChild:
         self.fade_frames = max(0, fade_in_ms // FRAME_LENGTH_MS)
         self._finished = False
 
+    @property
+    def finished(self) -> bool:
+        """Exhausted one-shot clip; the mixer drops it (a :class:`StreamSpeechChild` starving
+        between sentences reports False instead and stays attached)."""
+        return self._finished
+
     def read_frame(self) -> "Optional[np.ndarray]":
         """Next 20 ms frame as a float32 ndarray, or None when done."""
         if self._finished:
@@ -65,6 +71,82 @@ class MixerChild:
         self._pos += FRAME_SIZE
         if len(chunk) < FRAME_SIZE:
             chunk = chunk + b"\x00" * (FRAME_SIZE - len(chunk))
+        samples = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)
+        gain = self.gain
+        if self.fade_frames and self._fade_done < self.fade_frames:
+            self._fade_done += 1
+            gain *= self._fade_done / self.fade_frames
+        if gain != 1.0:
+            samples = samples * gain
+        return samples
+
+
+class StreamSpeechChild:
+    """A speech child fed incrementally (realtime supervisor speech).
+
+    Unlike :class:`MixerChild` (a fixed clip), the buffer grows while a
+    realtime server streams audio.  Starvation is not the end of the stream:
+    ``read_frame`` returns None but ``finished`` stays False, so the mixer
+    keeps the child attached and the next fed chunk resumes playback.  The
+    child is finished only after :meth:`end` once the buffer drains.
+
+    Fed from the realtime playout thread, read from discord.py's sender
+    thread, cleared from the websocket recv thread — all state is behind a
+    lock.
+    """
+
+    def __init__(self, name: str, *, gain: float = 1.0, fade_in_ms: int = 40):
+        self.name = name
+        self.gain = float(gain)
+        self.is_speech = True
+        # Re-applied after every starvation gap so resume doesn't click.
+        self.fade_frames = max(0, fade_in_ms // FRAME_LENGTH_MS)
+        self._fade_done = 0
+        self._buf = bytearray()
+        self._ended = False
+        self._lock = threading.Lock()
+
+    def feed(self, pcm: bytes) -> None:
+        if not pcm:
+            return
+        with self._lock:
+            if not self._ended:
+                self._buf.extend(pcm)
+
+    def end(self) -> None:
+        self._ended = True
+
+    def clear(self) -> None:
+        """Drop buffered audio immediately (barge-in)."""
+        with self._lock:
+            self._buf.clear()
+
+    @property
+    def buffered_bytes(self) -> int:
+        with self._lock:
+            return len(self._buf)
+
+    @property
+    def finished(self) -> bool:
+        with self._lock:
+            return self._ended and not self._buf
+
+    def read_frame(self) -> "Optional[np.ndarray]":
+        with self._lock:
+            if len(self._buf) < FRAME_SIZE:
+                if self._ended and self._buf:
+                    chunk = bytes(self._buf) + b"\x00" * (FRAME_SIZE - len(self._buf))
+                    self._buf.clear()
+                else:
+                    # Starving (or fully drained): contribute nothing this
+                    # tick; fade back in when audio resumes.
+                    self._fade_done = 0
+                    return None
+            else:
+                chunk = bytes(self._buf[:FRAME_SIZE])
+                del self._buf[:FRAME_SIZE]
+
+        np = _require_numpy()
         samples = np.frombuffer(chunk, dtype=np.int16).astype(np.float32)
         gain = self.gain
         if self.fade_frames and self._fade_done < self.fade_frames:
@@ -118,6 +200,18 @@ class VoiceMixer(discord.AudioSource):
             if self._ambient is not None:
                 self._ambient.gain = self._duck_gain
 
+    def attach_speech_stream(self, child: StreamSpeechChild) -> None:
+        """Attach (idempotent) a :class:`StreamSpeechChild`.
+
+        The stream survives starvation gaps — it is removed only by
+        :meth:`stop_speech` or once ``finished`` after ``child.end()``.
+        Ducking engages per-frame while the stream is audible.
+        """
+        with self._lock:
+            if self._closed or child in self._speech:
+                return
+            self._speech.append(child)
+
     @property
     def speech_active(self) -> bool:
         with self._lock:
@@ -141,18 +235,34 @@ class VoiceMixer(discord.AudioSource):
                 return SILENCE_FRAME
             np = _require_numpy()
             acc: "Optional[np.ndarray]" = None
-            # Speech children (drop exhausted ones; release duck when last ends)
+
+            # Speech children. Drop exhausted one-shots; keep starving
+            # streams (finished=False despite a None frame). Ducking follows
+            # audibility: engaged while any child produced a frame this tick,
+            # released as soon as none did — so a starving realtime stream
+            # lets the ambient bed swell back between sentences.
+            audible = False
             if self._speech:
                 still_live: List[MixerChild] = []
                 for child in self._speech:
                     frame = child.read_frame()
                     if frame is None:
+                        if not child.finished:
+                            still_live.append(child)
                         continue
+                    audible = True
                     acc = frame if acc is None else acc + frame
                     still_live.append(child)
                 self._speech = still_live
-                if not self._speech and self._speech_active:
-                    self._begin_duck_release_locked()
+            if audible:
+                if not self._speech_active:
+                    self._speech_active = True
+                    self._duck_release_left = 0
+                    if self._ambient is not None:
+                        self._ambient.gain = self._duck_gain
+            elif self._speech_active:
+                self._begin_duck_release_locked()
+
             # Ambient bed — ramp gain back up during duck-release.
             if self._ambient is not None:
                 if self._duck_release_left > 0 and not self._speech_active:

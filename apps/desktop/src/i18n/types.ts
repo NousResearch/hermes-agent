@@ -2482,6 +2482,16 @@ export interface Translations {
     newSessionPlaceholders: readonly string[]
     followUpPlaceholders: readonly string[]
     startVoice: string
+    microphone: {
+      title: string
+      description: string
+      systemDefault: string
+      chooseTitle: string
+      chooseDescription: string
+      useThis: string
+      virtualHint: string
+      silent: (label: string) => string
+    }
     openDirective: string
     queueMessage: string
     steer: string

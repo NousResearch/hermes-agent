@@ -75,6 +75,17 @@ class TurnRunner:
         self._runner = runner
         self._ctx = ctx
 
+    def _skip_discord_voice_consult_text_progress(self) -> bool:
+        """True while a realtime supervisor consult owns this turn and tool progress must not post
+        to the bound Discord text channel ("running terminal" bubbles in #general for a spoken
+        task). ``voice.realtime.discord_text_mirror`` opts back in; typed turns and classic/ears
+        voice turns keep their tool progress as usual.
+        """
+        ctrl = self._runner._voice_realtime_controller_for_ack(self._ctx)
+        if ctrl is None or not getattr(ctrl, "consult_active", False):
+            return False
+        return not self._runner._voice_discord_text_mirror(ctrl, reload=False)
+
     # ── shared thread→loop plumbing ─────────────────────────────────────────────────────────
 
     def _schedule(self, coro, log_message: str, loop=None):
@@ -133,6 +144,10 @@ class TurnRunner:
             preview_str = f' "{preview}"' if preview else ""
             ctx.log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
         if not ctx.progress_queue or not ctx._run_still_current():
+            return
+        # Live Discord supervisor consult: don't dump progress bubbles into the bound text
+        # channel unless discord_text_mirror is on.
+        if self._skip_discord_voice_consult_text_progress():
             return
         if event_type == "tool.completed" and not ctx.long_tool_hint_fired[0]:
             self._progress_onboarding_hint(kwargs)
@@ -756,7 +771,21 @@ class TurnRunner:
     def voice_ack_callback(self, call_id, tool_name, args):
         """tool_start_callback: speak a one-time ack in the voice channel."""
         ctx = self._ctx
-        if ctx._voice_ack_fired[0] or ctx._voice_ack_guild[0] is None or not ctx._run_still_current():
+        if ctx._voice_ack_guild[0] is None or not ctx._run_still_current():
+            return
+        # Realtime supervisor consult: narrate progress through the voice model's own speech
+        # (rate-limited inside narrate_tool) instead of the one-shot TTS ack.
+        _rt_ctrl = self._runner._voice_realtime_controller_for_ack(ctx)
+        if _rt_ctrl is not None and _rt_ctrl.consult_active:
+            _rt_ctrl.narrate_tool(tool_name)
+            return
+        # Any other turn (typed message) while a supervisor session is live: grok owns the
+        # speaker — skip the classic TTS ack entirely. The session lives on the turn's own
+        # (profile) adapter.
+        _rt_brain = getattr(self._runner._adapter_for_source(ctx.source), "voice_realtime_brain", None)
+        if _rt_brain is not None and _rt_brain(ctx._voice_ack_guild[0]) == "supervisor":
+            return
+        if ctx._voice_ack_fired[0]:
             return
         ctx._voice_ack_fired[0] = True
         adapter = self._runner.adapters.get(Platform.DISCORD)
@@ -775,7 +804,8 @@ class TurnRunner:
 
     def _native_card_gate(self) -> bool:
         ctx = self._ctx
-        return bool(ctx.progress_queue) and ctx._run_still_current() and not self._agent_interrupted()
+        return (bool(ctx.progress_queue) and ctx._run_still_current() and not self._agent_interrupted()
+                and not self._skip_discord_voice_consult_text_progress())
 
     # ── Slack-native task cards: ID-bearing lifecycle callbacks (#29483) ── These ride
     # agent.tool_start_callback / agent.tool_complete_callback so start/completion events correlate by the
@@ -1381,6 +1411,8 @@ class TurnRunner:
         # command string still leaks secrets. Both the button and plain-text paths use this value.
         cmd = _redact_approval_command(approval_data.get("command", ""))
         desc = approval_data.get("description", "dangerous command")
+        # The user may be away from the screen while a realtime supervisor consult runs.
+        self._runner._notify_voice_realtime_blocked(ctx, "Hermes needs your approval in Discord.")
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
         if _renders_exec_approval_buttons(type(adapter)):

@@ -607,6 +607,19 @@ export const ja: Translations = {
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
   },
+
+  voiceCall: {
+    title: "音声",
+    start: "音声チャット",
+    end: "終了",
+    mute: "マイクをミュート",
+    unmute: "ミュート解除",
+    connecting: "接続中…",
+    listening: "聞き取り中",
+    speaking: "話しています",
+    working: "Hermes が作業中…",
+  },
+
   kanban: {
     loading: "Kanban ボードを読み込んでいます…",
     loadFailed: "Kanban ボードの読み込みに失敗しました: ",

@@ -45,6 +45,7 @@ import {
 } from './helpers'
 import { MemoryConnect } from './memory/connect'
 import { ProviderConfigPanel } from './memory/provider-config-panel'
+import { MicrophoneSetting } from './microphone-setting'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
 import { PoolLimitsSetting } from './pool-limits-setting'
 import { EmptyState, ListRow, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
@@ -415,6 +416,7 @@ function ConfigSettingsInner({
           where image-attachment behavior already lives, so this sits above the
           schema fields for that section. */}
       {activeSectionId === 'chat' ? <AttachmentSizeSetting /> : null}
+      {activeSectionId === 'voice' ? <MicrophoneSetting /> : null}
       {visibleFields.length === 0 && activeSectionId !== 'chat' ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
       ) : visibleFields.length === 0 ? null : (

@@ -608,6 +608,19 @@ export const tr: Translations = {
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
   },
+
+  voiceCall: {
+    title: "Ses",
+    start: "Sesli sohbet",
+    end: "Bitir",
+    mute: "Mikrofonu sessize al",
+    unmute: "Sessizi kaldır",
+    connecting: "Bağlanıyor…",
+    listening: "Dinliyor",
+    speaking: "Konuşuyor",
+    working: "Hermes çalışıyor…",
+  },
+
   kanban: {
     loading: "Kanban panosu yükleniyor…",
     loadFailed: "Kanban panosu yüklenemedi: ",

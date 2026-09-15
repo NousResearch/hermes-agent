@@ -1,4 +1,5 @@
 import { ComposerPrimitive } from '@assistant-ui/react'
+import { interceptsTypedVoiceStop } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef } from 'react'
 
@@ -18,7 +19,6 @@ import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { useStoreSelector, useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
-import { interceptsTypedVoiceStop } from '@/lib/voice-stop-word'
 import { sessionCompacting } from '@/store/compaction'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
@@ -134,7 +134,7 @@ export function ChatBar({
   })
 
   // Typed stop phrase during an active voice conversation ends it — same
-  // semantics as SAYING "stop" (voice-stop-word.ts) or clicking the pill's
+  // semantics as SAYING "stop" (@hermes/shared voice-stop-word) or the pill's
   // end control. Populated after useComposerVoice below (the submit wrapper
   // is created first); render-time assignment keeps the ref current.
   const voiceStopRef = useRef<{ active: boolean; end: () => void }>({ active: false, end: () => {} })
@@ -1048,6 +1048,7 @@ export function ChatBar({
   } = useComposerVoice({
     busy,
     clearDraft,
+    cwd,
     disabled,
     focusInput,
     insertText,

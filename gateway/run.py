@@ -2119,6 +2119,7 @@ from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.run_voice import GatewayVoiceMixin
+from gateway.voice_realtime_mixin import GatewayVoiceRealtimeMixin
 from gateway.run_adapters import GatewayAdapterLifecycleMixin
 from gateway.run_topics import GatewayTopicThreadsMixin
 from gateway.run_turn import GatewayTurnMixin, is_context_overflow_failure_result
@@ -3289,7 +3290,8 @@ def _instantiate_builtin_adapter(platform: Platform, config: Any) -> Optional[Ba
 
 class GatewayRunner(
     GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin,
-    GatewayVoiceMixin, GatewayAdapterLifecycleMixin, GatewayTopicThreadsMixin, GatewayTurnMixin,
+    GatewayVoiceMixin, GatewayVoiceRealtimeMixin, GatewayAdapterLifecycleMixin, GatewayTopicThreadsMixin,
+    GatewayTurnMixin,
     GatewayShutdownMixin, GatewayBusySessionMixin, GatewayConfigLoadersMixin, GatewayStartupMixin,
     GatewaySessionWatchersMixin, GatewayNotificationsMixin, GatewayInboundMixin, GatewayGoalsMixin,
     GatewayAgentCacheMixin, GatewayProfileReconcileMixin):
@@ -3640,6 +3642,9 @@ class GatewayRunner(
         self._voice_mode: Dict[str, str] = self._load_voice_modes()
         # Per-(guild,user) transcript dedup: the voice/STT pipeline can emit one utterance twice.
         self._recent_voice_transcripts: Dict[tuple[int, int], List[tuple[float, str]]] = {}
+        # Realtime (xAI S2S) supervisor controllers keyed (owner profile, guild id) — built lazily
+        # on the first consult/steer function call from a voice session.
+        self._voice_realtime_controllers: Dict[Tuple[Optional[str], int], Any] = {}
         # Background tasks kept referenced so they are not garbage-collected mid-execution.
         self._background_tasks: set = set()
         # Event-loop liveness heartbeat: rewritten every 30s while the loop dispatches; supervisors use

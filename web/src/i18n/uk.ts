@@ -609,6 +609,19 @@ export const uk: Translations = {
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
   },
+
+  voiceCall: {
+    title: "Голос",
+    start: "Голосовий чат",
+    end: "Завершити",
+    mute: "Вимкнути мікрофон",
+    unmute: "Увімкнути мікрофон",
+    connecting: "Підключення…",
+    listening: "Слухаю",
+    speaking: "Говорить",
+    working: "Hermes працює…",
+  },
+
   kanban: {
     loading: "Завантаження дошки Kanban…",
     loadFailed: "Не вдалося завантажити дошку Kanban: ",

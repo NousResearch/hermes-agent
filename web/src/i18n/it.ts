@@ -607,6 +607,19 @@ export const it: Translations = {
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
   },
+
+  voiceCall: {
+    title: "Voce",
+    start: "Chat vocale",
+    end: "Termina",
+    mute: "Disattiva microfono",
+    unmute: "Riattiva microfono",
+    connecting: "Connessione…",
+    listening: "In ascolto",
+    speaking: "Sta parlando",
+    working: "Hermes al lavoro…",
+  },
+
   kanban: {
     loading: "Caricamento bacheca Kanban…",
     loadFailed: "Caricamento della bacheca Kanban non riuscito: ",

@@ -6,6 +6,7 @@ synth path are all mocked. Covers the registry/resolver, provider availability,
 the chunked-streamer playback path, and the universal per-sentence sync fallback.
 """
 
+import json
 import os
 import queue
 import sys
@@ -210,6 +211,75 @@ def test_xai_available_uses_oauth_credential_resolver(monkeypatch):
 
 
 # ── xAI WebSocket bridge ─────────────────────────────────────────────────
+
+
+class _FakeXaiTtsWS:
+    """Fake streaming-TTS socket speaking the documented protocol."""
+
+    def __init__(self, server_messages):
+        self.sent = []
+        self._server = list(server_messages)
+
+    async def send(self, payload):
+        self.sent.append(json.loads(payload))
+
+    async def recv(self):
+        if not self._server:
+            raise AssertionError("client kept reading past audio.done")
+        return self._server.pop(0)
+
+
+def _drain_ws_frames(streamer, ws, text="Hello."):
+    import asyncio
+
+    async def _run():
+        return [frame async for frame in streamer._ws_tts_frames(ws, text)]
+
+    return asyncio.run(_run())
+
+
+def test_xai_ws_protocol_sends_text_delta_then_done(monkeypatch):
+    """Client half of the documented contract: text.delta chunks + text.done."""
+    import base64
+
+    ws = _FakeXaiTtsWS([
+        json.dumps({"type": "audio.delta",
+                    "delta": base64.b64encode(b"\x01\x02").decode()}),
+        json.dumps({"type": "audio.done", "trace_id": "t1"}),
+    ])
+    streamer = ts.XAIStreamer({}, {})
+    frames = _drain_ws_frames(streamer, ws)
+    assert frames == [b"\x01\x02"]
+    assert ws.sent == [
+        {"type": "text.delta", "delta": "Hello."},
+        {"type": "text.done"},
+    ]
+
+
+def test_xai_ws_stops_on_error_envelope(monkeypatch):
+    ws = _FakeXaiTtsWS([
+        json.dumps({"type": "error", "message": "synthesis failed"}),
+        json.dumps({"type": "audio.delta", "delta": "never-read"}),
+    ])
+    streamer = ts.XAIStreamer({}, {})
+    frames = _drain_ws_frames(streamer, ws)
+    assert frames == []
+    # The error stopped the read loop — the trailing message stays unread.
+    assert len(ws._server) == 1
+
+
+def test_xai_ws_skips_malformed_audio(monkeypatch):
+    import base64
+
+    ws = _FakeXaiTtsWS([
+        json.dumps({"type": "audio.delta", "delta": "!!!not-base64!!!"}),
+        json.dumps({"type": "audio.delta",
+                    "delta": base64.b64encode(b"ok").decode()}),
+        json.dumps({"type": "audio.done"}),
+    ])
+    streamer = ts.XAIStreamer({}, {})
+    frames = _drain_ws_frames(streamer, ws)
+    assert frames == [b"ok"]
 
 
 # ── 16 MiB per-sentence stream cap ───────────────────────────────────────

@@ -2361,6 +2361,16 @@ export const zhHant = defineLocale({
       '調整或繼續'
     ],
     startVoice: '開始語音對話',
+    microphone: {
+      title: '麥克風',
+      description: 'Hermes 用於語音對話、聽寫和喚醒詞的輸入裝置。僅對此電腦生效。',
+      systemDefault: '系統預設',
+      chooseTitle: '選擇麥克風',
+      chooseDescription: '這台電腦有多個輸入。請選擇你對著說話的那個——虛擬混音器在對應程式未執行時通常是靜音的。',
+      useThis: '使用此麥克風',
+      virtualHint: '虛擬裝置，常常沒有聲音',
+      silent: label => `「${label}」上沒有偵測到說話。如果你在講話，請換一個麥克風。`
+    },
     openDirective: '開啟',
     queueMessage: '排隊訊息',
     stop: '停止',

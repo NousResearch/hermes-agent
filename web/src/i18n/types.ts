@@ -713,6 +713,19 @@ export interface Translations {
     };
   };
 
+  // ── Realtime voice call (chat sidebar) ──
+  voiceCall: {
+    title: string;
+    start: string;
+    end: string;
+    mute: string;
+    unmute: string;
+    connecting: string;
+    listening: string;
+    speaking: string;
+    working: string;
+  };
+
   // ── Kanban ──
   kanban: {
     loading: string;

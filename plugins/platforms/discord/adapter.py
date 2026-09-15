@@ -26,7 +26,7 @@ import time
 import traceback
 from collections import defaultdict
 from contextlib import suppress
-from typing import Callable, Dict, List, Optional, Any, Tuple
+from typing import Callable, Dict, List, Optional, Any, Set, Tuple
 from urllib.parse import quote, urljoin
 
 from agent.async_utils import (consume_detached_task_result as _consume_background_task_result)
@@ -669,6 +669,7 @@ class VoiceReceiver:
         self._paused = False
         # Debug logging counter (instance-level to avoid cross-instance races)
         self._packet_debug_count = 0
+        self._dave_fail_count = 0
 
     # --- Lifecycle ---
 
@@ -823,11 +824,35 @@ class VoiceReceiver:
                         user_id, davey.MediaType.audio, decrypted
                     )
                 except Exception as e:
-                    # Unencrypted passthrough — use NaCl-decrypted data as-is
-                    if "Unencrypted" not in str(e):
-                        if self._packet_debug_count <= 10:
-                            logger.warning("DAVE decrypt failed for ssrc=%d: %s", ssrc, e)
+                    # Fall through with the transport (NaCl-decrypted) payload
+                    # only when it is NOT a DAVE protocol frame: passthrough
+                    # mode and not-yet-negotiated senders (davey raises
+                    # NoDecryptorForUser) deliver plain Opus. Protocol frames
+                    # end with the 0xFAFA magic marker (dave-protocol
+                    # protocol.md, "Magic Marker"); such a payload is still
+                    # ciphertext — Opus cannot reject it and decodes it as
+                    # full-scale noise — so it is dropped.
+                    if not decrypted:
                         return
+                    if decrypted[-2:] == b"\xfa\xfa":
+                        self._dave_fail_count += 1
+                        n = self._dave_fail_count
+                        if n <= 5 or n % 200 == 0:
+                            logger.warning(
+                                "DAVE decrypt failed for ssrc=%d (n=%d); "
+                                "dropping protocol frame: %s",
+                                ssrc, n, e,
+                            )
+                        return
+                    if "Unencrypted" not in str(e):
+                        self._dave_fail_count += 1
+                        n = self._dave_fail_count
+                        if n <= 5 or n % 200 == 0:
+                            logger.warning(
+                                "DAVE decrypt failed for ssrc=%d (n=%d); "
+                                "using transport payload: %s",
+                                ssrc, n, e,
+                            )
             # Unknown SSRC (no SPEAKING yet): skip DAVE, try Opus directly; user_id arrives with SPEAKING.
         try:
             if ssrc not in self._decoders:
@@ -893,6 +918,32 @@ class VoiceReceiver:
                     self._buffers.pop(ssrc, None)
                     self._last_packet_time.pop(ssrc, None)
         return completed
+
+    def drain_pending(self) -> list:
+        """Return and clear ALL buffered PCM per user (realtime streaming).
+
+        Unlike :meth:`check_silence` (which waits for an utterance to end),
+        this hands audio over continuously — the realtime backend does its
+        own server-side VAD. Buffers for SSRCs with no user mapping yet are
+        kept (SPEAKING event may still arrive) but capped to the last ~2 s
+        so an unmappable source can't grow without bound.
+        """
+        out = []
+        max_unmapped = 2 * self.SAMPLE_RATE * self.CHANNELS * 2
+        with self._lock:
+            for ssrc in list(self._buffers.keys()):
+                buf = self._buffers[ssrc]
+                if not buf:
+                    continue
+                user_id = self._ssrc_to_user.get(ssrc, 0)
+                if not user_id:
+                    user_id = self._infer_user_for_ssrc(ssrc)
+                if user_id:
+                    out.append((user_id, bytes(buf)))
+                    self._buffers[ssrc] = bytearray()
+                elif len(buf) > max_unmapped:
+                    del buf[: len(buf) - max_unmapped]
+        return out
 
     def flush_pending(self) -> list:
         """Return buffered utterances that have not yet reached silence."""
@@ -1050,6 +1101,24 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._voice_mixers: Dict[int, Any] = {}  # guild_id -> VoiceMixer
         self._ambient_pcm_cache: Optional[bytes] = None  # decoded ambient bed
         self._voice_fx_cfg: Dict[str, Any] = self._load_voice_fx_config()
+        # Realtime voice (xAI S2S) — per-guild session + mic bridge.
+        # Gated on voice.realtime.enabled + voice.realtime.discord in config.
+        self._voice_realtime: Dict[int, Any] = {}  # guild_id -> RealtimeVoiceSession
+        self._voice_realtime_mics: Dict[int, Any] = {}  # guild_id -> DiscordMicBridge
+        self._voice_realtime_last_speaker: Dict[int, int] = {}  # guild_id -> user_id
+        self._voice_realtime_last_transcribed: Dict[int, int] = {}  # last ASR speaker
+        # Wake-name gate: last transcript decision per guild
+        # (accepted, monotonic_ts, transcript) and the consult_hermes call
+        # parked until that decision arrives (name, call_id, args_json).
+        self._voice_wake_last: Dict[int, Tuple[bool, float, str]] = {}
+        self._voice_pending_consults: Dict[int, Tuple[str, str, str]] = {}
+        # Once-per-guild latches: the supervisor's join greeting and the drain-failure warning
+        # (the listen loop ticks at 20 Hz — a repeating warning would flood the log).
+        self._voice_rt_join_greeted: Set[int] = set()
+        self._voice_rt_drain_errors: Set[int] = set()
+        # Supervisor function calls (consult/steer) — set by run.py, called
+        # from session threads: (guild_id, name, call_id, args_json) -> None.
+        self._voice_function_call_callback: Optional[Callable] = None
         # Threads the bot participated in (no @mention needed there); persisted across restarts.
         self._threads = ThreadParticipationTracker("discord")
         # Persistent typing loops per channel (DMs don't reliably show bot typing events).
@@ -3356,7 +3425,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             duck_gain=float(self._voice_fx_cfg.get("duck_gain", 0.06)),
             speech_gain=float(self._voice_fx_cfg.get("speech_gain", 1.0)),
         )
-        ambient = await asyncio.to_thread(self._get_ambient_pcm)
+        # The ambient bed is a voice_fx extra. A mixer installed solely for
+        # realtime supervisor speech (voice_fx disabled) stays silent-idle.
+        ambient = None
+        if self._voice_fx_cfg.get("enabled"):
+            ambient = await asyncio.to_thread(self._get_ambient_pcm)
         if ambient:
             mixer.set_ambient(ambient)
 
@@ -3432,6 +3505,385 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         mixers = getattr(self, "_voice_mixers", None)
         return bool(mixers) and mixers.get(guild_id) is not None
 
+    # ------------------------------------------------------------------
+    # Realtime voice (xAI S2S)
+    # ------------------------------------------------------------------
+
+    def _load_voice_realtime_config(self):
+        """Return the RealtimeConfig when realtime voice is enabled for
+        Discord VCs, else None.
+
+        Reads the global ``voice.realtime`` section (same knobs as the CLI)
+        plus the ``voice.realtime.discord`` opt-in gate. Two Discord-specific
+        overrides are forced:
+
+        * ``full_duplex=True`` — the receive path never contains the bot's
+          own audio (own-SSRC packets are skipped), so there is no echo to
+          gate against and users can barge in naturally.
+        * ``idle_pause_seconds=0`` — the VC inactivity timeout already
+          disconnects idle channels; a silent mid-session disarm would just
+          look like the bot going deaf.
+        """
+        try:
+            from hermes_cli.config import read_raw_config
+            from tools.voice_realtime_config import load_realtime_config, realtime_voice_enabled
+
+            cfg = read_raw_config() or {}
+            voice_cfg = cfg.get("voice")
+            if not realtime_voice_enabled(voice_cfg):
+                return None
+            section = voice_cfg.get("realtime") or {}
+            if not section.get("discord"):
+                return None
+            rt_cfg = load_realtime_config(voice_cfg)
+            rt_cfg.full_duplex = True
+            rt_cfg.idle_pause_seconds = 0.0
+            return rt_cfg
+        except Exception as e:
+            logger.debug("Could not load voice.realtime config: %s", e)
+            return None
+
+    def voice_realtime_session(self, guild_id: int):
+        """Return the live realtime session for a guild, or None."""
+        session = self._voice_realtime.get(guild_id)
+        if session is not None and session.alive:
+            return session
+        return None
+
+    def voice_realtime_brain(self, guild_id: int) -> str:
+        """Return the active realtime brain for a guild ("" when inactive)."""
+        session = self.voice_realtime_session(guild_id)
+        if session is None:
+            return ""
+        cfg = getattr(session, "_cfg", None)
+        return getattr(cfg, "brain", "") or ""
+
+    def _start_voice_realtime(self, guild_id: int, rt_cfg) -> bool:
+        """Build and start a realtime session wired to this guild's VC.
+
+        Best-effort: any failure logs and returns False so the classic
+        silence-detection + Whisper path keeps working untouched.
+        """
+        try:
+            from tools.voice_realtime import RealtimeVoiceSession
+
+            try:
+                from .realtime_voice import DiscordMicBridge, MixerPlayoutSink
+            except ImportError:
+                from realtime_voice import DiscordMicBridge, MixerPlayoutSink
+
+            loop = asyncio.get_running_loop()
+            supervisor = rt_cfg.supervisor
+
+            # A re-join after the VoiceClient dropped replaces the session;
+            # stop the previous one first or its threads, socket and
+            # callbacks keep running for this guild (double dispatch).
+            if guild_id in self._voice_realtime:
+                self._stop_voice_realtime(guild_id)
+
+            def _on_transcript(text: str) -> None:
+                asyncio.run_coroutine_threadsafe(
+                    self._handle_realtime_transcript(guild_id, text), loop
+                )
+
+            def _on_function_call(name: str, call_id: str, args_json: str) -> None:
+                self._dispatch_or_gate_function_call(
+                    guild_id, name, call_id, args_json, loop=loop,
+                )
+
+            def _on_speech_started() -> None:
+                loop.call_soon_threadsafe(self._reset_voice_timeout, guild_id)
+
+            def _on_state(state: str, detail: str) -> None:
+                self._on_realtime_state(
+                    guild_id, state, detail, supervisor=supervisor, loop=loop,
+                )
+
+            def _mic_factory(on_frame):
+                bridge = DiscordMicBridge(on_frame)
+                self._voice_realtime_mics[guild_id] = bridge
+                return bridge
+
+            session = RealtimeVoiceSession(
+                rt_cfg,
+                on_transcript=_on_transcript,
+                on_speech_started=_on_speech_started,
+                on_state=_on_state,
+                on_function_call=_on_function_call if supervisor else None,
+                mic_factory=_mic_factory,
+                playout_sink_factory=lambda: MixerPlayoutSink(
+                    lambda: self._voice_mixers.get(guild_id),
+                    gain=float(self._voice_fx_cfg.get("speech_gain", 1.0)),
+                ),
+                require_local_audio=False,
+            )
+            # Publish before start() so a fast "connected" callback can greet.
+            self._voice_realtime[guild_id] = session
+            session.start()
+            session.set_armed(True)
+            logger.info(
+                "Realtime voice session started (guild=%d, brain=%s)", guild_id, rt_cfg.brain,
+            )
+            return True
+        except Exception as e:
+            logger.warning("Realtime voice failed to start (guild=%d): %s", guild_id, e)
+            self._stop_voice_realtime(guild_id)
+            return False
+
+    def _on_realtime_state(
+        self, guild_id: int, state: str, detail: str, *, supervisor: bool, loop,
+    ) -> None:
+        """Handle RealtimeVoiceSession on_state from the Discord VC path."""
+        if state == "dead":
+            logger.warning(
+                "Realtime voice session died (guild=%d): %s — "
+                "falling back to classic transcription", guild_id, detail,
+            )
+            asyncio.run_coroutine_threadsafe(
+                self._post_voice_line(
+                    guild_id,
+                    "*Realtime voice lost — falling back to classic transcription.*",
+                ),
+                loop,
+            )
+            return
+        logger.info("Realtime voice %s (guild=%d) %s", state, guild_id, detail)
+        if state == "connected" and supervisor:
+            sess = self._voice_realtime.get(guild_id)
+            if sess is not None:
+                # on_state runs on the grok-voice net thread; call_later is
+                # not thread-safe. Hop onto the Discord loop first.
+                def _schedule_greeting():
+                    loop.call_later(
+                        0.4, self._maybe_speak_join_greeting, guild_id, sess,
+                    )
+                loop.call_soon_threadsafe(_schedule_greeting)
+
+    def _maybe_speak_join_greeting(self, guild_id: int, session) -> None:
+        """One-shot supervisor join line so playback is obviously working."""
+        if guild_id in self._voice_rt_join_greeted:
+            return
+        self._voice_rt_join_greeted.add(guild_id)
+        if not session.speak_verbatim("I'm here.", interruptible=True):
+            logger.warning("Join greeting could not be sent (guild=%d)", guild_id)
+
+    def _feed_realtime_pcm(self, guild_id: int, receiver) -> None:
+        """Drain mapped PCM into the grok-voice mic bridge."""
+        bridge = self._voice_realtime_mics.get(guild_id)
+        if bridge is None:
+            return
+
+        client = getattr(self, "_client", None)
+        _rt_guild = client.get_guild(guild_id) if client is not None else None
+        drained = [
+            (user_id, pcm_data)
+            for user_id, pcm_data in receiver.drain_pending()
+            if self._is_allowed_user(str(user_id), guild=_rt_guild, is_dm=False)
+        ]
+        if not drained:
+            return
+        # One chunk per speaker for the same window; the bridge sums them.
+        # Attribution follows whoever contributed the most audio this drain.
+        self._voice_realtime_last_speaker[guild_id] = max(drained, key=lambda item: len(item[1]))[0]
+        bridge.feed([pcm for _, pcm in drained])
+
+    def _stop_voice_realtime(self, guild_id: int) -> None:
+        """Tear down the realtime session for a guild (idempotent, sync-safe)."""
+        session = self._voice_realtime.pop(guild_id, None)
+        self._voice_realtime_mics.pop(guild_id, None)
+        self._voice_realtime_last_speaker.pop(guild_id, None)
+        self._voice_realtime_last_transcribed.pop(guild_id, None)
+        self._voice_wake_last.pop(guild_id, None)
+        pending = self._voice_pending_consults.pop(guild_id, None)
+        if pending is not None:
+            self._reject_wake_consult(guild_id, pending[1])
+        self._voice_rt_drain_errors.discard(guild_id)
+        self._voice_rt_join_greeted.discard(guild_id)
+        if session is not None:
+            try:
+                session.stop()
+            except Exception:
+                logger.debug("realtime session stop failed", exc_info=True)
+
+    def _voice_human_count(self, guild_id: int) -> int:
+        """Humans in the bot's current VC (bots, including us, do not count)."""
+        info = self.get_voice_channel_info(guild_id)
+        if not info:
+            return 0
+        return sum(1 for m in info.get("members") or [] if not m.get("is_bot"))
+
+    def _voice_wake_names(self, guild_id: int):
+        from tools.voice_wake_gate import default_wake_names
+
+        session = self.voice_realtime_session(guild_id)
+        cfg = getattr(session, "_cfg", None) if session is not None else None
+        extras = list(getattr(cfg, "wake_names", None) or [])
+        bot = self._client.user if self._client else None
+        if bot is not None:
+            extras.append(getattr(bot, "display_name", None) or getattr(bot, "name", None) or "")
+        return default_wake_names(*extras)
+
+    def _apply_voice_wake_gate(self, guild_id: int, transcript: str):
+        from tools.voice_wake_gate import apply_wake_gate
+
+        session = self.voice_realtime_session(guild_id)
+        cfg = getattr(session, "_cfg", None) if session is not None else None
+        policy = getattr(cfg, "require_wake_name", "auto") if cfg is not None else "auto"
+        accepted, rest = apply_wake_gate(
+            transcript,
+            policy=policy,
+            human_count=self._voice_human_count(guild_id),
+            names=self._voice_wake_names(guild_id),
+        )
+        return accepted, rest, policy
+
+    _WAKE_DECISION_TTL_S = 5.0
+
+    def _reject_wake_consult(self, guild_id: int, call_id: str) -> None:
+        """Complete consult_hermes without a spoken follow-up."""
+        session = self._voice_realtime.get(guild_id)
+        if session is None:
+            return
+        session.send_function_output(
+            call_id,
+            "The user was not addressing you. Do not speak or consult.",
+            respond=False,
+        )
+        session.cancel_response()
+
+    def _fire_function_call(
+        self, guild_id: int, name: str, call_id: str, args_json: str,
+    ) -> None:
+        cb = self._voice_function_call_callback
+        if cb is None:
+            session = self._voice_realtime.get(guild_id)
+            if session is not None:
+                session.send_function_output(
+                    call_id, "Hermes is not attached to this voice session.",
+                )
+            return
+        try:
+            cb(guild_id, name, call_id, args_json)
+        except Exception:
+            logger.warning("realtime function-call dispatch failed", exc_info=True)
+
+    def _dispatch_or_gate_function_call(
+        self, guild_id: int, name: str, call_id: str, args_json: str, *, loop,
+    ) -> None:
+        """Drop crowded-room consults that were not wake-named.
+
+        Steer and unknown tools pass through. consult_hermes waits briefly
+        for the transcript gate when the decision is not yet known.
+        """
+        from tools.voice_realtime_config import CONSULT_TOOL_NAME
+
+        if name != CONSULT_TOOL_NAME:
+            self._fire_function_call(guild_id, name, call_id, args_json)
+            return
+        from tools.voice_wake_gate import wake_gate_active
+
+        session = self.voice_realtime_session(guild_id)
+        cfg = getattr(session, "_cfg", None) if session is not None else None
+        policy = getattr(cfg, "require_wake_name", "auto") if cfg is not None else "auto"
+        if not wake_gate_active(policy, self._voice_human_count(guild_id)):
+            self._fire_function_call(guild_id, name, call_id, args_json)
+            return
+        last = self._voice_wake_last.get(guild_id)
+        now = time.monotonic()
+        if last is not None and (now - float(last[1])) <= self._WAKE_DECISION_TTL_S:
+            if last[0]:
+                self._fire_function_call(guild_id, name, call_id, args_json)
+            else:
+                self._reject_wake_consult(guild_id, call_id)
+            return
+        prev = self._voice_pending_consults.get(guild_id)
+        if prev is not None:
+            self._reject_wake_consult(guild_id, prev[1])
+        self._voice_pending_consults[guild_id] = (name, call_id, args_json)
+
+        def _timeout():
+            held = self._voice_pending_consults.pop(guild_id, None)
+            if held is None:
+                return
+            # Transcript never arrived — last resort: gate the tool task.
+            try:
+                args = json.loads(held[2] or "") or {}
+            except (ValueError, TypeError):
+                args = {}
+            task = str(args.get("task") or "")
+            accepted, _, _ = self._apply_voice_wake_gate(guild_id, task)
+            if accepted:
+                self._fire_function_call(guild_id, *held)
+            else:
+                self._reject_wake_consult(guild_id, held[1])
+
+        loop.call_soon_threadsafe(loop.call_later, 2.0, _timeout)
+
+    async def _handle_realtime_transcript(self, guild_id: int, transcript: str) -> None:
+        """Route a server-side transcript from the realtime session.
+
+        Ears brain: dispatch through the normal voice-input pipeline (same
+        as the classic Whisper path). Supervisor brain: the voice model
+        already answered or consulted — the transcript only updates the
+        speaker attribution used by consult turns; nothing is displayed.
+        """
+        transcript = (transcript or "").strip()
+        if not transcript:
+            return
+        accepted, gated_text, policy = self._apply_voice_wake_gate(guild_id, transcript)
+        self._voice_wake_last[guild_id] = (bool(accepted), time.monotonic(), transcript)
+        if not accepted:
+            humans = self._voice_human_count(guild_id)
+            logger.info(
+                "Realtime voice dropped (no wake name, guild=%d, humans=%d, policy=%s): %s",
+                guild_id, humans, policy, transcript[:80],
+            )
+            session = self.voice_realtime_session(guild_id)
+            if session is not None:
+                session.cancel_response()
+            pending = self._voice_pending_consults.pop(guild_id, None)
+            if pending is not None:
+                self._reject_wake_consult(guild_id, pending[1])
+            return
+        if gated_text:
+            transcript = gated_text
+        user_id = self._voice_realtime_last_speaker.get(guild_id) or 0
+        if not user_id:
+            source_data = self._voice_sources.get(guild_id) or {}
+            try:
+                user_id = int(source_data.get("user_id") or 0)
+            except (TypeError, ValueError):
+                user_id = 0
+        if user_id:
+            self._voice_realtime_last_transcribed[guild_id] = int(user_id)
+        pending = self._voice_pending_consults.pop(guild_id, None)
+        if pending is not None:
+            self._fire_function_call(guild_id, *pending)
+        if not user_id:
+            return
+        if self.voice_realtime_brain(guild_id) == "supervisor":
+            return
+        cb = self._voice_input_callback
+        if cb is None:
+            return
+        try:
+            await cb(guild_id=guild_id, user_id=user_id, transcript=transcript)
+        except Exception:
+            logger.warning("realtime transcript dispatch failed", exc_info=True)
+
+    async def _post_voice_line(self, guild_id: int, text: str) -> None:
+        """Best-effort post to the guild's bound voice text channel."""
+        text_ch_id = self._voice_text_channels.get(guild_id)
+        if not text_ch_id or self._client is None:
+            return
+        try:
+            channel = self._client.get_channel(text_ch_id)
+            if channel:
+                safe = text.replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
+                await channel.send(safe[:2000])
+        except Exception:
+            logger.debug("voice line post failed", exc_info=True)
+
     async def join_voice_channel(self, channel, *, text_channel_id: int = None, source: dict = None) -> bool:
         """Join a voice channel; returns True on success. ``text_channel_id`` stores the
         transcription-routing binding so programmatic joins work without ``/voice join``."""
@@ -3463,17 +3915,45 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 )
             except Exception as e:
                 logger.warning("Voice receiver failed to start: %s", e)
+
+            # Realtime voice (xAI S2S). The supervisor brain speaks through
+            # the mixer, so it forces a mixer install even when the voice_fx
+            # extras are off (ambient bed stays fx-gated).
+            rt_cfg = self._load_voice_realtime_config()
+
             # Mixer is best-effort; failure falls back to one-shot FFmpegPCMAudio playback.
-            if getattr(self, "_voice_fx_cfg", {}).get("enabled"):
+            if getattr(self, "_voice_fx_cfg", {}).get("enabled") or (
+                rt_cfg is not None and rt_cfg.supervisor
+            ):
                 try:
                     await self._install_voice_mixer(guild_id, vc)
                 except Exception as e:
                     logger.warning("Voice mixer failed to start: %s", e)
+
+            if rt_cfg is not None and self._voice_receivers.get(guild_id) is not None:
+                if rt_cfg.supervisor and self._voice_mixers.get(guild_id) is None:
+                    # Without the mixer the supervisor's speech has no output
+                    # path — a session would connect but be inaudible. Keep
+                    # the classic pipeline instead of a silently mute bot.
+                    logger.warning(
+                        "Realtime supervisor voice needs the voice mixer, "
+                        "which is not installed (guild=%d) — using the "
+                        "classic voice pipeline instead", guild_id,
+                    )
+                else:
+                    self._start_voice_realtime(guild_id, rt_cfg)
+
             return True
 
     async def leave_voice_channel(self, guild_id: int) -> None:
         """Disconnect from the voice channel in a guild."""
         async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
+            # Stop the realtime session first (its mic bridge is fed by the
+            # receiver we are about to stop). session.stop() joins worker
+            # threads — keep that off the event loop.
+            if getattr(self, "_voice_realtime", {}).get(guild_id) is not None:
+                await asyncio.to_thread(self._stop_voice_realtime, guild_id)
+
             receiver = self._voice_receivers.pop(guild_id, None)
             pending_inputs = []
             if receiver:
@@ -3698,7 +4178,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         last_keepalive = time.monotonic()
         try:
             while receiver._running:
-                await asyncio.sleep(0.2)
+                rt = getattr(self, "_voice_realtime", {}).get(guild_id)
+                if rt is not None and not getattr(rt, "alive", False):
+                    # Reconnects exhausted — reclaim threads and fall back
+                    # to the classic silence-detection + Whisper path.
+                    await asyncio.to_thread(self._stop_voice_realtime, guild_id)
+                    rt = None
+                # Realtime streams continuously into server-side VAD, so it
+                # polls fast; the classic path only needs silence granularity.
+                await asyncio.sleep(0.05 if rt is not None else 0.2)
                 now = time.monotonic()
                 if now - last_keepalive >= self._KEEPALIVE_INTERVAL:
                     last_keepalive = now
@@ -3708,6 +4196,19 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                             vc._connection.send_packet(b'\xf8\xff\xfe')
                     except Exception:
                         pass
+
+                if rt is not None:
+                    try:
+                        self._feed_realtime_pcm(guild_id, receiver)
+                    except Exception:
+                        if guild_id not in self._voice_rt_drain_errors:
+                            self._voice_rt_drain_errors.add(guild_id)
+                            logger.warning(
+                                "Realtime voice drain failed (guild=%d); keep listening",
+                                guild_id, exc_info=True,
+                            )
+                    continue
+
                 completed = receiver.check_silence()
                 # Pass guild so role checks stay guild-scoped.
                 _vc_guild = self._client.get_guild(guild_id) if self._client is not None else None

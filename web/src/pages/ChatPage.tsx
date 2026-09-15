@@ -31,6 +31,7 @@ import { createPortal } from "react-dom";
 import { useNavigate, useSearchParams } from "react-router";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
+import { VoiceCallCard } from "@/components/VoiceCallCard";
 import { ChatSessionList } from "@/components/ChatSessionList";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
@@ -1828,6 +1829,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "border-t border-current/10",
             )}
           >
+            <div className="border-b border-current/10 px-1 py-2">
+              <VoiceCallCard profile={scopedProfile} />
+            </div>
             <div className="border-b border-current/10 px-1 py-2">
               <ChatSidebar
                 channel={channel}

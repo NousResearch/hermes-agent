@@ -705,6 +705,18 @@ export const en: Translations = {
     },
   },
 
+  voiceCall: {
+    title: "Voice",
+    start: "Voice chat",
+    end: "End",
+    mute: "Mute microphone",
+    unmute: "Unmute microphone",
+    connecting: "Connecting…",
+    listening: "Listening",
+    speaking: "Speaking",
+    working: "Hermes working…",
+  },
+
   kanban: {
     loading: "Loading Kanban board…",
     loadFailed: "Failed to load Kanban board: ",

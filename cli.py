@@ -42,6 +42,7 @@ from hermes_cli.cli_stream_mixin import CLIStreamMixin
 from hermes_cli.cli_session_mixin import CLISessionMixin
 from hermes_cli.cli_model_switch_mixin import CLIModelSwitchMixin
 from hermes_cli.cli_voice_mixin import CLIVoiceMixin
+from hermes_cli.cli_voice_realtime_mixin import CLIVoiceRealtimeMixin
 from hermes_cli.cli_status_bar_mixin import CLIStatusBarMixin
 from hermes_cli.cli_tui_mixin import CLITuiMixin
 from hermes_cli.cli_process_notifications import CLIProcessNotificationsMixin
@@ -2519,13 +2520,15 @@ class _ChatTurn:
     stop_event: Optional[threading.Event] = None
     tts_normal_exit: bool = False
     voice_prefix: str = ""
+    # The submitted user message — a realtime supervisor consult is matched by it.
+    message: Any = None
 from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
 
 
 _PASTE_REF_RE = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
 
 
-class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIVoiceMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
+class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIVoiceMixin, CLIVoiceRealtimeMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
     """Interactive REPL for the Hermes Agent."""
 
     # Seeded -q first message (see _should_seed_interactive); run() re-creates
@@ -2944,6 +2947,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._voice_barge_capture = threading.Event()  # barge monitor is capturing the interruption
         self._voice_last_tts_text = ""  # echo guard
         self._voice_barge_phase = None  # "generation" | "playback"
+        self._init_voice_realtime_state()
 
         self._status_bar_visible = _status_bar_visible_from_display_config(CLI_CONFIG.get("display"))
         self._battery_visible = bool(CLI_CONFIG["display"].get("battery", False))
@@ -3490,7 +3494,9 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
                 self._recover_terminal_input_modes(reason="mouse reports leaked into submitted input")
 
         # A typed bare stop phrase ends an active voice chat (transcripts are checked earlier).
-        if not is_voice_input and self._typed_voice_stop(user_input):
+        # Seeded queries are literal text: a realtime supervisor consult restated as "stop" is a
+        # task for the agent, not a command to end the voice chat.
+        if not is_voice_input and not is_seeded_query and self._typed_voice_stop(user_input):
             return
 
         # File drops are detected before any dispatch; seeded -q prompts are literal text.
@@ -3968,6 +3974,14 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             with suppress(Exception):
                 self._voice_recorder.shutdown()
             self._voice_recorder = None
+        # Realtime voice: close the xAI socket and release the hot mic (otherwise it streams
+        # billable audio until process death). stop() is idempotent; call it inline too so the
+        # release is not left to a daemon thread the interpreter may not wait for.
+        with suppress(Exception):
+            _rt_sess = getattr(self, "_voice_rt_session", None)
+            self._voice_realtime_stop()
+            if _rt_sess is not None:
+                _rt_sess.stop()
         with suppress(Exception):
             from tools.voice_mode import cleanup_temp_recordings
             cleanup_temp_recordings()

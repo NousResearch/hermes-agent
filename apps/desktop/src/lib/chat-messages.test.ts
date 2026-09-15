@@ -1357,6 +1357,35 @@ describe('collectUnspokenTurnSpeech', () => {
     ]
 
     expect(collectUnspokenTurnSpeech(messages, null)?.text).toBe('Live reply only.')
+    expect(collectUnspokenTurnSpeech(messages, null)?.userText).toBeNull()
+  })
+
+  it('attributes the speech to the triggering user submission', () => {
+    const messages = [
+      user('u1', 'check disk usage'),
+      assistant('a1', 'Checking…', { interim: true }),
+      assistant('a2', 'Disk is 42% full.')
+    ]
+
+    expect(collectUnspokenTurnSpeech(messages, null)?.userText).toBe('check disk usage')
+  })
+
+  it('binds userText to the turn that bounds the unspoken speech', () => {
+    const messages = [
+      user('u1', 'task one'),
+      assistant('a1', 'Answer one.'),
+      user('u2', 'task two'),
+      assistant('a2', 'Answer two.')
+    ]
+
+    // No spoken id → bounded to the latest user turn (earlier turns never replay).
+    expect(collectUnspokenTurnSpeech(messages, null)?.userText).toBe('task two')
+    expect(collectUnspokenTurnSpeech(messages, 'a1')?.userText).toBe('task two')
+    expect(collectUnspokenTurnSpeech(messages, 'a2')).toBeNull()
+  })
+
+  it('reports null userText when no user message precedes the bubble', () => {
+    expect(collectUnspokenTurnSpeech([assistant('a1', 'Hi.')], null)?.userText).toBeNull()
   })
 })
 

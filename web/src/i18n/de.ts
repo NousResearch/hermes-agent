@@ -607,6 +607,19 @@ export const de: Translations = {
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
   },
+
+  voiceCall: {
+    title: "Stimme",
+    start: "Sprachchat",
+    end: "Beenden",
+    mute: "Mikrofon stummschalten",
+    unmute: "Stummschaltung aufheben",
+    connecting: "Verbinden…",
+    listening: "Hört zu",
+    speaking: "Spricht",
+    working: "Hermes arbeitet…",
+  },
+
   kanban: {
     loading: "Kanban-Board wird geladen…",
     loadFailed: "Laden des Kanban-Boards fehlgeschlagen: ",

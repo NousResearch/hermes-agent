@@ -19,6 +19,8 @@
 // - Detection is a windowed majority (>=80% of the last SUSTAINED_MS above
 //   trigger) so intra-word energy dips don't reset progress.
 
+import { $audioInputDeviceId, openMicrophoneStream } from '@/store/audio-input'
+
 const CALIBRATION_MS = 400
 const SUSTAINED_MS = 300
 const SUSTAINED_MAJORITY = 0.8
@@ -157,9 +159,7 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
   }
   void (async () => {
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true }
-      })
+      stream = await openMicrophoneStream($audioInputDeviceId.get())
 
       if (disposed) {
         cleanup()

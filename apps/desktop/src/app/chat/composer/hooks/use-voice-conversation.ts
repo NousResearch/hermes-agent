@@ -1,3 +1,4 @@
+import { isVoiceStopCommand } from '@hermes/shared'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
@@ -10,7 +11,6 @@ import {
   startSpeechStream,
   stopVoicePlayback
 } from '@/lib/voice-playback'
-import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import { notify, notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
 

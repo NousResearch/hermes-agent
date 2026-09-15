@@ -255,6 +255,9 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   // How the desktop voice conversation is wired — tools/voice_live.py owns the
   // gpt-live branch (one full-duplex voice model delegating to Hermes).
   'voice.voice_chat_mode': ['chained', 'gpt-live'],
+  // xAI realtime brain (tools/voice_realtime_config.py) — a CLI/Discord knob;
+  // browser surfaces always run the supervisor.
+  'voice.realtime.brain': ['supervisor', 'ears'],
   'voice.gpt_live.voice': [
     'marin',
     'cedar',
@@ -743,6 +746,9 @@ export const SECTIONS: DesktopConfigSection[] = [
       'voice.voice_chat_mode',
       'voice.gpt_live.voice',
       'voice.gpt_live.instructions',
+      'voice.realtime.enabled',
+      'voice.realtime.brain',
+      'voice.realtime.voice',
       'tts.provider',
       'stt.enabled',
       'stt.echo_transcripts',

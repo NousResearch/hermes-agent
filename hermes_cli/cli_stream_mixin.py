@@ -678,6 +678,7 @@ class CLIStreamMixin:
         if event_type == "tool.started":
             self._pet_reasoning = False
             self.__dict__.pop("_tool_gen_announced", None)
+            self._voice_realtime_narrate_tool(function_name)
         elif event_type == "tool.completed" and kwargs.get("is_error"):
             self._pet_turn_error = True
         elif event_type and event_type.startswith("reasoning"):

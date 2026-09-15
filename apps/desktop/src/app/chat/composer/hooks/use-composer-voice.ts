@@ -1,19 +1,22 @@
+import { isVoiceStopCommand, type RealtimeTokenGrant, realtimeVoiceContextKeyterms } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { chatMessageText, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
+import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { triggerHaptic } from '@/lib/haptics'
 import { adoptSpokenReplySession, markAssistantIdSpoken, resolveSpokenReply } from '@/lib/spoken-reply'
 import { CONVERSATION_LEASE, READ_ALOUD_LEASE, syncTtsLease } from '@/lib/tts-lease'
 import { toLiveHistory } from '@/lib/voice-live'
 import { clearWakeIndicator, syncWakeIndicatorWithVoice } from '@/lib/wake-indicator'
+import { ensureAudioInputChoice } from '@/store/audio-input'
 import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $voiceLiveStatus, refreshVoiceLiveStatus, selectedVoiceChatMode } from '@/store/voice-live'
-import { $autoSpeakReplies, $voiceStopPhrase, setAutoSpeakReplies } from '@/store/voice-prefs'
+import { $autoSpeakReplies, $realtimeVoiceEnabled, $voiceStopPhrase, setAutoSpeakReplies } from '@/store/voice-prefs'
 import { resumeWakeAfterVoice } from '@/store/wake-word'
 
 import type { ComposerTarget } from '../focus'
@@ -22,6 +25,7 @@ import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
 
 import { useAutoSpeakReplies } from './use-auto-speak-replies'
+import { useRealtimeVoiceConversation } from './use-realtime-voice-conversation'
 import { useVoiceConversation } from './use-voice-conversation'
 import { useVoiceLiveConversation } from './use-voice-live-conversation'
 import { useVoiceRecorder } from './use-voice-recorder'
@@ -29,6 +33,7 @@ import { useVoiceRecorder } from './use-voice-recorder'
 interface UseComposerVoiceArgs {
   busy: boolean
   clearDraft: () => void
+  cwd?: string | null
   disabled: boolean
   focusInput: () => void
   insertText: (text: string) => void
@@ -53,6 +58,7 @@ interface UseComposerVoiceArgs {
 export function useComposerVoice({
   busy,
   clearDraft,
+  cwd,
   disabled,
   focusInput,
   insertText,
@@ -73,6 +79,10 @@ export function useComposerVoice({
   const ownsWakeIndicatorRef = useRef(false)
   const previousSessionIdRef = useRef(sessionId)
   const voiceStartRequest = useStore($voiceConversationStartRequest)
+  const realtimeEnabled = useStore($realtimeVoiceEnabled)
+  // Missing/failed realtime support falls back to the classic STT/TTS loop.
+  const [realtimeUnavailable, setRealtimeUnavailable] = useState(false)
+  const realtimeMode = realtimeEnabled && !realtimeUnavailable
 
   // eslint-disable-next-line no-restricted-syntax -- session-id adopt token, not an atom mirror
   useEffect(() => {
@@ -178,7 +188,7 @@ export function useComposerVoice({
   const chainedConversation = useVoiceConversation({
     busy,
     consumePendingResponse,
-    enabled: voiceConversationActive && !liveEngineActive,
+    enabled: voiceConversationActive && !liveEngineActive && !realtimeMode,
     onFatalError: () => setVoiceConversationActive(false),
     // Speaking over the model mid-generation interrupts the in-flight turn —
     // the same seam as the Stop button — so the interjection becomes the next
@@ -202,7 +212,7 @@ export function useComposerVoice({
     beforeMicOpen: () => wakePauseBarrierRef.current ?? undefined,
     busy,
     consumePendingResponse,
-    enabled: voiceConversationActive && liveEngineActive,
+    enabled: voiceConversationActive && liveEngineActive && !realtimeMode,
     onFatalError: () => setVoiceConversationActive(false),
     onInterrupt,
     onStopWord: () => setVoiceConversationActive(false),
@@ -211,31 +221,104 @@ export function useComposerVoice({
     seedHistory: seedLiveHistory
   })
 
-  const conversation = liveEngineActive ? liveConversation : chainedConversation
+  // Ephemeral grants are minted fresh per dial and never reused. Resolving
+  // null (older backend without the RPC) makes the hook stand down quietly;
+  // flipping realtimeUnavailable re-renders with the classic loop enabled,
+  // so the conversation continues instead of dying.
+  const requestRealtimeToken = useCallback(async (): Promise<RealtimeTokenGrant | null> => {
+    const gateway = $gateway.get()
+
+    if (!gateway) {
+      throw new Error('gateway not connected')
+    }
+
+    try {
+      return await gateway.request<RealtimeTokenGrant>('voice.realtime_token', {
+        keyterms: realtimeVoiceContextKeyterms(cwd)
+      })
+    } catch (error) {
+      if (isMissingRpcMethod(error)) {
+        setRealtimeUnavailable(true)
+
+        return null
+      }
+
+      throw error
+    }
+  }, [cwd])
+
+  // Consult/steer submissions bypass the voice-turn busy gate — the submit
+  // pipeline owns interrupt semantics for turns started while one runs.
+  const submitConsultTask = useCallback(
+    async (text: string): Promise<boolean> => {
+      triggerHaptic('submit')
+      resetBrowseState(sessionId)
+      clearDraft()
+
+      // The submit pipeline returns false when the turn was dropped (busy
+      // guard, deferred credential, read-only transcript, middleware
+      // cancel). Report that, or the voice model tells the user "on it"
+      // for a task that never started.
+      return (await onSubmit(text)) !== false
+    },
+    [clearDraft, onSubmit, sessionId]
+  )
+
+  const realtimeConversation = useRealtimeVoiceConversation({
+    busy,
+    enabled: voiceConversationActive && realtimeMode,
+    sessionId,
+    requestToken: requestRealtimeToken,
+    submitTask: submitConsultTask,
+    onInterrupt,
+    // Match CLI/Discord: a dead realtime transport degrades to classic voice
+    // without ending the user's hands-free session. The classic hook reports
+    // its own actionable setup error if STT/TTS is unavailable too.
+    onFatalError: () => setRealtimeUnavailable(true),
+    onStopWord: () => setVoiceConversationActive(false),
+    isStopWord: isVoiceStopCommand,
+    pendingResponse: pendingTurnResponse,
+    consumePendingResponse,
+    beforeMicOpen: () => wakePauseBarrierRef.current ?? undefined,
+    failureLabel: t.assistant.thread.readAloudFailed
+  })
+
+  const conversation = realtimeMode
+    ? realtimeConversation
+    : liveEngineActive
+      ? liveConversation
+      : chainedConversation
 
   /** Turn the conversation on with the engine `voice.voice_chat_mode` selects,
    *  decided in the same state batch so the other engine never sees a frame of
    *  `enabled`. gpt-live selected but not startable (no OpenAI key on the
-   *  gateway) falls back to chained with a notice rather than a dead button. */
+   *  gateway) falls back to chained with a notice rather than a dead button.
+   *  Realtime (xAI S2S) wins when enabled; its own fallback lands on chained. */
   const activateConversation = useCallback(() => {
-    const status = $voiceLiveStatus.get()
-    let live = false
-
-    if (selectedVoiceChatMode(status) === 'gpt-live') {
-      if (status?.available) {
-        live = true
-      } else {
-        notify({
-          id: 'voice-live-unavailable',
-          kind: 'warning',
-          message: t.notifications.voice.liveUnavailable(status?.reason ?? 'not configured')
-        })
+    void ensureAudioInputChoice().then(ok => {
+      if (!ok) {
+        return
       }
-    }
 
-    setLiveEngineActive(live)
-    setVoiceConversationActive(true)
-  }, [t])
+      const status = $voiceLiveStatus.get()
+      let live = false
+
+      if (!realtimeMode && selectedVoiceChatMode(status) === 'gpt-live') {
+        if (status?.available) {
+          live = true
+        } else {
+          notify({
+            id: 'voice-live-unavailable',
+            kind: 'warning',
+            message: t.notifications.voice.liveUnavailable(status?.reason ?? 'not configured')
+          })
+        }
+      }
+
+      setLiveEngineActive(live)
+      setVoiceConversationActive(true)
+    })
+  }, [realtimeMode, t])
 
   useEffect(() => {
     if (!voiceConversationActive) {

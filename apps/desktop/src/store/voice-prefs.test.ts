@@ -6,8 +6,14 @@ vi.mock('@/hermes', () => ({
 }))
 
 import { saveHermesConfig } from '@/hermes'
+import type { HermesConfig } from '@/types/hermes'
 
-import { $voiceStopPhrase, applyVoiceStopPhraseFromConfig } from './voice-prefs'
+import {
+  $realtimeVoiceEnabled,
+  $voiceStopPhrase,
+  applyRealtimeVoiceFromConfig,
+  applyVoiceStopPhraseFromConfig
+} from './voice-prefs'
 
 it('keeps the desktop toggle local across config refreshes', async () => {
   for (const fails of [false, true]) {
@@ -93,5 +99,28 @@ describe('applyVoiceStopPhraseFromConfig', () => {
   it('malformed entries are skipped; all-blank list disables', () => {
     applyVoiceStopPhraseFromConfig({ voice: { stop_phrases: ['  ', ''] } })
     expect($voiceStopPhrase.get()).toBeNull()
+  })
+})
+
+describe('applyRealtimeVoiceFromConfig', () => {
+  it('gates on voice.realtime.enabled alone — config.yaml omits the default brain', () => {
+    // config.get hands back the user's file, not DEFAULT_CONFIG: the common
+    // `enabled: true` with no `brain` key must still turn realtime on.
+    applyRealtimeVoiceFromConfig({ voice: { realtime: { enabled: true } } })
+    expect($realtimeVoiceEnabled.get()).toBe(true)
+
+    applyRealtimeVoiceFromConfig({ voice: { realtime: { enabled: false } } })
+    expect($realtimeVoiceEnabled.get()).toBe(false)
+
+    applyRealtimeVoiceFromConfig(null)
+    expect($realtimeVoiceEnabled.get()).toBe(false)
+  })
+
+  it('ignores brain: the desktop is supervisor-only, so the ears opt-in does not disable it', () => {
+    for (const brain of ['ears', 'supervisor', 'nonsense']) {
+      const config: HermesConfig = { voice: { realtime: { enabled: true, brain } } }
+      applyRealtimeVoiceFromConfig(config)
+      expect($realtimeVoiceEnabled.get()).toBe(true)
+    }
   })
 })

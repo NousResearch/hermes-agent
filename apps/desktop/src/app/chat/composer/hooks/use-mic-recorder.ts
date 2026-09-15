@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
+import { $audioInputDeviceId, openMicrophoneStream } from '@/store/audio-input'
+
 type BrowserAudioContext = typeof AudioContext
 
 export interface MicRecorderOptions {
@@ -184,9 +186,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     let stream: MediaStream
 
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true }
-      })
+      stream = await openMicrophoneStream($audioInputDeviceId.get())
     } catch (error) {
       throw micError(error, copy)
     }

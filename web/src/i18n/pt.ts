@@ -609,6 +609,19 @@ export const pt: Translations = {
       tweet_text: "Just unlocked {tier_part}\"{name}\" in Hermes Agent ☤",
     },
   },
+
+  voiceCall: {
+    title: "Voz",
+    start: "Chat de voz",
+    end: "Encerrar",
+    mute: "Silenciar microfone",
+    unmute: "Ativar microfone",
+    connecting: "Conectando…",
+    listening: "Ouvindo",
+    speaking: "Falando",
+    working: "Hermes trabalhando…",
+  },
+
   kanban: {
     loading: "A carregar o quadro Kanban…",
     loadFailed: "Falha ao carregar o quadro Kanban: ",

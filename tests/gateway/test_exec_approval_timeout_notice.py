@@ -62,6 +62,9 @@ def _runner(adapter):
 
     runner._schedule = lambda coro, _label: _Fut(asyncio.run(coro))
     runner._close_native_stream_boundary = lambda _why: None
+    # No Discord realtime-voice consult is running for a Telegram approval; the
+    # spoken-notice hop is a no-op here.
+    runner._runner = SimpleNamespace(_notify_voice_realtime_blocked=lambda _ctx, _text: None)
     return runner
 
 

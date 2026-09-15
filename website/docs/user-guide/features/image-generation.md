@@ -87,6 +87,23 @@ update needed. Generation routes each model to the surface that serves it
 Nous Portal proxies the chat-completions protocol only, so its picker offers
 the chat-served models.
 
+For an OpenRouter primary/fallback chain, configure the primary in `model` and
+ordered fallbacks in `fallback_models`:
+
+```yaml
+image_gen:
+  provider: openrouter
+  model: google/gemini-3.1-flash-image  # Nano Banana 2
+  fallback_models:
+    - openai/gpt-5.4-image-2          # latest GPT Image 2 variant
+```
+
+Fallbacks are tried for retryable provider failures such as model availability,
+timeouts, rate limits, and server errors. Each configured fallback adds one more
+sequential request, so keep the chain short when outage latency or retry cost
+matters. An explicit per-call model or the `OPENROUTER_IMAGE_MODEL` environment
+override remains an exact selection and bypasses the configured fallback chain.
+
 Optional per-request knobs for Image API models go under the scoped config
 section (or `OPENROUTER_IMAGE_API_*` env vars):
 

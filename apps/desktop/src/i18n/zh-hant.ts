@@ -915,7 +915,7 @@ export const zhHant = defineLocale({
       voice: {
         autoTts: '自動朗讀助手回覆。',
         voiceChatMode:
-          'chained：語音轉文字 → Hermes → 文字轉語音，使用下方的提供方。gpt-live：由全雙工 OpenAI 語音模型（gpt-live-1）負責聆聽與說話，並將每個實際請求交給 Hermes——由你選擇的任意模型使用完整工具集作答。需要 OpenAI API 金鑰；語音層每分鐘收費 $0.05。',
+          'chained：語音轉文字 → Hermes → 文字轉語音，使用下方的提供方。gpt-live：由全雙工 OpenAI 語音模型（gpt-live-1）負責聆聽與說話，並將每個實際請求交給 Hermes——由你選擇的任意模型使用完整工具集作答。需要 OpenAI API 金鑰；語音層每分鐘收費 $0.05。grok-live：由全雙工 xAI 語音模型（grok-voice-latest）負責聆聽與說話，並將每個實際請求交給 Hermes。需要 SuperGrok 登入（hermes auth add xai-oauth）或 XAI_API_KEY；語音層不按分鐘計費。',
         gptLive: {
           voice: 'GPT-Live 模式使用的音色，可填入自訂音色 ID。',
           instructions: '附加至即時語音人設的句子（語氣、語速、語言）。Hermes 會保留自己的系統提示詞。'

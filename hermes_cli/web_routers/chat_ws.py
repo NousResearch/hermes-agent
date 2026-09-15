@@ -435,6 +435,18 @@ async def pty_ws(ws: WebSocket) -> None:
     await ws.accept()
     _log.info("pty accepted peer=%s mode=%s cred=%s", peer, mode, cred)
 
+    # A gated browser ticket is consumed once at this outer PTY connection.
+    # The child it starts needs a stable, multi-use credential for its own
+    # /api/ws and /api/pub reconnects, so bind a fresh server-only credential
+    # to this exact verified identity before constructing either child URL.
+    internal_credential = None
+    auth_identity = getattr(ws, "_hermes_auth_identity", None)
+    if auth_identity is not None:
+        from hermes_cli.dashboard_auth.ws_tickets import mint_internal_credential
+
+        internal_credential = mint_internal_credential(
+            user_id=auth_identity["user_id"], provider=auth_identity["provider"])
+
     # Native Windows can't import the POSIX PTY bridge: say so and close cleanly.
     if not _PTY_BRIDGE_AVAILABLE:
         await ws.send_text(
@@ -450,7 +462,7 @@ async def pty_ws(ws: WebSocket) -> None:
     resume = raw_resume
     profile = ws.query_params.get("profile") or None
     channel = _channel_or_close_code(ws)
-    sidecar_url = _build_sidecar_url(channel) if channel else None
+    sidecar_url = _build_sidecar_url(channel, internal_credential=internal_credential) if channel else None
     force_fresh = (ws.query_params.get("fresh") or "").strip().lower() in {"1", "true", "yes", "on"}
     active_session_file: Optional[Path] = None
 
@@ -474,6 +486,8 @@ async def pty_ws(ws: WebSocket) -> None:
     resolve_kwargs = {"resume": resume, "sidecar_url": sidecar_url, "profile": profile}
     if active_session_file is not None:
         resolve_kwargs["active_session_file"] = str(active_session_file)
+    if internal_credential is not None:
+        resolve_kwargs["internal_credential"] = internal_credential
 
     try:
         argv, cwd, env = await _resolve_chat_argv_async(**resolve_kwargs)

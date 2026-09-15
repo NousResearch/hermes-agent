@@ -297,7 +297,8 @@ def _ws_auth_ok(ws: "WebSocket") -> bool:
 
 def _resolve_chat_argv(
     resume: Optional[str] = None, sidecar_url: Optional[str] = None, profile: Optional[str] = None,
-    active_session_file: Optional[str] = None) -> tuple[list[str], Optional[str], Optional[dict]]:
+    active_session_file: Optional[str] = None,
+    internal_credential: Optional[str] = None) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve the argv + cwd + env for the chat PTY (what ``hermes --tui`` runs).
 
     Tests monkeypatch this with a tiny fake command.  Env contract: resume goes
@@ -371,7 +372,8 @@ def _resolve_chat_argv(
 
     # Without the attach URL, gatewayClient spawns its own `tui_gateway.entry`,
     # which inherits the profile HERMES_HOME set above.
-    if profile_dir is None and (gateway_ws_url := _build_gateway_ws_url()):
+    if profile_dir is None and (gateway_ws_url := _build_gateway_ws_url(
+            internal_credential=internal_credential)):
         env["HERMES_TUI_GATEWAY_URL"] = gateway_ws_url
 
     return list(argv), str(cwd) if cwd else None, env
@@ -395,7 +397,9 @@ def _resolve_client_ws_host() -> Optional[str]:
     return "127.0.0.1" if host in _WILDCARD_HOSTS else host
 
 
-def _server_internal_ws_url(path: str, **extra_qs) -> Optional[str]:
+def _server_internal_ws_url(
+    path: str, *, internal_credential: Optional[str] = None, **extra_qs,
+) -> Optional[str]:
     """``ws://<host>:<port><path>?<auth>&<extra>`` for server-spawned WS clients,
     or None when unbound.
 
@@ -412,31 +416,35 @@ def _server_internal_ws_url(path: str, **extra_qs) -> Optional[str]:
     if getattr(app.state, "auth_required", False):
         from hermes_cli.dashboard_auth.ws_tickets import internal_ws_credential
 
-        auth = {"internal": internal_ws_credential()}
+        auth = {"internal": internal_credential or internal_ws_credential()}
     else:
         auth = {"token": _SESSION_TOKEN}
     return f"ws://{netloc}{path}?{urllib.parse.urlencode({**auth, **extra_qs})}"
 
 
-def _build_gateway_ws_url() -> Optional[str]:
+def _build_gateway_ws_url(*, internal_credential: Optional[str] = None) -> Optional[str]:
     """ws:// URL the PTY child attaches to for JSON-RPC gateway traffic."""
-    return _server_internal_ws_url("/api/ws")
+    return _server_internal_ws_url("/api/ws", internal_credential=internal_credential)
 
 
-def _build_sidecar_url(channel: str) -> Optional[str]:
+def _build_sidecar_url(channel: str, *, internal_credential: Optional[str] = None) -> Optional[str]:
     """ws:// URL the PTY child publishes events to, or None when unbound."""
-    return _server_internal_ws_url("/api/pub", channel=channel)
+    return _server_internal_ws_url(
+        "/api/pub", internal_credential=internal_credential, channel=channel)
 
 
 async def _resolve_chat_argv_async(
     resume: Optional[str] = None, sidecar_url: Optional[str] = None, profile: Optional[str] = None,
-    active_session_file: Optional[str] = None) -> tuple[list[str], Optional[str], Optional[dict]]:
+    active_session_file: Optional[str] = None,
+    internal_credential: Optional[str] = None) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve chat argv off the event loop (it may run ``npm run build``); the
     async lock keeps one-build-at-a-time without parking worker threads."""
     from hermes_cli.web_server import _get_chat_argv_lock, app
     kwargs = {"resume": resume, "sidecar_url": sidecar_url, "profile": profile}
     if active_session_file is not None:
         kwargs["active_session_file"] = active_session_file
+    if internal_credential is not None:
+        kwargs["internal_credential"] = internal_credential
 
     async with _get_chat_argv_lock(app):
         return await asyncio.to_thread(_resolve_chat_argv, **kwargs)

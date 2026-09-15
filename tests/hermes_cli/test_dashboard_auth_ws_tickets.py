@@ -17,6 +17,7 @@ from hermes_cli.dashboard_auth.ws_tickets import (
     TicketInvalid,
     _reset_for_tests,
     consume_ticket,
+    mint_internal_credential,
     mint_ticket,
 )
 
@@ -176,3 +177,19 @@ class TestInternalCredential:
         # Consuming the internal credential leaves the ticket intact.
         ws_tickets.consume_internal_credential(cred)
         assert consume_ticket(ticket)["user_id"] == "u1"
+
+
+class TestPerPtyInternalCredentials:
+    def test_per_pty_credentials_preserve_and_isolate_authenticated_identities(self):
+        """A PTY child reconnects with its credential without becoming another caller."""
+        alice = mint_internal_credential(user_id="alice", provider="stub")
+        bob = mint_internal_credential(user_id="bob", provider="oidc")
+
+        assert alice != bob
+        assert ws_tickets.consume_internal_credential(alice) == {
+            "user_id": "alice", "provider": "stub"}
+        # Internal credentials are multi-use so a reconnect preserves the PTY's identity.
+        assert ws_tickets.consume_internal_credential(alice) == {
+            "user_id": "alice", "provider": "stub"}
+        assert ws_tickets.consume_internal_credential(bob) == {
+            "user_id": "bob", "provider": "oidc"}

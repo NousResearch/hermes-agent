@@ -273,6 +273,55 @@ def test_translate_native_response_surfaces_reasoning_and_tool_calls():
     assert json.loads(choice.message.tool_calls[0].function.arguments) == {"q": "hermes"}
 
 
+def test_translate_native_response_counts_thought_tokens_as_reasoning():
+    from agent.gemini_native_adapter import translate_gemini_response
+
+    payload = {
+        "candidates": [
+            {
+                "content": {"parts": [{"text": "hello"}]},
+                "finishReason": "STOP",
+            }
+        ],
+        "usageMetadata": {
+            "promptTokenCount": 10,
+            "candidatesTokenCount": 20,
+            "totalTokenCount": 30,
+            "thoughtsTokenCount": 12,
+        },
+    }
+
+    response = translate_gemini_response(payload, model="gemini-3-flash")
+    assert response.usage.completion_tokens == 20
+    assert response.usage.prompt_tokens_details.cached_tokens == 0
+    assert response.usage.completion_tokens_details.reasoning_tokens == 12
+
+
+def test_translate_stream_event_counts_thought_tokens_as_reasoning():
+    from agent.gemini_native_adapter import translate_stream_event
+
+    event = {
+        "candidates": [
+            {
+                "content": {"parts": [{"text": "hello"}]},
+                "finishReason": "STOP",
+            }
+        ],
+        "usageMetadata": {
+            "promptTokenCount": 10,
+            "candidatesTokenCount": 20,
+            "totalTokenCount": 30,
+            "thoughtsTokenCount": 12,
+        },
+    }
+
+    chunks = translate_stream_event(event, model="gemini-3-flash", tool_call_indices={})
+    finish_chunks = [c for c in chunks if getattr(c.choices[0], "finish_reason", None)]
+    assert finish_chunks, "expected a finish chunk carrying usage"
+    assert finish_chunks[-1].usage.completion_tokens_details.reasoning_tokens == 12
+    assert finish_chunks[-1].usage.completion_tokens == 20
+
+
 def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatch):
     from agent.gemini_native_adapter import GeminiNativeClient
 

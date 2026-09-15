@@ -313,6 +313,18 @@ class SessionGatewayMixin:
         )
         return [dict(r) for r in rows]
 
+    def gateway_routing_entry_for_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """The routing entry (any scope) whose current owner is *session_id*, or None. The id lives
+        only inside ``entry_json``, so matching is done in Python; an archived/rotated row has none."""
+        for row in self._read_all("SELECT entry_json FROM gateway_routing"):
+            try:
+                entry = json.loads(row["entry_json"] or "{}")
+            except Exception:
+                continue
+            if isinstance(entry, dict) and entry.get("session_id") == session_id:
+                return entry
+        return None
+
     def _delete_routing_entries_for_sessions(self, session_ids: Set[str]) -> int:
         """Drop ``gateway_routing`` rows pointing at any of *session_ids*; the target id
         lives only inside ``entry_json``, so matching is done in Python over all scopes."""

@@ -196,17 +196,22 @@ def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str) 
 
 
 def _notif_gateway_owns_heartbeat(session: dict, session_key: str) -> bool:
-    """Whether the persisted conversation route owns heartbeat delivery.
+    """Whether the gateway's heartbeat poller owns this session's due tick.
 
-    Desktop/TUI can attach to a messaging conversation, but its session-owner
-    poller has no adapter route for the reply.  The gateway's heartbeat poller
-    retains that route, so leave its due tick untouched.  A missing row is
-    fail-open for a newly-created local session.
+    Desktop/TUI can attach to a messaging conversation, but its session-owner poller has no adapter
+    route for the reply. Ownership is the gateway's LIVE routing index, not the row's immutable
+    ``source``: ``gateway/run_heartbeat_restore.py`` only registers watches for a non-suspended,
+    origin-bearing key whose current ``session_id`` is this one, so a row archived by /reset,
+    auto-reset or compression rotation belongs to nobody there and must keep firing here. The index
+    lives in the gateway's home store (the launch handle for a multiplexed gateway, the profile's
+    own store for a per-profile gateway), so both are consulted; no entry is fail-open.
     """
     try:
         with _session_db(session) as db:
-            row = db.get_session(session_key) if db is not None else None
-        return bool(row and _is_gateway_owned_source(str(row.get("source") or "")))
+            for store in {id(d): d for d in (db, _get_db()) if d is not None}.values():
+                if (entry := store.gateway_routing_entry_for_session(session_key)) is not None:
+                    return bool(entry.get("origin")) and not entry.get("suspended")
+        return False
     except Exception:
         return False
 
@@ -227,11 +232,11 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
         return
     if not (sid_key := session.get("session_key") or ""):
         return
-    if _notif_gateway_owns_heartbeat(session, sid_key):
-        return  # the gateway poller owns the persisted messaging route
     mgr = HeartbeatManager(session_id=sid_key)
-    if not mgr.is_active() or not mgr.state.is_due() or not _notif_claim_turn(session):
-        return  # not due, or busy — the tick coalesces to the next idle poll
+    if not mgr.is_active() or not mgr.state.is_due() or _notif_gateway_owns_heartbeat(session, sid_key):
+        return  # not due, or the gateway poller owns the routed conversation — stays due there
+    if not _notif_claim_turn(session):
+        return  # busy — the tick coalesces to the next idle poll
     if not (prompt := mgr.due_prompt()):
         _notif_release_turn(session)
         return

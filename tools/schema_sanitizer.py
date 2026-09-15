@@ -316,10 +316,7 @@ def _sanitize_node(node: Any, path: str) -> Any:
             out["properties"] = {}
         if isinstance(out.get("required"), list):
             valid = [r for r in out["required"] if isinstance(r, str) and r in out["properties"]]
-            if valid:
-                out["required"] = valid
-            else:
-                del out["required"]
+            out["required"] = valid
     return out
 
 

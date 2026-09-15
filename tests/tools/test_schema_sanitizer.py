@@ -156,6 +156,16 @@ def test_required_pruned_to_existing_properties():
     assert out[0]["function"]["parameters"]["required"] == ["name"]
 
 
+def test_empty_required_array_is_preserved():
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": [],
+    })]
+    out = sanitize_tool_schemas(tools)
+    assert out[0]["function"]["parameters"]["required"] == []
+
+
 def test_well_formed_schema_unchanged():
     schema = {
         "type": "object",

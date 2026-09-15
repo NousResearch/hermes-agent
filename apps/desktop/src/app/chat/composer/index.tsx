@@ -358,7 +358,9 @@ export function ChatBar({
     composerRef,
     composerSurfaceRef,
     editorRef,
-    poppedOut
+    poppedOut,
+    running: busy,
+    surfaceKey: focusKey
   })
 
   const hasComposerPayload = hasText || attachments.length > 0

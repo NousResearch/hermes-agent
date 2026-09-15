@@ -139,6 +139,28 @@ def _fake_windll(
     return _windll
 
 
+def test_desktop_stamp_path_is_profile_invariant(tmp_path, monkeypatch):
+    """The stamp hashes the shared checkout, so a build under ``profiles/<name>``
+    and the post-update verification under the default home must resolve to the
+    same stamp file (#105659): a profile-active build wrote the stamp where the
+    root-context verifier never looks, so every update reported a healthy build
+    as stale."""
+    root = tmp_path / "hermes-root"
+    profile_home = root / "profiles" / "cfo"
+    profile_home.mkdir(parents=True)
+
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    assert main_desktop._desktop_stamp_path() == root / "desktop-build-stamp.json"
+
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    assert main_desktop._desktop_stamp_path() == root / "desktop-build-stamp.json"
+
+    # The profile's own home must never be the stamp location, whichever
+    # context asks; a bare path computation, nothing is written.
+    monkeypatch.delenv("HERMES_HOME")
+    assert main_desktop._desktop_stamp_path() != profile_home / "desktop-build-stamp.json"
+
+
 @pytest.mark.windows_only
 def test_native_machine_reports_os_arch_not_process_arch():
     """The #69179 WoA regression: x64 Python under ARM64 emulation must report

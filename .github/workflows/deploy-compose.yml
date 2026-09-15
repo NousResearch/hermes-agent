@@ -7,10 +7,6 @@ on:
 
 permissions:
   contents: read
-  checks: read
-  packages: write
-  id-token: write
-  attestations: write
 
 concurrency:
   group: hermes-staging-deploy
@@ -19,6 +15,12 @@ concurrency:
 jobs:
   publish:
     if: github.repository == 'batumilove/hermes-agent'
+    permissions:
+      attestations: write
+      checks: read
+      contents: read
+      id-token: write
+      packages: write
     uses: batumilove/hermes-ops/.github/workflows/build-image.yml@00047fd62468b7785f82dfaf688006f0433d6bfa
     with:
       source_sha: ${{ github.sha }}
@@ -29,6 +31,8 @@ jobs:
   deploy-staging:
     needs: publish
     if: vars.HERMES_STAGING_DEPLOY_ENABLED == 'true'
+    permissions:
+      contents: read
     uses: batumilove/hermes-ops/.github/workflows/compose-deploy.yml@00047fd62468b7785f82dfaf688006f0433d6bfa
     with:
       environment: batumi-staging

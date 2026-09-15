@@ -568,6 +568,30 @@ class TestIdempotency:
             data = await resp2.json()
             assert data["status"] == "duplicate"
 
+    @pytest.mark.asyncio
+    async def test_same_delivery_id_on_different_routes_is_not_deduped(self):
+        """One delivery ID fanning out to two routes runs on both (#7448)."""
+        routes = {
+            "one": {"secret": _INSECURE_NO_AUTH, "prompt": "test"},
+            "two": {"secret": _INSECURE_NO_AUTH, "prompt": "test"},
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            headers = {"X-GitHub-Delivery": "delivery-123"}
+            resp1 = await cli.post("/webhooks/one", json={"a": 1}, headers=headers)
+            assert resp1.status == 202
+
+            resp2 = await cli.post("/webhooks/two", json={"a": 1}, headers=headers)
+            assert resp2.status == 202
+
+            resp3 = await cli.post("/webhooks/one", json={"a": 1}, headers=headers)
+            assert resp3.status == 200
+            data = await resp3.json()
+            assert data["status"] == "duplicate"
+
 
 # ===================================================================
 # Rate limiting

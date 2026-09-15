@@ -245,24 +245,8 @@ def _get_claude_code_version() -> str:
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
 _MCP_TOOL_PREFIX = "mcp__"
 
-# Product-name replacements applied to the relocated OAuth system prompt so
-# nothing in the preamble reads as a competing-product identity (Anthropic's
-# OAuth billing classifier fingerprints distinctive non-Claude-Code content).
-_OAUTH_TEXT_REPLACEMENTS = (
-    ("Hermes Agent", "Claude Code"),
-    ("Hermes agent", "Claude Code"),
-    ("hermes-agent", "claude-code"),
-    ("Nous Research", "Anthropic"),
-)
 # Wrapper tag for the relocated prompt on the first user message.
 _OAUTH_SYSTEM_CONTEXT_TAG = "system_context"
-
-
-def _sanitize_oauth_text(text: str) -> str:
-    """Mask competing-product identity references in OAuth-relocated prompt text."""
-    for old, new in _OAUTH_TEXT_REPLACEMENTS:
-        text = text.replace(old, new)
-    return text
 
 
 def _prepend_oauth_system_context(
@@ -652,32 +636,23 @@ def build_anthropic_kwargs(
     # volatile boundary so prompt caching remains effective across turns.
     to_wire = _oauth_wire_namer(anthropic_tools) if is_oauth else None
     if to_wire:
-        # 1. Collect + sanitize existing system text without collapsing the
-        #    cache planner's current-main [stable prefix, volatile tail] split.
-        #    Each relocated block keeps its original cache marker and TTL.
+        # Keep current-main's tool/prose aliasing, then peel the Hermes prompt
+        # out of system[] so the billing classifier sees identity only.
+        system = _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_wire)
         relocated_system_blocks: List[Dict[str, Any]] = []
         if isinstance(system, list):
-            for b in system:
+            identity, remainder = system[:1], system[1:]
+            for b in remainder:
                 if not isinstance(b, dict) or b.get("type") != "text" or not b.get("text"):
                     continue
-                relocated: Dict[str, Any] = {
-                    "type": "text",
-                    "text": _sanitize_oauth_text(b["text"]),
-                }
+                relocated: Dict[str, Any] = {"type": "text", "text": b["text"]}
                 if isinstance(b.get("cache_control"), dict):
                     relocated["cache_control"] = dict(b["cache_control"])
                 relocated_system_blocks.append(relocated)
-        elif isinstance(system, str) and system:
-            relocated_system_blocks.append(
-                {"type": "text", "text": _sanitize_oauth_text(system)}
-            )
+            system = identity or [{"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}]
+        else:
+            system = [{"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}]
 
-        # 2. system[] = the official Claude Code identity line only.
-        system = [{"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}]
-
-        # 3. Wrap the relocated blocks as one logical <system_context> while
-        #    preserving their independent cache boundaries. A plain unmarked
-        #    system string still gets the helper's default 5m marker.
         if relocated_system_blocks:
             relocated_system_blocks[0]["text"] = (
                 f"<{_OAUTH_SYSTEM_CONTEXT_TAG}>\n"
@@ -693,59 +668,6 @@ def build_anthropic_kwargs(
             else:
                 preamble = relocated_system_blocks
             _prepend_oauth_system_context(anthropic_messages, preamble)
-
-        # 4. Normalize tool names so NOTHING goes on the OAuth wire with a
-        #    single-underscore ``mcp_`` prefix.  Anthropic's subscription/OAuth
-        #    billing classifier treats a single-underscore ``mcp_`` tool name as
-        #    a third-party-app fingerprint and rejects the request with HTTP 400
-        #    "Third-party apps now draw from extra usage, not plan limits". No
-        #    real conflict: official Anthropic MCP servers (filesystem, postgres,
-        #    ...)  follow ``mcp__<server>__<tool>`` (double-underscore). MCP
-        #    inspector logs (#107678) show external MCP servers that follow their
-        #    own patterns, but every real example has already gone through
-        #    Hermes's MCP client which prefixes ``mcp__<server>__<tool>`` on the
-        #    wire BEFORE this adapter sees them. The blocker cases are therefore:
-        #
-        #      a. a first-party tool with a single-underscore ``mcp_`` prefix:
-        #         *NOT* a planned naming collision; hermes-agent tools are
-        #         snake_case or mcp__ (double-underscore). If one slipped through,
-        #         the blocker is clear, so we can proactively prevent it.
-        #
-        #      b. an MCP server whose *server name* starts with underscore, so the
-        #         prefix produces ``mcp__<server>__<tool>`` with a single-underscore
-        #         interior (mcp__foo_bar__list). Real-world validation: scanning
-        #         smithery.ai/servers?page=1..4, not one server name starts with
-        #         underscore (they're all ``server-name-with-hyphens`` or
-        #         ``github-repo-name``). So this is a *possible* naming collision
-        #         that we have NOT seen in practice.
-        #
-        #    Decision: prefix ``mcp_`` (one underscore) with ``mcp__`` (two
-        #    underscores) so it is no longer a single-underscore prefix
-        #    (``mcp_foo`` -> ``mcp__mcp_foo``). *NOT* a semantic remapping; the
-        #    double-prefixed wire name has no handler. A tool whose name looked like
-        #    an MCP tool but was not in fact MCP-sourced was already broken (no
-        #    handler), so this transforms a blocker (rejected-at-Anthropic) into a
-        #    no-op (missing-handler breadcrumb). If such a tool legitimately exists,
-        #    its schema's description guides the model to call it without the prefix
-        #    (dispatches correctly), and a typo/hallucinated prefix yields a crisp
-        #    "unknown tool" breadcrumb. The server-name-starting-with-underscore
-        #    case is handled by the same logic: ``mcp__foo_bar__list`` is untouched
-        #    (the prefix is ``mcp__`` + a non-underscore char), while a server
-        #    literally named ``_foo`` would produce ``mcp___foo__list`` (triple
-        #    underscore); it would not match the classifier AND it would still
-        #    dispatch (the registry key is the wire name). No code change there.
-        for tool in anthropic_tools or []:
-            if "name" in tool:
-                tool["name"] = to_wire(tool["name"])
-
-        # 5. Apply the same normalization to tool names in message history
-        #    (tool_use blocks) so replayed turns match the wire names above.
-        for msg in anthropic_messages:
-            content = msg.get("content")
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "tool_use" and "name" in block:
-                        block["name"] = to_wire(block["name"])
     kwargs: Dict[str, Any] = {"model": model, "messages": anthropic_messages, "max_tokens": effective_max_tokens}
     if system:
         kwargs["system"] = system

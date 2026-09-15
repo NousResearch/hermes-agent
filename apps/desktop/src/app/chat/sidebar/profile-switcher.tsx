@@ -67,6 +67,7 @@ import { $fleetRoster, refreshFleetRoster } from '@/store/fleet-roster'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
+  $gatewaySwapTarget,
   $profileColors,
   $profileCreateRequest,
   $profileOrder,
@@ -151,6 +152,7 @@ export function ProfileRail() {
   const profiles = useStore($profiles)
   const scope = useStore($profileScope)
   const gatewayProfile = useStore($activeGatewayProfile)
+  const gatewaySwapTarget = useStore($gatewaySwapTarget)
   const order = useStore($profileOrder)
   const colors = useStore($profileColors)
   const remoteOverrides = useStore($profileRemoteOverrides)
@@ -265,7 +267,7 @@ export function ProfileRail() {
   }, [condensed])
 
   const isAll = scope === ALL_PROFILES
-  const activeKey = normalizeProfileKey(gatewayProfile)
+  const activeKey = normalizeProfileKey(gatewaySwapTarget ?? gatewayProfile)
   const defaultProfile = profiles.find(profile => profile.is_default)
   const onDefault = !isAll && activeKey === 'default'
 

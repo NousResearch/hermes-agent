@@ -546,7 +546,14 @@ async function resolveConnectionForProfile(profile: string): Promise<HermesConne
 // their sockets — so their sessions keep streaming concurrently. A null/empty
 // target means "no explicit profile" → keep the current gateway (a plain new
 // chat stays put; single-profile users never leave the primary).
-export async function ensureGatewayProfile(profile: string | null | undefined): Promise<void> {
+export async function ensureGatewayProfile(
+  profile: string | null | undefined,
+  { signal }: { signal?: AbortSignal } = {}
+): Promise<void> {
+  if (signal?.aborted) {
+    return
+  }
+
   if (profile == null || !String(profile).trim()) {
     // "No explicit profile" = use the current gateway. But if an explicit swap
     // (e.g. the user just picked a profile in the switcher) is still in flight,
@@ -604,12 +611,17 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
     await gatewaySwitch.catch(() => undefined)
   }
 
+  if (signal?.aborted) {
+    return
+  }
+
   if (routeAgrees()) {
     return
   }
 
   $gatewaySwapTarget.set(target)
-  gatewaySwitch = (async () => {
+
+  const activationWork = (async () => {
     // ensureGatewayForProfile opens (or reuses) the target's socket and points
     // the active gateway at it — without closing the profile you came from.
     // The descriptor resolves concurrently so nothing awaits between the
@@ -618,6 +630,13 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
     // already targeted the new backend while $connection still described the
     // previous one, and remote-aware paths announced the wrong mode (#46651).
     const [connection] = await Promise.all([resolveConnectionForProfile(target), ensureGatewayForProfile(target)])
+
+    // A newer relative selection may supersede this cold dial. The gateway's
+    // activation epoch prevents the old socket from winning; keep the mirrored
+    // renderer state from publishing the obsolete target too.
+    if (signal?.aborted) {
+      return
+    }
 
     // ONE publication frame. batch() defers Nanostores' notifications to the
     // end of the callback, so the profile pointer and the connection
@@ -654,6 +673,10 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
       $activeGatewayProfile.set(landed ? target : routeKey)
     })
   })()
+
+  // Abandon foreground ownership immediately. The old backend may finish as a
+  // warm secondary, but it no longer blocks the latest profile selection.
+  gatewaySwitch = releaseWhenAborted(activationWork, signal)
 
   // A failed switch must NOT fall back to the primary socket silently: that
   // would route the user's messages to the wrong profile's backend and cause
@@ -897,8 +920,25 @@ export const $profileScope = computed([$showAllProfiles, $activeGatewayProfile],
 // Switch the active context to `name`: leave "All profiles" mode, point new
 // chats at it, and swap the single live gateway onto its backend (which moves
 // $activeGatewayProfile → name, so $profileScope follows).
-export function selectProfile(name: string): void {
+interface ProfileSelectionOptions {
+  fromCycle?: boolean
+  onSettled?: () => void
+  signal?: AbortSignal
+}
+
+let cycleSelectionController: AbortController | null = null
+let cycleSelectionTarget: string | null = null
+
+export function selectProfile(name: string, options: ProfileSelectionOptions = {}): void {
   const target = normalizeProfileKey(name)
+
+  // A direct selection takes ownership from relative navigation in flight.
+  if (!options.fromCycle && cycleSelectionController) {
+    cycleSelectionController.abort()
+    cycleSelectionController = null
+    cycleSelectionTarget = null
+  }
+
   // Switching profiles (or coming back from the all-profiles browse view) starts
   // fresh; re-tapping the profile you're already in leaves your session be.
   const switching = $showAllProfiles.get() || target !== normalizeProfileKey($activeGatewayProfile.get())
@@ -932,19 +972,24 @@ export function selectProfile(name: string): void {
 
   const shouldRememberStartupProfile = onPrimary ? isLocalDesktopProfile(target) : Promise.resolve(false)
 
-  void Promise.all([activateOnCurrentSource(target), shouldRememberStartupProfile])
+  void Promise.all([activateOnCurrentSource(target, options.signal), shouldRememberStartupProfile])
     .then(([, shouldRemember]) => {
-      if (shouldRemember) {
+      if (!options.signal?.aborted && shouldRemember) {
         return window.hermesDesktop?.profile?.remember(target)
       }
 
       return undefined
     })
     .catch((error: unknown) => {
+      if (options.signal?.aborted) {
+        return
+      }
+
       if (!notifyRemoteOverrideAuthFailure(target, error)) {
         notifyError(error, `Failed to switch to profile "${target}"`)
       }
     })
+    .finally(() => options.onSettled?.())
 }
 
 // Resolve persistence from the saved per-profile Desktop route, rather than the
@@ -976,10 +1021,14 @@ async function isLocalDesktopProfile(target: string): Promise<boolean> {
 // profile-only path so the main process can resolve a per-profile remote
 // override before falling back to a local backend. Default on `local` stays
 // on that source — see profilePickConnectionId.
-function activateOnCurrentSource(target: string): Promise<void> {
+function activateOnCurrentSource(target: string, signal?: AbortSignal): Promise<void> {
   const connectionId = profilePickConnectionId(target)
 
-  return connectionId ? ensureGatewayAgent(connectionId, target) : ensureGatewayProfile(target)
+  if (connectionId) {
+    return signal ? ensureGatewayAgent(connectionId, target, { signal }) : ensureGatewayAgent(connectionId, target)
+  }
+
+  return signal ? ensureGatewayProfile(target, { signal }) : ensureGatewayProfile(target)
 }
 
 // Pin the next new chat to `name` (legacy profile-only door) so session.create
@@ -1091,11 +1140,28 @@ export function cycleProfile(direction: 1 | -1): void {
     return
   }
 
-  const current = $showAllProfiles.get() ? -1 : keys.indexOf(normalizeProfileKey($activeGatewayProfile.get()))
+  const currentKey = cycleSelectionTarget ?? normalizeProfileKey($activeGatewayProfile.get())
+  const current = $showAllProfiles.get() ? -1 : keys.indexOf(currentKey)
   const start = current < 0 ? (direction === 1 ? -1 : 0) : current
   const next = (start + direction + keys.length) % keys.length
+  const target = keys[next]
 
-  selectProfile(keys[next])
+  cycleSelectionController?.abort()
+
+  const controller = new AbortController()
+  cycleSelectionController = controller
+  cycleSelectionTarget = target
+
+  selectProfile(target, {
+    fromCycle: true,
+    signal: controller.signal,
+    onSettled: () => {
+      if (cycleSelectionController === controller) {
+        cycleSelectionController = null
+        cycleSelectionTarget = null
+      }
+    }
+  })
 }
 
 // Bumped to ask the rail to open its "create profile" dialog (the dialog state

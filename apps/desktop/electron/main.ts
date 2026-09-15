@@ -6703,9 +6703,14 @@ function sendPreviewNavCommand(command: 'back' | 'forward' | 'reload') {
 function installBrowserNavGestures(window) {
   window.on('swipe', (_event, direction) => {
     if (direction === 'left' || direction === 'right') {
-      // Swipe LEFT moves the page left, revealing what's behind it — that's
-      // back. Matches Safari, Chrome, and Finder.
-      sendPreviewNavCommand(direction === 'left' ? 'back' : 'forward')
+      const command = direction === 'left' ? 'back' : 'forward'
+
+      // A gesture inside a guest page belongs to that page. App-chrome swipes
+      // go to the renderer, which gives the hovered sidebar first refusal
+      // and otherwise preserves preview back/forward navigation.
+      if (!commandFocusedGuest(command) && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('hermes:native-swipe', direction)
+      }
     }
   })
 

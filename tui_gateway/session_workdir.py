@@ -265,6 +265,14 @@ def _ensure_session_db_row(session: dict) -> bool:
             # deliberately absent) — that keeps the pinned best-effort contract and stays True. See #98924.
             return _db_error is None
         row_model, model_config = _workdir_row_model_config(session)
+        probe_cwd = str(session.get("cwd") or "").strip()
+        should_schedule_git_meta = False
+        if session.get("explicit_cwd") and probe_cwd and _session_source(session) == "desktop":
+            try:
+                should_schedule_git_meta = db.get_session(key) is None
+            except Exception:
+                # If row identity cannot be established, preserve the existing idempotent path.
+                pass
         try:
             db.create_session(
                 key, source=_session_source(session), model=row_model, model_config=model_config or None,
@@ -276,6 +284,11 @@ def _ensure_session_db_row(session: dict) -> bool:
                 # backfill ran stayed NULL forever: profile-keyed matching then drops them from the sidebar
                 # and deep links can't resolve them (#99222).
                 profile_name=profile_name_for_home(profile_home) or _current_profile_name())
+            if should_schedule_git_meta:
+                try:
+                    _persist_session_cwd_and_schedule_git_meta(session, probe_cwd, db=db)
+                except Exception:
+                    logger.debug("failed to schedule initial session git metadata", exc_info=True)
             # Born hidden (session.create hidden=true, or set_hidden before the row existed): apply the deferred intent.
             if session.get("pending_hidden"):
                 try:

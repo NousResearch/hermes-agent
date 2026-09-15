@@ -115,7 +115,12 @@ VALID_HOOKS: Set[str] = {
     # pre_verify: once per turn when the agent edited code and is about to verify/finish. Return
     # {"action": "continue", "message"} (or Claude-Code Stop {"decision": "block", "reason"}) to keep
     # going; anything else finishes. Bounded by agent.max_verify_nudges.
-    "pre_verify", "pre_api_request", "post_api_request", "api_request_error",
+    "pre_verify",
+    # pre_turn_finalize: once per turn just before a plain-text final would be accepted, after
+    # every built-in stop gate. Return {"action": "continue", "message"} (or Claude-Code Stop
+    # {"decision": "block", "reason"}) to send the turn back to the agent loop; anything else
+    # finalizes. Hard-bounded to one continuation per turn (no config key).
+    "pre_turn_finalize", "pre_api_request", "post_api_request", "api_request_error",
     # pre/post_auxiliary_call: once per physical provider attempt of an auxiliary LLM call
     # (agent/auxiliary_hooks.py — titling, compression, MoA, vision, approval, ...). Same payload
     # shape as pre/post_api_request plus ``aux_task``; distinct events so turn-scoped
@@ -205,7 +210,10 @@ VALID_HOOKS: Set[str] = {
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
 # the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
-SHELL_UNSUPPORTED_HOOKS: Set[str] = {"transform_api_error_classification"}
+# pre_turn_finalize stays Python-plugin-only in v1: its continue directive needs the same
+# stop-gate lifecycle as pre_verify, and shell-hook support would be a half-supported silent
+# no-op without a dedicated response parser.
+SHELL_UNSUPPORTED_HOOKS: Set[str] = {"transform_api_error_classification", "pre_turn_finalize"}
 
 _env_enabled = env_var_enabled  # imported by plugins/memory
 _UNSET = object()
@@ -2075,6 +2083,32 @@ def get_pre_verify_continue_message(
     hook_results = invoke_hook(
         "pre_verify", session_id=session_id, platform=platform, model=model, coding=coding,
         attempt=attempt, final_response=final_response, changed_paths=list(changed_paths or []),
+    )
+    for result in hook_results:
+        if not isinstance(result, dict):
+            continue
+        action = str(result.get("action") or result.get("decision") or "").strip().lower()
+        message = result.get("message") or result.get("reason")
+        if action in ("continue", "block") and isinstance(message, str) and message.strip():
+            return message.strip()
+    return None
+
+
+def get_pre_turn_finalize_continue_message(
+    *, session_id: str = "", turn_id: str = "", platform: str = "", model: str = "",
+    provider: str = "", final_response: str = "", finish_reason: str = "stop",
+    api_call_count: int = 0, attempt: int = 0,
+) -> Optional[str]:
+    """Check ``pre_turn_finalize`` hooks for ``{"action": "continue", "message"}`` (or Claude-Code
+    Stop ``{"decision": "block", "reason"}``) to send the turn back to the agent loop; first
+    non-empty message wins, any other return finalizes. ``attempt`` lets hooks self-throttle —
+    core enforces a hard bound of one continuation per turn before this is consulted, so this
+    helper never needs its own budget. Only cheap, already-available fields are passed: no
+    conversation history, raw requests, or SSE payloads."""
+    hook_results = invoke_hook(
+        "pre_turn_finalize", session_id=session_id, turn_id=turn_id, platform=platform,
+        model=model, provider=provider, final_response=final_response,
+        finish_reason=finish_reason, api_call_count=api_call_count, attempt=attempt,
     )
     for result in hook_results:
         if not isinstance(result, dict):

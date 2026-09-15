@@ -86,14 +86,16 @@
     return body || raw;
   }
 
-  // Board column display order; any backend status not listed here renders after these.
-  const COLUMN_ORDER = ["triage", "todo", "ready", "running", "blocked", "review", "done"];
+  // Board column display order; keep in step with the backend's BOARD_COLUMNS
+  // (a status missing here still renders, but after every listed column).
+  const COLUMN_ORDER = ["triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done"];
   // English fallback dictionaries — used when the i18n catalog is missing
   // a key, and as defaults for the get*() helpers below so callers running
   // outside any React component (where there's no `t`) still get sane text.
   const FALLBACK_COLUMN_LABEL = {
     triage: "Triage",
     todo: "Todo",
+    scheduled: "Scheduled",
     ready: "Ready",
     running: "In Progress",
     blocked: "Blocked",
@@ -104,6 +106,7 @@
   const FALLBACK_COLUMN_HELP = {
     triage: "Raw ideas — a specifier will flesh out the spec",
     todo: "Waiting on dependencies or unassigned",
+    scheduled: "Parked until a due time — the dispatcher wakes it; a card with no due time wakes only by hand",
     ready: "Dependencies satisfied; assign a profile to dispatch",
     running: "Claimed by a worker — in-flight",
     blocked: "Worker asked for human input",
@@ -2992,6 +2995,18 @@
     return "";
   }
 
+  // Wake time for a parked (scheduled) card: a clock time while it is still
+  // ahead of us, "overdue …" once it has passed. Lateness means the wake was
+  // held by a reserved execution band, or nothing is ticking the dispatcher.
+  const dueLabel = function (epoch) {
+    if (!epoch) return "";
+    const delta = epoch * 1000 - Date.now();
+    if (delta < 0) return "overdue " + (timeAgo ? timeAgo(epoch) : "");
+    const mins = Math.round(delta / 60000);
+    if (mins < 60) return "in " + mins + "m";
+    return new Date(epoch * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  };
+
   function TaskCard(props) {
     const { t: i18n } = useI18n();
     const t = props.task;
@@ -3105,6 +3120,15 @@
             t.tenant
               ? h(Badge, { variant: "outline", className: "hermes-kanban-tag",
                            title: `Tenant: ${t.tenant}. Free-form tag for grouping tasks (customer, project, team).` }, t.tenant)
+              : null,
+            t.status === "scheduled"
+              ? h(Badge, {
+                  variant: "outline",
+                  className: "hermes-kanban-due",
+                  title: t.due_at
+                    ? `Due ${new Date(t.due_at * 1000).toLocaleString()} (${t.due_window_policy || "defer"}). The dispatcher wakes this card on its first tick after that time; a reserved execution band holds the wake until the band closes unless the card is armed "ambient".`
+                    : `No due time: nothing wakes this card — it resumes when a human unblocks it (arm one with: hermes kanban schedule ${t.id} --due +1h).`,
+                }, t.due_at ? "⏰ " + dueLabel(t.due_at) : "no due time")
               : null,
             progress
               ? h("span", {

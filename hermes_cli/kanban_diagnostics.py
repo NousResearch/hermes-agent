@@ -179,6 +179,82 @@ def _runs_newest_first(runs) -> list[Any]:
 
 RuleFn = Callable[[Any, list[Any], list[Any], int, dict], list[Diagnostic]]
 
+# --- Overdue parked cards (due_at) ---
+#
+# ``due_at`` is a promise only while something ticks: the wake runs inside the
+# dispatcher loop (``kanban_due.wake_due_cards``), so a gateway that is down --
+# or a card armed while no dispatcher was running -- leaves the card parked with
+# nobody watching. These two thresholds are how lateness turns into a signal.
+_DUE_OVERDUE_GRACE_SECONDS = 5 * 60
+_DUE_STALE_SECONDS = 6 * 3600
+
+
+def _due_duration(seconds: int) -> str:
+    """``90`` -> ``1m30s``, ``5400`` -> ``1h30m``, ``172800`` -> ``2d0h``."""
+    s = max(0, int(seconds))
+    if s >= 86400:
+        return f"{s // 86400}d{(s % 86400) // 3600}h"
+    if s >= 3600:
+        return f"{s // 3600}h{(s % 3600) // 60}m"
+    if s >= 60:
+        return f"{s // 60}m{s % 60}s"
+    return f"{s}s"
+
+
+def _rule_overdue_scheduled(task, events, runs, now_ts, cfg) -> list[Diagnostic]:
+    """A ``scheduled`` card whose due time passed and is still parked.
+
+    Fires on lateness, not on a heartbeat, so it holds even when the waker never
+    ran: the card is the evidence. ``due_waker_last_tick`` (when the caller has
+    it) says which of the two failures this is -- nothing ticking, or a tick that
+    ran and refused -- because the fix is different for each.
+    """
+    if _task_field(task, "status") != "scheduled":
+        return []
+    due_at = _task_field(task, "due_at")
+    if not due_at:
+        return []
+    overdue = int(now_ts) - int(due_at)
+    grace = _positive_int(cfg.get("due_grace_seconds"), _DUE_OVERDUE_GRACE_SECONDS)
+    if overdue < grace:
+        return []
+    stale_after = _positive_int(cfg.get("due_stale_seconds"), _DUE_STALE_SECONDS)
+    task_id = _task_field(task, "id", "")
+    last_tick = cfg.get("due_waker_last_tick")
+    if last_tick:
+        why = (
+            f"The waker last ticked {_due_duration(max(0, int(now_ts) - int(last_tick)))} "
+            f"ago, so ticks ARE running and this card was not woken: check why the "
+            f"wake was refused (an execution band, or a broken window map)."
+        )
+    else:
+        why = (
+            "No wake tick has been recorded on this board at all, so nothing is "
+            "watching this due time: the dispatcher that owns the wake is not running."
+        )
+    return [Diagnostic(
+        kind="overdue_scheduled",
+        severity="error" if overdue >= stale_after else "warning",
+        title=f"Scheduled card is {_due_duration(overdue)} past its due time",
+        detail=(
+            f"Due {time.strftime('%Y-%m-%d %H:%M', time.localtime(int(due_at)))} "
+            f"({_due_duration(overdue)} ago) and still parked. {why}"
+        ),
+        actions=[
+            _cli_hint(f"Wake it now: hermes kanban unblock {task_id}",
+                      f"hermes kanban unblock {task_id}", suggested=True),
+            _cli_hint(f"Re-arm the wait: hermes kanban schedule {task_id} --due +15m",
+                      f"hermes kanban schedule {task_id} --due +15m"),
+        ],
+        first_seen_at=int(due_at),
+        last_seen_at=int(now_ts),
+        data={
+            "due_at": int(due_at),
+            "overdue_seconds": overdue,
+            "due_waker_last_tick": int(last_tick) if last_tick else None,
+        },
+    )]
+
 
 def _aux_slot_explicit(slot: Any) -> bool:
     """True if the aux slot was user-configured: provider other than "auto",
@@ -689,6 +765,7 @@ _RULES: list[RuleFn] = [
     _rule_stuck_in_blocked,
     _rule_block_unblock_cycling,
     _rule_stranded_in_ready,
+    _rule_overdue_scheduled,
 ]
 
 
@@ -703,6 +780,12 @@ DEFAULT_CONFIG = {
     # Below 30 min the signal is dominated by tasks about to be claimed on
     # the next dispatcher tick.
     "stranded_threshold_seconds": 30 * 60,
+    # Lateness (seconds) before a parked card with a passed due time is called
+    # overdue: one dispatcher tick plus slack, so a healthy board stays quiet.
+    "due_grace_seconds": 5 * 60,
+    # Lateness past which an overdue wake is an error, not a warning: no band or
+    # tick noise explains being this late.
+    "due_stale_seconds": 6 * 3600,
 }
 
 
@@ -790,5 +873,6 @@ DIAGNOSTIC_KINDS = (
     "stuck_in_blocked",
     "block_unblock_cycling",
     "stranded_in_ready",
+    "overdue_scheduled",
 )
 # ---- END PLUGIN-COMPAT ----

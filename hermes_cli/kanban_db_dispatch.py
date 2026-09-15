@@ -133,6 +133,18 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    due_woken: list[str] = field(default_factory=list)
+    """``scheduled`` cards whose ``due_at`` had passed and were woken into
+    ``ready`` by this tick's due-card waker. Waking is not spawning: with no
+    spawn budget left they simply wait in ``ready`` until a later tick."""
+    due_deferred: list[tuple[str, str, int]] = field(default_factory=list)
+    """``(task_id, band_key, new_due_at)`` for a due card whose wake was pushed
+    to the close of a reserved/external execution band instead of starting work
+    inside it."""
+    due_problems: list[str] = field(default_factory=list)
+    """Operator-facing reasons the waker could not do its job (unreadable
+    execution-window map, waker crash). A due card stays parked while this is
+    non-empty, so it is also what the overdue diagnostic points at."""
 
 
 # Bounded registry of recently-reaped worker exits, filled by the reap loop in
@@ -1747,6 +1759,40 @@ def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
 # The dispatch lock has been released here. Fire the tick observer strictly OUTSIDE the single-writer
 # critical section (#56066 sweeper finding / #64231 disposition): a slow subscriber must never extend the
 # lock hold and stall a sibling dispatcher's tick.
+def _run_due_wake_phase(
+    conn: sqlite3.Connection,
+    result: DispatchResult,
+    *,
+    dry_run: bool = False,
+    board: Optional[str] = None,
+) -> None:
+    """Wake time-gated cards whose ``due_at`` has passed.
+
+    Runs on EVERY tick, before the lanes are enumerated, so a card whose due
+    time passed during the last interval is spawnable on this tick rather than
+    the next one. Deliberately not gated on the spawn budget: waking is not
+    spawning -- a card woken while the board is busy waits in ``ready`` (where
+    the stranded-in-ready diagnostic can see it) instead of staying in
+    ``scheduled``, where nothing would ever look at it again.
+
+    The waker owns its own failure handling (it fails CLOSED, waking nothing,
+    when the execution-window map is unreadable) and reports through
+    ``result.due_problems``; a crash here still must not kill the tick.
+    """
+    try:
+        outcome = _kdue.wake_due_cards(conn, board=board, dry_run=dry_run)
+    except Exception as exc:  # pragma: no cover - defensive
+        result.due_problems.append(
+            f"due-card waker crashed: {exc.__class__.__name__}: {exc}"
+        )
+        return
+    result.due_woken.extend(outcome.woken)
+    result.due_deferred.extend(
+        (d.task_id, d.band.key, d.band_end) for d in outcome.deferred
+    )
+    result.due_problems.extend(outcome.problems)
+
+
 def _dispatch_once_locked(
     conn: sqlite3.Connection,
     *,
@@ -1768,6 +1814,9 @@ def _dispatch_once_locked(
     the PID so later ticks catch crashes before the TTL. Cap semantics:
     :func:`_tick_spawn_budget`."""
     result = DispatchResult()
+    # Time-gated cards re-enter the lanes FIRST, so one woken here is claimed in
+    # this same tick (see _run_due_wake_phase).
+    _run_due_wake_phase(conn, result, dry_run=dry_run, board=board)
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans,
@@ -2384,3 +2433,4 @@ def run_daemon(
 from hermes_cli import kanban_db as _kb  # noqa: E402
 from hermes_cli import kanban_db_connect as _kbc  # noqa: E402
 from hermes_cli import kanban_db_workspace as _kbw  # noqa: E402
+from hermes_cli import kanban_due as _kdue  # noqa: E402

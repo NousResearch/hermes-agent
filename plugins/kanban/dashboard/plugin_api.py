@@ -202,6 +202,10 @@ def _compute_task_diagnostics(conn: sqlite3.Connection, task_ids: Optional[list[
     if task_ids is not None and not task_ids:
         return {}
     diag_config = kd.config_from_runtime_config(load_config())
+    # The waker's heartbeat (written on every dispatcher tick): the overdue rule
+    # uses it to tell a dead tick apart from a wake that was refused by a band.
+    diag_config["due_waker_last_tick"] = kanban_db.get_meta_int(
+        conn, kanban_db.META_DUE_WAKER_LAST_TICK)
     if task_ids is not None:
         rows = conn.execute(f"SELECT * FROM tasks WHERE id IN ({_placeholders(task_ids)})", tuple(task_ids)).fetchall()
     else:
@@ -506,6 +510,12 @@ class UpdateTaskBody(BaseModel):
     clear_model_override: bool = False
     reasoning_effort: Optional[str] = None
     clear_reasoning_effort: bool = False
+    # Due time for a card parked in ``scheduled`` (epoch seconds), parity with
+    # ``hermes kanban schedule --due``. ``None`` = not sent; ``clear_due_at`` clears.
+    # Setting one PARKS the card (that is the only status where a due time fires).
+    due_at: Optional[int] = None
+    due_window_policy: Optional[str] = None
+    clear_due_at: bool = False
 
 
 class BulkTaskBody(BaseModel):
@@ -545,13 +555,24 @@ def _drag_to(conn, task_id: str, s: str) -> bool:
     return _set_status_direct(conn, task_id, s)
 
 
+def _due_arg(p) -> Any:
+    """``kanban_db.UNSET`` when the payload says nothing about the due time (leave
+    the card's existing one alone) -- a plain ``None`` would CLEAR it."""
+    if getattr(p, "clear_due_at", False):
+        return None
+    value = getattr(p, "due_at", None)
+    return kanban_db.UNSET if value is None else int(value)
+
+
 # Status verb dispatch shared by PATCH /tasks/{id} and POST /tasks/bulk: (conn, task_id,
 # payload) -> ok. ``review`` uses request_review (never a block, so it can't trip unblock-loop
 # detection) with ``force=True``: a dashboard action is a human override of a live worker claim.
 _STATUS_HANDLERS: dict[str, Any] = {
     "done": lambda conn, tid, p: kanban_db.complete_task(conn, tid, result=p.result, summary=p.summary, metadata=p.metadata),
     "blocked": lambda conn, tid, p: kanban_db.block_task(conn, tid, reason=getattr(p, "block_reason", None)),
-    "scheduled": lambda conn, tid, p: kanban_db.schedule_task(conn, tid, reason=getattr(p, "block_reason", None)),
+    "scheduled": lambda conn, tid, p: kanban_db.schedule_task(
+        conn, tid, reason=getattr(p, "block_reason", None),
+        due_at=_due_arg(p), window_policy=getattr(p, "due_window_policy", None)),
     "review": lambda conn, tid, p: kanban_db.request_review(
         conn, tid, summary=p.summary, metadata=p.metadata, reviewer=(p.assignee or None), force=True),
     "ready": lambda conn, tid, p: _drag_to(conn, tid, "ready"),
@@ -590,10 +611,25 @@ def _apply_reasoning_effort(conn, task_id: str, p) -> bool:
     return kanban_db.set_reasoning_effort(conn, task_id, None if p.clear_reasoning_effort else p.reasoning_effort)
 
 
+def _apply_due_at(conn, task_id: str, p) -> bool:
+    """Set/clear the due time. The status phase already carries it when the PATCH
+    moved the card to ``scheduled``; this path covers a due-time-only PATCH."""
+    if getattr(p, "status", None) == "scheduled":
+        return True
+    value = _due_arg(p)
+    policy = getattr(p, "due_window_policy", None)
+    if value is kanban_db.UNSET and not policy:
+        return True
+    return kanban_db.schedule_task(conn, task_id, due_at=value, window_policy=policy)
+
+
 # Override knobs shared by PATCH and bulk: (payload wants it?, apply, bulk refusal message).
 _OVERRIDE_OPS = (
     (lambda p: p.clear_model_override or p.model_override is not None, _apply_model_override, "model override refused"),
     (lambda p: p.clear_reasoning_effort or p.reasoning_effort is not None, _apply_reasoning_effort, "reasoning override refused"),
+    (lambda p: getattr(p, "clear_due_at", False) or getattr(p, "due_at", None) is not None
+               or getattr(p, "due_window_policy", None) is not None,
+     _apply_due_at, "due time refused"),
 )
 
 

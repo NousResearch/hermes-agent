@@ -478,6 +478,56 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         ) == "rate_limit_cooldown"
 
 
+@pytest.mark.parametrize("event_kind", ["status", "promoted", "unblocked", "reclaimed"])
+def test_active_pr_guard_yields_to_later_explicit_requeue(
+    kanban_home: Path, event_kind: str
+) -> None:
+    """An operator action after a PR comment deliberately re-runs the task."""
+    now = int(__import__("time").time())
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="rerun merged PR", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+                "VALUES (?, 'done', 'completed', ?, ?)",
+                (task_id, now - 30, now - 20),
+            )
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, 'worker', ?, ?)",
+                (task_id, "Opened https://github.com/example/repo/pull/456", now - 10),
+            )
+            conn.execute(
+                "INSERT INTO task_events (task_id, kind, payload, created_at) "
+                "VALUES (?, ?, NULL, ?)",
+                (task_id, event_kind, now - 5),
+            )
+
+        assert kbd.check_respawn_guard(conn, task_id) is None
+
+
+def test_active_pr_guard_ignores_explicit_requeue_before_pr_comment(
+    kanban_home: Path,
+) -> None:
+    """A later PR comment supersedes an earlier requeue and still prevents duplication."""
+    now = int(__import__("time").time())
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="PR followed requeue", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "INSERT INTO task_events (task_id, kind, payload, created_at) "
+                "VALUES (?, 'unblocked', NULL, ?)",
+                (task_id, now - 10),
+            )
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, 'worker', ?, ?)",
+                (task_id, "Opened https://github.com/example/repo/pull/789", now - 5),
+            )
+
+        assert kbd.check_respawn_guard(conn, task_id) == "active_pr"
+
+
 def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

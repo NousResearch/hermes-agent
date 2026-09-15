@@ -483,6 +483,19 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   return <Text color={color}>♥</Text>
 }
 
+// Pinned focus-view badge text, shared between the essential-width reservation
+// and the render below so the two can never drift out of sync.
+const FOCUS_BADGE_TEXT = '◉ focus'
+
+// Compact freshness cue: usage/context numbers may still be settling while a
+// turn is running or the session is reattaching after a crash respawn.
+// Derived only from existing busy/recovery state -- never a fabricated token
+// estimate, timer, or provider claim. Recovering/resuming reattach a session
+// that already has real (now possibly stale) numbers on screen; forging a
+// brand-new session has none to go stale, so it's deliberately excluded.
+const PENDING_MARKER = '⋯'
+const RECOVERY_STATUS_TEXT = new Set(['recovering session…', 'resuming…', 'resuming most recent…'])
+
 export function StatusRule({
   battery,
   focusView,
@@ -533,6 +546,13 @@ export function StatusRule({
   const bar = !segs.compactCtx && usage.context_max && ok('context_pct') ? ctxBar(pct) : ''
   const modelText = modelLabel(model, modelReasoningEffort, modelFast)
 
+  // Focus-view badge and pending/freshness marker. Both are pinned (never
+  // tail-budgeted) -- computed here, before essentialWidth, so that budget
+  // actually reserves room for them and a low-priority tail segment yields
+  // instead of either one silently overflowing leftWidth.
+  const showFocus = !!focusView
+  const showPending = busy || RECOVERY_STATUS_TEXT.has(status)
+
   // Battery read-out — the first (pinned) status-bar element when enabled.
   const showBattery = !!battery && battery.available && battery.percent != null && ok('battery')
   const batteryText = showBattery ? batteryLabel(battery!) : ''
@@ -568,7 +588,9 @@ export function StatusRule({
     slotWidth +
     stringWidth(' │ ') +
     stringWidth(modelText) +
-    (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
+    (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0) +
+    (showPending ? stringWidth(' │ ') + stringWidth(PENDING_MARKER) : 0) +
+    (showFocus ? stringWidth(' │ ') + stringWidth(FOCUS_BADGE_TEXT) : 0)
 
   const rightLabel = sessionTitle && ok('title') ? ` ${sessionTitle} ` : cwdLabel
   const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, rightLabel, essentialWidth)
@@ -647,11 +669,6 @@ export function StatusRule({
   // so it consumes tail budget LAST and drops first on a narrow terminal.
   const showDevCredits = !!devCreditsText && fits(SEP + stringWidth(devCreditsText))
 
-  // Focus-view badge. Pinned (not tail-budgeted) on purpose: the whole point of
-  // the indicator is that the user can never be in reduced-output mode without
-  // seeing it, so it must not drop off a narrow terminal.
-  const showFocus = !!focusView
-
   const handleSessionCountClick = (event: { stopImmediatePropagation?: () => void }) => {
     event.stopImmediatePropagation?.()
     onSessionCountClick?.()
@@ -721,10 +738,18 @@ export function StatusRule({
             </Text>
           ) : null}
         </Box>
+        {showPending ? (
+          <Box flexDirection="row" flexShrink={0}>
+            <Text color={t.color.muted}>
+              {' │ '}
+              {PENDING_MARKER}
+            </Text>
+          </Box>
+        ) : null}
         {showFocus ? (
           <Box flexDirection="row" flexShrink={0}>
             <Text color={t.color.muted}>{' │ '}</Text>
-            <Text color={t.color.warn}>◉ focus</Text>
+            <Text color={t.color.warn}>{FOCUS_BADGE_TEXT}</Text>
           </Box>
         ) : null}
         {showBar ? (

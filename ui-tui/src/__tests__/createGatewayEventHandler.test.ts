@@ -2077,17 +2077,24 @@ describe('createGatewayEventHandler', () => {
       expect(getUiState().usage).toMatchObject({ context_percent: 42, input: 1200, total: 1280 })
     })
 
-    it('keeps existing usage fields when the tick only carries a subset', () => {
-      patchUiState({ sid: 'sess-1', usage: { calls: 2, input: 500, output: 40, total: 540 } })
+    it('clears a field omitted from a fresh snapshot instead of keeping the stale prior value', () => {
+      // The confirmed bug: the gateway sends a complete authoritative
+      // snapshot on every tick, but a spread-merge client would keep a
+      // dropped field (e.g. context_percent after compression) forever.
+      patchUiState({
+        sid: 'sess-1',
+        usage: { calls: 2, input: 500, output: 40, total: 540, context_percent: 30 }
+      })
       const onEvent = createGatewayEventHandler(buildCtx([]))
 
       onEvent({
-        payload: { usage: { context_percent: 55 } },
+        payload: { usage: { calls: 2, input: 500, output: 40, total: 540 } },
         session_id: 'sess-1',
         type: 'session.usage'
       } as any)
 
-      expect(getUiState().usage).toMatchObject({ context_percent: 55, input: 500, total: 540 })
+      expect(getUiState().usage).toEqual({ calls: 2, input: 500, output: 40, total: 540 })
+      expect(getUiState().usage.context_percent).toBeUndefined()
     })
 
     it('drops a tick for a non-focused session', () => {
@@ -2101,6 +2108,44 @@ describe('createGatewayEventHandler', () => {
       } as any)
 
       expect(getUiState().usage).toEqual(ZERO)
+    })
+  })
+
+  describe('session.info usage replacement', () => {
+    it('replaces usage wholesale, clearing a field the new snapshot omits', () => {
+      patchUiState({
+        sid: 'sess-1',
+        usage: { calls: 4, input: 800, output: 200, total: 1000, context_percent: 60 }
+      })
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+
+      onEvent({
+        payload: { model: 'opus', skills: {}, tools: {}, usage: { calls: 4, input: 800, output: 200, total: 1000 } },
+        session_id: 'sess-1',
+        type: 'session.info'
+      } as any)
+
+      expect(getUiState().usage).toEqual({ calls: 4, input: 800, output: 200, total: 1000 })
+      expect(getUiState().usage.context_percent).toBeUndefined()
+    })
+  })
+
+  describe('message.complete usage replacement', () => {
+    it('replaces usage wholesale, clearing a field the new snapshot omits', () => {
+      patchUiState({
+        sid: 'sess-1',
+        usage: { calls: 1, input: 100, output: 50, total: 150, context_percent: 10 }
+      })
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+
+      onEvent({
+        payload: { text: 'done', usage: { calls: 2, input: 300, output: 90, total: 390 } },
+        session_id: 'sess-1',
+        type: 'message.complete'
+      } as any)
+
+      expect(getUiState().usage).toEqual({ calls: 2, input: 300, output: 90, total: 390 })
+      expect(getUiState().usage.context_percent).toBeUndefined()
     })
   })
 

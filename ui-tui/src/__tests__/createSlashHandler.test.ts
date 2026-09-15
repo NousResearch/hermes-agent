@@ -1136,6 +1136,23 @@ describe('createSlashHandler', () => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith('title: demo title')
     })
   })
+
+  it('/compress replaces usage wholesale, clearing a field the response omits', async () => {
+    patchUiState({
+      sid: 'sid-abc',
+      usage: { calls: 5, input: 900, output: 300, total: 1200, context_percent: 40 }
+    })
+    const rpc = vi.fn(() => Promise.resolve({ removed: 12, usage: { calls: 5, input: 900, output: 300, total: 1200 } }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    createSlashHandler(ctx)('/compress')
+
+    expect(rpc).toHaveBeenCalledWith('session.compress', { session_id: 'sid-abc' })
+    await vi.waitFor(() => {
+      expect(getUiState().usage).toEqual({ calls: 5, input: 900, output: 300, total: 1200 })
+    })
+    expect(getUiState().usage.context_percent).toBeUndefined()
+  })
 })
 
 const buildCtx = (overrides: Partial<Ctx> = {}): Ctx => ({

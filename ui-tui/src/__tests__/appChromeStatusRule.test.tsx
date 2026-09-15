@@ -88,6 +88,37 @@ const findElementWithText = (node: ReactNodeLike, needle: string): React.ReactEl
   return textContent(node).includes(needle) ? node : null
 }
 
+// Finds a hook-bearing subcomponent by name in the element tree (e.g.
+// SessionDuration/IdleSince) — they can't be invoked outside a renderer, so
+// presence/absence in the tree is asserted instead of their rendered text.
+const findComponentByName = (node: ReactNodeLike, name: string): React.ReactElement | null => {
+  if (node === null || node === undefined || typeof node === 'boolean') {
+    return null
+  }
+
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findComponentByName(child, name)
+
+      if (found) {
+        return found
+      }
+    }
+
+    return null
+  }
+
+  if (!React.isValidElement(node)) {
+    return null
+  }
+
+  if (typeof node.type === 'function' && node.type.name === name) {
+    return node
+  }
+
+  return findComponentByName(node.props.children, name)
+}
+
 const baseProps = {
   bgCount: 0,
   busy: false,
@@ -424,37 +455,6 @@ describe('StatusRule battery indicator', () => {
 })
 
 describe('StatusRule idle-since read-out', () => {
-  // The IdleSince component uses hooks, so it can't be invoked outside a
-  // renderer — assert on the element tree instead (same reason the duration
-  // tests don't check SessionDuration's text).
-  const findComponentByName = (node: ReactNodeLike, name: string): React.ReactElement | null => {
-    if (node === null || node === undefined || typeof node === 'boolean') {
-      return null
-    }
-
-    if (Array.isArray(node)) {
-      for (const child of node) {
-        const found = findComponentByName(child, name)
-
-        if (found) {
-          return found
-        }
-      }
-
-      return null
-    }
-
-    if (!React.isValidElement(node)) {
-      return null
-    }
-
-    if (typeof node.type === 'function' && node.type.name === name) {
-      return node
-    }
-
-    return findComponentByName(node.props.children, name)
-  }
-
   it('shows time since the last final agent response when idle', () => {
     const endedAt = Date.now() - 42_000
 
@@ -545,5 +545,78 @@ describe('StatusRule perf read-outs (cache hit / latency / tps)', () => {
     })
 
     expect(textContent(element)).not.toContain('weekly-digest')
+  })
+})
+
+describe('StatusRule busy/recovery pending marker', () => {
+  it('shows no marker when idle', () => {
+    const element = StatusRule({ ...baseProps })
+
+    expect(textContent(element)).not.toContain('⋯')
+  })
+
+  it('shows the marker while a turn is busy', () => {
+    const element = StatusRule({ ...baseProps, busy: true, turnStartedAt: Date.now() })
+
+    expect(textContent(element)).toContain('⋯')
+  })
+
+  it('shows the marker while the session is recovering after a crash respawn', () => {
+    const element = StatusRule({ ...baseProps, status: 'recovering session…' })
+
+    expect(textContent(element)).toContain('⋯')
+  })
+
+  it('shows the marker while resuming a picked session', () => {
+    const element = StatusRule({ ...baseProps, status: 'resuming…' })
+
+    expect(textContent(element)).toContain('⋯')
+  })
+
+  it('does not show the marker for an ordinary cold-start status like forging a brand-new session', () => {
+    // A forged session has no prior usage to go stale -- nothing to flag.
+    const element = StatusRule({ ...baseProps, status: 'forging session…' })
+
+    expect(textContent(element)).not.toContain('⋯')
+  })
+
+  it('preserves the existing token labels and pins the marker beside the context read-out', () => {
+    // A bare `.toContain('⋯')` can't tell "marker rendered beside its data"
+    // from "marker rendered anywhere" -- pin adjacency to the exact label the
+    // freshness cue is qualifying, matching the essentialWidth term it feeds.
+    const element = StatusRule({ ...baseProps, busy: true, turnStartedAt: Date.now() })
+
+    expect(textContent(element)).toContain('50k/200k │ ⋯')
+  })
+})
+
+describe('StatusRule pinned-segment essential-width accounting', () => {
+  it('reserves width for the pinned focus badge, so it displaces a lower-priority tail segment instead of silently overflowing', () => {
+    const narrowProps = {
+      bgCount: 0,
+      busy: false,
+      cols: 76,
+      // Deliberately sized (not a real path) so it lands under both branches'
+      // maxRightWidth and is never truncated itself -- the leftWidth split
+      // stays identical with/without the focus badge, isolating its width
+      // contribution as the only variable between the two renders below.
+      cwdLabel: `~${'x'.repeat(46)}`,
+      liveSessionCount: 0,
+      model: 'm',
+      sessionStartedAt: Date.now() - 60_000,
+      status: 'ready',
+      statusColor: DEFAULT_THEME.color.ok,
+      t: DEFAULT_THEME,
+      turnStartedAt: null,
+      usage: { total: 0 },
+      voiceLabel: ''
+    }
+
+    const withoutFocus = StatusRule({ ...narrowProps })
+    expect(findComponentByName(withoutFocus, 'SessionDuration')).not.toBeNull()
+
+    const withFocus = StatusRule({ ...narrowProps, focusView: true })
+    expect(textContent(withFocus)).toContain('◉ focus')
+    expect(findComponentByName(withFocus, 'SessionDuration')).toBeNull()
   })
 })

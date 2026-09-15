@@ -1,6 +1,7 @@
 import { usageBarsText } from '../../../components/overlayPrimitives.js'
 import { introMsg, toTranscriptMessages } from '../../../domain/messages.js'
 import { sessionScopedModelArg, TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
+import { replaceUsageStable } from '../../../domain/usage.js'
 import type {
   BackgroundStartResponse,
   ConfigGetValueResponse,
@@ -257,7 +258,7 @@ export const sessionCommands: SlashCommand[] = [
             }
 
             if (r.usage) {
-              patchUiState(state => ({ ...state, usage: { ...state.usage, ...r.usage } }))
+              patchUiState(state => ({ ...state, usage: replaceUsageStable(state.usage, r.usage) }))
             }
 
             if (r.summary?.headline) {

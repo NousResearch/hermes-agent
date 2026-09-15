@@ -446,6 +446,10 @@ class TestKeylessFailover:
     def _throttled(self, vendor):
         return {"success": False, "error": f"Keyless {vendor} search failed: free MCP rate limit."}
 
+    def _empty(self):
+        """What a throttling anonymous free tier returns: 200 with a parseable empty page."""
+        return {"success": True, "data": {"web": []}}
+
     def _pin(self, monkeypatch, name):
         """Pin *name* so the ring starts there deterministically."""
         monkeypatch.setattr(keyless_mcp, "_vendor_pinned", lambda n: n == name)
@@ -472,6 +476,71 @@ class TestKeylessFailover:
         out = keyless_mcp.search_with_failover("exa", "q")
         assert out["success"] is False
         assert not called  # peer never tried
+
+    def test_search_fails_over_on_empty_result_page(self, monkeypatch):
+        # Regression: the anonymous tiers throttle by answering 200 with a
+        # parseable "no results" page. Nothing raises, so the walk used to
+        # accept it and the caller got zero hits while healthy vendors sat idle.
+        self._pin(monkeypatch, "exa")
+        monkeypatch.setitem(keyless_mcp._KEYLESS_SEARCHERS, "exa", lambda q, l: self._empty())
+        monkeypatch.setitem(keyless_mcp._KEYLESS_SEARCHERS, "parallel", lambda q, l: self._ok("parallel"))
+        out = keyless_mcp.search_with_failover("exa", "q")
+        assert out["success"] is True
+        assert out["data"]["web"]
+        assert out["data"]["served_by"] == "parallel"
+
+    def test_search_walks_past_multiple_empty_result_pages(self, monkeypatch):
+        self._pin(monkeypatch, "exa")
+        for vendor in ("exa", "parallel"):
+            monkeypatch.setitem(keyless_mcp._KEYLESS_SEARCHERS, vendor, lambda q, l: self._empty())
+        monkeypatch.setitem(keyless_mcp._KEYLESS_SEARCHERS, "firecrawl", lambda q, l: self._ok("firecrawl"))
+        out = keyless_mcp.search_with_failover("exa", "q")
+        assert out["success"] is True
+        assert out["data"]["served_by"] == "firecrawl"
+
+    def test_search_all_vendors_empty_returns_empty_not_error(self, monkeypatch):
+        # Every vendor genuinely has nothing for this query: return the empty
+        # page as a success, never a fabricated throttle error.
+        self._pin(monkeypatch, "exa")
+        for vendor in keyless_mcp._KEYLESS_RING:
+            monkeypatch.setitem(keyless_mcp._KEYLESS_SEARCHERS, vendor, lambda q, l: self._empty())
+        out = keyless_mcp.search_with_failover("exa", "q")
+        assert out["success"] is True
+        assert out["data"]["web"] == []
+        assert "error" not in out
+
+    def test_search_first_vendor_empty_second_stops_not_throttled(self, monkeypatch):
+        # Mixed ring: vendor 1 returns an empty page, vendor 2 fails for a
+        # request-shaped reason — the walk stops there, it does not keep going.
+        self._pin(monkeypatch, "exa")
+        monkeypatch.setitem(keyless_mcp._KEYLESS_SEARCHERS, "exa", lambda q, l: self._empty())
+        monkeypatch.setitem(
+            keyless_mcp._KEYLESS_SEARCHERS, "parallel",
+            lambda q, l: {"success": False, "error": "invalid request: query missing"},
+        )
+        called = []
+        monkeypatch.setitem(
+            keyless_mcp._KEYLESS_SEARCHERS, "firecrawl",
+            lambda q, l: called.append(1) or self._ok("firecrawl"),
+        )
+        out = keyless_mcp.search_with_failover("exa", "q")
+        assert out["success"] is False
+        assert not called
+
+    def test_search_empty_then_throttled_reports_the_served_answer(self, monkeypatch):
+        # Vendors that answered "no results" outrank a later vendor's throttle:
+        # the query was served, so never claim every vendor was throttled.
+        self._pin(monkeypatch, "exa")
+        monkeypatch.setitem(keyless_mcp._KEYLESS_SEARCHERS, "exa", lambda q, l: self._empty())
+        for vendor in ("parallel", "firecrawl", "keenable"):
+            monkeypatch.setitem(
+                keyless_mcp._KEYLESS_SEARCHERS, vendor,
+                lambda q, l, v=vendor: self._throttled(v),
+            )
+        out = keyless_mcp.search_with_failover("exa", "q")
+        assert out["success"] is True
+        assert out["data"]["web"] == []
+        assert "throttled" not in out.get("error", "")
 
     def test_search_all_throttled_reports_ring(self, monkeypatch):
         self._pin(monkeypatch, "exa")

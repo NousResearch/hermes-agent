@@ -1336,6 +1336,16 @@ class TestExactValueEnvRedaction:
         assert vals1 is vals2  # same list object = cache hit
         assert "gh_token_value_123" in vals1
 
+    def test_values_below_min_length_are_not_loaded(self, tmp_path, monkeypatch):
+        self._write_env(tmp_path, monkeypatch, [
+            "API_KEY=shortvalue",
+            "API_SECRET=long_enough_secret_value",
+        ])
+        from agent.redact import _load_env_secret_values
+        vals = _load_env_secret_values()
+        assert "shortvalue" not in vals
+        assert "long_enough_secret_value" in vals
+
     # -- _redact_env_secret_values ---------------------------------------------
 
     def test_masks_exact_value(self, tmp_path, monkeypatch):
@@ -1362,14 +1372,14 @@ class TestExactValueEnvRedaction:
 
     def test_longest_first_prevents_prefix_residue(self, tmp_path, monkeypatch):
         self._write_env(tmp_path, monkeypatch, [
-            "API_KEY=abcdef",
-            "API_SECRET=abc",
+            "API_KEY=abcdefghijklmnop",
+            "API_SECRET=abcdefghijkl",
         ])
         from agent.redact import _redact_env_secret_values
-        out = _redact_env_secret_values("value abcdef end")
+        out = _redact_env_secret_values("value abcdefghijklmnop end")
         assert out == "value «redacted-secret» end"
-        # "abc" would have matched first and left "def" residue without
-        # longest-first ordering.
+        # "abcdefghijkl" is a prefix of "abcdefghijklmnop": longest-first
+        # replaces the longer value whole, leaving no residual suffix.
 
     def test_empty_text_returns_unchanged(self, tmp_path, monkeypatch):
         self._write_env(tmp_path, monkeypatch, [

@@ -85,8 +85,10 @@ def redact_registered_vault_values(text: str) -> str:
 # it loads the exact values of .env variables whose NAME matches a secret
 # keyword (TOKEN, PASSWORD, SECRET, KEY, CREDENTIAL, AUTH, ...), then replaces
 # every occurrence with a label-free sentinel.  Because the match is an exact
-# literal, there is zero risk of a false positive on source-code fixtures
-# (``MAX_TOKENS=100``), so it runs independently of the ``code_file`` gate.
+# literal, a source-code fixture (``MAX_TOKENS=100``) is masked only when that
+# exact value is itself stored in .env under a secret name; the length floor
+# below excludes short values, so the pass runs independently of the
+# ``code_file`` gate.
 
 # Keyword-matching regex for env-var NAMES that identify a secret.
 # Delimited by underscores so bare USER / ADDRESS / URL / HOST / INSTANCE /
@@ -97,6 +99,11 @@ _SECRET_NAME_RE = re.compile(
     r"(?:_|$)",
     re.IGNORECASE,
 )
+
+# Values shorter than this are not loaded: a short value is a common substring
+# (e.g. "100", "abc") that would mask unrelated text everywhere it appears.
+# 12 mirrors the floor in mask_secret; a real secret is almost always longer.
+_MIN_SECRET_VALUE_LENGTH = 12
 
 
 def _secret_name_pattern() -> "re.Pattern[str]":
@@ -143,8 +150,9 @@ def _load_env_secret_values() -> list[str]:
     Reads ``<HERMES_HOME>/.env`` through the official parser
     (``agent.secret_scope.load_env_file``) and keeps every value whose NAME
     matches the secret-name matcher (``_secret_name_pattern()``, which honors
-    the ``security.secret_name_pattern`` config override).  Values are never
-    logged or displayed.  Results are cached per profile home.
+    the ``security.secret_name_pattern`` config override).  Values shorter than
+    ``_MIN_SECRET_VALUE_LENGTH`` are skipped.  Values are never logged or
+    displayed.  Results are cached per profile home.
     """
     from hermes_constants import get_hermes_home
     home = str(get_hermes_home())
@@ -166,6 +174,13 @@ def _load_env_secret_values() -> list[str]:
     pattern = _secret_name_pattern()
     for name, value in env.items():
         if not value or not isinstance(value, str):
+            continue
+        if len(value) < _MIN_SECRET_VALUE_LENGTH:
+            logger.debug(
+                "exact-value redaction: skipping %s (shorter than %d chars)",
+                name,
+                _MIN_SECRET_VALUE_LENGTH,
+            )
             continue
         if pattern.search(name):
             values.append(value)
@@ -814,8 +829,9 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         return text
 
     # Exact-value redaction of .env secrets runs regardless of the code_file
-    # gate: it matches literal secret values, so a source-code fixture like
-    # ``MAX_TOKENS=100`` or ``"apiKey": "test"`` can never be a false positive.
+    # gate: it matches literal secret values, and the length floor excludes
+    # short values that would otherwise over-match code fixtures such as
+    # ``MAX_TOKENS=100``.
     text = _redact_env_secret_values(text)
 
     code_file = code_file or file_read

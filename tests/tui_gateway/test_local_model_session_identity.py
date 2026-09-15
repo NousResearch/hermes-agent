@@ -34,10 +34,10 @@ def test_live_local_identity_survives_new_chat_and_resume(local_route):
                             session_id=session["session_key"])
     # The renderer carries these two fields into the next session.create.
     info = server._session_info(agent, session)
-    assert info["provider"] == "llamacpp"
-    assert info["model"] == model
+    assert info.provider == "llamacpp"
+    assert info.model == model
     next_model, next_runtime = server._resolve_agent_model_runtime(
-        {"model": info["model"], "provider": info["provider"]}, None)
+        {"model": info.model, "provider": info.provider}, None)
     assert next_model == model and next_runtime["base_url"] == route["base_url"]
     assert next_runtime["api_key"] == route["api_key"]
     persisted = server._runtime_model_config(agent)
@@ -54,7 +54,7 @@ def test_live_local_identity_survives_new_chat_and_resume(local_route):
         assert restored["api_key"] == route["api_key"]
     # Pending picks and compute-host mirrors still own the reported identity.
     session["pending_model_switch"] = {"display_model": "claude-test", "display_provider": "anthropic"}
-    assert server._session_info(agent, session)["provider"] == "anthropic"
+    assert server._session_info(agent, session).provider == "anthropic"
 
 
 def test_session_info_recovers_identity_from_the_owning_profile(tmp_path, monkeypatch):
@@ -81,16 +81,16 @@ def test_session_info_recovers_identity_from_the_owning_profile(tmp_path, monkey
                             reasoning_config=None, service_tier=None, session_id="profile-identity")
     session = {"cwd": str(tmp_path), "session_key": "profile-identity", "profile_home": str(secondary)}
     # Broadcast/resume can publish metadata outside the session's profile scope.
-    assert server._session_info(agent, session)["provider"] == "custom:secondary-route"
+    assert server._session_info(agent, session).provider == "custom:secondary-route"
     assert get_hermes_home() == launch
     # A launch-profile session must also ignore an ambient secondary-profile scope.
     with server._profile_build_scope(secondary):
-        assert server._session_info(agent, {**session, "profile_home": None})["provider"] == "custom:launch-route"
+        assert server._session_info(agent, {**session, "profile_home": None}).provider == "custom:launch-route"
         assert get_hermes_home() == secondary
     assert get_hermes_home() == launch
     # Remote compute metadata remains authoritative; never reinterpret it using local profiles.
     session["_metadata_mirror"] = {"model": "remote-model", "provider": "custom:remote-route"}
-    assert server._session_info(agent, session)["provider"] == "custom:remote-route"
+    assert server._session_info(agent, session).provider == "custom:remote-route"
 
 
 def test_local_identity_never_claims_an_unrelated_endpoint(local_route):

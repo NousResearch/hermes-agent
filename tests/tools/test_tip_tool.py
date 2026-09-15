@@ -14,7 +14,8 @@ def emitted(monkeypatch):
     sent = []
 
     def _emit(event, payload):
-        sent.append((event, payload))
+        # The bridge carries a closed TipShowPayload; record its wire keys (unset fields dropped).
+        sent.append((event, payload.model_dump(exclude_none=True)))
         return True
 
     monkeypatch.setattr(tt.desktop_ui, "emit", _emit)

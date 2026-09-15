@@ -27,6 +27,7 @@ import pytest
 
 import hermes_state
 from hermes_state import SessionDB
+from tui_gateway.contracts.common import SessionLiveInfo
 
 
 @pytest.fixture
@@ -155,7 +156,7 @@ def test_deferred_build_fails_closed_when_profile_store_unopenable(homes, monkey
         assert session.get("agent") is None
         assert "profile session store unavailable" in str(session.get("agent_error"))
         assert any(
-            evt == "error" and "could not start the assistant" in str((payload or {}).get("message"))
+            evt == "error" and "could not start the assistant" in str(getattr(payload, "message", None))
             for evt, _s, payload in events
         )
         # And nothing bled into the launch store.
@@ -187,7 +188,7 @@ def test_init_session_skips_launch_db_when_profile_store_unopenable(homes, monke
     monkeypatch.setattr(server, "_start_notification_poller", lambda _sid, _s: threading.Event())
     monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **kw: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
-    monkeypatch.setattr(server, "_session_info", lambda _agent, _s=None: {})
+    monkeypatch.setattr(server, "_session_info", lambda _agent, _s=None: SessionLiveInfo())
     monkeypatch.setattr(server, "_schedule_mcp_late_refresh", lambda _sid, _agent: None)
     monkeypatch.setattr(server, "_register_session_cwd", lambda _s: None)
     monkeypatch.setattr(server, "_load_show_reasoning", lambda: False)

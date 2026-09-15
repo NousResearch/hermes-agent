@@ -13,13 +13,22 @@ import pytest
 
 from tools.bot_relay import DeliveryAuthor
 from tui_gateway import server as srv
+from tui_gateway.contracts.common import Usage
+from tui_gateway.contracts.prompt_voice import PromptSubmitParams, PromptSubmitResult
 
 AUTHOR = {"id": "bot:coder", "name": "coder", "is_bot": True}
 OTHER = {"id": "bot:writer", "name": "writer", "is_bot": True}
 
 
 def _result(resp):
-    return resp["result"] if "result" in resp else resp
+    if isinstance(resp, dict):
+        return resp["result"] if "result" in resp else resp
+    return resp.model_dump(mode="json", exclude_none=True)
+
+
+def _submit(params: dict, author=None):
+    """The trusted in-process path the relay handler uses: the author rides as a keyword, never in params."""
+    return _result(srv.invoke("prompt.submit", PromptSubmitParams(**params), _turn_author=author))
 
 
 def _session(agent=None, **extra):
@@ -54,7 +63,7 @@ def turn_env(monkeypatch, tmp_path):
                  "_tts_stream_begin", "_sync_session_key_after_compress"):
         monkeypatch.setattr(srv, name, lambda *a, **k: None)
     monkeypatch.setattr(srv, "_session_cwd", lambda session: str(tmp_path))
-    monkeypatch.setattr(srv, "_get_usage", lambda agent: {})
+    monkeypatch.setattr(srv, "_get_usage", lambda agent: Usage())
 
 
 def test_live_relay_stamps_the_sender_as_a_delivery_author(tmp_path, monkeypatch):
@@ -62,20 +71,34 @@ def test_live_relay_stamps_the_sender_as_a_delivery_author(tmp_path, monkeypatch
     (home / "profiles" / "ops").mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
     submitted = []
-    monkeypatch.setitem(srv._methods, "prompt.submit", lambda rid, p: submitted.append(p) or srv._ok(rid, {"status": "streaming"}))
+
+    def fake_submit(rid, p, **trusted):
+        submitted.append((p, trusted))
+        return PromptSubmitResult(status="streaming")
+
+    fake_submit._hermes_raw_handler = fake_submit  # what ``srv.invoke`` dispatches to
+    monkeypatch.setitem(srv._methods, "prompt.submit", fake_submit)
     monkeypatch.setattr(srv, "_profile_home", lambda name: home / "profiles" / name)
     monkeypatch.setitem(srv._sessions, "live-ops",
                         {"profile_home": str(home / "profiles" / "ops"), "pending_title": "Bot Chat", "history": []})
 
     _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping", "from_profile": "coder", "from_handle": "coder"}))
 
-    assert submitted == [{"session_id": "live-ops", "text": "ping", "queued": True, "_turn_author": DeliveryAuthor(AUTHOR)}]
+    assert submitted == [(
+        PromptSubmitParams(session_id="live-ops", text="ping", queued=True),
+        {"_turn_author": DeliveryAuthor(AUTHOR)},
+    )]
 
 
 def test_prompt_submit_refuses_a_client_supplied_author(monkeypatch):
     srv._sessions["sid"] = _session()
     try:
+        # Over the wire ``_turn_author`` is not a declared param: the model boundary rejects it.
         resp = srv._methods["prompt.submit"]("r", {"session_id": "sid", "text": "hi", "_turn_author": dict(AUTHOR)})
+        assert resp["error"]["code"] == 4000
+        assert [e["loc"] for e in resp["error"]["data"]] == [["_turn_author"]]
+        # And an in-process caller handing a bare dict (not a DeliveryAuthor) is refused by the handler.
+        resp = _submit({"session_id": "sid", "text": "hi"}, author=dict(AUTHOR))
     finally:
         srv._sessions.pop("sid", None)
     assert resp["error"]["code"] == 4124
@@ -90,9 +113,7 @@ def test_busy_relay_dms_queue_with_their_authors_and_drain_with_them(monkeypatch
     try:
         for text, author in (("ping", AUTHOR), ("hello", OTHER), ("human note", None)):
             params = {"session_id": "sid", "text": text, "queued": True}
-            if author:
-                params["_turn_author"] = DeliveryAuthor(author)
-            assert _result(srv._methods["prompt.submit"]("r", params)) == {"status": "queued"}
+            assert _submit(params, DeliveryAuthor(author) if author else None) == {"status": "queued"}
         # Authored envelopes never merge with each other or with the human's text.
         assert session["queued_prompt"]["turn_author"] == AUTHOR
         assert [e["text"] for e in session["queued_prompts"]] == ["hello", "human note"]
@@ -139,8 +160,8 @@ def test_a_human_prompt_after_a_relayed_dm_runs_without_an_author(turn_env, monk
     session = _session(agent=agent, running=True)
     srv._sessions["sid"] = session
     try:
-        params = {"session_id": "sid", "text": "ping", "queued": True, "_turn_author": DeliveryAuthor(AUTHOR)}
-        assert _result(srv._methods["prompt.submit"]("r", params)) == {"status": "queued"}
+        params = {"session_id": "sid", "text": "ping", "queued": True}
+        assert _submit(params, DeliveryAuthor(AUTHOR)) == {"status": "queued"}
         session["running"] = False
         assert srv._drain_queued_prompt("d", "sid", session) is True
         session["running"] = True

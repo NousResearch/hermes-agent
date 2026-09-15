@@ -329,7 +329,7 @@ class TestNotificationPollerLoopKanbanWiring:
             stop.set()
             thread.join(timeout=5)
 
-        status_texts = [p["text"] for e, p in emits if e == "status.update" and p]
+        status_texts = [p.text for e, p in emits if e == "status.update" and p]
         assert any(tid in t for t in status_texts), status_texts
         assert any(e == "message.start" for e, _ in emits)
         assert any(tid in text for text in submits), submits

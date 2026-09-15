@@ -3,6 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tui_gateway.contracts.events import BrowserControllerCommandPayload
+
 from gateway.browser_control_broker import (
     BROWSER_CONTROL_CAPABILITIES,
     ControllerRejected,
@@ -123,7 +125,17 @@ def test_cloud_event_writer_surfaces_closed_or_failed_transport_immediately():
         def write(self, _frame):
             return False
 
-    frame = {"method": "browser.controller.command", "params": {"command_id": "fixture"}}
+    frame = {
+        "method": "browser.controller.command",
+        "params": BrowserControllerCommandPayload(
+            command_id="fixture",
+            action="controller.noop",
+            arguments={},
+            controller_id=None,
+            browser_profile_id=None,
+            tool_call_id=None,
+        ),
+    }
     with pytest.raises(ConnectionError, match="fixture transport closed"):
         _broker_event_writer(RaisingTransport(), "session-fixture")(frame)
     with pytest.raises(ConnectionError, match="failed"):
@@ -226,7 +238,13 @@ def test_cloud_registration_rejects_unsupported_protocol_or_empty_capabilities(
             },
             transport,
         )
-        assert response["error"]["code"] == 4403
+        # A value of the wrong TYPE is refused by the wire schema (4000, naming the field); a wrong
+        # VALUE reaches the handler and is refused there (4403). Both leave nothing registered.
+        error = response["error"]
+        if error["code"] == 4000:
+            assert [entry["loc"] for entry in error["data"]] == [["protocol_version"]]
+        else:
+            assert error["code"] == 4403
     finally:
         server._sessions.pop("registration-session-fixture", None)
 

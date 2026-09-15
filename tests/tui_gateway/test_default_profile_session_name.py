@@ -25,7 +25,7 @@ def test_default_home_aliases_are_reported_as_default(tmp_path, monkeypatch):
 
     for alias in (default_home.name, "hermes"):
         assert server._response_profile_name(alias) == "default"
-    assert server._session_info(None, {"profile_home": str(default_home)})["profile_name"] == "default"
+    assert server._session_info(None, {"profile_home": str(default_home)}).profile_name == "default"
     # "hermes" is a legal profile id: a REAL named profile of that name is never swallowed by the alias.
     (default_home / "profiles" / "hermes").mkdir(parents=True)
     assert server._response_profile_name("hermes") == "hermes"
@@ -45,7 +45,7 @@ def test_profile_home_resolution_stamps_default_rows(tmp_path, monkeypatch):
 
     assert profile_name_for_home(default_home) == "default"
     assert profile_name_for_home(named_home) == "writer"
-    assert server._session_info(None, {"profile_home": str(named_home)})["profile_name"] == "writer"
+    assert server._session_info(None, {"profile_home": str(named_home)}).profile_name == "writer"
 
     class CaptureDB:
         profile_name = None
@@ -104,8 +104,8 @@ def test_custom_default_root_real_session_db_owner_stamping(tmp_path, monkeypatc
     # 1. Custom default root path resolution
     assert profile_name_for_home(default_home) == "default"
     assert profile_name_for_home(launch_home) == "worker"
-    assert server._session_info(None, {"profile_home": str(default_home)})["profile_name"] == "default"
-    assert server._session_info(None, {"profile_home": str(launch_home)})["profile_name"] == "worker"
+    assert server._session_info(None, {"profile_home": str(default_home)}).profile_name == "default"
+    assert server._session_info(None, {"profile_home": str(launch_home)}).profile_name == "worker"
 
     # 2. Real SessionDB owner stamping
     with SessionDB(default_home / "state.db") as db:

@@ -72,7 +72,11 @@ def test_every_surface_honours_preview_without_compressing(surface, monkeypatch)
         reply = asyncio.run(gw._handle_compress_command_inner(event))
         assert "Preview" in reply
     elif surface == "tui":
+        import tui_gateway.server as tui_server
+        from tui_gateway.contracts.common import Usage
         from tui_gateway.server import _compress_session_history
+        # The preview path still reports usage as a closed model; a MagicMock agent has no real counters.
+        monkeypatch.setattr(tui_server, "_get_usage", lambda _agent: Usage())
         session = {"agent": agent, "history": history, "history_lock": threading.Lock(), "history_version": 3}
         assert _compress_session_history(session, "--preview")[0] == 0
         assert session["history"] == frozen and session["history_version"] == 3

@@ -179,8 +179,8 @@ def test_settled_session_info_reports_the_worktree_branch(
 ):
     """End of turn: the emitted session.info is what the desktop follows."""
     _, worktree = repo_with_worktree
-    emitted: list[tuple[str, str, dict]] = []
-    monkeypatch.setattr(server, "_emit", lambda ev, sid, payload=None: emitted.append((ev, sid, payload or {})))
+    emitted: list[tuple[str, str, object]] = []
+    monkeypatch.setattr(server, "_emit", lambda ev, sid, payload=None: emitted.append((ev, sid, payload)))
     terminal_tool.record_session_cwd(session["session_key"], str(worktree))
 
     server._emit_settled_session_info("sid-1", session, agent=None)
@@ -188,8 +188,9 @@ def test_settled_session_info_reports_the_worktree_branch(
     assert len(emitted) == 1
     event, sid, payload = emitted[0]
     assert (event, sid) == ("session.info", "sid-1")
-    assert payload["cwd"] == str(worktree)
-    assert payload["branch"] == "feature"
+    assert isinstance(payload, server.SessionLiveInfo)
+    assert payload.cwd == str(worktree)
+    assert payload.branch == "feature"
 
 
 def test_reconcile_ignores_a_foreign_sessions_record(session, repo_with_worktree):

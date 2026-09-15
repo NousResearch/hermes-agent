@@ -9,11 +9,11 @@ import pytest
 
 from tui_gateway import server, server_requests
 from tui_gateway.contracts import registry as contracts
-from tui_gateway.contracts.base import Params, Payload, Result
+from tui_gateway.contracts.base import MethodParams, Payload, Result
 from tui_gateway.contracts.server_requests import EmptyRequestParams
 
 
-class _DispatchParams(Params):
+class _DispatchParams(MethodParams):
     count: int
 
 

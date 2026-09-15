@@ -15,6 +15,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tui_gateway.contracts.common import SessionLiveInfo
+from tui_gateway.contracts.events import ReviewSummaryPayload
+
 
 @pytest.fixture()
 def server():
@@ -54,7 +57,7 @@ def test_init_session_attaches_background_review_callback(server, monkeypatch):
     monkeypatch.setattr(server, "_SlashWorker", lambda *a, **kw: object())
     monkeypatch.setattr(server, "_wire_callbacks", lambda sid: None)
     monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **kw: None)
-    monkeypatch.setattr(server, "_session_info", lambda agent, session=None: {"model": "m"})
+    monkeypatch.setattr(server, "_session_info", lambda agent, session=None: SessionLiveInfo(model="m"))
     monkeypatch.setattr(server, "_load_show_reasoning", lambda: False)
     monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "all")
 
@@ -94,9 +97,9 @@ def test_init_session_attaches_background_review_callback(server, monkeypatch):
     assert len(matched) == 1, captured_emits
     event, sid, payload = matched[0]
     assert sid == "sid-abc"
-    assert payload == {
-        "text": "💾 Self-improvement review: Skill 'hermes-release' patched"
-    }
+    assert payload == ReviewSummaryPayload(
+        text="💾 Self-improvement review: Skill 'hermes-release' patched"
+    )
 
 
 def test_review_summary_callback_survives_agent_without_attribute(server, monkeypatch):
@@ -106,7 +109,7 @@ def test_review_summary_callback_survives_agent_without_attribute(server, monkey
     monkeypatch.setattr(server, "_SlashWorker", lambda *a, **kw: object())
     monkeypatch.setattr(server, "_wire_callbacks", lambda sid: None)
     monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **kw: None)
-    monkeypatch.setattr(server, "_session_info", lambda agent, session=None: {"model": "m"})
+    monkeypatch.setattr(server, "_session_info", lambda agent, session=None: SessionLiveInfo(model="m"))
     monkeypatch.setattr(server, "_load_show_reasoning", lambda: False)
     monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "all")
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)

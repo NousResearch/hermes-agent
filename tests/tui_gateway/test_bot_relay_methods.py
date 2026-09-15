@@ -19,6 +19,7 @@ import pytest
 import tui_gateway.server as srv
 from hermes_cli.dashboard_auth.ws_tickets import INTERNAL_PROVIDER, INTERNAL_USER_ID
 from tools import bot_relay
+from tui_gateway.contracts.prompt_voice import PromptSubmitResult
 
 
 @pytest.fixture
@@ -145,9 +146,13 @@ def test_deliver_lands_in_live_bot_chat_instead_of_subprocess(home, monkeypatch)
         return _Proc()
 
     monkeypatch.setattr("subprocess.run", _fake_run)
-    monkeypatch.setitem(
-        srv._methods, "prompt.submit", lambda rid, p: submitted.append(p) or srv._ok(rid, {"status": "streaming"})
-    )
+    # The relay reaches prompt.submit through ``srv.invoke`` (trusted in-process path), which
+    # calls the raw handler hung off the registered wrapper; register a typed double the same way.
+    def _fake_submit(rid, p, **_trusted):
+        submitted.append(p.model_dump(exclude_none=True))
+        return PromptSubmitResult(status="streaming")
+
+    monkeypatch.setattr(srv._methods["prompt.submit"], "_hermes_raw_handler", _fake_submit)
     monkeypatch.setattr(srv, "_profile_home", lambda name: home / "profiles" / name)
     monkeypatch.setitem(
         srv._sessions,

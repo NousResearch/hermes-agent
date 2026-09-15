@@ -34,6 +34,8 @@ import types
 import pytest
 
 from tui_gateway import server
+from tui_gateway.contracts.common import SessionLiveInfo
+from tui_gateway.contracts.sessions import LiveSessionSnapshot
 
 
 class _RecordingDB:
@@ -203,7 +205,8 @@ def test_resume_closes_profile_db_on_live_session_fast_path(profile_dbs, monkeyp
     monkeypatch.setattr(
         server,
         "_live_session_payload",
-        lambda sid, session, **_k: {"session_id": sid, "message_count": 0, "messages": [], "info": {}},
+        lambda sid, session, **_k: LiveSessionSnapshot(
+            session_id=sid, message_count=0, messages=[], info=SessionLiveInfo()),
     )
     monkeypatch.setattr(server, "_child_run_active", lambda _key: False)
 

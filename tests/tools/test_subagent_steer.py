@@ -16,6 +16,36 @@ from tools.delegate_tool import (
     _unregister_subagent,
     steer_subagent,
 )
+from tui_gateway.contracts.base import MethodParams, Result
+from tui_gateway.contracts.registry import method as _declare_method
+
+
+# Test-double RPC methods registered through the real wrapper (``server.register_method``) so they
+# take a validated params model and return a Result, like every production handler. Declared once at
+# module level: the contract registry rejects duplicate names.
+class _AuthorityProbeParams(MethodParams):
+    session_id: str | None = None
+    # Spoof keys a caller may try to smuggle; the handler must never read them.
+    owner_transport: str | None = None
+    owner_session_record: str | None = None
+
+
+class _AuthorityProbeResult(Result):
+    transport_matches: bool
+    record_matches: bool
+
+
+class _EmptyParams(MethodParams):
+    pass
+
+
+class _OkResult(Result):
+    ok: bool
+
+
+_declare_method("test.capture-steer-authority", params=_AuthorityProbeParams, result=_AuthorityProbeResult)
+_declare_method("test.capture-delegate-authority", params=_AuthorityProbeParams, result=_AuthorityProbeResult)
+_declare_method("test.unrelated-query", params=_EmptyParams, result=_OkResult)
 
 
 class _StubAgent:
@@ -381,7 +411,7 @@ class TestSubagentSteerRPC:
         assert envelope["error"]["code"] == 4000
 
     def test_empty_text_is_4002(self):
-        envelope = self._call({"subagent_id": "sid-rpc-1", "text": "   "})
+        envelope = self._call({"session_id": "owner-session", "subagent_id": "sid-rpc-1", "text": "   "})
         assert envelope["error"]["code"] == 4002
 
     def test_live_child_queues_and_receives_text(self):
@@ -584,15 +614,12 @@ class TestSubagentSteerRPC:
 
         def capture(rid, _params):
             authority = srv._current_session_steer_authority("owner-session")
-            return srv._ok(
-                rid,
-                {
-                    "transport_matches": authority[0] is owner_transport,
-                    "record_matches": authority[1] is owner_record,
-                },
+            return _AuthorityProbeResult(
+                transport_matches=authority[0] is owner_transport,
+                record_matches=authority[1] is owner_record,
             )
 
-        srv._methods["test.capture-steer-authority"] = capture
+        srv.register_method("test.capture-steer-authority", capture)
         try:
             envelope = srv.dispatch(
                 {
@@ -631,15 +658,12 @@ class TestSubagentSteerRPC:
             transport, record = delegate_tool._capture_gateway_steer_authority(
                 "owner-session"
             )
-            return srv._ok(
-                rid,
-                {
-                    "transport_matches": transport is owner_transport,
-                    "record_matches": record is owner_record,
-                },
+            return _AuthorityProbeResult(
+                transport_matches=transport is owner_transport,
+                record_matches=record is owner_record,
             )
 
-        srv._methods["test.capture-delegate-authority"] = capture
+        srv.register_method("test.capture-delegate-authority", capture)
         try:
             envelope = srv.dispatch(
                 {
@@ -718,7 +742,8 @@ class TestSubagentSteerRPC:
             # The wire contract refuses unknown keys outright, so a forged runtime artifact never
             # reaches the handler (before contracts: silently ignored, steer still queued).
             assert envelope["error"]["code"] == 4000
-            assert "owner_transport" in envelope["error"]["message"]
+            rejected_keys = {loc for item in envelope["error"]["data"] for loc in item["loc"]}
+            assert "owner_transport" in rejected_keys, envelope["error"]
             assert agent.steered == []
         finally:
             _unregister_subagent("sid-rpc-param-spoof")
@@ -821,9 +846,7 @@ class TestSubagentSteerRPC:
             owner_transport=owner_transport,
             owner_session_record=owner_record,
         )
-        srv._methods["test.unrelated-query"] = lambda rid, _params: srv._ok(
-            rid, {"ok": True}
-        )
+        srv.register_method("test.unrelated-query", lambda rid, _params: _OkResult(ok=True))
         try:
             assert srv.dispatch(
                 {"id": 8, "method": "test.unrelated-query", "params": {}},
@@ -879,7 +902,10 @@ class TestSubagentSteerRPC:
             envelope = self._call(
                 {"subagent_id": "sid-rpc-no-caller", "text": "identity missing"}
             )
-            assert envelope["error"]["code"] == 4001
+            # ``session_id`` is a required param of the wire contract: a caller without a session
+            # identity is refused at the shape boundary (4000), before the handler runs.
+            assert envelope["error"]["code"] == 4000
+            assert any("session_id" in item["loc"] for item in envelope["error"]["data"])
             assert agent.steered == []
         finally:
             _unregister_subagent("sid-rpc-no-caller")

@@ -42,15 +42,15 @@ class TestSessionInfoReasoningEffort:
 
     def test_disabled_reports_none(self) -> None:
         info = _session_info(_agent({"enabled": False}))
-        assert info["reasoning_effort"] == "none"
+        assert info.reasoning_effort == "none"
 
     def test_enabled_reports_effort(self) -> None:
         info = _session_info(_agent({"enabled": True, "effort": "high"}))
-        assert info["reasoning_effort"] == "high"
+        assert info.reasoning_effort == "high"
 
     def test_unset_reports_empty(self) -> None:
         info = _session_info(_agent(None))
-        assert info["reasoning_effort"] == ""
+        assert info.reasoning_effort == ""
 
 
 class TestConfigSetReasoningSessionScope:

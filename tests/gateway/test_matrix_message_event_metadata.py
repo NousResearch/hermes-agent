@@ -290,3 +290,19 @@ async def test_reply_with_explicit_mention_still_strips_it_from_reply_text(monke
     assert msg.reply_to_author_id == "@carol:example.org"
     assert msg.reply_to_text == "original question"
     assert msg.text == "because reasons"
+
+
+@pytest.mark.asyncio
+async def test_plain_blockquote_without_reply_is_stripped_whole(monkeypatch):
+    """The quote exemption keys on m.in_reply_to, not on a leading ``> ``: a hand-typed
+    blockquote mentioning the bot in a non-reply message must not reach the agent raw."""
+    adapter = _make_adapter(require_mention=True, monkeypatch=monkeypatch)
+    adapter._startup_ts = time.time() - 10
+
+    event = _make_event("> @hermes:example.org please summarise\n\nthanks", event_id="$evt_quote")
+    await adapter._on_room_message(event)
+
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.reply_to_message_id is None
+    assert "@hermes:example.org" not in msg.text
+    assert "thanks" in msg.text

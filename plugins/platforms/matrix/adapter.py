@@ -2025,9 +2025,13 @@ class MatrixAdapter(BasePlatformAdapter):
             # Strip the mention from the reply text only: the quote block carries the
             # ``> <@bot:srv> ...`` reply pill, which _extract_reply_context parses later
             # for reply_to_author_id. A whole-body replace rewrote the pill to ``> <>``
-            # and silently dropped the replied-to author (#111233).
-            quote_block, reply_text = _split_reply_fallback(body)
-            body = quote_block + self._strip_mention(reply_text)
+            # and silently dropped the replied-to author (#111233). Only a real reply carries a
+            # pill; a hand-typed blockquote in a plain message is stripped whole as before.
+            if relates_to.get("m.in_reply_to"):
+                quote_block, reply_text = _split_reply_fallback(body)
+                body = quote_block + self._strip_mention(reply_text)
+            else:
+                body = self._strip_mention(body)
         # Real thread roots are preserved above; synthetic roots (this event) follow policy: DM
         # @mention threads / DM auto-thread, or room auto-thread unless session_scope pins the room.
         if not thread_id:

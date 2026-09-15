@@ -8,6 +8,8 @@ import sys
 import time
 from typing import Optional, Sequence
 
+from hermes_cli.pty_executor import get_pty_executor
+
 try:
     from winpty import PtyProcess  # type: ignore
     _PTY_AVAILABLE = sys.platform.startswith("win")
@@ -126,7 +128,11 @@ class WinPtyBridge:
         if not data:
             return True
         loop = asyncio.get_running_loop()
-        write_future = loop.run_in_executor(None, self._write_blocking, data)
+        # Dedicated PTY pool: this worker can stay parked inside pywinpty after
+        # terminate() (see _stop_stalled_write), so a leak here must not consume
+        # default-executor threads the dashboard's control-plane routes need
+        # (#95559 — starved /api/sessions/{id}/messages).
+        write_future = loop.run_in_executor(get_pty_executor(), self._write_blocking, data)
         try:
             return await asyncio.wait_for(
                 asyncio.shield(write_future),
@@ -152,7 +158,7 @@ class WinPtyBridge:
 
     async def _stop_stalled_write(self, write_future: asyncio.Future) -> None:
         """Close ConPTY and reap the worker that was blocked in ``write``."""
-        await asyncio.to_thread(self.close)
+        await asyncio.get_running_loop().run_in_executor(get_pty_executor(), self.close)
         try:
             await asyncio.wait_for(
                 asyncio.shield(write_future),

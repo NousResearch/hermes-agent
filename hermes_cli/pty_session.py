@@ -10,6 +10,8 @@ import asyncio
 import time
 from typing import Callable, Dict, Optional, Tuple
 
+from hermes_cli.pty_executor import get_pty_executor
+
 WS_CLOSE_PROCESS_EXITED = 4410
 WS_CLOSE_SUPERSEDED = 4409
 TUI_FORCE_REDRAW = b"\x0c"
@@ -61,8 +63,12 @@ class PtySession:
 
     async def _drain(self) -> None:
         loop = asyncio.get_running_loop()
+        # The blocking read runs on the dedicated PTY pool, never the default
+        # executor: this loop lives as long as the session, so one default-pool
+        # thread per terminal would starve every ``to_thread`` route (#95559).
+        executor = get_pty_executor()
         while True:
-            chunk = await loop.run_in_executor(None, self.bridge.read, self._read_timeout)
+            chunk = await loop.run_in_executor(executor, self.bridge.read, self._read_timeout)
             if chunk is None:                       # EOF — the agent process exited
                 self.alive = False
                 await _close_ws(self._ws, WS_CLOSE_PROCESS_EXITED)
@@ -133,8 +139,10 @@ class PtySession:
                 pass
         try:
             # bridge.close() joins the child — blocking; keep it off the event loop.
-            # See #53227.
-            await asyncio.to_thread(self.bridge.close)
+            # See #53227. Uses the PTY pool so a wedged close cannot consume a
+            # default-executor thread the control-plane routes need (#95559).
+            await asyncio.get_running_loop().run_in_executor(
+                get_pty_executor(), self.bridge.close)
         except Exception:
             pass
 
@@ -172,8 +180,9 @@ class PtySessionRegistry:
         if len(self._sessions) >= self._max:
             self._reap_one_idle_or_raise()
         # PTY spawn does blocking fork/exec work — keep it off the event loop.
-        # See #53227.
-        bridge = await asyncio.to_thread(spawn)
+        # See #53227. On the PTY pool (#95559): spawn latency must not queue
+        # behind, or steal threads from, the default executor.
+        bridge = await asyncio.get_running_loop().run_in_executor(get_pty_executor(), spawn)
         session = PtySession(key, bridge, buffer_cap=self._buffer_cap, read_timeout=self._read_timeout)
         await session.start()
         self._sessions[key] = session

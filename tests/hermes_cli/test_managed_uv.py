@@ -182,6 +182,21 @@ class TestResolveUv:
             assert resolve_uv() is None
 
 
+class TestPipInstallHint:
+
+    def test_names_the_managed_uv_when_present(self, tmp_path):
+        uv = tmp_path / "bin" / _UV_BINARY_NAME
+        _make_executable(uv)
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
+            from hermes_cli.managed_uv import pip_install_hint
+            assert pip_install_hint("qrcode") == f"{uv} pip install --python {sys.executable} qrcode"
+
+    def test_falls_back_to_bare_uv_when_absent(self, tmp_path):
+        with patch("hermes_cli.managed_uv.get_hermes_home", return_value=tmp_path):
+            from hermes_cli.managed_uv import pip_install_hint
+            assert pip_install_hint("qrcode") == f"uv pip install --python {sys.executable} qrcode"
+
+
 # ---------------------------------------------------------------------------
 # ensure_uv
 # ---------------------------------------------------------------------------

@@ -51,6 +51,15 @@ def resolve_uv() -> Optional[str]:
     return str(p) if p.is_file() and os.access(p, os.X_OK) else None
 
 
+def pip_install_hint(package: str) -> str:
+    """Copy-pasteable command that installs *package* into the running interpreter.
+
+    Names Hermes' own uv when it exists: the installer drops it in ``$HERMES_HOME/bin``
+    without putting that on PATH, so a bare ``uv`` would fail for installer-only users.
+    """
+    return f"{resolve_uv() or 'uv'} pip install --python {sys.executable} {package}"
+
+
 def managed_python_install_dir(project_root: Path | None = None) -> Path:
     """Return the checkout-scoped Python store shared by all profiles."""
     root = Path(project_root) if project_root is not None else _PROJECT_ROOT

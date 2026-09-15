@@ -235,7 +235,7 @@ def _connection_update(operation, change=None):
     server._emit("connection.update", sid, ConnectionUpdatePayload.model_validate({**srv._operation_view(operation), **(change or {})}))
 
 
-def _install_update_hook():
+def _install_update_hook(server):
     """Route every operation change through ``_connection_update``. Idempotent: ``register`` can run
     more than once (reload, tests) and must not stack wrappers."""
     from tools.connectors import operation as op_module
@@ -243,13 +243,15 @@ def _install_update_hook():
     if getattr(op_module.ConnectionOperation, "_update_hook_installed", False):
         return
     op_module.ConnectionOperation._update_hook_installed = True
-    op_module.ConnectionOperation.on_change = staticmethod(srv._connection_update)
+    op_module.ConnectionOperation.on_change = staticmethod(server._connection_update)
 
 
 def register(server):
+    """``server`` is the facade instance registering us; ``srv`` is not bound yet when this module is
+    imported first (its tail import is still running server.py, whose tail calls this)."""
     bind_module(globals(), server)
-    server._LONG_HANDLERS = server._LONG_HANDLERS | srv._CONNECTOR_RPC_METHODS
-    srv._install_update_hook()
+    server._LONG_HANDLERS = server._LONG_HANDLERS | server._CONNECTOR_RPC_METHODS
+    server._install_update_hook(server)
 
 # Bound last, after every definition, so importing this module first (tests, the gateway process)
 # lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.

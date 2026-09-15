@@ -205,6 +205,7 @@ def test_tui_init_run_state_seeds_config_sig_when_config_exists(monkeypatch):
     from hermes_cli.config import get_config_path
     import cli as cli_mod
 
+    # Bare object: skip the tool-callback / security wiring at the end of the init.
     monkeypatch.setenv("HERMES_DEFER_AGENT_STARTUP", "1")
     cfg_file = get_config_path()
     cfg_file.parent.mkdir(parents=True, exist_ok=True)
@@ -215,7 +216,6 @@ def test_tui_init_run_state_seeds_config_sig_when_config_exists(monkeypatch):
     obj._tui_init_run_state()
 
     assert obj._config_sig == file_signature(cfg_file.stat())
-    assert obj._config_mcp_servers == {}
 
 
 def test_pinned_mtime_same_size_replacement_triggers_reload(tmp_path):

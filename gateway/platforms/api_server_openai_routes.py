@@ -7,6 +7,7 @@ module (top-level import = cycle), and lazy lookup keeps ``patch("...api_server.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -500,11 +501,14 @@ class OpenAICompatRoutesMixin:
             model_alias=model_name)
         if selection_error is not None:
             return selection_error
+        # Optional per-request caller identity (X-Hermes-User-*/Chat-*/Thread-Id, or the
+        # OpenAI `user` body field) for multi-user deployments behind one API key.
+        user_identity = self._parse_user_identity_headers(request, body=body)
         run_kwargs = dict(
             user_message=user_message, conversation_history=history,
             ephemeral_system_prompt=system_prompt, session_id=session_id,
             gateway_session_key=gateway_session_key, **agent_overrides, route=route,
-            relay_metadata=relay_metadata,
+            relay_metadata=relay_metadata, user_identity=user_identity,
             # #98619: only an explicitly provided X-Hermes-Session-Id is wake-capable (the
             # header is 403-gated on API_SERVER_KEY, so the wake self-post can authenticate
             # and the client can resume the session by sending it again). A fingerprint-derived
@@ -555,7 +559,7 @@ class OpenAICompatRoutesMixin:
         outcome, err = await self._run_idempotent(
             request, body, _compute_completion, log_label="chat completions",
             fingerprint_keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream"],
-            route="chat_completions",
+            route="chat_completions", user_identity=user_identity,
         )
         if err is not None:
             return err
@@ -571,6 +575,7 @@ class OpenAICompatRoutesMixin:
         response_headers = {"X-Hermes-Session-Id": (provided_session_id or result.get("session_id", session_id))}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
+        response_headers.update(self._identity_response_headers(user_identity))
         # Hard fail (no usable text AND a real failure) -> 502 OpenAI error envelope so SDK
         # clients raise instead of rendering the failure string as message.content.
         if not final_response and (is_failed or is_partial):
@@ -600,7 +605,8 @@ class OpenAICompatRoutesMixin:
 
     async def _run_idempotent(
         self, request: "web.Request", body: Dict[str, Any], compute, *,
-        log_label: str, fingerprint_keys: List[str], route: str) -> tuple:
+        log_label: str, fingerprint_keys: List[str], route: str,
+        user_identity: Optional[Dict[str, str]] = None) -> tuple:
         """Run ``compute()`` once per (principal scope, logical route, Idempotency-Key) + body fingerprint
         -> ``((result, usage), None)`` or ``(None, 500 response)``.
 
@@ -610,6 +616,13 @@ class OpenAICompatRoutesMixin:
         colliding across profiles, or a rotated API_SERVER_KEY, never replays another principal's response.
         ``route`` is the logical endpoint (``/v1/...`` and its ``/p/<profile>/v1/...`` alias are the same
         route), folded into the key because the store keeps the fingerprint only as the slot's value.
+
+        ``user_identity`` extends that namespace below the principal: callers sharing one
+        ``API_SERVER_KEY`` land in the same principal scope, yet identity changes the agent/memory
+        result, so an identical body under two identities must not replay one another's response.
+        Folding it into the key (not the fingerprint) keeps each identity in its own slot, so
+        retries still hit within an identity and neither can evict the other. Identity-less
+        requests keep the unextended key.
         """
         from gateway.platforms.api_server import _error_response, _idem_cache, _make_request_fingerprint
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -617,6 +630,10 @@ class OpenAICompatRoutesMixin:
             if idempotency_key:
                 principal_scope = self._run_idempotency_scope(request)
                 scoped_key = f"{principal_scope}\0{route}\0{idempotency_key}"
+                if user_identity:
+                    identity_scope = hashlib.sha256(
+                        repr(sorted(user_identity.items())).encode("utf-8")).hexdigest()[:16]
+                    scoped_key = f"{scoped_key}\0{identity_scope}"
                 fp = _make_request_fingerprint(body, keys=fingerprint_keys)
                 result, usage = await _idem_cache.get_or_set(scoped_key, fp, compute)
             else:
@@ -857,11 +874,14 @@ class OpenAICompatRoutesMixin:
             model_alias=body.get("model"))
         if selection_error is not None:
             return selection_error
+        # Same optional per-request identity contract as /v1/chat/completions.
+        user_identity = self._parse_user_identity_headers(request, body=body)
         run_kwargs = dict(
             user_message=user_message, conversation_history=conversation_history,
             ephemeral_system_prompt=instructions, session_id=session_id,
             gateway_session_key=gateway_session_key, bind_declared_conversation=_declared_selected,
-            **agent_overrides, route=route, relay_metadata=relay_metadata)
+            **agent_overrides, route=route, relay_metadata=relay_metadata,
+            user_identity=user_identity)
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
 
@@ -894,7 +914,7 @@ class OpenAICompatRoutesMixin:
         outcome, err = await self._run_idempotent(
             request, body, _compute_response, log_label="responses",
             fingerprint_keys=["input", "instructions", "previous_response_id", "conversation", "model", "provider", "model_options", "tools"],
-            route="responses",
+            route="responses", user_identity=user_identity,
         )
         if err is not None:
             return err
@@ -929,6 +949,7 @@ class OpenAICompatRoutesMixin:
         response_headers = {"X-Hermes-Session-Id": _effective_session_id}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
+        response_headers.update(self._identity_response_headers(user_identity))
         return web.json_response(response_data, headers=response_headers)
 
     async def _handle_get_response(self, request: "web.Request") -> "web.Response":

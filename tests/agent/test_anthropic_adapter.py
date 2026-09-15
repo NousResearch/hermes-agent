@@ -996,6 +996,53 @@ class TestBuildAnthropicKwargs:
         assert _supports_fast_mode("claude-haiku-4-5") is False
         assert _supports_fast_mode("") is False
 
+    def test_kimi_coding_endpoint_translates_k3_display_aliases(self):
+        """Kimi's /coding endpoint serves K3 as the bare ``k3`` slug; the ``kimi-k3`` /
+        ``kimi-k3-cot`` display ids 401 with "model id does not exist" there (#105650)."""
+        for display in ("kimi-k3", "kimi-k3-cot", "Kimi-K3"):
+            kwargs = build_anthropic_kwargs(
+                model=display,
+                messages=[{"role": "user", "content": "hi"}],
+                tools=None,
+                max_tokens=64,
+                reasoning_config=None,
+                base_url="https://api.kimi.com/coding",
+            )
+            assert kwargs["model"] == "k3"
+
+    def test_kimi_coding_alias_translation_passes_bare_slug_and_unrelated_models_through(self):
+        kwargs = build_anthropic_kwargs(
+            model="k3",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=64,
+            reasoning_config=None,
+            base_url="https://api.kimi.com/coding",
+        )
+        assert kwargs["model"] == "k3"
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-8",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=64,
+            reasoning_config=None,
+            base_url="https://api.kimi.com/coding",
+        )
+        assert kwargs["model"] == "claude-opus-4-8"
+
+    def test_kimi_coding_alias_translation_is_scoped_to_coding_endpoint(self):
+        """Moonshot/Kimi chat endpoints serve the ``kimi-k3`` name natively — only the
+        /coding endpoint requires the bare ``k3`` slug."""
+        kwargs = build_anthropic_kwargs(
+            model="kimi-k3",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=64,
+            reasoning_config=None,
+            base_url="https://api.moonshot.ai/v1",
+        )
+        assert kwargs["model"] == "kimi-k3"
+
     def test_fable_class_models_route_as_adaptive_thinking(self):
         """Invariant: unknown/new Claude models default to the modern (4.7+)
         contract — adaptive thinking, xhigh-capable, sampling-params-forbidden —

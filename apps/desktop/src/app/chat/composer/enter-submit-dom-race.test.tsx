@@ -30,7 +30,8 @@ function Harness({
   onQueue,
   onCancel,
   onDrain,
-  onSendNow
+  onSendNow,
+  onSteerNow
 }: {
   busy?: boolean
   disabled?: boolean
@@ -40,6 +41,7 @@ function Harness({
   onCancel: () => void
   onDrain: () => void
   onSendNow?: (id: string) => void
+  onSteerNow?: (id: string) => void
 }) {
   const editorRef = useRef<HTMLDivElement>(null)
   const draftRef = useRef('')
@@ -108,7 +110,9 @@ function Harness({
         const head = queued[0]
 
         if (head) {
-          onSendNow?.(head)
+          // Text-only queued strings are steerable; the production handler
+          // falls back to send-now for attachments / slash commands.
+          ;(onSteerNow ?? onSendNow)?.(head)
         }
 
         return
@@ -198,9 +202,10 @@ describe('composer Enter submit — live DOM vs stale composer state (#39630)', 
     expect(onSendNow).not.toHaveBeenCalled()
   })
 
-  it('double-send: an empty Enter while busy with a queued turn sends that turn now', async () => {
+  it('double-send: an empty Enter while busy with a queued turn steers that turn now', async () => {
     const onCancel = vi.fn()
     const onSendNow = vi.fn()
+    const onSteerNow = vi.fn()
 
     const { getByTestId } = render(
       <Harness
@@ -209,6 +214,7 @@ describe('composer Enter submit — live DOM vs stale composer state (#39630)', 
         onDrain={vi.fn()}
         onQueue={vi.fn()}
         onSendNow={onSendNow}
+        onSteerNow={onSteerNow}
         onSubmit={vi.fn()}
         queued={['queued-1', 'queued-2']}
       />
@@ -221,8 +227,9 @@ describe('composer Enter submit — live DOM vs stale composer state (#39630)', 
       fireEvent.keyDown(editor, { key: 'Enter' })
     })
 
-    // Head of the queue, and NOT a bare cancel — send-now promotes + interrupts.
-    expect(onSendNow).toHaveBeenCalledWith('queued-1')
+    // Head of the queue, no interrupt: steer injects into the live turn.
+    expect(onSteerNow).toHaveBeenCalledWith('queued-1')
+    expect(onSendNow).not.toHaveBeenCalled()
     expect(onCancel).not.toHaveBeenCalled()
   })
 

@@ -76,6 +76,9 @@ class PtySession:
                 if ws is not None:
                     await ws.send_bytes(chunk)
             except Exception:
+                # The viewer is gone; nothing else observes this failure (the handler's finally
+                # only runs once ws.receive() sees the disconnect). detach() is a no-op when a
+                # replacement socket attached during the send, so the new viewer keeps its session.
                 self.detach(ws)
 
     async def write(self, ws, data: bytes) -> bool:
@@ -112,6 +115,8 @@ class PtySession:
             try:
                 await ws.send_bytes(snap)
             except Exception:
+                # Client dropped mid-replay; the caller never reaches its writer loop, so undo the
+                # attach here or reap_idle() can never reclaim this PTY (#110849).
                 self.detach(ws)
                 return False
         if force_redraw:

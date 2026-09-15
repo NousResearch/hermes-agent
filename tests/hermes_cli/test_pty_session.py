@@ -66,12 +66,18 @@ class FakeWS:
 
 
 class FailingWS(FakeWS):
-    def __init__(self):
+    """A socket whose client already dropped: every send raises, optionally after a hold."""
+
+    def __init__(self, *, hold=False):
         super().__init__()
         self.send_started = asyncio.Event()
+        self.release = asyncio.Event()
+        self._hold = hold
 
     async def send_bytes(self, data):
         self.send_started.set()
+        if self._hold:
+            await self.release.wait()
         raise RuntimeError("socket closed")
 
 
@@ -90,23 +96,26 @@ async def test_attach_replays_buffer_then_streams_live():
 
 
 @pytest.mark.asyncio
-async def test_failed_replay_detaches_session():
-    from hermes_cli.pty_session import PtySession
+async def test_failed_replay_detaches_session_so_reaper_reclaims_it():
+    """A client dropping mid-replay must not pin the PTY as attached forever (#110849)."""
+    from hermes_cli.pty_session import PtySessionRegistry
 
-    s = PtySession("k", FakeBridge([b""]), buffer_cap=1024, read_timeout=0.01)
+    reg = PtySessionRegistry(ttl=0.0, max_sessions=2, buffer_cap=1024, read_timeout=0.01)
+    bridge = FakeBridge([b""])
+    s, _ = await reg.attach_or_spawn("k", spawn=lambda: bridge)
     s.buffer.append(b"replay")
-    ws = FailingWS()
 
-    assert await s.attach(ws) is False
+    assert await s.attach(FailingWS()) is False
 
     assert s.attached is False
     assert s.last_detached_at is not None
-    assert s._ws is None
-    await s.close()
+    await reg.reap_idle(now=time.monotonic() + 1.0)
+    assert "k" not in reg._sessions
+    assert bridge.closed
 
 
 @pytest.mark.asyncio
-async def test_failed_live_send_detaches_session():
+async def test_drain_send_failure_detaches_current_socket_but_not_a_replacement():
     from hermes_cli.pty_session import PtySession
 
     s = PtySession("k", FakeBridge([b"live"]), buffer_cap=1024, read_timeout=0.01)
@@ -114,10 +123,24 @@ async def test_failed_live_send_detaches_session():
     ws = FailingWS()
     await s.attach(ws)
     await asyncio.wait_for(ws.send_started.wait(), timeout=1)
-
+    await asyncio.sleep(0)
     assert s.attached is False
     assert s.last_detached_at is not None
-    assert s._ws is None
+    await s.close()
+
+    # The failure of a socket superseded mid-send must leave the new viewer attached.
+    s = PtySession("k", FakeBridge([b"live"]), buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    stale = FailingWS(hold=True)
+    await s.attach(stale)
+    await asyncio.wait_for(stale.send_started.wait(), timeout=1)
+    replacement = FakeWS()
+    assert await s.attach(replacement) is True
+    stale.release.set()
+    await asyncio.sleep(0.05)
+    assert s.attached is True
+    assert s._ws is replacement
+    assert s.last_detached_at is None
     await s.close()
 
 

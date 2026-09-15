@@ -110,6 +110,10 @@ _HERMES_GATEWAY_LABEL_RE = re.compile(r"(?i)\bhermes[.\-]?gateway\b")
 _SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})
 _SHELL_OPTIONS_WITH_VALUES = frozenset({"-O", "+O", "-o", "+o"})
 _SHELL_COMMAND_FLAGS = {"-c", "--command"}
+# Recursion shell-tokenizes referenced scripts. Only POSIX-shell source is meaningful to
+# tokenize; feeding Node/Python/Ruby/etc. bundles to shlex generates bogus path tokens that
+# exhaust the scan budget and fail closed on innocent commands. See #78398.
+_SHELL_SHEBANG_RE = re.compile(r"^#!.*\b(?:sh|bash|dash|ksh|zsh)\b", re.IGNORECASE)
 _MAX_REFERENCED_SCRIPT_BYTES = 1024 * 1024
 _MAX_REFERENCED_SCRIPT_DEPTH = 8
 _CONTROL_CHARS = frozenset(";&|()")
@@ -777,6 +781,23 @@ def _has_binary_magic(data: bytes) -> bool:
     return data.startswith(_BINARY_MAGICS)
 
 
+def _is_shell_script(text: str, path: Path) -> bool:
+    """Return True when the file should be shell-tokenized by the recursive walk.
+
+    A non-shell shebang (e.g. ``#!/usr/bin/env node``) is the strongest signal to skip.
+    Without a shebang, conventional shell extensions are trusted; suffixless files are also
+    recursed into so that bare launchers still get scanned. Other extensions (``.py``,
+    ``.js``, ``.rb``, etc.) are skipped because shlexing them produces bogus path tokens.
+    """
+    if not text:
+        return False
+    first_line = text.lstrip("\ufeff").splitlines()[0]
+    if first_line.startswith("#!"):
+        return bool(_SHELL_SHEBANG_RE.match(first_line))
+    suffix = path.suffix.lower()
+    return suffix in ("", ".sh", ".bash", ".zsh", ".ksh")
+
+
 def _read_referenced_script(
     path: Path, *, max_bytes: Optional[int] = None
 ) -> tuple[Optional[str], bool]:
@@ -951,6 +972,11 @@ def _contains_unsafe_gateway_action(
             if unsafe:
                 return True
         if not script_text:
+            continue
+        # The walk shell-tokenizes the file text. Only POSIX-shell source is meaningful to
+        # recurse into; non-shell interpreters generate bogus path tokens from regex literals
+        # and strings and can exhaust the scan budget on a benign command.
+        if not _is_shell_script(script_text, resolved):
             continue
         # Relative references inside a script resolve against that script's directory, not the cwd.
         if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd):

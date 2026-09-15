@@ -1100,6 +1100,14 @@ export function useGatewayBoot({
         return
       }
 
+      // The main process only publishes this for the current backend child;
+      // stale exits from a replacement or teardown never reach this handler.
+      // Recycle immediately so the next connection-applied event re-dials a
+      // fresh local backend instead of leaving the renderer attached to the
+      // descriptor of the process that just died. Keep the toast as a visible
+      // fallback if the automatic recovery itself cannot complete.
+      requestBackendRestart()
+
       // Post-boot: the shell's restart intent recycles a local service via main
       // (or re-dials a remote one) and does not depend on this hook's
       // reconnect gate, unlike reconnectGateway().

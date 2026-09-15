@@ -164,11 +164,11 @@ class LlamaServerSupervisor:
             "--models-autoload",
             "--metrics",          # opt-in flag; supervisor telemetry needs it
             "--slots",            # /slots endpoint is also opt-in; is_idle reads it
-            "--no-webui",
+            "--no-ui",
             "--jinja",
             # Direct I/O on model load bypasses the page cache so a multi-GB load doesn't evict
             # half the OS cache — measured faster on NVMe, and our router bounces reload often.
-            "-dio",
+            "--load-mode", "dio",
         ]
         if self.preset_path and self.preset_path.exists():
             cmd += ["--models-preset", str(self.preset_path)]

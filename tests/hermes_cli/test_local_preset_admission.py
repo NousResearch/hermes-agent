@@ -85,3 +85,27 @@ def test_supervisor_with_presets_does_not_scan_unadmitted_files(tmp_path, monkey
         sup._log_handle.close()
     assert "--models-preset" in calls[0]
     assert "--models-dir" not in calls[0]
+
+
+def test_supervisor_uses_current_llama_server_flags(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    calls = []
+    monkeypatch.setattr(supervisor, "server_binary", lambda p: Path("llama-server"))
+    monkeypatch.setattr(
+        supervisor,
+        "spawn_server",
+        lambda cmd, **kw: (calls.append(cmd) or SimpleNamespace(pid=123), None),
+    )
+    monkeypatch.setattr(supervisor.LlamaServerSupervisor, "_write_state", lambda self: None)
+    sup = supervisor.LlamaServerSupervisor(tmp_path, tmp_path, port=1234)
+    try:
+        sup._spawn()
+    finally:
+        sup._log_handle.close()
+
+    cmd = calls[0]
+    load_mode = cmd.index("--load-mode")
+    assert cmd[load_mode + 1] == "dio"
+    assert "--no-ui" in cmd
+    assert "-dio" not in cmd
+    assert "--no-webui" not in cmd

@@ -3772,6 +3772,7 @@ export const en: Translations = {
     placeholderSendChord: (chord: string) => `${chord} sends`,
     placeholderSendEnterSends: 'Enter sends',
     placeholderSendPause: 'sends once you stop typing',
+    sendHold: 'Sending… Esc to cancel',
     newSessionPlaceholders: [
       'What are we building?',
       'Give Hermes a task',

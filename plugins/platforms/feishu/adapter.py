@@ -1382,9 +1382,14 @@ class FeishuAdapter(BasePlatformAdapter):
             return executor
 
     async def _run_blocking(self, func, *args):
-        """Run a blocking Feishu SDK call on the adapter-owned thread pool."""
+        """Run a blocking Feishu SDK call on the adapter-owned thread pool.
+
+        ``copy_context().run`` mirrors ``asyncio.to_thread``: the worker sees the caller's
+        profile HERMES_HOME override / secret scope (multiplexed dedup flush, thread lookup).
+        """
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._get_sdk_executor(), func, *args)
+        return await loop.run_in_executor(
+            self._get_sdk_executor(), contextvars.copy_context().run, func, *args)
 
     def _shutdown_sdk_executor(self) -> None:
         """Stop the adapter-owned SDK executor without touching the loop default."""

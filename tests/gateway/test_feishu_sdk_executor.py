@@ -98,3 +98,21 @@ async def test_is_duplicate_flush_survives_default_executor_teardown(
     finally:
         loop._default_executor = original_executor
         adapter._shutdown_sdk_executor()
+
+
+@pytest.mark.asyncio
+async def test_run_blocking_propagates_caller_contextvars(tmp_path, monkeypatch):
+    """Call sites moved off asyncio.to_thread must keep seeing the caller's context: a
+    multiplexed profile's HERMES_HOME override is a contextvar, and a worker that lost it
+    would flush dedup state / look up threads under the wrong profile."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from gateway.config import PlatformConfig
+    from hermes_constants import get_hermes_home_override, reset_hermes_home_override, set_hermes_home_override
+
+    adapter = FeishuAdapter(PlatformConfig())
+    token = set_hermes_home_override(str(tmp_path / "profiles" / "secondary"))
+    try:
+        assert await adapter._run_blocking(get_hermes_home_override) == str(tmp_path / "profiles" / "secondary")
+    finally:
+        reset_hermes_home_override(token)
+        adapter._shutdown_sdk_executor()

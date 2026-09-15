@@ -9,7 +9,8 @@ Common CI failure patterns and how to diagnose them from the logs.
 gh run view <RUN_ID> --log-failed
 
 # With curl — download and extract
-curl -sL -H "Authorization: token $GITHUB_TOKEN" \
+GH_AUTH="Authorization: token $GITHUB_TOKEN"
+curl -sL -H "$GH_AUTH" \
   https://api.github.com/repos/$GH_OWNER/$GH_REPO/actions/runs/<RUN_ID>/logs \
   -o /tmp/ci-logs.zip && unzip -o /tmp/ci-logs.zip -d /tmp/ci-logs
 ```

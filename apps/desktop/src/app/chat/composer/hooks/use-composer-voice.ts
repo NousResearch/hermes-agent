@@ -269,6 +269,7 @@ export function useComposerVoice({
     activeToolLabel,
     beforeMicOpen: () => wakePauseBarrierRef.current ?? undefined,
     busy,
+    chatSessionId: () => sessionId ?? null,
     consumePendingResponse,
     enabled: voiceConversationActive && grokEngineActive,
     onFatalError: () => setVoiceConversationActive(false),

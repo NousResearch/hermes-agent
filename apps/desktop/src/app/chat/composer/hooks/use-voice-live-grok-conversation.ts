@@ -17,6 +17,9 @@ interface PendingVoiceResponse {
 }
 
 interface VoiceLiveGrokConversationOptions {
+  /** The open chat's real Hermes session id — the voice session must ride it
+   * (backend routes events + delegation by this id; see GrokVoiceSession.useSessionId). */
+  chatSessionId: () => null | string
   busy: boolean
   enabled: boolean
   onFatalError?: () => void
@@ -48,6 +51,7 @@ interface VoiceLiveGrokConversationOptions {
  */
 export function useVoiceLiveGrokConversation({
   busy,
+  chatSessionId,
   enabled,
   onFatalError,
   onInterrupt,
@@ -79,6 +83,7 @@ export function useVoiceLiveGrokConversation({
   const latest = useRef({
     activeToolLabel,
     beforeMicOpen,
+    chatSessionId,
     onFatalError,
     onInterrupt,
     onStopWord,
@@ -90,6 +95,7 @@ export function useVoiceLiveGrokConversation({
   latest.current = {
     activeToolLabel,
     beforeMicOpen,
+    chatSessionId,
     onFatalError,
     onInterrupt,
     onStopWord,
@@ -224,6 +230,9 @@ export function useVoiceLiveGrokConversation({
     setStatus('thinking')
 
     try {
+      // The voice session must ride the open chat's real Hermes session id —
+      // the backend routes voice.grok.* events and the delegation seam by it.
+      session.useSessionId(latest.current.chatSessionId?.())
       await session.start()
 
       if (sessionRef.current !== session || startEpochRef.current !== epoch) {

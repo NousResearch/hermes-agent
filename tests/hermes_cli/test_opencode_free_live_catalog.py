@@ -221,3 +221,4 @@ class TestOpencodeFreeFollowUps:
         assert "x-preview-f-free" not in _PROVIDER_MODELS["opencode-free"]
         assert "hy3-free" not in _PROVIDER_MODELS["opencode-free"]
         assert "laguna-s-2.1-free" not in _PROVIDER_MODELS["opencode-free"]
+        assert "mimo-v2.5-free" not in _PROVIDER_MODELS["opencode-free"]  # UA-gated 2026-09-14

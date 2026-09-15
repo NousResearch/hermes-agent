@@ -33,7 +33,8 @@ const buildUiState = (): UiState => ({
   sid: null,
   status: 'summoning hermes…',
   statusBar: 'top',
-  statusBarFields: null,
+  // undefined = config not hydrated yet (no filter); see the UiState type.
+  statusBarFields: undefined,
   streaming: true,
   timestamps: false,
   // Last session's resolved theme paints frame one (flash-free boot, like

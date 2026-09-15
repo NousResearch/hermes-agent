@@ -307,7 +307,11 @@ export const applyDisplay = (
     sections: resolveSections(d.sections),
     showReasoning: !!d.show_reasoning,
     statusBar: normalizeStatusBar(d.tui_statusbar),
-    statusBarFields: normalizeStatusBarFields(d.status_bar?.fields),
+    // Only claim "hydrated" when a config payload actually arrived. A failed
+    // config.get (cfg === null) must leave the previous filter untouched
+    // instead of resetting it to "user has not customized" — that reset was
+    // what made a configured display.status_bar.fields filter never stick.
+    ...(cfg ? { statusBarFields: normalizeStatusBarFields(d.status_bar?.fields) } : {}),
     streaming: d.streaming !== false,
     // The SAME key that stamps [HH:MM] on classic-CLI labels (#41531) —
     // no separate TUI knob.

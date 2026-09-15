@@ -492,7 +492,7 @@ export function StatusRule({
   busy,
   compacting = false,
   status,
-  statusBarFields = null,
+  statusBarFields,
   statusColor,
   model,
   modelFast,
@@ -516,23 +516,36 @@ export function StatusRule({
   const segs = statusBarSegments(cols)
 
   // display.status_bar.fields visibility gate (same key + names as the
-  // classic CLI bar). null = user hasn't customized → everything shows.
-  const ok = (name: string) => statusBarFields === null || statusBarFields.has(name)
+  // classic CLI bar). `undefined` (not hydrated yet) and `null` (hydrated,
+  // uncustomized) both mean "no filter → show the default set"; only a Set
+  // filters. Never treat `undefined` as an empty filter — that would blank
+  // the bar for the milliseconds before the first config payload lands.
+  const ok = (name: string) => statusBarFields == null || statusBarFields.has(name)
 
   // On narrow terminals the context read-out collapses to a bare token count
   // (`12k tok`) and the visual fill bar is dropped entirely.
+  // `context_detail` (used/max) and `context_pct` (the % + bar) are SEPARATE
+  // segments: ORing them into one gate meant asking for the percentage alone
+  // still rendered the used/max detail, so the filter looked ignored.
+  const showCtxDetail = ok('context_detail')
+  const showCtxPct = ok('context_pct')
+
   const ctxLabel =
-    ok('context_detail') || ok('context_pct')
+    showCtxDetail || showCtxPct
       ? usage.context_max
         ? segs.compactCtx
           ? `${contextMark}${compactNumber(usage.context_used ?? 0)} tok`
-          : `${contextMark}${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max ?? 0)}`
+          : showCtxDetail
+            ? `${contextMark}${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max ?? 0)}`
+            : showCtxPct
+              ? `${contextMark}${usage.context_percent != null ? `${usage.context_percent}%` : compactNumber(usage.context_used ?? 0)}`
+              : ''
         : (usage.total ?? 0) > 0
           ? `${compactNumber(usage.total)} tok`
           : ''
       : ''
 
-  const bar = !segs.compactCtx && usage.context_max && ok('context_pct') ? ctxBar(pct) : ''
+  const bar = !segs.compactCtx && usage.context_max && showCtxPct ? ctxBar(pct) : ''
   const modelText = modelLabel(model, modelReasoningEffort, modelFast)
 
   // Battery read-out — the first (pinned) status-bar element when enabled.
@@ -612,7 +625,11 @@ export function StatusRule({
   // (the FaceTicker's elapsed tail covers the live turn) and before the first
   // turn completes. Shares the duration breakpoint and width reservation.
   const showIdle =
-    segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
+    segs.duration &&
+    ok('duration') &&
+    !busy &&
+    lastTurnEndedAt != null &&
+    fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
 
   const showCompressions =
     segs.compressions && ok('compressions') && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
@@ -628,7 +645,10 @@ export function StatusRule({
   const showTps = segs.tps && ok('tps') && !!tpsText && fits(SEP + stringWidth(tpsText))
 
   const showVoice = segs.voice && ok('voice') && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
-  const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
+  // The live-session counter has no config name of its own on the classic bar,
+  // but showing it while the user has customized `status_bar.fields` to a set
+  // that omits it made the filter look ignored — gate it on the same list.
+  const showSessionCount = ok('sessions') && !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
   const showBg = segs.bg && ok('bg_tasks') && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
   const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
 
@@ -955,7 +975,7 @@ interface StatusRuleProps {
   status: string
   // display.status_bar.fields — segment visibility filter shared with the
   // classic CLI bar. null = defaults (everything shows).
-  statusBarFields?: null | ReadonlySet<string>
+  statusBarFields?: null | ReadonlySet<string> | undefined
   statusColor: string
   t: Theme
   turnStartedAt?: null | number

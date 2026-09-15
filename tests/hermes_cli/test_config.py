@@ -405,6 +405,114 @@ class TestSaveAndLoadRoundtrip:
         assert config_path.read_text(encoding="utf-8") == original
         assert list((tmp_path / "backups" / "config").glob("config.yaml.corrupt.*"))
 
+class TestConfigSetPreservesComments:
+    """`_write_user_config` must round-trip through ruamel, not plain PyYAML — a dict has no
+    concept of comments, so dumping one destroys every comment in the user's config.yaml on a
+    single `hermes config set`/`unset` (regression for the bug fixed by routing through
+    `atomic_roundtrip_yaml_save` instead of `atomic_yaml_write`)."""
+
+    _COMMENTED_CONFIG = (
+        "# Top-of-file banner comment.\n"
+        "model:\n"
+        "  default: claude-opus-5  # inline comment on a real key\n"
+        "  provider: anthropic\n"
+        "\n"
+        "# A section comment describing browser settings.\n"
+        "browser:\n"
+        "  use_real_profile: true\n"
+        "\n"
+        "# A commented-out example block, deliberately left disabled.\n"
+        "# fallback_model:\n"
+        "#   provider: openrouter\n"
+        "#   model: anthropic/claude-sonnet-4\n"
+    )
+
+    def _write_commented_config(self, tmp_path: Path) -> Path:
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(self._COMMENTED_CONFIG, encoding="utf-8")
+        return config_path
+
+    def test_set_preserves_comments_and_changes_only_the_target_value(self, tmp_path):
+        config_path = self._write_commented_config(tmp_path)
+        before_text = config_path.read_text(encoding="utf-8")
+        before_comment_lines = [l for l in before_text.splitlines() if l.strip().startswith("#")]
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            set_config_value("browser.use_real_profile", "false")
+
+        after_text = config_path.read_text(encoding="utf-8")
+        after_comment_lines = [l for l in after_text.splitlines() if l.strip().startswith("#")]
+
+        assert after_comment_lines == before_comment_lines, (
+            "hermes config set must not drop or reorder any comment line"
+        )
+        saved = yaml.safe_load(after_text)
+        assert saved["browser"]["use_real_profile"] is False
+        assert saved["model"]["default"] == "claude-opus-5"
+        assert saved["model"]["provider"] == "anthropic"
+
+    def test_unset_preserves_comments(self, tmp_path):
+        """Unsetting a leaf key whose section stays non-empty must not touch any comment.
+
+        (Comments attached to a section header are inherently lost if unsetting fully empties
+        and removes that section — a pre-existing ruamel round-trip limitation shared by
+        `atomic_roundtrip_yaml_update`, not something this fix introduces. This test exercises
+        the common case: removing one override while sibling keys remain.)
+        """
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "# Top-of-file banner comment.\n"
+            "model:\n"
+            "  default: claude-opus-5  # inline comment on a real key\n"
+            "  provider: anthropic\n"
+            "\n"
+            "# A section comment describing browser settings.\n"
+            "browser:\n"
+            "  use_real_profile: true\n"
+            "  headless: false\n"
+            "\n"
+            "# A commented-out example block, deliberately left disabled.\n"
+            "# fallback_model:\n"
+            "#   provider: openrouter\n"
+            "#   model: anthropic/claude-sonnet-4\n",
+            encoding="utf-8",
+        )
+        before_text = config_path.read_text(encoding="utf-8")
+        before_comment_lines = [l for l in before_text.splitlines() if l.strip().startswith("#")]
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            unset_config_value("browser.use_real_profile")
+
+        after_text = config_path.read_text(encoding="utf-8")
+        after_comment_lines = [l for l in after_text.splitlines() if l.strip().startswith("#")]
+
+        assert after_comment_lines == before_comment_lines
+        saved = yaml.safe_load(after_text)
+        assert "use_real_profile" not in saved.get("browser", {})
+        assert saved["browser"]["headless"] is False
+        assert saved["model"]["default"] == "claude-opus-5"
+
+    def test_set_yaml11_ambiguous_word_round_trips_as_string(self, tmp_path):
+        """``off``/``on``/``yes``/``no`` must survive as strings, never collapse to a YAML 1.1 bool."""
+        config_path = self._write_commented_config(tmp_path)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            set_config_value("approvals.mode", "off")
+
+        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert saved["approvals"]["mode"] == "off"
+        assert saved["approvals"]["mode"] is not False
+
+    def test_set_preserves_file_permissions(self, tmp_path):
+        config_path = self._write_commented_config(tmp_path)
+        config_path.chmod(0o600)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            set_config_value("browser.use_real_profile", "false")
+
+        assert (config_path.stat().st_mode & 0o777) == 0o600
+
+
 class TestLoadEnvInlineComments:
     def test_unquoted_hash_is_a_comment_quoted_hash_is_data(self, tmp_path):
         """load_env is the one dotenv reader (agent.secret_scope.load_env_file): an unquoted ` #...` tail

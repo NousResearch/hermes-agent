@@ -115,6 +115,14 @@ def test_guard_can_be_opted_out_of_explicitly():
     assert voice.speak_text.__name__ == "_blocked_speak_text"
 
 
+def test_voice_mode_playback_sink_is_stubbed():
+    """Late-import playback paths are covered by the same guard."""
+    import tools.voice_mode as voice_mode
+
+    assert voice_mode.play_audio_file.__name__ == "_blocked_play_audio_file"
+    assert voice_mode._play_int16_via_tempfile(None, 24000) is None
+
+
 @pytest.mark.real_audio_playback
 def test_bypass_marker_restores_the_real_speak_text():
     """``@pytest.mark.real_audio_playback`` hands back the real primitive.
@@ -122,5 +130,7 @@ def test_bypass_marker_restores_the_real_speak_text():
     Asserts identity only — it does not call it, which would speak aloud.
     """
     import hermes_cli.voice as voice
+    import tools.voice_mode as voice_mode
 
     assert voice.speak_text.__name__ == "speak_text"
+    assert voice_mode.play_audio_file.__name__ == "play_audio_file"

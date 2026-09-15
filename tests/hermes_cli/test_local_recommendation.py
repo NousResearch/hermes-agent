@@ -22,8 +22,12 @@ from __future__ import annotations
 import pytest
 
 from hermes_cli.local_runtime.catalog import (
+    AssetFile,
+    CatalogEntry,
     CATALOG,
     PLEASANT_FLOOR_TOK_S,
+    QuantVariant,
+    predicted_agent_turn_latency_s,
     predicted_decode_tok_s,
     recommended_entry,
     select_variant,
@@ -164,3 +168,81 @@ def test_quality_decides_where_speed_permits():
         if (c := select_variant(e, budget)) is not None and c.zero_spill
     ]
     assert pick == max(resident, key=lambda e: e.quality).id
+
+
+def _test_entry(*, entry_id: str, quality: int, size_gb: int,
+                prefill_tok_s: float | None = None) -> CatalogEntry:
+    return CatalogEntry(
+        id=entry_id, display_name=entry_id, description="test", repo="test/repo",
+        variants=(QuantVariant("Q4", (AssetFile("model.gguf", size_gb * _GIB),)),),
+        n_ctx_train=262144, full_layers=1, recurrent_layers=0, per_layer_f16=1,
+        quality=quality, prefill_tok_s=prefill_tok_s,
+    )
+
+
+def test_prefill_aware_latency_prices_an_agent_turn_not_just_decode():
+    """A long prompt makes a slow prefill materially visible in the estimate."""
+    budget = _discrete(128)
+    fast = _test_entry(entry_id="fast-prefill", quality=1, size_gb=10, prefill_tok_s=1_000)
+    slow = _test_entry(entry_id="slow-prefill", quality=1, size_gb=1, prefill_tok_s=10)
+
+    fast_latency = predicted_agent_turn_latency_s(
+        fast, fast.variants[0], budget, input_tokens=32_768)
+    slow_latency = predicted_agent_turn_latency_s(
+        slow, slow.variants[0], budget, input_tokens=32_768)
+
+    assert fast_latency is not None
+    assert slow_latency is not None
+    assert slow_latency > fast_latency * 20
+
+
+def test_prefill_dominated_turn_gates_a_higher_quality_model():
+    """Quality cannot recommend a model whose measured prompt cost is unpleasant."""
+    budget = _discrete(128)
+    fast = _test_entry(entry_id="fast-prefill", quality=50, size_gb=10, prefill_tok_s=1_000)
+    slow = _test_entry(entry_id="slow-prefill", quality=100, size_gb=1, prefill_tok_s=10)
+
+    picked = recommended_entry(budget, (fast, slow), input_tokens=32_768)
+
+    assert picked is not None
+    assert (picked[0].id, picked[1]) == ("fast-prefill", "speed-gated-quality")
+
+
+def test_missing_prompt_workload_keeps_decode_only_floor_behavior():
+    """Measured prefill cannot alter the established policy without input workload data."""
+    budget = _discrete(128)
+    fast = _test_entry(entry_id="fast-decode", quality=50, size_gb=1, prefill_tok_s=1_000)
+    slow = _test_entry(entry_id="slow-decode", quality=100, size_gb=40, prefill_tok_s=10)
+
+    picked = recommended_entry(budget, (fast, slow))
+
+    assert predicted_agent_turn_latency_s(fast, fast.variants[0], budget) is None
+    assert picked is not None
+    assert (picked[0].id, picked[1]) == ("slow-decode", "best-quality-resident")
+
+
+def test_invalid_prefill_cost_fails_open_to_decode_only_behavior():
+    budget = _discrete(128)
+    fast = _test_entry(entry_id="fast-decode", quality=50, size_gb=1,
+                       prefill_tok_s=float("nan"))
+    slow = _test_entry(entry_id="slow-decode", quality=100, size_gb=40)
+
+    picked = recommended_entry(budget, (fast, slow))
+
+    assert predicted_agent_turn_latency_s(fast, fast.variants[0], budget) is None
+    assert picked is not None
+    assert (picked[0].id, picked[1]) == ("slow-decode", "best-quality-resident")
+
+
+def test_prefill_latency_orders_fastest_resident_when_none_are_pleasant():
+    """With complete prompt data, the fallback orders by turn latency, not decode alone."""
+    budget = _discrete(128)
+    faster_turn = _test_entry(
+        entry_id="faster-turn", quality=50, size_gb=10, prefill_tok_s=10)
+    slower_turn = _test_entry(
+        entry_id="slower-turn", quality=100, size_gb=1, prefill_tok_s=5)
+
+    picked = recommended_entry(budget, (faster_turn, slower_turn), input_tokens=32_768)
+
+    assert picked is not None
+    assert (picked[0].id, picked[1]) == ("faster-turn", "fastest-resident")

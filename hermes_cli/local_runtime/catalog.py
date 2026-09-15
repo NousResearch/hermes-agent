@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import threading
 import time
 import urllib.request
@@ -105,6 +106,8 @@ class CatalogEntry:
     # MoE. With memory bandwidth this predicts decode speed — the physics half of the
     # recommendation.
     decode_fraction: float = 1.0
+    # Measured prompt-ingestion throughput. Omitted until a representative measurement exists.
+    prefill_tok_s: float | None = None
 
     def profile(self, variant: QuantVariant) -> ModelProfile:
         layers = ([(LayerKind.FULL, self.per_layer_f16)] * self.full_layers
@@ -175,6 +178,10 @@ _HOST_BANDWIDTH_GB_S = 80.0         # spilled weights stream over host DRAM
 # compress floor, which marks unusable, not unpleasant.
 PLEASANT_FLOOR_TOK_S = 20.0
 
+# A response-sized decode workload makes a latency estimate comparable to the established speed
+# floor. Prompt work is deliberately not assumed: its token count must come from the caller.
+AGENT_TURN_DECODE_TOKENS = 256
+
 
 def predicted_decode_tok_s(entry: CatalogEntry, variant: QuantVariant, budget: HardwareBudget, *,
                            spilled: bool = False) -> float:
@@ -186,33 +193,66 @@ def predicted_decode_tok_s(entry: CatalogEntry, variant: QuantVariant, budget: H
     return bandwidth * 1e9 / bytes_per_token
 
 
+def predicted_agent_turn_latency_s(entry: CatalogEntry, variant: QuantVariant,
+                                   budget: HardwareBudget, *, input_tokens: int | None = None,
+                                   decode_tokens: int = AGENT_TURN_DECODE_TOKENS,
+                                   spilled: bool = False) -> float | None:
+    """Predict end-to-end latency when prompt workload and throughput are both known."""
+    if (input_tokens is None or input_tokens < 0 or entry.prefill_tok_s is None
+            or not math.isfinite(entry.prefill_tok_s) or entry.prefill_tok_s <= 0):
+        return None
+    return (input_tokens / entry.prefill_tok_s
+            + decode_tokens
+            / predicted_decode_tok_s(entry, variant, budget, spilled=spilled))
+
+
 def recommended_entry(budget: HardwareBudget,
-                      entries: "tuple[CatalogEntry, ...] | None" = None
+                      entries: "tuple[CatalogEntry, ...] | None" = None, *,
+                      input_tokens: int | None = None,
+                      decode_tokens: int = AGENT_TURN_DECODE_TOKENS,
                       ) -> "tuple[CatalogEntry, str] | None":
     """The catalog's default pick for THIS machine, with its reason key.
 
     Callers pass pre-filtered entries when some are ineligible for reasons the catalog can't know
-    (engine too old). Reasons: best-quality-resident (quality won among resident entries clearing
-    the pleasant floor); speed-gated-quality (same, but the floor eliminated a HIGHER quality
-    candidate); fastest-resident (nothing resident clears the floor). Returns None when no
-    eligible entry runs resident; spilled models remain available for explicit selection.
+    (engine too old). When callers provide an input-token workload and every resident candidate
+    has measured prompt throughput, the pleasant floor and fallback rank that prompt-plus-decode
+    agent turn. Missing workload or prompt measurements deliberately fail open to the established
+    decode-only rule. Reasons:
+    best-quality-resident (quality won among resident entries clearing the pleasant floor);
+    speed-gated-quality (same, but the floor eliminated a HIGHER quality candidate);
+    fastest-resident (nothing resident clears the floor). Returns None when no eligible entry runs
+    resident; spilled models remain available for explicit selection.
     """
     pool = CATALOG if entries is None else entries
     fitting = [(e, c) for e in pool if (c := select_variant(e, budget)) is not None]
     if not fitting:
         return None
 
-    def speed(t, spilled=False):
+    def decode_speed(t, spilled=False):
         return predicted_decode_tok_s(t[0], t[1].variant, budget, spilled=spilled)
 
     resident = [(e, c) for e, c in fitting if c.zero_spill]
-    pleasant = [t for t in resident if speed(t) >= PLEASANT_FLOOR_TOK_S]
+    latencies = [predicted_agent_turn_latency_s(
+        e, c.variant, budget, input_tokens=input_tokens, decode_tokens=decode_tokens)
+                 for e, c in resident]
+    use_latency = bool(resident) and all(latency is not None for latency in latencies)
+    if use_latency:
+        pleasant = [t for t, latency in zip(resident, latencies)
+                    if latency <= (input_tokens + decode_tokens) / PLEASANT_FLOOR_TOK_S]
+    else:
+        pleasant = [t for t in resident if decode_speed(t) >= PLEASANT_FLOOR_TOK_S]
     if pleasant:
         pick = max(pleasant, key=lambda t: (t[0].quality, -t[1].variant.size_bytes))[0]
         floor_gated = any(e.quality > pick.quality for e, _ in resident)
         return (pick, "speed-gated-quality" if floor_gated else "best-quality-resident")
     if resident:
-        return (max(resident, key=speed)[0], "fastest-resident")
+        if use_latency:
+            return (min(resident,
+                        key=lambda t: predicted_agent_turn_latency_s(
+                            t[0], t[1].variant, budget, input_tokens=input_tokens,
+                            decode_tokens=decode_tokens))[0],
+                    "fastest-resident")
+        return (max(resident, key=decode_speed)[0], "fastest-resident")
     # A spilled model may be usable, but it is not a recommendation. Keep it
     # discoverable through Browse so the user can opt in with the degradation visible.
     return None
@@ -264,6 +304,8 @@ def _load_catalog(doc: dict) -> "tuple[CatalogEntry, ...]":
                          for v in m["variants"])
         scalars = {k: coerce(m[k] if default is None else m.get(k, default))
                    for k, (coerce, default) in _SCALAR_FIELDS.items()}
+        scalars["prefill_tok_s"] = (float(m["prefill_tok_s"])
+                                    if m.get("prefill_tok_s") is not None else None)
         entries.append(CatalogEntry(
             id=m["id"], display_name=m["display_name"],
             description=m["description"], repo=m["repo"], variants=variants,

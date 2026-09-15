@@ -279,6 +279,7 @@ export interface BotRelayReplyResult {
 }
 /** One Desktop roster row normalized by ``tools/bot_relay.py::_normalize_roster_row``. */
 export interface RelayAgentRow {
+  profile: string | null
   handle: string | null
   connection_id: string | null
   connection_label: string | null

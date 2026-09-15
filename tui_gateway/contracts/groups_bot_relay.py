@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Literal
 
+from pydantic import StrictInt
+
 from .base import JsonValue, MethodParams, Params, Result
 from .common import OkResult
 from .registry import method
@@ -618,6 +620,7 @@ method("groups.peer.register", params=GroupsPeerRegisterParams, result=GroupsPee
 class RelayAgentRow(Params):
     """One Desktop roster row normalized by ``tools/bot_relay.py::_normalize_roster_row``."""
 
+    profile: str | None = None  # the row's OWN profile (a roster fact, not the routing key)
     handle: str | None = None
     connection_id: str | None = None
     connection_label: str | None = None
@@ -705,7 +708,7 @@ class BrowserControllerRegisterParams(BrowserControllerParams):
     controller_id: str
     browser_profile_id: str
     capabilities: list[str] | None = None
-    protocol_version: int | None = None
+    protocol_version: StrictInt | None = None  # lax int accepts True as 1
     # Ignored: the principal is derived from the server-minted identity, never client-supplied.
     principal_id: str | None = None
 

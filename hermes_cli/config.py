@@ -3466,6 +3466,31 @@ def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:
         "this notice.)", Colors.DIM))
 
 
+def _is_unread_nested_key(key: str) -> bool:
+    """True when *key* is a NESTED path under a known top-level section that the schema does not
+    define (``compression.compressor.enabled``) — the phantom-key class ``config get`` must flag,
+    because the value it echoes is read by nothing. Custom top-level keys are exempt: arbitrary
+    top-level scalars are a supported feature (bridged into ``os.environ`` for skills/external
+    tools), and open-subkey sections (``plugins``, ``custom_providers``, ...) accept any child."""
+    segments = _split_key_path(key)
+    if len(segments) < 2 or segments[0] not in _known_top_level_keys():
+        return False
+    return not _validate_config_key(key)[0]
+
+
+def _print_unread_key_notice(key: str) -> None:
+    """Read-path mirror of ``_print_unknown_key_notice``: the value is echoed from the config file
+    but nothing in the schema reads it, so it must not look like a live setting. Written to stderr
+    so stdout stays parseable for tooling; the command still exits 0 — a notice must never turn a
+    successful read into a failure."""
+    _, suggestion = _validate_config_key(key)
+    print(color(
+        f"⚠ '{key}' is not a recognized config key — Hermes does not read it; the value printed "
+        "above comes from your config file.", Colors.YELLOW), file=sys.stderr)
+    if suggestion:
+        print(color(f"  Did you mean: {suggestion}", Colors.YELLOW), file=sys.stderr)
+
+
 def set_config_value(key: str, value: str, force: bool = False):
     """Set a configuration value at a dotted ``key``; ``value`` is auto-coerced to bool/int/float.
     ``force`` skips the unknown-key warning AND authorizes replacing a mapping section with a
@@ -3555,7 +3580,8 @@ def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
     """Print a resolved configuration value. Credentials are masked unless ``--raw`` or
     ``security.redact_secrets: false``: ``print`` bypasses the log redactor, and the agent runs
     this command from sessions whose transcripts persist (#84106, #110758)."""
-    if _is_env_config_key(key):
+    is_env_key = _is_env_config_key(key)
+    if is_env_key:
         env_value = get_env_value(key.upper())
         value = _MISSING if env_value is None else env_value
     else:
@@ -3575,7 +3601,9 @@ def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
         else:
             value = redact_config_value(value)
 
-    print(_format_config_get_value(value, as_json=as_json))
+    print(_format_config_get_value(value, as_json=as_json), flush=True)
+    if not is_env_key and _is_unread_nested_key(key):
+        _print_unread_key_notice(key)
 
 
 def unset_config_value(key: str):

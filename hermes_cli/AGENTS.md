@@ -74,6 +74,12 @@ Do not add a surface-specific goal parser. ACP has no goal command or goal loop 
   canon, NO defaults — for presence-sensitive readers). If the CLI sees a key and the gateway
   doesn't (or vice versa), you're on the wrong loader — check `DEFAULT_CONFIG` coverage. Never
   hand-roll raw-read → overlay → expand; `read_user_config_raw` is for write-back round-trips only.
+- **Every `DEFAULT_CONFIG` key has a runtime reader, and every reader a registry entry.** Both drift
+  modes are silent: a registered key nothing reads (a knob that does nothing) and a reader of a key
+  never registered (never shown, never migrated; new roots also go in `_KNOWN_ROOT_KEYS`). For a new
+  key: `rg -n '"<key>"' hermes_cli/config_defaults.py` AND `rg -n '<key>' --glob '!tests' .` both hit,
+  and one invariant test sets it in a temp `config.yaml` and asserts the behaviour through the loader
+  the consuming surface uses. Under multiplex the process env never overrides a profile's YAML.
 - **Working directory:** CLI uses `os.getcwd()`; messaging uses `terminal.cwd`, bridged to
   `TERMINAL_CWD` for child tools.
 
@@ -130,8 +136,12 @@ matchers; parser-derived flag sets; never blanket-exclude gateway ancestors, #87
 
 ## Profiles (multi-instance)
 
-`_apply_profile_override()` in `hermes_cli/main.py` sets `HERMES_HOME` before any module import, so
-every `get_hermes_home()` scopes to the active profile (rules in root). Profiles are independent
+`_apply_profile_override()` in `hermes_cli/main.py` sets `HERMES_HOME` before any module import for
+single-profile commands (`hermes -p x <cmd>`), so there `get_hermes_home()` scopes to the active
+profile. The multiplex gateway and the Desktop/dashboard `serve` backend instead bind the active
+profile per activity via a contextvar override while `os.environ["HERMES_HOME"]` keeps the launch
+profile — a module constant or import-time read there freezes to the launch profile (rules in
+root). Profiles are independent
 islands by design — no live config inheritance; `--clone` copies at creation, minus messaging
 channels (`profile_channels.py`: ownership-based inventory evaluated in the SOURCE's plugin scope —
 adapter-declared keys + canonical/alias prefixes + `GATEWAY_ALLOW*`/`GATEWAY_RELAY_*`; prefixes shared
@@ -155,6 +165,21 @@ other service domain / UNIX user / HERMES_HOME outside `profiles/` — notices f
 blockers for the hook) and the `gateway.auto_multiplex_migration` opt-out (#109954). Blockers reuse `GatewayRunner._adapter_credential_fingerprint` and `platform_binds_port`;
 "has a `/p/<profile>/` ingress" is the adapter class attribute `serves_profile_prefix` — set it on a
 new HTTP-inbound adapter when it answers the prefix, never extend a list here.
+`hermes gateway restart` for a gateway Hermes did not install (custom launchd agent / unit running
+`gateway run --external-supervisor`): `gateway_supervised_restart.py` — the gateway's SELF-declared
+supervisor (control-socket `identify` answering anything but `manual`, OR the argv marker) decides; hand back via SIGUSR1 and wait
+for a fresh supervised PID, never stop + foreground `run_gateway` (that stamps the CLI's PID and wedges
+every KeepAlive respawn, #110637).
+
+Service installs are a matrix, not a unit file: `gateway.py::generate_systemd_unit(system=,
+run_as_user=)` (user unit AND `--system` unit with `User=`; an unresolvable `User=` is a blocker,
+never a dir-owner fallback), `generate_launchd_plist` (`gui/<uid>` then `user/<uid>` domains, never a
+`~/Library/LaunchAgents` glob), Windows Scheduled Task and the Desktop-spawned backend all carry the
+profile's `HERMES_HOME` (and `HOME` for the service user) explicitly — a supervisor starts with an
+empty environment, so the env override that makes `-p` work interactively does not exist there. A
+change to install/restart/status regenerates and diffs every kind; both user and system units are
+recorded when both exist. Process liveness is `(pid, start_time)` or the canonical matchers
+(`gateway.status.live_gateway_pid_for_home`), never bare PID existence.
 
 ## Nous free tier (`hermes_cli/anon_auth.py`)
 

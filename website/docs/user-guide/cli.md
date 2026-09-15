@@ -287,6 +287,21 @@ hermes chat -s github-pr-workflow -s github-auth
 
 Hermes loads each named skill into the session prompt before the first turn. The same flag works in interactive mode and single-query mode.
 
+### Persistent auto-load via config
+
+To have the same skills active at the start of **every** new session — CLI, TUI, gateway, cron and API sessions alike — set `skills.auto_load` in `config.yaml`:
+
+```yaml
+skills:
+  auto_load:
+    - hermes-agent-dev
+    - github-pr-workflow
+```
+
+Each entry is a skill name. The list is resolved once when a session's system prompt is first built and the rendered bytes are reused for the life of the conversation (model switches, compression), so prompt caching stays intact; config edits take effect in the next session. Missing or disabled skills log a warning and are skipped. `-s` names that overlap the list are loaded once.
+
+`--ignore-rules` (equivalently `HERMES_IGNORE_RULES=1`) skips auto-load together with AGENTS.md, SOUL.md, `.cursorrules` and memory injection; explicit `-s` skills still load. The setting is profile-scoped: each profile's `config.yaml` controls its own list.
+
 ## Skill Slash Commands
 
 Every installed skill in `~/.hermes/skills/` is automatically registered as a slash command. The skill name becomes the command:

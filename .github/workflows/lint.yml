@@ -185,6 +185,24 @@ jobs:
       - name: Forbid in-tree use of plugin-compat pointers
         run: python scripts/check_compat_pointers.py
 
+      # Advisory: profile-scope hazard shapes on the lines this PR adds (child env from os.environ,
+      # raw os.getenv of a platform credential, HOME-only RPC binding, bare-PID liveness). One
+      # process serves many profiles; every pattern leaked the launch profile at least once. Printed
+      # into the log for the reviewer; never fails the job (root AGENTS.md § Code Shape Rules).
+      - name: Profile-scope patterns on added lines (advisory)
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        timeout-minutes: 3
+        env:
+          PR_HEAD: "+refs/pull/${{ github.event.pull_request.number }}/head:refs/remotes/origin/pr-head"
+        run: |
+          git fetch --no-tags --deepen=200 origin "${{ github.base_ref }}" "$PR_HEAD"
+          for i in 1 2 3; do
+            git merge-base "origin/${{ github.base_ref }}" origin/pr-head >/dev/null 2>&1 && break
+            git fetch --no-tags --deepen=1000 origin "${{ github.base_ref }}" "$PR_HEAD"
+          done
+          python scripts/check_profile_scope_patterns.py --base "origin/${{ github.base_ref }}" --head origin/pr-head
+
       # Advisory: dropped public names / methods / test defs vs the PR base, printed into the log.
       # A refactor that silently removes a public symbol breaks plugins that import it; the Sep 2026
       # decomposition opened with 1,703 such drops that reviewers had to find by hand.

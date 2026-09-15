@@ -641,8 +641,8 @@ DELEGATE_TASK_SCHEMA = {
                             "object",
                             "Optional JSON Schema this child's final answer must validate against (told to the "
                             "child up front; parent validates with one bounded correction retry; result gains "
-                            "schema_valid, plus schema_errors on failure). Keep it forgiving — require only "
-                            "fields you will read.",
+                            "schema_valid, plus schema_errors on failure — the child's raw text is still returned "
+                            "as summary, never discarded). Keep it forgiving — require only fields you will read.",
                         ),
                         "images": _p(
                             "array",

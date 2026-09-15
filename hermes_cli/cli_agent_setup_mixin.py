@@ -194,7 +194,10 @@ class CLIAgentSetupMixin:
                 _primary_exc = None
         if runtime is None:
             message = format_runtime_provider_error(_primary_exc) if _primary_exc else "Provider resolution failed."
-            ChatConsole().print(f"[bold red]{message}[/]")
+            if getattr(self, "tool_progress_mode", "full") == "off":
+                print(message, file=sys.stderr)  # quiet/stream-json: stdout is machine-readable
+            else:
+                ChatConsole().print(f"[bold red]{message}[/]")
             return False
         api_key = runtime.get("api_key")
         base_url = runtime.get("base_url")
@@ -576,6 +579,12 @@ class CLIAgentSetupMixin:
             # ``cli._active_agent_ref`` None forever — so memory shutdown never ran on /exit (#49287).
             import cli as _cli
             _cli._active_agent_ref = self.agent
+            # Seed the agent's once-per-lifecycle auto_load cache with the bytes the preload
+            # thread rendered, so the shared prompt path never re-reads config or skill files.
+            _auto_result = getattr(self, "_auto_load_skills_result", None)
+            if _auto_result is not None:
+                self.agent._auto_load_skills_result = _auto_result
+                self.agent._auto_load_skills_resolved = True
             # Route agent status output through prompt_toolkit so ANSI escapes aren't garbled by
             # patch_stdout's StdoutProxy (#2262), holding lines while a response box streams so a
             # subagent/background completion notice never splits the reply mid-paragraph.
@@ -604,7 +613,8 @@ class CLIAgentSetupMixin:
             return True
         except Exception as e:
             console = ChatConsole()
-            console.print(f"[bold red]Failed to initialize agent: {e}[/]")
+            from hermes_cli.cli_chat_error_copy import agent_init_failure_message
+            console.print(f"[bold red]{_escape(agent_init_failure_message(e))}[/]")
             from hermes_constants import partial_update_hint
             for line in partial_update_hint(e):
                 console.print(line)

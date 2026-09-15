@@ -54,4 +54,46 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
         # Should have been called at least twice (primary + fallback)
         assert call_count["n"] >= 2
 
+    def test_missing_api_key_does_not_try_fallback(self, tmp_path, monkeypatch):
+        """Configuration AuthError must fail closed — do not switch providers."""
+        from hermes_cli.auth import AuthError
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "model:\n  provider: openai-codex\n"
+            "fallback_model:\n  provider: openrouter\n"
+            "  model: meta-llama/llama-4-maverick\n"
+        )
+
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+
+        call_count = {"n": 0}
+
+        def _mock_resolve(**kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise AuthError("No usable credentials", code="missing_api_key")
+            return {
+                "api_key": "fallback-key",
+                "base_url": "https://openrouter.ai/api/v1",
+                "provider": "openrouter",
+                "api_mode": "openai_chat",
+                "command": None,
+                "args": None,
+                "credential_pool": None,
+            }
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            side_effect=_mock_resolve,
+        ):
+            from gateway.run import _resolve_runtime_agent_kwargs
+
+            with pytest.raises(RuntimeError) as exc_info:
+                _resolve_runtime_agent_kwargs()
+
+        assert isinstance(exc_info.value.__cause__, AuthError)
+        assert exc_info.value.__cause__.code == "missing_api_key"
+        assert call_count["n"] == 1
+
 

@@ -406,7 +406,7 @@ def _action_targets_system_gateway(subcommand: List[str]) -> bool:
     Scope is decided by the CLI's own picker (``_select_systemd_scope``) evaluated for the profile
     the action addresses, not by "a system unit exists": a host carrying both units resolves to the
     user unit, which the dashboard user operates unelevated. Same root/sudo posture as the
-    ``hermes update`` fleet restart (``update_cmd_fleet._needs_sudo``).
+    ``hermes update`` fleet restart (``update_cmd_fleet._needs_sudo`` / ``_sudo_noninteractive_ok``).
     """
     from hermes_cli.update_cmd_fleet import _needs_sudo
 
@@ -436,14 +436,6 @@ def _action_targets_system_gateway(subcommand: List[str]) -> bool:
         reset_hermes_home_override(token)
 
 
-def _sudo_noninteractive_available() -> bool:
-    """True when this user can elevate without being prompted (``sudo -n true``)."""
-    try:
-        return subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=5).returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-
-
 def _spawn_hermes_action(
     subcommand: List[str], name: str, *, env_overrides: Optional[Dict[str, str]] = None
 ) -> subprocess.Popen:
@@ -460,8 +452,12 @@ def _spawn_hermes_action(
         # system install (#110820). Elevate — the CLI is sudo-aware: it adopts the unit's
         # HERMES_HOME past sudo's env_reset and reads SUDO_USER for the service identity.
         # ``-n`` never prompts (stdin is DEVNULL anyway); without a passwordless path the
-        # REQUEST fails instead of reporting a started action whose child refuses.
-        if not _sudo_noninteractive_available():
+        # REQUEST fails instead of reporting a started action whose child refuses. Same
+        # two-step gate as the ``hermes update`` fleet restart: a refused blanket probe falls
+        # back to ``sudo -l`` on the exact argv, so a command-scoped NOPASSWD entry qualifies.
+        from hermes_cli.update_cmd_fleet import _sudo_noninteractive_ok
+
+        if not _sudo_noninteractive_ok(["-l", "--", *cmd]):
             message = (
                 f"{name} targets the system-scope gateway service, which requires root, and "
                 "passwordless sudo is unavailable for the dashboard user. Run "

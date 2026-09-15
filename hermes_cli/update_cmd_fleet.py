@@ -774,6 +774,23 @@ def _gateway_home_for_pid(pid: int):
     return None
 
 
+def _sudo_noninteractive_ok(targeted_probe: list) -> bool:
+    """True when this user can elevate without a prompt.
+
+    ``sudo -n true`` first; a refusal is inconclusive because a NOPASSWD sudoers entry scoped
+    to one command (the hardened shape) rejects the blanket probe, so fall back to running
+    ``sudo -n <targeted_probe>`` — callers pass a non-destructive stand-in for the argv they
+    are about to elevate.
+    """
+    try:
+        if subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=5).returncode == 0:
+            return True
+        # Blanket sudo refused — a targeted NOPASSWD sudoers entry may still work.
+        return subprocess.run(["sudo", "-n", *targeted_probe], capture_output=True, timeout=5).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def _resolve_manage_cmd(cache: dict, scope_: str, scope_cmd_: list, svc_name_: str):
     """Resolve the command prefix for manage-units verbs (None ⇒ no privilege path).
 
@@ -789,16 +806,7 @@ def _resolve_manage_cmd(cache: dict, scope_: str, scope_cmd_: list, svc_name_: s
     cmd = scope_cmd_ + ["--no-ask-password"]
     if _needs_sudo(scope_):
         sudo_cmd = ["sudo", "-n"] + cmd
-        try:
-            sudo_ok = subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=5).returncode == 0
-            if not sudo_ok:
-                # Blanket sudo refused — a targeted NOPASSWD sudoers entry may still work.
-                sudo_ok = subprocess.run(
-                    sudo_cmd + ["reset-failed", svc_name_], capture_output=True, timeout=5
-                ).returncode == 0
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            sudo_ok = False
-        cmd = sudo_cmd if sudo_ok else None
+        cmd = sudo_cmd if _sudo_noninteractive_ok(cmd + ["reset-failed", svc_name_]) else None
     cache[scope_] = cmd
     return cmd
 

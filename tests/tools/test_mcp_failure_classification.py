@@ -261,3 +261,20 @@ def test_initial_auth_failure_parks_and_revives_after_relogin(
     ]
     assert len(auth_warnings) == 1
     assert "hermes mcp login figma" in auth_warnings[0].getMessage()
+
+
+def test_http_session_expired_401_detected():
+    from tools.mcp_tool import _is_http_session_expired_401
+    import httpx
+
+    # A 401 request WITH MCP-Session-ID header is session expiry, not credential revocation
+    req_with_session = httpx.Request("POST", "https://mcp.composio.dev/message", headers={"MCP-Session-ID": "sess-123"})
+    resp_401 = httpx.Response(401, request=req_with_session)
+    exc_with_session = httpx.HTTPStatusError("401 Unauthorized", request=req_with_session, response=resp_401)
+    assert _is_http_session_expired_401(exc_with_session) is True
+
+    # A 401 request WITHOUT MCP-Session-ID header is genuine auth failure
+    req_no_session = httpx.Request("POST", "https://mcp.composio.dev/message", headers={"Authorization": "Bearer key"})
+    resp_401_no_session = httpx.Response(401, request=req_no_session)
+    exc_no_session = httpx.HTTPStatusError("401 Unauthorized", request=req_no_session, response=resp_401_no_session)
+    assert _is_http_session_expired_401(exc_no_session) is False

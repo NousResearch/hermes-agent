@@ -57,7 +57,7 @@ def test_every_owed_identity_requires_current_evidence(monkeypatch, bad):
     directory = home / "logs" / "update_receipts"
     directory.mkdir(parents=True)
     if bad == "marker":
-        (home / "fleet_restart_pending").write_text("expected_sha=new\n")
+        (home / "fleet_restart_pending").write_text("expected_sha=stale_sha\n")
     owed = {"kind": "gateway", "profile": "beta", "code_sha": "old"}
     if bad == "wrong-kind":
         owed["kind"] = "serve"

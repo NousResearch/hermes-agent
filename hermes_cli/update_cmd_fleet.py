@@ -183,6 +183,46 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
         return False
 
 
+def _parse_marker_expected_sha() -> str | None:
+    """Extract ``expected_sha`` from the marker file, or ``None``."""
+    try:
+        text = _fleet_restart_pending_marker_path().read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith("expected_sha="):
+            sha = line.split("=", 1)[1].strip()
+            return sha or None
+    return None
+
+
+def _live_fleet_satisfies_marker(expected_sha: str, *, _fleet_versions=None) -> bool:
+    """True when every live gateway already runs *expected_sha*.
+
+    Uses the same ``collect_fleet_versions`` matrix the updater's own verify
+    stage trusts.  Returns False on any probe failure or unknown state so the
+    conservative path (warn + restart) is preserved.  See #106682.
+    """
+    if not expected_sha:
+        return False
+    try:
+        if _fleet_versions is not None:
+            fleet = _fleet_versions
+        else:
+            from hermes_cli.update_receipt import collect_fleet_versions
+
+            fleet = collect_fleet_versions()
+        if not fleet:
+            return False
+        return all(
+            row.get("state") == "current" and row.get("code_sha") == expected_sha
+            for row in fleet
+        )
+    except Exception as exc:
+        logger.debug("Live fleet SHA check failed: %s", exc)
+        return False
+
+
 def _pending_fleet_restart_needed() -> bool:
     """Reconcile old restart obligations against current, identity-matched gateways."""
     from hermes_cli.update_cmd import _current_checkout_sha
@@ -191,6 +231,14 @@ def _pending_fleet_restart_needed() -> bool:
     # than latest.json. An older receipt cannot discharge that unknown obligation.
     with suppress(OSError):
         if _fleet_restart_pending_marker_path().is_file():
+            # Self-heal: if the marker's expected_sha is already satisfied by
+            # all live gateways, the restart was completed outside the updater
+            # (operator restart, agent fallback, etc.) and the marker is orphaned.
+            # Clear it so neither the warning nor catch-up fires.  See #106682.
+            expected_sha = _parse_marker_expected_sha()
+            if expected_sha and _live_fleet_satisfies_marker(expected_sha):
+                _clear_fleet_restart_pending_marker()
+                return False
             return True
     if not _receipt_reports_stale_runtime():
         return False

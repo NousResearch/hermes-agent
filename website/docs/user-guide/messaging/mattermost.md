@@ -165,6 +165,35 @@ group_sessions_per_user: true
 
 - `group_sessions_per_user: true` keeps each participant's context isolated inside shared channels and threads
 
+### Post Length
+
+Set the outbound post limit in the active profile's `config.yaml`:
+
+```yaml
+mattermost:
+  max_post_length: 4000
+```
+
+The default is 4000 characters. Integer values from 500 through 16383 are
+accepted; invalid values or values below 500 fall back to 4000, and values above
+16383 are clamped. This YAML-only setting has no environment-variable override.
+It applies to gateway replies, streaming previews, direct sends and cron
+messages within that profile. Streaming reserves room for its cursor.
+
+Oversized edits update the first post within this limit and send only the
+overflow as continuation posts. Text delivery receipts retain every acknowledged
+post ID, with the last editable post as `message_id`. If a continuation is
+rejected, streaming can send the known missing tail using an exact source
+prefix. If an interim acknowledgement is lost, Hermes keeps collecting later
+text. At completion it sends only text beyond the exact attempted prefix. The
+uncertain portion may be missing if the server did not accept it. If the final
+answer changes that prefix, Hermes makes one full correction attempt labelled
+"Correction: Earlier text may appear again because delivery was not confirmed."
+A lost correction acknowledgement does not trigger another full correction.
+Confirmed previews are retained; media and footers still use their normal
+post-stream delivery. This does not guarantee exactly-once delivery or recovery
+across separate sends or restarts.
+
 ### Start the Gateway
 
 Once configured, start the Mattermost gateway:

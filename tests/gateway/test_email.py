@@ -383,6 +383,79 @@ class TestThreadContext(unittest.TestCase):
             self.assertIn("Date", send_call)
 
 
+class TestSubjectOverride(unittest.TestCase):
+    """Explicit subject wins verbatim; thread fallback unchanged (#102884)."""
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        return adapter
+
+    def _sent_subject(self, mock_smtp):
+        return mock_smtp.return_value.send_message.call_args[0][0]["Subject"]
+
+    def test_override_used_verbatim_without_re_prefix(self):
+        """Send-only (no-IMAP) profiles get the exact requested subject."""
+        adapter = self._make_adapter()
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+            adapter._send_email("user@test.com", "Weekly report body.", None, "Weekly status")
+            self.assertEqual(self._sent_subject(mock_smtp), "Weekly status")
+
+    def test_no_override_keeps_thread_fallback(self):
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {"subject": "Project question"}
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+            adapter._send_email("user@test.com", "Here is the answer.", None)
+            self.assertEqual(self._sent_subject(mock_smtp), "Re: Project question")
+
+    def test_no_override_no_context_keeps_default(self):
+        adapter = self._make_adapter()
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+            adapter._send_email("user@test.com", "Hello.", None)
+            self.assertEqual(self._sent_subject(mock_smtp), "Re: Hermes Agent")
+
+    def test_send_forwards_metadata_subject(self):
+        """adapter.send() threads metadata['subject'] into the MIME headers."""
+        import asyncio
+        adapter = self._make_adapter()
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+            result = asyncio.run(
+                adapter.send("user@test.com", "Body.", metadata={"subject": "Budget Q3"})
+            )
+            self.assertTrue(result.success)
+            self.assertEqual(self._sent_subject(mock_smtp), "Budget Q3")
+
+    def test_standalone_send_honors_subject(self):
+        """Out-of-process sends use the subject verbatim (fresh send, no Re:)."""
+        import asyncio
+        from types import SimpleNamespace
+        from plugins.platforms.email.adapter import _standalone_send
+        pconfig = SimpleNamespace(extra={})
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            with patch("smtplib.SMTP") as mock_smtp:
+                mock_smtp.return_value = MagicMock()
+                result = asyncio.run(
+                    _standalone_send(pconfig, "user@test.com", "Body.", subject="Budget Q3")
+                )
+                self.assertTrue(result.get("success"))
+                self.assertEqual(self._sent_subject(mock_smtp), "Budget Q3")
+
+
 class TestSendMethods(unittest.TestCase):
     """Test email send methods."""
 

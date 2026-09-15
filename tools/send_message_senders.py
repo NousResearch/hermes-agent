@@ -331,10 +331,26 @@ def _plugin_standalone_sender(platform_name, *, label=None, discover=True):
     return entry.standalone_sender_fn, None
 
 
-async def _registry_standalone_send(platform_name, pconfig, chat_id, message, thread_id=None):
-    """One-shot text send through a plugin's ``standalone_sender_fn``."""
+async def _registry_standalone_send(platform_name, pconfig, chat_id, message, thread_id=None, **kwargs):
+    """One-shot text send through a plugin's ``standalone_sender_fn``.
+
+    Extra keyword arguments (e.g. ``subject`` for email) forward only to
+    standalone senders that declare them — callers pass extras solely on
+    the branches of platforms whose sender accepts them.
+    """
     sender, err = _plugin_standalone_sender(platform_name)
-    return err or await sender(pconfig, chat_id, message, thread_id=thread_id)
+    if err:
+        return err
+    if kwargs:
+        import inspect
+        try:
+            params = inspect.signature(sender).parameters
+            kwargs = {k: v for k, v in kwargs.items()
+                      if k in params or any(p.kind == inspect.Parameter.VAR_KEYWORD
+                                           for p in params.values())}
+        except (TypeError, ValueError):
+            kwargs = {}
+    return err or await sender(pconfig, chat_id, message, thread_id=thread_id, **kwargs)
 
 
 async def _resolve_slack_user_target(token, chat_id):

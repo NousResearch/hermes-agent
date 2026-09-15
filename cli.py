@@ -4150,6 +4150,25 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
                 cli._quiet_notify_linger_done = True
             if isinstance(continued, dict):
                 result = continued
+        # Kanban worker: same in-place turn recovery as the non-quiet path (see
+        # agent/kanban_turn_recovery.py) — a failed API call must not silently end the run.
+        from agent.kanban_turn_recovery import recover_failed_kanban_turns as _recover_turns
+
+        def _quiet_recover_turn(nudge):
+            nonlocal result
+            _history = result.get("messages") if isinstance(result, dict) else None
+            result = cli.agent.run_conversation(
+                user_message=nudge,
+                conversation_history=_history or cli.conversation_history,
+                **author_kwargs,
+            )
+            _sync_cli_session_id_from_agent(cli)
+
+        _recover_turns(
+            _quiet_recover_turn,
+            lambda: result,
+            emit=lambda m: print(m, file=sys.stderr, flush=True),
+        )
         response = result.get("final_response", "") if isinstance(result, dict) else str(result)
     # Surface backend errors that produced no visible output (e.g. invalid model slug
     # -> provider 4xx) on stderr so piped stdout stays clean.
@@ -4528,7 +4547,22 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
             cli.console.print(f"[bold blue]Query:[/] {_query_label}")
         cli._show_security_advisories()
         cli.chat(query, images=single_query_images or None)
+        # Kanban worker: an exhausted API call used to end the run silently — the process
+        # exited rc=0 with no terminal kanban call, so the dispatcher booked a "protocol
+        # violation" and cold-restarted the task from scratch, losing all session context.
+        # Retry the failed turn IN PLACE within a bounded budget (same session, same
+        # conversation history); when the budget is exhausted exit non-zero so the run is
+        # booked honestly instead of masquerading as a clean exit.
+        from agent.kanban_turn_recovery import recover_failed_kanban_turns
+        recover_failed_kanban_turns(
+            lambda nudge: cli.chat(nudge),
+            lambda: getattr(cli, "_last_turn_result", None),
+            emit=lambda m: print(m, file=sys.stderr, flush=True),
+        )
         cli._print_exit_summary(clear_screen=False)
+        _final_result = getattr(cli, "_last_turn_result", None)
+        if os.environ.get("HERMES_KANBAN_TASK") and isinstance(_final_result, dict) and _final_result.get("failed"):
+            sys.exit(1)
     finally:
         _finalize_single_query(cli)
 

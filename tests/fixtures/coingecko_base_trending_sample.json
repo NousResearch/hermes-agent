@@ -1,0 +1,50 @@
+{
+  "data": [
+    {
+      "id": "base_0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "type": "pool",
+      "attributes": {
+        "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "TOKEN / WETH",
+        "reserve_in_usd": "250000",
+        "volume_usd": {"h24": "180000"},
+        "price_change_percentage": {"h24": "7.5"}
+      },
+      "relationships": {
+        "base_token": {
+          "data": {
+            "id": "base_0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "type": "token"
+          }
+        },
+        "quote_token": {
+          "data": {
+            "id": "base_0xcccccccccccccccccccccccccccccccccccccccc",
+            "type": "token"
+          }
+        },
+        "dex": {"data": {"id": "uniswap_v3", "type": "dex"}}
+      }
+    }
+  ],
+  "included": [
+    {
+      "id": "base_0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "type": "token",
+      "attributes": {
+        "address": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "symbol": "TOKEN",
+        "decimals": 18
+      }
+    },
+    {
+      "id": "base_0xcccccccccccccccccccccccccccccccccccccccc",
+      "type": "token",
+      "attributes": {
+        "address": "0xcccccccccccccccccccccccccccccccccccccccc",
+        "symbol": "WETH",
+        "decimals": 18
+      }
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "version": "2.1.3",
+  "source_commit": "5a5c47f6a34b93ee11cf701d17e171cea0f775ed",
+  "source_files": [
+    "src/constants.js",
+    "src/index.js",
+    "src/toolService.js",
+    "src/services/blockchainService.js"
+  ],
+  "aggregator": {
+    "url": "http://44.252.136.98",
+    "transport": "plaintext_http"
+  },
+  "tools": {
+    "get_swap_quote": {
+      "required": ["chainId", "buyToken", "sellToken", "sellAmount"],
+      "optional": ["taker", "slippageBps"],
+      "backend": "aggregator"
+    },
+    "execute_swap": {
+      "required": ["quoteData"],
+      "optional": [],
+      "backend": "local_signing_of_aggregator_quote"
+    },
+    "get_gasless_quote": {
+      "required": ["chainId", "buyToken", "sellToken", "sellAmount"],
+      "optional": ["taker", "slippageBps"],
+      "backend": "aggregator"
+    },
+    "submit_gasless_swap": {
+      "required": ["quoteData"],
+      "optional": ["chainId"],
+      "backend": "local_signing_of_aggregator_quote"
+    }
+  }
+}

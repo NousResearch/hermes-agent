@@ -1,0 +1,10 @@
+name: hermes-agentic-trader
+version: "0.7.0-repair.3"
+description: "Paper-safe Base trader repair: direct on-chain Uniswap quotes, unsigned EIP-5792 call construction, and fail-closed legacy MCP write guards."
+author: ivan09069
+provides_tools:
+  - trader_uniswap_quote
+  - trader_uniswap_build_calls
+provides_hooks:
+  - pre_tool_call
+  - post_tool_call

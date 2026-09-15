@@ -28,8 +28,7 @@ _BRACKETED_SILENCE_MARKERS = tuple(
     sorted(m for m in LIVE_GATEWAY_SILENT_MARKERS if m.startswith("["))
 )
 
-# The persisted user-row kind of a self-injected MessageEvent(internal=True) turn — the only
-# machinery kind the gateway produces; only these may vanish on a bare silence marker.
+# Self-injected notifications persist with this machinery kind.
 INTERNAL_NOTIFICATION_DISPLAY_KIND = "internal_notification"
 MACHINERY_DISPLAY_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND})
 
@@ -114,6 +113,19 @@ def is_machinery_display_kind(display_kind: Any) -> bool:
     authorize silence on a human turn.
     """
     return display_kind in MACHINERY_DISPLAY_KINDS
+
+
+def allows_final_silence(agent_result: dict, display_kind: Any, heartbeat_turn: bool = False) -> bool:
+    """Keep internal-notification policy; heartbeat permission requires a healthy turn.
+
+    Heartbeat provenance is gateway-owned, never inferred from text or metadata,
+    and deliberately separate from persisted display kind (compression/autofocus).
+    """
+    return is_machinery_display_kind(display_kind) or (
+        heartbeat_turn
+        and not any(agent_result.get(flag) for flag in ("failed", "interrupted", "partial"))
+        and agent_result.get("completed") is not False
+    )
 
 
 def is_partial_silence_marker(text: Any) -> bool:

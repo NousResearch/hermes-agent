@@ -1,5 +1,6 @@
 """Gateway intentional-silence token behavior."""
 
+import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -78,6 +79,207 @@ def _runner(monkeypatch, tmp_path):
     return runner
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply,failed,interrupted", [
+    ("[SILENT]", False, False), ("NO_REPLY", False, False),
+    (" SILENT ", False, False), ("no reply", False, False),
+    ("[静默]", False, False), ("静默", False, False),
+    ("[沉默]", False, False), ("沉默", False, False),
+    ("A useful update", False, False),
+    ("Use [SILENT] when no answer is needed.", False, False),
+    ("[SILENT] A useful update", False, False),
+    ("[SILENT]", True, False), ("", True, False), ("", False, False),
+    ("Operation interrupted.", False, True),
+])
+async def test_scheduled_heartbeat_final_delivery_keeps_human_guard(
+    monkeypatch, tmp_path, reply, failed, interrupted,
+):
+    """Poller/admission/final-delivery contract with a fake model and transport (#112254)."""
+    from evals.heartbeat_idle_wire import WireAdapter
+    from gateway.config import PlatformConfig
+    from hermes_cli.heartbeat import HeartbeatState, save_heartbeat
+
+    runner = _runner(monkeypatch, tmp_path)
+    source = _source()
+    key = "agent:main:telegram:group:-1001:12345"
+    entry = runner.session_store.get_or_create_session.return_value
+    runner.session_store.peek_session_id.return_value = entry.session_id
+    runner.session_store.lookup_by_session_key.return_value = entry
+    runner.session_store.load_transcript.return_value = [
+        {"role": "user", "content": "hello"}, {"role": "assistant", "content": "hello"},
+    ]
+    adapter = WireAdapter(PlatformConfig(enabled=True, typing_indicator=False), Platform.TELEGRAM)
+    adapter.wire = []
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    seen = []
+
+    async def model(**kwargs):
+        seen.append(kwargs)
+        return {"final_response": reply, "failed": failed, "interrupted": interrupted,
+                "error": "test failure" if failed else None,
+                "messages": [{"role": "user", "content": kwargs["message"]},
+                             {"role": "assistant", "content": reply}], "api_calls": 1}
+
+    runner._run_agent = model
+
+    async def handler(event):
+        if not seen:
+            assert event._heartbeat_session_id == entry.session_id
+            assert event.internal is False
+        try:
+            return await runner._handle_message_with_agent(event, source, key, 1)
+        finally:
+            # The enclosing gateway handler normally releases the turn lease.
+            runner._release_turn_lease(key, 1)
+
+    adapter.set_message_handler(handler)
+    save_heartbeat(entry.session_id, HeartbeatState(prompt="check status", interval_seconds=60, created_at=1))
+    try:
+        await runner._heartbeat_poll_once({key: (source, entry.session_id)})
+        while adapter._background_tasks:
+            await asyncio.gather(*list(adapter._background_tasks))
+        assert len(seen) == 1
+        assert seen[0]["heartbeat_turn"] is True
+        assert seen[0]["persist_user_display_kind"] is None
+        appended = [call.args[1] for call in runner.session_store.append_to_transcript.call_args_list]
+        assert all(not msg.get("display_kind") for msg in appended)
+        if reply in {"[SILENT]", "NO_REPLY", " SILENT ", "no reply", "[静默]", "静默", "[沉默]", "沉默"} and not failed:
+            assert adapter.wire == []
+        else:
+            assert adapter.wire
+            if not failed and reply:
+                assert adapter.wire == [reply]
+            elif failed and not reply:
+                assert "couldn't finish" in adapter.wire[-1]
+            elif not reply:
+                assert "no response was generated" in adapter.wire[-1]
+
+        if not failed and reply:
+            appended = [call.args[1] for call in runner.session_store.append_to_transcript.call_args_list]
+            assert any(msg.get("role") == "assistant" and msg.get("content") == reply for msg in appended)
+        # Copying the scheduled prompt or metadata cannot grant a human silence privileges.
+        if reply in {"[SILENT]", "NO_REPLY", " SILENT ", "no reply", "[静默]", "静默", "[沉默]", "沉默"} and not failed:
+            event = _event()
+            event.text = seen[0]["message"]
+            event.metadata["_heartbeat_session_id"] = entry.session_id
+            await adapter.handle_message(event)
+            while adapter._background_tasks:
+                await asyncio.gather(*list(adapter._background_tasks))
+            assert len(adapter.wire) == 1
+            assert "silence marker" in adapter.wire[0]
+    finally:
+        await adapter.cancel_session_processing(key)
+        if adapter._background_tasks:
+            await asyncio.gather(*list(adapter._background_tasks), return_exceptions=True)
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("heartbeat_terminal", [True, False])
+@pytest.mark.parametrize("status", [{}, {"failed": True}, {"interrupted": True}, {"partial": True}, {"completed": False}])
+async def test_queued_heartbeat_silence_permission_belongs_to_terminal_event(monkeypatch, tmp_path, heartbeat_terminal, status):
+    runner = _runner(monkeypatch, tmp_path)
+    key = "agent:main:telegram:group:-1001:12345"
+    runner._MAX_INTERRUPT_DEPTH = 8
+    runner._is_goal_continuation_event = lambda event: False
+    runner._session_key_for_source = lambda source: key
+    runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="follow-up")
+    runner._adapter_for_source = lambda source: None
+    runner._refresh_agent_cache_message_count = AsyncMock()
+    runner.session_store.lookup_by_session_key.return_value = runner.session_store.get_or_create_session.return_value
+    opener, terminal = _event(), _event()
+    (terminal if heartbeat_terminal else opener)._heartbeat_session_id = "sess-silent"
+    ctx = SimpleNamespace(source=_source(), session_id="sess-silent", session_key=key,
+                          run_generation=1, _interrupt_depth=0, history=[], _status_thread_metadata=None,
+                          context_prompt=None, result_holder=[None])
+    runner._run_agent = AsyncMock(return_value={"final_response": "[SILENT]", "messages": [], "failed": False, **status})
+    merged = await runner._run_agent_queued_followup(
+        ctx, adapter=None, pending="follow-up", pending_event=terminal, response="",
+        result={"interrupted": True, "messages": []}, stream_task=None)
+    runner._run_agent = AsyncMock(return_value=merged)
+    response = await runner._handle_message_with_agent(opener, _source(), key, 1)
+    assert runner._run_agent.await_count == 1
+    assert merged["queued_terminal_heartbeat_turn"] is heartbeat_terminal
+    assert merged["queued_terminal_display_kind"] is None
+    if status.get("failed"):
+        assert response == (
+            "[SILENT]\n\nYour request was not processed. Send it again if you still want me to carry it out."
+        )  # Preserve the base failed-result fallback (no API calls in this fixture).
+    elif heartbeat_terminal and not status:
+        assert response == ""
+    else:
+        assert "silence marker" in response
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_heartbeat", [False, True])
+async def test_nested_queue_preserves_innermost_heartbeat_provenance(monkeypatch, tmp_path, terminal_heartbeat):
+    runner = _runner(monkeypatch, tmp_path)
+    runner._MAX_INTERRUPT_DEPTH = 8
+    runner._is_goal_continuation_event = lambda event: False
+    runner._session_key_for_source = lambda source: "key"
+    runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="follow-up")
+    runner._adapter_for_source = lambda source: None
+    runner._refresh_agent_cache_message_count = AsyncMock()
+    pending_event = _event()
+    if not terminal_heartbeat:
+        pending_event._heartbeat_session_id = "sid"
+    terminal_result = {
+        "final_response": "[SILENT]", "messages": [], "completed": True,
+        "queued_terminal_inbound_id": "innermost",
+        "queued_terminal_display_kind": None,
+        "queued_terminal_heartbeat_turn": terminal_heartbeat,
+    }
+    runner._run_agent = AsyncMock(return_value=terminal_result)
+    ctx = SimpleNamespace(source=_source(), session_id="sid", session_key="key",
+                          run_generation=1, _interrupt_depth=0, history=[],
+                          _status_thread_metadata=None, context_prompt=None, result_holder=[None])
+    merged = await runner._run_agent_queued_followup(
+        ctx, adapter=None, pending="follow-up", pending_event=pending_event,
+        response="", result={"interrupted": True, "messages": []}, stream_task=None)
+    assert merged["queued_terminal_inbound_id"] == "innermost"
+    assert merged["queued_terminal_heartbeat_turn"] is terminal_heartbeat
+    assert merged["queued_terminal_display_kind"] is None
+    assert runner._run_agent.await_args.kwargs["heartbeat_turn"] is not terminal_heartbeat
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provenance", ["human", "internal", "heartbeat"])
+@pytest.mark.parametrize("state", ["interrupted", "interrupted_before_start", "partial", "incomplete"])
+@pytest.mark.parametrize("reply", ["[SILENT]", "", "Useful partial update"])
+async def test_noncompleted_final_delivery_characterization(monkeypatch, tmp_path, provenance, state, reply):
+    """Heartbeat markers need completion; legacy internal and empty policies stay intact."""
+    runner = _runner(monkeypatch, tmp_path)
+    event = _event(internal=provenance == "internal")
+    runner.session_store.lookup_by_session_key.return_value = runner.session_store.get_or_create_session.return_value
+    if provenance == "heartbeat":
+        setattr(event, "_heartbeat_session_id", "sess-silent")
+    result = {"final_response": reply, "failed": False, "completed": state != "incomplete",
+              "interrupted": state.startswith("interrupted"), "partial": state == "partial",
+              "api_calls": 0 if state == "interrupted_before_start" else 1,
+              "messages": [{"role": "user", "content": "check"},
+                           {"role": "assistant", "content": reply}]}
+    runner._run_agent = AsyncMock(return_value=result)
+    response = await runner._handle_message_with_agent(
+        event, _source(), "agent:main:telegram:group:-1001:12345", 1)
+    assert is_intentional_silence_agent_result(result, reply) == (reply == "[SILENT]")
+    if reply == "[SILENT]":
+        if provenance != "internal":
+            assert "silence marker" in response
+        else:
+            assert response == ""
+    elif reply:
+        assert response == reply
+    elif state == "interrupted":
+        assert response == ""
+    elif state == "interrupted_before_start":
+        assert "interrupted before processing started" in response
+    elif state == "partial":
+        assert "stop before finishing" in response
+    else:
+        assert "no response was generated" in response
+
+
 def test_exact_silence_tokens_are_intentional_silence():
     for token in ("[SILENT]", " SILENT ", "NO_REPLY", "no reply"):
         assert is_intentional_silence_response(token)
@@ -145,26 +347,34 @@ async def test_internal_silence_token_suppresses_delivery_but_preserves_transcri
 
 
 @pytest.mark.asyncio
-async def test_queued_human_turn_also_gets_the_visible_fallback():
+@pytest.mark.parametrize("heartbeat_turn", [False, True])
+@pytest.mark.parametrize("status", [{}, {"failed": True}, {"interrupted": True}, {"partial": True}, {"completed": False}])
+async def test_queued_first_response_silence_policy(heartbeat_turn, status):
     runner = gateway_run.GatewayRunner(GatewayConfig())
     runner._deliver_queued_first_response = AsyncMock()
     turn_ctx = SimpleNamespace(
         session_key="agent:main:telegram:group:-1001:12345",
         stream_consumer_holder=[None],
         persist_user_display_kind=None,
+        heartbeat_turn=heartbeat_turn,
         source=_source(),
         _status_thread_metadata=None,
         event_message_id=None,
         inbound_message_id="msg-42",
         run_generation=1,
     )
-    result = {"final_response": "NO_REPLY", "failed": False}
+    result = {"final_response": "NO_REPLY", "failed": False, **status}
 
     await runner._run_agent_deliver_first_response(
         turn_ctx, None, result, result, None,
     )
 
-    assert "silence marker" in runner._deliver_queued_first_response.await_args.args[0]
+    if heartbeat_turn and not status:
+        runner._deliver_queued_first_response.assert_not_awaited()
+    elif status.get("failed"):
+        assert runner._deliver_queued_first_response.await_args.args[0] == "NO_REPLY"
+    else:
+        assert "silence marker" in runner._deliver_queued_first_response.await_args.args[0]
 
 
 @pytest.mark.asyncio

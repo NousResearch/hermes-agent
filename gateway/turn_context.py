@@ -13,6 +13,8 @@ from typing import Any, Callable, List, Optional
 
 @dataclass
 class TurnContext:
+    # Gateway-only provenance: not persisted or forwarded to the model.
+    heartbeat_turn: bool = field(default=False, kw_only=True)
     # read-only turn identity / wiring
     source: Any = None
     _run_still_current: Callable[[], bool] = None  # type: ignore[assignment]

@@ -23,7 +23,7 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
-from gateway.response_filters import display_kind_for_event, is_machinery_display_kind
+from gateway.response_filters import allows_final_silence, display_kind_for_event
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
@@ -1375,7 +1375,7 @@ class GatewayTurnMixin:
     async def _hmwa_shape_agent_response(
         self, agent_result, source, history, session_entry, session_key,
         _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
-        persist_user_display_kind: Optional[str] = None,
+        persist_user_display_kind: Optional[str] = None, heartbeat_turn: bool = False,
     ):
         """Turn the raw agent result into the outbound text: sentinel/silence handling, response
         logging, resume-pending clear, empty-response normalization, and identity-guarded
@@ -1394,7 +1394,8 @@ class GatewayTurnMixin:
         # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
         # opened the chain: an internal follow-up may go silent, a human one must not.
         _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
-        if _intentional_silence and not is_machinery_display_kind(_silence_kind):
+        _heartbeat_turn = agent_result.get("queued_terminal_heartbeat_turn", heartbeat_turn)
+        if _intentional_silence and not allows_final_silence(agent_result, _silence_kind, _heartbeat_turn):
             logger.warning(
                 "silence marker rejected on a user turn: platform=%s chat=%s",
                 _platform_name, source.chat_id or "unknown",
@@ -2052,6 +2053,7 @@ class GatewayTurnMixin:
                 persist_user_timestamp=prepared.persist_user_timestamp,
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 persist_user_display_metadata={"gateway_input_owner": prepared.persistence_owner},
+                heartbeat_turn=bool(getattr(event, "_heartbeat_session_id", None)),
                 message_type=event.message_type,
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
@@ -2075,6 +2077,7 @@ class GatewayTurnMixin:
                 agent_result, source, history, session_entry, session_key,
                 _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
                 persist_user_display_kind=prepared.persist_user_display_kind,
+                heartbeat_turn=bool(getattr(event, "_heartbeat_session_id", None)),
             )
             response = self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence)
             _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)
@@ -3519,7 +3522,10 @@ class GatewayTurnMixin:
         )
         # Same silence predicate as the normal path, else this branch leaks the literal marker.
         if self._is_intentional_silence(_delivery_result, first_response):
-            if is_machinery_display_kind(turn_ctx.persist_user_display_kind):
+            if allows_final_silence(
+                _delivery_result, turn_ctx.persist_user_display_kind,
+                getattr(turn_ctx, "heartbeat_turn", False),
+            ):
                 logger.info(
                     "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
                     session_key or "?",
@@ -3606,6 +3612,7 @@ class GatewayTurnMixin:
         # topic turns with the same text would collide on one obligation id (queued-final-ledger).
         next_inbound_id = None
         next_display_kind = display_kind_for_event(pending_event)
+        next_heartbeat_turn = bool(getattr(pending_event, "_heartbeat_session_id", None))
         # See #60671.
         if pending_event is not None:
             next_source = getattr(pending_event, "source", None) or source
@@ -3679,6 +3686,7 @@ class GatewayTurnMixin:
                 event_message_id=next_message_id, inbound_message_id=next_inbound_id,
                 channel_prompt=next_channel_prompt, message_type=next_message_type,
                 persist_user_display_kind=next_display_kind,
+                heartbeat_turn=next_heartbeat_turn,
             )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(
@@ -3702,6 +3710,7 @@ class GatewayTurnMixin:
                 **merged,
                 "queued_terminal_inbound_id": next_inbound_id,
                 "queued_terminal_display_kind": next_display_kind,
+                "queued_terminal_heartbeat_turn": next_heartbeat_turn,
             }
         return merged
 
@@ -3997,7 +4006,7 @@ class GatewayTurnMixin:
         channel_prompt: Optional[str] = None, moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
-        persist_user_display_metadata: Optional[dict] = None,
+        persist_user_display_metadata: Optional[dict] = None, heartbeat_turn: bool = False,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
@@ -4022,6 +4031,7 @@ class GatewayTurnMixin:
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
             persist_user_display_metadata=persist_user_display_metadata,
+            heartbeat_turn=heartbeat_turn,
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,

@@ -132,7 +132,9 @@ Each platform adapter receives messages, routes them through a per-chat session 
 
 ## Intentional Silence Tokens
 
-For group chats, hooks, and automation flows, Hermes supports explicit silence tokens. If the agent's final response is exactly one supported token, the gateway suppresses outbound delivery and sends nothing to the chat.
+For trusted self-injected notifications and scheduled per-session heartbeats, Hermes supports explicit silence tokens. If the final response is exactly one supported token, the gateway can suppress the final outbound reply. For heartbeats, the result must not be failed, interrupted, partial, or explicitly incomplete (`completed=False`). Self-injected notifications retain their existing not-failed policy. Human-initiated turns instead receive a visible retry notice when the model returns only a silence token; writing a heartbeat header in a human message does not change that policy. In a queued chain, the terminal turn's provenance determines whether its final reply may be silent.
+
+This controls final replies, not tool-progress messages or other activity already sent during the turn.
 
 Supported tokens:
 

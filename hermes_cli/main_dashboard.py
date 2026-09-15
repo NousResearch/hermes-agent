@@ -274,13 +274,18 @@ def _launchd_job_owning_backend(
 ) -> tuple[str, str, int | None] | None:
     """``(domain, label, live_pid)`` of the loaded launchd job that owns *pid*: launchd reports *pid*
     (or one of its *ancestors* — a plist may wrap the backend in ``/bin/sh -c …`` without ``exec``)
-    as the job's live process, OR the process runs the job's exact ``ProgramArguments`` — a detached
-    copy of a supervised backend (an earlier respawn) holds the port the job needs, and respawning it
-    again would only re-create that conflict. None when no loaded job claims the process."""
+    as the job's live process, OR the process runs the job's ``ProgramArguments`` — a detached copy
+    of a supervised backend (an earlier respawn) holds the port the job needs, and respawning it again
+    would only re-create that conflict. ``--no-open`` is ignored on both sides: the respawn path adds
+    it, so an earlier respawn's argv is the plist's plus that flag. None when no loaded job claims
+    the process."""
+    def _norm(argv: list[str]) -> list[str]:
+        return [a for a in argv if a != "--no-open"]
+
     for domain, label, argv, live_pid in jobs:
         if live_pid is not None and (live_pid == pid or live_pid in ancestors):
             return (domain, label, live_pid)
-        if cmdline is not None and list(cmdline) == argv:
+        if cmdline is not None and _norm(list(cmdline)) == _norm(argv):
             return (domain, label, live_pid)
     return None
 

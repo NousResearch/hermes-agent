@@ -1054,6 +1054,9 @@ class TestLaunchdSupervisedBackends:
         assert owning(4242, ["something", "else"], jobs) == (f"user/{uid}", "ai.hermes.dashboard", 4242)
         assert owning(9999, ["python"], jobs, ancestors=[4242, 1]) == (f"user/{uid}", "ai.hermes.dashboard", 4242)
         assert owning(9999, serve_argv, jobs) == ("system", "ai.hermes.serve", None)
+        # An earlier detached respawn runs the plist argv plus the ``--no-open`` the respawn path
+        # appends; it must still be attributed to the job, or every update respawns it again.
+        assert owning(9999, backend_argv + ["--no-open"], jobs) == (f"user/{uid}", "ai.hermes.dashboard", 4242)
         assert owning(9999, serve_argv[:-1] + ["8643"], jobs) is None
         assert owning(9999, None, jobs) is None
         assert owning(4242, None, []) is None

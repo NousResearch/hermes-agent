@@ -1,6 +1,6 @@
 # CURRENT — Workstation Engineering Journal
 
-Last updated: 2026-09-14
+Last updated: 2026-09-15
 Active track: Workstation Knowledge Subsystem (Hermes Vault) & V3 Hardening
 Repository: `kevynlucasprofissional-stack/hermes-agent`
 Active feature branch: `main` plus current Workstation working tree
@@ -8,7 +8,7 @@ Journal entries:
 - `v1-1-5-integrated-dogfood-mvp.md` (V1 #1.5 MVP verification)
 - `v2-roadmap-completion.md` (Full roadmap completion: V1.1 and V2)
 - `v3-runtime-hardening-closure.md` (V3.1–V3.4 contract-layer closure)
-Status: 175/175 Workstation Pytest passing, Desktop typecheck passing.
+Status: 247/247 Workstation Pytest passing, Desktop typecheck passing; current-main audit closure appended below.
 
 ## H-049 — Workstation Browser Automation Ergonomics: Input Hygiene, Proactive Human Handoff, Canvas Awareness, and Batch Extraction
 
@@ -2928,3 +2928,48 @@ Immediately after:
 - promote stable product truth into canonical docs instead of leaving it only here.
 
 No experiment is complete until this file is updated. A checkpoint is never permission to stop; it is memory for the next action.
+
+## 2026-09-15 — Current-main Workstation gap audit closure
+
+Status: VALIDATED — focused contracts green; clean-candidate release evidence remains external
+
+Audit base: started at `main@b6ac2d273a43e287122db377bcfa702af6e7553c`, then
+rebased and revalidated on `origin/main@80d4ffce3cfba3ed03474a5b8ebcede4a7fc1770`
+after its docs-only advancement. The audit found and closed the confirmed
+host-independent path-policy failures, the Human Card → Agent Task delegation
+gap, the unscoped human browser-control boundary, extension update last-known-
+good handling, operational-reference loss risk in compaction, and the missing
+provider-free workload baseline.
+
+Evidence and ownership decisions:
+
+- `workstation/path_utils.py` classifies Windows drive/UNC, POSIX absolute and
+  relative syntax without applying the host OS's `abspath`; ReleaseQualification
+  and ScopedPolicyEngine now remain fail-closed across host/target OSes.
+- `hybrid_card_delegations` extends the canonical `hermes_cli.kanban_db`; it is
+  not a second task database. Attempts, restart/idempotency, independent
+  lifecycles, terminal writeback and compact evidence references are covered by
+  `tests/hermes_cli/test_hybrid_kanban.py`.
+- `BrowserHumanControlLease` is owned by `BrowserTask` and scoped by task,
+  session, tab/page/profile and expiry. Restore clears process-local human
+  authority; unrelated tasks remain runnable. Focused Electron lease contracts
+  passed.
+- `ChromeExtensionManager` journals promotion and retains the previous content
+  until load/verification commit. Staging, replace, load, verification and
+  restart recovery tests preserve v1 as last-known-good.
+- The compactor emits a bounded operational-reference envelope beside the
+  narrative summary. `workstation/benchmarks/workload_baseline.json` contains
+  deterministic structural counters for refs, deduplication, worker ACK/restart,
+  compaction, policy errors and event invalidation; no private `.db` is committed.
+- KI-007 was not reproduced by the deterministic session/export/reconnect and
+  concurrent close/export test, so SessionDB was deliberately not rewritten.
+
+Validation on this working tree: `python -m pytest -q workstation/tests` passed
+247 tests; the focused Hybrid/worker/policy/plugin contracts passed 78 tests;
+extension/KI-007/benchmark/compaction contracts passed 17 tests; compaction
+regressions passed 148 tests; Desktop typecheck passed; the Electron platform
+suite passed 1,778 tests with 5 pre-existing skips; and strict doctor, lock,
+license and integration-anchor checks passed. The full Desktop UI suite passed
+591 files / 5,669 tests with `--maxWorkers=4`; the integrated Workstation
+Browser E2E passed 2/2. Release promotion still requires the existing
+clean-machine candidate workflow and branch-protection governance.

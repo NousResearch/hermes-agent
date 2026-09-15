@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import shutil
 import tempfile
+from copy import deepcopy
 from typing import Any, Optional
 import urllib.request
 import zipfile
@@ -115,6 +116,7 @@ class ChromeExtensionManager:
         self.storage_dir = storage_dir or get_extensions_dir()
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         self.registry_file = self.storage_dir / "extensions.json"
+        self._recover_pending_update()
 
     def extract_extension_id(self, input_str: str) -> str:
         """Extract a 32-character Chrome extension ID from a URL or raw ID string."""
@@ -183,6 +185,89 @@ class ChromeExtensionManager:
         except Exception:
             return {"extensions": {}}
 
+    def _read_registry_document(self) -> dict[str, Any] | None:
+        """Read the registry without hiding an interrupted transaction."""
+        if not self.registry_file.exists():
+            return {"extensions": {}}
+        try:
+            with open(self.registry_file, "r", encoding="utf-8") as f:
+                value = json.load(f)
+        except Exception:
+            return None
+        return value if isinstance(value, dict) else None
+
+    def _managed_path(self, value: str | Path | None) -> Path | None:
+        """Resolve a transaction path and reject paths outside the extension store."""
+        if not value:
+            return None
+        candidate = Path(value)
+        root = self.storage_dir.resolve()
+        try:
+            candidate.resolve().relative_to(root)
+        except ValueError as exc:
+            raise RuntimeError("Extension transaction references a path outside the store") from exc
+        return candidate
+
+    @staticmethod
+    def _remove_managed_path(path: Path | None) -> None:
+        if path is None or not path.exists():
+            return
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+
+    def _recover_pending_update(self) -> None:
+        """Recover an update interrupted before or after the registry commit.
+
+        The registry is the tiny transaction journal.  A ``promoting`` record
+        always restores the previous installation; a ``committed`` record
+        keeps the candidate and only finishes cleanup.  This makes startup
+        deterministic after a process or registry interruption while keeping
+        the existing ChromeExtensionManager as the sole extension owner.
+        """
+        reg = self._read_registry_document()
+        if reg is None:
+            return
+        transaction = reg.get("_update")
+        if not isinstance(transaction, dict):
+            return
+        ext_id = str(transaction.get("extension_id") or "").strip().lower()
+        if not re.fullmatch(r"[a-p]{32}", ext_id):
+            raise RuntimeError("Extension registry contains an invalid update transaction")
+
+        target_dir = self._managed_path(self.storage_dir / ext_id)
+        backup_dir = self._managed_path(transaction.get("backup_path"))
+        candidate_dir = self._managed_path(transaction.get("candidate_path"))
+        state = str(transaction.get("state") or "promoting")
+        previous_entry = transaction.get("previous_entry")
+        extensions = reg.setdefault("extensions", {})
+
+        if state == "committed":
+            self._remove_managed_path(backup_dir)
+            self._remove_managed_path(candidate_dir)
+            reg.pop("_update", None)
+            self._save_registry(reg)
+            return
+        if state != "promoting":
+            raise RuntimeError(f"Unknown extension update transaction state: {state}")
+
+        # If the old directory was moved, it is the last-known-good copy.
+        # If promotion had not started yet, leave the existing target alone.
+        if backup_dir is not None and backup_dir.exists():
+            self._remove_managed_path(target_dir)
+            os.replace(backup_dir, target_dir)
+        elif previous_entry is None:
+            # A new install may have promoted before the process stopped.
+            self._remove_managed_path(target_dir)
+        self._remove_managed_path(candidate_dir)
+        if isinstance(previous_entry, dict):
+            extensions[ext_id] = previous_entry
+        else:
+            extensions.pop(ext_id, None)
+        reg.pop("_update", None)
+        self._save_registry(reg)
+
     def _save_registry(self, data: dict[str, Any]) -> None:
         temporary = self.registry_file.with_suffix(".tmp")
         with open(temporary, "w", encoding="utf-8") as f:
@@ -198,28 +283,11 @@ class ChromeExtensionManager:
             raise ValueError("Extension manifest must be an object with a version")
         return manifest, assess_extension_risk(manifest)
 
-    def install_from_bytes(self, ext_id: str, crx_bytes: bytes) -> dict[str, Any]:
-        """Install extension from raw CRX bytes (useful for offline/tests)."""
-        target_dir = self.storage_dir / ext_id
-        staging_dir = Path(tempfile.mkdtemp(prefix=f".{ext_id}-", dir=self.storage_dir))
-        unpacked = staging_dir / "extension"
-        try:
-            self.unpack_crx(crx_bytes, unpacked)
-            manifest = self.get_manifest(unpacked)
-            if not isinstance(manifest, dict) or not str(manifest.get("version") or "").strip():
-                raise ValueError("Extension manifest must be an object with a version")
-            if target_dir.exists():
-                shutil.rmtree(target_dir)
-            os.replace(unpacked, target_dir)
-        finally:
-            shutil.rmtree(staging_dir, ignore_errors=True)
-
+    def _entry_from_manifest(self, ext_id: str, target_dir: Path, manifest: dict[str, Any]) -> dict[str, Any]:
         name = manifest.get("name", ext_id)
-        # Handle localized message __MSG_name__ fallback
-        if name.startswith("__MSG_"):
+        if isinstance(name, str) and name.startswith("__MSG_"):
             name = ext_id
-
-        entry = {
+        return {
             "id": ext_id,
             "name": name,
             "version": manifest.get("version", "1.0.0"),
@@ -232,9 +300,112 @@ class ChromeExtensionManager:
             "risk": assess_extension_risk(manifest),
         }
 
-        reg = self._load_registry()
-        reg["extensions"][ext_id] = entry
+    def prepare_install_from_bytes(self, ext_id: str, crx_bytes: bytes) -> dict[str, Any]:
+        """Promote a candidate and retain the previous version until verification.
+
+        Callers that load/verify the candidate must call ``commit_update`` on
+        success or ``rollback_update`` on failure.  The normal offline install
+        API below commits immediately for callers without a runtime verifier.
+        """
+        ext_id = self.extract_extension_id(ext_id)
+        target_dir = self.storage_dir / ext_id
+        staging_dir = Path(tempfile.mkdtemp(prefix=f".{ext_id}-", dir=self.storage_dir))
+        unpacked = staging_dir / "extension"
+        try:
+            self.unpack_crx(crx_bytes, unpacked)
+            manifest = self.get_manifest(unpacked)
+            if not isinstance(manifest, dict) or not str(manifest.get("version") or "").strip():
+                raise ValueError("Extension manifest must be an object with a version")
+
+            reg = self._load_registry()
+            previous_entry = deepcopy(reg.get("extensions", {}).get(ext_id))
+            backup_dir = self.storage_dir / f".{ext_id}-last-known-good"
+            self._remove_managed_path(backup_dir)
+            transaction = {
+                "state": "promoting",
+                "extension_id": ext_id,
+                "previous_entry": previous_entry,
+                "backup_path": str(backup_dir),
+                "candidate_path": str(unpacked),
+            }
+            reg["_update"] = transaction
+            self._save_registry(reg)
+
+            try:
+                if target_dir.exists():
+                    os.replace(target_dir, backup_dir)
+                os.replace(unpacked, target_dir)
+                entry = self._entry_from_manifest(ext_id, target_dir, manifest)
+                reg["extensions"][ext_id] = entry
+                self._save_registry(reg)
+            except Exception:
+                # Keep the registry journal until the old directory and old
+                # entry are restored.  The startup recovery path is the
+                # safety net if this cleanup itself is interrupted.
+                try:
+                    self._restore_update(reg, transaction)
+                except Exception as restore_exc:
+                    _log.error("Extension update rollback failed for %s: %s", ext_id, restore_exc)
+                raise
+            return entry
+        finally:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+
+    def _restore_update(self, reg: dict[str, Any], transaction: dict[str, Any]) -> None:
+        ext_id = str(transaction["extension_id"])
+        target_dir = self._managed_path(self.storage_dir / ext_id)
+        backup_dir = self._managed_path(transaction.get("backup_path"))
+        candidate_dir = self._managed_path(transaction.get("candidate_path"))
+        if backup_dir is not None and backup_dir.exists():
+            self._remove_managed_path(target_dir)
+            os.replace(backup_dir, target_dir)
+        elif transaction.get("previous_entry") is None:
+            self._remove_managed_path(target_dir)
+        self._remove_managed_path(candidate_dir)
+        previous_entry = transaction.get("previous_entry")
+        if isinstance(previous_entry, dict):
+            reg.setdefault("extensions", {})[ext_id] = previous_entry
+        else:
+            reg.setdefault("extensions", {}).pop(ext_id, None)
+        reg.pop("_update", None)
         self._save_registry(reg)
+
+    def commit_update(self, ext_id: str) -> None:
+        """Mark a verified candidate good and discard its rollback copy."""
+        ext_id = self.extract_extension_id(ext_id)
+        reg = self._load_registry()
+        transaction = reg.get("_update")
+        if not isinstance(transaction, dict) or transaction.get("extension_id") != ext_id:
+            return
+        transaction["state"] = "committed"
+        self._save_registry(reg)
+        self._remove_managed_path(self._managed_path(transaction.get("backup_path")))
+        self._remove_managed_path(self._managed_path(transaction.get("candidate_path")))
+        reg.pop("_update", None)
+        self._save_registry(reg)
+
+    def rollback_update(self, ext_id: str) -> None:
+        """Restore the last-known-good candidate after load/verification failure."""
+        ext_id = self.extract_extension_id(ext_id)
+        reg = self._load_registry()
+        transaction = reg.get("_update")
+        if not isinstance(transaction, dict) or transaction.get("extension_id") != ext_id:
+            return
+        # Once the journal has reached ``committed``, the candidate is the
+        # last-known-good version.  A caller can still observe an exception
+        # while final cleanup is being retried; treating that state as a
+        # rollback would point the registry back at v1 while the promoted
+        # directory is already v2.  Re-run deterministic committed cleanup
+        # instead, preserving the on-disk version and registry coherence.
+        if transaction.get("state") == "committed":
+            self._recover_pending_update()
+            return
+        self._restore_update(reg, transaction)
+
+    def install_from_bytes(self, ext_id: str, crx_bytes: bytes) -> dict[str, Any]:
+        """Install extension from raw CRX bytes (useful for offline/tests)."""
+        entry = self.prepare_install_from_bytes(ext_id, crx_bytes)
+        self.commit_update(ext_id)
         return entry
 
     def install_extension(self, identifier_or_url: str) -> dict[str, Any]:

@@ -1,0 +1,27 @@
+{
+  "benchmark_version": "workstation-workload-v1",
+  "tool_calls": 5,
+  "tool_result_bytes_inline": 20,
+  "tool_result_bytes_as_refs": 320,
+  "tool_result_bytes_avoided_by_refs": 11968,
+  "large_results_replaced_by_refs": 4,
+  "dedup_hits": 2,
+  "unique_result_references": 2,
+  "artifact_references": 2,
+  "unique_artifact_references": 2,
+  "worker_result_restart_recovery": 1,
+  "worker_result_ack_recovery": 1,
+  "compaction_input_chars": 949,
+  "operational_reference_envelope_chars": 553,
+  "operational_references_preserved": 11,
+  "structured_error_classifications": {
+    "deny": 1,
+    "require_approval": 1,
+    "sandbox": 1
+  },
+  "policy_evaluations": 3,
+  "policy_fail_closed_sensitive_path": 1,
+  "event_resource_invalidations": 3,
+  "event_bus_dropped_events": 0,
+  "polling_fallback_checks": 0
+}

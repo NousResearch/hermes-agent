@@ -30,6 +30,12 @@ import path from 'node:path'
 import { app, BrowserWindow, ipcMain, session, type Session, type WebContents, WebContentsView } from 'electron'
 
 import {
+  buildWorkstationResourceSnapshot,
+  WORKSTATION_EVENT_SCHEMA_VERSION,
+  type WorkstationEventSnapshot,
+  type WorkstationResourceSnapshot
+} from './workstation-browser-resources'
+import {
   BrowserSessionStateFilePersistence,
   type BrowserSessionStateSnapshot,
   type BrowserSessionTab,
@@ -38,13 +44,12 @@ import {
   safeRestorableUrlMetadata,
   safeTitleMetadata
 } from './workstation-browser-session-state'
-import { type BrowserTask, BrowserTaskLifecycle, type BrowserTaskSeed } from './workstation-browser-task'
 import {
-  buildWorkstationResourceSnapshot,
-  WORKSTATION_EVENT_SCHEMA_VERSION,
-  type WorkstationEventSnapshot,
-  type WorkstationResourceSnapshot
-} from './workstation-browser-resources'
+  type BrowserHumanControlLease,
+  type BrowserTask,
+  BrowserTaskLifecycle,
+  type BrowserTaskSeed
+} from './workstation-browser-task'
 
 const CACHE_CHECK_INTERVAL_MS = 30 * 60 * 1000
 const DEFAULT_CACHE_MAX_MB = 512
@@ -60,6 +65,7 @@ const FULL_TEXT_CHARS = 24_000
 const COMPACT_ELEMENTS = 120
 const FULL_ELEMENTS = 400
 const MAX_EVENTS_ENDPOINT = 200
+const HUMAN_CONTROL_LEASE_TTL_MS = 5 * 60 * 1000
 
 export function getStandardChromeUserAgent(): string {
   const plat = process.platform
@@ -114,6 +120,7 @@ export interface WorkstationBrowserState {
   backgroundCapable: true
   paused: boolean
   controlOwner: WorkstationBrowserControlOwner
+  humanControlLease?: BrowserHumanControlLease | null
   controlReady: boolean
   profilePath: string
   cacheBytes: number | null
@@ -167,24 +174,64 @@ export function normalizeWorkstationControllerError(error: unknown, resourceRef?
   }
 
   if (lower.includes('human control')) {
-    return { ...base, error_code: 'USER_CONTROL_ACTIVE', retryable: true, state_changed: true, recommended_action: 'WAIT_FOR_RELEASE' }
+    return {
+      ...base,
+      error_code: 'USER_CONTROL_ACTIVE',
+      retryable: true,
+      state_changed: true,
+      recommended_action: 'WAIT_FOR_RELEASE'
+    }
   }
   if (lower.includes('no_bound_browser_tab') || lower.includes('no active tab')) {
-    return { ...base, error_code: 'NO_BOUND_TAB', retryable: true, state_changed: true, recommended_action: 'BIND_OR_NAVIGATE' }
+    return {
+      ...base,
+      error_code: 'NO_BOUND_TAB',
+      retryable: true,
+      state_changed: true,
+      recommended_action: 'BIND_OR_NAVIGATE'
+    }
   }
-  if (lower.includes('ref_required') || lower.includes('element_unavailable') || lower.includes('browser_tab_destroyed')) {
+  if (
+    lower.includes('ref_required') ||
+    lower.includes('element_unavailable') ||
+    lower.includes('browser_tab_destroyed')
+  ) {
     return { ...base, error_code: 'STALE_REF', retryable: true, state_changed: true, recommended_action: 'RESNAPSHOT' }
   }
   if (lower.includes('timed out') || lower.includes('timeout')) {
-    return { ...base, error_code: 'TIMEOUT', retryable: true, state_changed: false, recommended_action: 'RETRY_WITH_BACKOFF' }
+    return {
+      ...base,
+      error_code: 'TIMEOUT',
+      retryable: true,
+      state_changed: false,
+      recommended_action: 'RETRY_WITH_BACKOFF'
+    }
   }
   if (lower.includes('unavailable') || lower.includes('could not bind')) {
-    return { ...base, error_code: 'CONTROLLER_DOWN', retryable: true, state_changed: true, recommended_action: 'RECONCILE_CONTROLLER' }
+    return {
+      ...base,
+      error_code: 'CONTROLLER_DOWN',
+      retryable: true,
+      state_changed: true,
+      recommended_action: 'RECONCILE_CONTROLLER'
+    }
   }
   if (lower.includes('unsupported') || lower.includes('invalid') || lower.includes('required')) {
-    return { ...base, error_code: 'INVALID_ARGUMENT', retryable: false, state_changed: false, recommended_action: 'CORRECT_REQUEST' }
+    return {
+      ...base,
+      error_code: 'INVALID_ARGUMENT',
+      retryable: false,
+      state_changed: false,
+      recommended_action: 'CORRECT_REQUEST'
+    }
   }
-  return { ...base, error_code: 'CAPABILITY_MISSING', retryable: false, state_changed: false, recommended_action: 'ESCALATE' }
+  return {
+    ...base,
+    error_code: 'CAPABILITY_MISSING',
+    retryable: false,
+    state_changed: false,
+    recommended_action: 'ESCALATE'
+  }
 }
 
 interface ControlHandle {
@@ -849,7 +896,7 @@ export class WorkstationBrowserRuntime {
   private preferredTaskId: string | null = null
   private bounds: WorkstationBrowserBounds | null = null
   private paused = false
-  private controlOwner: WorkstationBrowserControlOwner = 'agent'
+  private unboundHumanControlLease: BrowserHumanControlLease | null = null
   private lastError: string | null = null
   private viewVisible = true
   private cacheBytes: number | null = null
@@ -892,6 +939,18 @@ export class WorkstationBrowserRuntime {
   }
 
   state(): WorkstationBrowserState {
+    const activeTaskId = this.activeTabId ? (this.entries.get(this.activeTabId)?.ownerTaskId ?? null) : null
+    if (activeTaskId) {
+      this.taskLifecycle().hasActiveHumanControl(activeTaskId)
+    }
+    // hasActiveHumanControl() is also the authoritative expiry boundary. Read
+    // the task projection after it runs so state never reports an expired
+    // lease that was just removed from the lifecycle owner.
+    const tasks = this.listTasks()
+    const activeTaskLease = activeTaskId
+      ? (tasks.find(task => task.taskId === activeTaskId)?.humanControlLease ?? null)
+      : null
+    const activeLease = activeTaskLease ?? this.activeUnboundHumanControlLease()
     return {
       runtime: 'electron-chromium',
       ready: this.browserSession !== null,
@@ -899,13 +958,14 @@ export class WorkstationBrowserRuntime {
       viewportHost: this.attached ? this.viewportHost : null,
       backgroundCapable: true,
       paused: this.paused,
-      controlOwner: this.controlOwner,
+      controlOwner: activeLease ? 'human' : 'agent',
+      humanControlLease: activeLease,
       controlReady: this.control !== null,
       profilePath: workstationBrowserProfilePath(),
       cacheBytes: this.cacheBytes,
       activeTabId: this.activeTabId,
       tabs: Array.from(this.entries.values()).map(entry => this.tabState(entry)),
-      tasks: this.listTasks(),
+      tasks,
       downloads: [...this.downloads],
       lastError: this.lastError
     }
@@ -1492,15 +1552,86 @@ export class WorkstationBrowserRuntime {
     return this.state()
   }
 
-  takeControl(): WorkstationBrowserState {
-    this.controlOwner = 'human'
+  takeControl(taskId?: string, sessionId?: string): WorkstationBrowserState {
+    this.ensureBrowserSessionStateRestored()
+    const scopedTaskId = this.resolveControlTaskId(taskId)
+    if (scopedTaskId) {
+      const entry = this.entryForTask(scopedTaskId, false, sessionId, null, null)
+      const pageId = entry && typeof entry.view.webContents.id === 'number' ? entry.view.webContents.id : null
+      this.taskLifecycle().acquireHumanControl(
+        scopedTaskId,
+        {
+          sessionId: sessionId ?? this.taskLifecycle().task(scopedTaskId)?.sessionHost ?? null,
+          tabId: entry?.id ?? this.taskTabs.get(scopedTaskId) ?? null,
+          pageId,
+          profileScope: workstationBrowserProfilePath()
+        },
+        HUMAN_CONTROL_LEASE_TTL_MS
+      )
+    } else {
+      const tabId = this.activeTabId
+      if (!tabId) {
+        throw new Error('human control requires an active browser tab scope')
+      }
+      const timestamp = new Date().toISOString()
+      this.unboundHumanControlLease = {
+        owner: 'human',
+        taskId: `tab:${tabId}`,
+        sessionId: sessionId ?? null,
+        tabId,
+        pageId: null,
+        profileScope: workstationBrowserProfilePath(),
+        acquiredAt: this.unboundHumanControlLease?.acquiredAt ?? timestamp,
+        expiresAt: new Date(Date.now() + HUMAN_CONTROL_LEASE_TTL_MS).toISOString(),
+        renewedAt: this.unboundHumanControlLease ? timestamp : null
+      }
+    }
     this.emitState()
 
     return this.state()
   }
 
-  releaseControl(): WorkstationBrowserState {
-    this.controlOwner = 'agent'
+  releaseControl(taskId?: string): WorkstationBrowserState {
+    this.ensureBrowserSessionStateRestored()
+    const scopedTaskId = this.resolveControlTaskId(taskId)
+    if (scopedTaskId) {
+      this.taskLifecycle().releaseHumanControl(scopedTaskId)
+    } else {
+      this.unboundHumanControlLease = null
+    }
+    this.emitState()
+
+    return this.state()
+  }
+
+  renewControl(taskId?: string): WorkstationBrowserState {
+    this.ensureBrowserSessionStateRestored()
+    const scopedTaskId = this.resolveControlTaskId(taskId)
+    if (scopedTaskId) {
+      this.taskLifecycle().renewHumanControl(scopedTaskId, HUMAN_CONTROL_LEASE_TTL_MS)
+    } else if (this.unboundHumanControlLease) {
+      const timestamp = new Date().toISOString()
+      this.unboundHumanControlLease = {
+        ...this.unboundHumanControlLease,
+        expiresAt: new Date(Date.now() + HUMAN_CONTROL_LEASE_TTL_MS).toISOString(),
+        renewedAt: timestamp
+      }
+    } else {
+      throw new Error('No active human control lease')
+    }
+    this.emitState()
+
+    return this.state()
+  }
+
+  expireControl(taskId?: string): WorkstationBrowserState {
+    this.ensureBrowserSessionStateRestored()
+    const scopedTaskId = this.resolveControlTaskId(taskId)
+    if (scopedTaskId) {
+      this.taskLifecycle().expireHumanControl(scopedTaskId)
+    } else if (this.unboundHumanControlLease && Date.parse(this.unboundHumanControlLease.expiresAt) <= Date.now()) {
+      this.unboundHumanControlLease = null
+    }
     this.emitState()
 
     return this.state()
@@ -1590,7 +1721,12 @@ export class WorkstationBrowserRuntime {
         const message = error instanceof Error ? error.message : String(error)
         this.recordError(error)
         const structured = normalizeWorkstationControllerError(error)
-        const status = structured.error_code === 'USER_CONTROL_ACTIVE' || structured.error_code === 'NO_BOUND_TAB' || structured.error_code === 'STALE_REF' ? 409 : 400
+        const status =
+          structured.error_code === 'USER_CONTROL_ACTIVE' ||
+          structured.error_code === 'NO_BOUND_TAB' ||
+          structured.error_code === 'STALE_REF'
+            ? 409
+            : 400
         // Keep `error` for older controller clients while new clients receive
         // a stable code and a recovery action rather than retrying blindly.
         sendJson(res, status, { success: false, error: message, ...structured })
@@ -1714,7 +1850,7 @@ export class WorkstationBrowserRuntime {
     ])
 
     if (mutating.has(action)) {
-      this.assertAgentControl()
+      this.assertAgentControl(taskId)
     }
 
     if (sessionHost || kanbanCardId || runId) {
@@ -1725,7 +1861,11 @@ export class WorkstationBrowserRuntime {
       const entry = this.entryForTask(taskId, true, sessionHost, kanbanCardId, runId)!
       const url = normalizeWorkstationBrowserTarget(String(args.url ?? ''))
       await entry.view.webContents.loadURL(url)
-      if (!this.activeTabId || this.activeTabId === entry.id || (this.preferredTaskId && this.preferredTaskId === taskId)) {
+      if (
+        !this.activeTabId ||
+        this.activeTabId === entry.id ||
+        (this.preferredTaskId && this.preferredTaskId === taskId)
+      ) {
         this.activateTab(entry.id)
       }
 
@@ -1779,7 +1919,9 @@ export class WorkstationBrowserRuntime {
     }
 
     if (action === 'browser_extension_open_options') {
-      const extensionId = String(args.extension_id ?? '').trim().toLowerCase()
+      const extensionId = String(args.extension_id ?? '')
+        .trim()
+        .toLowerCase()
       const optionsPath = String(args.options_path ?? 'options.html').replace(/^[/\\]+/, '')
       if (!/^[a-p]{32}$/.test(extensionId) || !optionsPath || optionsPath.includes('..')) {
         throw new Error('invalid_extension_options_request')
@@ -1804,7 +1946,7 @@ export class WorkstationBrowserRuntime {
         return this.snapshotForEntry(entry, false)
 
       case 'browser_type': {
-        const clear = args.clear !== undefined ? Boolean(args.clear) : !Boolean(args.append)
+        const clear = args.clear !== undefined ? Boolean(args.clear) : !args.append
         const append = Boolean(args.append)
         await this.typeRef(entry, String(args.ref ?? ''), String(args.text ?? ''), { clear, append })
         await delay(160)
@@ -1849,13 +1991,43 @@ export class WorkstationBrowserRuntime {
     }
   }
 
-  private assertAgentControl(): void {
+  private resolveControlTaskId(taskId?: string): string | null {
+    const explicit = typeof taskId === 'string' && taskId.trim() ? taskId.trim() : null
+    const activeTaskId = this.activeTabId ? this.entries.get(this.activeTabId)?.ownerTaskId ?? null : null
+    const candidate = explicit ?? activeTaskId ?? this.preferredTaskId
+    if (candidate && this.taskLifecycle().task(candidate)) {
+      return candidate
+    }
+    if (explicit) {
+      throw new Error(`BrowserTask not found: ${explicit}`)
+    }
+    return null
+  }
+
+  private activeUnboundHumanControlLease(): BrowserHumanControlLease | null {
+    const lease = this.unboundHumanControlLease
+    if (!lease) {
+      return null
+    }
+    if (Date.parse(lease.expiresAt) <= Date.now() || lease.tabId !== this.activeTabId) {
+      this.unboundHumanControlLease = null
+      return null
+    }
+    return lease
+  }
+
+  private assertAgentControl(taskId: string): void {
     if (this.paused) {
       throw new Error('Hermes Browser is paused. Resume it before agent actions continue.')
     }
 
-    if (this.controlOwner === 'human') {
-      throw new Error('Hermes Browser is under human control. Release Control before agent actions continue.')
+    if (taskId !== 'default' && this.taskLifecycle().hasActiveHumanControl(taskId)) {
+      throw new Error(
+        `Hermes Browser task ${taskId} is under human control. Release Control before agent actions continue.`
+      )
+    }
+    if (taskId === 'default' && this.activeUnboundHumanControlLease()) {
+      throw new Error('Hermes Browser tab is under human control. Release Control before agent actions continue.')
     }
   }
 
@@ -2120,12 +2292,15 @@ export class WorkstationBrowserRuntime {
     // Canvas / WebGL SPA Settlement: if elements are sparse, check if canvas or heavy SPA is hydrating
     if (inv.elements.length <= 2) {
       try {
-        const spaCheck = (await wc.executeJavaScript(`(function () {
+        const spaCheck = (await wc.executeJavaScript(
+          `(function () {
           var hasCanvas = document.querySelector('canvas') !== null;
           var isMaps = location.hostname.includes('google.') && location.pathname.includes('/maps');
           var hasFeed = document.querySelector('div[role="feed"], main, #pane, [role="main"]') !== null;
           return { hasCanvas: hasCanvas, isMaps: isMaps, hasFeed: hasFeed };
-        })()`, true)) as { hasCanvas?: boolean; isMaps?: boolean; hasFeed?: boolean }
+        })()`,
+          true
+        )) as { hasCanvas?: boolean; isMaps?: boolean; hasFeed?: boolean }
 
         if (spaCheck?.hasCanvas || spaCheck?.isMaps) {
           for (let wait = 0; wait < 4; wait++) {
@@ -2140,7 +2315,8 @@ export class WorkstationBrowserRuntime {
             }
           }
           if (inv.elements.length <= 2 && spaCheck?.hasCanvas) {
-            inv.spaNotice = '[Canvas/WebGL SPA active: scene rendered on canvas. Use Page Text below or browser_extract_items.]'
+            inv.spaNotice =
+              '[Canvas/WebGL SPA active: scene rendered on canvas. Use Page Text below or browser_extract_items.]'
           }
         }
       } catch {
@@ -2238,7 +2414,8 @@ export class WorkstationBrowserRuntime {
     if (shouldClear) {
       // 1. Try DOM select() on active element
       try {
-        await wc.executeJavaScript(`(function () {
+        await wc.executeJavaScript(
+          `(function () {
           var el = document.activeElement;
           if (el) {
             if (typeof el.select === 'function') {
@@ -2253,7 +2430,9 @@ export class WorkstationBrowserRuntime {
               }
             }
           }
-        })()`, true)
+        })()`,
+          true
+        )
       } catch {
         // best effort
       }
@@ -2291,7 +2470,8 @@ export class WorkstationBrowserRuntime {
 
       // 4. Fallback: if value is still populated, clear it directly via DOM and dispatch input/change events
       try {
-        await wc.executeJavaScript(`(function () {
+        await wc.executeJavaScript(
+          `(function () {
           var el = document.activeElement;
           if (el) {
             if ('value' in el && el.value) {
@@ -2303,7 +2483,9 @@ export class WorkstationBrowserRuntime {
               el.dispatchEvent(new Event('input', { bubbles: true }));
             }
           }
-        })()`, true)
+        })()`,
+          true
+        )
       } catch {
         // best effort
       }
@@ -2487,7 +2669,7 @@ export class WorkstationBrowserRuntime {
 
   private extensionInfo(extensionId: string): any | null {
     const all = (this.browserSession as any)?.getAllExtensions?.()
-    return all && typeof all === 'object' ? all[extensionId] ?? null : null
+    return all && typeof all === 'object' ? (all[extensionId] ?? null) : null
   }
 
   private isLoadedExtensionUrl(url: string): boolean {
@@ -2499,7 +2681,10 @@ export class WorkstationBrowserRuntime {
     }
   }
 
-  private async loadExtensionForController(extensionId: string, extensionPath: string): Promise<Record<string, unknown>> {
+  private async loadExtensionForController(
+    extensionId: string,
+    extensionPath: string
+  ): Promise<Record<string, unknown>> {
     const id = extensionId.trim().toLowerCase()
     if (!/^[a-p]{32}$/.test(id)) {
       throw new Error('invalid_extension_id')
@@ -3214,8 +3399,21 @@ function registerIpc(): void {
   )
   ipcMain.handle('hermes:workstation-browser:pause', () => getWorkstationBrowserRuntime().pause())
   ipcMain.handle('hermes:workstation-browser:resume', () => getWorkstationBrowserRuntime().resume())
-  ipcMain.handle('hermes:workstation-browser:take-control', () => getWorkstationBrowserRuntime().takeControl())
-  ipcMain.handle('hermes:workstation-browser:release-control', () => getWorkstationBrowserRuntime().releaseControl())
+  ipcMain.handle('hermes:workstation-browser:take-control', (_event, taskId, sessionId) =>
+    getWorkstationBrowserRuntime().takeControl(
+      typeof taskId === 'string' ? taskId : undefined,
+      typeof sessionId === 'string' ? sessionId : undefined
+    )
+  )
+  ipcMain.handle('hermes:workstation-browser:release-control', (_event, taskId) =>
+    getWorkstationBrowserRuntime().releaseControl(typeof taskId === 'string' ? taskId : undefined)
+  )
+  ipcMain.handle('hermes:workstation-browser:renew-control', (_event, taskId) =>
+    getWorkstationBrowserRuntime().renewControl(typeof taskId === 'string' ? taskId : undefined)
+  )
+  ipcMain.handle('hermes:workstation-browser:expire-control', (_event, taskId) =>
+    getWorkstationBrowserRuntime().expireControl(typeof taskId === 'string' ? taskId : undefined)
+  )
   ipcMain.handle('hermes:workstation-browser:cleanup-cache', (_event, force) =>
     getWorkstationBrowserRuntime().cleanupCache(Boolean(force))
   )

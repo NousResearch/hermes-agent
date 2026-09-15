@@ -84,7 +84,7 @@ deleting coverage:
   an injected boundary.
 
 Validation: Desktop UI **591 files / 5,669 tests passed**; Desktop
-platform/Electron **126 files / 1,760 tests passed, 5 skipped**; Desktop
+platform/Electron **126 files / 1,778 tests passed, 5 skipped**; Desktop
 typecheck passed. The baseline comparison above remains historical evidence;
 KI-006 is no longer an open failure on this working tree.
 
@@ -95,6 +95,15 @@ KI-006 is no longer an open failure on this working tree.
 **Causality status:** **unproven**. Preview/browser behavior has independent reproduced gaps, so this issue must not be used as their explanation without a causal trace.
 
 **Required proof before any SessionDB/Gateway change:** reproduce on current `main` → identify endpoint/caller/session id → determine lineage/compression/rotation expectations → identify the responsible line/race → add regression test → only then change core.
+
+**Current audit result (2026-09-15):** a deterministic provider-free regression
+scenario now creates a session, binds task/browser metadata, persists
+user/assistant/tool messages, finalizes, closes/reconnects through separate
+handles, exports the session/lineage and exercises concurrent close/export plus
+rotation-like writer activity. It passed in
+`tests/hermes_state/test_ki007_session_export.py`; `export_session()` never
+returned `session: null`. KI-007 therefore remains **NOT_REPRODUCED / evidence
+gap**, and no SessionDB rewrite is justified.
 
 ## KI-008 — V3 product-level acceptance evidence is still open
 

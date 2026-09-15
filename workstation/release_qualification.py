@@ -24,6 +24,7 @@ import time
 from typing import Any, Callable, Mapping, Sequence
 
 from workstation.isolation import ReleaseQualificationGate
+from workstation.path_utils import classify_path, path_is_within
 from workstation.session_lifecycle import SessionLifecycleStore
 
 
@@ -240,14 +241,13 @@ class ReleaseQualificationRunner:
         workstation_home = data.get("workstation_home")
         if not isinstance(workstation_home, str) or not workstation_home.strip():
             return StageCheck(False, "clean-install evidence must name workstation_home")
-        workstation_home_path = Path(workstation_home.strip())
-        if not workstation_home_path.is_absolute():
+        workstation_home_value = workstation_home.strip()
+        workstation_home_path = classify_path(workstation_home_value)
+        if not workstation_home_path.is_absolute:
             return StageCheck(False, "clean-install workstation_home must be absolute")
-        try:
-            if workstation_home_path == self.root or self.root in workstation_home_path.parents:
-                return StageCheck(False, "clean-install workstation_home must be outside the candidate checkout")
-        except (OSError, ValueError):
-            return StageCheck(False, "clean-install workstation_home is not a valid path")
+        containment = path_is_within(str(self.root), workstation_home_value)
+        if containment is True:
+            return StageCheck(False, "clean-install workstation_home must be outside the candidate checkout")
         evidence_revision = str(data.get("candidate_revision", ""))
         stages = data.get("stages", [])
         stage_names = {str(item) for item in stages} if isinstance(stages, list) else set()

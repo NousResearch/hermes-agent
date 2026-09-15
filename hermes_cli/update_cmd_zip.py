@@ -286,6 +286,15 @@ def _download_and_swap_zip(branch: str, zip_url: str) -> None:
         extracted = _extracted_root(tmp_dir, branch)
         entries = [i for i in os.listdir(extracted) if i not in _ZIP_PRESERVED_TOP_LEVEL]
         project_root = str(_m().PROJECT_ROOT)
+        stashed_outputs = []
+        for rel_path in ("apps/desktop/release", "apps/desktop/dist", "hermes_cli/web_dist"):
+            src = os.path.join(project_root, os.path.normpath(rel_path))
+            if os.path.exists(src):
+                dst = os.path.join(tmp_dir, "stash_" + rel_path.replace("/", "_"))
+                with suppress(Exception):
+                    shutil.move(src, dst)
+                    stashed_outputs.append((dst, src))
+
         _require_staging_space(extracted, entries, project_root)
         staged = _stage_entries(extracted, entries, project_root)
         try:
@@ -294,16 +303,28 @@ def _download_and_swap_zip(branch: str, zip_url: str) -> None:
             recheck_reason = _zip_overlay_block_reason(_m().PROJECT_ROOT, ignore_staging_artifacts=True)
             if recheck_reason is not None:
                 _discard_staged(staged)
+                for dst, src in stashed_outputs:
+                    with suppress(Exception):
+                        os.makedirs(os.path.dirname(src), exist_ok=True)
+                        shutil.move(dst, src)
                 print(f"✗ ZIP fallback aborted before the swap: {recheck_reason}.")
                 print("  Files appeared in the checkout while the update was downloading; committing the swap would delete them.")
                 print(_STASH_HINT)
                 _m().sys.exit(1)
             _commit_staged_replacements(staged)
+            for dst, src in stashed_outputs:
+                with suppress(Exception):
+                    os.makedirs(os.path.dirname(src), exist_ok=True)
+                    shutil.move(dst, src)
         except Exception:
             # Rollback restored swapped entries but staging copies for the rest remain; drop them or the
             # retry's up-front free-space check (runs BEFORE per-entry leftover cleanup) fails on our litter.
             # Safe post-rollback: _discard_staged skips paths that no longer exist.
             _discard_staged(staged)
+            for dst, src in stashed_outputs:
+                with suppress(Exception):
+                    os.makedirs(os.path.dirname(src), exist_ok=True)
+                    shutil.move(dst, src)
             raise
         print(f"✓ Updated {len(staged)} items from ZIP")
     except Exception as e:

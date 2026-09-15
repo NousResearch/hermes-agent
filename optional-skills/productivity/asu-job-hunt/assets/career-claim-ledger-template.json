@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "profile": {
+    "candidate_id": "fictional-candidate",
+    "target_roles": [
+      "AI 应用工程师实习生"
+    ],
+    "updated_at": "2026-09-03"
+  },
+  "claims": [
+    {
+      "id": "claim-open-source-001",
+      "source_fact": "为一个虚构开源项目补充 Python 快速开始的环境变量说明和运行验证命令，PR 已合并。",
+      "candidate_wording": "为开源项目完善 Python 快速开始流程，补充环境变量配置与可复现验证命令；PR 已被合并。",
+      "sources": [
+        {
+          "type": "pull_request",
+          "location": "https://example.com/OpenPromptLab/guidebook/pull/18",
+          "public": true,
+          "note": "虚构示例链接"
+        }
+      ],
+      "responsibility_level": "负责模块",
+      "verification_status": "已确认",
+      "allowed_uses": [
+        "AI 应用工程师实习生简历",
+        "HR 开场白",
+        "面试自我介绍"
+      ],
+      "interview_details": {
+        "decisions": [
+          "将配置说明放在首次运行步骤之前"
+        ],
+        "difficulties": [
+          "确保示例从空目录可以复现"
+        ],
+        "verification": [
+          "从空目录完成快速开始流程",
+          "Markdown 预览通过"
+        ],
+        "result": "维护者合并 PR"
+      },
+      "boundary": "贡献范围为文档和开发者体验，不涉及核心模型代码。",
+      "risk_notes": [],
+      "last_verified": "2026-09-03"
+    },
+    {
+      "id": "claim-gpa-001",
+      "source_fact": "两份材料中的 GPA 数值不一致。",
+      "candidate_wording": "【待补：以最新官方成绩单确认 GPA】",
+      "sources": [
+        {
+          "type": "document",
+          "location": "示例简历 A",
+          "public": false,
+          "note": "记录为 3.70"
+        },
+        {
+          "type": "document",
+          "location": "示例申请表 B",
+          "public": false,
+          "note": "记录为 3.73"
+        }
+      ],
+      "responsibility_level": "参与",
+      "verification_status": "待确认",
+      "allowed_uses": [],
+      "interview_details": {
+        "decisions": [],
+        "difficulties": [],
+        "verification": [
+          "核对最新官方成绩单"
+        ],
+        "result": null
+      },
+      "boundary": "确认前不得进入正式简历或公开资料。",
+      "risk_notes": [
+        "简历、领英和申请表必须统一"
+      ],
+      "last_verified": null
+    }
+  ]
+}

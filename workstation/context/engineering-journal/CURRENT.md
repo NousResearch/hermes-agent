@@ -11,6 +11,91 @@ Journal entries:
 Status: 158/158 Workstation Pytest passing, Desktop typecheck passing; broad
 Desktop UI and platform/Electron suites pass after the HW-018 KI-006 closure.
 
+## H-054 — Corpus hardening audit: retain only gaps reproducible on current `main`
+
+Status: ACTIVE — evidence and focused reproductions in progress
+Origin: real Hermes conversation corpus supplied for the Workstation hardening
+audit
+Audit base: `main@1ca169ca15626071c21122f3ea6801065de8d407` (2026-09-14)
+
+### Scope and evidence boundary
+
+The supplied corpus describes 50 conversations with repeated tool payloads,
+long polling waits, compactions and tool-call limits. It is workload evidence,
+not proof that an historical implementation still has the same defect. The
+named corpus Markdown/CSV attachments were not present in this checkout during
+the initial audit, so their stated aggregate figures are retained as the task
+input but no per-conversation causal claim is made without the attachments or a
+current reproduction.
+
+### Initial gap matrix on the audit base
+
+| Area | Classification | Current evidence / disposition |
+| --- | --- | --- |
+| Large tool-result spillover | PARTIAL | `tools.tool_result_storage` persists only oversized results and gives a text/path preview; it has no content-addressed reference, scope-safe stable-result reuse, or `unchanged` contract. `read_file` is deliberately exempted from spillover. |
+| Inline budget / large outputs | PARTIAL | Per-result and per-turn character budgets exist, but no normalized `verbosity`/`inline_budget`/artifact contract governs all results. |
+| Persistent-worker result durability | CONFIRMED_GAP | `workstation/workers.py` persists worker records and pending messages, while `WorkerResultEnvelope`s live only in `PersistentWorker._results`; reconstructed workers start with an empty result list. |
+| WorkItems / exception-driven execution | PARTIAL | Persistent workers, journal and events exist; no durable WorkItem lifecycle or generic validator-to-anomaly escalation was found. |
+| Structured operational errors | CONFIRMED_GAP | The Electron controller serializes action exceptions as `{ success: false, error: message }`, rather than a stable remediation contract. |
+| BrowserTask lifecycle/restart | ALREADY_SOLVED | BrowserTask/BrowserSessionState single-page and lazy restart contracts are implemented and covered by focused/runtime/native evidence. |
+| Controller descriptor reconciliation | PARTIAL | Controller startup writes a descriptor with the Electron PID, but the audited route still needs a current lifecycle/reconciliation proof before any extraction or rewrite is considered. |
+| Human takeover | PARTIAL | Browser actions are blocked while `controlOwner === 'human'`; the present owner is runtime-global, so cross-host/task scoping needs focused validation before changing semantics. |
+| Process ownership guardrails | ALREADY_SOLVED | `tools.process_registry` only tree-kills tracked spawned PIDs and verifies recorded process start time before signalling; no wildcard Chrome-kill path was found in that owner. |
+| Event-driven waits | PARTIAL | `RuntimeEventBus` and worker blocking waits exist, but reusable condition-specific await projections have not yet been established. |
+| Context compaction | PARTIAL | Workstation session lifecycle records compaction markers and bounded memory compaction exists, but the core conversation compactor still needs a separate trace before a non-recursive operational-reference change can be justified. |
+| Session `null` / KI-007 | NOT_REPRODUCED | KI-007 remains causally unproven; no SessionDB/Gateway change is authorized without the documented reproduction gate. |
+| Session forensic manifest | PARTIAL | Session/worker/resource identities are individually projected; no single redacted manifest export was established in this audit. |
+| Capability preflight | PARTIAL | Worker/host/toolset capability sources exist, but no single WorkPlan projection has yet been found. |
+| Toolset/schema handles | PARTIAL | Tool-definition caching/fingerprinting exists, but repeated discovery results have no consumer-visible delta handle. |
+| Skill identity / collisions | ALREADY_SOLVED | Skill hashes and explicit ambiguous-name rejection are present; no silent collision reproduction was found. |
+| Skill preflight | PARTIAL | Existing guard and install validation cover substantial input validation; model-visible preflight constraints require a separate skill-manager trace. |
+| Effective configuration semantics | NOT_REPRODUCED | The historical unknown-key symptom was not reproduced in the audit window; no config-owner change is justified yet. |
+| Typed host/process operations | PARTIAL | The tracked ProcessRegistry and host adapters cover high-value operations; shell-wide command paths still need a focused safety/capability audit before adding API surface. |
+| Provenance/validators | PARTIAL | Perception, journal and evidence metadata exist, but no generic WorkItem validator escalation was found. |
+| Experience promotion | PARTIAL | Procedure promotion is explicit; the requested skill/guardrail/regression triage needs a separately scoped evidence lifecycle. |
+| Observability projection | ALREADY_SOLVED | EvidenceState, RuntimeEventBus, resources and Desktop projections already expose the canonical operational plane. |
+| Corpus benchmark | CONFIRMED_GAP | No versioned baseline-vs-hardened benchmark for the supplied workload shape was found. |
+
+### First focused experiments
+
+1. Reconstruct a completed persistent worker and prove whether an unread result
+   survives exactly once.
+2. Exercise the existing result-persistence boundary twice with stable content,
+   then verify whether the second delivery can be represented by a safe handle
+   instead of reinjecting the raw body.
+3. Exercise controller error normalization at the authenticated action boundary
+   without changing BrowserTask ownership or fallback routing.
+
+No new SessionDB, Kanban, Memory store, BrowserTask store, browser runtime,
+agent core, scheduler or event bus is permitted by this investigation.
+
+### Observed result — 2026-09-15
+
+- Confirmed the worker-result gap with the pre-change implementation: a
+  reconstructed `PersistentWorker` had an empty `_results` list even when the
+  previous executor had completed.
+- `WorkerMessage.work_item_id`, a durable result envelope, explicit consumer
+  ACK and durable in-flight claim now extend the existing worker record. The
+  result is persisted before journal/event publication; persistence failure
+  leaves recovery work and never publishes `COMPLETED`.
+- Large results already selected for spillover now receive scope-isolated
+  content-addressed `result_ref`, `content_hash`, `artifact_ref`, byte count,
+  cache status and `inline_truncated` metadata. Repeated content in the same
+  task scope reuses the immutable artifact; a distinct scope receives a
+  distinct reference. This is a representation cache, not an unsafe
+  argument-only execution cache.
+- The Electron controller keeps the compatible `error` string and now adds a
+  structured recovery contract for stale refs, unbound tabs, human control,
+  timeout, invalid arguments and controller loss. BrowserTask ownership and
+  fail-closed routing remain unchanged.
+- Focused validation: `43 passed` across
+  `tests/tools/test_tool_result_storage.py` and
+  `workstation/tests/test_persistent_workers.py`; Python compile check passed.
+  Electron typecheck/runtime validation remains blocked locally because the
+  existing shared `node_modules` cannot materialize its locked dev dependencies
+  (`ENOTEMPTY` during npm install). No dependency directory was removed or
+  repaired by this investigation.
+
 ## H-046 — Chrome Web Store support is not yet an agentic capability boundary
 
 Status: PARTIALLY RESOLVED — governed agentic install slice validated; discovery/catalog and dedicated UI remain open

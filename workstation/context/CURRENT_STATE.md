@@ -63,6 +63,13 @@ On `main` plus the current Workstation V3 hardening working tree:
   - Versioned routine promotion/replay, persistent WorkerRegistry queue/control,
     temporal memory/snapshots, session ownership/migration/compaction,
     portable replay/fork, protocol adapters, isolation and evaluation gates.
+  - Persistent worker results use a durable envelope/ACK handoff over the
+    existing worker record: an executor result is persisted before it is
+    journaled or published, unread results survive reconstruction, and claimed
+    work remains explicit recovery work when persistence cannot be confirmed.
+    Large spillover results are content-addressed within task scope and expose
+    a reference-first metadata contract without becoming an argument-only
+    execution cache.
   - Shared resource/event client boundary: Electron BrowserTask/page ownership
     publishes versioned `/resources` and bounded `/events` projections; Desktop
     IPC, Dashboard REST and TUI JSON-RPC consume the same read-only contracts,

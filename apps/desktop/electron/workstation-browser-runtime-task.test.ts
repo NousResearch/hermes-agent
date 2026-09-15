@@ -196,6 +196,7 @@ vi.mock('electron', () => ({
 
 import {
   getStandardChromeUserAgent,
+  normalizeWorkstationControllerError,
   WorkstationBrowserRuntime,
   workstationBrowserSessionStatePath
 } from './workstation-browser-runtime'
@@ -210,6 +211,24 @@ afterEach(() => {
   for (const root of tempRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true })
   }
+})
+
+test('controller error contract recommends a state-changing recovery instead of blind retry', () => {
+  assert.deepEqual(normalizeWorkstationControllerError(new Error('no_bound_browser_tab: call browser_navigate first')), {
+    error_code: 'NO_BOUND_TAB',
+    message: 'no_bound_browser_tab: call browser_navigate first',
+    retryable: true,
+    retry_after_ms: 0,
+    state_changed: true,
+    recommended_action: 'BIND_OR_NAVIGATE',
+    resource_ref: undefined,
+    details: {}
+  })
+  assert.equal(
+    normalizeWorkstationControllerError(new Error('Hermes Browser is under human control. Release Control before agent actions continue.')).error_code,
+    'USER_CONTROL_ACTIVE'
+  )
+  assert.equal(normalizeWorkstationControllerError(new Error('element_unavailable')).recommended_action, 'RESNAPSHOT')
 })
 
 function runtimeHome(): string {

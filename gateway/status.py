@@ -960,7 +960,17 @@ def shared_listener_mirror_platforms(runtime: Optional[dict[str, Any]], profile:
     ``/p/<profile>/v1/...`` answered. Only a live default entry is mirrored; its state is the profile's
     state, plus the ``/p/<profile>`` URL the client must actually call.
     """
-    from gateway.config import SHARED_LISTENER_MIRROR_PATHS, SHARED_LISTENER_MIRROR_PLATFORMS
+    # KENSEI CUSTOM: long-lived processes started before an editable-install update can hold a
+    # gateway.config module cached from before the multiplex names existed; reload once and retry
+    # so delivery/status code paths resolve them without a process restart. Fresh processes hit
+    # the happy path and never reload.
+    try:
+        from gateway.config import SHARED_LISTENER_MIRROR_PATHS, SHARED_LISTENER_MIRROR_PLATFORMS
+    except ImportError:
+        import importlib
+        import gateway.config as _gateway_config
+        importlib.reload(_gateway_config)
+        from gateway.config import SHARED_LISTENER_MIRROR_PATHS, SHARED_LISTENER_MIRROR_PLATFORMS
     plats = (runtime or {}).get("platforms")
     if not profile or profile == "default" or not isinstance(plats, dict):
         return {}

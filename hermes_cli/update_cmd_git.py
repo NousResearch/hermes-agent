@@ -340,6 +340,14 @@ _FETCH_FAILURE_RULES = (
 )
 
 
+def _is_rate_limited(stderr: str) -> bool:
+    """True when the fetch stderr carries the repo-scoped HTTP 429 / rate-limit signature.
+
+    Mirrors the first rule in ``_FETCH_FAILURE_RULES`` so retry/fallback decisions key on
+    exactly the stderr the classifier will report to the user (#105857)."""
+    return _has_http_code(stderr or "", "429") or "rate limit" in (stderr or "").lower()
+
+
 def _classify_fetch_failure(stderr: str) -> str:
     """Map git-fetch stderr to a one-line diagnosis (caller also prints the raw first line)."""
     return next((message for matches, message in _FETCH_FAILURE_RULES if matches(stderr)), "✗ Failed to fetch updates from origin.")

@@ -1,6 +1,6 @@
 ---
 name: chroma
-description: Embedding database for RAG and semantic search.
+description: Store and search embeddings for local RAG.
 version: 1.0.0
 author: Orchestra Research
 license: MIT

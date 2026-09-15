@@ -1,14 +1,14 @@
 ---
-title: "Godmode — Jailbreak LLMs: Parseltongue, GODMODE, ULTRAPLINIAN"
+title: "Godmode — Jailbreak API-served LLMs with prompt techniques"
 sidebar_label: "Godmode"
-description: "Jailbreak LLMs: Parseltongue, GODMODE, ULTRAPLINIAN"
+description: "Jailbreak API-served LLMs with prompt techniques"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Godmode
 
-Jailbreak LLMs: Parseltongue, GODMODE, ULTRAPLINIAN.
+Jailbreak API-served LLMs with prompt techniques.
 
 ## Skill metadata
 

@@ -1,14 +1,14 @@
 ---
-title: "Computer Use — Drive the desktop background-first; escalate on signal"
+title: "Computer Use — Automate desktop apps when browser control is unsuitable"
 sidebar_label: "Computer Use"
-description: "Drive the desktop background-first; escalate on signal"
+description: "Automate desktop apps when browser control is unsuitable"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Computer Use
 
-Drive the desktop background-first; escalate on signal.
+Automate desktop apps when browser control is unsuitable.
 
 ## Skill metadata
 

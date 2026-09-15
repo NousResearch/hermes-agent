@@ -1,14 +1,14 @@
 ---
-title: "Google Workspace — Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python"
+title: "Google Workspace — Operate Gmail, Calendar, Drive, Docs, and Sheets"
 sidebar_label: "Google Workspace"
-description: "Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python"
+description: "Operate Gmail, Calendar, Drive, Docs, and Sheets"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Google Workspace
 
-Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python.
+Operate Gmail, Calendar, Drive, Docs, and Sheets.
 
 ## Skill metadata
 

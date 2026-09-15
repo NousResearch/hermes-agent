@@ -1,6 +1,6 @@
 ---
 name: computer-use
-description: "Drive the desktop background-first; escalate on signal."
+description: "Automate desktop apps when browser control is unsuitable."
 version: 2.0.0
 author: Francesco Bonacci (f-trycua), Hermes Agent
 license: MIT

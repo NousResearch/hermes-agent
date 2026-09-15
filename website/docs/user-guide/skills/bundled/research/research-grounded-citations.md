@@ -1,14 +1,14 @@
 ---
-title: "Grounded Citations — Ground answers and documents in cited, verifiable sources"
+title: "Grounded Citations — Cite and verify external claims in deliverables"
 sidebar_label: "Grounded Citations"
-description: "Ground answers and documents in cited, verifiable sources"
+description: "Cite and verify external claims in deliverables"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Grounded Citations
 
-Ground answers and documents in cited, verifiable sources.
+Cite and verify external claims in deliverables.
 
 ## Skill metadata
 

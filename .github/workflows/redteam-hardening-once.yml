@@ -111,3 +111,5 @@ jobs:
           git commit -m "fix(workstation): close red-team trust and durability gaps"
           git push origin HEAD:main
           echo "validated_commit=$(git rev-parse HEAD)"
+
+# redteam bootstrap revision 3

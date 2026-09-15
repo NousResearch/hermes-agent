@@ -243,20 +243,40 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
     return messages
 
 
+_SEED_ROLES = frozenset({"user", "assistant", "system", "tool"})
+_SEED_EXTRA_FIELDS = ("tool_calls", "tool_call_id", "tool_name", "name")
+
+
 def _coerce_seed_history(value: Any) -> list[dict]:
     history = []
     for item in value if isinstance(value, list) else ():
-        if not isinstance(item, dict) or item.get("role") not in ("user", "assistant", "system"):
+        if not isinstance(item, dict):
+            continue
+        role = item.get("role")
+        if role not in _SEED_ROLES:
             continue
         content = item.get("text") if item.get("content") is None else item.get("content")
-        if isinstance(content, str) and content.strip():
-            row = {"role": item["role"], "content": content}
-            # "hidden" is the one display_kind a seeding client may author: model-facing scaffolding the
-            # renderer must not paint (a guided-chat runbook). Every other kind is stamped by the gateway
-            # at turn time, so it is not accepted from the wire.
-            if item.get("display_kind") == "hidden":
-                row["display_kind"] = "hidden"
-            history.append(row)
+        has_text = isinstance(content, str) and bool(content.strip())
+        has_tool_calls = role == "assistant" and bool(item.get("tool_calls"))
+        is_tool = role == "tool"
+        if not (has_text or has_tool_calls or is_tool):
+            continue
+        row = {"role": role}
+        if content is not None:
+            row["content"] = content
+        elif is_tool:
+            row["content"] = ""
+        for field in _SEED_EXTRA_FIELDS:
+            if item.get(field) is not None:
+                row[field] = item[field]
+        if is_tool and not row.get("tool_name") and row.get("name"):
+            row["tool_name"] = row["name"]
+        # "hidden" is the one display_kind a seeding client may author: model-facing scaffolding the
+        # renderer must not paint (a guided-chat runbook). Every other kind is stamped by the gateway
+        # at turn time, so it is not accepted from the wire.
+        if item.get("display_kind") == "hidden":
+            row["display_kind"] = "hidden"
+        history.append(row)
     return history
 
 

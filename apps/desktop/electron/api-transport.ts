@@ -194,9 +194,29 @@ function readStatusCode(error: unknown): number {
   return Number(error && typeof error === 'object' ? (error as { statusCode?: unknown }).statusCode : NaN)
 }
 
+/**
+ * Error for a JSON endpoint that answered with HTML. A 2xx/404 HTML body is
+ * the SPA index.html for an unregistered /api path, and downstream capability
+ * probes (isMissingHealthEndpointError, gateway-rpc) key on the "endpoint is
+ * likely missing" wording. A 3xx is an access proxy bouncing the request to
+ * its login page instead — the endpoint exists, the credentials never
+ * arrived — so it must neither carry that wording nor blame the backend.
+ */
+function htmlResponseError(url: string, statusCode: unknown) {
+  const status = Number(statusCode)
+
+  const hint =
+    status >= 300 && status < 400
+      ? 'The request was redirected, usually by an authentication proxy in front of the gateway; check the saved token and extra gateway headers.'
+      : 'The endpoint is likely missing on the Hermes backend.'
+
+  return new Error(`Expected JSON from ${url} but got HTML (status ${statusCode}). ${hint}`)
+}
+
 export {
   destroyKeepaliveAgents,
   downloadAgentFor,
+  htmlResponseError,
   httpStatusError,
   isIdempotentMethod,
   isTransientTransportError,

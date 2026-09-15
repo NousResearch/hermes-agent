@@ -19,6 +19,7 @@ import { afterAll, describe, expect, it } from 'vitest'
 import {
   destroyKeepaliveAgents,
   downloadAgentFor,
+  htmlResponseError,
   httpStatusError,
   isIdempotentMethod,
   isTransientTransportError,
@@ -402,5 +403,18 @@ describe('httpStatusError', () => {
     expect(httpStatusError(undefined, 'boom').statusCode).toBe(500)
     expect(httpStatusError(undefined, 'boom').message).toBe('500: boom')
     expect(httpStatusError(0, 'boom').statusCode).toBe(500)
+  })
+})
+
+describe('htmlResponseError', () => {
+  it('names an auth redirect for 3xx HTML and keeps the endpoint-missing capability wording otherwise', () => {
+    const redirected = htmlResponseError('https://gateway.example.com/api/profiles', 302).message
+
+    expect(redirected).toContain('status 302')
+    expect(redirected).toMatch(/redirected/)
+    expect(redirected).not.toContain('endpoint is likely missing')
+    expect(htmlResponseError('https://gateway.example.com/api/missing', 404).message).toContain(
+      'endpoint is likely missing'
+    )
   })
 })

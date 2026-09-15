@@ -180,7 +180,14 @@ def _prune_durable_records() -> None:
                    )""", (pending_count - _MAX_DURABLE_PENDING,))
 
 
-def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
+def _write_durable_terminal(event: Dict[str, Any], result: Dict[str, Any]) -> None:
+    """Write the terminal outcome onto the durable row (state + payloads).
+
+    Same SQL as before, but split out of ``_persist_completion`` so the converge
+    retry below has a landing spot that is NOT the test monkeypatch seam.
+    Leaving the row in ``running``/``finalizing`` after the runner succeeded lets
+    ``recover_abandoned_delegations`` invent a contradictory ``unknown``.
+    """
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
         conn.execute("""UPDATE async_delegations SET state=?, completed_at=?, updated_at=?,
@@ -188,6 +195,68 @@ def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
                WHERE delegation_id=?""",
             (event.get("status", "completed"), event.get("completed_at", now), now,
              json.dumps(event), json.dumps(result), event["delegation_id"]))
+
+
+def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
+    """Primary durable completion write (monkeypatch seam for tests)."""
+    _write_durable_terminal(event, result)
+
+
+def _shield_unconverged_durable_row(event: Dict[str, Any]) -> bool:
+    """Stop restart recovery from inventing ``unknown`` when payload writes failed.
+
+    ``recover_abandoned_delegations`` only selects rows in ('running','finalizing'),
+    so a minimal terminal mark (no payload dependency) is enough; if even that
+    UPDATE fails, delete the row so it can never be selected. In-memory delivery
+    still proceeds either way. This runs BEFORE publication.
+    """
+    delegation_id = event.get("delegation_id")
+    if not delegation_id:
+        return False
+    now = time.time()
+    try:
+        with _DB_LOCK, _transaction() as conn:
+            conn.execute(
+                """UPDATE async_delegations
+                   SET state=?, completed_at=?, updated_at=?, delivery_state='pending'
+                   WHERE delegation_id=? AND state IN ('running','finalizing')""",
+                (event.get("status", "completed"), event.get("completed_at", now), now, delegation_id))
+        return True
+    except Exception as exc:  # noqa: BLE001 - last-ditch shield, never fatal
+        logger.error("Async delegation %s: minimal terminal shield failed; "
+                     "deleting durable row before in-memory delivery: %s", delegation_id, exc)
+    try:
+        with _DB_LOCK, _transaction() as conn:
+            conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Async delegation %s: durable restart shield failed; in-memory "
+                     "delivery may diverge from state.db on restart: %s", delegation_id, exc)
+        return False
+
+
+def _converge_durable_completion(event: Dict[str, Any], result: Dict[str, Any]) -> bool:
+    """Ensure state.db will not contradict the in-process terminal outcome.
+
+    True  = the row carries the terminal status AND the payloads.
+    False = payloads were never written; the row was still shielded so restart
+            recovery cannot select it (the caller still publishes in memory).
+    """
+    delegation_id = event.get("delegation_id")
+    try:
+        _persist_completion(event, result)
+        return True
+    except Exception as exc:  # noqa: BLE001 - converge, never lose the result
+        logger.error("Async delegation %s: durable completion persist failed; "
+                     "retrying terminal converge: %s", delegation_id, exc)
+    try:
+        _write_durable_terminal(event, result)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Async delegation %s: durable terminal converge failed; shielding "
+                     "restart recovery before in-memory delivery: %s", delegation_id, exc)
+    _shield_unconverged_durable_row(event)
+    return False
 
 
 def record_unit_child(delegation_id: str, entry: Dict[str, Any]) -> None:
@@ -486,8 +555,16 @@ def _new_delegation_id() -> str:
 
 
 def _prune_completed_locked() -> None:
-    """Drop the oldest completed records beyond the cap. Caller holds ``_records_lock``."""
-    completed = [(rid, r) for rid, r in _records.items() if r.get("status") != "running"]
+    """Drop the oldest TERMINAL records beyond the cap. Caller holds ``_records_lock``.
+
+    ``stalling``/``finalizing`` are still live work. Popping one makes the late
+    runner return hit ``_finalize``'s missing-record path - a real result is
+    silently dropped and the durable row stays on ``running``, so restart
+    recovery reports ``unknown`` for work that actually succeeded. Note the sort
+    key below falls back to ``dispatched_at`` for a stalling record (no
+    ``completed_at`` yet), which made it the FIRST candidate to be popped.
+    """
+    completed = [(rid, r) for rid, r in _records.items() if r.get("status") not in _LIVE_STATES]
     completed.sort(key=lambda kv: kv[1].get("completed_at") or kv[1].get("dispatched_at") or 0)
     for rid, _ in completed[: max(0, len(completed) - _MAX_RETAINED_COMPLETED)]:
         _records.pop(rid, None)
@@ -669,18 +746,28 @@ def _finalize(delegation_id: str, result: Any, status: str) -> None:
     A second call for the same id (late runner return after a forced stall) is a no-op."""
     with _records_lock:
         record = _records.get(delegation_id)
-        if record is None or record.get("status") not in _ACTIVE_STATES:
+        if record is None:
+            # Retired from _records while the ledger still says running => a live
+            # unit's real result is being dropped (see _prune_completed_locked).
+            logger.warning("Async delegation %s: finalize with no active record; result dropped",
+                           delegation_id)
+            return
+        if record.get("status") not in _ACTIVE_STATES:
             return
         record["status"] = "finalizing"
         record["completed_at"] = time.time()
         record["interrupt_fn"] = None  # drop the closure; child is done
         record["progress_fn"] = None  # stop stale-monitor sampling
         snapshot = dict(record)
-    _push_completion_event(snapshot, result(snapshot) if callable(result) else result, status)
-    with _records_lock:
-        if delegation_id in _records:
-            _records[delegation_id]["status"] = status
-        _prune_completed_locked()
+    try:
+        _push_completion_event(snapshot, result(snapshot) if callable(result) else result, status)
+    finally:
+        # A persist/enqueue failure must not park the record in "finalizing"
+        # (active_count() counts it forever and the concurrency slot is lost).
+        with _records_lock:
+            if delegation_id in _records:
+                _records[delegation_id]["status"] = status
+            _prune_completed_locked()
 
 
 def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], status: str) -> None:
@@ -722,7 +809,12 @@ def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], statu
         **({} if is_batch else {"exit_reason": result.get("exit_reason")}),
         **{k: record[k] for k in _ROUTING_KEYS if record.get(k)},
         **{k: result[k] for k in _STALL_META_KEYS if k in result}}
-    _persist_completion(evt, result)
+    # Converge the durable row BEFORE publishing, so a later restart replay reads
+    # the real outcome instead of an invented ``unknown``.
+    if not _converge_durable_completion(evt, result):
+        logger.error(f"Async delegation{label} %s: continuing with in-memory delivery "
+                     "after durable terminal converge failure (restart shield attempted)",
+                     record.get("delegation_id"))
     try:
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover
@@ -852,23 +944,15 @@ def _stale_monitor_loop() -> None:
             return
 
 
-def _stalled_error_text(event_record: Dict[str, Any]) -> str:
-    """Human wording for a force-finalized stall. This string reaches the user (CLI timeline, Desktop
-    async-result card), so it names the task, how long it was silent, and what to do — no issue
-    numbers or worker internals (those stay in the log line and the stall_* metadata)."""
-    goal = " ".join(str(event_record.get("goal") or "").split())
-    label = f'Background task "{goal[:120]}"' if goal else "The background task"
-    quiet = float(event_record.get("_stall_quiet_seconds") or 0)
-    silence = f" after {round(quiet / 60)} min of no progress" if quiet >= 60 else ""
-    return (f"{label} stopped responding{silence} and was cancelled. Nothing else was affected; "
-            "ask me to run it again if you still need it.")
-
-
 def _stalled_result(delegation_id: str, event_record: Dict[str, Any]) -> Dict[str, Any]:
     """Synthetic terminal result for a stalling delegation whose runner never returned."""
     completed_at = event_record.get("completed_at") or time.time()
     duration = round(completed_at - (event_record.get("dispatched_at") or completed_at), 2)
-    error = _stalled_error_text(event_record)
+    error = (
+        f"Async delegation {delegation_id} stalled: the detached subagent stopped making progress "
+        "(no new API calls, tool activity, or streamed tokens), did not respond to interruption, and never "
+        "produced a completion event. The worker may be wedged inside a model API call — this is a known "
+        "failure mode of long-lived gateway processes (#60203). Re-dispatch the task if it is still needed.")
     logger.error("Async delegation %s force-finalized as stalled after %.0fs", delegation_id, duration)
     # Structured stall metadata lets parents/UIs distinguish a stall-monitor
     # kill from other failures without parsing the error string.

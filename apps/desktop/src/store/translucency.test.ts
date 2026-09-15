@@ -289,6 +289,63 @@ describe('frost and area', () => {
   })
 })
 
+describe('sidebar glass lifecycle', () => {
+  const edge = () => document.documentElement.style.getPropertyValue('--glass-rail-edge')
+
+  const mountRail = (right: number) => {
+    const rail = document.createElement('div')
+    rail.dataset.slot = 'sidebar'
+    vi.spyOn(rail, 'getBoundingClientRect').mockReturnValue({ right, left: 0 } as DOMRect)
+    document.body.append(rail)
+
+    return rail
+  }
+
+  beforeEach(() => {
+    setTranslucencyMode('clear')
+    document.body.replaceChildren()
+    setTranslucencyScope('sidebar')
+    setTranslucency(29)
+    setTranslucencyMode('glass')
+  })
+
+  afterEach(() => {
+    setTranslucencyMode('clear')
+    document.body.replaceChildren()
+    vi.restoreAllMocks()
+  })
+
+  it('acquires a sidebar mounted after glass starts without a theme or resize event', async () => {
+    expect(edge()).toBe('0px')
+    const rail = mountRail(280)
+    await Promise.resolve()
+    expect(edge()).toBe('280px')
+
+    const reads = vi.mocked(rail.getBoundingClientRect)
+    reads.mockClear()
+    rail.append(document.createElement('span'))
+    await Promise.resolve()
+    expect(reads).not.toHaveBeenCalled()
+  })
+
+  it('tracks removal and remount without settings changes and stops when glass is disabled', async () => {
+    const first = mountRail(280)
+    window.dispatchEvent(new Event('resize'))
+    expect(edge()).toBe('280px')
+    first.remove()
+    await Promise.resolve()
+    expect(edge()).toBe('0px')
+    mountRail(320)
+    await Promise.resolve()
+    expect(edge()).toBe('320px')
+    setTranslucencyMode('clear')
+    document.body.replaceChildren()
+    mountRail(400)
+    await Promise.resolve()
+    expect(edge()).toBe('')
+  })
+})
+
 // A held slider drag and a timed pulse from a picker click can overlap, which
 // is why the peek counts rather than toggling: the drag must not be cancelled
 // by a pulse expiring underneath it.

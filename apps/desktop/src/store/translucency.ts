@@ -171,6 +171,7 @@ export const isChatWindow = (search = typeof window === 'undefined' ? '' : windo
    direction off html[dir]. */
 let railObserver: null | ResizeObserver = null
 let railTarget: Element | null = null
+let railMountObserver: MutationObserver | null = null
 let railTrackingOn = false
 
 const measureRailEdge = (): void => {
@@ -229,6 +230,20 @@ const startRailTracking = (): void => {
     railObserver = new ResizeObserver(() => measureRailEdge())
   }
 
+  // The store starts before React mounts the rail. A ResizeObserver cannot
+  // discover an element it never observed; layout remounts have the same gap.
+  // Child-list changes only check identity: streaming and tint updates must
+  // not force layout while the observed rail is still connected.
+  railMountObserver ??= new MutationObserver(() => {
+    if (railTarget?.isConnected) {
+      return
+    }
+
+    if (railTarget || document.querySelector('[data-slot="sidebar"]')) {
+      measureRailEdge()
+    }
+  })
+  railMountObserver.observe(document.documentElement, { childList: true, subtree: true })
   window.addEventListener('resize', measureRailEdge)
   measureRailEdge()
 }
@@ -239,6 +254,7 @@ const stopRailTracking = (): void => {
   }
 
   railTrackingOn = false
+  railMountObserver?.disconnect()
 
   if (railObserver && railTarget) {
     railObserver.unobserve(railTarget)

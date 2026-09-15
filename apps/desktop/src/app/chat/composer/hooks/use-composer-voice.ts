@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
-import { chatMessageText, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
 import { adoptSpokenReplySession, markAssistantIdSpoken, resolveSpokenReply } from '@/lib/spoken-reply'
 import { CONVERSATION_LEASE, READ_ALOUD_LEASE, syncTtsLease } from '@/lib/tts-lease'
@@ -42,6 +42,22 @@ interface UseComposerVoiceArgs {
   /** This composer's focus-bus key — voice toggles targeting another
    *  composer (or the active one, when not us) are ignored. */
   target: ComposerTarget
+}
+
+/** The tool Hermes is running right now, for quiet progress in the voice. A part sealed without a
+ *  result (turn stopped, completion event lost — completeOpenTimelineParts stamps `completedAt`
+ *  but never `result`) is dead, not running; without the `completedAt` check this reports it as
+ *  active and the conversation announces "still working" for a call that already ended (mirrors
+ *  ToolFallback's `settledWithoutResult` guard in message-parts.tsx). Exported standalone so it's
+ *  testable without the rest of this hook's machinery. */
+export function activeToolLabelFromMessages(messages: ChatMessage[]): null | string {
+  const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
+
+  const running = last?.parts.findLast(
+    part => part.type === 'tool-call' && part.result === undefined && part.completedAt === undefined
+  )
+
+  return running && running.type === 'tool-call' ? running.toolName : null
 }
 
 /**
@@ -159,13 +175,7 @@ export function useComposerVoice({
         .map(m => ({ role: m.role as 'assistant' | 'user', text: chatMessageText(m) }))
     )
 
-  /** The tool Hermes is running right now, for quiet progress in the voice. */
-  const activeToolLabel = () => {
-    const last = $messages.get().findLast(m => m.role === 'assistant' && !m.hidden)
-    const running = last?.parts.findLast(part => part.type === 'tool-call' && part.result === undefined)
-
-    return running && running.type === 'tool-call' ? running.toolName : null
-  }
+  const activeToolLabel = () => activeToolLabelFromMessages($messages.get())
 
   const wakePausedRef = useRef(false)
   // Resolves once the in-flight wake.pause round-trip completes (mic released by

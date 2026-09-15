@@ -50,6 +50,85 @@ _EMOJI_RE = re.compile(
     flags=re.UNICODE)
 _VARIATION_SELECTOR_RE = re.compile("[︎️]")
 
+# --- Identifier normalization -------------------------------------------------
+# Machine identifiers (hashes, API tokens, file names) are meant to be READ, not
+# spoken. A listener needs a reference to the thing, not its characters. Rules
+# are deliberately conservative: anything ambiguous is left alone.
+
+# Hex strings of 12+ chars (git SHAs, hashes, UUID-minus-dashes).
+_LONG_HEX_RE = re.compile(r"(?<![\w-])[0-9a-f]{12,}(?![\w-])", flags=re.IGNORECASE)
+# Dashed hex identifiers (UUIDs): hex segments joined by single dashes, 32+ hex digits total.
+_UUID_RE = re.compile(
+    r"(?<![\w-])[0-9a-f]{8}(?:-[0-9a-f]{4,}){2,}(?![\w-])", flags=re.IGNORECASE)
+# Opaque alnum tokens of 16+ chars (API keys, voice IDs, base62 IDs). Match
+# broadly, then require upper AND lower AND digit in Python so normal words,
+# acronyms, and dates never match.
+_OPAQUE_TOKEN_RE = re.compile(r"(?<![\w-])[A-Za-z0-9]{16,}(?![\w-])")
+
+_FILE_EXT_WORDS = {
+    "png": "PNG", "jpg": "JPEG", "jpeg": "JPEG", "gif": "GIF", "svg": "S-V-G",
+    "webp": "web-P", "pdf": "PDF", "doc": "Word", "docx": "Word",
+    "xls": "spreadsheet", "xlsx": "spreadsheet", "csv": "C-S-V",
+    "mp3": "M-P-3", "wav": "wave", "mp4": "M-P-4", "mov": "movie",
+    "py": "Python", "js": "JavaScript", "ts": "TypeScript", "json": "Jason",
+    "yaml": "YAML", "yml": "YAML", "toml": "toml", "md": "markdown",
+    "zip": "zip", "tar": "tar", "gz": "gzipped", "html": "HTML",
+}
+# A file name: a non-empty stem, a dot, a known extension, word-boundary end.
+# Stems ending in another known word (e.g. "e.g", sentence "end.") stay safe:
+# the extension must be in the map AND the stem must look name-like
+# (letter/digit start, no spaces, no sentence-ending punctuation).
+_FILE_NAME_RE = re.compile(
+    r"(?<![\w./-])(\w[\w.-]*?)\.(" + "|".join(_FILE_EXT_WORDS) + r")\b(?!\.\w)",
+    flags=re.IGNORECASE)
+
+
+def _spell_tail(token: str) -> str:
+    return " ".join(token[-4:].lower())
+
+
+def _sub_long_hex(match: re.Match) -> str:
+    return f"hash ending in {_spell_tail(match.group(0))}"
+
+
+def _sub_opaque_token(match: re.Match) -> str:
+    token = match.group(0)
+    # Opaque ID heuristic: needs the mix of cases AND a digit that real words
+    # and acronyms never have ("internationalization", "NASA2026" stay safe).
+    if not (any(c.isupper() for c in token) and any(c.islower() for c in token)
+            and any(c.isdigit() for c in token)):
+        return token
+    return f"string ending in {_spell_tail(token)}"
+
+
+def _sub_file_name(match: re.Match) -> str:
+    stem, ext = match.group(1), match.group(2).lower()
+    word = _FILE_EXT_WORDS[ext]
+    # A meaningful stem stays ("report-2026 PDF file"); a purely numeric stem
+    # carries no information, so drop it ("PNG file").
+    stem_spoken = stem if re.search(r"[A-Za-z]", stem) else ""
+    return f"{stem_spoken} {word} file".strip()
+
+
+def normalize_identifiers_for_tts(text: str) -> str:
+    """Rewrite machine identifiers into speakable references.
+
+    Hashes/IDs become "ending in <last 4>", file extensions become words
+    ("report.pdf" -> "report PDF file"), and underscores inside identifiers
+    become pauses instead of a spoken "underscore". Conservative by design:
+    short tokens, pure words, versions, and anything ambiguous pass through.
+    """
+    if not text:
+        return ""
+    text = _UUID_RE.sub(_sub_long_hex, text)
+    text = _LONG_HEX_RE.sub(_sub_long_hex, text)
+    text = _OPAQUE_TOKEN_RE.sub(_sub_opaque_token, text)
+    text = _FILE_NAME_RE.sub(_sub_file_name, text)
+    # Underscore-separated identifiers: "TTSS_2026" -> "TTSS 2026". Only inside
+    # tokens with a letter or digit on BOTH sides, so paths (already stripped)
+    # and standalone underscores never turn into stray words.
+    return re.sub(r"(?<=[A-Za-z0-9])_(?=[A-Za-z0-9])", " ", text)
+
 
 def strip_markdown_for_tts(text: str) -> str:
     """Strip Markdown/Telegram formatting while preserving readable words."""
@@ -207,7 +286,8 @@ def prepare_spoken_text(text: str, max_chars: int | None = 4000) -> str:
     pauses > single line (for newline-sensitive providers), then ``max_chars``."""
     spoken = text
     for step in (strip_nonspoken_blocks, strip_markdown_for_tts, normalize_symbols_for_tts,
-                 smooth_whitespace_for_tts, flatten_newlines_for_payload):
+                 normalize_identifiers_for_tts, smooth_whitespace_for_tts,
+                 flatten_newlines_for_payload):
         spoken = step(spoken)
     if max_chars is not None and max_chars > 0 and len(spoken) > max_chars:
         spoken = spoken[:max_chars].rstrip()

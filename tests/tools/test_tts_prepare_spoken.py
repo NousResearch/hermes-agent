@@ -88,6 +88,67 @@ class TestNewlineFlattening:
         assert "Alpha." in out and "Beta!" in out
 
 
+class TestIdentifierNormalization:
+    """Machine identifiers become speakable references (conversation, not dictation)."""
+
+    def test_opaque_voice_id_becomes_tail_anchor(self):
+        from tools.tts_text_normalize import normalize_identifiers_for_tts
+
+        out = normalize_identifiers_for_tts("Saved voice 6u6JbqKdaQy89ENzLSju to config.")
+        assert "6u6JbqKdaQy89ENzLSju" not in out
+        assert "string ending in" in out
+        assert "l s j u" in out  # last four characters, char-spoken
+
+    def test_long_hex_becomes_hash_tail(self):
+        from tools.tts_text_normalize import normalize_identifiers_for_tts
+
+        out = normalize_identifiers_for_tts("Commit 72a3277cd7abc is the culprit.")
+        assert "72a3277cd7abc" not in out
+        assert "hash ending in" in out
+
+    def test_uuid_becomes_hash_tail(self):
+        from tools.tts_text_normalize import normalize_identifiers_for_tts
+
+        out = normalize_identifiers_for_tts("Page 550e8400-e29b-41d4-a716-446655440000 moved.")
+        assert "550e8400" not in out
+        assert "hash ending in 0 0 0 0" in out
+
+    def test_file_name_extension_becomes_words(self):
+        from tools.tts_text_normalize import normalize_identifiers_for_tts
+
+        out = normalize_identifiers_for_tts("See 1234567.png in the folder.")
+        assert "1234567" not in out
+        assert "PNG file" in out
+
+    def test_meaningful_file_stem_is_kept(self):
+        from tools.tts_text_normalize import normalize_identifiers_for_tts
+
+        out = normalize_identifiers_for_tts("Wrote report-2026.pdf for you.")
+        assert "report-2026 PDF file" in out
+
+    def test_underscore_identifier_gets_pause_not_underscore(self):
+        from tools.tts_text_normalize import normalize_identifiers_for_tts
+
+        assert normalize_identifiers_for_tts("Updated TTSS_2026 today.") == "Updated TTSS 2026 today."
+
+    def test_normal_words_dates_versions_untouched(self):
+        from tools.tts_text_normalize import normalize_identifiers_for_tts
+
+        text = "Version 3.2.0 shipped in 2026. NASA2026 too."
+        assert normalize_identifiers_for_tts(text) == text
+
+    def test_mixed_case_word_without_digit_untouched(self):
+        from tools.tts_text_normalize import normalize_identifiers_for_tts
+
+        assert "internationalization" in normalize_identifiers_for_tts("internationalization")
+
+    def test_wired_into_prepare_spoken_text(self):
+        spoken = prepare_spoken_text("Saved voice 6u6JbqKdaQy89ENzLSju and wrote log_2026.")
+        assert "6u6JbqKdaQy89ENzLSju" not in spoken
+        assert "l s j u" in spoken
+        assert "log 2026" in spoken
+
+
 class TestSharedCleanerWiring:
     """The ONE cleaner must be applied on every TTS entry path."""
 

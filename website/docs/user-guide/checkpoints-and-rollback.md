@@ -53,8 +53,15 @@ CLI for inspecting and managing the store outside a session:
 | `hermes checkpoints status` | Same as bare `checkpoints` |
 | `hermes checkpoints list` | Alias for `status` |
 | `hermes checkpoints prune` | Force a sweep: delete orphans/stale, GC, enforce size cap |
+| `hermes checkpoints repair` | Repair refs that point at missing objects (blocks GC and the size cap) |
 | `hermes checkpoints clear` | Nuke the entire checkpoint base (asks first) |
 | `hermes checkpoints clear-legacy` | Delete only the `legacy-*` archives from v1 migration |
+
+If `hermes checkpoints status` reports refs that point at missing objects, run
+`hermes checkpoints repair`. A ref left pointing at a pruned object makes **every**
+`git gc` fail, so the store can never be reclaimed and stays over its size cap. The repair
+is lossless: it only touches refs that resolve to nothing (a loose ref whose valid packed
+twin exists just loses its shadow), and normal checkpoints heal this state automatically.
 
 ## How Checkpoints Work
 

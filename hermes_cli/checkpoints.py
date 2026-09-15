@@ -55,6 +55,17 @@ def cmd_status(args: argparse.Namespace) -> int:
         _print_archives(sorted(legacy, key=lambda a: a.get("mtime", 0), reverse=True))
         print()
         print("Clear with: hermes checkpoints clear-legacy")
+
+    bad_refs = info.get("unresolvable_refs") or []
+    if bad_refs:
+        print()
+        print(f"⚠ {len(bad_refs)} ref(s) point at missing objects — `git gc` cannot reclaim")
+        print("  space while they exist, so the store stays over its size cap.")
+        for ref in bad_refs[:5]:
+            print(f"    {ref}")
+        if len(bad_refs) > 5:
+            print(f"    … and {len(bad_refs) - 5} more")
+        print("  Fix with: hermes checkpoints repair")
     return 0
 
 
@@ -116,6 +127,24 @@ def cmd_prune(args: argparse.Namespace) -> int:
     print(f"Errors:          {result['errors']}")
     print(f"Bytes reclaimed: {_fmt_bytes(result['bytes_freed'])}")
     return 0
+
+
+def cmd_repair(args: argparse.Namespace) -> int:
+    """Remove refs that point at missing objects (they block every `git gc`)."""
+    from tools.checkpoint_manager import repair_store
+
+    print("Repairing checkpoint store refs…")
+    result = repair_store()
+    print(f"Scanned:        {result['scanned']} ref(s)")
+    print(f"Shadow removed: {result['repaired']}")
+    print(f"Dropped:        {result['deleted']}  (refs whose object no longer exists)")
+    print(f"Errors:         {result['errors']}")
+    print()
+    if result["repaired"] or result["deleted"]:
+        print("Repaired. Run `hermes checkpoints prune` to reclaim the freed space.")
+    else:
+        print("No unresolvable refs — nothing to repair.")
+    return 0 if result["errors"] == 0 else 2
 
 
 def _confirm(prompt: str) -> bool:
@@ -207,6 +236,11 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     p_prune.add_argument("-f", "--force", action="store_true",
                          help="Skip the orphan-deletion confirmation prompt")
     p_prune.set_defaults(func=cmd_prune)
+
+    p_repair = subs.add_parser(
+        "repair",
+        help="Remove refs that point at missing objects (they block git gc and the size cap)")
+    p_repair.set_defaults(func=cmd_repair)
 
     for name, help_text, func in (
         ("clear", "Delete the entire checkpoint base (all /rollback history)", cmd_clear),

@@ -23,7 +23,17 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tui_gateway.contracts.base import Result
+
 _original_stdout = sys.stdout
+
+
+class _SessionsResult(Result):
+    sessions: list
+
+
+class _OkResult(Result):
+    ok: bool
 
 
 @pytest.fixture(autouse=True)
@@ -107,10 +117,10 @@ def test_dispatch_inline_rpc_does_not_block_under_gil_pressure(server):
 
     def slow_session_list(rid, params):
         released.wait(timeout=5)
-        return server._ok(rid, {"sessions": []})
+        return server._ok(rid, _SessionsResult(sessions=[]))
 
     server._methods["session.list"] = slow_session_list
-    server._methods["fast.check"] = lambda rid, params: server._ok(rid, {"ok": True})
+    server._methods["fast.check"] = lambda rid, params: server._ok(rid, _OkResult(ok=True))
 
     t0 = time.monotonic()
     # session.list is in _LONG_HANDLERS → dispatch returns None immediately

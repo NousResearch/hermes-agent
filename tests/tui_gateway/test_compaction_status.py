@@ -35,9 +35,15 @@ def server():
 
 
 def _capture(server, monkeypatch):
+    # ``_emit`` now receives a StatusUpdatePayload model; capture its dumped fields
+    # (dropping None optionals) so assertions stay shape-based.
     events: list[dict] = []
     monkeypatch.setattr(
-        server, "_emit", lambda event, sid, payload=None: events.append(payload or {})
+        server,
+        "_emit",
+        lambda event, sid, payload=None: events.append(
+            payload.model_dump(exclude_none=True) if payload is not None else {}
+        ),
     )
     return events
 

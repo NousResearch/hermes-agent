@@ -119,7 +119,6 @@ def test_share_nous_extra_files_sanitized_and_redacted(captured_upload):
                 "desktop.log": f"boot ok\ntoken={secret}\n",
                 "../../etc/passwd": "nope",
                 "ok name (1).txt": "fine",
-                7: "not-a-str-label",
                 "empty": "   ",
             }
         },
@@ -132,9 +131,13 @@ def test_share_nous_extra_files_sanitized_and_redacted(captured_upload):
     # Path separators are stripped from labels; traversal shapes can't survive.
     assert not any("/etc/passwd" in k or ".." in k for k in files)
     assert "client/ok name (1).txt" in files
-    # Non-string labels and blank bodies are dropped.
-    assert not any(k.startswith("client/7") for k in files)
+    # Blank bodies are dropped.
     assert "client/empty" not in files
+    # Non-string labels never reach the upload: the closed params contract rejects them
+    # at the RPC boundary (4000) instead of the handler silently dropping them.
+    rejected = _handler()("rid-3b", {"extra_files": {7: "not-a-str-label"}})
+    assert rejected["error"]["code"] == 4000
+    assert not any(k.startswith("client/7") for k in files)
 
 
 def test_share_nous_upload_failure_is_structured(monkeypatch):

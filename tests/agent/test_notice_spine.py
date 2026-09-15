@@ -16,6 +16,7 @@ import pytest
 
 from agent.credits_tracker import AgentNotice
 from run_agent import AIAgent
+from tui_gateway.contracts.events import NotificationClearPayload, NotificationShowPayload
 
 
 # ── A. Emitter behaviour ─────────────────────────────────────────────────────
@@ -91,14 +92,14 @@ class TestAgentCbsNoticeBinding:
         mock_emit.assert_called_once_with(
             "notification.show",
             "sid123",
-            {
-                "text": "credits 90% used",
-                "level": "warn",
-                "kind": "sticky",
-                "ttl_ms": None,
-                "key": "credits.warn90",
-                "id": "n1",
-            },
+            NotificationShowPayload(
+                text="credits 90% used",
+                level="warn",
+                kind="sticky",
+                ttl_ms=None,
+                key="credits.warn90",
+                id="n1",
+            ),
         )
 
     def test_notice_callback_payload_is_full_snake_case_dict(self):
@@ -122,7 +123,8 @@ class TestAgentCbsNoticeBinding:
 
         assert len(captured) == 1
         _event_type, _sid, payload = captured[0]
-        assert set(payload.keys()) == {"text", "level", "kind", "ttl_ms", "key", "id"}
+        assert isinstance(payload, NotificationShowPayload)
+        assert set(payload.model_dump().keys()) == {"text", "level", "kind", "ttl_ms", "key", "id"}
 
 
 
@@ -136,4 +138,4 @@ class TestAgentCbsNoticeBinding:
 
         assert captured[0][0] == "notification.clear"
         assert captured[0][1] == "sid123"
-        assert captured[0][2] == {"key": "some.key"}
+        assert captured[0][2] == NotificationClearPayload(key="some.key")

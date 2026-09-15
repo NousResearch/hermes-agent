@@ -17,6 +17,8 @@ from __future__ import annotations
 import pytest
 
 from tui_gateway import server
+from tui_gateway.contracts.common import SessionLiveInfo
+from tui_gateway.contracts.sessions import LiveSessionSnapshot
 
 
 class _DB:
@@ -66,7 +68,8 @@ def homes(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_default_session_cwd", lambda *a, **k: str(tmp_path))
     monkeypatch.setattr(server, "_child_run_active", lambda _key: False)
     monkeypatch.setattr(
-        server, "_live_session_payload", lambda sid, session, **_k: {"session_id": sid, "message_count": 0, "messages": [], "info": {}}
+        server, "_live_session_payload",
+        lambda sid, session, **_k: LiveSessionSnapshot(session_id=sid, message_count=0, messages=[], info=SessionLiveInfo()),
     )
     known = set(server._sessions)
     yield homes

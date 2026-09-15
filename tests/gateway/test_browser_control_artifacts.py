@@ -295,9 +295,9 @@ def test_broker_developer_mode_allows_negotiated_privileged_dispatch(tmp_path):
 
     def send(frame):
         broker.complete(
-            frame["params"]["command_id"],
+            frame["params"].command_id,
             ok=True,
-            result={"expression": frame["params"]["arguments"]["expression"]},
+            result={"expression": frame["params"].arguments["expression"]},
         )
 
     broker.attach(scope, send)
@@ -332,7 +332,7 @@ def test_broker_artifact_action_requires_approved_id_only(tmp_path):
 
     def send(frame):
         frames.append(frame)
-        broker.complete(frame["params"]["command_id"], ok=True, result={"ok": True})
+        broker.complete(frame["params"].command_id, ok=True, result={"ok": True})
 
     broker.attach(scope, send)
 
@@ -363,11 +363,11 @@ def test_broker_artifact_action_requires_approved_id_only(tmp_path):
         arguments={"artifact_id": receipt.artifact_id},
     )
     assert result == {"ok": True}
-    assert frames[0]["params"]["arguments"]["artifact_id"] == receipt.artifact_id
+    assert frames[0]["params"].arguments["artifact_id"] == receipt.artifact_id
     # The frame carries only the id — never the payload bytes.
-    assert "data" not in frames[0]["params"]["arguments"]
+    assert "data" not in frames[0]["params"].arguments
     assert all(
-        not isinstance(value, bytes) for value in frames[0]["params"]["arguments"].values()
+        not isinstance(value, bytes) for value in frames[0]["params"].arguments.values()
     )
 
 
@@ -616,7 +616,7 @@ def test_http_uploaded_artifact_composes_with_broker_dispatch(tmp_path):
 
     def send(frame):
         broker.complete(
-            frame["params"]["command_id"], ok=True, result={"ok": True}
+            frame["params"].command_id, ok=True, result={"ok": True}
         )
 
     broker.attach(scope, send)

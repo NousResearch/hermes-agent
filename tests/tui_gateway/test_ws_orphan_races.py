@@ -65,7 +65,8 @@ def test_obsolete_orphan_cannot_replace_new_detachment(monkeypatch, phase):
         replies = []
 
         def resume_during_interrupt(*a, **kw):
-            ctx = server._Resume(1, {}, sid)
+            from tui_gateway.contracts.sessions import SessionResumeParams
+            ctx = server._Resume(1, SessionResumeParams(session_id=sid), sid)
             replies.append(ctx.claim("unused", {}))
 
         monkeypatch.setattr(server, "_interrupt_session_turn", resume_during_interrupt)

@@ -19,11 +19,11 @@ def test_model_options_binds_requested_profile_home(monkeypatch, tmp_path):
         from hermes_constants import get_hermes_home
 
         seen["home"] = Path(get_hermes_home())
-        return {"providers": []}
+        return {"providers": [], "model": "test/model", "provider": "test"}
 
     monkeypatch.setattr("hermes_cli.inventory.build_model_options_payload", build_payload)
 
     response = server._methods["model.options"](1, {"profile": "fred-work"})
 
-    assert response["result"] == {"providers": []}
+    assert response["result"] == {"providers": [], "model": "test/model", "provider": "test"}
     assert seen["home"] == profile_home

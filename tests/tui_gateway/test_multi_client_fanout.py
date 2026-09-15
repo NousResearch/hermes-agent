@@ -10,6 +10,7 @@ from contextlib import ExitStack, suppress
 import pytest
 
 from tui_gateway import server
+from tui_gateway.contracts.events import MessageCompletePayload, StreamDeltaPayload
 from tui_gateway.transport import FanoutTransport, StdioTransport
 from tui_gateway.ws import WSTransport
 
@@ -112,8 +113,12 @@ def test_membership_preserves_terminal_delivery_and_revokes_departed_peers(monke
         newcomer = b if attachment == "direct" else FanoutTransport(a, b)
         assert server._attach_session_transport(session, newcomer)
         assert server._attach_session_transport(session, b)
-        for kind in ("message.delta", "reasoning.delta", "message.complete"):
-            server._emit(kind, "fanout-invariant", {"text": "α"})
+        for kind, payload in (
+            ("message.delta", StreamDeltaPayload(text="α")),
+            ("reasoning.delta", StreamDeltaPayload(text="α")),
+            ("message.complete", MessageCompletePayload(text="α")),
+        ):
+            server._emit(kind, "fanout-invariant", payload)
             first, second = a.receive(), b.receive()
             assert first == second
             assert first["params"]["type"] == kind
@@ -156,11 +161,11 @@ def test_membership_preserves_terminal_delivery_and_revokes_departed_peers(monke
         assert server._detach_session_transport(session, b)
         assert not session["viewers"]
         assert not server._session_transport_contains(session, b)
-        server._emit("message.complete", "fanout-invariant", {"text": "only A"})
+        server._emit("message.complete", "fanout-invariant", MessageCompletePayload(text="only A"))
         assert a.receive()["params"]["payload"]["text"] == "only A"
         assert b.frames.empty()
         assert server._attach_session_transport(session, b)
-        server._emit("message.complete", "fanout-invariant", {"text": "reattached"})
+        server._emit("message.complete", "fanout-invariant", MessageCompletePayload(text="reattached"))
         assert a.receive() == b.receive()
         b.close()
         # A stale queued envelope must not restore a dead peer's authority.

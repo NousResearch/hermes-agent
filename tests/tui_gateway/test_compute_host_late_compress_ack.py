@@ -15,6 +15,8 @@ import types
 import pytest
 
 from tui_gateway import server
+from tui_gateway.contracts.common import SessionLiveInfo
+from tui_gateway.contracts.events import ErrorPayload, SessionInfoPayload, StatusUpdatePayload
 from tui_gateway.host_supervisor import HostSupervisor
 
 
@@ -131,7 +133,7 @@ def compute_host_gateway(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: emitted.append((event, sid, payload)))
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda _s, cfg=None: True)
     monkeypatch.setattr(server, "_compute_host_compress_wait_seconds", lambda cfg=None: 0.05)
-    monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {"model": "mirrored"})
+    monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: SessionLiveInfo(model="mirrored"))
     session = _session()
     server._sessions["sid"] = session
     try:
@@ -175,8 +177,8 @@ def test_session_compress_reports_pending_and_adopts_late_ack(compute_host_gatew
     assert session["_metadata_message_count"] == 2
     assert session["_metadata_mirror"]["model"] == "host-model"
     events = [(event, payload) for event, _sid, payload in emitted]
-    assert ("session.info", {"model": "mirrored"}) in events
-    assert ("status.update", {"kind": "compacted", "text": "✓ Context compression complete"}) in events
+    assert ("session.info", SessionInfoPayload(model="mirrored")) in events
+    assert ("status.update", StatusUpdatePayload(kind="compacted", text="✓ Context compression complete")) in events
 
 
 def test_session_compress_late_control_error_surfaces_as_error_event(compute_host_gateway):
@@ -188,7 +190,7 @@ def test_session_compress_late_control_error_surfaces_as_error_event(compute_hos
     sup._handle_host_frame({"type": "control.error", "request_id": sent[0]["request_id"], "message": "provider down"})
 
     assert session["session_key"] == "old-session-key"
-    assert ("error", "sid", {"message": "compression failed: provider down"}) in emitted
+    assert ("error", "sid", ErrorPayload(message="compression failed: provider down")) in emitted
 
 
 def test_session_compress_late_ack_ignored_after_session_closed(compute_host_gateway):

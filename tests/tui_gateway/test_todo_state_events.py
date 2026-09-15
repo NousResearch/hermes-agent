@@ -32,7 +32,8 @@ def test_todo_completion_always_emits_snapshot_and_compat_event(monkeypatch):
     server._on_tool_complete(sid, "call-1", "todo", {}, json.dumps(state))
 
     assert [event[0] for event in events] == ["tool.complete", "todo.updated"]
-    assert events[-1] == ("todo.updated", sid, state)
+    assert events[-1][:2] == ("todo.updated", sid)
+    assert events[-1][2].model_dump(mode="json", exclude_none=True) == state
     assert session["todo_state"] == state
 
 

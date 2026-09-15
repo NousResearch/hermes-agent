@@ -476,8 +476,9 @@ def test_include_sessions_false_skips_canonical(home):
     db.close()
 
     row = _row(_profiles({"include_sessions": False}), "default")
-    assert "last_session" not in row
-    assert "canonical_session" not in row
+    # Declared-but-unset fields serialize as ``None``: no session summary was computed.
+    assert row["last_session"] is None
+    assert row["canonical_session"] is None
 
 
 def test_canonical_session_scoped_per_profile_db(home):

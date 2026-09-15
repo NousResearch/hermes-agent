@@ -27,6 +27,7 @@ import types
 import pytest
 
 from tui_gateway import server
+from tui_gateway.contracts.common import Usage
 
 
 class _InlineThread:
@@ -88,11 +89,15 @@ def turn_env(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_register_session_cwd", lambda session: None)
     monkeypatch.setattr(server, "_tts_stream_begin", lambda: None)
     monkeypatch.setattr(server, "_sync_session_key_after_compress", lambda *a, **k: None)
-    monkeypatch.setattr(server, "_get_usage", lambda agent: {})
+    monkeypatch.setattr(server, "_get_usage", lambda agent: Usage())
 
 
 def _events(captured, name):
-    return [payload for event, _sid, payload in captured if event == name]
+    """Emitted payloads are contract models; compare their wire shape (``None`` fields
+    are absent on the wire, so ``"error" not in payload`` keeps its meaning)."""
+    return [
+        payload.model_dump(exclude_none=True) for event, _sid, payload in captured if event == name
+    ]
 
 
 # ── Unit: retention helpers ───────────────────────────────────────────
@@ -309,7 +314,7 @@ def test_live_session_payload_exposes_retained_failure(emits, turn_env, monkeypa
 
     # What session.resume's live fast path hands a reconnecting client.
     monkeypatch.setattr(server, "_get_db", lambda: None)
-    payload = server._live_session_payload("sid", session)
+    payload = server._live_session_payload("sid", session).model_dump(exclude_none=True)
 
     assert payload["running"] is False
     inflight = payload.get("inflight")

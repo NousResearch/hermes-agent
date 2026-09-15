@@ -13,6 +13,7 @@ import time
 import pytest
 
 from tui_gateway import server
+from tui_gateway.contracts.events import ChangeSignalPayload
 
 
 @pytest.fixture()
@@ -51,7 +52,7 @@ def test_cron_jobs_file_move_broadcasts_cron_changed(watcher_home):
     (home / "cron" / "jobs.json").write_text("[]")
     server._broadcast_watched_changes(now=10.0)
 
-    assert ("cron.changed", {}) in events
+    assert ("cron.changed", ChangeSignalPayload()) in events
 
 
 def test_state_db_move_broadcasts_sessions_changed(watcher_home):
@@ -61,7 +62,7 @@ def test_state_db_move_broadcasts_sessions_changed(watcher_home):
     (home / "state.db").write_text("x")
     server._broadcast_watched_changes(now=10.0)
 
-    assert ("sessions.changed", {}) in events
+    assert ("sessions.changed", ChangeSignalPayload()) in events
 
 
 def test_served_profile_store_move_broadcasts_sessions_changed(watcher_home, monkeypatch):
@@ -78,7 +79,7 @@ def test_served_profile_store_move_broadcasts_sessions_changed(watcher_home, mon
     (bot_home / "state.db").write_text("x")
     server._broadcast_watched_changes(now=10.0)
 
-    assert ("sessions.changed", {}) in events
+    assert ("sessions.changed", ChangeSignalPayload()) in events
 
 
 def test_gateway_state_move_broadcasts_platforms_changed(watcher_home):
@@ -88,7 +89,7 @@ def test_gateway_state_move_broadcasts_platforms_changed(watcher_home):
     (home / "gateway_state.json").write_text('{"platforms": {}}')
     server._broadcast_watched_changes(now=10.0)
 
-    assert ("platforms.changed", {}) in events
+    assert ("platforms.changed", ChangeSignalPayload()) in events
 
 
 def test_pending_pairing_request_broadcasts_pairing_changed(watcher_home):
@@ -107,8 +108,8 @@ def test_pending_pairing_request_broadcasts_pairing_changed(watcher_home):
     (store / "telegram-pending.json").write_text('{"abc": {"user_id": "1"}}')
     server._broadcast_watched_changes(now=10.0)
 
-    assert ("pairing.changed", {}) in events
-    assert ("platforms.changed", {}) not in events
+    assert ("pairing.changed", ChangeSignalPayload()) in events
+    assert ("platforms.changed", ChangeSignalPayload()) not in events
 
 
 def test_pairing_signal_follows_a_profile_store(watcher_home):
@@ -122,7 +123,7 @@ def test_pairing_signal_follows_a_profile_store(watcher_home):
     (store / "telegram-approved.json").write_text('{"u1": {"user_id": "u1"}}')
     server._broadcast_watched_changes(now=10.0)
 
-    assert ("pairing.changed", {}) in events
+    assert ("pairing.changed", ChangeSignalPayload()) in events
 
 
 def test_rate_limit_churn_does_not_broadcast_pairing_changed(watcher_home):
@@ -137,7 +138,7 @@ def test_rate_limit_churn_does_not_broadcast_pairing_changed(watcher_home):
     (store / "_rate_limits.json").write_text('{"telegram:1": 123}')
     server._broadcast_watched_changes(now=10.0)
 
-    assert ("pairing.changed", {}) not in events
+    assert ("pairing.changed", ChangeSignalPayload()) not in events
 
 
 def test_sessions_floor_coalesces_burst_but_keeps_trailing_edge(watcher_home):
@@ -156,7 +157,7 @@ def test_sessions_floor_coalesces_burst_but_keeps_trailing_edge(watcher_home):
 
     # …but the change is not lost — it fires once the window opens.
     server._broadcast_watched_changes(now=13.0)
-    assert ("sessions.changed", {}) in events
+    assert ("sessions.changed", ChangeSignalPayload()) in events
 
 
 def test_pet_sig_stays_off_without_a_renderable_pet(watcher_home):
@@ -192,9 +193,9 @@ def test_renderable_pet_broadcasts_meta_payload(watcher_home, monkeypatch):
     pet_events = [e for e in events if e[0] == "pet.changed"]
     assert pet_events
     payload = pet_events[0][1]
-    assert payload["enabled"] is True
-    assert payload["slug"] == "boba"
-    assert payload["spritesheetRevision"]
+    assert payload.enabled is True
+    assert payload.slug == "boba"
+    assert payload.spritesheetRevision
 
 
 def test_enqueued_envelope_broadcasts_outbox_pending(watcher_home):
@@ -209,7 +210,7 @@ def test_enqueued_envelope_broadcasts_outbox_pending(watcher_home):
     (outbox / ("a" * 32 + ".json")).write_text('{"id": "' + "a" * 32 + '"}')
     server._broadcast_watched_changes(now=10.0)
 
-    assert ("bot_relay.outbox.pending", {}) in events
+    assert ("bot_relay.outbox.pending", ChangeSignalPayload()) in events
 
 
 def test_drained_outbox_does_not_rebroadcast_pending(watcher_home):
@@ -253,8 +254,8 @@ def test_new_envelope_after_drain_fires_pending_again(watcher_home):
     server._broadcast_watched_changes(now=30.0)
 
     assert [e for e in events if e[0] == "bot_relay.outbox.pending"] == [
-        ("bot_relay.outbox.pending", {}),
-        ("bot_relay.outbox.pending", {}),
+        ("bot_relay.outbox.pending", ChangeSignalPayload()),
+        ("bot_relay.outbox.pending", ChangeSignalPayload()),
     ]
 
 
@@ -279,4 +280,4 @@ def test_broken_probe_never_kills_the_pass(watcher_home, monkeypatch):
     server._broadcast_watched_changes(now=10.0)
 
     # The broken cron probe is skipped; sessions still broadcasts.
-    assert ("sessions.changed", {}) in events
+    assert ("sessions.changed", ChangeSignalPayload()) in events

@@ -8,6 +8,16 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.hosted_room_driver import TaskIdentity
+from tui_gateway.contracts.common import SessionLiveInfo, TranscriptMessage
+from tui_gateway.contracts.prompt_voice import ApprovalRespondResult, PromptSubmitResult
+from tui_gateway.contracts.sessions import (
+    SessionCreateResult,
+    SessionHistoryResult,
+    SessionInterruptResult,
+    SessionListResult,
+    SessionListRow,
+    SessionResumeResult,
+)
 from tui_gateway.hosted_room_server_rpc import (
     HostedRoomServerRPC,
     HostedRoomSessionError,
@@ -15,31 +25,52 @@ from tui_gateway.hosted_room_server_rpc import (
 
 
 def _server():
+    """Fake server module: ``invoke(method, params_model, **trusted)`` calls the raw handler exactly
+    like ``tui_gateway.server.invoke`` and returns a Result model (or a dict error frame)."""
     sessions = {}
     calls = []
 
     def method(name, result):
-        def handler(rid, params):
-            calls.append((name, params))
-            value = result(params) if callable(result) else result
-            return {"id": rid, **value}
+        def handler(rid, params, **trusted):
+            # Record the validated params as a plain dict (plus the trusted kwargs) so
+            # assertions can stay key-based.
+            calls.append((name, {**params.model_dump(exclude_none=True), **trusted}))
+            return result(params) if callable(result) else result
 
         return handler
 
+    info = SessionLiveInfo(model="m")
     methods = {
         "session.list": method(
             "session.list",
-            {"result": {"sessions": [{"id": "stored", "resolved_id": "tip", "title": "Group: room"}]}},
+            SessionListResult(sessions=[SessionListRow(id="stored", resolved_id="tip", title="Group: room")]),
         ),
-        "session.create": method("session.create", {"result": {"session_id": "runtime"}}),
-        "session.resume": method("session.resume", {"result": {"session_id": "runtime"}}),
-        "session.history": method("session.history", {"result": {"messages": [{"role": "assistant"}]}}),
-        "session.interrupt": method("session.interrupt", {"result": {"interrupted": True}}),
-        "approval.respond": method("approval.respond", {"result": {"resolved": 1}}),
-        "prompt.submit": method("prompt.submit", {"result": {"status": "streaming"}}),
+        "session.create": method(
+            "session.create",
+            SessionCreateResult(session_id="runtime", stored_session_id="runtime", message_count=0,
+                                messages=[], info=info),
+        ),
+        "session.resume": method(
+            "session.resume",
+            SessionResumeResult(session_id="runtime", message_count=0, messages=[], info=info),
+        ),
+        "session.history": method(
+            "session.history",
+            SessionHistoryResult(count=1, messages=[TranscriptMessage(role="assistant")]),
+        ),
+        "session.interrupt": method(
+            "session.interrupt", SessionInterruptResult(status="interrupted", interrupted=True)
+        ),
+        "approval.respond": method("approval.respond", ApprovalRespondResult(resolved=1)),
+        "prompt.submit": method("prompt.submit", PromptSubmitResult(status="streaming")),
     }
+
+    def invoke(name, params, **trusted):
+        return methods[name](None, params, **trusted)
+
     server = SimpleNamespace(
         _methods=methods,
+        invoke=invoke,
         _sessions=sessions,
         _sessions_lock=threading.Lock(),
         _pending_approval_request_payload=lambda _session_key: None,
@@ -145,7 +176,7 @@ def test_local_approval_snapshot_and_response_use_exact_request():
 
 def test_rpc_errors_are_typed():
     server, _calls = _server()
-    server._methods["session.list"] = lambda rid, _params: {
+    server._methods["session.list"] = lambda rid, _params, **_trusted: {
         "id": rid,
         "error": {"code": 4007, "message": "not found"},
     }
@@ -158,7 +189,7 @@ def test_rpc_errors_are_typed():
 
 def test_prompt_rejection_is_proven_not_admitted():
     server, _calls = _server()
-    server._methods["prompt.submit"] = lambda rid, _params: {
+    server._methods["prompt.submit"] = lambda rid, _params, **_trusted: {
         "id": rid,
         "error": {"code": 4121, "message": "session is already busy"},
     }

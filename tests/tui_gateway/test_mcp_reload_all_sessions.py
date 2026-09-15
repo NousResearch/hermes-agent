@@ -17,6 +17,7 @@ from tools import mcp_tool_agent as _mcp_agent
 from tools import mcp_tool_discovery as _mcp_discovery
 from tools import mcp_tool_lifecycle as _mcp_lifecycle
 import tui_gateway.server as srv
+from tui_gateway.contracts.common import SessionLiveInfo
 from tui_gateway.contracts.tools_mcp_plugins import ReloadMcpParams
 
 
@@ -31,7 +32,7 @@ def reload_env(monkeypatch, tmp_path):
                         lambda agent, **_kw: refreshed.append(agent.name) or set())
     monkeypatch.setattr(srv, "_compute_mcp_rev", lambda: "rev-a")
     monkeypatch.setattr(srv, "_emit", lambda *_a, **_k: True)
-    monkeypatch.setattr(srv, "_session_info", lambda agent, session=None: {})
+    monkeypatch.setattr(srv, "_session_info", lambda agent, session=None: SessionLiveInfo())
     monkeypatch.setattr(srv, "_mcp_reload_gen", 0)
     monkeypatch.setattr(srv, "_mcp_reload_loaded_rev", "")
 

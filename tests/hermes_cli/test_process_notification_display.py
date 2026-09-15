@@ -8,6 +8,7 @@ from cli import HermesCLI
 from tools.process_registry_notifications import (
     PROCESS_COMPLETE_DISPLAY_KIND, format_process_notification, process_completion_display_text)
 from tui_gateway import server
+from tui_gateway.contracts.events import StatusUpdatePayload
 
 
 def _registry(events):
@@ -65,7 +66,7 @@ def test_process_completion_display_keeps_payload_separate_across_surfaces(monke
     session = {"session_key": "display-session", "history_lock": threading.RLock()}
     server._notif_handle_ready("ui-session", session, events, set(), registry, format_process_notification, None,
                                owned=True)
-    assert emitted[0][2] == {"kind": "process", "text": expected}
+    assert emitted[0][2] == StatusUpdatePayload(kind="process", text=expected)
     (_rid, _sid, _session, text, _what), kwargs = submitted[0]
     assert text == payload
     assert kwargs["display_kind"] == PROCESS_COMPLETE_DISPLAY_KIND

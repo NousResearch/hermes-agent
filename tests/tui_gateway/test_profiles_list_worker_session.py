@@ -12,7 +12,7 @@ Contract under test:
   last_active.
 - ``None`` when the profile has no worker sessions.
 - ``last_session`` still never includes worker rows (existing deny intact).
-- ``include_sessions: false`` skips the field entirely.
+- ``include_sessions: false`` leaves the field unpopulated (``None``).
 """
 
 from __future__ import annotations
@@ -98,5 +98,7 @@ def test_include_sessions_false_omits_worker_session(home):
     db.close()
 
     row = _row(_profiles({"include_sessions": False}), "default")
-    assert "worker_session" not in row
-    assert "last_session" not in row
+    # The closed ProfileRow model always declares these fields; without sessions
+    # they must stay unpopulated (None), never leak the worker/kanban row.
+    assert row["worker_session"] is None
+    assert row["last_session"] is None

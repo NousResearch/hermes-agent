@@ -46,7 +46,7 @@ def test_agent_cbs_includes_interim_callback_when_enabled():
     assert len(emitted) == 1
     assert emitted[0][0] == "message.interim"
     assert emitted[0][1] == "test-session"
-    assert emitted[0][2]["text"] == "hello world"
-    assert emitted[0][2]["already_streamed"] is True
+    assert emitted[0][2].text == "hello world"
+    assert emitted[0][2].already_streamed is True
 
 

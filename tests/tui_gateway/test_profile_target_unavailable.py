@@ -1,7 +1,13 @@
 """An unavailable explicit target must never become the launch profile."""
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+
+
+def _params(profile):
+    """``_profile_db`` reads ``params.profile`` off the validated MethodParams model (attribute access)."""
+    return SimpleNamespace(profile=profile)
 
 
 def test_explicit_profile_target_never_falls_back(tmp_path, monkeypatch):
@@ -19,7 +25,7 @@ def test_explicit_profile_target_never_falls_back(tmp_path, monkeypatch):
         with SessionDB(db_path=path / "state.db") as db:
             db.create_session(marker, "tui")
     for name, marker in ((None, "launch"), ("default", "launch"), ("DEFAULT", "launch"), ("worker", "worker")):
-        with server._profile_db({"profile": name}) as db:
+        with server._profile_db(_params(name)) as db:
             assert db.get_session(marker)
         response = server._methods["config.get"](1, {"profile": name, "key": "full"})
         assert response["result"]["config"]["terminal"]["cwd"] == f"/{marker}"
@@ -27,7 +33,7 @@ def test_explicit_profile_target_never_falls_back(tmp_path, monkeypatch):
     worker.rename(worker.with_name("gone"))
     for name in ("worker", "unknown"):
         with pytest.raises(FileNotFoundError):
-            with server._profile_db({"profile": name}):
+            with server._profile_db(_params(name)):
                 pytest.fail("unavailable profile reached a database")
         with pytest.raises(FileNotFoundError):
             server._methods["config.set"](2, {"profile": name, "key": "busy", "value": "steer"})
@@ -55,7 +61,7 @@ def test_custom_root_basename_target_fails_closed_when_unavailable(tmp_path, mon
         server._profile_home("customer-data")
 
     with pytest.raises(FileNotFoundError):
-        with server._profile_db({"profile": "customer-data"}):
+        with server._profile_db(_params("customer-data")):
             pass
 
 
@@ -76,7 +82,7 @@ def test_profile_param_traversal_fails_closed(tmp_path, monkeypatch, name):
     with pytest.raises(FileNotFoundError):
         server._profile_home(name)
     with pytest.raises(FileNotFoundError):
-        with server._profile_db({"profile": name}):
+        with server._profile_db(_params(name)):
             pass
 
 

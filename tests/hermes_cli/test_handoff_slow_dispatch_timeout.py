@@ -234,13 +234,17 @@ class TestDesktopHandoffFail:
         globs = dict(handler.__globals__)
         globs["_sess_nowait"] = lambda p, r: (session, None)
         globs["_session_db"] = fake_session_db
-        globs["_ok"] = lambda rid, result: {"ok": True, **result}
         globs["_db_unavailable_error"] = lambda rid, code: {"error": code}
         rebound = types.FunctionType(
             handler.__code__, globs, handler.__name__,
             handler.__defaults__, handler.__closure__,
         )
-        return rebound("rid", {"error": "poll timeout"})
+        # The handler takes the validated params model and returns a HandoffFailResult.
+        from tui_gateway.contracts.billing_delegation_pets import HandoffFailParams
+
+        result = rebound("rid", HandoffFailParams(session_id=session_key, error="poll timeout"))
+        assert not isinstance(result, dict), result
+        return result.model_dump()
 
     def test_desktop_fail_refuses_running_row(self, db):
         db.ensure_session("d1", "desktop")

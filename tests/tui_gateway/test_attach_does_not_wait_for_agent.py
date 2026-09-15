@@ -19,6 +19,7 @@ import threading
 import pytest
 
 from tui_gateway import server
+from tui_gateway.contracts.common import SessionParams
 
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 4
 
@@ -131,8 +132,8 @@ def test_sess_building_does_not_wait_but_sess_does(session, monkeypatch):
 
     monkeypatch.setattr(server, "_wait_agent", lambda s, rid: waited.append(rid) or None)
 
-    server._sess_building({"session_id": sid}, "rid-building")
+    server._sess_building(SessionParams(session_id=sid), "rid-building")
     assert waited == []
 
-    server._sess({"session_id": sid}, "rid-sess")
+    server._sess(SessionParams(session_id=sid), "rid-sess")
     assert waited == ["rid-sess"]

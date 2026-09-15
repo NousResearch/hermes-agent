@@ -22,6 +22,12 @@ export interface FleetGroup {
   kind: DesktopConnectionKind
   label: string
   reachable: boolean
+  /** The roster deliberately did not dial this gateway rather than failing to:
+   *  an ssh connection before its first use, or the local runtime while the
+   *  primary route is remote (enumerating it would spawn a backend the user
+   *  never asked for). Clicking a square starts it — so it must not be painted
+   *  as a fault. */
+  onDemand: boolean
   /** The gateway's default profile — every Hermes home has one, so a group
    *  always carries it even before the roster has been enumerated. */
   defaultAgent: FleetAgent
@@ -30,6 +36,22 @@ export interface FleetGroup {
 }
 
 export const DEFAULT_PROFILE = 'default'
+
+/** The three conditions a gateway can be in on the rail. `reachable` alone
+ *  cannot say them apart: enumeration returns no profiles both when a dial
+ *  FAILED and when it was deliberately skipped, and reporting the second as
+ *  "unreachable" accuses a healthy machine (Bot Mode already draws this
+ *  distinction; the rail did not). One resolver so the rail, the condensed
+ *  menu and the gateway dropdown never drift. */
+export type FleetGatewayCondition = 'down' | 'on-demand' | 'ready'
+
+export function fleetGatewayCondition(group: Pick<FleetGroup, 'onDemand' | 'reachable'>): FleetGatewayCondition {
+  if (group.reachable) {
+    return 'ready'
+  }
+
+  return group.onDemand ? 'on-demand' : 'down'
+}
 
 export function fleetRouteKey(connectionId: string, profile: string): string {
   return `${connectionId}::${profile}`
@@ -94,6 +116,7 @@ export function buildRestGroups({
       kind: connection.kind,
       label: connection.label,
       reachable: source?.reachable ?? true,
+      onDemand: source?.error === 'connect-on-demand',
       defaultAgent: toAgent(DEFAULT_PROFILE, defaultRow?.handle),
       named
     })

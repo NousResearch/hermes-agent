@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { DesktopAgentRoster, DesktopRegistryConnection } from '@/global'
 
-import { buildRestGroups, countRestAgents, fleetRouteKey } from './fleet-rail'
+import { buildRestGroups, countRestAgents, fleetGatewayCondition, fleetRouteKey } from './fleet-rail'
 
 const connections: DesktopRegistryConnection[] = [
   { id: 'pandora', kind: 'remote', label: 'Pandora', url: 'https://pandora.example' },
@@ -93,6 +93,38 @@ describe('buildRestGroups', () => {
     expect(vps?.reachable).toBe(false)
     expect(vps?.defaultAgent.profile).toBe('default')
     expect(vps?.named).toEqual([])
+  })
+
+  // A gateway the roster declined to dial (ssh before first use; the local
+  // runtime while the primary route is remote) reports exactly like one that
+  // failed to answer — no profiles. Telling them apart is the whole point of
+  // `onDemand`: the second is broken, the first is merely idle and a click
+  // starts it.
+  it('separates a gateway that was never dialed from one that did not answer', () => {
+    const idleRoster: DesktopAgentRoster = {
+      agents: [],
+      sources: [
+        { connectionId: 'pandora', kind: 'remote', label: 'Pandora', reachable: true },
+        { connectionId: 'local', kind: 'local', label: 'This device', reachable: false, error: 'connect-on-demand' },
+        { connectionId: 'vps', kind: 'ssh', label: 'VPS', reachable: false, error: 'ssh: connect timed out' }
+      ]
+    }
+
+    const groups = buildRestGroups({ activeConnectionId: 'pandora', connections, roster: idleRoster })
+    const byId = (id: string) => groups.find(group => group.connectionId === id)
+
+    expect(byId('local')?.onDemand).toBe(true)
+    expect(fleetGatewayCondition(byId('local')!)).toBe('on-demand')
+    expect(byId('vps')?.onDemand).toBe(false)
+    expect(fleetGatewayCondition(byId('vps')!)).toBe('down')
+  })
+
+  // Reachability wins over the deferral flag: once a gateway answers it is
+  // ready, whatever an earlier poll called it.
+  it('calls a gateway that answered ready', () => {
+    const groups = buildRestGroups({ activeConnectionId: 'pandora', connections, roster })
+
+    expect(fleetGatewayCondition(groups.find(group => group.connectionId === 'local')!)).toBe('ready')
   })
 
   it('shows every gateway with just its default before the roster has loaded', () => {

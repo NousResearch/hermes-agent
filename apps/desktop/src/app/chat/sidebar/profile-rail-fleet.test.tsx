@@ -40,6 +40,7 @@ vi.mock('@/i18n', () => ({
           allOnGateway: 'All profiles on this gateway',
           deleteOn: (gateway: string) => ` on ${gateway}`,
           gateway: (gateway: string) => `Profiles on ${gateway}`,
+          gatewayOnDemand: (gateway: string) => `${gateway} · not connected — click to connect`,
           gatewayUnreachable: (gateway: string) => `${gateway} · unreachable`,
           onGateway: (name: string, gateway: string) => `${name} · ${gateway}`,
           switchTo: (name: string, gateway: string) => `Switch to ${name} on ${gateway}`
@@ -328,11 +329,40 @@ describe('ProfileRail fleet mode', () => {
     const gatewayB = container.querySelector('[data-slot="profile-rail-gateway"][data-connection-id="gateway-b"]')
     expect(gatewayB?.getAttribute('data-reachable')).toBe('false')
     expect(
-      container.querySelector(
-        '[data-slot="profile-rail-divider"][data-connection-id="gateway-b"] [data-slot="profile-rail-unreachable"]'
-      )
-    ).toBeTruthy()
+      container
+        .querySelector(
+          '[data-slot="profile-rail-divider"][data-connection-id="gateway-b"] [data-slot="gateway-condition-dot"]'
+        )
+        ?.getAttribute('data-condition')
+    ).toBe('down')
     expect(within(gatewayB as HTMLElement).getByRole('button', { name: 'default · Gateway B' })).toBeTruthy()
+  })
+
+  // A gateway the roster deliberately did not dial is idle, not broken: its
+  // squares stay clickable and its dot must not read as a fault, or a healthy
+  // machine (the local runtime under a remote primary; ssh before first use)
+  // is reported as unreachable to its owner.
+  it('marks a never-dialed gateway as on demand, not as a failure', async () => {
+    armFleet()
+    getAgentRoster.mockResolvedValue({
+      ...roster,
+      sources: roster.sources.map(source =>
+        source.connectionId === 'local' ? { ...source, reachable: false, error: 'connect-on-demand' } : source
+      )
+    })
+
+    const container = await renderFleet()
+
+    const dot = container.querySelector(
+      '[data-slot="profile-rail-divider"][data-connection-id="local"] [data-slot="gateway-condition-dot"]'
+    )
+
+    expect(dot?.getAttribute('data-condition')).toBe('on-demand')
+    expect(
+      container
+        .querySelector('[data-slot="profile-rail-divider"][data-connection-id="local"]')
+        ?.getAttribute('data-condition')
+    ).toBe('on-demand')
   })
 
   it('re-homes onto the exact (gateway, profile) when an at-rest square is clicked', async () => {

@@ -2508,6 +2508,7 @@ export const zh = defineLocale({
     fleet: {
       allOnGateway: '此网关上的全部配置档案',
       gateway: gateway => `${gateway} 上的配置档案`,
+      gatewayOnDemand: gateway => `${gateway} · 未连接 — 点击以连接`,
       gatewayUnreachable: gateway => `${gateway} · 无法连接`,
       onGateway: (name, gateway) => `${name} · ${gateway}`,
       switchTo: (name, gateway) => `切换到 ${gateway} 上的 ${name}`,

@@ -73,10 +73,46 @@ class GatewayBusySessionMixin:
         return pending_event
 
     def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
-        """Total pending /queue items for a session — slot + overflow."""
+        """Total pending /queue items for a session — slot + overflow.
+
+        Counts EVERY queued event, synthetic ones included: this is the resource-accounting
+        number backing ``_BUSY_QUEUE_MAX_PENDING``, where a synthetic wake occupies a slot
+        exactly like a user message. For a number shown to a human use ``_user_queue_depth``.
+        """
         depth = len(self._overflow_queue(session_key) or ())
         if adapter is not None and session_key in getattr(adapter, "_pending_messages", {}):
             depth += 1
+        return depth
+
+    @classmethod
+    def _is_user_queued_event(cls, event: Any) -> bool:
+        """True when a queued event is a message the USER sent.
+
+        Synthetic turns share the FIFO with real user messages — ``internal=True`` events
+        (background/kanban completion wakes, auto-resume continuations, plugin-injected turns)
+        and ``/goal`` continuations. They must occupy queue slots, but must not be counted in a
+        user-facing total.
+        """
+        if event is None:
+            return False
+        if getattr(event, "internal", False):
+            return False
+        if cls._is_goal_continuation_event(event):
+            return False
+        return True
+
+    def _user_queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
+        """Pending queue items the USER actually sent — slot + overflow.
+
+        User-facing counterpart to ``_queue_depth``: one ``/queue`` issued into a session that
+        already has a synthetic turn parked must not report "(2 queued)".
+        """
+        overflow = self._overflow_queue(session_key) or ()
+        depth = sum(1 for ev in overflow if self._is_user_queued_event(ev))
+        if adapter is not None:
+            pending_slot = getattr(adapter, "_pending_messages", {}) or {}
+            if self._is_user_queued_event(pending_slot.get(session_key)):
+                depth += 1
         return depth
 
     def _rescue_orphaned_overflow(self, session_key: str, adapter: Any) -> Optional["MessageEvent"]:
@@ -910,7 +946,10 @@ class GatewayBusySessionMixin:
                 channel_prompt=event.channel_prompt, channel_context=event.channel_context,
                 internal=event.internal, timestamp=event.timestamp,
             ), adapter)
-        depth = self._queue_depth(quick_key, adapter=adapter)
+        # User-facing count: synthetic turns (background/kanban wakes, /goal continuations) share
+        # this FIFO but are not something the user queued, so the raw depth told a user who sent
+        # ONE /queue that "(2 queued)".
+        depth = self._user_queue_depth(quick_key, adapter=adapter)
         return "Queued for the next turn." + (f" ({depth} queued)" if depth > 1 else "")
 
     async def _busy_steer_command(self, event: MessageEvent, quick_key: str, source):

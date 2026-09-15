@@ -1999,9 +1999,8 @@ class CLICommandsMixin:
                 _print_side_result_panel(self, header_lines=header_lines, body=body,
                                          title_suffix=title_suffix, empty_note=empty_note,
                                          console=console)
-                if bell and self.bell_on_complete:
-                    sys.stdout.write("\a")
-                    sys.stdout.flush()
+                if bell:
+                    self._ring_bell(context=f"{fail_label} complete")
             except Exception as e:
                 _refresh_tui_before_print(self)
                 line = f"  ❌ {fail_label} failed: {e}"

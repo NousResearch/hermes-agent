@@ -373,6 +373,15 @@ describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
     expect(home?.isHome).toBe(true)
   })
 
+  it('keeps an unknown live branch out of the main display fallback', () => {
+    const home = mergeRepoWorktreeGroups({ id: '/repo', path: '/repo', groups: [] }, [
+      { branch: null, detached: false, isMain: true, locked: false, path: '/repo' }
+    ]).find(g => g.isHome)
+
+    expect(home?.label).toBe('main')
+    expect(home?.branchTarget).toBeNull()
+  })
+
   it('folds multiple historical main-checkout branch lanes into the single live home lane', () => {
     const repo = {
       id: '/repo',

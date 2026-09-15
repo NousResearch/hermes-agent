@@ -323,6 +323,31 @@ def test_exact_pinned_deps_exempt_from_exclude_newer():
 
 
 
+def test_lockfile_exclude_newer_whitelist_matches_pyproject():
+    """``uv sync --locked`` needs the lockfile's whitelist to match pyproject.
+
+    ``exclude-newer-package`` is resolver input, not merely metadata. When
+    pyproject adds an exemption without regenerating uv.lock, uv rejects every
+    locked sync before it can create an update candidate environment.
+    """
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    lockfile = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    expected = {
+        _canonical(name): enabled
+        for name, enabled in pyproject.get("tool", {}).get("uv", {}).get("exclude-newer-package", {}).items()
+    }
+    actual = {
+        _canonical(name): enabled
+        for name, enabled in lockfile.get("options", {}).get("exclude-newer-package", {}).items()
+    }
+
+    assert actual == expected, (
+        "uv.lock [options.exclude-newer-package] drifted from "
+        "pyproject.toml [tool.uv.exclude-newer-package]; run `uv lock` so "
+        "`uv sync --locked` can resolve the project"
+    )
+
+
 def test_build_system_requires_wheel_for_isolated_builds():
     """Regression for #96488 — PEP 517 isolation must include wheel.
 

@@ -98,6 +98,7 @@ agent-client-protocol = false
 fire = false
 httpx2 = false
 google-auth-oauthlib = false
+google-cloud-pubsub = false
 python-multipart = false
 ty = false
 openai = false

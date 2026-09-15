@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 
 import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
+import type { Contribution } from '@/contrib/types'
 
 type NavigateLike = (to: string, options?: { replace?: boolean }) => void
 
@@ -91,9 +92,17 @@ export interface RouteContribution {
   path: string
 }
 
-export function contributedRoutes(): Array<{ key: string; path: string; title?: string; render: () => ReactNode }> {
-  return registry
-    .getArea(ROUTES_AREA)
+/** Pure projection of `routes`-area contributions to mountable pages. Render
+ *  paths MUST pass the subscribed array from `useContributions(ROUTES_AREA)`
+ *  so the value is a reactive input — the React Compiler memoizes render-time
+ *  computations against the inputs it can see, and a bare registry read is
+ *  cached once and never recomputed when a plugin registers a route after
+ *  mount (its sidebar row appears but the page 404s into the chat catch-all).
+ */
+export function contributedRoutesFrom(
+  contributions: readonly Contribution[]
+): Array<{ key: string; path: string; title?: string; render: () => ReactNode }> {
+  return contributions
     .map(c => ({
       key: `${c.source ?? 'core'}:${c.id}`,
       path: (c.data as RouteContribution | undefined)?.path ?? '',
@@ -101,6 +110,12 @@ export function contributedRoutes(): Array<{ key: string; path: string; title?: 
       render: c.render!
     }))
     .filter(route => Boolean(route.path.startsWith('/') && route.render) && !RESERVED_PATHS.has(route.path))
+}
+
+/** Imperative form for non-render callers (route classification, pane
+ *  titles). Do NOT call in a component render — see contributedRoutesFrom. */
+export function contributedRoutes(): Array<{ key: string; path: string; title?: string; render: () => ReactNode }> {
+  return contributedRoutesFrom(registry.getArea(ROUTES_AREA))
 }
 
 function isContributedPath(pathname: string): boolean {

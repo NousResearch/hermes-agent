@@ -114,6 +114,28 @@ class TestSupportsMediaInToolResults:
         finally:
             clear_runtime_main()
 
+    def test_commandcode_profile_veto_applies_even_when_vision_capable_lookup_agrees(self):
+        """CommandCode /provider/v1 accepts user-message images but 400s on
+        list-type tool-result content (#107476). The profile veto is a hard
+        veto even when ``model.supports_vision: true`` and lookup agrees."""
+        from tools.vision_tools import _should_use_native_vision_fast_path
+        from agent.auxiliary_client import set_runtime_main, clear_runtime_main
+        from agent import image_routing
+
+        set_runtime_main("commandcode", "deepseek/deepseek-v4.1-flash")
+        try:
+            with patch.object(
+                image_routing, "decide_image_input_mode", return_value="native"
+            ), patch.object(
+                image_routing, "_lookup_supports_vision", return_value=True
+            ):
+                assert _should_use_native_vision_fast_path() is False
+                assert _supports_media_in_tool_results(
+                    "commandcode", "deepseek/deepseek-v4.1-flash"
+                ) is False
+        finally:
+            clear_runtime_main()
+
 
 # ─── _build_native_vision_tool_result ────────────────────────────────────────
 

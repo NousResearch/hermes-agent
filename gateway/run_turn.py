@@ -1386,9 +1386,7 @@ class GatewayTurnMixin:
         _intentional_silence = self._is_intentional_silence(agent_result, response)
         # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
         # opened the chain: an internal follow-up may go silent, a human one must not.
-        _silence_kind = persist_user_display_kind
-        if isinstance(agent_result, dict) and "queued_terminal_display_kind" in agent_result:
-            _silence_kind = agent_result["queued_terminal_display_kind"]
+        _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
         if _intentional_silence and not is_machinery_display_kind(_silence_kind):
             logger.warning(
                 "silence marker rejected on a user turn: platform=%s chat=%s",

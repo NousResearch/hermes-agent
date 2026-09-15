@@ -14,10 +14,10 @@ from typing import Any
 # error/empty-response path, not silence.
 LIVE_GATEWAY_SILENT_MARKERS = frozenset({"[SILENT]", "SILENT", "NO_REPLY", "NO REPLY"})
 
-# Only these persisted user-row kinds may vanish on a bare marker; a human turn must get a
-# visible fallback instead. "internal_notification" is the only value gateway/run_turn.py
-# ever passes as persist_user_display_kind (self-injected MessageEvent(internal=True) turns).
-MACHINERY_DISPLAY_KINDS = frozenset({"internal_notification"})
+# The persisted user-row kind of a self-injected MessageEvent(internal=True) turn — the only
+# machinery kind the gateway produces; only these may vanish on a bare silence marker.
+INTERNAL_NOTIFICATION_DISPLAY_KIND = "internal_notification"
+MACHINERY_DISPLAY_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND})
 
 # Longer than any marker could plausibly be, even with stray punctuation.
 _MARKER_LENGTH_CAP = 64
@@ -87,7 +87,7 @@ def is_intentional_silence_agent_result(agent_result: dict | None, response: Any
 
 def display_kind_for_event(event: Any) -> str | None:
     """The persisted user-row kind for a gateway turn: only self-injected events are machinery."""
-    return "internal_notification" if getattr(event, "internal", False) else None
+    return INTERNAL_NOTIFICATION_DISPLAY_KIND if getattr(event, "internal", False) else None
 
 
 def is_machinery_display_kind(display_kind: Any) -> bool:

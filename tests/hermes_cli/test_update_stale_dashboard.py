@@ -33,7 +33,7 @@ from hermes_cli.dashboard_procs import _kill_stale_dashboard_processes as _warn_
 
 
 @pytest.fixture(autouse=True)
-def _refresh_bindings_against_live_module():
+def _refresh_bindings_against_live_module(monkeypatch):
     """Rebind module-level names to the *current* defining modules.
 
     Other tests in the suite reload modules from ``sys.modules``; when that
@@ -53,6 +53,9 @@ def _refresh_bindings_against_live_module():
     _kill_stale_dashboard_processes = dashboard_procs._kill_stale_dashboard_processes
     _restart_managed_dashboard_service = main_dashboard._restart_managed_dashboard_service
     _warn_stale_dashboard_processes = dashboard_procs._kill_stale_dashboard_processes
+    # Unit tests must never query or restart the user's real macOS LaunchAgent.
+    # Launchd-specific tests override this with explicit synthetic job states.
+    monkeypatch.setattr(main_dashboard, "_launchd_dashboard_jobs", lambda: [])
     yield
 
 
@@ -219,6 +222,7 @@ class TestKillStaleDashboardPosix:
 
 
 
+    @pytest.mark.linux_only
     def test_user_scope_restart_never_falls_back_to_system_or_sudo(self, capsys):
         """A user unit is discovered and restarted through ``systemctl --user``.
 
@@ -431,6 +435,116 @@ class TestSupervisedBackendRestart:
 
         kill.assert_not_called()
         restart.assert_not_called()
+        assert result == {"matched": [], "killed": [], "failed": []}
+
+    @pytest.mark.macos_only
+    def test_macos_launchagent_restart_excludes_owned_pids_from_manual_respawn(self, capsys):
+        """An update restarts the LaunchAgent and never converts it into a detached process."""
+        live = self._live()
+        calls: list[list[str]] = []
+        hermes_home = main_dashboard.Path(os.environ["HERMES_HOME"]).resolve()
+        target = "gui/501/ai.hermes.dashboard"
+        launchd_jobs = iter((
+            [(target, 4321, hermes_home)],
+            [(target, 5432, hermes_home)],
+            [(target, 5432, hermes_home)],
+        ))
+
+        def fake_probe(args, *, timeout):
+            calls.append(list(args))
+            if args[:2] == ["launchctl", "kickstart"]:
+                return subprocess.CompletedProcess(args, 0, "", "")
+            raise AssertionError(f"unexpected managed-dashboard probe: {args}")
+
+        def assert_launchd_pid_is_excluded(*, exclude_pids=None):
+            assert exclude_pids is not None
+            assert 4321 in exclude_pids
+            assert 5432 in exclude_pids
+            return []
+
+        with patch.object(main_dashboard, "_launchd_dashboard_jobs",
+                          side_effect=lambda: next(launchd_jobs)), \
+             patch.object(main_dashboard, "_run_probe", side_effect=fake_probe), \
+             patch.object(live, "_find_stale_dashboard_pids",
+                          side_effect=assert_launchd_pid_is_excluded), \
+             patch("os.kill") as kill, \
+             patch.object(live, "_respawn_dashboard_processes") as respawn:
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        assert calls == [["launchctl", "kickstart", "-k", target]]
+        kill.assert_not_called()
+        respawn.assert_not_called()
+        assert result == {"matched": [], "killed": [], "failed": []}
+        assert "restarted ai.hermes.dashboard" in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        "scenario", ["foreign-running", "foreign-transition", "foreign-missing",
+                     "new-domain", "middle-transition", "middle-disappears",
+                     "discovery-error"]
+    )
+    @pytest.mark.macos_only
+    def test_macos_launchagent_uncertainty_never_reaches_raw_kill(
+        self, tmp_path, monkeypatch, scenario
+    ):
+        """Foreign, newly loaded, and indeterminate LaunchAgents all fail closed."""
+        live = self._live()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes-isolated"))
+        gui_target = "gui/501/ai.hermes.dashboard"
+        user_target = "user/501/ai.hermes.dashboard"
+        foreign_home = (tmp_path / ".hermes-default").resolve()
+        initial = [(gui_target, 4321, foreign_home)]
+        after = initial
+        scanned_pid = 4321
+        if scenario == "foreign-running":
+            final = initial
+        elif scenario == "foreign-transition":
+            final = [(gui_target, None, foreign_home)]
+        elif scenario == "foreign-missing":
+            final = []
+        elif scenario == "new-domain":
+            initial = []
+            after = []
+            scanned_pid = 6000
+            final = [(user_target, scanned_pid, foreign_home)]
+        elif scenario == "middle-transition":
+            initial = []
+            after = [(user_target, None, foreign_home)]
+            scanned_pid = 6000
+            final = []
+        elif scenario == "middle-disappears":
+            initial = []
+            scanned_pid = 6000
+            after = [(user_target, scanned_pid, foreign_home)]
+            final = []
+        else:
+            initial = None
+            after = None
+            final = None
+        snapshots = [initial] if initial is None else [initial, after, final]
+        launchd_jobs = iter(snapshots)
+
+        def stale_scan(*, exclude_pids=None):
+            if initial:
+                assert exclude_pids is not None and 4321 in exclude_pids
+            # Simulate a process captured before the final ownership reconciliation.
+            return [scanned_pid]
+
+        with patch.object(main_dashboard, "_launchd_dashboard_jobs",
+                          side_effect=lambda: next(launchd_jobs)), \
+             patch.object(main_dashboard, "_run_probe") as probe, \
+             patch.object(live, "_find_stale_dashboard_pids",
+                          side_effect=stale_scan) as find_stale, \
+             patch("os.kill") as kill, \
+             patch.object(live, "_respawn_dashboard_processes") as respawn:
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        if scenario in {"discovery-error", "middle-transition"}:
+            find_stale.assert_not_called()
+        else:
+            find_stale.assert_called_once()
+        probe.assert_not_called()
+        kill.assert_not_called()
+        respawn.assert_not_called()
         assert result == {"matched": [], "killed": [], "failed": []}
 
 

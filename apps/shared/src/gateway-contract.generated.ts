@@ -4724,6 +4724,7 @@ export interface SessionInfoPayload {
   system_prompt: string | null
   credential_warning: string | null
   lazy: boolean | null
+  config_warning: string | null
 }
 export type SessionReclaimReason = 'idle_timeout' | 'lru_evict' | 'ws_orphan_reap'
 /** ``session_lifecycle._announce_session_reclaimed`` (broadcast). */

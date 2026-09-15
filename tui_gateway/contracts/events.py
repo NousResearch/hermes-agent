@@ -381,6 +381,8 @@ event("tip.show", TipShowPayload, doc="Point at a desktop element with a one-lin
 class SessionInfoPayload(Payload, SessionLiveInfo):
     """Payload counterpart to the method-result model; shared fields stay single-sourced."""
 
+    config_warning: str | None = None  # set once, by the agent-build tail, when the profile config had a problem
+
 
 event("session.info", SessionInfoPayload,
       doc="Live session settings snapshot (``server._session_info``); method results use SessionLiveInfo.")

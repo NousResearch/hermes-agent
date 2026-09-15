@@ -1668,7 +1668,7 @@ def _compress_live(rid, sid: str, session: dict, focus_topic: str) -> dict:
         summary = summarize_manual_compression(before_messages, messages, before_tokens, after_tokens,
                                                compression_state=getattr(agent, "context_compressor", None))
         info = _session_info(agent, session)
-        _emit("session.info", sid, SessionInfoPayload.model_validate(info))
+        _emit("session.info", sid, SessionInfoPayload(**info.model_dump(mode="json")))
         finalize_context_engine_compression_notification(agent, committed=True)
         return SessionCompressResult.model_validate({"status": "aborted" if summary["aborted"] else "compressed", "removed": removed, "before_messages": before_count, "after_messages": len(messages), "before_tokens": before_tokens, "after_tokens": after_tokens, "summary": summary, "usage": usage, "info": info, "messages": _history_to_messages(messages)})
     finally:

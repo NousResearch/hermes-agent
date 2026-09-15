@@ -10,7 +10,7 @@ import threading
 from .method_ctx import HandlerRegistry, bind_module
 from .contracts.common import SessionLiveInfo
 from .contracts.events import ErrorPayload, MessageCompletePayload, SessionInfoPayload
-from .contracts.prompt_voice import PromptSubmitResult, PromptSubmitStatus
+from .contracts.prompt_voice import ClarifyLockResult, PromptSubmitResult, PromptSubmitStatus
 
 _registry = HandlerRegistry()
 
@@ -185,7 +185,7 @@ def _lock_compute_host_clarify(rid: str, request_id: str, question_id: str, answ
                 session.pop("_compute_host_open_request", None)
             else:
                 mirrored["params"]["answers"] = {**(mirrored["params"].get("answers") or {}), question_id: answer}
-    return _ok(rid, result)
+    return _ok(rid, ClarifyLockResult.model_validate(result))
 
 
 def _apply_compute_host_metadata_mirror(session: dict, frame: dict | None) -> None:

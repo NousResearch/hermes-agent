@@ -44977,6 +44977,18 @@
             ],
             "default": null,
             "title": "Lazy"
+          },
+          "config_warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Config Warning"
           }
         },
         "type": "object"

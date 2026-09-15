@@ -21,6 +21,7 @@ from hermes_constants import (
 
 from agent.model_metadata import CHARS_PER_TOKEN
 from agent.runtime_cwd import resolve_agent_cwd
+from agent.skill_preprocessing import load_skills_config
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS, ORG_ACTIVE_MARKER, ORG_MIRROR_DIR_NAME, ORG_PROVENANCE_FILE, SKILL_SUPPORT_DIRS,
     extract_skill_conditions, extract_skill_description, get_all_skills_dirs, get_disabled_skill_names,
@@ -1288,9 +1289,46 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
         skills_by_category.setdefault(category, []).append((fm, desc))
 
 
+def _default_skills_index_instruction(available_tools: "set[str] | None") -> tuple[str, str]:
+    # Do not reference web_search when the session has no web tools.
+    _basic_tools = "terminal" if available_tools is not None and "web_search" not in available_tools else "web_search or terminal"
+    intro = (
+        "Before replying, scan the skills below. If a skill matches or is even partially relevant to your "
+        "task, you MUST load it with skill_view(name) and follow its instructions. Err on the side of "
+        "loading — it is always better to have context you don't need than to miss critical steps, pitfalls, "
+        "or established workflows. Skills contain specialized knowledge — API endpoints, tool-specific "
+        "commands, and proven workflows that outperform general-purpose approaches. Load the skill "
+        f"even if you think you could handle the task with basic tools like {_basic_tools}. "
+        "Skills also encode the user's preferred approach, conventions, and quality standards for tasks like "
+        "code review, planning, and testing — load them even for tasks you already know how to do, because "
+        "the skill defines how it should be done here.\n"
+        "If a skill has issues, fix it with skill_manage(action='patch').\n"
+        "After difficult/iterative tasks, offer to save as a skill. If a skill you loaded was missing steps, "
+        "had wrong commands, or needed pitfalls you discovered, update it before finishing."
+    )
+    return intro, "Only proceed without loading a skill if genuinely none are relevant to the task."
+
+
+def _resolve_skills_index_instruction(spec, default_intro: str, default_outro: str) -> tuple[str, str]:
+    """Apply append/replace overrides without letting malformed config break assembly."""
+    if isinstance(spec, str):
+        spec = {"append": spec}
+    if not isinstance(spec, dict):
+        return default_intro, default_outro
+    replace_text, append_text = (
+        value.strip() if isinstance(value, str) else ""
+        for value in (spec.get("replace"), spec.get("append"))
+    )
+    intro = replace_text or default_intro
+    if append_text:
+        intro = f"{intro}\n\n{append_text}"
+    return intro, "" if replace_text else default_outro
+
+
 def _render_skills_index(
     skills_by_category: dict[str, list[tuple[str, str]]], category_descriptions: dict[str, str],
     compact_categories: "frozenset[str] | None", available_tools: "set[str] | None",
+    index_instruction=None,
 ) -> str:
     """Render the ## Skills block; "" when there is nothing to list."""
     if not skills_by_category:
@@ -1303,8 +1341,8 @@ def _render_skills_index(
         "context, so their descriptions are omitted — the skills work "
         "normally and load with skill_view(name) as usual.)"
     ) if demoted else ""
-    # Don't name web_search when the session has no web tools (dangling reference).
-    _basic_tools = "terminal" if available_tools is not None and "web_search" not in available_tools else "web_search or terminal"
+    intro, outro = _resolve_skills_index_instruction(
+        index_instruction, *_default_skills_index_instruction(available_tools))
     index_lines = []
     for category in sorted(skills_by_category):
         entries = skills_by_category[category]
@@ -1319,25 +1357,11 @@ def _render_skills_index(
                 seen.add(name)
                 index_lines.append(f"    - {name}: {desc}" if desc else f"    - {name}")
     return (
-        "## Skills\n"
-        "Before replying, scan the skills below. If a skill matches or is even partially relevant to your "
-        "task, you MUST load it with skill_view(name) and follow its instructions. Err on the side of "
-        "loading — it is always better to have context you don't need than to miss critical steps, pitfalls, "
-        "or established workflows. Skills contain specialized knowledge — API endpoints, tool-specific "
-        "commands, and proven workflows that outperform general-purpose approaches. Load the skill "
-        f"even if you think you could handle the task with basic tools like {_basic_tools}. "
-        "Skills also encode the user's preferred approach, conventions, and quality standards for tasks like "
-        "code review, planning, and testing — load them even for tasks you already know how to do, because "
-        "the skill defines how it should be done here.\n"
-        "If a skill has issues, fix it with skill_manage(action='patch').\n"
-        "After difficult/iterative tasks, offer to save as a skill. If a skill you loaded was missing steps, "
-        "had wrong commands, or needed pitfalls you discovered, update it before finishing.\n"
-        "\n"
+        f"## Skills\n{intro}\n\n"
         "<available_skills>\n"
         + "\n".join(index_lines) + "\n"
         "</available_skills>\n\n"
-        "Only proceed without loading a skill if genuinely none are relevant to the task."
-        + hidden_note
+        + outro + hidden_note
     )
 
 
@@ -1350,11 +1374,15 @@ def _build_skills_system_prompt_inner(
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
     project_dirs = project_dirs or []
+    index_instruction = load_skills_config().get("index_instruction")
+    resolved_instruction = _resolve_skills_index_instruction(
+        index_instruction, *_default_skills_index_instruction(available_tools))
     cache_key = (
         str(skills_dir), tuple(str(d) for d in external_dirs), tuple(str(d) for d in project_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
+        resolved_instruction,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1412,7 +1440,8 @@ def _build_skills_system_prompt_inner(
         for cat, cat_desc in _read_category_descriptions(ext_dir, "Could not read external skill description %s: %s").items():
             category_descriptions.setdefault(cat, cat_desc)
 
-    result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools)
+    result = _render_skills_index(
+        skills_by_category, category_descriptions, compact_categories, available_tools, index_instruction)
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE[cache_key] = result
         _SKILLS_PROMPT_CACHE.move_to_end(cache_key)

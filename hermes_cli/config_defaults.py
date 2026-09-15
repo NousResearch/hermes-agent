@@ -148,6 +148,9 @@ DEFAULT_CONFIG = {
         # read-only commands) into one batched turn; the runtime already runs them concurrently. ~70
         # cached tokens. False disables.
         "parallel_tool_call_guidance": True,
+        # Prompt block directing Hermes help questions to the built-in skill or documentation.
+        # Enabled for all models. False disables both variants.
+        "hermes_help_guidance": True,
         # Toolchain probe: surfaces Python/pip/uv/PEP-668 state in the system prompt only when
         # something non-default is detected (no pip module, pip/python mismatch, PEP 668 without
         # uv); zero tokens when clean. Skipped for docker/modal/ssh backends (own probe).
@@ -1344,6 +1347,10 @@ DEFAULT_CONFIG = {
     # Skills — external skill directories shared across tools/agents. Paths are expanded (~, ${VAR})
     # and resolved; read-only — creation goes to ~/.hermes/skills/ unless create_dir redirects it.
     "skills": {
+        # Index guidance: a string appends; {replace: "...", append: "..."} supports both.
+        # Replacement removes the closing instruction; append adds a blank-line-separated paragraph.
+        # Empty or malformed values retain the default guidance.
+        "index_instruction": "",
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
         # Where skill_manage-created skills go (empty = profile-local dir). When set, new skills
         # land here AND agent-facing instructions name this path; expanded (~, ${VAR}), relative to

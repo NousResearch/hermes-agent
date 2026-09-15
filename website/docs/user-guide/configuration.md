@@ -761,6 +761,25 @@ hermes config set skills.config.myplugin.path ~/myplugin-data
 
 For details on declaring config settings in your own skills, see [Creating Skills — Config Settings](/developer-guide/creating-skills#config-settings-configyaml).
 
+### Skills index instruction
+
+Use `skills.index_instruction` to customize the guidance around the skills index:
+
+```yaml
+skills:
+  index_instruction:
+    replace: "Load skills when they provide relevant task-specific guidance."
+    append: "Follow the user's explicit workflow preferences."
+```
+
+A bare string is shorthand for `append`. Appending keeps the default
+intro and closing instruction, adding text after the intro with one blank
+line between them. `replace` replaces the intro and removes the closing
+instruction; when both keys are set, the appended text follows the replacement.
+Empty or non-string fields are ignored; an empty or malformed setting retains
+the defaults. Skill entries and names-only category notes stay unchanged.
+The default is `""`. Start a new session to apply a changed setting.
+
 ### Guard on agent-created skill writes
 
 When the agent uses `skill_manage` to create, edit, patch, or delete a skill, Hermes can optionally scan the new/updated content for dangerous keyword patterns (credential harvesting, obvious prompt injection, exfil instructions). The scanner is **off by default** — real agent workflows that legitimately touch `~/.ssh/` or mention `$OPENAI_API_KEY` were tripping the heuristic too often. Turn it back on if you want the scanner to prompt you before the agent's skill writes land:
@@ -1861,6 +1880,20 @@ The injected block covers:
 - **Verification-gated completion** — "done" means every named acceptance criterion is verified, never a plausible subset.
 
 The gate is independent of `tool_use_enforcement` — either can be on without the other. The guidance is chosen once at session start keyed on the model name, so the system prompt stays byte-stable (and prompt-cache-friendly) for the life of the conversation. Gemini/Gemma are excluded from the auto list because they receive the more specific Google operational guidance; Claude is excluded because it doesn't exhibit these failure modes — opt any model in with `true` or a substring list.
+
+## Hermes Help Guidance
+
+By default, Hermes includes guidance for answering questions about its own
+setup and operation. Disable that block with:
+
+```yaml
+agent:
+  hermes_help_guidance: false   # default: true
+```
+
+This removes both the skill-based and documentation-only variants. It does
+not disable skills or remove their index. The setting applies to newly
+created agents; start a new session after changing it.
 
 ## Tool-Loop Guardrails
 

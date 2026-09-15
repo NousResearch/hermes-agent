@@ -539,6 +539,11 @@ def _rule_stuck_in_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
     hours = float(cfg.get("blocked_stale_hours", 24))
     if _task_field(task, "status") != "blocked":
         return []
+    # A resource wait is a queue, not stalled human input: it has its own
+    # rule with a much shorter window, and reporting it here too would
+    # duplicate it a day later under the wrong remedy.
+    if str(_parse_payload(_latest_block_event(events)).get("kind") or "") == "resource":
+        return []
     last_blocked_ts = _latest_event_ts(events, {"blocked"})
     if last_blocked_ts == 0:
         return []
@@ -559,6 +564,84 @@ def _rule_stuck_in_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
                                   suggested=True)],
         first_seen_at=last_blocked_ts, last_seen_at=last_blocked_ts, count=1,
         data={"blocked_at": last_blocked_ts, "age_hours": round(age_hours, 1)},
+    )]
+
+
+def _latest_block_event(events):
+    """The most recent ``blocked`` event, or None."""
+    return next((ev for ev in reversed(list(events)) if _event_kind(ev) == "blocked"), None)
+
+
+def _rule_stale_resource_wait(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """A ``resource`` block held past cfg["resource_wait_stale_hours"] (default 1).
+
+    ``resource`` means a peer holds something this task needs -- a write lease,
+    a rate-limited seat -- so the task did not fail and the wait deliberately
+    does NOT count toward ``BLOCK_RECURRENCE_LIMIT``. That exemption also
+    strips it of every escalation the other kinds have: unlike ``dependency``
+    it is never re-promoted when a parent finishes, and unlike ``transient`` a
+    repeat does not route it to ``triage``.
+
+    ``_rule_stuck_in_blocked`` is not a safety net for it, for two reasons.
+    Its window is 24h, far longer than any lease is meant to be held. And its
+    timer is reset by any ``commented`` event -- but a card queueing for a
+    lease narrates its own wait, so it silences its own alarm. Measured on one
+    board, four resource waits sat 10-13h with the lease already free and no
+    diagnostic raised. So this rule reads a resource wait as a queue rather
+    than a conversation: only an ``unblocked`` counts as someone acting on it.
+    """
+    hours = float(cfg.get("resource_wait_stale_hours", 1))
+    if hours <= 0:
+        return []
+    if _task_field(task, "status") != "blocked":
+        return []
+    latest_block = _latest_block_event(events)
+    if latest_block is None:
+        return []
+    payload = _parse_payload(latest_block)
+    if str(payload.get("kind") or "") != "resource":
+        return []
+
+    blocked_at = _event_ts(latest_block)
+    if blocked_at == 0:
+        return []
+    # Defensive: a task cannot normally be blocked with an unblock after its
+    # own latest block, but an out-of-order event must not raise a false stall.
+    if _latest_event_ts(events, {"unblocked"}) > blocked_at:
+        return []
+    age_hours = (now - blocked_at) / 3600.0
+    if age_hours < hours:
+        return []
+
+    # Past 4x the window this is no longer a queue anyone is draining.
+    severity = "error" if age_hours >= hours * 4 else "warning"
+    task_id = str(_task_field(task, "id") or "")
+    reason = str(payload.get("reason") or "").strip()
+
+    actions: list[DiagnosticAction] = []
+    if task_id:
+        actions.append(_cli_hint(
+            "Release the wait once the resource is free",
+            f"hermes kanban unblock {task_id}", suggested=True,
+        ))
+        actions.append(_cli_hint(
+            "Or gate it on the holder so it resumes itself",
+            f"hermes kanban link <holder-task-id> {task_id}",
+        ))
+
+    return [Diagnostic(
+        kind="stale_resource_wait", severity=severity,
+        title=f"Resource wait held for {int(age_hours)}h",
+        detail=f"This task has been waiting {int(age_hours)}h for a resource another task holds. "
+               f"A resource block is exempt from the unblock-loop breaker, so nothing escalates it "
+               f"on its own and no one is notified when the holder finishes -- if the resource is "
+               f"already free, this task will wait forever. Check whether it is still held: if it "
+               f"is not, unblock the task; if the holder is a known task, link it as a parent and "
+               f"re-block with --kind dependency so it is promoted automatically instead.",
+        actions=actions,
+        first_seen_at=blocked_at, last_seen_at=blocked_at, count=1,
+        data={"blocked_at": blocked_at, "age_hours": round(age_hours, 1),
+              "block_reason": reason or None},
     )]
 
 
@@ -687,6 +770,7 @@ _RULES: list[RuleFn] = [
     _rule_repeated_crashes,
     _rule_review_dependency_deadlock,
     _rule_stuck_in_blocked,
+    _rule_stale_resource_wait,
     _rule_block_unblock_cycling,
     _rule_stranded_in_ready,
 ]
@@ -700,6 +784,9 @@ DEFAULT_CONFIG = {
     "spawn_failure_threshold": 2,
     "crash_threshold": 2,
     "blocked_stale_hours": 24,
+    # A resource wait is a queue, not a conversation: a lease still held an
+    # hour later is a stall, and blocked_stale_hours would hide it for a day.
+    "resource_wait_stale_hours": 1,
     # Below 30 min the signal is dominated by tasks about to be claimed on
     # the next dispatcher tick.
     "stranded_threshold_seconds": 30 * 60,

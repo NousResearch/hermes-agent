@@ -112,6 +112,31 @@ def test_native_tool_cache_marks_stable_and_context_boundaries_within_budget():
     assert _count_cache_markers(plan.messages, plan.tools) == 4
 
 
+def test_native_three_part_system_split_survives_deepcopy_and_redecoration():
+    """The enlarged prefix rides in ``api_messages`` text parts: those bytes must deep-copy
+    (vision prep, compression snapshots) and strip back to the stored string so a failover
+    redecoration can re-split the same three boundaries."""
+    from agent.system_prompt import _SystemCachePrefix
+
+    prefix = _SystemCachePrefix("stable prefix\n\ncontext head", "stable prefix")
+    history = _tool_heavy_native_history()
+    history[0]["content"] = "stable prefix\n\ncontext head\n\nvolatile suffix"
+    tools = _tool_heavy_native_tools()
+
+    plan = build_prompt_cache_plan(history, tools, native_anthropic=True,
+                                   static_system_prefix=prefix, direct_native_tool_cache=True)
+    assert all(type(part["text"]) is str for part in plan.messages[0]["content"])
+    copied = copy.deepcopy(plan.messages)  # must not raise on the str subclass
+    strip_anthropic_cache_control(copied)
+    assert copied[0]["content"] == history[0]["content"]
+
+    replanned = build_prompt_cache_plan(copied, tools, native_anthropic=True,
+                                        static_system_prefix=prefix, direct_native_tool_cache=True)
+    assert [part["text"] for part in replanned.messages[0]["content"]] == [
+        "stable prefix", "\n\ncontext head", "\n\nvolatile suffix"]
+    assert [("cache_control" in part) for part in replanned.messages[0]["content"]] == [True, True, False]
+
+
 class TestPromptCachePlan:
     def test_copies_sections_and_keeps_canonical_tools_plain(self):
         import copy

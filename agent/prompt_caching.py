@@ -33,7 +33,9 @@ def envelope_tool_part_cache_markers_supported(provider: str | None, base_url: s
 
 
 def _text_part(text: str, cache_marker: dict | None = None) -> dict:
-    part: dict = {"type": "text", "text": text}
+    # Plain str on the wire: the static prefix may arrive as a str subclass carrying its
+    # stable boundary, and that attribute must never leak into request payloads.
+    part: dict = {"type": "text", "text": str(text)}
     if cache_marker is not None:
         part["cache_control"] = cache_marker
     return part
@@ -191,7 +193,7 @@ def strip_anthropic_cache_control(api_messages: List[Dict[str, Any]]) -> List[Di
 
     Used before re-decorating after a mid-turn failover. Flattening to a string is restricted
     to the exact shapes :func:`apply_anthropic_cache_control` produces from string content
-    (single text part, two-part system split, two-part skill split) so the ``""``-join is
+    (single text part, two- or three-part system split, two-part skill split) so the ``""``-join is
     byte-exact. Marker removal is copy-on-write on part dicts: parts can alias caller-held
     lists and stripping must never rewrite the stored transcript.
     """
@@ -216,7 +218,7 @@ def strip_anthropic_cache_control(api_messages: List[Dict[str, Any]]) -> List[Di
             isinstance(part, dict) and part.get("type", "text") == "text"
             and isinstance(part.get("text"), str) and set(part.keys()) <= {"type", "text"} for part in content
         )
-        if plain_text_parts and (len(content) == 1 or (role == "system" and len(content) == 2) or skill_split_shape):
+        if plain_text_parts and (len(content) == 1 or (role == "system" and len(content) in (2, 3)) or skill_split_shape):
             msg["content"] = "".join(part["text"] for part in content)
     return api_messages
 

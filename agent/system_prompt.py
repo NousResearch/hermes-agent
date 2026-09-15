@@ -732,6 +732,11 @@ class _ContextTier(str):
         instance.cacheable_head = cacheable_head
         return instance
 
+    def __getnewargs__(self):
+        # copy/deepcopy/pickle rebuild str subclasses via __new__; without this the
+        # two-argument constructor raises TypeError on every deepcopy of the parts.
+        return (str(self), self.cacheable_head)
+
 
 class _SystemCachePrefix(str):
     """Largest reusable system prefix, carrying its stable-tier boundary."""
@@ -740,6 +745,11 @@ class _SystemCachePrefix(str):
         instance = super().__new__(cls, value)
         instance.stable_prefix = stable_prefix
         return instance
+
+    def __getnewargs__(self):
+        # The prefix lands in ``api_messages`` text parts, which the request path deep-copies
+        # (vision prep, compression snapshots); a bare str subclass would TypeError there.
+        return (str(self), self.stable_prefix)
 
 
 def _static_cache_prefix(parts: Dict[str, str]) -> str:

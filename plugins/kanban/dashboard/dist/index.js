@@ -1112,8 +1112,17 @@
             } else {
               setFailedIds(new Set());
             }
-            setSelectedIds(new Set());
-            setLastSelectedId(null);
+            // Keep the selection so a second action can run on the same
+            // cards, e.g. move to Ready and then reassign. /tasks/bulk
+            // accepts a combined patch, but the action bar submits one
+            // field per click, so clearing here made the two-step form
+            // impossible too: the cards had to be reselected each time.
+            // Archive is the exception — those cards leave the default
+            // board view, so keeping them selected would be meaningless.
+            if (finalPatch.archive) {
+              setSelectedIds(new Set());
+              setLastSelectedId(null);
+            }
             loadBoard();
           })
           .catch(function (e) {

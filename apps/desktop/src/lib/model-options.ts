@@ -18,6 +18,22 @@ export function catalogProviderMatches(provider: CatalogProviderIdentity, curren
   )
 }
 
+/** One catalog row's option support for a model. A user-defined row (a custom
+ *  endpoint the user added) reports `reasoning` from models.dev/builtin tables
+ *  keyed on a provider Hermes does not own — that endpoint can serve a
+ *  thinking knob under any id it likes, so the guess must not hide the effort
+ *  control or dead-end the menu at "No options" (#110903). The wire clamps
+ *  whatever level it rejects (`agent/reasoning_effort.py` `clamp_effort`), so
+ *  offering the canonical ladder costs a no-op, never a 400. */
+export function rowModelCapabilities(
+  row: Pick<ModelOptionProvider, 'capabilities' | 'is_user_defined'>,
+  model: string
+): ModelCapabilities | undefined {
+  const caps = row.capabilities?.[model]
+
+  return row.is_user_defined && caps ? { ...caps, reasoning: true } : caps
+}
+
 /** The catalog's option support for the current pick, or undefined while the
  *  catalog is loading / doesn't say. Callers treat undefined as "assume
  *  reasoning" so controls never flicker away during the fetch. */
@@ -26,7 +42,9 @@ export function currentModelCapabilities(
   provider: string,
   model: string
 ): ModelCapabilities | undefined {
-  return options?.providers?.find(row => catalogProviderMatches(row, provider))?.capabilities?.[model]
+  const row = options?.providers?.find(row => catalogProviderMatches(row, provider))
+
+  return row ? rowModelCapabilities(row, model) : undefined
 }
 
 // A picked (provider, model) pair is never retargeted from catalog membership.

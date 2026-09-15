@@ -3,7 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getGlobalModelOptions } from '@/hermes'
 
-import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from './model-options'
+import {
+  catalogProviderMatches,
+  currentModelCapabilities,
+  modelOptionsQueryKey,
+  requestModelOptions
+} from './model-options'
 
 const globalOptions = { model: 'hermes-4', provider: 'nous', providers: [] }
 
@@ -221,5 +226,44 @@ describe('catalogProviderMatches', () => {
     expect(catalogProviderMatches(cloudflare, 'Cloudflare')).toBe(true)
     expect(catalogProviderMatches(cloudflare, 'custom:cloudflare')).toBe(true)
     expect(catalogProviderMatches(cloudflare, 'openrouter')).toBe(false)
+  })
+})
+
+describe('currentModelCapabilities', () => {
+  const customRow = {
+    aliases: ['custom:my-endpoint'],
+    capabilities: { 'deepseek-v4.1-flash': { fast: false, reasoning: false } },
+    is_user_defined: true,
+    models: ['deepseek-v4.1-flash'],
+    name: 'My Endpoint',
+    slug: 'my-endpoint'
+  }
+
+  const curatedRow = {
+    capabilities: { 'gpt-4o': { fast: false, reasoning: false } },
+    models: ['gpt-4o'],
+    name: 'OpenAI',
+    slug: 'openai'
+  }
+
+  const options = { providers: [curatedRow, customRow] }
+
+  // A user-defined row's `reasoning` is models.dev guessing about a provider
+  // Hermes doesn't own; the endpoint may serve a thinking knob under that id
+  // anyway. Trusting the guess hid the pill and rendered "No options" (#110903).
+  it('keeps the effort control on a custom endpoint whose row denies reasoning', () => {
+    expect(currentModelCapabilities(options, 'custom:my-endpoint', 'deepseek-v4.1-flash')).toMatchObject({
+      fast: false,
+      reasoning: true
+    })
+  })
+
+  it('honours a curated row verdict — its catalog really knows the model', () => {
+    expect(currentModelCapabilities(options, 'openai', 'gpt-4o')).toMatchObject({ reasoning: false })
+  })
+
+  it('reports nothing while the catalog has no verdict for the model', () => {
+    expect(currentModelCapabilities(options, 'my-endpoint', 'served-but-not-listed')).toBeUndefined()
+    expect(currentModelCapabilities(options, 'unknown-provider', 'gpt-4o')).toBeUndefined()
   })
 })

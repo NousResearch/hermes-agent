@@ -16,10 +16,18 @@ import shutil
 import struct
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Mapping, Optional
 
 DESKTOP_ENTRY_NAME = "hermes.desktop"
+
+# XDG startup notification: set by an app-grid / menu launch, absent for terminal and detached
+# (updater relaunch) launches. See launched_from_shell().
+SHELL_LAUNCH_ENV_VAR = "DESKTOP_STARTUP_ID"
+# Write end of the reveal pipe handed to Electron; one byte means "main window is on screen".
+READY_FD_ENV_VAR = "HERMES_DESKTOP_READY_FD"
 
 _SHELL_NAMES = ("bash", "sh", "dash", "zsh", "ksh")
 
@@ -619,3 +627,92 @@ def install_desktop_entry(project_root: Path) -> Optional[Path]:
 
     refresh_desktop_databases(entry_path.parent)
     return entry_path
+
+
+def launched_from_shell(environ: Optional[Mapping[str, str]] = None) -> bool:
+    """True when this process was started from the app grid / menu (XDG startup notification).
+
+    A grid launch has a gnome-shell ShellApp in STARTING until our window maps; unpatched
+    shells (before GNOME MR !4428) drop that app's last reference when its own ``.desktop``
+    entry changes, and the next idle GC kills the whole Wayland session (#111906). A false
+    negative degrades to the pre-#111906 behaviour; a false positive only delays a heal.
+    """
+    env = os.environ if environ is None else environ
+    return bool(env.get(SHELL_LAUNCH_ENV_VAR))
+
+
+class DeferredDesktopEntryInstall:
+    """Install the entry once the desktop window is on screen — never while the shell's
+    ShellApp is STARTING.
+
+    The launcher hands Electron the write end of a pipe (``HERMES_DESKTOP_READY_FD``); Electron
+    writes one byte when the main window is revealed and a worker thread then installs the entry.
+    ``finish()`` runs after Electron exits and covers the app never revealing a window (a STOPPED
+    app has no STARTING object, so writing there is safe). Terminal and detached launches never
+    build one of these: they install immediately, as before.
+    """
+
+    def __init__(
+        self,
+        project_root: Path,
+        install: Optional[Callable[[Path], Optional[Path]]] = None,
+        settle_seconds: float = 2.0,
+    ) -> None:
+        self._project_root = project_root
+        self._install = install or install_desktop_entry
+        # Electron reports the reveal before the compositor has necessarily mapped the surface;
+        # a short settle after the signal keeps the write on the RUNNING side. It is a margin
+        # after the condition, not a substitute for it.
+        self._settle_seconds = settle_seconds
+        self._read_fd, self.write_fd = os.pipe()
+        self._lock = threading.Lock()
+        self._done = False
+        self._thread = threading.Thread(target=self._wait_for_reveal, name="desktop-entry-install", daemon=True)
+
+    def child_env(self, env: dict) -> dict:
+        env[READY_FD_ENV_VAR] = str(self.write_fd)
+        return env
+
+    @property
+    def pass_fds(self) -> tuple[int, ...]:
+        return (self.write_fd,)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def _wait_for_reveal(self) -> None:
+        try:
+            data = os.read(self._read_fd, 1)
+        except OSError:
+            return
+        if self._done:  # woken by finish(): the app already exited, finish() owns the heal
+            return
+        if data and self._settle_seconds:
+            time.sleep(self._settle_seconds)
+        self._heal()
+
+    def _heal(self) -> None:
+        with self._lock:
+            if self._done:
+                return
+            self._done = True
+        try:
+            entry = self._install(self._project_root)
+            if entry:
+                print(f"✓ Desktop launcher entry installed: {entry}")
+        except Exception as exc:  # never fail a launch on launcher plumbing
+            print(f"⚠ Could not install the desktop launcher entry: {exc}")
+
+    def finish(self) -> None:
+        """Electron exited: heal now if the reveal never came, and let an in-flight heal complete."""
+        self._heal()
+        try:
+            os.write(self.write_fd, b"x")  # wake the reader so join() returns promptly
+        except OSError:
+            pass
+        self._thread.join(timeout=15)
+        for fd in (self._read_fd, self.write_fd):
+            try:
+                os.close(fd)
+            except OSError:
+                pass

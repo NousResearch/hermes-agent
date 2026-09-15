@@ -79,3 +79,53 @@ async def test_model_picker_reads_routed_profile_config(tmp_path, monkeypatch):
     assert adapter.kwargs is not None
     assert adapter.kwargs["current_model"] == "secondary-model"
     assert adapter.kwargs["current_provider"] == "secondary-provider"
+
+
+@pytest.mark.asyncio
+async def test_model_command_keeps_config_route_for_model_only_session_override(
+    tmp_path, monkeypatch
+):
+    """A rehydrated model-only override must not crash the typed /model path."""
+    import gateway.run as gateway_run
+    from hermes_cli.model_switch import ModelSwitchResult
+
+    (tmp_path / "config.yaml").write_text(
+        "model:\n"
+        "  default: configured-model\n"
+        "  provider: openai-codex\n"
+        "  base_url: https://chatgpt.com/backend-api/codex\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    captured = {}
+
+    def _fake_switch(**kwargs):
+        captured.update(kwargs)
+        return ModelSwitchResult(success=False, error_message="stop after capture")
+
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", _fake_switch)
+
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {}
+    runner._voice_mode = {}
+    runner._session_model_overrides = {}
+    runner._running_agents = {}
+    event = MessageEvent(
+        text="/model gpt-6-astra",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="model-only-override-chat",
+            chat_type="dm",
+        ),
+    )
+    session_key = runner._session_key_for_source(event.source)
+    runner._session_model_overrides[session_key] = {"model": "gpt-5.6-sol"}
+
+    reply = await runner._handle_model_command(event)
+
+    assert reply is not None and "stop after capture" in reply
+    assert captured["current_model"] == "gpt-5.6-sol"
+    assert captured["current_provider"] == "openai-codex"
+    assert captured["current_base_url"] == "https://chatgpt.com/backend-api/codex"

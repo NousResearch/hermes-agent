@@ -962,3 +962,31 @@ def test_flat_entries_unaffected_by_tier_machinery():
     )
     # 250k * $0.25/M + 10k * $1.50/M
     assert result.amount_usd == Decimal("0.0775")
+
+
+def test_claude_opus_5_is_priced_like_opus_4_8():
+    """Opus 5 launched 2026-09-11 with no dedicated pricing row, so every Opus 5
+    session silently priced at $0 / cost_status=unknown (cost-breakdown-opus5
+    investigation, 2026-09-14). Opus 5 bills at the same $5/$25 rate as the
+    4.5-4.8 Opus family per platform.claude.com/docs/en/about-claude/pricing."""
+    entry = get_pricing_entry("claude-opus-5", provider="anthropic")
+    assert entry is not None
+    reference = get_pricing_entry("claude-opus-4-8", provider="anthropic")
+    assert entry.input_cost_per_million == reference.input_cost_per_million
+    assert entry.output_cost_per_million == reference.output_cost_per_million
+    assert entry.cache_read_cost_per_million == reference.cache_read_cost_per_million
+    assert entry.cache_write_cost_per_million == reference.cache_write_cost_per_million
+
+
+def test_claude_dated_snapshot_ids_resolve_to_bare_model_pricing():
+    """Anthropic dated snapshot ids (e.g. claude-haiku-4-5-20251001) fell through
+    to unpriced/unknown because _normalize_anthropic_model_name only handled
+    dotted versions, never trailing dates — unlike its Bedrock counterpart which
+    already strips _BEDROCK_TRAILERS. Confirmed against a real zero-priced
+    title_generation session in state.db (cost-breakdown-haiku-snapshot
+    investigation, 2026-09-14)."""
+    dated = get_pricing_entry("claude-haiku-4-5-20251001", provider="anthropic")
+    bare = get_pricing_entry("claude-haiku-4-5", provider="anthropic")
+    assert dated is not None
+    assert dated.input_cost_per_million == bare.input_cost_per_million
+    assert dated.output_cost_per_million == bare.output_cost_per_million

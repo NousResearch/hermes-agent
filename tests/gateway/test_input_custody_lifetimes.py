@@ -56,6 +56,11 @@ async def test_terminal_hosted_image_retry_after_real_settlement(tmp_path, monke
             if retired:
                 retire_metadata(db, row['admission_id'])
                 collect_working_copies(db, epoch=owner.epoch)
+                prepared = prepare_hosted_input(rpc, request_id=row['request_id'], prompt='read',
+                    attachments=params['attachments'])
+                receipt = await owner.submit(rpc.principal, Submission(row['request_id'], rpc.ref, prepared.payload, 'queue'),
+                    _input_custody=prepared.handle)
+                assert receipt.admission_id == first['admission_id'] and receipt.status == 'terminal'
             assert reconstruct_accepted_payload(rpc, 'read', params['attachments'], row) == row['payload']
             assert reconstruct_attested_payload(db, 'read', params['attachments'], digests, row) == row['payload']
             with pytest.raises(RuntimeStoreError, match='admission_conflict'):

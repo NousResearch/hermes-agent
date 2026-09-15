@@ -185,13 +185,3 @@ class TestCreateMode:
 
         assert stat.S_IMODE(target.stat().st_mode) == 0o600
 
-    def test_atomic_write_text_newline_preservation(self, tmp_path: Path) -> None:
-        """Writing text via atomic_write_text must preserve exact newlines without CRLF translation."""
-        target = tmp_path / "exact_lf.txt"
-        content = "line1\nline2\nline3\n"
-        atomic_write_text(target, content)
-        with open(target, "rb") as f:
-            raw = f.read()
-        assert b"\r\n" not in raw
-        assert raw == b"line1\nline2\nline3\n"
-

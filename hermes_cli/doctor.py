@@ -94,10 +94,16 @@ def _login_row(label: str, status: dict, ok_detail: str = "(logged in)", show_er
 def _check_api_connectivity(should_fix: bool, f: Finding) -> None:
     """Parallel HTTP/SDK probes for every configured provider; results printed in submission order."""
     probes = build_probes()
-    # Single status line so users see something happening; ``\r`` clears it once results land.
-    print(f"  {color(f'Running {len(probes)} connectivity checks in parallel…', Colors.DIM)}", end="", flush=True)
+    # Single status line so users see something happening. The ``\r`` in-place rewrite
+    # only runs on a real TTY — piped/redirected output stays free of control bytes.
+    is_tty = sys.stdout.isatty()
+    if is_tty:
+        print(f"  {color(f'Running {len(probes)} connectivity checks in parallel…', Colors.DIM)}", end="", flush=True)
+    else:
+        print(f"  {color(f'Running {len(probes)} connectivity checks in parallel…', Colors.DIM)}", flush=True)
     results = run_probes(probes)
-    print("\r" + " " * 70 + "\r", end="")
+    if is_tty:
+        print("\r" + " " * 70 + "\r", end="")
     for r in results:
         for glyph, label, detail in r.lines:
             print(f"  {glyph} {label}" + (f" {detail}" if detail else ""))

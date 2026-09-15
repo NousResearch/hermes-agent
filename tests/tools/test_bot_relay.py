@@ -201,6 +201,7 @@ def test_waiter_picks_up_reply_within_a_sub_second_cadence(root):
     elapsed = time.monotonic() - started
     assert proc.returncode == 0 and "pong" in proc.stdout
     assert elapsed < 1.5, f"waiter took {elapsed:.2f}s to notice a reply written at 0.3s"
+    assert not reply_path.exists(), "consumed reply plaintext must be removed immediately"
 
 
 def test_roster_rejects_connection_id_outside_handle_charset(root):

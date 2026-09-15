@@ -17132,6 +17132,7 @@ async function dispatchRegistryApiRequest(
   // OUT of the claim: an interactive open coalescing onto an in-flight
   // passive read would otherwise inherit its "no warm backend" rejection.
   const spawnPriority = spawnPriorityFrom(request?.priority)
+
   const connection: any = await resolveRegistryApiConnection(request, registryConnectionId, () =>
     request?.passive
       ? ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })

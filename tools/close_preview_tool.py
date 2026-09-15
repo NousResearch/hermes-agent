@@ -15,8 +15,16 @@ from tools.open_preview_tool import _normalize_target
 from tools.registry import registry, tool_error
 
 
-def close_preview_tool(url: str = "") -> str:
+def close_preview_tool(url: str = "", task_id: str = "") -> str:
     """Ask the desktop GUI to close the preview pane, or the tab for ``url``."""
+    if task_id:
+        try:
+            from workstation.browser_session import BrowserControlLeaseManager, HumanTakeoverActiveError
+            BrowserControlLeaseManager.get_instance().assert_action_allowed(task_id, "close_preview")
+        except Exception as exc:
+            if exc.__class__.__name__ == "HumanTakeoverActiveError":
+                return tool_error(str(exc))
+
     target = _normalize_target(url or "")
 
     try:

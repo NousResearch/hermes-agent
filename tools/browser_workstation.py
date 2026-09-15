@@ -430,6 +430,15 @@ def workstation_routed_browser_handler(
             )
         return fallback()
 
+    # Enforce human-in-the-loop control lease invariants
+    if task_id:
+        try:
+            from workstation.browser_session import BrowserControlLeaseManager
+            BrowserControlLeaseManager.get_instance().assert_action_allowed(task_id, action)
+        except Exception as exc:
+            if exc.__class__.__name__ == "HumanTakeoverActiveError":
+                raise
+
     # Once selected, the internal browser is authoritative for this call.
     # Dispatch failures propagate and never trigger a second browser lane.
     return _dispatch(

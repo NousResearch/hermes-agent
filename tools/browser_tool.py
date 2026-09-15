@@ -2327,6 +2327,11 @@ BROWSER_TOOL_SCHEMAS = [
                     "type": "integer",
                     "description": "Maximum number of items to extract (default: 20, max: 100).",
                     "default": 20
+                },
+                "output_artifact": {
+                    "type": "boolean",
+                    "description": "If true (default), stores complete extracted items into ArtifactStore and creates a durable WorkPlan in kanban_db, returning a compact summary with SHA-256 artifact reference to save prompt tokens.",
+                    "default": True
                 }
             },
             "required": []
@@ -5783,11 +5788,111 @@ registry.register(
     check_fn=lambda: check_browser_routed_requirements("browser_console"),
     emoji="🖥️",
 )
-registry.register(
-    name="browser_extract_items",
-    toolset="browser",
-    schema=_BROWSER_SCHEMA_MAP["browser_extract_items"],
-    handler=lambda args, **kw: _workstation_or_legacy(
+def _process_extracted_items_durably(raw_result: Any, args: dict, kw: dict) -> str:
+    """Post-process browser_extract_items output via DurableTaskStore, ArtifactStore and SemanticValidator."""
+    import json
+
+    if isinstance(raw_result, str):
+        try:
+            data = json.loads(raw_result)
+        except Exception:
+            return raw_result
+    elif isinstance(raw_result, dict):
+        data = raw_result
+    else:
+        return str(raw_result)
+
+    items = data.get("items")
+    if not isinstance(items, list):
+        return json.dumps(data, ensure_ascii=False)
+
+    output_artifact = args.get("output_artifact", True)
+    if not output_artifact and len(items) <= 5:
+        return json.dumps(data, ensure_ascii=False)
+
+    # Pre-flight capability check
+    try:
+        from workstation.capabilities import RuntimeCapabilityRegistry
+        RuntimeCapabilityRegistry.audit_environment()
+    except Exception as exc:
+        logger.debug("RuntimeCapabilityRegistry audit note: %s", exc)
+
+    # 1. Store complete extracted raw dataset into ArtifactStore
+    artifact_ref = None
+    artifact_path = None
+    try:
+        from workstation.artifacts import ArtifactStore
+        store = ArtifactStore()
+        artifact_ref = store.store_json({
+            "source": "browser_extract_items",
+            "selector_used": data.get("selector_used"),
+            "url": data.get("url"),
+            "title": data.get("title"),
+            "count": len(items),
+            "items": items,
+        })
+        artifact_path = str(store.resolve_path(artifact_ref))
+    except Exception as exc:
+        logger.warning("Failed to store extraction to ArtifactStore: %s", exc)
+
+    # 2. Persist durable WorkPlan and WorkItems in canonical kanban_db
+    anomalies = []
+    task_id = kw.get("task_id") or "browser_batch"
+    try:
+        from workstation.durable_tasks import DurableTaskStore
+        from workstation.semantic_validation import SemanticValidator
+
+        with DurableTaskStore() as task_store:
+            plan = task_store.create_plan(
+                task_id,
+                f"Extraction: {data.get('title') or data.get('selector_used') or 'Items'} ({len(items)} items)",
+                [{"index": i, "payload": it} for i, it in enumerate(items)],
+                metadata={"source": "browser_extract_items", "artifact_ref": artifact_ref},
+            )
+            work_items = task_store.get_work_items(plan.id)
+            validator = SemanticValidator(required_fields=["title"])
+            for i, it in enumerate(items):
+                val_res = validator.validate_item(it)
+                item_id = work_items[i].id if i < len(work_items) else None
+                ref_handle = artifact_ref or "artifact://raw"
+                if not val_res.get("valid", True):
+                    issues = val_res.get("issues", [])
+                    anomalies.append({
+                        "index": i,
+                        "title": (it.get("title") or "")[:40],
+                        "violations": issues,
+                    })
+                    if item_id:
+                        task_store.mark_item_captured(item_id, raw_output_ref=ref_handle)
+                        task_store.mark_item_validated(item_id, validation_result=val_res)
+                        task_store.fail_item(item_id, error="; ".join(issues), can_retry=False)
+                else:
+                    if item_id:
+                        task_store.mark_item_captured(item_id, raw_output_ref=ref_handle)
+                        task_store.mark_item_persisted(item_id, normalized_output_ref=ref_handle)
+                        task_store.mark_item_validated(item_id, validation_result=val_res)
+                        task_store.complete_item(item_id)
+    except Exception as exc:
+        logger.debug("Durable task creation note: %s", exc)
+
+    # 3. Return compact executive summary to LLM to save prompt context
+    summary = {
+        "success": True,
+        "total_extracted": len(items),
+        "valid_count": len(items) - len(anomalies),
+        "anomalies_count": len(anomalies),
+        "selector_used": data.get("selector_used"),
+        "artifact_ref": artifact_ref,
+        "artifact_path": artifact_path,
+        "sample_preview": items[:2] if items else [],
+        "anomalies": anomalies[:5] if anomalies else [],
+        "note": f"Complete {len(items)} items saved durably to ArtifactStore and kanban_db WorkPlan. Prompt context protected.",
+    }
+    return json.dumps(summary, ensure_ascii=False)
+
+
+def _handle_browser_extract_items(args: dict, **kw) -> str:
+    raw = _workstation_or_legacy(
         "browser_extract_items",
         args,
         kw,
@@ -5801,7 +5906,15 @@ registry.register(
             ),
             **_browser_router_kw(kw),
         ),
-    ),
+    )
+    return _process_extracted_items_durably(raw, args, kw)
+
+
+registry.register(
+    name="browser_extract_items",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_extract_items"],
+    handler=_handle_browser_extract_items,
     check_fn=lambda: check_browser_routed_requirements("browser_extract_items"),
     emoji="📦",
 )

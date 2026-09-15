@@ -1433,6 +1433,11 @@ class TelegramAdapter(BasePlatformAdapter):
         # Only non-None routing keys: direct_messages_topic_id is paired with message_thread_id=None.
         payload.update({k: v for k, v in thread_kwargs.items() if v is not None})
         payload.update(self._notification_kwargs(metadata))
+        # Completion effect (private chats only) rides the rich send as well — the same
+        # metadata gate as the legacy path; the consumer sets it only on turn-final sends.
+        _effect_id = self._message_effect_id_for(chat_id, metadata)
+        if _effect_id:
+            payload["message_effect_id"] = _effect_id
         if reply_to_id is not None:
             # sendRichMessage takes reply_parameters, NOT reply_to_message_id (silently ignored → anchor dropped).
             payload["reply_parameters"] = {"message_id": reply_to_id}

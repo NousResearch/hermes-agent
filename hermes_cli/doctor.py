@@ -460,7 +460,7 @@ def _render_state_db_stats(stats: dict, holders=None) -> list:
     ):
         lines.append((
             "warn",
-            f"multiple processes hold this WAL DB open ({holders})",
+            f"multiple processes hold this WAL DB (holders={holders})",
             "(prefer one writer process, or set database.journal_mode: delete "
             "after stopping all openers — see docs/state-db-recovery.md)",
         ))

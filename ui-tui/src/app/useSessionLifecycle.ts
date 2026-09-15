@@ -208,13 +208,16 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         return null
       }
 
-      const info = r.info ?? null
+      // The durable id lives on the create result; the lazy-create `info` does
+      // not carry it, and session.resume / the exit epilogue need the stored id.
+      const storedSid = r.stored_session_id || r.session_id
+      const info = r.info ? { ...r.info, stored_session_id: storedSid } : null
       const requestedTitle = title?.trim() ?? ''
 
       resetSession()
       setSessionStartedAt(Date.now())
 
-      writeActiveSessionFile(r.session_id)
+      writeActiveSessionFile(storedSid)
       patchUiState({
         info,
         sid: r.session_id,
@@ -331,7 +334,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'resuming…' })
 
-      rpc<SetupStatusResponse>('setup.status', {}).then(setup => {
+      return rpc<SetupStatusResponse>('setup.status', {}).then(setup => {
         if (setup?.provider_configured === false) {
           panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
           patchUiState({ status: 'setup required' })
@@ -341,7 +344,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
         const previousSid = getUiState().sid
 
-        gw.request<SessionResumeResult>('session.resume', { cols: colsRef.current, session_id: id })
+        return gw.request<SessionResumeResult>('session.resume', { cols: colsRef.current, session_id: id })
           .then(raw => {
             const r = asRpcResult<SessionResumeResult>(raw)
 
@@ -351,7 +354,10 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               return patchUiState({ status: 'ready' })
             }
 
-            const info = r.info ?? null
+            const info = r.info
+              ? { ...r.info, stored_session_id: r.info.stored_session_id || r.stored_session_id || r.resumed || id }
+              : null
+
             const running = Boolean(r.running || r.status === 'working' || r.status === 'waiting')
 
             resetSession()
@@ -360,7 +366,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             const resumed = [...toTranscriptMessages(r.messages), ...liveSessionInflightMessages(r.inflight)]
 
             setHistoryItems(info ? [introMsg(info), ...resumed] : resumed)
-            writeActiveSessionFile(r.resumed ?? r.session_id)
+            writeActiveSessionFile(info?.stored_session_id || r.resumed || id)
             patchUiState({
               busy: running,
               info,

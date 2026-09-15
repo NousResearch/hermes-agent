@@ -715,15 +715,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       })
       .catch((e: unknown) => turnController.pushActivity(`command catalog unavailable: ${rpcErrorMessage(e)}`, 'info'))
 
-    // Crash recovery: a respawn triggered by an unexpected gateway death
-    // resumes the session that was live, not a brand-new one. One-shot — the
-    // ref is cleared so an ordinary later restart still forges/resumes per
-    // config. No startup prompt here (this is mid-session, not a cold boot).
+    // Keep the recovery target until resume succeeds, including across a second
+    // disconnect during setup or history loading. Recovery never resends the prompt.
     const recoverSid = recoverSidRef?.current
 
     if (recoverSidRef && recoverSid) {
-      recoverSidRef.current = null
-      resumeById(recoverSid)
+      void resumeById(recoverSid).then(() => {
+        if (getUiState().sid && recoverSidRef.current === recoverSid) {
+          recoverSidRef.current = null
+        }
+      })
       // After resumeById: it synchronously sets status to 'resuming…' on entry,
       // so override it here to keep the distinct "recovering" label visible for
       // the duration of the resume RPC (which later flips status to 'ready').

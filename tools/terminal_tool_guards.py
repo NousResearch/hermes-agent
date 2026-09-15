@@ -233,11 +233,12 @@ def gateway_lifecycle_block(
         read_remote_script=lambda p: _read_script_for_guard(env, guard_cwd, p, _MAX_REFERENCED_SCRIPT_BYTES),
     ):
         return _blocked_json(
-            "Blocked: command or referenced script cannot restart, stop, or "
-            "uninstall the gateway from inside the gateway process. The gateway would "
-            "kill this command before it could complete (SIGTERM propagates "
-            "to child processes). Run `hermes gateway restart` from a "
-            "separate shell outside the running gateway.",
+            "Blocked by the gateway lifecycle safety check: a gateway lifecycle action "
+            "was detected, or the command or referenced script could not be safely inspected "
+            "(including scan limits or inaccessible cloud paths). This does not "
+            "necessarily mean the command would restart the gateway. Check the "
+            "lifecycle guard logs for scan-limit details. Actual gateway restart, stop, "
+            "or uninstall commands must run from a separate shell outside the gateway.",
             "error",
         )
     return None

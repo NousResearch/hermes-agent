@@ -27,19 +27,20 @@ def test_object_without_properties_gets_empty_properties():
 
 
 def test_nested_object_without_properties_gets_empty_properties():
+    # NOTE (#102795): bare nested objects keep the llama.cpp injection;
+    # ANNOTATED ones (with description et al) skip it for Bedrock — see
+    # test_nested_annotated_empty_object_skips_properties_injection.
     tools = [_tool("t", {
         "type": "object",
         "properties": {
             "name": {"type": "string"},
-            "arguments": {"type": "object", "description": "free-form"},
+            "arguments": {"type": "object"},
         },
         "required": ["name"],
     })]
     out = sanitize_tool_schemas(tools)
     args = out[0]["function"]["parameters"]["properties"]["arguments"]
-    assert args["type"] == "object"
-    assert args["properties"] == {}
-    assert args["description"] == "free-form"
+    assert args == {"type": "object", "properties": {}}
 
 
 def test_bare_string_object_value_replaced_with_schema_dict():
@@ -517,3 +518,50 @@ def test_collapse_is_deterministic():
     first = collapse_const_unions(copy.deepcopy(schema))
     second = collapse_const_unions(copy.deepcopy(schema))
     assert first == second == {"type": "string", "enum": ["b", "a"]}
+
+
+def test_annotated_empty_object_skips_properties_injection_bedrock():
+    # Issue #102795: Bedrock (draft 2020-12 strict) rejects
+    # {type: object, description: ..., properties: {}} while accepting
+    # both halves separately. The llama.cpp-motivated empty-properties
+    # injection must not fire on annotated nodes (e.g. delegate_task's
+    # per-task output_schema).
+    tools = [_tool("t", {"type": "object", "description": "free-form"})]
+    out = sanitize_tool_schemas(tools)
+    assert out[0]["function"]["parameters"] == {
+        "type": "object", "description": "free-form"}
+
+
+def test_nested_annotated_empty_object_skips_properties_injection():
+    # Same shape as delegate_task tasks[].output_schema.
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "output_schema": {"type": "object", "description": "child schema"},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    nested = out[0]["function"]["parameters"]["properties"]["output_schema"]
+    assert nested == {"type": "object", "description": "child schema"}
+
+
+def test_bare_empty_object_still_gets_properties_for_llamacpp():
+    # Guard: unannotated free-form objects keep the llama.cpp injection.
+    tools = [_tool("t", {"type": "object"})]
+    out = sanitize_tool_schemas(tools)
+    assert out[0]["function"]["parameters"] == {
+        "type": "object", "properties": {}}
+
+
+def test_each_annotation_key_skips_empty_properties_injection():
+    # Issue #102795 follow-up: every key in _ANNOTATION_KEYS triggers
+    # the Bedrock exception, not just description.
+    from tools.schema_sanitizer import _ANNOTATION_KEYS
+    assert len(_ANNOTATION_KEYS) >= 2
+    for key in sorted(_ANNOTATION_KEYS):
+        node = {"type": "object", key: "x"}
+        tools = [_tool("t", {"type": "object",
+                             "properties": {"p": node}})]
+        out = sanitize_tool_schemas(tools)
+        got = out[0]["function"]["parameters"]["properties"]["p"]
+        assert got == node, key

@@ -1446,12 +1446,15 @@ class GoalManager:
             tgt = f"session {self.wait_on_session(str(wait_directive['session_id']), reason=reason).waiting_on_session}"
         elif wait_directive.get("pid"):
             pid = int(wait_directive["pid"])
-            if not _pid_alive(pid):
+            try:
+                tgt = f"pid {self.wait_on(pid, reason=reason).waiting_on_pid}"
+            except ValueError:
                 # A remote or already-exited pid is a barrier this host can never observe lifting
                 # (#110826): the judge sees the same pid next turn and would re-park forever.
+                # Catching wait_on's own liveness check (rather than probing first) closes the
+                # window where the pid exits between a pre-check and the park.
                 logger.info("goal judge: wait_on_pid %s is not alive on this host; continuing", pid)
                 return None
-            tgt = f"pid {self.wait_on(pid, reason=reason).waiting_on_pid}"
         else:
             self.wait_for_seconds(int(wait_directive["seconds"]), reason=reason, on_delegations=active_delegations)
             tgt = f"{wait_directive['seconds']}s"

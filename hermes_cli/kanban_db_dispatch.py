@@ -1204,12 +1204,32 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # An explicit re-queue after that comment is a deliberate request to let
+    # the same task continue (for example, a reviewer requested changes).
+    # Keep the duplicate-PR guard for genuinely idle tasks that have no newer
+    # lifecycle/requeue event.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    newest_pr_comment_at: Optional[int] = None
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        "SELECT body, created_at FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
         if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+            created_at = int(c["created_at"] or 0)
+            if newest_pr_comment_at is None or created_at > newest_pr_comment_at:
+                newest_pr_comment_at = created_at
+
+    if newest_pr_comment_at is not None:
+        requeue_after_pr = conn.execute(
+            "SELECT 1 FROM task_events "
+            "WHERE task_id = ? AND created_at > ? "
+            "AND kind IN ("
+            "'status', 'promoted', 'promoted_manual', 'unblocked', "
+            "'reclaimed', 'changes_requested') LIMIT 1",
+            (task_id, newest_pr_comment_at),
+        ).fetchone()
+        if not requeue_after_pr:
             return "active_pr"
 
     return None

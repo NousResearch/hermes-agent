@@ -27221,7 +27221,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Spritesheetbase64"
           },
           "spritesheetRevision": {
@@ -27244,7 +27243,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Spritesheetunchanged"
           },
           "frameW": {
@@ -27350,7 +27348,9 @@
           "slug",
           "displayName",
           "mime",
+          "spritesheetBase64",
           "spritesheetRevision",
+          "spritesheetUnchanged",
           "frameW",
           "frameH",
           "framesPerState",

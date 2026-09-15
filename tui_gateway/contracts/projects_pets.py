@@ -320,10 +320,9 @@ class PetInfoResult(Result):
     slug: str | None
     displayName: str | None  # noqa: N815 - wire key
     mime: str | None
-    # The producer pops spritesheetBase64 when the client's revision matches and only then sets spritesheetUnchanged.
-    spritesheetBase64: str | None = None  # noqa: N815 - wire key
+    spritesheetBase64: str | None  # noqa: N815 - wire key
     spritesheetRevision: str | None  # noqa: N815 - wire key
-    spritesheetUnchanged: bool | None = None  # noqa: N815 - wire key
+    spritesheetUnchanged: bool | None  # noqa: N815 - wire key
     frameW: int | None  # noqa: N815 - wire key
     frameH: int | None  # noqa: N815 - wire key
     framesPerState: int | None  # noqa: N815 - wire key

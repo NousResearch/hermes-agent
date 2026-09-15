@@ -65,9 +65,7 @@ class HandlerRegistry:
         published too — a rebound body resolves ``FooResult`` through ``server``, not its own module."""
         g = vars(server)
         if module_globals is not None:
-            for name, obj in module_globals.items():
-                if isinstance(obj, type) and obj.__module__ != module_globals["__name__"]:
-                    publish_imported_class(server, module_globals["__name__"], name, obj)
+            publish_imported_classes(server, module_globals)
         for name, fn in self._pending:
             real = rebind(fn, g)
             if getattr(fn, "_hermes_profile_scoped", False):
@@ -76,6 +74,14 @@ class HandlerRegistry:
 
 
 _PLUMBING = {"HandlerRegistry", "method", "_profile_scoped", "register", "rebind", "logger"}
+
+
+def publish_imported_classes(server, module_globals: dict) -> None:
+    """Publish every class ``module_globals`` imported from elsewhere onto ``server`` (see ``publish_imported_class``)."""
+    mod_name = module_globals.get("__name__", "")
+    for name, obj in module_globals.items():
+        if isinstance(obj, type) and obj.__module__ != mod_name:
+            publish_imported_class(server, mod_name, name, obj)
 
 
 def publish_imported_class(server, mod_name: str, name: str, obj: type) -> None:

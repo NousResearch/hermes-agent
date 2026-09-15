@@ -474,6 +474,22 @@ class SessionMessagesMixin:
         row = self._read_one("SELECT role FROM messages WHERE id = ? AND session_id = ? AND active = 1", (int(row_id), session_id))
         return row[0] if row else None
 
+    def get_reaction_target(self, session_id: str, row_id: int) -> Optional[Tuple[str, str]]:
+        """Return ``(owning_session_id, role)`` when *row_id* is in the caller's compression lineage.
+
+        Explicit branch/delegate/tool children are excluded by ``get_compression_lineage``; the row id
+        is never resolved outside that bounded set of sessions.
+        """
+        lineage = self.get_compression_lineage(session_id)
+        if not lineage:
+            return None
+        placeholders = ", ".join("?" for _ in lineage)
+        row = self._read_one(
+            f"SELECT session_id, role FROM messages WHERE id = ? AND session_id IN ({placeholders})",
+            (int(row_id), *lineage),
+        )
+        return (row[0], row[1]) if row else None
+
     def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
         """Insert *messages* as fresh active rows in the caller's txn -> ``(inserted, tool_call_count)``.
         Never touches sessions.* counters (callers reconcile differently); reasoning kept for assistant rows."""

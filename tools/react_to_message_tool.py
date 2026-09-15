@@ -31,7 +31,7 @@ def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -
     if db is None:
         return tool_error("Session storage is unavailable.")
     try:
-        row_id, target_role = message_row_id, "user"
+        row_id, target_role, target_session_id = message_row_id, "user", session_key
         if row_id is None:
             # Default: the latest user message; `messages_back` steps to earlier user turns
             # (ids aren't visible to the model; "two messages ago" is how a person thinks).
@@ -40,9 +40,12 @@ def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -
             if row_id is None:
                 return tool_error(f"No user message found {back} back." if back else "No user message to react to yet.")
         else:
-            target_role = db.get_message_role(session_key, int(row_id)) or "user"
+            target = db.get_reaction_target(session_key, int(row_id))
+            if target is None:
+                return tool_error(f"Message {row_id} is not part of this conversation.")
+            target_session_id, target_role = target
         try:
-            reactions = db.set_message_reaction(session_key, int(row_id), emoji or None, author="agent")
+            reactions = db.set_message_reaction(target_session_id, int(row_id), emoji or None, author="agent")
         except Exception as exc:
             return tool_error(f"Failed to set the reaction: {exc}")
         if reactions is None:

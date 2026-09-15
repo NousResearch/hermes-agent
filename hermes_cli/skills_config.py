@@ -68,6 +68,44 @@ def _get_categories(skills: List[dict]) -> List[str]:
     return sorted({s["category"] or "uncategorized" for s in skills})
 
 
+def toggle_skills(action: str, names: List[str], platform: Optional[str] = None) -> List[str]:
+    """Enable/disable *names* non-interactively; returns human-readable result lines.
+
+    Shared by `/skills enable|disable` and `hermes skills enable|disable`. Writes
+    ``skills.disabled`` (or the platform list) via save_disabled_skills, which
+    silently keeps essential skills enabled.
+    """
+    from agent.skill_utils import ESSENTIAL_SKILLS
+    config = load_config()
+    known = {s["name"] for s in _list_all_skills()}
+    disabled = get_disabled_skills(config, platform)
+    lines: List[str] = []
+    changed = False
+    for name in names:
+        if name in ESSENTIAL_SKILLS and action == "disable":
+            lines.append(f"✗ '{name}' is essential and cannot be disabled")
+        elif name not in known and name not in disabled:
+            lines.append(f"✗ unknown skill: {name}")
+        elif action == "disable":
+            if name in disabled:
+                lines.append(f"· already disabled: {name}")
+            else:
+                disabled.add(name)
+                changed = True
+                lines.append(f"✓ disabled: {name}")
+        else:
+            if name not in disabled:
+                lines.append(f"· already enabled: {name}")
+            else:
+                disabled.discard(name)
+                changed = True
+                lines.append(f"✓ enabled: {name}")
+    if changed:
+        save_disabled_skills(config, disabled, platform)
+        lines.append("Takes effect for new sessions.")
+    return lines
+
+
 def _select_platform() -> Optional[str]:
     """Ask which platform to configure; None means global."""
     options = [("global", "All platforms (global default)")] + list(PLATFORMS.items())

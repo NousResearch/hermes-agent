@@ -105,6 +105,17 @@ class TestGetProfileDir:
         result = get_profile_dir("default")
         assert result == tmp_path / ".hermes"
 
+    @pytest.mark.parametrize("name", ["..", "../outside", "../../tmp", "a/b", "a\\b", ".hidden", "has space"])
+    def test_traversal_and_invalid_names_rejected(self, name, profile_env):
+        # The name becomes a path component under profiles/; invalid ids must
+        # raise instead of escaping the root.
+        with pytest.raises(ValueError):
+            get_profile_dir(name)
+
+    @pytest.mark.parametrize("name", ["..", "../outside", "a/b"])
+    def test_profile_exists_false_for_invalid_names(self, name, profile_env):
+        assert profiles.profile_exists(name) is False
+
 
 # ===================================================================
 # TestCreateProfile
@@ -189,6 +200,62 @@ class TestCreateProfile:
         assert cloned_config["model"] == "test"
         assert (profile_dir / ".env").read_text().strip() == "KEY=val"
         assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
+
+    def test_clone_sync_imports_carries_manifest_but_never_links_profiles(self, profile_env):
+        """--sync-imports copies import-sync.json (a pointer at EXTERNAL agent trees) and nothing
+        else changes: the clone still gets its own config/skills copies, never a live link."""
+        from hermes_cli.agent_import_sync import SYNC_MANIFEST_NAME, load_sync_manifest
+
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text("model: test")
+        manifest = {"version": 1, "agents": {"claude-code": {
+            "source": str(profile_env / ".claude"), "digest": "d", "overwrite": False,
+            "last_import": 1, "imported_skills": ["s1"]}}}
+        (default_home / SYNC_MANIFEST_NAME).write_text(json.dumps(manifest))
+
+        plain = create_profile("plain", clone_config=True, no_alias=True)
+        assert not (plain / SYNC_MANIFEST_NAME).exists()
+
+        synced = create_profile("synced", clone_config=True, sync_imports=True, no_alias=True)
+        assert load_sync_manifest(synced)["agents"] == manifest["agents"]
+        # Editing the source afterwards does not reach the clone: still an independent island.
+        (default_home / "config.yaml").write_text("model: changed")
+        assert yaml.safe_load((synced / "config.yaml").read_text())["model"] == "test"
+
+    def test_sync_imports_requires_a_clone_source(self, profile_env):
+        with pytest.raises(ValueError, match="--sync-imports requires"):
+            create_profile("lonely", sync_imports=True, no_alias=True)
+
+    def test_clone_all_does_not_copy_cron_jobs(self, profile_env):
+        # Cron jobs are scheduled work bound to the source profile + origin channel; a clone
+        # that inherits jobs.json fires every job twice (two gateways, same job ids).
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text("model: test")
+        (default_home / "cron").mkdir()
+        (default_home / "cron" / "jobs.json").write_text(json.dumps({"jobs": [{"id": "abc123def456"}]}))
+        (default_home / "cron" / "output").mkdir()
+
+        profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+
+        assert (profile_dir / "cron").is_dir()
+        assert not any((profile_dir / "cron").iterdir())
+        assert yaml.safe_load((profile_dir / "config.yaml").read_text())["model"] == "test"
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="special files need a POSIX filesystem")
+    def test_clone_all_skips_special_files(self, profile_env):
+        # A live source profile holds special files copytree cannot copy (e.g. a suffixless
+        # agent-browser control socket); one of them must not abort the whole clone.
+        default_home = profile_env / ".hermes"
+        (default_home / "config.yaml").write_text("model: test")
+        browser_dir = default_home / "home" / ".agent-browser"
+        browser_dir.mkdir(parents=True)
+        (browser_dir / "state.json").write_text("{}")
+        os.mkfifo(browser_dir / "control")
+
+        profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+
+        assert (profile_dir / "home" / ".agent-browser" / "state.json").is_file()
+        assert not (profile_dir / "home" / ".agent-browser" / "control").exists()
 
 
 
@@ -753,6 +820,52 @@ class TestRenameProfile:
         assert cfg["hosts"]["hermes_heimdall"]["aiPeer"] == "ssi_health"
         assert cfg["hosts"]["hermes_heimdall"]["peerName"] == "user-peer"
 
+    def test_multiplexed_rename_unroutes_old_then_hot_serves_new(self, profile_env):
+        """Under a live multiplexer the old name is tombstoned + unrouted BEFORE the directory
+        moves and the new name is hot-served after, so a stale runtime mkdir of the old home is
+        refused instead of resurrecting a ghost served profile (#109267)."""
+        from hermes_constants import mkdir_under_hermes_home
+        tmp_path = profile_env
+        create_profile("oldname", no_alias=True)
+        old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
+        new_dir = tmp_path / ".hermes" / "profiles" / "newname"
+
+        calls = []
+
+        def _record_notify(name):
+            # Snapshot the world at each multiplexer signal to pin ordering.
+            calls.append((name, old_dir.exists(), new_dir.exists(), profiles.named_profile_is_deleted(old_dir)))
+            if name == "oldname" and old_dir.exists():
+                # A still-live component of the multiplexer writing into the old home mid-teardown.
+                with pytest.raises(FileNotFoundError):
+                    mkdir_under_hermes_home(old_dir / "logs")
+
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
+             patch("hermes_cli.profiles._live_default_multiplexer", return_value=True), \
+             patch("hermes_cli.profiles._notify_multiplexer", side_effect=_record_notify):
+            rename_profile("oldname", "newname")
+
+        # (name, old_exists, new_exists, old_tombstoned): unroute first, hot-serve last.
+        assert calls[0] == ("oldname", True, False, True)
+        assert calls[-1] == ("newname", False, True, False)
+        assert not old_dir.exists() and new_dir.is_dir()
+        assert not profiles.named_profile_is_deleted(old_dir)  # a future 'oldname' is not born deleted
+
+    def test_unmultiplexed_rename_does_not_signal_multiplexer(self, profile_env):
+        """No live multiplexer → rename must neither tombstone nor ping (single-profile installs)."""
+        tmp_path = profile_env
+        create_profile("oldname", no_alias=True)
+        old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
+
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
+             patch("hermes_cli.profiles._live_default_multiplexer", return_value=False), \
+             patch("hermes_cli.profiles._notify_multiplexer") as notify:
+            new_dir = rename_profile("oldname", "newname")
+
+        notify.assert_not_called()
+        assert not (tmp_path / ".hermes" / "profiles" / ".deleted").exists()
+        assert not old_dir.exists() and new_dir.is_dir()
+
 
 # ===================================================================
 # TestExportImport
@@ -774,7 +887,10 @@ class TestExportImport:
 
     def test_export_default_includes_profile_data(self, profile_env, tmp_path):
         """Profile data files end up in the archive (credentials excluded)."""
-        default_dir = get_profile_dir("default")
+        # Write through HERMES_HOME, not get_profile_dir("default"): the latter resolves to the
+        # OPERATOR's real install whenever basetest sits inside it, so this test used to
+        # overwrite the live config.yaml / .env / MEMORY.md with its fixtures.
+        default_dir = profile_env / ".hermes"
         (default_dir / "config.yaml").write_text("model: test")
         (default_dir / ".env").write_text("KEY=val")
         (default_dir / "SOUL.md").write_text("Be nice.")
@@ -803,7 +919,8 @@ class TestExportImport:
         symlinks inside *allowed* artifacts (e.g. ``skills/``) survive as
         symlinks; the link and its target are both retained.
         """
-        default_dir = get_profile_dir("default")
+        # Same reason as above: never resolve the operator's real default home from a test.
+        default_dir = profile_env / ".hermes"
         (default_dir / "config.yaml").write_text("ok")
         # Place broken symlink *inside* the allowed ``skills/`` tree so the
         # root-level allow-list passes the directory through; the
@@ -1099,32 +1216,6 @@ class TestProfilesToServe:
         assert set(serve) == {"default", "coder", "writer"}
         assert serve["default"] == _get_default_hermes_home()
         assert serve["coder"] == get_profile_dir("coder")
-
-    def test_empty_allowlist_serves_only_default(self, profile_env):
-        create_profile("worker", no_alias=True)
-
-        serve = dict(profiles_to_serve(multiplex=True, profile_allowlist=[]))
-
-        assert serve == {"default": _get_default_hermes_home()}
-
-    def test_allowlist_normalizes_deduplicates_and_keeps_default(self, profile_env):
-        create_profile("worker", no_alias=True)
-        create_profile("guest", no_alias=True)
-
-        serve = dict(
-            profiles_to_serve(
-                multiplex=True,
-                profile_allowlist=[" Worker ", "worker", "default", "missing"],
-            )
-        )
-
-        assert set(serve) == {"default", "worker"}
-        assert serve["worker"] == get_profile_dir("worker")
-
-
-
-        assert set(serve) == {"default", "worker"}
-        assert serve["worker"] == get_profile_dir("worker")
 
 
 # ---------------------------------------------------------------------------

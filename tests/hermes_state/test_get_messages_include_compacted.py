@@ -12,8 +12,18 @@ soft-deleted Undo/Rewind rows (``active=0, compacted=0``) — that remains the
 job of ``include_inactive`` (audit / debug reads).
 """
 
+import json
+import sqlite3
+
 import pytest
 
+from agent.context_compressor import (
+    HISTORICAL_TASK_HEADING,
+    SUMMARY_PREFIX,
+    _MERGED_PRIOR_CONTEXT_HEADER,
+    _MERGED_SUMMARY_DELIMITER,
+    _SUMMARY_END_MARKER,
+)
 from hermes_state import SessionDB
 
 
@@ -139,6 +149,219 @@ class TestDisplayDedupe:
             )
 
         db._execute_write(_do)
+
+    def test_display_paging_and_append_work_is_bounded(self, db):
+        """Page and identity-lookup work scale with the page, not the transcript: 10x rows
+        must not cost 10x SQLite VM steps (the pre-index read deduped the whole session)."""
+        for sid, count in (("small", 2_000), ("large", 20_000)):
+            db.create_session(sid, source="desktop")
+            db.append_messages_batch(
+                sid,
+                [{"role": "assistant", "content": f"row-{index}"} for index in range(count)],
+                chunk_rows=500,
+            )
+
+        db._wal_active = False
+
+        def progress_steps(sid):
+            callbacks = 0
+
+            def progress():
+                nonlocal callbacks
+                callbacks += 1
+                return 0
+
+            db._conn.set_progress_handler(progress, 100)
+            try:
+                page = db.get_messages(
+                    sid, include_compacted=True, latest=True, limit=120)
+            finally:
+                db._conn.set_progress_handler(None, 0)
+            assert len(page) == 120
+            return callbacks
+
+        small_steps = progress_steps("small")
+        large_steps = progress_steps("large")
+        assert large_steps < small_steps * 3
+
+        def seed(sid, count):
+            db.create_session(sid, source="desktop")
+            db._execute_write(lambda conn: conn.executemany(
+                "INSERT INTO messages (session_id, role, content, timestamp, display_order) "
+                "VALUES (?, 'assistant', ?, ?, ?)",
+                [(sid, f"row-{index}", 100_000.0, index + 1) for index in range(count)],
+            ))
+
+        seed("write-small", 2_000)
+        seed("write-large", 20_000)
+        db._wal_active = False
+
+        def append_steps(sid):
+            callbacks = 0
+
+            def progress():
+                nonlocal callbacks
+                callbacks += 1
+                return 0
+
+            db._conn.set_progress_handler(progress, 10)
+            try:
+                db.append_message(sid, role="user", content="fresh", timestamp=100_000.0)
+            finally:
+                db._conn.set_progress_handler(None, 0)
+            return callbacks
+
+        small_steps = append_steps("write-small")
+        large_steps = append_steps("write-large")
+        assert large_steps < small_steps * 3
+
+    def test_composite_handoff_keeps_live_turn_identity_and_first_position(self, db):
+        sid = "composite"
+        db.create_session(sid, source="desktop")
+        original_id = db.append_message(sid, role="user", content="live ask", timestamp=100.0)
+        later_id = db.append_message(sid, role="assistant", content="later answer", timestamp=200.0)
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET active = 0, compacted = 1 WHERE session_id = ?", (sid,)))
+        carrier = (
+            f"{_MERGED_PRIOR_CONTEXT_HEADER}\n"
+            "live ask\n\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n\n"
+            f"{SUMMARY_PREFIX}\n\n"
+            f"{HISTORICAL_TASK_HEADING}\nold work\n\n"
+            f"{_SUMMARY_END_MARKER}"
+        )
+        carrier_id = db.append_message(sid, role="user", content=carrier, timestamp=100.0)
+        # Simulate rows written before display_order existed; lazy backfill must use
+        # the same normalized user-turn key as the historical Python projection.
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET display_order = NULL WHERE session_id = ?", (sid,)))
+
+        messages = db.get_messages(sid, include_compacted=True)
+
+        assert [message["id"] for message in messages] == [carrier_id, later_id]
+        assert messages[0]["content"] == carrier
+        assert original_id not in [message["id"] for message in messages]
+        # Index columns never escape the message dict (BLOB identity is not JSON-serializable).
+        assert not {"display_identity", "display_order"} & set(messages[0])
+        json.dumps(messages)
+        # SQLite stores -0.0 and 0.0 as one value; the hashed identity must agree with that.
+        db.append_message(sid, role="assistant", content="same", timestamp=-0.0)
+        newest_id = db.append_message(sid, role="assistant", content="same", timestamp=0.0)
+        assert [m["id"] for m in db.get_messages(sid, include_compacted=True)][-1:] == [newest_id]
+        assert len([m for m in db.get_messages(sid, include_compacted=True) if m["content"] == "same"]) == 1
+
+    def test_display_metadata_update_does_not_invalidate_display_identity(self, tmp_path):
+        # Install the pre-narrowing trigger (``display_metadata`` in UPDATE OF, no WHEN) as an existing
+        # store would carry it; the reopen must replace it, since IF NOT EXISTS alone never would.
+        path = tmp_path / "state.db"
+        SessionDB(path).close()
+        conn = sqlite3.connect(path)
+        conn.execute("DROP TRIGGER IF EXISTS messages_display_identity_update")
+        conn.execute(
+            "CREATE TRIGGER messages_display_identity_update AFTER UPDATE OF role, content, timestamp, "
+            "tool_call_id, tool_calls, tool_name, display_kind, display_metadata ON messages "
+            "BEGIN UPDATE messages SET display_identity = NULL, display_order = NULL WHERE id = new.id; END")
+        conn.commit()
+        conn.close()
+        db = SessionDB(path)
+        trigger_sql = db._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'messages_display_identity_update'").fetchone()[0]
+        assert "display_metadata" not in trigger_sql and "display_kind" in trigger_sql
+
+        sid = "metadata"
+        db.create_session(sid, source="desktop")
+        row_ids = [
+            db.append_message(sid, role="assistant", content=f"row-{index}", timestamp=100.0)
+            for index in range(3)
+        ]
+        before = db._conn.execute(
+            "SELECT id, display_order, display_identity FROM messages WHERE session_id = ? ORDER BY id",
+            (sid,),
+        ).fetchall()
+
+        changes = db._conn.total_changes
+        db.set_message_reaction(sid, row_ids[1], "👍", author="user")
+        assert db._conn.total_changes - changes == 1
+        assert db._conn.execute(
+            "SELECT id, display_order, display_identity FROM messages WHERE session_id = ? ORDER BY id",
+            (sid,),
+        ).fetchall() == before
+
+        changes = db._conn.total_changes
+        db.get_messages(sid, include_compacted=True)
+        assert db._conn.total_changes == changes
+
+    def test_display_backfill_rewrites_only_changed_identity_group(self, db):
+        sid = "identity-update"
+        db.create_session(sid, source="desktop")
+        first = db.append_message(sid, role="assistant", content="same", timestamp=100.0)
+        db.append_message(sid, role="assistant", content="same", timestamp=100.0)
+        unaffected = db.append_message(sid, role="assistant", content="other", timestamp=100.0)
+        unaffected_before = db._conn.execute(
+            "SELECT display_order, display_identity FROM messages WHERE id = ?", (unaffected,)
+        ).fetchone()
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET content = ? WHERE id = ?", ('"changed"', first)))
+
+        changes = db._conn.total_changes
+        db.get_messages(sid, include_compacted=True)
+        assert db._conn.total_changes - changes == 2
+        assert db._conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ? "
+            "AND (display_order IS NULL OR display_identity IS NULL)",
+            (sid,),
+        ).fetchone()[0] == 0
+        assert db._conn.execute(
+            "SELECT display_order, display_identity FROM messages WHERE id = ?", (unaffected,)
+        ).fetchone() == unaffected_before
+
+    def test_legacy_store_is_readable_then_lazily_migrated(self, tmp_path):
+        path = tmp_path / "legacy.db"
+        writer = SessionDB(path)
+        writer.create_session("legacy", source="desktop")
+        writer.append_message("legacy", role="assistant", content="same", timestamp=1.0)
+        writer.append_message("legacy", role="assistant", content="same", timestamp=1.0)
+        new_store_missing = writer._read_one(
+            "SELECT COUNT(*) FROM messages "
+            "WHERE display_order IS NULL OR display_identity IS NULL")
+        assert new_store_missing is not None and new_store_missing[0] == 0
+        writer.close()
+
+        conn = sqlite3.connect(path)
+        conn.execute("DROP TRIGGER IF EXISTS messages_display_order_insert")
+        conn.execute("DROP TRIGGER IF EXISTS messages_display_visibility_update")
+        conn.execute("DROP TRIGGER IF EXISTS messages_display_identity_update")
+        conn.execute("DROP TRIGGER IF EXISTS messages_display_identity_delete")
+        conn.execute("DROP INDEX IF EXISTS idx_messages_display_page")
+        conn.execute("DROP INDEX IF EXISTS idx_messages_display_backfill")
+        conn.execute("DROP INDEX IF EXISTS idx_messages_display_identity")
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+        for column in ("display_order", "display_identity"):
+            if column in columns:
+                conn.execute(f"ALTER TABLE messages DROP COLUMN {column}")
+        conn.commit()
+        conn.close()
+
+        reader = SessionDB(path, read_only=True)
+        try:
+            legacy_messages = reader.get_messages("legacy", include_compacted=True)
+            assert len(legacy_messages) == 1
+            json.dumps(legacy_messages)
+            assert "display_order" not in {
+                row[1] for row in reader._conn.execute("PRAGMA table_info(messages)")}
+        finally:
+            reader.close()
+
+        migrated = SessionDB(path)
+        try:
+            assert len(migrated.get_messages("legacy", include_compacted=True)) == 1
+            columns = {row[1] for row in migrated._conn.execute("PRAGMA table_info(messages)")}
+            assert {"display_order", "display_identity"} <= columns
+            assert migrated._conn.execute(
+                "SELECT COUNT(*) FROM messages "
+                "WHERE display_order IS NULL OR display_identity IS NULL").fetchone()[0] == 0
+        finally:
+            migrated.close()
 
     def test_copied_protected_tail_is_surfaced_once(self, db):
         """A message copied across compaction epochs appears exactly once."""

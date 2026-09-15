@@ -12,6 +12,7 @@ so a test's ``monkeypatch.setattr(<owning module>, "_helper", ...)`` keeps worki
 import contextlib
 import copy
 import functools
+from hermes_cli.web_read_coalescing import coalesced_read
 import inspect
 import json
 import logging
@@ -27,8 +28,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Query
 
 from hermes_cli.web_deps import late
-from hermes_cli.web_server_config import _apply_main_model_assignment, _normalize_main_model_assignment
+from hermes_cli.config import get_process_hermes_home
+from hermes_cli.web_server_config import (
+    _apply_main_model_assignment, _normalize_main_model_assignment, _validated_main_model_selection,
+)
 from hermes_cli.web_server_gateway import _strip_session_list_rows
+from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK
 from hermes_cli.web_server_profiles import (
     _fallback_profile_dicts, _hub_action_name, _write_profile_mcp_servers,
 )
@@ -94,14 +99,21 @@ def _profile_setup_command(name: str) -> str:
     return "hermes setup" if name == "default" else f"{name} setup"
 
 
-def _write_profile_model(profile_dir: Path, provider: str, model: str) -> None:
-    """Write the main model assignment into ``profile_dir``'s config.yaml (HERMES_HOME-scoped);
-    clears stale ``base_url`` / ``context_length`` like ``POST /api/model/set`` does."""
+def _write_profile_model(profile_dir: Path, provider: str, model: str, validate_in: Optional[Path] = None) -> None:
+    """Write the main model assignment into ``profile_dir``'s config.yaml (HERMES_HOME-scoped)
+    through the same validated /model shape as ``POST /api/model/set``.
+
+    ``validate_in`` is the home whose ``providers:``/``.env``/catalog vouch for the pick (default:
+    ``profile_dir`` itself). Profile-create passes the dashboard's own home: the picker that offered
+    the model read THAT catalog, and a just-created profile has no credentials yet, so validating
+    in the empty profile rejected every non-env provider (anthropic, ollama, custom)."""
     from hermes_cli.config import load_config, save_config
-    with _hermes_home_scope(profile_dir):
+    with _hermes_home_scope(validate_in or profile_dir):
         provider, model = _normalize_main_model_assignment(provider, model)
+        result = _validated_main_model_selection(load_config(), provider, model)
+    with _hermes_home_scope(profile_dir), _CONFIG_MUTATION_LOCK:  # RMW span
         cfg = load_config()
-        cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), provider, model)
+        cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), result)
         save_config(cfg)
 
 
@@ -113,7 +125,7 @@ def _disable_unselected_skills(profile_dir: Path, keep: List[str]) -> int:
     from hermes_cli.config import load_config
     from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
     keep_set = {s.strip() for s in keep if s and s.strip()}
-    with _hermes_home_scope(profile_dir):
+    with _hermes_home_scope(profile_dir), _CONFIG_MUTATION_LOCK:  # RMW span
         skills_root = profile_dir / "skills"
         installed = ([md.parent.name for md in skills_root.rglob("SKILL.md")]
                      if skills_root.is_dir() else [])
@@ -557,6 +569,7 @@ def _merge_profile_tree(
 
 
 @sessions_router.get("/api/profiles/projects/tree")
+@_sidebar_singleflight_cache
 def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000):
     """Project tree for every profile at once, for the all-profiles sidebar.
 
@@ -631,15 +644,20 @@ def post_profiles_sessions_pull_requests(body: SessionPrScanBody):
     return {"pull_requests": found, "scanned": wanted}
 
 
-@router.get("/api/profiles")
-async def list_profiles_endpoint():
+@functools.partial(coalesced_read, thread_runner=lambda func: run_in_threadpool(func))
+def _read_profiles():
     from hermes_cli import profiles as profiles_mod
     try:
-        profiles = await run_in_threadpool(profiles_mod.list_profiles)
+        profiles = profiles_mod.list_profiles()
         return {"profiles": [_profile_to_dict(p) for p in profiles]}
     except Exception:
         _log.exception("GET /api/profiles failed; falling back to profile directory scan")
         return {"profiles": _fallback_profile_dicts(profiles_mod)}
+
+
+@router.get("/api/profiles")
+async def list_profiles_endpoint():
+    return await _read_profiles()
 
 
 @router.post("/api/profiles")
@@ -660,7 +678,8 @@ async def create_profile_endpoint(body: ProfileCreate):
                          bad_request=(ValueError, FileExistsError, FileNotFoundError)):
         path = profiles_mod.create_profile(
             name=body.name, clone_from=clone_from, clone_all=body.clone_all,
-            clone_config=clone_config, no_skills=body.no_skills, description=body.description)
+            clone_config=clone_config, no_skills=body.no_skills, description=body.description,
+            clone_channels=body.clone_channels)
         # Match the CLI flow: fresh named profiles get the bundled skills (cloning already
         # copied the source's; no_skills wrote the opt-out marker so seeding no-ops) and a
         # ~/.local/bin wrapper when the alias is safe.
@@ -673,9 +692,22 @@ async def create_profile_endpoint(body: ProfileCreate):
     # the whole create — the user can fix it from the dashboard or `<profile> setup`.
     provider = (body.provider or "").strip()
     model = (body.model or "").strip()
+    # Validate against THIS dashboard's home (the catalog the picker offered), not the empty
+    # new profile; the write still lands in the new profile. A rejection is reported (not just
+    # logged) so the dialog can say WHY the model was not set.
+    model_error = ""
+
+    def _set_model() -> bool:
+        nonlocal model_error
+        try:
+            _write_profile_model(path, provider, model, validate_in=get_process_hermes_home())
+        except HTTPException as exc:
+            model_error = str(exc.detail)
+            return False
+        return True
+
     model_set = bool(provider and model) and _best_effort(
-        "Setting model for new profile %s failed", body.name,
-        fn=lambda: (_write_profile_model(path, provider, model), True)[1], default=False)
+        "Setting model for new profile %s failed", body.name, fn=_set_model, default=False)
     mcp_written = _best_effort(
         "Writing MCP servers for new profile %s failed", body.name, default=0,
         fn=lambda: _write_profile_mcp_servers(path, body.mcp_servers)) if body.mcp_servers else 0
@@ -696,7 +728,7 @@ async def create_profile_endpoint(body: ProfileCreate):
             fn=lambda: _spawn_install(ident))}
         for ident in ((i or "").strip() for i in body.hub_skills) if ident]
 
-    return {"ok": True, "name": body.name, "path": str(path), "model_set": model_set,
+    return {"ok": True, "name": body.name, "path": str(path), "model_set": model_set, "model_error": model_error,
             "mcp_written": mcp_written, "skills_disabled": skills_disabled,
             "hub_installs": hub_installs}
 

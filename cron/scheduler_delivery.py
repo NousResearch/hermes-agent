@@ -112,9 +112,9 @@ def _cron_mirror_delivery_enabled(job: dict, cfg: Optional[dict] = None) -> bool
 
 def _target_matches_origin(origin: dict, platform_name: str, chat_id: str,
                            thread_id: Optional[str]) -> bool:
-    """True when a delivery target is the job's own origin conversation. Mirroring is scoped to
-    the origin session (guaranteed to exist); fan-out targets are broadcasts, deliberately NOT
-    mirrored. A pinned origin thread_id must match — a target without it is a different lane."""
+    """True when a delivery target is the job's own origin conversation. A pinned origin
+    thread_id must match — a target without it is a different lane. Mirror eligibility for
+    non-origin targets is decided by ``_target_mirror_eligible``."""
     if (
         not origin
         or str(origin.get("platform", "")).lower() != str(platform_name).lower()
@@ -127,17 +127,19 @@ def _target_matches_origin(origin: dict, platform_name: str, chat_id: str,
 
 # Provenance rank for the dedup OR-merge in _resolve_delivery_targets (higher = stronger mirror
 # claim). Broadcasts rank 0 so "origin,all"/"all,origin" keep the origin tag regardless of order.
-_MIRROR_PROVENANCE_RANK = {"origin": 3, "origin_fallback": 2, "explicit": 1}
+_MIRROR_PROVENANCE_RANK = {"origin": 3, "origin_fallback": 2, "home": 2, "explicit": 1}
 
 
 def _target_mirror_eligible(
     job: dict, target: dict, *, global_mirror: bool, origin_match: Optional[bool] = None) -> bool:
     """Whether a resolved delivery target may receive the transcript mirror. Origin targets:
     always. ``origin_fallback`` (deliver=origin with no captured origin → home channel, standing
-    in for the primary conversation): same flags as a true origin. ``explicit``
-    ``platform:chat_id``: ONLY with per-job ``attach_to_session: true`` — the global flag must
-    never write transcripts into arbitrary explicitly-addressed chats. Untagged broadcasts
-    (``all``, bare-platform home) are never eligible. ``origin_match`` may be precomputed."""
+    in for the primary conversation) and ``home`` (user-written bare-platform token, e.g.
+    ``deliver: slack`` — deliberately addresses that platform's home channel): same flags as a
+    true origin. ``explicit`` ``platform:chat_id``: ONLY with per-job ``attach_to_session: true``
+    — the global flag must never write transcripts into arbitrary explicitly-addressed chats.
+    Untagged broadcast expansions (``all``) are never eligible. ``origin_match`` may be
+    precomputed."""
     if origin_match is None:
         origin = _resolve_origin(job) or {}
         origin_match = _target_matches_origin(
@@ -145,7 +147,7 @@ def _target_mirror_eligible(
     if origin_match:
         return True
     resolved_from = target.get("_resolved_from")
-    if resolved_from == "origin_fallback":
+    if resolved_from in ("origin_fallback", "home"):
         # Same precedence as _cron_mirror_delivery_enabled (keep in sync): a per-job False must
         # beat a global True even for callers that don't pre-merge `global_mirror`.
         per_job = job.get("attach_to_session")
@@ -557,8 +559,15 @@ def _home_target(platform_name: str, chat_id: str, resolved_from: Optional[str] 
     return target
 
 
-def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[dict]:
-    """Resolve one concrete auto-delivery target for a cron job."""
+def _resolve_single_delivery_target(
+    job: dict, deliver_value: str, *, from_broadcast: bool = False
+) -> Optional[dict]:
+    """Resolve one concrete auto-delivery target for a cron job.
+
+    ``from_broadcast`` marks a bare-platform token that was produced by expanding a broadcast
+    token (``all``) rather than written by the user; broadcast expansions carry no mirror
+    provenance (fan-out is never continuable), while a user-written bare platform token is a
+    deliberate home-channel address and gets the ``home`` tag."""
     origin = _resolve_origin(job)
     if deliver_value == "local":
         return None
@@ -615,10 +624,13 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
             "_resolved_from": "explicit",  # mirror-eligible only under attach_to_session opt-in
         }
     platform_name = deliver_value
+    home_provenance = None if from_broadcast else "home"
     if origin and origin.get("platform") == platform_name:
         chat_id = _get_home_target_chat_id(platform_name)
         if chat_id:
-            return _home_target(platform_name, chat_id)
+            return _home_target(platform_name, chat_id, home_provenance)
+        # No home configured: falls back to the origin chat. No tag needed — the
+        # origin-match check in _target_mirror_eligible already covers this target.
         return {
             "platform": platform_name,
             "chat_id": str(origin["chat_id"]),
@@ -627,7 +639,7 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
     if not _is_known_delivery_platform(platform_name):
         return None
     chat_id = _get_home_target_chat_id(platform_name)
-    return _home_target(platform_name, chat_id) if chat_id else None
+    return _home_target(platform_name, chat_id, home_provenance) if chat_id else None
 
 
 def _get_bot_chat_delivery_timeout() -> int:
@@ -641,7 +653,7 @@ def _get_bot_chat_delivery_timeout() -> int:
         return 600
 
 
-def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]:
+def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Optional[dict] = None) -> Optional[str]:
     """Hand output to the live Bot Chat owner, or use the legacy unowned CLI lane.
 
     None means completed; a queued/claimed receipt returns an explicit unverified status
@@ -667,7 +679,11 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
     )
     try:
         source_home = get_hermes_home().resolve()
-        home = (get_profile_dir(profile) if profile else source_home).resolve()
+        from pathlib import Path
+        home = (Path(deferred["home"]) if deferred is not None else
+                get_profile_dir(profile) if profile else source_home).resolve()
+        if deferred is not None and not (home / "state.db").is_file():
+            return f"bot-chat delivery target no longer exists: {home}; do not resend"
         # run_one_job/claim_fire attach the durable execution id before delivery. The
         # transient fallback supports direct helper callers, never deduping recurring
         # runs by their (potentially identical) output or previous last_run timestamp.
@@ -678,9 +694,26 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
             [str(source_home), job_id, str(run_id), str(home)],
             ensure_ascii=False, separators=(",", ":"),
         ).encode("utf-8")).hexdigest()
+        if deferred is not None:
+            key = deferred["id"]
         # Read BEFORE discovery: the previous owner may have exited after accepting.
         # No receipt state, including ambiguous/failed, authorizes a CLI replay.
         receipt = read_delivery_result(home, key)
+        if receipt is None and not deferred:
+            from cron.bot_chat_delivery import defer, read_pending
+            from tools.bot_live_delivery import find_canonical_owner
+
+            pending = read_pending(key)
+            if pending is None and find_canonical_live_owner(home) is None and find_canonical_owner(home):
+                pending = defer(key, dict(job), content, profile, home)
+            if pending is not None:
+                if pending["content"] != content or pending["home"] != str(home):
+                    raise ValueError("delivery id already belongs to a different payload")
+                status = pending["status"]
+                target = f"bot-chat:{profile_label}"
+                job.setdefault("_bot_chat_delivery_receipts", {})[target] = {
+                    "status": status, "delivery_id": key}
+                return None if status == "settled" else f"{target} {status} (receipt {key}): completion unverified; do not resend"
         if receipt is None:
             owner = find_canonical_live_owner(home)
             if owner is not None:
@@ -713,7 +746,8 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
         except Exception:
             found = False
         if not found:
-            return "bot-chat delivery failed: hermes CLI not resolvable"
+            return ("Hermes could not deliver this result to Bot Chat: the `hermes` command was not found. "
+                    "The result is saved; run `hermes cron runs` to see it, or `hermes doctor` if this keeps happening")
         argv = [sys.executable, "-m", "hermes_cli.main"]
 
     def _fail(msg: str, **log_kwargs) -> str:
@@ -721,14 +755,15 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
         return msg
 
     from agent.delegation_context import delegated_child_subprocess_env
-    env = delegated_child_subprocess_env(os.environ)
-    if profile:
-        argv += ["-p", profile]
-        # -p owns profile resolution; this scheduler's HERMES_HOME must not shadow it.
-        env.pop("HERMES_HOME", None)
-    else:
-        # Multiplex workers carry the profile in a ContextVar, not os.environ.
-        env["HERMES_HOME"] = str(source_home)
+    from tools.environments.local import strip_launch_profile_env
+    env = strip_launch_profile_env(delegated_child_subprocess_env(os.environ))
+    if not home.is_dir():
+        return _fail(f"bot-chat delivery target no longer exists: {home}; do not resend")
+    # Discovery (or deferred admission) owns the destination, not HOME or a
+    # subsequently changed active_profile. Do not resolve the name a second time.
+    env["HERMES_HOME"] = str(home)
+    if home.parent.name != "profiles":
+        argv += ["-p", "default"]
 
     query_file = None
     try:
@@ -747,9 +782,13 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
             creationflags=windows_hide_flags())
         if result.returncode != 0:
             tail = (result.stderr or result.stdout or "").strip()[-500:]
-            return _fail(
-                f"bot-chat delivery to profile '{profile_label}' failed (exit {result.returncode})"
-                + (f": {tail}" if tail else ""))
+            logger.warning(
+                "Job '%s': bot-chat delivery to profile '%s' failed (exit %s) at %s%s",
+                job_id, profile_label, result.returncode, home, f": {tail}" if tail else "")
+            return (
+                f"Hermes could not deliver this result to Bot Chat (profile '{profile_label}'). "
+                "The result is saved; run `hermes cron runs` to see it, or `hermes doctor` if this keeps happening"
+                + (f". Details: {tail[-200:]}" if tail else ""))
         logger.info("Job '%s': delivered to Bot Chat of profile '%s'", job_id, profile_label)
         return None
     except subprocess.TimeoutExpired:
@@ -759,7 +798,12 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
             "still complete; raise cron.bot_chat_delivery_timeout_seconds if "
             "this recurs)")
     except Exception as e:
-        return _fail(f"bot-chat delivery failed: {str(e) or type(e).__name__}", exc_info=True)
+        logger.warning(
+            "Job '%s': bot-chat delivery to profile '%s' failed: %s", job_id, profile_label,
+            str(e) or type(e).__name__, exc_info=True)
+        return (
+            f"Hermes could not deliver this result to Bot Chat (profile '{profile_label}'). "
+            "The result is saved; run `hermes cron runs` to see it, or `hermes doctor` if this keeps happening")
     finally:
         if query_file:
             with contextlib.suppress(OSError):
@@ -853,29 +897,28 @@ def _resolve_delivery_targets(job: dict, *, for_failure: bool = False) -> List[d
     if deliver == "local":
         return []
 
-    parts: List[str] = []
-    for raw in deliver.split(","):
-        if raw.strip():
-            parts.extend(_expand_routing_tokens(raw.strip()))
-
     seen = {}
     targets = []
-    for part in parts:
-        target = _resolve_single_delivery_target(job, part)
-        if not target:
+    for raw in deliver.split(","):
+        raw = raw.strip()
+        if not raw:
             continue
-        key = (target["platform"].lower(), str(target["chat_id"]), target.get("thread_id"))
-        kept = seen.get(key)
-        if kept is None:
-            seen[key] = target
-            targets.append(target)
-        elif (
-            # OR-merge provenance on dedup: "origin,all" in either order must keep the
-            # origin/origin_fallback tag or mirror eligibility would depend on token order.
-            _MIRROR_PROVENANCE_RANK.get(str(target.get("_resolved_from") or ""), 0)
-            > _MIRROR_PROVENANCE_RANK.get(str(kept.get("_resolved_from") or ""), 0)
-        ):
-            kept["_resolved_from"] = target.get("_resolved_from")
+        from_broadcast = raw.lower() in _ROUTING_TOKENS
+        for part in _expand_routing_tokens(raw):
+            target = _resolve_single_delivery_target(job, part, from_broadcast=from_broadcast)
+            if not target:
+                continue
+            key = (target["platform"].lower(), str(target["chat_id"]), target.get("thread_id"))
+            kept = seen.get(key)
+            if kept is None:
+                seen[key] = target
+                targets.append(target)
+            elif (
+                # Keep origin/origin_fallback/home provenance regardless of broadcast token order.
+                _MIRROR_PROVENANCE_RANK.get(str(target.get("_resolved_from") or ""), 0)
+                > _MIRROR_PROVENANCE_RANK.get(str(kept.get("_resolved_from") or ""), 0)
+            ):
+                kept["_resolved_from"] = target.get("_resolved_from")
     return targets
 
 
@@ -1122,15 +1165,28 @@ def _resolve_target_transport(
     """Resolve ``(transport, pconfig, runtime_adapter, target_adapters)`` for one target, or
     ``(None, error)`` when it cannot be served (relay-fronted with no live transport, or not
     configured/enabled)."""
-    from gateway.delivery import resolve_delivery_transport
+    from gateway.delivery import DeliveryTransport, resolve_delivery_transport
     target_adapters = adapters
+    transport = None
     if isinstance(adapters, _preflight.SharedRouteAdapters):
         # Credentialless satellite: the primary adapter serves THIS target only when an exact
         # primary route maps it to this profile; a miss fails closed below.
         # See #101113.
         shared = adapters.get(platform, target)
         target_adapters = {platform: shared} if shared is not None else {}
-    transport = resolve_delivery_transport(platform, config, target_adapters)
+        if shared is not None:
+            # The PRIMARY's route authorized this exact native adapter. The satellite's own
+            # ``platforms.<p>`` block describes a connector it never runs (no credential), so
+            # neither its absence nor ``enabled: false`` may veto the shared transport; only its
+            # non-credential settings (continuable surface, reply mode) are kept (#89302, #103701).
+            from dataclasses import replace
+            from gateway.config import PlatformConfig
+            own = config.platforms.get(platform)
+            transport = DeliveryTransport(
+                shared, replace(own, enabled=True) if own is not None else PlatformConfig(enabled=True),
+                platform)
+    if transport is None:
+        transport = resolve_delivery_transport(platform, config, target_adapters)
     if transport is not None:
         pconfig = transport.config
         runtime_adapter = transport.adapter
@@ -1148,9 +1204,11 @@ def _resolve_target_transport(
         pconfig = config.platforms.get(platform)
         runtime_adapter = None
 
-    if transport is not None and transport.is_relay:
-        # Relay transport carries the RELAY adapter's config (enablement already checked). The
-        # logical platform is deliberately NOT natively enabled, so the native gate must not apply.
+    if transport is not None and (transport.is_relay or pconfig is None):
+        # Relay transport carries the RELAY adapter's config (enablement already checked): the
+        # logical platform is deliberately NOT natively enabled. A live NATIVE adapter with no
+        # ``platforms.<p>`` block is the same shape — the owning process already authorized the
+        # adapter; "no config" is not "disabled" (#89302).
         if pconfig is None:
             from gateway.config import PlatformConfig
             pconfig = PlatformConfig(enabled=True)
@@ -1542,7 +1600,7 @@ def _prepare_target_delivery(
             "Job '%s': delivering to %s:%s thread_id=%s",
             job["id"], platform_name, chat_id, thread_id)
 
-    # Mirror: origin, home FALLBACK for origin-less deliver=origin, or attach_to_session opt-in.
+    # Mirror: origin, origin-less home fallback, user-written home, or explicit-target opt-in.
     origin_target = _target_matches_origin(origin, platform_name, chat_id, thread_id)
     mirror_this_target = mirror_enabled and _target_mirror_eligible(
         job, target, global_mirror=mirror_enabled, origin_match=origin_target)

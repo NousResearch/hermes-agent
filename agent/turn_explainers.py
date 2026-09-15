@@ -17,17 +17,19 @@ from agent.tool_result_classification import (
 
 _NO_REPLY = "⚠️ No reply: "
 
+# One text for "the model produced nothing after retries" on every surface (CLI explainer,
+# gateway ``(empty)`` rewrite, desktop); the model name is filled in by the explainer.
+EMPTY_RESPONSE_EXPLANATION = (
+    "{model} didn't produce a reply this time, even after retries. "
+    "Send `continue` to try again, or switch models with /model."
+)
+
 # Exact ``turn_exit_reason`` → explanation body (prefixed with ``_NO_REPLY``).
 _EXIT_REASON_EXPLANATIONS: Dict[str, str] = {
-    "empty_response_exhausted": (
-        "the model returned empty content after retries and any "
-        "fallback providers. Try `continue`, switch model/provider, "
-        "or inspect the tool output above."
-    ),
+    "empty_response_exhausted": EMPTY_RESPONSE_EXPLANATION,
     "all_retries_exhausted_no_response": (
-        "all API retries were exhausted before a response was "
-        "produced (provider errors / rate limits). Try `continue` "
-        "or switch provider."
+        "the model provider didn't answer after all retries. "
+        "Send /retry, or switch models with /model."
     ),
     "partial_stream_recovery": (
         "streaming stopped early and only a partial response was "
@@ -40,6 +42,16 @@ _EXIT_REASON_EXPLANATIONS: Dict[str, str] = {
     "interrupted_during_api_call": (
         "the request was interrupted mid-call before a reply was "
         "received. Send `continue` to retry."
+    ),
+    "redirect_restart_limit_exceeded": (
+        "the request was cancelled by a new correction on every attempt, "
+        "so the turn stopped instead of retrying forever. Your last "
+        "correction is queued as the next message."
+    ),
+    "rebuilt_restart_limit_exceeded": (
+        "every provider in the fallback chain kept failing over, so the "
+        "turn stopped instead of retrying forever. Send `continue` or "
+        "switch provider."
     ),
     "budget_exhausted": (
         "the per-turn iteration/cost budget was exhausted before a "
@@ -100,24 +112,30 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
         "database). Your message should already be saved — "
         "please send it again in a moment."
     ),
+    # The forensic runbook for both (WAL generations, manifest.json, sidecars) lives in the
+    # logger.error at hermes_state.py::_raise_if_db_replaced — never in the chat reply.
     "replaced": (
-        "the turn was stopped because the state database file "
-        "was replaced underneath this process. Do not run "
-        "`hermes doctor --fix` or in-place FTS repair — stop "
-        "the process, restore the intended state.db, then "
-        "restart. Unwritten messages were diverted to "
-        "sessions/<session_id>.jsonl and, on the gateway, "
-        "pending_messages/pending-*.json."
+        "the session database file was replaced while Hermes was running, so this "
+        "message was not saved (a copy is kept in {home}/sessions/). Stop Hermes "
+        "(`hermes gateway stop`), run `hermes doctor` — not `hermes doctor --fix`, which "
+        "would repair the wrong file in place — then start it again and send your message "
+        "once more. Advanced recovery steps are in the log."
+    ),
+    "deleted_wal": (
+        "the session database was changed or replaced while Hermes was running, so this "
+        "message was not saved (a copy is kept in {home}/sessions/). Stop Hermes "
+        "(`hermes gateway stop`), run `hermes doctor`, then start it again and send your "
+        "message once more. Advanced recovery steps are in the log."
     ),
     "corrupt": (
         "the turn was stopped because the state database "
         "reported structural corruption (the transcript would "
         "have been lost on restart). Freeing disk space will "
         "not help. Recovery options:\n"
-        "1. Run `hermes doctor --fix`\n"
+        "1. Run `hermes {profile_arg}doctor --fix`\n"
         "2. Stop the gateway, then recover with:\n"
-        "   hermes sessions recover --source {db_path} --inspect-only\n"
-        "   (if it reports recoverable) hermes sessions recover "
+        "   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n"
+        "   (if it reports recoverable) hermes {profile_arg}sessions recover "
         "--source {db_path} --output recovered-state.db\n"
         "   — recovery snapshots the damaged file first; do NOT "
         "run `sqlite3 ... \".recover\"` against the live "
@@ -126,19 +144,27 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
         "3. Restore from a backup in {backups_dir}/\n"
         "Then send your message again."
     ),
+    # SQLite scoped the corruption to the FTS index and the derived indexes could not be
+    # detached, so this write did not land; the message store itself is intact (#97794).
+    "fts_index": (
+        "the turn was stopped because the session search index (FTS5) "
+        "is corrupt and could not be detached, so this message was not "
+        "saved. The message store itself is not damaged: do not run "
+        "recovery tools or restore a backup. Run `hermes {profile_arg}doctor --fix` "
+        "(or restart Hermes, which repairs the index on open), then "
+        "send your message again."
+    ),
     "disk": (
-        "the turn was stopped because session storage could not "
-        "be written (the transcript would have been lost on "
-        "restart). This is often a full disk — free some space "
-        "(or fix state.db permissions), then send your message "
-        "again."
+        "Hermes couldn't save this conversation to disk, so it stopped rather than lose "
+        "your messages. The disk is probably full: free some space (or fix the permissions "
+        "on {home}/state.db), then send your message again."
     ),
 }
 _PERSISTENCE_DEFAULT_EXPLANATION = (
-    "the turn was stopped because session storage could not be "
-    "written (the transcript would have been lost on restart). "
-    "Check the state database health (`hermes doctor`), then "
-    "send your message again."
+    "Hermes couldn't save this conversation, so it stopped rather than lose your messages. "
+    "Possible causes: the drive is out of room, or another Hermes process is holding the "
+    "database. Close other Hermes windows, run `hermes doctor` to check storage, then send "
+    "your message again."
 )
 
 
@@ -271,7 +297,7 @@ class TurnExplainersMixin:
 
     @staticmethod
     def _format_turn_completion_explanation(
-        turn_exit_reason: str, persistence_cause: Optional[str] = None
+        turn_exit_reason: str, persistence_cause: Optional[str] = None, db_path=None, model: str = "",
     ) -> str:
         """User-facing explanation for an abnormal turn ending, or "" for normal / unknown reasons.
 
@@ -289,16 +315,23 @@ class TurnExplainersMixin:
                 if reason.startswith(prefix):
                     body = text
                     break
+        if body is not None and "{model}" in body:
+            body = body.format(model=model or "The model")
         if body is None and reason == "session_persistence_failed":
+            from hermes_constants import display_hermes_home
+
             body = _PERSISTENCE_CAUSE_EXPLANATIONS.get(
                 persistence_cause or "unknown", _PERSISTENCE_DEFAULT_EXPLANATION
-            )
-            if persistence_cause == "corrupt":
-                # Copy-pasteable, so name the real store (profiles / HERMES_HOME do not live under ~/.hermes).
-                from hermes_constants import get_default_hermes_root
+            ).replace("{home}", display_hermes_home())
+            if persistence_cause in ("corrupt", "fts_index"):
+                # Copy-pasteable, so name the store that actually failed and pin the profile:
+                # a multi-profile backend (Desktop serve) hosts sessions whose state.db is NOT
+                # the process default, and a bare `hermes` follows active_profile (#105887).
+                from hermes_constants import get_default_hermes_root, profile_cli_selector
                 from hermes_state import _default_db_path
 
-                body = body.replace("{db_path}", str(_default_db_path()))
+                body = body.replace("{profile_arg}", profile_cli_selector())
+                body = body.replace("{db_path}", str(db_path or _default_db_path()))
                 body = body.replace(
                     "{backups_dir}", str(get_default_hermes_root() / "backups")
                 )

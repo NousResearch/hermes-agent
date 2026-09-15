@@ -533,6 +533,7 @@ def _event_field(event: Any, name: str, default: Any = None) -> Any:
 _CODEX_PROGRESS_DELTA_TYPES = frozenset({
     "response.output_text.delta", "response.reasoning_summary_text.delta", "response.text.delta",
     "response.audio.delta", "response.function_call_arguments.delta", "response.reasoning_text.delta",
+    "response.refusal.delta",
 })
 
 
@@ -656,6 +657,15 @@ class _CodexResponseAssembler:
                 self._safe(self.on_first_delta, "on_first_delta")
             self._safe(self.on_text_delta, "on_text_delta", delta_text)
 
+    def _on_refusal_delta(self, event: Any, event_type: str) -> None:
+        # ``response.refusal.delta``: the model declined and streams its explanation on the refusal
+        # channel instead of output_text. It is answer text — a refusal-only stream must not end
+        # with zero content and "did not emit a terminal response". The done item's ``refusal``
+        # part is read by the normalizer; the deltas cover backends that omit the done item.
+        refusal_text = _event_field(event, "delta", "")
+        if isinstance(refusal_text, str) and refusal_text:
+            self.text_deltas.append(refusal_text)
+
     def _on_function_call(self, event: Any, event_type: str) -> None:
         self.has_tool_calls = True
         pending = self.pending_function_calls.get(str(_event_field(event, "item_id", "")))
@@ -723,6 +733,7 @@ class _CodexResponseAssembler:
         "error": lambda self, event, event_type: _raise_stream_error(event),
         "response.output_item.added": _on_item_added, "response.output_item.done": _on_item_done,
         "response.completed": _on_terminal, "response.incomplete": _on_terminal, "response.failed": _on_terminal,
+        "response.refusal.delta": _on_refusal_delta,
     }
     _FUZZY_HANDLERS = (
         (lambda t: "output_text.delta" in t, _on_text_delta), (lambda t: "function_call" in t, _on_function_call),
@@ -869,7 +880,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     import httpx as _httpx
     from openai import APIConnectionError as _APIConnectionError
     from agent import relay_llm
-    transport_errors = (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError)
+    transport_errors = (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ReadError, _httpx.ConnectError, ConnectionError)
     active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
     max_stream_retries, model = 1, api_kwargs.get("model")
     # Accumulate streamed text so callers / compat shims can read it.
@@ -918,6 +929,15 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         return bool(agent._interrupt_requested)
 
     def _open_codex_stream(next_api_kwargs: dict[str, Any]):
+        from hermes_cli.providers import is_actual_route
+
+        if is_actual_route(
+            getattr(agent, "provider", ""),
+            str(getattr(active_client, "base_url", "") or ""),
+        ):
+            raise ValueError(
+                "Actual requests require Chat Completions; refusing to call /responses."
+            )
         stream_kwargs = _sanitize_consumer_codex_request(agent, next_api_kwargs)
         stream_kwargs["stream"] = True
         return active_client.responses.create(**_bypass_sdk_request_transform(stream_kwargs))

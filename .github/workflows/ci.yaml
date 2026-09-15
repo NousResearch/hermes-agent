@@ -250,7 +250,11 @@ jobs:
       - profile-artifact-check
       - supply-chain
       - review-labels
-      - osv-scanner
+      # osv-scanner is deliberately NOT a dependency: osv-scanner.yml is
+      # detection-only (fail-on-vuln: false, findings go to the Security tab)
+      # and its SARIF upload trips GitHub's per-installation API rate limit
+      # during merge trains, which turned an advisory scan into a merge
+      # blocker for whole batches of unrelated PRs.
       # The image build runs in its own workflow (docker.yml) and reports
       # its own check. It was never required here, because it is too slow
       # to block a merge. A separate run also stops it from holding this

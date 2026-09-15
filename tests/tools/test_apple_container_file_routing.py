@@ -1,5 +1,7 @@
 """Apple Container routing coverage for file operations."""
 
+import pytest
+
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -93,3 +95,18 @@ def test_file_factory_carries_extra_args():
         "--network", "none",
     ]
     assert captured["container_config"]["docker_extra_args"] == []
+
+@pytest.mark.parametrize('ambient,scoped', [('local', 'apple_container'), ('apple_container', 'local')])
+def test_cache_roundtrip_uses_scoped_backend(monkeypatch, tmp_path, ambient, scoped):
+    from tools.credential_files import from_agent_visible_cache_path, to_agent_visible_cache_path
+    from tools.terminal_scope import set_terminal_scope, reset_terminal_scope
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setenv('TERMINAL_ENV', ambient)
+    host = str(tmp_path / 'cache' / 'images' / 'fixture.png')
+    token = set_terminal_scope({'TERMINAL_ENV': scoped})
+    try:
+        visible = to_agent_visible_cache_path(host)
+        assert (visible != host) is (scoped == 'apple_container')
+        assert from_agent_visible_cache_path(visible) == host
+    finally:
+        reset_terminal_scope(token)

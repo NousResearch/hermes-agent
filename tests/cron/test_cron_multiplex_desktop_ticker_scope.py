@@ -196,3 +196,42 @@ def test_a_routed_profile_fire_runs_under_multiplex_semantics_for_exactly_its_sc
 
     assert routed_profile_fire() is False
     assert dict(os.environ) == environ_before
+
+
+@pytest.mark.parametrize(
+    ("routed_env_line", "expected"),
+    [
+        ("", "managed-key"),  # managed-only credential: resolvable, not absent
+        ("ORG_API_KEY=user-key\n", "managed-key"),  # managed-vs-user collision: policy wins
+    ],
+    ids=["managed-only", "managed-beats-user"],
+)
+def test_routed_fire_scope_carries_managed_env_authority(tmp_path, monkeypatch, routed_env_line, expected):
+    """Under multiplex semantics get_secret never falls back to os.environ, so the routed fire's
+    scope itself must carry the administrator-managed .env with the precedence _apply_managed_env
+    gives it in the launch process: a managed-only key is present and a managed value beats the
+    routed profile's own (#111187 review)."""
+    import cron.scheduler as scheduler
+    from agent import secret_scope
+    from cron.scheduler_provider import _profile_cron_scope
+    from hermes_cli import managed_scope
+
+    launch, routed = tmp_path / "launch", tmp_path / "launch" / "profiles" / "ops"
+    managed = tmp_path / "managed"
+    for home in (launch, routed, managed):
+        (home / "cron").mkdir(parents=True)
+    (routed / ".env").write_text(routed_env_line, encoding="utf-8")
+    (managed / ".env").write_text("ORG_API_KEY=managed-key\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    monkeypatch.setenv("ORG_API_KEY", "managed-key")  # what _apply_managed_env left in the launch env
+    managed_scope.invalidate_managed_cache()
+    secret_scope.set_multiplex_active(False)
+
+    with _profile_cron_scope(routed):
+        tokens = scheduler._install_fire_secret_scope()
+        try:
+            assert secret_scope.is_multiplex_active() is True
+            assert secret_scope.get_secret("ORG_API_KEY") == expected
+        finally:
+            scheduler._reset_fire_secret_scope(tokens)

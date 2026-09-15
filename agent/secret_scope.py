@@ -248,6 +248,16 @@ def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
     except Exception:
         external_secrets = {}
     secrets.update((k, v) for k, v in external_secrets.items() if not _is_global_env(k))
+    # Administrator-managed ``.env`` LAST, with override: the launch process applies it that way
+    # (``env_loader._apply_managed_env``) so policy beats a user's own value. Under multiplex
+    # semantics ``get_secret`` never reads ``os.environ`` on a scope miss, so a scope built from
+    # the profile files alone would drop a managed-only credential and let the user's value win a
+    # managed-vs-user collision (#111187 review). Every multiplex-authoritative scope — gateway
+    # turn, routed cron fire, external worker — is built here, so managed authority is composed
+    # once, not restored by each consumer.
+    from hermes_cli.managed_scope import load_managed_env  # fail-open: {} when no managed scope
+
+    secrets.update((k, v) for k, v in load_managed_env().items() if not _is_global_env(k))
     return secrets
 
 

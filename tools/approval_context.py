@@ -154,6 +154,21 @@ def _is_single_query_approval_context() -> bool:
     return is_truthy_value(_session_env("HERMES_SINGLE_QUERY_SESSION"))
 
 
+def _is_kanban_approval_context() -> bool:
+    """True when this approval decision is running inside a kanban worker.
+
+    Dispatcher spawn sets ``HERMES_KANBAN_TASK=<task id>`` and
+    ``HERMES_SESSION_SOURCE=kanban`` (and also ``-q`` / ``HERMES_SINGLE_QUERY_SESSION``).
+    Task ids are opaque strings (e.g. ``t_abcd``), not boolean flags — any
+    non-blank value counts as present, matching ``kanban_tools`` / dispatcher.
+    Kanban workers are a distinct trust object from ad-hoc ``hermes chat -q``.
+    """
+    task = _session_env("HERMES_KANBAN_TASK")
+    if is_truthy_value(task) or bool(task.strip()):
+        return True
+    return _session_env("HERMES_SESSION_SOURCE") == "kanban"
+
+
 def _is_gateway_approval_context() -> bool:
     """True inside a gateway/API session that can answer an approval.
 
@@ -282,6 +297,16 @@ def _get_unattended_approval_mode() -> str:
     deny — an unattended session never silently runs a flagged action unless the
     operator explicitly trusts it."""
     return _binary_approval_mode("unattended_mode")
+
+
+def _get_kanban_approval_mode() -> str:
+    """Approval mode for kanban dispatcher workers; default deny.
+
+    Distinct from ``single_query_mode``: real dispatch sets both ``-q`` and
+    kanban markers, and the kanban context must win so a profile that grants
+    ``code_execution`` can opt in via ``approvals.kanban_mode: approve``.
+    """
+    return _binary_approval_mode("kanban_mode")
 
 
 def _tirith_fail_open() -> bool:

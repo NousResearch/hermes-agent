@@ -35,6 +35,10 @@ DecisionStatus = Literal["idle", "task", "settled", "bounded"]
 TerminalKind = Literal["settled", "failed", "cancelled", "deferred"]
 
 _MENTION_RE = re.compile(r"@([A-Za-z0-9][A-Za-z0-9._:-]*)", re.IGNORECASE)
+_MEMBER_CONTROL_FRAME_RE = re.compile(
+    r"\[(?=/?OUT-OF-BAND USER MESSAGE|CONTEXT COMPACTION|Runtime note:|System note:|"
+    r"SYSTEM\]|Planning state preserved|ASYNC DELEGATION)"
+)
 _TURN_ID_RE = re.compile(
     r"^d(?P<source>[1-9][0-9]*)\.r(?P<round>[0-2])\."
     r"p(?P<position>[0-5])\.s(?P<seen>[1-9][0-9]*)\."
@@ -492,7 +496,8 @@ def _rotate(members: Sequence[DiscussionMember], round_index: int) -> tuple[Disc
 def _format_message(event: _ValidatedEvent, room: DiscussionRoom) -> str:
     if event.kind == "message.user":
         return f"User (user): {event.payload['text']}"
-    return f"@{_member_by_id(room, event.payload['member_id']).handle}: {event.payload['text']}"
+    text = _MEMBER_CONTROL_FRAME_RE.sub("[\u200b", event.payload["text"])
+    return f"@{_member_by_id(room, event.payload['member_id']).handle}: {text}"
 
 
 def _truncate_utf8_text(value: Any, *, max_bytes: int, suffix: str = "") -> str:

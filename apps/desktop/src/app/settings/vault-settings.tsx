@@ -188,6 +188,7 @@ export function VaultSettings() {
   const { data: sourcesData } = useQuery({
     enabled: gatewayState === 'open',
     queryKey: VAULT_SOURCES_QUERY_KEY,
+    staleTime: 0,
     queryFn: async () => {
       const result = await requestGateway<{ sources: VaultSource[] }>('vault.sources', {})
 

@@ -39,6 +39,7 @@ class _Runner(GatewayNotificationsMixin):
         self._completion_deliveries_inflight = set()
         self._completion_deliveries_delivered = {}
         self._completion_delivery_retention = 64
+        self._delegation_defer_streaks = {}
 
     def _get_cached_session_source(self, session_key):
         return None
@@ -214,3 +215,29 @@ def test_lease_probe_fails_open_on_errors():
         return await runner._completion_delivery_ready(evt)
 
     assert asyncio.run(_ready()) is True  # fail-open: no lease evidence → proceed
+
+
+def test_defer_streak_suppresses_claim_then_decays(runner):
+    """c1: repeated claim→defer cycles stop claiming; decay resumes delivery."""
+    import time as _time
+
+    runner._delegation_defer_streaks = {}
+    runner._DELEGATION_DEFER_CLAIM_FREE_STREAK = 3
+    runner._DELEGATION_DEFER_DECAY_S = 0.05
+
+    for _ in range(3):
+        runner._record_delegation_defer("d1")
+    assert runner._delegation_defer_suppresses_claim("d1") is True
+    assert runner._delegation_defer_suppresses_claim("d2") is False  # unknown row: never suppressed
+
+    runner._clear_delegation_defer_streak("d1")
+    assert runner._delegation_defer_suppresses_claim("d1") is False
+
+    # Decay: fresh streak, then wait past DECAY_S without new defers.
+    for _ in range(3):
+        runner._record_delegation_defer("d3")
+    assert runner._delegation_defer_suppresses_claim("d3") is True
+    _time.sleep(0.08)
+    assert runner._delegation_defer_suppresses_claim("d3") is False, (
+        "suppression must decay so a cleared lease resumes delivery on the next tick"
+    )

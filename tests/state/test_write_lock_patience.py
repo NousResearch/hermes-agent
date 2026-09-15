@@ -201,3 +201,23 @@ class TestSlowTxnHoldWarn:
             "held the lock" in r.message and "_slow_set_meta" in r.message
             for r in caplog.records
         )
+
+
+class TestRollbackHoldWarn:
+    def test_long_rollback_path_is_named_in_warning(self, db, monkeypatch, caplog):
+        """d1: a rollback after a long fn must be measured too, not only the commit path."""
+        import time as _time
+
+        monkeypatch.setattr(SessionDB, "_SLOW_TXN_HOLD_WARN_S", 0.05)
+
+        def _slow_then_fail(conn):
+            _time.sleep(0.15)
+            raise sqlite3.OperationalError("simulated mid-txn failure")
+
+        import logging as _logging
+        with caplog.at_level(_logging.WARNING, logger="hermes_state"):
+            with pytest.raises(sqlite3.OperationalError, match="simulated"):
+                db._execute_write(_slow_then_fail)
+        assert any(
+            "before ROLLBACK" in r.message for r in caplog.records
+        ), "rollback-path holds must be measured and named"

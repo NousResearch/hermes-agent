@@ -847,10 +847,22 @@ class SessionDB(
                         result = fn(self._conn)
                         self._conn.commit()
                     except BaseException:
+                        # d1 (skeptic deleg_01d53160): a rollback releases the lock too, and a
+                        # rollback storm (failures after a long fn) starves siblings exactly
+                        # like a slow commit — measure BOTH paths, not only the success one.
+                        _txn_hold_s = time.monotonic() - _txn_t0
                         try:
                             self._conn.rollback()
                         except Exception:
                             pass
+                        if _txn_hold_s > self._SLOW_TXN_HOLD_WARN_S:
+                            logger.warning(
+                                "state.db write txn held the lock %.1fs before ROLLBACK "
+                                "(>%ss budget) via %s — siblings' lease heartbeats are "
+                                "starved by holds like this",
+                                _txn_hold_s, self._SLOW_TXN_HOLD_WARN_S,
+                                getattr(fn, "__qualname__", getattr(fn, "__name__", "<fn>")),
+                            )
                         raise
                     _txn_hold_s = time.monotonic() - _txn_t0
                 if _txn_hold_s > self._SLOW_TXN_HOLD_WARN_S:

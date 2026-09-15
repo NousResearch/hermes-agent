@@ -1041,6 +1041,55 @@ class GatewayNotificationsMixin:
             "active turn lease" in str(exc)
         )
 
+    def _delegation_defer_streak(self, delegation_id: str) -> int:
+        """Consecutive claim→defer settlements for *delegation_id* this gateway lifecycle.
+
+        Skeptic c1 (deleg_01d53160): fail-open probes make claim+defer writes possible every
+        watcher tick under a long turn, with the attempt cap refunded so nothing bounds it.
+        The streak lets the defer settlement in _deliver_completion_notification_scoped skip
+        the claim entirely once the streak exceeds _DELEGATION_DEFER_CLAIM_FREE_STREAK —
+        identical to the probe-active fast path (requeue without spending ledger writes).
+        """
+        entry = self._delegation_defer_streaks.get(delegation_id)
+        if entry is None:
+            return 0
+        streak, _last_defer_at = entry
+        return streak
+
+    def _delegation_defer_suppresses_claim(self, delegation_id: str) -> bool:
+        """True when recent defers say claiming again NOW would just be another fenced spin.
+
+        Time-decayed: after _DELEGATION_DEFER_DECAY_S without a new defer the suppression
+        lifts, so a cleared lease resumes delivery within one watcher tick — the streak can
+        never wedge the row claim-free forever (the streak itself only clears on a real
+        settlement, which a suppressed claim can never reach).
+        """
+        entry = self._delegation_defer_streaks.get(delegation_id)
+        if entry is None:
+            return False
+        streak, last_defer_at = entry
+        return (
+            streak >= self._DELEGATION_DEFER_CLAIM_FREE_STREAK
+            and (time.monotonic() - last_defer_at) < self._DELEGATION_DEFER_DECAY_S
+        )
+
+    def _record_delegation_defer(self, delegation_id: str) -> None:
+        _streak, last_defer_at = self._delegation_defer_streaks.get(delegation_id, (0, 0.0))
+        self._delegation_defer_streaks[delegation_id] = (
+            _streak + 1, time.monotonic()
+        )
+
+    def _clear_delegation_defer_streak(self, delegation_id: str) -> None:
+        self._delegation_defer_streaks.pop(delegation_id, None)
+
+    # After this many consecutive claim→defer cycles for one delegation, stop claiming while
+    # defers keep arriving. 8 ≈ the old hard cap; reached only when BOTH the read-only probe
+    # fails open AND the persist fence fires. Suppression decays so a cleared lease resumes
+    # delivery on the very next watcher tick instead of wedging the row claim-free forever.
+    _DELEGATION_DEFER_CLAIM_FREE_STREAK = 8
+    _DELEGATION_DEFER_DECAY_S = 60.0
+
+
     def _resolve_injection_adapter(self, platform_name: str, source=None):
         """Adapter for a synthetic-event platform: alias-aware transport resolver first (one
         Platform.RELAY adapter fronts N logical platforms; native wins), literal ``p.value`` scan as
@@ -1308,6 +1357,14 @@ class GatewayNotificationsMixin:
         if evt_type == "async_delegation" and not evt.get("task_failure_notice"):
             claim.delegation_id = str(evt.get("delegation_id") or "")
             if claim.delegation_id:
+                # c1 (deleg_01d53160): a long recent defer streak means the delivery keeps
+                # landing behind a live/fenced lease. Skip the claim — same claim-free
+                # requeue as the probe-active fast path — so a fail-open probe cannot turn
+                # every watcher tick into claim+defer ledger writes. Decays after
+                # _DELEGATION_DEFER_DECAY_S so a cleared lease resumes on the next tick.
+                if self._delegation_defer_suppresses_claim(claim.delegation_id):
+                    claim.proceed, claim.early_result = False, False
+                    return claim
                 try:
                     from tools.async_delegation import claim_completion_delivery
                     claim.claim_id = f"gateway:{id(self)}:{__import__('uuid').uuid4().hex}"
@@ -1421,6 +1478,18 @@ class GatewayNotificationsMixin:
             for sibling, claim_id in sibling_claims:
                 if claim_id:
                     self._settle_durable_claim(operation, sibling["delegation_id"], claim_id)
+            # c1 streak bookkeeping: defer counts up (fail-open spin guard), any real
+            # settlement (complete/release) clears it — the delivery made progress.
+            if claim.delegation_id:
+                if operation == "defer":
+                    self._record_delegation_defer(claim.delegation_id)
+                else:
+                    self._clear_delegation_defer_streak(claim.delegation_id)
+            for sibling, _claim_id in sibling_claims:
+                if operation == "defer":
+                    self._record_delegation_defer(sibling["delegation_id"])
+                else:
+                    self._clear_delegation_defer_streak(sibling["delegation_id"])
             if accepted and sibling_claims:
                 self._record_coalesced_completion_siblings([event for event, _claim_id in sibling_claims])
 

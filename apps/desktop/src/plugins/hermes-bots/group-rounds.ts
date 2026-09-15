@@ -1,9 +1,11 @@
-import { botFriendlyNames, botHandle, mentionNameForms } from './data'
 /**
  * Room-level coordination: who speaks, in what order, for how long — the
  * @mention parse, the round-robin driver, the #93129 member holds, the stop
  * path, and the user send that starts it all.
  */
+import { host } from '@hermes/plugin-sdk'
+
+import { botFriendlyNames, botHandle, mentionNameForms } from './data'
 import { recordGroupActivity } from './group-activity'
 import {
   $groupChats,
@@ -28,6 +30,7 @@ import {
 import { runGroupContinuationMembers, runGroupRoundMember } from './group-round-members'
 import { rejectGroupSlashCommand } from './group-slash'
 import { GROUP_TURN_HARD_CAP_MS, harvestStrandedGroupReply } from './group-turns'
+import { botsText } from './i18n'
 import { requestForBot } from './routing'
 import type { Attachment, GroupMember, GroupMessage } from './types'
 
@@ -685,7 +688,20 @@ export function sendToGroupChat(
 
   const attached = Array.isArray(images) ? images.filter((img: Attachment) => img && img.data) : []
 
-  if ((!trimmed && !attached.length) || !members.length) {
+  if (!trimmed && !attached.length) {
+    return null
+  }
+
+  // An empty member seat (roster hydration race, meta clobber, legacy room
+  // record without member descriptors) used to swallow the send: a fully
+  // typed message vanished with no thread and no error. Surface it — the
+  // caller keeps the draft, so nothing is lost.
+  if (!members.length) {
+    host.notify({
+      kind: 'error',
+      message: botsText().group.noMembersToSend(group)
+    })
+
     return null
   }
 

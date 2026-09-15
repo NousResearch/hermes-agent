@@ -191,6 +191,7 @@ type BotsMessages = {
     heldMembersStatus: (members: string) => string
     holdReleaseHint: string
     needsYourInput: string
+    noMembersToSend: (group: string) => string
     pictureGenerationFailed: string
     nameTaken: (name: string) => string
     memberCount: (count: number) => string
@@ -424,6 +425,7 @@ const en: BotsMessages = {
     heldMembersStatus: members => `Paused: ${members}`,
     holdReleaseHint: 'Mention a paused bot or send @all resume to release them.',
     needsYourInput: 'A bot in this group chat needs your input',
+    noMembersToSend: group => `${group} has no members to send to — add a bot, or reopen the room if members are still loading.`,
     pictureGenerationFailed: 'Group picture generation failed',
     nameTaken: name => `A group named “${name}” already exists.`,
     memberCount: count => `${count} bots`,
@@ -650,6 +652,7 @@ const ja: BotsMessages = {
     heldMembersStatus: members => `一時停止中: ${members}`,
     holdReleaseHint: '一時停止中のボットにメンションするか、@all resume を送信して再開します。',
     needsYourInput: 'このグループチャットのボットが入力を待っています',
+    noMembersToSend: group => `${group} に送信先のメンバーがいません。ボットを追加するか、メンバーの読み込み中であればルームを開き直してください。`,
     pictureGenerationFailed: 'グループ画像の生成に失敗しました',
     nameTaken: name => `「${name}」という名前のグループはすでに存在します。`,
     memberCount: count => `ボット${count}体`,
@@ -871,6 +874,7 @@ const zh: BotsMessages = {
     heldMembersStatus: members => `已暂停：${members}`,
     holdReleaseHint: '提及已暂停的机器人，或发送 @all resume 以恢复它们。',
     needsYourInput: '此群聊中有机器人需要你输入',
+    noMembersToSend: group => `${group} 没有可发送的成员——请添加机器人，如果成员仍在加载，请重新打开该群聊。`,
     pictureGenerationFailed: '群组图片生成失败',
     nameTaken: name => `已存在名为“${name}”的群聊。`,
     memberCount: count => `${count} 个机器人`,
@@ -1092,6 +1096,7 @@ const zhHant: BotsMessages = {
     heldMembersStatus: members => `已暫停：${members}`,
     holdReleaseHint: '提及已暫停的機器人，或傳送 @all resume 以恢復它們。',
     needsYourInput: '此群組聊天中有機器人需要您的輸入',
+    noMembersToSend: group => `${group} 沒有可傳送的成員——請新增機器人，若成員仍在載入中，請重新開啟該群組聊天。`,
     pictureGenerationFailed: '群組圖片產生失敗',
     nameTaken: name => `已存在名為「${name}」的群組聊天。`,
     memberCount: count => `${count} 個機器人`,

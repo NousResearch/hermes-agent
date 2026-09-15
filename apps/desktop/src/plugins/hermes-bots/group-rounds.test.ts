@@ -514,6 +514,19 @@ describe('threads', () => {
     expect(alphaMessages.some(message => message.content.includes('BETA_TOPIC'))).toBe(false)
     expect(betaMessages.some(message => message.content.includes('ALPHA_TOPIC'))).toBe(false)
   })
+
+  it('surfaces an empty member seat instead of swallowing the send; empty text stays silent', async () => {
+    const room = await loadRoom()
+    const notify = room.gateway.host.notify as ReturnType<typeof vi.fn>
+
+    expect(room.rounds.sendToGroupChat('Seating', [], 'anyone there?')).toBeNull()
+    expect(log(room, 'Seating')).toHaveLength(0)
+    expect(notify).toHaveBeenCalledTimes(1)
+    expect(notify.mock.calls[0][0]).toMatchObject({ kind: 'error', message: expect.stringContaining('Seating') })
+
+    expect(room.rounds.sendToGroupChat('Seating', MEMBERS, '   ')).toBeNull()
+    expect(notify).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('turn prompt', () => {

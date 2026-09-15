@@ -1976,6 +1976,7 @@ export const ar = defineLocale({
       back: 'كل المشاريع'
     },
     newSessionIn: label => `جلسة جديدة في ${label}`,
+    landingDetached: 'بدون مشروع',
     showMoreIn: (count, label) => `إظهار ${count} أخرى في ${label}`,
     loading: 'جار التحميل...',
     loadMore: 'تحميل المزيد',

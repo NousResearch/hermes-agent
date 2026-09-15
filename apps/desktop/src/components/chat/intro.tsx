@@ -1,6 +1,11 @@
+import { useStore } from '@nanostores/react'
 import { useState } from 'react'
 
+import { useI18n } from '@/i18n'
 import { capitalize, normalize } from '@/lib/text'
+import { openCommandPalette } from '@/store/command-palette'
+import { $projectScope, $projectTree, goToProject, newSessionLanding } from '@/store/projects'
+import { $newChatWorkspaceTarget } from '@/store/session'
 
 import introCopyJsonl from './intro-copy.jsonl?raw'
 import { Wordmark } from './wordmark'
@@ -158,8 +163,20 @@ function resolveCopy(personality?: string, seed?: number): IntroCopy {
 }
 
 export function Intro({ personality, seed }: IntroProps) {
+  const { t } = useI18n()
   const [mountSeed] = useState(() => Math.floor(Math.random() * 100000))
   const copy = resolveCopy(personality, mountSeed + (seed ?? 0))
+  useStore($projectScope)
+  useStore($projectTree)
+  useStore($newChatWorkspaceTarget)
+  const landing = newSessionLanding()
+
+  const label =
+    landing.kind === 'project' && landing.name
+      ? t.sidebar.newSessionIn(landing.name)
+      : landing.kind === 'home'
+        ? t.sidebar.newSessionIn(t.sidebar.projects.home)
+        : t.sidebar.landingDetached
 
   return (
     <div
@@ -170,6 +187,22 @@ export function Intro({ personality, seed }: IntroProps) {
         <Wordmark className="mb-1" text={WORDMARK} />
 
         <p className="m-0 text-center leading-normal tracking-tight">{copy.body}</p>
+        <button
+          className="pointer-events-auto mt-3 text-sm text-foreground underline-offset-4 hover:underline"
+          data-slot="aui_intro-landing"
+          onClick={() => {
+            if (landing.kind === 'project' && landing.id) {
+              goToProject(landing.id)
+
+              return
+            }
+
+            openCommandPalette()
+          }}
+          type="button"
+        >
+          {label}
+        </button>
       </div>
     </div>
   )

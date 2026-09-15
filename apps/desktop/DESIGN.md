@@ -62,6 +62,9 @@ one-off at the call site.
   per entry point.
 - **Projects own workspace cwd.** Use Sidebar → Projects for local folders and
   worktrees; do not reintroduce a per-session/right-sidebar folder-picker flow.
+  A fresh draft names its landing project (or Home / Detached) on the intro
+  splash and the statusbar workspace chip. That label is the send cwd, not
+  `$activeProjectId`.
 
 Navigation must preserve context. A background session finishing, a tool result
 arriving, or a project refresh may update badges and cached data; it must not

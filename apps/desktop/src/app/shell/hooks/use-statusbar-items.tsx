@@ -39,13 +39,14 @@ import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { revealFileInTree } from '@/store/layout'
 import { $onboardingGate, guidedOnboardingActive } from '@/store/onboarding-gate'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $projectTree, projectNameForCwd } from '@/store/projects'
+import { $projectScope, $projectTree, newSessionLanding, projectNameForCwd } from '@/store/projects'
 import {
   $activeSessionId,
   $busy,
   $connection,
   $currentCwd,
   $currentUsage,
+  $newChatWorkspaceTarget,
   $selectedStoredSessionId,
   $sessions,
   $sessionStartedAt,
@@ -247,6 +248,9 @@ export function useStatusbarItems({
   // a second per-session copy of the same fact. Re-derives whenever the cwd or
   // the tree changes; null (no named project) falls back to the cwd leaf below.
   const projectTree = useStore($projectTree)
+  useStore($projectScope)
+  useStore($newChatWorkspaceTarget)
+  const landing = newSessionLanding()
   const projectName = useMemo(() => projectNameForCwd(currentCwd), [currentCwd, projectTree])
 
   const sessionStartedAt = primaryFocused
@@ -495,13 +499,18 @@ export function useStatusbarItems({
         variant: 'action'
       },
       {
-        hidden: !currentCwd,
+        hidden: false,
         icon: <FolderOpen className="size-3" />,
         id: 'workspace-cwd',
-        // Prefer the named project; fall back to the cwd leaf. Hover tip uses
-        // the shared display formatter (home → ~) so statusbar and branch bar
-        // agree on how a path looks.
-        label: projectName || (currentCwd ? pathLeaf(currentCwd) : undefined),
+        // Prefer the named project; fall back to the cwd leaf. Empty cwd on a
+        // fresh draft still names Home / Detached so Ctrl+N is not unlabeled.
+        label:
+          projectName ||
+          (currentCwd
+            ? pathLeaf(currentCwd)
+            : landing.kind === 'home'
+              ? t.sidebar.projects.home
+              : t.sidebar.landingDetached),
         menuItems: currentCwd
           ? [
               {
@@ -590,11 +599,14 @@ export function useStatusbarItems({
       gatewayRestarting,
       inferenceReady,
       inferenceStatus?.reason,
+      landing.kind,
       openAgents,
       projectName,
       sessionsShowing,
       subagentsFailed,
       subagentsRunning,
+      t.sidebar.landingDetached,
+      t.sidebar.projects.home,
       toggleCommandCenter
     ]
   )

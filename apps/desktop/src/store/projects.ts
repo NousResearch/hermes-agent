@@ -25,6 +25,7 @@ import {
   requestFreshSession
 } from '@/store/profile'
 import {
+  $newChatWorkspaceTarget,
   $selectedStoredSessionId,
   $sessions,
   sessionMatchesStoredId,
@@ -166,6 +167,38 @@ export function resolveNewSessionCwd(): string {
   }
 
   return workspaceCwdForNewSession()
+}
+
+export type NewSessionLanding = {
+  cwd: string
+  id: null | string
+  kind: 'detached' | 'home' | 'project'
+  name: null | string
+}
+
+/** What a fresh draft will send into — same cwd as session.create, named for UI. */
+export function newSessionLanding(): NewSessionLanding {
+  const scope = $projectScope.get()
+  const explicit = $newChatWorkspaceTarget.get()
+
+  if (explicit === null || scope === NO_PROJECT_ID) {
+    return { cwd: '', id: NO_PROJECT_ID, kind: 'home', name: null }
+  }
+
+  const cwd = (typeof explicit === 'string' ? explicit : resolveNewSessionCwd()).trim()
+
+  if (!cwd) {
+    return { cwd: '', id: null, kind: 'detached', name: null }
+  }
+
+  const id = projectIdForCwd(cwd)
+  const name = projectNameForCwd(cwd)
+
+  if (id && name) {
+    return { cwd, id, kind: 'project', name }
+  }
+
+  return { cwd, id: id ?? null, kind: 'detached', name: null }
 }
 
 // The project (explicit or auto) that owns `cwd`, by longest path match across

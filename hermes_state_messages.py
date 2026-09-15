@@ -659,12 +659,16 @@ class SessionMessagesMixin:
                 live = current_by_id.get(row_id)
                 if live is None:
                     continue
-                if live["display_kind"]:
+                if live["display_kind"] is None:
+                    message.pop("display_kind", None)
+                else:
                     message["display_kind"] = live["display_kind"]
                 display_metadata = self._decode_display_metadata(
                     live["display_metadata"]
                 )
-                if display_metadata:
+                if display_metadata is None:
+                    message.pop("display_metadata", None)
+                else:
                     message["display_metadata"] = display_metadata
             retained_by_slot: Dict[int, List[Dict[str, Any]]] = {}
             for row in active_rows:

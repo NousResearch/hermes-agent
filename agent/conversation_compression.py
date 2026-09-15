@@ -3307,7 +3307,7 @@ def _finish_compaction_boundary(
 
 def _candidate_rejected(
     agent: Any, compressed: Any, messages: list, messages_before_compression: list, *,
-    attempt_generation: Any, attempt_started_at: float,
+    attempt_generation: Any, attempt_started_at: float, pure_sanitation: bool = False,
 ) -> bool:
     """Reject an unusable compression candidate before any session mutation.
     Order matters: compressor-reported abort, no progress, empty transcript, superseded attempt. Each branch surfaces
@@ -3371,6 +3371,16 @@ def _candidate_rejected(
             getattr(agent.context_compressor, "_compression_attempt_generation", None),
             agent.session_id or "none",
         )
+        if pure_sanitation:
+            sanitation.remember_sanitation_retry(
+                agent,
+                sanitation.prepare_sanitation_commit(
+                    messages_before_compression or messages,
+                    compressed,
+                    watermark_messages=messages_before_compression or messages,
+                    externalized_payload_loader=sanitation.externalized_payload_loader(agent),
+                ),
+            )
         _restore_messages_snapshot(messages, messages_before_compression)
         agent._last_compaction_in_place = False
         _emit_aborted_attempt_telemetry(agent, attempt_started_at, "attempt_superseded")
@@ -4024,7 +4034,7 @@ def compress_context(
         )
         if _candidate_rejected(
             agent, compressed, messages, messages_before_compression, attempt_generation=attempt.generation,
-            attempt_started_at=attempt.started_at,
+            attempt_started_at=attempt.started_at, pure_sanitation=pure_sanitation,
         ):
             return messages, _existing_system_prompt(agent, system_message)
         if commit_fence is not None:

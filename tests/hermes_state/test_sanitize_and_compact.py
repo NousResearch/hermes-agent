@@ -252,3 +252,54 @@ def test_sanitation_preserves_concurrent_display_metadata_on_represented_rows(
     assert published[0]["display_kind"] == "steer"
     assert published[0]["display_metadata"]["source"] == "gateway"
     assert published[0]["display_metadata"]["reactions"][0]["emoji"] == "👍"
+
+
+def test_sanitation_accepts_empty_durable_prefix_watermark(db: SessionDB) -> None:
+    assert db.get_active_message_watermark("sess1") == 0
+    assert db.try_acquire_compression_lock("sess1", "sanitizer")
+
+    inserted = db.sanitize_and_compact(
+        "sess1",
+        [{"role": "user", "content": "live-only"}],
+        watermark=0,
+        represented_row_ids=(),
+        lock_holder="sanitizer",
+    )
+
+    assert inserted == 1
+    assert [row["content"] for row in db.get_messages("sess1")] == ["live-only"]
+
+
+def test_sanitation_live_cleared_display_fields_replace_stale_candidate(
+    db: SessionDB,
+) -> None:
+    row_id = db.append_message(
+        "sess1",
+        role="user",
+        content="secret-token",
+        display_kind="steer",
+        display_metadata={"reactions": [{"emoji": "👍"}]},
+    )
+    candidate = [{
+        "role": "user",
+        "content": "clean",
+        "display_kind": "steer",
+        "display_metadata": {"reactions": [{"emoji": "👍"}]},
+    }]
+    db._write_sql(
+        "UPDATE messages SET display_kind = NULL, display_metadata = NULL WHERE id = ?",
+        (row_id,),
+    )
+    assert db.try_acquire_compression_lock("sess1", "sanitizer")
+
+    db.sanitize_and_compact(
+        "sess1",
+        candidate,
+        watermark=row_id,
+        represented_row_ids=(row_id,),
+        lock_holder="sanitizer",
+    )
+
+    published = db.get_messages_as_conversation("sess1")[0]
+    assert published.get("display_kind") is None
+    assert published.get("display_metadata") is None

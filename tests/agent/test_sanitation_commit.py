@@ -1786,6 +1786,38 @@ def test_sanitation_supersession_preserves_original(tmp_path, caplog):
     assert "superseded by a newer attempt" in caplog.text
 
 
+def test_sanitation_supersession_retains_retry(tmp_path):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1)
+
+    def supersede():
+        harness.agent.context_compressor._compression_attempt_generation += 1
+
+    harness.agent.context_compressor.after_compress = supersede
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+    assert returned is harness.messages
+
+    harness.agent.context_compressor.after_compress = None
+    harness.agent.context_compressor.current_operation = None
+    retried, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert harness.agent.context_compressor.calls == 1
+    assert _without_persistence_markers(retried) == _without_persistence_markers(
+        harness.candidate
+    )
+
+
 def test_sanitation_commit_failure_rolls_back_without_boundary_hooks(
     tmp_path,
     monkeypatch,

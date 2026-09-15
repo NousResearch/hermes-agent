@@ -676,7 +676,7 @@ def prepare_sanitation_commit(
             plan_candidate,
             externalized_payload_loader=externalized_payload_loader,
         ),
-        watermark=max(represented_row_ids) if represented_row_ids else None,
+        watermark=max(represented_row_ids, default=0),
         represented_row_ids=represented_row_ids,
     )
 

@@ -474,6 +474,13 @@ export function ModelCatalogMenu({
                   <span className="truncate">
                     <HighlightMatches foldSeparators query={search} text={group.provider.name} />
                   </span>
+                  {/* Where this group's list came from — a bundled fallback or a dated catalog
+                      snapshot must not look like a live list (issue #110055). */}
+                  {group.provider.provenance?.label ? (
+                    <span className="truncate font-normal normal-case tracking-normal text-(--ui-text-tertiary)">
+                      · {group.provider.provenance.label}
+                    </span>
+                  ) : null}
                   <DisclosureCaret
                     className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/label:opacity-100"
                     open={!collapsed}

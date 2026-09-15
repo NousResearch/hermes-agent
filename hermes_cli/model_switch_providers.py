@@ -371,16 +371,37 @@ def _is_aws_sdk(pconfig) -> bool:
     return bool(pconfig) and getattr(pconfig, "auth_type", "") == "aws_sdk"
 
 
+class _ProvenancedList(list):
+    """Model ids carrying where they came from, so the row builder can label the row (#110055)."""
+
+    def __init__(self, models, provenance: dict | None = None):
+        super().__init__(models)
+        self.provenance: dict = provenance or {}
+
+
+def _row_provenance(slug: str, model_ids=None) -> dict:
+    """Provenance for a built-in provider row: the list's own label when it carries one (the branch
+    that produced it knew), else the journal entry ``cached_provider_model_ids`` left behind.
+    Empty when neither knows — a row then shows no source, never a guess."""
+    from hermes_cli import model_list_provenance as prov
+
+    carried = getattr(model_ids, "provenance", None)
+    return carried or prov.provider_provenance(slug)
+
+
 def _live_or_curated_ids(slug: str, curated: dict, *fallback_keys: str, merge_models_dev: bool = True) -> list:
     """``cached_provider_model_ids`` (the SAME disk-cached list ``hermes model`` builds), falling
-    back to the curated list (merged with models.dev for preferred providers) when live is empty."""
+    back to the curated list (merged with models.dev for preferred providers) when live is empty.
+    The result carries its provenance so the picker can say which of the two it got (#110055)."""
+    from hermes_cli import model_list_provenance as prov
     from hermes_cli.models import _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids
     model_ids = cached_provider_model_ids(slug)
     if not model_ids:
         model_ids = _first_curated(curated, fallback_keys or (slug,))
         if merge_models_dev and slug in _MODELS_DEV_PREFERRED:
             model_ids = _merge_with_models_dev(slug, model_ids)
-    return model_ids
+        return _ProvenancedList(model_ids, prov.describe(prov.BUNDLED, count=len(model_ids)))
+    return _ProvenancedList(model_ids, prov.provider_provenance(slug, count=len(model_ids)))
 
 
 def _first_curated(curated: dict, keys) -> list:
@@ -676,16 +697,22 @@ class _PickerBuild:
             self.builtin_endpoints.add(normed)
 
     def add_builtin_row(
-        self, slug: str, name: str, is_current: bool, model_ids: list, source: str, *, uncapped_ok: bool = True,
+        self, slug: str, name: str, is_current: bool, model_ids: list, source: str, *,
+        uncapped_ok: bool = True, provenance: dict | None = None,
     ) -> None:
         row = {
             "slug": slug, "name": name, "is_current": is_current, "is_user_defined": False,
             "models": _cap_models(model_ids, self.max_models, slug if uncapped_ok else ""),
             "total_models": len(model_ids), "source": source}
+        if provenance:
+            row["provenance"] = provenance
         if slug == "nous":
             # Free-tier identity: one row "Nous · free tier" / nous/welcome, or no row when
             # nous.guest is off. Still marks the slug seen so a later lap cannot re-emit it.
             row = _free_tier_nous_row(row)
+            if row is not None and row.get("free_tier_row"):
+                # The welcome host serves one model: a provider-catalog label would be a lie.
+                row.pop("provenance", None)
         if row is not None:
             self.results.append(row)
         self.seen_slugs.add(slug.lower())
@@ -693,12 +720,15 @@ class _PickerBuild:
 
     def add_endpoint_row(
         self, slug: str, name: str, api_url: str, models: list, is_current: bool, native_catalog_empty: bool,
-        *, source: str = "user-config", shown: list | None = None) -> None:
+        *, source: str = "user-config", shown: list | None = None, provenance: dict | None = None) -> None:
         """Append a user-defined endpoint row (sections 3, 3b, 4)."""
-        self.results.append({
+        row = {
             "slug": slug, "name": name, "is_current": is_current, "is_user_defined": True,
             "models": models if shown is None else shown, "total_models": len(models), "source": source,
-            "api_url": api_url, "native_catalog_empty": native_catalog_empty})
+            "api_url": api_url, "native_catalog_empty": native_catalog_empty}
+        if provenance:
+            row["provenance"] = provenance
+        self.results.append(row)
         self.seen_slugs.add(slug.lower())
 
     def record_section3_pair(self, name: str, url_norm: str) -> bool:
@@ -751,11 +781,13 @@ def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
         # emit it later because this row owns the slug.
         configured = user_providers.get(hermes_id) if isinstance(user_providers, dict) else None
         configured_models = _declared_model_ids(configured.get("models")) if isinstance(configured, dict) else []
+        provenance = _row_provenance(hermes_id, model_ids)
         model_ids = list(dict.fromkeys([*configured_models, *model_ids]))
         pinfo = get_provider_info(mdev_id)
         display_name = pconfig.name if pconfig and pconfig.name else (pinfo.name if pinfo else mdev_id)
         b.add_builtin_row(
-            hermes_id, display_name, b.current_provider in (hermes_id, mdev_id), model_ids, "built-in")
+            hermes_id, display_name, b.current_provider in (hermes_id, mdev_id), model_ids, "built-in",
+            provenance=provenance)
 
 
 def _overlay_has_creds(b: _PickerBuild, pid: str, hermes_slug: str, overlay) -> bool:
@@ -842,8 +874,16 @@ def _lap_overlay_rows(b: _PickerBuild, data: dict) -> None:
             model_ids = _nous_picker_model_ids(b.curated, b.force_fresh_nous_tier) if real_account else []
         else:
             model_ids = _live_or_curated_ids(hermes_slug, b.curated, hermes_slug, pid)
+        # The picker's Nous row reads its list straight from the hosted manifest, so it is the
+        # manifest's snapshot date (or its absence) that labels it (#110055).
+        if hermes_slug == "nous":
+            from hermes_cli import model_list_provenance as prov
+            provenance = prov.catalog_provenance() if real_account else {}
+        else:
+            provenance = _row_provenance(hermes_slug, model_ids)
         b.add_builtin_row(
-            hermes_slug, get_label(hermes_slug), b.current_provider in (hermes_slug, pid), model_ids, "hermes")
+            hermes_slug, get_label(hermes_slug), b.current_provider in (hermes_slug, pid), model_ids, "hermes",
+            provenance=provenance)
         b.seen_slugs.add(pid.lower())
 
 
@@ -875,7 +915,8 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
         else:
             model_ids = _live_or_curated_ids(cp.slug, b.curated, merge_models_dev=False)
         b.add_builtin_row(
-            cp.slug, cp.label, cp.slug == b.current_provider, model_ids, "canonical", uncapped_ok=False)
+            cp.slug, cp.label, cp.slug == b.current_provider, model_ids, "canonical", uncapped_ok=False,
+            provenance=_row_provenance(cp.slug, model_ids))
 
 
 def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
@@ -883,6 +924,7 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
     extra_headers) so keyed providers on one endpoint with the same wire protocol collapse into
     one row (two Palantir Claude entries -> one "Palantir Claude" row); a different
     key_env/api_mode/headers keeps distinct rows since the wire protocol or tenant differs."""
+    from hermes_cli import model_list_provenance as prov
     from hermes_cli.model_switch import _extra_headers_from_config, _scoped_key_env
     from hermes_cli.config import coerce_provider_id, is_provider_enabled
     ep_groups: dict[tuple, dict] = {}
@@ -928,7 +970,11 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
         if discovered is not None:
             models_list = discovered
 
-        b.add_endpoint_row(ep_name, display_name, api_url, models_list, is_current, native_catalog_empty)
+        b.add_endpoint_row(
+            ep_name, display_name, api_url, models_list, is_current, native_catalog_empty,
+            provenance=prov.endpoint_provenance(
+                api_url, discovered=discovered is not None, count=len(models_list),
+                discovery_allowed=grp["discovery_allowed"], native_empty=native_catalog_empty))
         b.seen_slugs.update(ep_aliases)
         # Record every raw member name so section 4 can match per-model custom_providers rows
         # even though the group label was collapsed.
@@ -948,9 +994,11 @@ def _lap_bare_custom_row(b: _PickerBuild, custom_providers: list | None) -> None
         isinstance(cp, dict) and _norm_url(_entry_base_url(cp)) == _norm_url(b.current_base_url)
         for cp in (custom_providers or [])):
         return
+    from hermes_cli import model_list_provenance as prov
     api_url = str(b.current_base_url).strip().rstrip("/")
     models = [b.current_model] if b.current_model else []
     native_catalog_empty = False
+    discovered = None
     try:
         discovered, native_catalog_empty = _discover_endpoint_models(
             "", api_url, "custom", False, headers=None, api_mode=None,
@@ -962,7 +1010,10 @@ def _lap_bare_custom_row(b: _PickerBuild, custom_providers: list | None) -> None
         pass
     b.add_endpoint_row(
         "custom", "Custom endpoint", api_url, models, True, native_catalog_empty,
-        source="model-config", shown=_cap_models(models, b.max_models))
+        source="model-config", shown=_cap_models(models, b.max_models),
+        provenance=prov.endpoint_provenance(
+            api_url, discovered=discovered is not None, count=len(models),
+            discovery_allowed=True, native_empty=native_catalog_empty))
 
 
 def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
@@ -970,6 +1021,7 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
     (endpoint, credential identity, api_mode, extra_headers, display prefix). Four "Ollama — X"
     entries on one host become one "Ollama" row; distinct prefixes sharing a proxy URL keep
     their own rows."""
+    from hermes_cli import model_list_provenance as prov
     from hermes_cli.model_switch import _extra_headers_from_config, _scoped_key_env
     from hermes_cli.config import coerce_provider_id
     groups: dict[tuple, dict] = {}
@@ -1042,7 +1094,12 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
                         credential_identity=grp["credential_identity"])
                 except Exception:
                     pass
-        b.add_endpoint_row(slug, grp["name"], grp["api_url"], grp["models"], is_current, native_catalog_empty)
+        b.add_endpoint_row(
+            slug, grp["name"], grp["api_url"], grp["models"], is_current, native_catalog_empty,
+            provenance=prov.endpoint_provenance(
+                api_url, discovered=discovered is not None, count=len(grp["models"]),
+                discovery_allowed=bool(api_url) and grp.get("discover_models", True),
+                native_empty=native_catalog_empty))
         section4_slugs.add(slug.lower())
 
 

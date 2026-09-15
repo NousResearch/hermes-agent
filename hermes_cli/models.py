@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from typing import TypeGuard
 
 from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_cli import model_list_provenance as _prov
 from hermes_cli.urllib_security import open_credentialed_url
 from hermes_cli.models_catalog_static import (
     CANONICAL_PROVIDERS,
@@ -1289,12 +1290,18 @@ def _copilot_acp_session_models(force_refresh: bool) -> Optional[list[str]]:
 def _copilot_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
     if normalized == "copilot-acp" and (live := _copilot_acp_session_models(force_refresh)):
         return live
+    reasons: list[str] = []
+    if normalized == "copilot-acp":
+        reasons.append("copilot CLI session unavailable")
     try:
-        live = _fetch_github_models(_resolve_copilot_catalog_api_key())
-        if live:
+        token = _resolve_copilot_catalog_api_key()
+        if live := _fetch_github_models(token):
             return live
-    except Exception:
-        pass
+        reasons.append("GitHub catalog token not found" if not token else "GitHub model catalog unreachable")
+    except Exception as exc:
+        reasons.append(f"GitHub model catalog failed: {exc}")
+    # Both rows serve the bundled list below; say so instead of looking like a live catalog (#110055).
+    _mark_fetcher_source(normalized, _prov.BUNDLED, reason="; ".join(reasons))
     return list(_PROVIDER_MODELS.get("copilot", [])) if normalized == "copilot-acp" else None
 
 
@@ -1310,8 +1317,18 @@ def _nous_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
     except Exception:
         pass
     # Live failed / no creds: the docs-hosted manifest — NOT the in-repo snapshot — so newly added
-    # Portal models still surface without a Hermes release.
-    return get_curated_nous_model_ids() or None
+    # Portal models still surface without a Hermes release. The picker says which one it got (#110055).
+    from hermes_cli.model_catalog import catalog_status
+
+    curated = get_curated_nous_model_ids()
+    status = catalog_status()
+    if curated and status.get("origin") == "hosted":
+        _mark_fetcher_source(normalized, _prov.CATALOG, at=status.get("as_of"),
+                             stale=not status.get("fresh", True))
+    else:
+        _mark_fetcher_source(normalized, _prov.BUNDLED,
+                             reason=status.get("reason") or "no catalog cached yet")
+    return curated or None
 
 
 def _api_key_credentials(normalized: str) -> tuple[str, str]:
@@ -1414,7 +1431,11 @@ def _bedrock_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]
 def _opencode_free_catalog(normalized: str, force_refresh: bool) -> list[str]:
     # Live keyless catalog filtered to the anonymous-servable `*-free` tier ourselves (models.dev's
     # cost.input==0 lags reality); the curated floor applies only when the live fetch fails/is empty.
-    return _fetch_opencode_free_models(force_refresh=force_refresh) or list(_PROVIDER_MODELS.get(normalized, []))
+    live = _fetch_opencode_free_models(force_refresh=force_refresh)
+    if live:
+        return live
+    _mark_fetcher_source(normalized, _prov.BUNDLED, reason="live free-tier catalog unreachable")
+    return list(_PROVIDER_MODELS.get(normalized, []))
 
 
 # Per-provider catalog sources tried before the generic profile fetch. A fetcher returning None
@@ -1457,6 +1478,11 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     api_key, base_url = _api_key_credentials(normalized)
     live = profile.fetch_models(api_key=api_key, base_url=base_url or profile.base_url or None) if api_key else None
     if not live:
+        # The profile's own fallback_models / the in-repo list stand in for a live catalog here; say
+        # which and why, instead of serving them as if discovery had run (#110055).
+        _mark_fetcher_source(
+            normalized, _prov.BUNDLED,
+            reason="no API key configured" if not api_key else "provider /models unreachable")
         return list(profile.fallback_models) if profile.fallback_models else None
     curated = list(_PROVIDER_MODELS.get(normalized, [])) or list(profile.fallback_models or ())
     if not curated:
@@ -1465,24 +1491,59 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     return _merge_unique(primary, secondary, key=_model_dedup_key)
 
 
+# Provenance decided INSIDE a per-provider fetcher: slug -> {source, reason, detail, at, stale}. The
+# fetchers below fall back to a different SOURCE than their name advertises (hosted manifest, bundled
+# in-repo list), so ``provider_model_ids`` cannot label their result on its own (#110055).
+_fetcher_sources: dict[str, dict[str, Any]] = {}
+
+
+def _mark_fetcher_source(provider: str, source: str, *, reason: str = "", detail: str = "",
+                         at: Optional[float] = None, stale: bool = False) -> None:
+    """Stash what a fetcher actually returned for ``provider``; consumed by ``provider_model_ids``."""
+    _fetcher_sources[provider] = {
+        "source": source, "reason": reason, "detail": detail, "at": at, "stale": stale}
+
+
+def _record_fetcher_source(provider: str, marked: Optional[dict], count: int,
+                           default_source: str = "") -> None:
+    """Journal ``marked`` (or ``default_source`` — plain live fetch by default) as the provenance of
+    ``provider``'s list."""
+    from hermes_cli import model_list_provenance as prov
+
+    if not marked:
+        prov.record(provider, default_source or prov.LIVE, count=count)
+        return
+    fields = dict(marked)
+    prov.record(provider, fields.pop("source"), count=count, **fields)
+
+
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
     """Best known model catalog for a provider: per-provider live fetchers, then the generic profile
     fetch, then the static list (merged with models.dev for ``_MODELS_DEV_PREFERRED`` providers)."""
+    from hermes_cli import model_list_provenance as prov
+
     requested = str(provider or "").strip().lower()
     if requested == "ollama":
-        return _ollama_local_catalog(force_refresh)
+        models = _ollama_local_catalog(force_refresh)
+        prov.record(requested, prov.DISCOVERED, count=len(models), detail="/api/tags")
+        return models
 
     normalized = normalize_provider(provider)
+    marked: Optional[dict] = None
     fetcher = _PROVIDER_CATALOG_FETCHERS.get(normalized)
     if fetcher is not None:
         models = fetcher(normalized, force_refresh)
+        marked = _fetcher_sources.pop(normalized, None)
         if models is not None:
+            _record_fetcher_source(normalized, marked, len(models))
             return models
     try:
         models = _profile_live_catalog(normalized)
     except Exception:
         models = None
+    marked = marked or _fetcher_sources.pop(normalized, None)
     if models is not None:
+        _record_fetcher_source(normalized, marked, len(models))
         return models
 
     # Merge static curated list with live API results so models that the live endpoint omits (stale cache,
@@ -1495,8 +1556,15 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     # model, flux-*, ahead of its chat models).
     curated_static = list(_PROVIDER_MODELS.get(normalized, []))
     if normalized not in _MODELS_DEV_PREFERRED:
+        # Nothing live produced this list: the in-repo catalog is either this provider's only source
+        # (no live fetcher at all) or the silent fallback the issue is about (``marked`` says which).
+        _record_fetcher_source(normalized, marked, len(curated_static), default_source=prov.BUNDLED)
         return curated_static
     merged = _merge_with_models_dev(normalized, curated_static)
+    if merged:
+        prov.record(normalized, prov.LIVE, count=len(merged), detail="models.dev registry")
+    else:
+        _record_fetcher_source(normalized, marked, 0, default_source=prov.BUNDLED)
     return _xai_finalize_catalog(merged) if normalized in {"xai", "xai-oauth"} else merged
 
 
@@ -1519,9 +1587,33 @@ _swr_refresh_inflight: set = set()
 _swr_refresh_lock = threading.Lock()
 
 
-def _cache_entry(fp: str, models: list[str], at: Optional[float] = None) -> dict:
-    """One provider row of the disk cache: credential fingerprint, write time, model ids."""
-    return {"fp": fp, "at": time.time() if at is None else at, "models": list(models)}
+def _cache_entry(fp: str, models: list[str], at: Optional[float] = None, **provenance: Any) -> dict:
+    """One provider row of the disk cache: credential fingerprint, write time, model ids, plus the
+    provenance fields (``source``/``reason``/``detail``) so a later process can still say where the
+    cached list came from (#110055)."""
+    return {"fp": fp, "at": time.time() if at is None else at, "models": list(models), **provenance}
+
+
+def _provenance_fields(provider: str) -> dict[str, Any]:
+    """Journaled source/reason for *provider* as disk-cache fields (``{}`` when never resolved)."""
+    from hermes_cli import model_list_provenance as prov
+
+    entry = prov.recorded(provider)
+    if entry is None:
+        return {}
+    return {"source": entry["source"], "reason": entry["reason"],
+            "detail": entry["detail"], "stale": entry["stale"]}
+
+
+def _record_cache_hit(provider: str, entry: dict) -> None:
+    """Journal a disk-cache serve: the source that wrote the row, dated at the row's own fetch time
+    so the picker can say ``fetched 2m ago`` instead of implying the list is live right now."""
+    from hermes_cli import model_list_provenance as prov
+
+    prov.record(
+        provider, entry.get("source") or prov.LIVE, reason=entry.get("reason") or "",
+        detail=entry.get("detail") or "", count=len(entry.get("models") or []),
+        at=entry.get("at"), stale=bool(entry.get("stale")))
 
 
 def _ollama_native_probe_reachable() -> bool:
@@ -1551,7 +1643,8 @@ def _spawn_swr_refresh(cache_key: str, refresh_fn=None) -> None:
     def _default_refresh():
         live = provider_model_ids(cache_key, force_refresh=True)
         if live or (cache_key == "ollama" and _ollama_native_probe_reachable()):
-            return _cache_entry(_credential_fingerprint(cache_key), live or [])
+            return _cache_entry(_credential_fingerprint(cache_key), live or [],
+                                **_provenance_fields(cache_key))
         return None
 
     def _refresh() -> None:
@@ -1687,7 +1780,7 @@ def update_provider_cache_entry(provider: str, models: list[str]) -> None:
             return
         fp = _credential_fingerprint(normalized)
         with _cache_write_lock:
-            _store_cache_entry(normalized, _cache_entry(fp, models))
+            _store_cache_entry(normalized, _cache_entry(fp, models, **_provenance_fields(normalized)))
     except Exception:
         pass
 
@@ -1723,17 +1816,19 @@ def cached_provider_model_ids(
     if not force_refresh and _cache_entry_valid(entry, fp, allow_empty=is_ollama):
         age = now - entry["at"]
         if age < ttl_seconds:
+            _record_cache_hit(normalized, entry)
             return list(entry["models"])
         # Empty native catalogs are authoritative only for the short native TTL — never served
         # through the stale window. Non-empty stale rows are served immediately (SWR) so picker
         # opens never block on serial /v1/models round-trips.
         if entry["models"] and age < _PROVIDER_MODELS_STALE_SERVE_MAX:
             _spawn_swr_refresh(normalized)
+            _record_cache_hit(normalized, entry)
             return list(entry["models"])
 
     live = provider_model_ids(normalized, force_refresh=force_refresh)
     if live:
-        _store_cache_entry(normalized, _cache_entry(fp, live, now), cache)
+        _store_cache_entry(normalized, _cache_entry(fp, live, now, **_provenance_fields(normalized)), cache)
         return list(live)
 
     if is_ollama:
@@ -1745,12 +1840,14 @@ def cached_provider_model_ids(
         # the picker during a transient outage.
         same_creds = isinstance(entry, dict) and entry.get("fp") == fp
         if same_creds and isinstance(entry.get("models"), list) and entry["models"]:
+            _record_cache_hit(normalized, entry)
             return list(entry["models"])
         return []
     # Live returned nothing: a stale same-fingerprint entry beats an empty result — minus account-gated
     # models, which only a successful discovery may advertise (the entry itself is untouched, so the
     # next successful fetch restores them).
     if _cache_entry_valid(entry, fp):
+        _record_cache_hit(normalized, entry)
         return [model for model in entry["models"] if not _model_requires_account_discovery(normalized, model)]
     return []
 

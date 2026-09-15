@@ -18,7 +18,7 @@ from hermes_cli.model_setup_flows_common import (
     _ensure_dict_section, _ensure_flow_api_key, _finish_model,
     _load_config_model_section, _models_dev_merged, _oauth_gate, _persist_model, _pick_model_or_prompt,
     _print_numbered, _prompt_auth_credentials_choice,
-    _run_login, _say, _show_curated)
+    _run_login, _say, _show_curated, _source_note, _reason_note)
 from hermes_cli.model_setup_flows_custom import _model_flow_custom, _model_flow_named_custom
 from hermes_cli.model_setup_flows_azure import _model_flow_azure_foundry
 from hermes_cli.model_setup_flows_bedrock import _model_flow_bedrock
@@ -464,7 +464,7 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
 
 
 def _copilot_model_list(live_ids) -> list:
-    """Live GitHub Copilot ids, or the curated fallback with a warning."""
+    """Live GitHub Copilot ids, or the bundled fallback with the reason we landed there."""
     from hermes_cli.models import _PROVIDER_MODELS
     if live_ids:
         model_list = [model_id for model_id in live_ids if model_id]
@@ -472,7 +472,10 @@ def _copilot_model_list(live_ids) -> list:
         return model_list
     model_list = _PROVIDER_MODELS.get("copilot", [])
     if model_list:
-        _say("  ⚠ Could not auto-detect models from GitHub Copilot — showing defaults.",
+        # Say WHY the bundled list is showing (no catalog token, endpoint unreachable, ...): "my
+        # model is missing" used to mean hand-running _resolve_copilot_catalog_api_key() (#110055).
+        _say(f"  ⚠ Could not auto-detect models from GitHub Copilot — showing the bundled list"
+             f" ({_reason_note('copilot') or 'live catalog unavailable'}).",
              '    Use "Enter custom model name" if you do not see your model.')
     return model_list
 
@@ -872,6 +875,7 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
     → curated static list (offline insurance) → live /models probe (small providers without
     models.dev data). Providers in ``_SPECIAL_MODEL_LISTS`` have their own resolution."""
     from hermes_cli.config import get_env_value
+    from hermes_cli import model_list_provenance as prov
     from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models
     curated = _PROVIDER_MODELS.get(provider_id, [])
     api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
@@ -884,16 +888,21 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
     model_list = _models_dev_merged(provider_id, curated)
     if model_list:
         _report_live_models(model_list, "models.dev registry")
+        prov.record(provider_id, prov.LIVE, count=len(model_list), detail="models.dev registry")
         return model_list
     if curated and len(curated) >= 8:
         # Substantial curated list — use it directly, skip live probe
-        _show_curated(curated)
+        prov.record(provider_id, prov.BUNDLED, count=len(curated))
+        _show_curated(curated, provider_id=provider_id)
         return curated
     live_models = fetch_api_models(api_key_for_probe, effective_base)
     if live_models and len(live_models) >= len(curated):
         _report_live_models(live_models, f"{pconfig.name} API")
+        prov.record(provider_id, prov.LIVE, count=len(live_models), detail=f"{pconfig.name} API")
         return live_models
-    _show_curated(curated)  # may be empty: falls through to raw input
+    # Nothing live answered: the in-repo list is shown instead. Say so (#110055).
+    prov.record(provider_id, prov.BUNDLED, count=len(curated), reason="no live model list")
+    _show_curated(curated, provider_id=provider_id)  # may be empty: falls through to raw input
     return curated
 
 

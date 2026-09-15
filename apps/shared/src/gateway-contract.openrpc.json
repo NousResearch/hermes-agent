@@ -15314,6 +15314,17 @@
             "default": null,
             "title": "Source"
           },
+          "provenance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderModelProvenance"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "aliases": {
             "anyOf": [
               {
@@ -21972,6 +21983,86 @@
         ],
         "title": "PromptSubmitStatus",
         "type": "string"
+      },
+      "ProviderModelProvenance": {
+        "additionalProperties": true,
+        "description": "``hermes_cli/model_list_provenance.py::_finalize`` \u2014 where a provider row's model list came\nfrom (live discovery, the hosted catalog snapshot, or a bundled fallback). Display-only copy;\nthe surfaces render ``label``. Absent when nothing recorded it yet.",
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "age_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Age Seconds"
+          },
+          "count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Count"
+          },
+          "degraded": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Degraded"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "stale": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Stale"
+          }
+        },
+        "required": [
+          "label",
+          "source"
+        ],
+        "title": "ProviderModelProvenance",
+        "type": "object"
       },
       "QueuedPrompt": {
         "additionalProperties": false,

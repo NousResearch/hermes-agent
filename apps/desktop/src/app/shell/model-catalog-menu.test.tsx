@@ -207,3 +207,32 @@ describe('in-flight local downloads', () => {
     expect(screen.queryByText('Local')).toBeNull()
   })
 })
+
+// "My model is missing" used to mean hand-running Python to find out which source the picker
+// had used (issue #110055): a bundled fallback and a live list looked identical in the UI.
+describe('provider list provenance', () => {
+  it('shows the source under the provider name when the backend recorded one', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          models: ['gemini-3.1-pro'],
+          name: 'Google',
+          provenance: { degraded: true, label: 'bundled fallback — GitHub catalog token not found', source: 'bundled' },
+          slug: 'google'
+        }
+      ]
+    })
+
+    renderMenu()
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+
+    expect(screen.getByText(/bundled fallback — GitHub catalog token not found/)).toBeTruthy()
+  })
+
+  it('adds nothing when the backend has no provenance for the row', async () => {
+    renderMenu()
+    await screen.findByText(/Gemini 3\.1 Pro/i)
+
+    expect(screen.queryByText(/bundled fallback/)).toBeNull()
+  })
+})

@@ -239,9 +239,38 @@ def _models_dev_merged(provider_id: str, curated) -> list:
     return merged
 
 
-def _show_curated(model_list) -> None:
+def _source_note(provider_id: str, *, fallback: str = "") -> str:
+    """Where *provider_id*'s list came from, per the resolution layer (``model_list_provenance``),
+    or *fallback* when nothing recorded it — the flow then says the old, sourceless thing."""
+    if not provider_id:
+        return fallback
+    try:
+        from hermes_cli import model_list_provenance as prov
+        return prov.provider_provenance(provider_id).get("label") or fallback
+    except Exception:
+        return fallback
+
+
+def _reason_note(provider_id: str, *, fallback: str = "") -> str:
+    """The recorded reason for a *degraded* source (bundled fallback), or *fallback*. Used where the
+    flow already knows it is on the fallback and only needs the why."""
+    if not provider_id:
+        return fallback
+    try:
+        from hermes_cli import model_list_provenance as prov
+        entry = prov.provider_provenance(provider_id)
+        return entry.get("reason") if entry.get("degraded") else fallback
+    except Exception:
+        return fallback
+
+
+def _show_curated(model_list, *, provider_id: str = "") -> None:
     if model_list:
         print(f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.')
+    note = _source_note(provider_id)
+    if note:
+        # The picker used to show the bundled list with no sign that a live catalog was skipped.
+        print(f"  Source: {note}")
 
 
 def _prune_replaced_custom_model_config_credentials(base_url: str, *, provider_name: str = "") -> None:

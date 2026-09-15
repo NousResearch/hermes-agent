@@ -649,7 +649,11 @@ export function ModelPicker({
       const suffix =
         p.authenticated === false ? (p.auth_type === 'api_key' ? '(no key)' : '(needs setup)') : `${modelCount} models`
 
-      return `${authMark} ${name} · ${suffix}`
+      // Where the list came from (live / hosted snapshot / bundled fallback). Absent when the
+      // backend had nothing recorded: the row then stays bare rather than guessing (#110055).
+      const source = p.provenance?.label
+
+      return `${authMark} ${name} · ${suffix}${source ? ` · ${source}` : ''}`
     })
 
     const { items, offset } = windowItems(rows, providerIdx, VISIBLE)
@@ -756,6 +760,9 @@ export function ModelPicker({
   // ── Model selection stage ────────────────────────────────────────────
   const { items, offset } = windowItems(models, modelIdx, VISIBLE)
   const noModelMatches = !!filter.trim() && models.length === 0
+  // The step-2 subtitle answers "where did this list come from?" without leaving the picker
+  // (#110055): a bundled fallback or a dated snapshot is otherwise indistinguishable from live.
+  const selectedProviderProvenance = provider?.provenance?.label
 
   return (
     <Box flexDirection="column" width={width}>
@@ -764,7 +771,8 @@ export function ModelPicker({
       </Text>
 
       <Text color={t.color.muted} wrap="truncate-end">
-        {filteredProviderRows[providerIdx]?.name || '(unknown provider)'} · Esc back
+        {filteredProviderRows[providerIdx]?.name || '(unknown provider)'}
+        {selectedProviderProvenance ? ` · ${selectedProviderProvenance}` : ''} · Esc back
       </Text>
       <Text color={filter ? t.color.accent : t.color.muted} wrap="truncate-end">
         {filter ? `filter: ${filter}▎` : 'type to filter · ↑/↓ select'}

@@ -42,7 +42,12 @@ from agent.deadline import (
 
 class TestClampTimeout:
     def test_platform_cap_tracks_runtime_threading_limit(self):
-        assert MAX_SAFE_TIMEOUT_S == min(365 * 24 * 3600, threading.TIMEOUT_MAX)
+        from agent.deadline import _PLATFORM_WAIT_HEADROOM_S
+
+        assert MAX_SAFE_TIMEOUT_S == min(
+            365 * 24 * 3600,
+            threading.TIMEOUT_MAX - _PLATFORM_WAIT_HEADROOM_S,
+        )
 
     @pytest.mark.windows_only
     def test_windows_preserves_valid_timeout_above_legacy_millisecond_scale(self):
@@ -284,6 +289,30 @@ class TestRunBoundedSync:
 
 
 class TestRunBoundedAsync:
+    def test_watchdog_margin_stays_platform_safe(self, monkeypatch):
+        intervals = []
+
+        class FakeTimer:
+            def __init__(self, interval, _callback):
+                intervals.append(interval)
+                self.daemon = False
+
+            def start(self):
+                pass
+
+            def cancel(self):
+                pass
+
+        monkeypatch.setattr(threading, "Timer", FakeTimer)
+
+        async def scenario():
+            return await run_bounded_async(asyncio.sleep(0), float("inf"), label="watchdog")
+
+        result = asyncio.run(scenario())
+        assert result.timed_out is False
+        assert intervals == [MAX_SAFE_TIMEOUT_S, MAX_SAFE_TIMEOUT_S + 5.0]
+        assert intervals[-1] <= threading.TIMEOUT_MAX
+
     def test_completion_returns_value(self):
         async def scenario():
             async def op():

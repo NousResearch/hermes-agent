@@ -34,10 +34,13 @@ __all__ = [
     "run_bounded_async", "run_bounded_sync", "kill_process_tree",
 ]
 
-# CPython exposes the platform wait ceiling in seconds. Keep the one-year cap
-# established for the macOS time_t overflow in #83220, bounded by that runtime
-# contract on platforms such as Windows where the threading ceiling is lower.
-MAX_SAFE_TIMEOUT_S = min(31_536_000.0, threading.TIMEOUT_MAX)
+# Reserve room below the runtime's thread-wait ceiling for derived waits:
+# ``human_wait_ceiling`` adds 60s and the blocked-loop watchdog adds 5s.
+_PLATFORM_WAIT_HEADROOM_S = 300.0
+
+# Keep the one-year cap from #83220 where the runtime permits it. On Windows,
+# ``threading.TIMEOUT_MAX`` is only ~49.7 days because waits use a DWORD of milliseconds.
+MAX_SAFE_TIMEOUT_S = min(31_536_000.0, threading.TIMEOUT_MAX - _PLATFORM_WAIT_HEADROOM_S)
 
 # Grace after a deadline fires before concluding the loop thread is blocked and dumping stacks.
 _LOOP_BLOCKED_DUMP_GRACE_S = 5.0
@@ -248,7 +251,8 @@ async def run_bounded_async(
 
     timers = [threading.Timer(timeout_s, lambda: loop.call_soon_threadsafe(_mark_expired))]
     if dump_on_blocked_loop:
-        timers.append(threading.Timer(timeout_s + _LOOP_BLOCKED_DUMP_GRACE_S, _watchdog_check))
+        timers.append(threading.Timer(
+            min(timeout_s + _LOOP_BLOCKED_DUMP_GRACE_S, threading.TIMEOUT_MAX), _watchdog_check))
     for t in timers:
         t.daemon = True
         t.start()

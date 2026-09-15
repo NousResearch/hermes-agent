@@ -1,5 +1,12 @@
-import { forceCenter, forceCollide, forceLink, forceManyBody, forceSimulation, type SimulationNodeDatum } from 'd3-force'
-import { useEffect, useRef, useState } from 'react'
+import {
+  forceCenter,
+  forceCollide,
+  forceLink,
+  forceManyBody,
+  forceSimulation,
+  type SimulationNodeDatum
+} from 'd3-force'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { VaultGraph, VaultGraphEdge, VaultGraphNode } from './types'
 
@@ -15,34 +22,65 @@ interface SimLink {
   target: SimNode | string
 }
 
-export function VaultGraphView({
-  graph,
-  onSelectNote
-}: {
-  graph: VaultGraph
-  onSelectNote: (title: string) => void
-}) {
+export function filterVaultGraph(graph: VaultGraph, tag: string): VaultGraph {
+  if (!tag) return graph
+  const visible = new Set(graph.nodes.filter(node => node.tags.includes(tag)).map(node => node.id))
+  return {
+    nodes: graph.nodes.filter(node => visible.has(node.id)),
+    edges: graph.edges.filter(edge => visible.has(edge.source) && visible.has(edge.target))
+  }
+}
+
+export function connectedVaultNodeIds(graph: VaultGraph, nodeId: string | null): Set<string> {
+  const connected = new Set<string>()
+  if (!nodeId) return connected
+  connected.add(nodeId)
+  for (const edge of graph.edges) {
+    if (edge.source === nodeId) connected.add(edge.target)
+    if (edge.target === nodeId) connected.add(edge.source)
+  }
+  return connected
+}
+
+export function VaultGraphView({ graph, onSelectNote }: { graph: VaultGraph; onSelectNote: (title: string) => void }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [nodes, setNodes] = useState<SimNode[]>([])
-  const [links, setLinks] = useState<Array<{ source: { x: number; y: number }; target: { x: number; y: number } }>>([])
+  const [links, setLinks] = useState<
+    Array<{ source: { x: number; y: number }; target: { x: number; y: number }; sourceId: string; targetId: string }>
+  >([])
   const [hoveredNode, setHoveredNode] = useState<string | null>(null)
+  const [tagFilter, setTagFilter] = useState('')
   const [transform, setTransform] = useState({ x: 0, y: 0, k: 1 })
   const isDraggingRef = useRef(false)
   const dragStartRef = useRef({ x: 0, y: 0 })
 
+  const tags = useMemo(
+    () => Array.from(new Set(graph.nodes.flatMap(node => node.tags))).sort((left, right) => left.localeCompare(right)),
+    [graph.nodes]
+  )
+  const filteredGraph = useMemo(() => filterVaultGraph(graph, tagFilter), [graph, tagFilter])
+  const connectedNodes = useMemo(() => connectedVaultNodeIds(filteredGraph, hoveredNode), [filteredGraph, hoveredNode])
+
   useEffect(() => {
-    if (!containerRef.current || !graph.nodes.length) return
+    if (!containerRef.current || !filteredGraph.nodes.length) {
+      setNodes([])
+      setLinks([])
+      return
+    }
 
     const width = containerRef.current.clientWidth || 800
     const height = containerRef.current.clientHeight || 600
 
-    const simNodes: SimNode[] = graph.nodes.map(n => ({ ...n }))
-    const simLinks: SimLink[] = graph.edges.map(e => ({ source: e.source, target: e.target }))
+    const simNodes: SimNode[] = filteredGraph.nodes.map(n => ({ ...n }))
+    const simLinks: SimLink[] = filteredGraph.edges.map(e => ({ source: e.source, target: e.target }))
 
     const sim = forceSimulation(simNodes)
       .force('charge', forceManyBody().strength(-120))
       .force('center', forceCenter(width / 2, height / 2))
-      .force('collide', forceCollide().radius((d: any) => 8 + (d.weight || 1) * 2))
+      .force(
+        'collide',
+        forceCollide().radius((d: any) => 8 + (d.weight || 1) * 2)
+      )
       .force(
         'link',
         forceLink(simLinks)
@@ -52,7 +90,12 @@ export function VaultGraphView({
 
     sim.on('tick', () => {
       setNodes([...simNodes])
-      const renderedLinks: Array<{ source: { x: number; y: number }; target: { x: number; y: number } }> = []
+      const renderedLinks: Array<{
+        source: { x: number; y: number }
+        target: { x: number; y: number }
+        sourceId: string
+        targetId: string
+      }> = []
       for (const link of simLinks) {
         if (typeof link.source === 'object' && typeof link.target === 'object') {
           const s = link.source as SimNode
@@ -60,7 +103,9 @@ export function VaultGraphView({
           if (s.x != null && s.y != null && t.x != null && t.y != null) {
             renderedLinks.push({
               source: { x: s.x, y: s.y },
-              target: { x: t.x, y: t.y }
+              target: { x: t.x, y: t.y },
+              sourceId: s.id,
+              targetId: t.id
             })
           }
         }
@@ -73,7 +118,7 @@ export function VaultGraphView({
     return () => {
       sim.stop()
     }
-  }, [graph])
+  }, [filteredGraph])
 
   const onWheel = (e: React.WheelEvent) => {
     e.preventDefault()
@@ -114,6 +159,19 @@ export function VaultGraphView({
       ref={containerRef}
     >
       <div className="absolute right-3 top-3 z-10 flex gap-1 rounded bg-(--ui-bg-primary) p-1 text-xs shadow-md border border-(--ui-stroke-secondary)">
+        <select
+          aria-label="Filtrar grafo por tag"
+          className="max-w-40 rounded bg-(--ui-bg-secondary) px-1 text-(--ui-text-secondary)"
+          onChange={event => setTagFilter(event.target.value)}
+          value={tagFilter}
+        >
+          <option value="">Todas as tags</option>
+          {tags.map(tag => (
+            <option key={tag} value={tag}>
+              #{tag}
+            </option>
+          ))}
+        </select>
         <button
           className="px-2 py-1 hover:bg-(--ui-bg-tertiary) rounded"
           onClick={() => setTransform(p => ({ ...p, k: Math.min(4, p.k * 1.2) }))}
@@ -144,6 +202,7 @@ export function VaultGraphView({
             <line
               className="stroke-(--ui-stroke-secondary) opacity-50"
               key={idx}
+              opacity={hoveredNode && !(link.sourceId === hoveredNode || link.targetId === hoveredNode) ? 0.1 : 0.7}
               strokeWidth={1.5}
               x1={link.source.x}
               x2={link.target.x}
@@ -155,6 +214,7 @@ export function VaultGraphView({
           {/* Nodes */}
           {nodes.map(node => {
             const isHovered = hoveredNode === node.id
+            const isDimmed = hoveredNode !== null && !connectedNodes.has(node.id)
             const radius = 5 + Math.min(node.weight * 2, 16)
             return (
               <g
@@ -171,6 +231,7 @@ export function VaultGraphView({
                 <circle
                   className="transition-all duration-150"
                   fill={isHovered ? 'var(--ui-accent-primary, #6366f1)' : 'var(--ui-text-primary, #94a3b8)'}
+                  opacity={isDimmed ? 0.2 : 1}
                   r={radius}
                   stroke="var(--ui-bg-primary, #ffffff)"
                   strokeWidth={2}
@@ -179,6 +240,7 @@ export function VaultGraphView({
                   className="fill-(--ui-text-secondary) text-[10px] font-medium"
                   dx={radius + 4}
                   dy={3}
+                  opacity={isDimmed ? 0.2 : 1}
                 >
                   {node.label}
                 </text>

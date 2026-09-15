@@ -173,7 +173,8 @@ def _review_should_defer(agent: Any, task_cfg: Optional[Dict[str, Any]]) -> bool
 
 
 def _review_queue_key(agent: Any) -> str:
-    return str(getattr(agent, "session_id", None) or id(agent))
+    from hermes_constants import get_hermes_home
+    return f"{get_hermes_home()}::{getattr(agent, 'session_id', None) or id(agent)}"
 
 
 def _notify_context_engine_session_end(agent: Any, messages: Optional[list]) -> None:
@@ -738,7 +739,7 @@ class AIAgent(
     _summarize_background_review_actions = _forward_static("agent.background_review", "summarize_background_review_actions")
 
     def _spawn_background_review(self, messages_snapshot: List[Dict], review_memory: bool = False,
-                                 review_skills: bool = False, focus: Optional[str] = None, explicit: bool = False) -> None:
+                                 review_skills: bool = False, focus: Optional[str] = None, explicit: bool = False) -> bool:
         """Post-turn review entry point: decide WHEN, then spawn.
 
         A review whose runtime is the MANAGED LOCAL llama-server is queued for machine idle (``defer: auto``)
@@ -746,14 +747,17 @@ class AIAgent(
         (/refine) is never deferred but does not touch the ``focus``-keyed delegate/enabled gates.
         """
         # Gates run at enqueue/spawn time; the idle dispatcher re-checks `enabled` at dispatch time.
-        if focus is None and getattr(self, "_delegate_depth", 0) > 0:
-            return
+        if getattr(self, "_background_review_closing", False) is True:
+            return False
+        if focus is None and (getattr(self, "_delegate_depth", 0) > 0
+                              or (not explicit and getattr(self, "skip_background_review", False))):
+            return False
         task_cfg = None
         if focus is None:
             from agent.background_review import load_background_review_settings
             enabled, task_cfg = load_background_review_settings()
             if not enabled:
-                return
+                return False
 
         # Structural clone at the single chokepoint: the fork sanitizes in place, and a shallow copy would
         # alias the live history's nested tool_calls/content.
@@ -765,14 +769,13 @@ class AIAgent(
                       explicit=explicit)
         if focus is None and not explicit and _review_should_defer(self, task_cfg):
             from agent.review_idle_queue import QUEUE
-            QUEUE.enqueue(self, _review_queue_key(self), kwargs)
-            return
-        self._spawn_background_review_now(**kwargs)
+            return QUEUE.enqueue(self, _review_queue_key(self), kwargs)
+        return self._spawn_background_review_now(**kwargs)
 
     def _spawn_background_review_now(self, messages_snapshot: List[Dict], review_memory: bool = False,
                                      review_skills: bool = False, focus: Optional[str] = None,
                                      task_cfg: Optional[Dict[str, Any]] = None, _requeue_attempts: int = 0,
-                                     explicit: bool = False) -> None:
+                                     explicit: bool = False) -> bool:
         """Spawn the background memory/skill review thread.
 
         ``threading.Thread`` is constructed here so tests patching ``run_agent.threading.Thread`` keep working.
@@ -782,13 +785,16 @@ class AIAgent(
         rather than lost.
         """
         from agent.background_review import (
-            finish_background_review_run, prepare_background_review_run, spawn_background_review_thread,
+            prepare_background_review_run, spawn_background_review_thread,
         )
         from tools.thread_context import propagate_context_to_thread
 
+        from agent.review_lifecycle import finish_review_worker, publish_review_status, shutdown_timeout
+        self._review_shutdown_timeout_s = shutdown_timeout(task_cfg)
         review_run = prepare_background_review_run(self)
         if review_run is None:
-            return
+            return False
+        publish_review_status(self)
         try:
             target, _prompt = spawn_background_review_thread(
                 self, messages_snapshot, review_memory=review_memory, review_skills=review_skills,
@@ -796,18 +802,22 @@ class AIAgent(
             )
 
             def _target_with_requeue() -> None:
-                target()
-                self._maybe_requeue_preempted_review(review_run, dict(
-                    messages_snapshot=messages_snapshot, review_memory=review_memory, review_skills=review_skills,
-                    focus=focus, task_cfg=task_cfg, _requeue_attempts=_requeue_attempts + 1,
-                    explicit=explicit))
+                try:
+                    target()
+                    self._maybe_requeue_preempted_review(review_run, dict(
+                        messages_snapshot=messages_snapshot, review_memory=review_memory, review_skills=review_skills,
+                        focus=focus, task_cfg=task_cfg, _requeue_attempts=_requeue_attempts + 1,
+                        explicit=explicit))
+                finally:
+                    finish_review_worker(self, review_run)
 
             # Carry the active profile into the review thread so MEMORY.md / skill review writes land in the
             # right profile.
             threading.Thread(target=propagate_context_to_thread(_target_with_requeue), daemon=True, name="bg-review").start()
         except Exception:
-            finish_background_review_run(self, review_run)
+            finish_review_worker(self, review_run)
             raise
+        return True
 
     _REVIEW_REQUEUE_MAX_ATTEMPTS = 3
 
@@ -819,7 +829,8 @@ class AIAgent(
         """
         try:
             # Not cancelled == ran to completion (or was never admitted).
-            if not review_run.cancel_requested.is_set() or kwargs.get("focus") is not None:
+            if (getattr(self, "_background_review_closing", False) is True
+                    or not review_run.cancel_requested.is_set() or kwargs.get("focus") is not None):
                 return
             if kwargs.get("_requeue_attempts", 0) > self._REVIEW_REQUEUE_MAX_ATTEMPTS:
                 logger.info("Preempted background review dropped after %d requeues", self._REVIEW_REQUEUE_MAX_ATTEMPTS)
@@ -918,6 +929,8 @@ class AIAgent(
     def close(self) -> None:
         """Release every resource this agent holds (idempotent); each phase is guarded so one failure never
         blocks the rest."""
+        from agent.review_lifecycle import cancel_owned_reviews
+        _quietly(cancel_owned_reviews, self)
         # close() is the hard owner boundary; shutdown_memory_provider() is idempotent so gateway pre-calls
         # never double-extract.
         session_messages = getattr(self, "_session_messages", None)

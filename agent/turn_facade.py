@@ -129,6 +129,8 @@ class TurnFacadeMixin:
                 try:
                     if lease is not None:
                         lease.start()
+                    from agent.review_cadence import prepare_skill_review_cadence
+                    prepare_skill_review_cadence(self)
                     result = run_conversation(
                         self, user_message, system_message, conversation_history, effective_task_id,
                         stream_callback, persist_user_message,

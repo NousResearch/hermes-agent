@@ -68,3 +68,10 @@ def source_for_event_actor(event: Any) -> Any:
     source = getattr(event, "source", None)
     user_id, user_name = event_actor_identity(event)
     return copy_session_source_with(source, user_id=user_id, user_name=user_name)
+
+
+def turn_author_for_event(event: Any) -> dict:
+    """Carry the current sender to memory hooks without changing the shared route."""
+    user_id, user_name = event_actor_identity(event)
+    return {"id": user_id, "name": user_name,
+            "is_bot": bool(getattr(getattr(event, "source", None), "is_bot", False))}

@@ -84,6 +84,7 @@ async def test_shared_group_source_authorizes_and_identifies_actual_actor():
     assert result is not None
     assert "User ID: `111`" in result
     assert "Tier: **admin**" in result
+    assert runner.hooks.emit_collect.call_args.args[1]["user_id"] == event.user_id
 
 
 @pytest.mark.asyncio

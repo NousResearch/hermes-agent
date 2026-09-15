@@ -19,6 +19,7 @@ import {
   activeBots,
   botCanonicalSessionId,
   botRowOwnsWorkspace,
+  botWorkingMood,
   previewKind,
   rosterActivityMatches,
   workerActiveAt
@@ -97,6 +98,18 @@ describe('which bots are working right now', () => {
     row({ name: 'analyst' })
   ]
 
+  it('shares source-exact group presence between row mood and the active filter', () => {
+    const local = row({ name: 'default', connectionId: 'local' })
+    const remote = row({ name: 'default', connectionId: 'remote', remoteSource: true })
+    const groupKeys = new Set(['remote::default'])
+    expect(activeBots([local, remote], null, false, NOW, 'local', groupKeys)).toEqual([remote])
+    expect(botWorkingMood(remote, null, false, 'local', NOW, groupKeys)).toBe('think')
+    expect(botWorkingMood(local, null, false, 'local', NOW, groupKeys)).toBe('idle')
+    groupKeys.clear()
+    expect(activeBots([local, remote], null, false, NOW, 'local', groupKeys)).toEqual([])
+    expect(botWorkingMood(remote, null, false, 'local', NOW, groupKeys)).toBe('idle')
+  })
+
   it('counts the focused live turn only for its connection-qualified owner', () => {
     const local = row({ name: 'analyst', connectionId: 'local' })
     const remote = row({ name: 'analyst', connectionId: 'remote', remoteSource: true })
@@ -105,7 +118,9 @@ describe('which bots are working right now', () => {
     expect(activeBots([local, remote], owner, false, NOW)).toEqual([])
     expect(activeBots([local, remote], null, true, NOW)).toEqual([])
     expect(activeBots([local, remote], { ...owner, authoritative: false }, true, NOW)).toEqual([])
-    expect(activeBots([row({ name: 'analyst', remoteSource: true })], { ...owner, connectionId: '' }, true, NOW)).toEqual([])
+    expect(
+      activeBots([row({ name: 'analyst', remoteSource: true })], { ...owner, connectionId: '' }, true, NOW)
+    ).toEqual([])
   })
 
   it('includes activity inside the liveness window and excludes activity outside it', () => {

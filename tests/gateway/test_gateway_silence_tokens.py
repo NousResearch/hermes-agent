@@ -1,6 +1,7 @@
 """Gateway intentional-silence token behavior."""
 
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -24,11 +25,12 @@ def _source():
     )
 
 
-def _event():
+def _event(*, internal: bool = False):
     return MessageEvent(
         text="side chatter",
         source=_source(),
         message_id="msg-42",
+        internal=internal,
     )
 
 
@@ -93,7 +95,7 @@ def test_failed_agent_result_never_counts_as_intentional_silence():
 
 
 @pytest.mark.asyncio
-async def test_silence_token_suppresses_delivery_but_preserves_transcript(monkeypatch, tmp_path):
+async def test_human_turn_gets_a_visible_fallback_for_a_silence_marker(monkeypatch, tmp_path):
     runner = _runner(monkeypatch, tmp_path)
     runner._run_agent = AsyncMock(return_value={
         "final_response": "[SILENT]",
@@ -112,10 +114,103 @@ async def test_silence_token_suppresses_delivery_but_preserves_transcript(monkey
         _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
     )
 
+    assert "silence marker" in response
+    assert "Try again or rephrase" in response
+
+
+@pytest.mark.asyncio
+async def test_internal_silence_token_suppresses_delivery_but_preserves_transcript(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "[SILENT]",
+        "messages": [
+            {"role": "user", "content": "side chatter"},
+            {"role": "assistant", "content": "[SILENT]"},
+        ],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+        "api_calls": 1,
+        "failed": False,
+    })
+
+    response = await runner._handle_message_with_agent(
+        _event(internal=True), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
     assert response == ""
     appended = [call.args[1] for call in runner.session_store.append_to_transcript.call_args_list]
     assert {"role": "assistant", "content": "[SILENT]"}.items() <= appended[-1].items()
     assert [msg["role"] for msg in appended if msg.get("role") in {"user", "assistant"}] == ["user", "assistant"]
+
+
+@pytest.mark.asyncio
+async def test_queued_human_turn_also_gets_the_visible_fallback():
+    runner = gateway_run.GatewayRunner(GatewayConfig())
+    runner._deliver_queued_first_response = AsyncMock()
+    turn_ctx = SimpleNamespace(
+        session_key="agent:main:telegram:group:-1001:12345",
+        stream_consumer_holder=[None],
+        persist_user_display_kind=None,
+        source=_source(),
+        _status_thread_metadata=None,
+        event_message_id=None,
+        inbound_message_id="msg-42",
+        run_generation=1,
+    )
+    result = {"final_response": "NO_REPLY", "failed": False}
+
+    await runner._run_agent_deliver_first_response(
+        turn_ctx, None, result, result, None,
+    )
+
+    assert "silence marker" in runner._deliver_queued_first_response.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_queued_terminal_turn_owns_the_silence_verdict(monkeypatch, tmp_path):
+    """The chain's LAST turn decides whether a bare marker may vanish, not the opener."""
+    runner = _runner(monkeypatch, tmp_path)
+    runner._MAX_INTERRUPT_DEPTH = 8
+    runner._run_agent = AsyncMock(return_value={"final_response": "NO_REPLY", "messages": []})
+    runner._is_goal_continuation_event = MagicMock(return_value=False)
+    runner._session_key_for_source = MagicMock(return_value="agent:main:telegram:group:-1001:12345")
+    runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="follow-up")
+    runner._adapter_for_source = MagicMock(return_value=None)
+    runner._refresh_agent_cache_message_count = AsyncMock()
+    turn_ctx = SimpleNamespace(
+        source=_source(), session_id="sid", session_key="agent:main:telegram:group:-1001:12345",
+        run_generation=1, _interrupt_depth=0, history=[], _status_thread_metadata=None,
+        context_prompt=None, result_holder=[None])
+    pending_event = SimpleNamespace(source=_source(), message_id="43", channel_prompt=None,
+                                    message_type=None, internal=True)
+
+    merged = await gateway_run.GatewayRunner._run_agent_queued_followup(
+        runner, turn_ctx, adapter=None, pending="hi again", pending_event=pending_event,
+        response="resp", result={"interrupted": True, "messages": []}, stream_task=None)
+
+    assert runner._run_agent.await_args.kwargs["persist_user_display_kind"] == "internal_notification"
+    assert merged["queued_terminal_display_kind"] == "internal_notification"
+
+    def _result(terminal_kind):
+        return {
+            "final_response": "[SILENT]", "tools": [], "history_offset": 0, "last_prompt_tokens": 0,
+            "api_calls": 1, "failed": False, "queued_terminal_inbound_id": "43",
+            "queued_terminal_display_kind": terminal_kind,
+            "messages": [{"role": "user", "content": "x"}, {"role": "assistant", "content": "[SILENT]"}],
+        }
+
+    # Human opener, internal terminal turn: silent.
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value=_result("internal_notification"))
+    assert await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1) == ""
+    # Internal opener, human terminal turn: visible fallback.
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value=_result(None))
+    response = await runner._handle_message_with_agent(
+        _event(internal=True), _source(), "agent:main:telegram:group:-1001:12345", 1)
+    assert "silence marker" in response
 
 
 @pytest.mark.asyncio
@@ -195,3 +290,34 @@ async def test_agent_end_hook_includes_model_and_provider(monkeypatch, tmp_path)
     )
     assert end_context["model"] == "gpt-5.6-terra"
     assert end_context["provider"] == "openai-codex"
+
+
+@pytest.mark.asyncio
+async def test_shared_route_keeps_current_actor_through_turn_runner(monkeypatch, tmp_path):
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.turn_context import TurnContext
+
+    runner = _runner(monkeypatch, tmp_path)
+    source = _source()
+    source.user_id = source.user_name = None
+    event = MessageEvent(text="hello", source=source, user_id="participant", user_name="Alice")
+    seen = []
+
+    class Agent:
+        def run_conversation(self, message, **kwargs):
+            seen.append(kwargs["turn_author"])
+            return {"final_response": "Hello", "messages": [], "api_calls": 1}
+
+    async def run_agent(**kwargs):
+        assert kwargs["source"] is source
+        assert kwargs["session_key"] == key
+        kwargs.pop("message_type", None)
+        ctx = TurnContext(**kwargs)
+        return TurnRunner(runner, ctx)._run_conversation_with_approval(Agent(), [], [], None, None)
+
+    key = runner._session_key_for_source(source)
+    runner.session_store.get_or_create_session.return_value.session_key = key
+    runner._run_agent = run_agent
+    await runner._handle_message_with_agent(event, source, key, 1)
+    assert seen == [{"id": event.user_id, "name": event.user_name, "is_bot": False}]
+    assert source.user_id is None

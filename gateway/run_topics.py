@@ -436,6 +436,11 @@ class GatewayTopicThreadsMixin:
         copied_source = source
         with suppress(Exception):
             copied_source = dataclasses.replace(source)
+            # Keep the live transport owner; multiplex routes may run under a
+            # profile that does not own the Discord adapter/token.
+            transport_ref = getattr(source, "_transport_adapter_ref", None)
+            if transport_ref is not None:
+                setattr(copied_source, "_transport_adapter_ref", transport_ref)
         future = safe_schedule_threadsafe(
             make_coro(copied_source), loop, logger=logger, log_message=f"{label} failed to schedule",
         )

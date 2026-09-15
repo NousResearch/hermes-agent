@@ -302,3 +302,11 @@ export function appendAssistantTextPart(
 
   return next
 }
+
+/** True when a visible user message follows `messageId` — the reader has moved
+ *  on, so a question card at `messageId` counts as answered. */
+export function answeredAfter(messages: ChatMessage[], messageId: string): boolean {
+  const at = messages.findIndex(message => message.id === messageId)
+
+  return at !== -1 && messages.slice(at + 1).some(message => message.role === 'user' && !message.hidden)
+}

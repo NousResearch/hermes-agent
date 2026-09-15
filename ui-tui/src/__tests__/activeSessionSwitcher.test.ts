@@ -1,3 +1,4 @@
+import type { SessionListRow } from '@hermes/shared/gateway-events'
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -28,7 +29,6 @@ import {
 } from '../components/activeSessionSwitcher.js'
 import { listRowStyle } from '../components/overlayPrimitives.js'
 import type { SessionActiveItem } from '../gatewayTypes.js'
-import type { SessionListItem } from '../gatewayTypes.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 describe('session orchestrator helpers', () => {
@@ -192,7 +192,7 @@ describe('unified Sessions overlay helpers', () => {
       { id: 'a', message_count: 1, preview: '', started_at: 0, title: 'A' },
       { id: 'b', message_count: 2, preview: '', started_at: 0, title: 'B' },
       { id: 'c', message_count: 3, preview: '', started_at: 0, title: 'C' }
-    ] satisfies SessionListItem[]
+    ] satisfies SessionListRow[]
 
     const live = [{ id: 'b', status: 'idle' }] satisfies SessionActiveItem[]
 

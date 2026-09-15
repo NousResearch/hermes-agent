@@ -703,6 +703,117 @@ class TestPruning:
         assert total <= MAX_PROCESSES
 
 
+class TestFinishedHandleRelease:
+    """Finished sessions must release their Popen/PTY OS handles immediately.
+
+    Regression for the "file descriptor limit" symptom: a finished-but-
+    unpruned session previously kept its Popen stdout pipe (or PTY master)
+    FD open until the finished-process TTL (FINISHED_TTL_SECONDS) elapsed.
+    Under heavy background churn the gateway could exhaust its FD limit even
+    though the registry never rejects spawns (it prunes oldest-finished at
+    MAX_PROCESSES instead) — the symptom was a retained-handle leak, not a
+    registry-cap rejection. poll()/wait()/read_log() serve from the buffered
+    output_buffer, never from the pipe, so closing the handles at finish is
+    lossless.
+    """
+
+    def test_move_to_finished_closes_popen_pipes(self, registry):
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(0.2)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+        )
+        session = _make_session(sid="proc_handle_close", exited=False)
+        session.process = proc
+        registry._running[session.id] = session
+
+        assert proc.stdout is not None
+        assert not proc.stdout.closed
+
+        # Simulate the reader loop finishing (process exits, EOF drained).
+        proc.wait(timeout=5)
+        session.exited = True
+        session.exit_code = proc.returncode
+        session.completion_reason = "exited"
+        registry._move_to_finished(session)
+
+        assert session.id in registry._finished
+        assert proc.stdout.closed, "finished session must release its stdout pipe FD"  # type: ignore[union-attr]
+
+    def test_move_to_finished_closes_pty(self, registry):
+        """PTY-backed sessions release the PTY master on finish too."""
+        pty_closed = {"closed": False}
+
+        class _FakePty:
+            def close(self):
+                pty_closed["closed"] = True
+
+        session = _make_session(sid="proc_pty_close", exited=True)
+        session._pty = _FakePty()
+        registry._finished[session.id] = session
+
+        registry._move_to_finished(session)
+        assert pty_closed["closed"]
+
+    def test_poll_still_serves_output_after_handle_release(self, registry):
+        """Output remains queryable after the pipes close — poll() reads the
+        buffered output, never the (now-closed) pipe."""
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "print('hello-finish'); import time; time.sleep(0.2)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            text=True,
+        )
+        session = _make_session(sid="proc_poll_after_close", exited=False)
+        session.process = proc
+        registry._running[session.id] = session
+
+        # Drain output like the reader loop would.
+        proc.wait(timeout=5)
+        try:
+            tail = proc.stdout.read() if proc.stdout else ""
+        except ValueError:
+            tail = ""
+        session.output_buffer = tail or ""
+        session.exited = True
+        session.exit_code = proc.returncode
+        session.completion_reason = "exited"
+        registry._move_to_finished(session)
+
+        assert proc.stdout.closed
+        result = registry.poll("proc_poll_after_close")
+        assert result["status"] == "exited"
+        assert "hello-finish" in result["output_preview"]
+
+    def test_prune_releases_handles_of_dropped_sessions(self, registry):
+        """TTL-prune must release handles of sessions that landed in
+        _finished without passing through _move_to_finished (direct inserts).
+        The release is idempotent, so double-close on the normal path is safe.
+        """
+        import time as _time
+
+        pty_closed = {"closed": False}
+
+        class _FakePty:
+            def close(self):
+                pty_closed["closed"] = True
+
+        session = _make_session(sid="proc_prune_release", exited=True)
+        session._pty = _FakePty()
+        # Force TTL expiry.
+        session.started_at = _time.time() - (FINISHED_TTL_SECONDS + 60)
+        registry._finished[session.id] = session
+
+        with registry._lock:
+            registry._prune_if_needed()
+
+        assert session.id not in registry._finished
+        assert pty_closed["closed"], "pruned session must release its PTY handle"
+
+
+
 # =========================================================================
 # Spawn env sanitization
 # =========================================================================
@@ -1911,6 +2022,7 @@ class TestSystemdCgroupIsolation:
 
         return fake_popen, captured
 
+    @pytest.mark.linux_only
     def test_wraps_in_systemd_scope_when_supervisor_and_available(
         self, registry, monkeypatch, _gateway_identity
     ):
@@ -2131,6 +2243,7 @@ class TestSystemdCgroupIsolation:
 
         assert session.systemd_unit == ""
 
+    @pytest.mark.linux_only
     def test_systemd_post_spawn_failure_never_kills_gateway_process_group(
         self, registry, monkeypatch, _gateway_identity
     ):
@@ -2165,6 +2278,7 @@ class TestSystemdCgroupIsolation:
         assert stop_unit.call_args.args[0].endswith(".scope")
         killpg.assert_not_called()
 
+    @pytest.mark.linux_only
     def test_pty_spawn_is_wrapped_in_systemd_scope(self, registry, monkeypatch, _gateway_identity):
         """Interactive executors receive the same sibling-cgroup isolation."""
         from ptyprocess import PtyProcess
@@ -2196,6 +2310,7 @@ class TestSystemdCgroupIsolation:
         assert argv[-3:] == ["/bin/bash", "-lic", "set +m; codex"]
         assert session.systemd_unit == f"hermes-worker-{session.id}.scope"
 
+    @pytest.mark.linux_only
     def test_pty_spawn_failure_reaps_scope_before_distinct_pipe_fallback(
         self, registry, monkeypatch, _gateway_identity
     ):
@@ -2251,6 +2366,7 @@ class TestSystemdCgroupIsolation:
             f"hermes-worker-{session.id}-pipe-fallback.scope"
         )
 
+    @pytest.mark.linux_only
     def test_pty_spawn_failure_does_not_fallback_when_scope_reap_fails(
         self, registry, monkeypatch, _gateway_identity
     ):
@@ -2345,6 +2461,7 @@ class TestSystemdCgroupIsolation:
         assert session.id in registry._finished
         assert session.id not in registry._running
 
+    @pytest.mark.linux_only
     def test_systemd_run_user_scope_available_caches_after_probe(
         self, registry, monkeypatch
     ):
@@ -2424,6 +2541,31 @@ class TestSystemdCgroupIsolation:
         assert "XDG_RUNTIME_DIR" not in os.environ
         assert "DBUS_SESSION_BUS_ADDRESS" not in os.environ
 
+    @pytest.mark.linux_only
+    def test_probe_succeeds_without_bin_true(self, monkeypatch):
+        """An absent ``/bin/true`` must not make a usable scope fail its probe."""
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", 0.0)
+        real_run = subprocess.run
+        executed = []
+
+        def systemd_run_on_nixos_shaped_root(argv, **kwargs):
+            # Simulate NixOS's missing executable, but run the selected replacement.
+            payload = argv[argv.index("--") + 1 :]
+            if payload[0] == "/bin/true":
+                return subprocess.CompletedProcess(payload, 127, stderr=b"No such file or directory")
+            executed.append(payload)
+            return real_run(payload, **kwargs)
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr("subprocess.run", systemd_run_on_nixos_shaped_root)
+
+        assert pr._systemd_run_user_scope_available() is True
+        assert len(executed) == 1, "payload must really run (exit 0) on the host, not just be spelled right"
+
+    @pytest.mark.linux_only
     def test_systemd_scope_first_probe_is_serialized(self, monkeypatch):
         """Concurrent first-use callers must wait for one definitive probe.
 
@@ -2471,6 +2613,7 @@ class TestSystemdCgroupIsolation:
         assert results == [True, True]
         assert len(probe_calls) == 1
 
+    @pytest.mark.linux_only
     def test_failed_systemd_probe_retries_after_cache_ttl(self, monkeypatch):
         import tools.process_registry as pr
 

@@ -52,6 +52,31 @@ def _first_hint_file(directory: Path):
     return None
 
 
+_NAV_COMMANDS = frozenset({"cd", "pushd"})
+_SHELL_OPERATORS = frozenset({"&&", "||", "|", ";", "&", ";;", "|&", "(", ")"})
+
+
+def _nav_targets(cmd: str) -> list:
+    """Operands of `cd` / `pushd` that begin a shell segment. `cd -` and bare `cd` yield nothing."""
+    lexer = shlex.shlex(cmd, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return []
+    targets, segment_start = [], True
+    for idx, token in enumerate(tokens):
+        if token in _SHELL_OPERATORS:
+            segment_start = True
+            continue
+        if segment_start and token in _NAV_COMMANDS:
+            operand = next((t for t in tokens[idx + 1:] if t in _SHELL_OPERATORS or not t.startswith("-")), None)
+            if operand and operand not in _SHELL_OPERATORS:
+                targets.append(operand)
+        segment_start = False
+    return targets
+
+
 class SubdirectoryHintTracker:
     """Track which directories the agent visits and load hints on first access.
 
@@ -59,7 +84,11 @@ class SubdirectoryHintTracker:
     and append the returned text to the tool result.
     """
 
-    def __init__(self, working_dir: Optional[str] = None):
+    def __init__(self, working_dir: Optional[str] = None, *, enabled: bool = True):
+        # ``enabled=False`` mirrors ``skip_context_files``: a session that opted out of
+        # AGENTS.md/CLAUDE.md injection at startup must not get the same files spliced into
+        # tool results later — cron jobs relaying exact stdout leaked them to chat (#9441).
+        self.enabled = enabled
         self.working_dir = Path(working_dir or os.getcwd()).resolve()
         # The working dir is pre-marked loaded (startup context handles it).
         self._loaded_dirs: Set[Path] = {self.working_dir}
@@ -73,6 +102,8 @@ class SubdirectoryHintTracker:
 
     def check_tool_call(self, tool_name: str, tool_args: Dict[str, Any]) -> Optional[str]:
         """Return formatted hint text for newly visited directories, or None."""
+        if not self.enabled:
+            return None
         all_hints = [h for d in self._extract_directories(tool_name, tool_args) if (h := self._load_hints_for_directory(d))]
         return "\n\n" + "\n\n".join(all_hints) if all_hints else None
 
@@ -116,6 +147,12 @@ class SubdirectoryHintTracker:
             tokens = shlex.split(cmd)
         except ValueError:
             tokens = cmd.split()
+        # `cd backend && ls`: a bare directory name has no `/` or `.`, so the generic filter below drops
+        # it; the operand of a navigation command is a path by construction (#11032). Only a `cd` at the
+        # START of a shell segment counts (`echo cd backend` is prose); punctuation-aware tokenizing keeps
+        # a quoted `'backend;'` literal while splitting bare `backend;ls` at the operator.
+        for target in _nav_targets(cmd):
+            self._add_path_candidate(target, candidates)
         for token in tokens:
             if token.startswith(("-", "http://", "https://", "git@")) or ("/" not in token and "." not in token):
                 continue

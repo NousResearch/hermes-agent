@@ -72,7 +72,9 @@ def _owns_result(owner: str, parent: str | None) -> bool:
         return True
     from hermes_state import SessionDB
 
-    db = SessionDB()
+    # Pure lineage read on the hot path of every retained-result load; a writable open here
+    # was one more writer handle per call inside the gateway (#100896).
+    db = SessionDB(read_only=True)
     try:
         return db.get_compression_tip(parent) == owner
     finally:

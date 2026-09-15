@@ -140,6 +140,8 @@ def _run_and_exit_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: object = None,
+    resume: object = None,
+    reasoning: object = None,
 ) -> None:
     try:
         from hermes_cli.oneshot import run_oneshot
@@ -151,6 +153,8 @@ def _run_and_exit_oneshot(
             toolsets=toolsets,
             skills=skills,
             usage_file=usage_file,
+            resume=resume,
+            reasoning=reasoning,
         )
     except KeyboardInterrupt:
         rc = 130
@@ -356,6 +360,7 @@ from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
+from hermes_cli.subcommands.vault import build_vault_parser
 from hermes_cli.subcommands.moa import build_moa_parser
 from hermes_cli.subcommands.fallback import build_fallback_parser
 from hermes_cli.subcommands.worktree import build_worktree_parser
@@ -448,18 +453,15 @@ def _resolve_sudo_user_profile_env(name: str) -> str | None:
     sudo invocations the best signal is SUDO_USER: root is only doing the
     privileged install/start action; the profile store belongs to the user.
     """
-    if name == "default" or not hasattr(os, "geteuid") or os.geteuid() != 0:
+    if name == "default":
         return None
-    sudo_user = os.environ.get("SUDO_USER", "").strip()
-    if not sudo_user or sudo_user == "root":
-        return None
-    try:
-        import pwd
+    from hermes_constants import sudo_invoker_default_home
 
-        candidate = Path(pwd.getpwnam(sudo_user).pw_dir) / ".hermes" / "profiles" / name
-        return str(candidate) if candidate.is_dir() else None
-    except Exception:
+    sudo_home = sudo_invoker_default_home()
+    if sudo_home is None:
         return None
+    candidate = sudo_home / "profiles" / name
+    return str(candidate) if candidate.is_dir() else None
 
 
 def _under_gateway_supervisor(argv: list) -> bool:
@@ -492,6 +494,17 @@ def _under_gateway_supervisor(argv: list) -> bool:
     ).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _desktop_ssh_backend(argv: list) -> bool:
+    """A Desktop-owned ``serve --ssh-session-token-file`` child has a fixed identity too.
+
+    The Desktop client names the remote profile explicitly (``--profile <name>``, or none for
+    the root home). Following the remote host's sticky ``active_profile`` instead silently
+    re-homes the backend into a profile the UI never asked for, so Settings read one
+    ``config.yaml`` and the user edits another (KC's "nothing sticks over SSH").
+    """
+    return "--ssh-session-token-file" in argv
+
+
 def _apply_profile_override() -> None:
     """Pre-parse --profile/-p and set HERMES_HOME before imports."""
     argv = sys.argv[1:]
@@ -506,7 +519,7 @@ def _apply_profile_override() -> None:
     if profile_name is None and hermes_home_env and Path(hermes_home_env).parent.name == "profiles":
         return
 
-    if profile_name is None and not _under_gateway_supervisor(argv):
+    if profile_name is None and not _under_gateway_supervisor(argv) and not _desktop_ssh_backend(argv):
         try:
             from hermes_constants import get_default_hermes_root
 
@@ -591,20 +604,14 @@ load_hermes_dotenv(
 # is read from the same parse to avoid a second full load_config() (~17ms).
 _FORCE_IPV4_EARLY = False
 try:
-    # read_raw_config()'s (mtime, size)-keyed cache means this SAME parse serves
-    # hermes_logging and later raw reads: 3-4 config.yaml parses become one.
-    from hermes_cli.config import read_raw_config as _read_raw_early
+    # The effective-config cache (shared raw parse with read_raw_config()) means this SAME parse
+    # serves hermes_logging, hermes_time and later raw reads: 3-4 config.yaml parses become one.
+    # Managed overlay included: administrator-pinned redact_secrets / force_ipv4 win here too.
+    from hermes_cli.config_effective import load_user_config_effective as _load_effective_early
 
     _cfg_path = get_hermes_home() / "config.yaml"
     if _cfg_path.exists():
-        _early_cfg_raw = _read_raw_early() or {}
-        # Managed scope overlay: administrator-pinned redact_secrets /
-        # force_ipv4 must win here too (load_config isn't usable yet). Fail-open.
-        try:
-            from hermes_cli import managed_scope
-            _early_cfg_raw = managed_scope.apply_managed_overlay(_early_cfg_raw)
-        except Exception:
-            pass
+        _early_cfg_raw = _load_effective_early(_cfg_path)
         if "HERMES_REDACT_SECRETS" not in os.environ:
             _early_sec_cfg = _early_cfg_raw.get("security", {})
             if isinstance(_early_sec_cfg, dict):
@@ -707,6 +714,8 @@ from hermes_cli.main_provider_setup import (
     _clear_stale_openai_base_url,
     _is_profile_api_key_provider,
     _named_custom_provider_map,
+    _offer_reasoning_after_pick,
+    _prompt_main_reasoning_effort,
     _prompt_provider_choice,
     _remove_custom_provider,
 )
@@ -942,7 +951,9 @@ def _auth_store_logged_in(auth_file: Path, registry, strict_profile_scope: bool)
 
 
 def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
-    """Check if at least one inference provider is usable.
+    """Check if at least one inference provider is usable. Never creates one: the Nous free tier
+    counts only once its identity exists, and the boot bootstrap (``hermes_cli.free_tier_bootstrap``)
+    is the only thing that creates it; ``cmd_chat`` runs the bootstrap before asking.
 
     ``strict_profile_scope``: the caller has bound a NAMED profile's home and
     secret scope and wants an answer for that profile only — launch-process
@@ -1027,6 +1038,12 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
         except Exception:
             pass
 
+    # Nothing explicit anywhere: an existing Nous free-tier identity counts while the tier is on.
+    try:
+        from hermes_cli.anon_auth import guest_enabled, has_guest
+        return guest_enabled() and has_guest()
+    except Exception as exc:
+        logger.debug("free tier check on first run skipped: %s", exc)
     return False
 
 
@@ -1140,14 +1157,16 @@ def _resolve_workspace_key() -> Optional[str]:
 
 @contextlib.contextmanager
 def _session_db():
-    """Yield a ``SessionDB`` (lazy import, so test patches on ``hermes_state``
-    intercept). Open failures yield None and any error raised by the ``with``
-    body is swallowed — callers fall through to their ``return None``."""
+    """Yield a read-only ``SessionDB`` (lazy import, so test patches on ``hermes_state``
+    intercept). Every caller is a lookup (last session, title → id, recorded cwd), so it
+    never opens a writer beside the one the CLI acquires from the registry a moment later.
+    Open failures yield None and any error raised by the ``with`` body is swallowed —
+    callers fall through to their ``return None``."""
     db = None
     try:
         from hermes_state import SessionDB
 
-        db = SessionDB()
+        db = SessionDB(read_only=True)
     except Exception:
         pass
     try:
@@ -1319,12 +1338,13 @@ def _create_titled_session(title: str) -> Optional[str]:
     """
     db = None
     try:
-        import uuid as _uuid
+        from hermes_state_ids import new_session_id as mint_session_id
+        from hermes_state_registry import acquire
 
-        from hermes_state import SessionDB
-
-        new_session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:6]}"
-        db = SessionDB()
+        new_session_id = mint_session_id()
+        # The CLI acquires the registry handle for this same path moments later; share it
+        # instead of minting a second writer for one INSERT (close() releases the refcount).
+        db = acquire()
         db.create_session(new_session_id, source="cli")
         db.set_session_title(new_session_id, title)
         return new_session_id
@@ -1430,6 +1450,15 @@ def _apply_in_dir(args) -> None:
     except OSError as e:
         print(f"Error: cannot enter --in directory {in_dir}: {e}")
         sys.exit(1)
+    # Every cwd consumer (resolve_agent_cwd -> Codex app-server thread cwd, the
+    # terminal tool, context-file discovery) prefers TERMINAL_CWD over the process
+    # cwd, so a value inherited from a parent surface, the shell or .env outlives
+    # this chdir and re-homes the session in the old directory (#106220). Refresh
+    # it. An unset variable stays unset: the backends then derive from the new
+    # process cwd (local exports it at cli import, docker mounts it, ssh and
+    # container backends keep their own remote/sandbox default).
+    if os.environ.get("TERMINAL_CWD", "").strip():
+        os.environ["TERMINAL_CWD"] = _target_dir
     args.no_restore_cwd = True
 
 
@@ -1662,7 +1691,11 @@ def cmd_chat(args):
 
     _warn_retired_xai_models()
 
-    # First-run guard: check if any provider is configured before launching
+    # First-run guard: the free-tier bootstrap runs first (synchronously here; it is the only thing
+    # that may create the identity), then the inventory decides whether setup is needed.
+    from hermes_cli.free_tier_bootstrap import run_bootstrap
+
+    run_bootstrap(announce=False)
     if not _has_any_provider_configured():
         _first_run_setup_guard(args)
         return
@@ -1970,6 +2003,10 @@ def select_provider_and_model(args=None):
     if selected_provider == "aux-config":
         _aux_config_menu()
         return
+    if selected_provider == "reasoning":
+        # Effort for the CURRENT default model, no model change.
+        _prompt_main_reasoning_effort(current_model, active or "")
+        return
 
     # Provider-specific setup + model selection. Flows resolve the
     # _model_flow_* names at call time so test monkeypatches on
@@ -1996,6 +2033,10 @@ def select_provider_and_model(args=None):
         or _is_profile_api_key_provider(selected_provider)
     ):
         _model_flow_api_key_provider(config, selected_provider, current_model)
+
+    # Every flow persists through _save_model_choice; a changed model.default means a pick
+    # landed, so offer its reasoning effort here once instead of inside each flow.
+    _offer_reasoning_after_pick(current_model)
 
     # Post-switch cleanup: switching to a named provider (anything except
     # "custom") leaves a stale OPENAI_BASE_URL in ~/.hermes/.env that poisons
@@ -2606,6 +2647,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "resume",
         "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
+        "vault",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
         "browser",
         "verify",
@@ -2879,6 +2921,10 @@ def _run_oneshot_from_args(args) -> None:
     Bypasses cli.py entirely; _run_and_exit_oneshot never returns.
     """
     _confirm_startup_expensive_model_override(args)
+    # -z honors --resume/-c/--in exactly like chat (#105892): normalize BEFORE the
+    # oneshot exit path takes over, else the flags parse fine but silently do nothing
+    # and the turn starts a fresh session (every wire request loses all history).
+    _resolve_chat_session_args(args, use_tui=False)
     _run_and_exit_oneshot(
         args.oneshot,
         model=getattr(args, "model", None),
@@ -2886,6 +2932,8 @@ def _run_oneshot_from_args(args) -> None:
         toolsets=getattr(args, "toolsets", None),
         skills=getattr(args, "skills", None),
         usage_file=getattr(args, "usage_file", None),
+        resume=getattr(args, "resume", None),
+        reasoning=getattr(args, "reasoning", None),
     )
 
 
@@ -3243,6 +3291,7 @@ def _build_cli_parser():
     build_insights_parser(subparsers, cmd_insights=cmd_insights)
     build_monitoring_parser(subparsers, cmd_monitoring=cmd_monitoring)
     build_claw_parser(subparsers, cmd_claw=cmd_claw)
+    build_vault_parser(subparsers)
     build_update_parser(subparsers, cmd_update=cmd_update)
     build_uninstall_parser(subparsers, cmd_uninstall=cmd_uninstall)
     build_acp_parser(subparsers, cmd_acp=cmd_acp)

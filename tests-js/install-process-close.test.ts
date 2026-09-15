@@ -24,6 +24,7 @@ it('waits for native close, not exit, and retains a close observed before hand-o
 
 it('fails if the launched process never closes', async () => {
   vi.useFakeTimers()
+
   try {
     const waitForClose = observeProcessClose(Object.assign(new EventEmitter(), { stdio: [], exitCode: null, signalCode: null }))
     const completion = expect(waitForClose(2_000)).rejects.toThrow('Electron process did not close')

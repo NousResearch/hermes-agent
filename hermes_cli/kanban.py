@@ -63,10 +63,11 @@ def _run_state_kwargs(args: argparse.Namespace, cmd: str) -> tuple[Optional[dict
     return ({} if st is None else {"state_type": st, "state_name": sn}), 0
 
 
-def _parse_workspace_flag(value: str) -> tuple[str, Optional[str]]:
-    """``--workspace`` -> ``(kind, path|None)``: ``scratch``, ``worktree``, ``worktree:<p>``, ``dir:<p>``."""
+def _parse_workspace_flag(value: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """``--workspace`` -> ``(kind, path|None)``: ``scratch``, ``worktree``, ``worktree:<p>``, ``dir:<p>``.
+    Omitted -> ``(None, None)`` so ``create_task`` can tell "default" from an explicit scratch."""
     if not value:
-        return ("scratch", None)
+        return (None, None)
     v = value.strip()
     if v in {"scratch", "worktree"}:
         return (v, None)
@@ -1013,13 +1014,13 @@ def _cmd_promote(args: argparse.Namespace) -> int:
     author = _profile_author()
     # Dedupe while preserving order; positional task_id always first.
     ids = list(dict.fromkeys(_bulk_ids(args)))
-    dry_run, force = bool(args.dry_run), bool(args.force)
+    dry_run = bool(args.dry_run)
 
     results: list[dict[str, object]] = []
     with kbc.connect_closing() as conn:
         for tid in ids:
-            ok, err = kb.promote_task(conn, tid, actor=author, reason=reason, force=force, dry_run=dry_run)
-            results.append({"task_id": tid, "promoted": ok, "dry_run": dry_run, "forced": force,
+            ok, err = kb.promote_task(conn, tid, actor=author, reason=reason, dry_run=dry_run)
+            results.append({"task_id": tid, "promoted": ok, "dry_run": dry_run,
                             "reason": reason, "error": err})
 
     failed = [r for r in results if not r["promoted"]]
@@ -1073,6 +1074,14 @@ def _cmd_stats(args: argparse.Namespace) -> int:
 
 
 def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
+    delivery_metadata = {
+        key: value
+        for key, value in (
+            ("parent_chat_id", getattr(args, "parent_chat_id", None)),
+            ("guild_id", getattr(args, "guild_id", None)),
+        )
+        if value
+    }
     with kbc.connect_closing() as conn:
         if kb.get_task(conn, args.task_id) is None:
             return _err(f"no such task: {args.task_id}")
@@ -1082,6 +1091,7 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
             user_id_alt=getattr(args, "user_id_alt", None),
             notifier_profile=args.notifier_profile or _profile_author(),
             delivery_mode=getattr(args, "delivery_mode", None),
+            delivery_metadata=delivery_metadata or None,
         )
     print(f"Subscribed {args.platform}:{args.chat_id}" + (f":{args.thread_id}" if args.thread_id else "")
           + f" to {args.task_id}")

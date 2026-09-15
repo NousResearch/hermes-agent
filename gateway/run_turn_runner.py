@@ -20,7 +20,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
-from agent.replay_cleanup import strip_stale_dangerous_confirmations
+from agent.replay_cleanup import canonicalize_replay_history
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
@@ -33,6 +33,24 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+# Exact refusals retained for older adapters/connectors without destination preflight.
+# Substring matching would also silence transient thread-resolution errors.
+_CARD_DESTINATION_REFUSALS = {
+    "No Slack thread target",
+    "slack task_card requires a thread anchor",
+    "slack task_card requires a thread anchor (Slack streams are thread replies)",
+}
+
+
+def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
+    """True when the adapter class renders native approval buttons. BasePlatformAdapter subclasses
+    say so through ``supports_exec_approval_buttons``; anything else (test doubles, relay-style
+    duck types) counts when it defines ``send_exec_approval`` itself."""
+    probe = getattr(adapter_cls, "supports_exec_approval_buttons", None)
+    if callable(probe) and issubclass(adapter_cls, BasePlatformAdapter):
+        return bool(probe())
+    return getattr(adapter_cls, "send_exec_approval", None) is not None
 
 
 class _ExecApprovalDeclined(RuntimeError):
@@ -298,11 +316,13 @@ class TurnRunner:
         task_order: List[str] = dataclasses.field(default_factory=list)
         fallback_msg_id: Optional[str] = None
         native_failed: bool = False
-        # TERMINAL authorization refusal, distinct from native_failed: the
-        # connector refused this destination, so no later publication in this
-        # turn may re-deliver the task text through the text fallback. Declared
-        # rather than set dynamically so the state is visible where it lives.
-        egress_declined: bool = False
+        # TERMINAL for the turn, distinct from native_failed: no later publication
+        # in this turn may deliver task text through the native lane OR the text
+        # fallback. Two causes, both properties of the destination rather than of
+        # one attempt: the connector's egress guard refused the chat, or the chat
+        # cannot host a card (no thread anchor). Declared rather than set
+        # dynamically so the state is visible where it lives.
+        publication_suppressed: bool = False
         anonymous_seq: int = 0
 
         @staticmethod
@@ -348,7 +368,7 @@ class TurnRunner:
         text = st.fallback_text()
         from gateway.relay.egress import declined_send
 
-        if getattr(st, "egress_declined", False):
+        if st.publication_suppressed:
             return
         if st.fallback_msg_id:
             result = await st.adapter.edit_message(
@@ -366,7 +386,7 @@ class TurnRunner:
                     "guard; suppressing progress delivery for the rest of this "
                     "turn (the destination is not approved)"
                 )
-                st.egress_declined = True
+                st.publication_suppressed = True
                 return
         result = await self._send_progress_text(st, text)
         if getattr(result, "success", False) and getattr(result, "message_id", None):
@@ -376,10 +396,21 @@ class TurnRunner:
         ctx = self._ctx
         if not st.tasks:
             return
-        if getattr(st, "egress_declined", False):
-            # The connector refused this destination earlier in the turn; every
-            # later publication would re-deliver the same task text there.
+        if st.publication_suppressed:
+            # Publication was suppressed earlier in the turn (egress refusal or a chat
+            # that cannot host a card); every later publication would re-deliver the
+            # same task text there.
             return
+        # Resolve eligibility in the owning adapter BEFORE transport I/O: a first
+        # timeout/disconnect must not turn an un-cardable chat into text fallback.
+        # Optional for older adapters; only an explicit False refuses publication.
+        destination_supported = getattr(st.adapter, "native_task_card_destination_supported", None)
+        if callable(destination_supported) and destination_supported(
+            ctx.source.chat_id, reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata,
+        ) is False:
+            self._task_card_uncardable_destination(st)
+            if st.publication_suppressed:
+                return
         if not st.native_failed:
             result = await st.adapter.send_native_task_card_progress(
                 chat_id=ctx.source.chat_id, tasks=st.visible_tasks(), title="Hermes is working",
@@ -399,7 +430,7 @@ class TurnRunner:
                 # event skipped this branch (the lane is already "failed") and
                 # went straight to the text fallback. A refusal does not expire
                 # after one tick.
-                st.egress_declined = True
+                st.publication_suppressed = True
                 st.native_failed = True
                 logger.warning(
                     "Slack native task-card progress DECLINED by the connector's "
@@ -408,12 +439,36 @@ class TurnRunner:
                 )
                 return
             st.native_failed = True
-            logger.warning(
-                "Slack native task-card progress failed; falling back "
-                "to an editable text update: %s", getattr(result, "error", "unknown error"),
-            )
+            if getattr(result, "error", None) in _CARD_DESTINATION_REFUSALS:
+                self._task_card_uncardable_destination(st, getattr(result, "error", "unknown error"))
+                if st.publication_suppressed:
+                    return
+            else:
+                logger.warning(
+                    "Slack native task-card progress failed; falling back "
+                    "to an editable text update: %s", getattr(result, "error", "unknown error"),
+                )
         # Once the native rail fails, every later lifecycle event edits the same fallback message.
         await self._task_card_send_or_edit_fallback(st)
+
+    def _task_card_uncardable_destination(self, st, reason: str = "no thread anchor") -> None:
+        """The chat cannot host a card (flat DM: no thread anchor) — a property of the destination,
+        not a transient outage. The text fallback exists to keep a WORKING card lane live through a
+        transient failure, not to invent text bubbles the operator never asked for: with Slack's tier
+        default (``tool_progress: off``) the lane goes silent for the turn. An operator who WROTE
+        ``new``/``all`` asked for text progress, so the editable fallback carries it instead."""
+        if self._ctx.tool_progress_enabled:
+            st.native_failed = True
+            logger.info(
+                "Slack native task cards are unsupported for this destination (%s); "
+                "tool progress continues as an editable text update", reason,
+            )
+            return
+        st.publication_suppressed = True
+        logger.info(
+            "Slack native task cards are unsupported for this destination (%s); "
+            "tool progress stays off for this turn", reason,
+        )
 
     def _task_card_drain(self, st) -> bool:
         changed = False
@@ -427,8 +482,8 @@ class TurnRunner:
         return changed
 
     async def _send_native_task_card_progress(self, adapter) -> None:
-        """Drain the progress queue into Slack-native plan/task cards; on any native failure, fall
-        back to an editable in-thread message so progress stays live.
+        """Drain progress into native cards; supported destinations retain editable fallback.
+        Unsupported destinations and egress refusals suppress publication, never finalization.
 
         See #29483.
         """
@@ -876,7 +931,7 @@ class TurnRunner:
         delta_sinks = [sc for sc in ((stream_consumer if want_stream_deltas else None), stts) if sc is not None]
         stream_delta_cb = None
         if delta_sinks:
-            def stream_delta_cb(text: str) -> None:
+            def stream_delta_cb(text: Optional[str]) -> None:
                 if ctx._run_still_current():
                     for sink in delta_sinks:
                         sink.on_delta(text)
@@ -884,6 +939,12 @@ class TurnRunner:
         def interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
                 return
+            if stts is not None:
+                # Flush accepted deltas; completed commentary is a separate speech segment.
+                stts.on_delta(None)
+                if not already_streamed:
+                    stts.on_delta(text)
+                    stts.on_delta(None)
             if stream_consumer is not None:
                 stream_consumer.on_segment_break() if already_streamed else stream_consumer.on_commentary(text)
             elif not already_streamed and ctx._status_adapter and str(text or "").strip():
@@ -1176,7 +1237,9 @@ class TurnRunner:
                 if pdc is not None:
                     pdc[ctx.session_key] = bg_release
         # display.memory_notifications: off | on (generic "💾 Memory updated", default) | verbose.
-        mem_notif = ctx.user_config.get("display", {}).get("memory_notifications")
+        # `display:` present-but-null yields None, not the {} default (same `or {}` guard as
+        # display_config.py / runtime_footer.py).
+        mem_notif = (ctx.user_config.get("display") or {}).get("memory_notifications")
         if isinstance(mem_notif, bool):
             mem_notif = "on" if mem_notif else "off"
         agent.memory_notifications = str(mem_notif).lower() if mem_notif else "on"
@@ -1301,7 +1364,7 @@ class TurnRunner:
         desc = approval_data.get("description", "dangerous command")
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
-        if getattr(type(adapter), "send_exec_approval", None) is not None:
+        if _renders_exec_approval_buttons(type(adapter)):
             try:
                 fut = self._schedule(
                     adapter.send_exec_approval(
@@ -1401,9 +1464,9 @@ class TurnRunner:
                     "conversation context (possible FTS write corruption)",
                     ctx.session_key, len(agent_history), len(selected),
                 )
-                # The live history bypassed _build_gateway_agent_history's cleanup — re-apply the
-                # stale-confirmation expiry so a dangerous confirmation can't slip through.
-                agent_history = strip_stale_dangerous_confirmations(selected, now=time.time())
+                # The live history bypassed _build_gateway_agent_history's cleanup — re-apply
+                # the full canonicalization so no replay transform can slip through.
+                agent_history = canonicalize_replay_history(selected)
         # MEDIA paths already in history are excluded from this turn's extraction (compression-safe).
         return agent_history, observed_group_context, _collect_history_media_paths(agent_history)
 
@@ -1507,6 +1570,11 @@ class TurnRunner:
         try:
             api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
             kwargs = {"conversation_history": agent_history, "task_id": ctx.session_id}
+            if _accepts_keyword(agent.run_conversation, "turn_author"):
+                # Sent on every transport: a provider gating durable writes needs the bot flag in a DM too.
+                kwargs["turn_author"] = ctx.turn_author if ctx.turn_author is not None else {
+                                         "id": ctx.source.user_id or None, "name": ctx.source.user_name or None,
+                                         "is_bot": bool(getattr(ctx.source, "is_bot", False))}
             if persist_user_message_override is not None:
                 kwargs["persist_user_message"] = persist_user_message_override
             elif observed_group_context:

@@ -10,7 +10,10 @@ Most capabilities should NOT be core tools. Long-form: `website/docs/developer-g
 `registry.register()` at import time; `model_tools.py` imports the registry and triggers discovery
 (`discover_builtin_tools()`), then `run_agent.py`, `cli.py`, `batch_runner.py`, `environments/`
 consume it. Any `tools/*.py` with a top-level `registry.register()` is imported automatically — no
-manual import list. The registry handles schema collection, dispatch (`handle_function_call()`),
+manual import list. A tool that is a whole package (`tools/connectors/`) registers from
+`tools/<pkg>/tool.py`, the only file discovery scans inside a package; every sibling in the package
+is a library by construction, and the package needs an `__init__.py` or discovery skips it with a
+warning (setuptools would drop it from the wheel). The registry handles schema collection, dispatch (`handle_function_call()`),
 availability (`check_fn`, TTL-cached process-wide), and error wrapping. **All handlers return a JSON
 string.**
 

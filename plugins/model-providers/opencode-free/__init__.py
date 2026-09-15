@@ -8,6 +8,7 @@ hermes_cli.models.opencode_zen_free_runtime). Select via ``/model free``.
 
 from typing import Any
 
+from agent.reasoning_effort import ox_alpha_reasoning_extras
 from hermes_cli import __version__ as _HERMES_VERSION
 from providers import register_provider
 from providers.base import ProviderProfile
@@ -17,22 +18,13 @@ class OpenCodeFreeProfile(ProviderProfile):
     """OpenCode Free — keyless, with Ox Alpha reasoning controls.
 
     Ox Alpha (x-preview-f-free) is also reachable via opencode-zen with the same wire
-    contract; the translation lives in the zen plugin and is resolved through the
-    registered zen profile's module so the two providers can never drift.
+    contract; both profiles call ``agent.reasoning_effort.ox_alpha_reasoning_extras``.
     """
 
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        try:
-            import sys
-
-            from providers import get_provider_profile
-
-            zen_module = sys.modules[type(get_provider_profile("opencode-zen")).__module__]
-            return zen_module._build_ox_alpha_reasoning_extras(reasoning_config, model)
-        except Exception:
-            return {}, {}
+        return ox_alpha_reasoning_extras(reasoning_config, model)
 
 
 opencode_free = OpenCodeFreeProfile(
@@ -48,9 +40,12 @@ opencode_free = OpenCodeFreeProfile(
         "X-Title": "Hermes Agent",
         "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
     },
-    # laguna is the fastest non-UA-gated free model; big-pickle 429s every
-    # client except the opencode CLI's own User-Agent.
-    default_aux_model="laguna-s-2.1-free",
+    # laguna-s-2.1-free was delisted by the relay 2026-09-09 (anon 401). Of the
+    # surviving anonymous models mimo-v2.5-free is the only one that answers
+    # promptly (200 in 2-4s on every probe, 2026-09-13); nemotron-3.5-lightning-free
+    # hung >90s with no bytes on 4/4 probes and nemotron-3-ultra-free took ~40s.
+    # big-pickle 429s every client except the opencode CLI's own User-Agent.
+    default_aux_model="mimo-v2.5-free",
 )
 
 register_provider(opencode_free)

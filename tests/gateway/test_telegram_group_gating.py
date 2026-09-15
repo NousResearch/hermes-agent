@@ -7,6 +7,23 @@ from gateway.config import Platform, PlatformConfig, load_gateway_config
 from gateway.platforms.event import MessageType
 from gateway.session import SessionSource, build_session_key
 
+import os
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _restore_telegram_env():
+    """The YAML→env bridge tests below write TELEGRAM_* into os.environ; an explicit env value now
+    beats ``config.extra`` for the owning profile, so a leaked bridge value would silently override the
+    ``extra`` the later adapter tests construct with."""
+    saved = {k: v for k, v in os.environ.items() if k.startswith("TELEGRAM_")}
+    yield
+    for k in [k for k in os.environ if k.startswith("TELEGRAM_")]:
+        if k not in saved:
+            del os.environ[k]
+    os.environ.update(saved)
+
 
 def _make_adapter(
     require_mention=None,
@@ -22,6 +39,7 @@ def _make_adapter(
     group_allowed_chats=None,
     guest_mode=None,
     observe_unmentioned_group_messages=None,
+    bots_require_mention=None,
     bot_username="hermes_bot",
 ):
     from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -65,6 +83,8 @@ def _make_adapter(
         extra["guest_mode"] = guest_mode
     if observe_unmentioned_group_messages is not None:
         extra["observe_unmentioned_group_messages"] = observe_unmentioned_group_messages
+    if bots_require_mention is not None:
+        extra["bots_require_mention"] = bots_require_mention
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -965,3 +985,54 @@ def test_addressed_commands_keep_their_argument_boundary():
                 assert event.text == f"/{command}" + (f" {args}" if args else "")
                 assert event.user_id == "111"
     asyncio.run(check())
+def _bot_sender_message(
+    text="hello", *, chat_id=-100, sender_id=555, reply_to_bot=False, entities=None
+):
+    """Group message authored by another bot (is_bot=True, id != this bot's 999)."""
+    msg = _group_message(
+        text,
+        chat_id=chat_id,
+        from_user_id=sender_id,
+        reply_to_bot=reply_to_bot,
+        entities=entities,
+    )
+    msg.from_user.is_bot = True
+    return msg
+
+
+def test_bot_quote_reply_loop_is_broken_by_bots_require_mention():
+    """With require_mention alone the quote-reply-to-bot branch returns True unconditionally, so
+    two bots admitting each other's messages answer each other forever. The flag closes exactly
+    that path; a bot message that does @mention this bot still goes through."""
+    loop_adapter = _make_adapter(require_mention=True)
+    assert (
+        loop_adapter._should_process_message(
+            _bot_sender_message("auto-reply", reply_to_bot=True)
+        )
+        is True
+    )
+
+    gated = _make_adapter(require_mention=True, bots_require_mention=True)
+    assert (
+        gated._should_process_message(
+            _bot_sender_message("auto-reply", reply_to_bot=True)
+        )
+        is False
+    )
+
+    text = "@hermes_bot ping"
+    assert (
+        gated._should_process_message(
+            _bot_sender_message(text, entities=[_mention_entity(text)])
+        )
+        is True
+    )
+
+
+def test_human_reply_unaffected_by_bots_require_mention():
+    gated = _make_adapter(require_mention=True, bots_require_mention=True)
+
+    assert (
+        gated._should_process_message(_group_message("replying", reply_to_bot=True))
+        is True
+    )

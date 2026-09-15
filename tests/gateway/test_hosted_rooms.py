@@ -1339,3 +1339,26 @@ def test_room_log_page_bound_counts_bytes_not_characters(tmp_path, monkeypatch):
     assert [event["seq"] for event in page["events"]] == [1]
     assert page_bytes(page) <= budget
     assert page["has_more"] is True
+
+
+def test_default_db_path_never_names_the_master_session_store(tmp_path, monkeypatch):
+    """Hosted-room coordination lives beside, never inside, the master ``state.db``.
+
+    Every profile gateway starts the hosted-room worker, so a store resolved to the
+    root session DB made every profile process a long-lived writer on state.db —
+    the multi-profile restart corruption in #102120 / #103339 / #103490. The store
+    is shared across profiles (one file at the install root) but is not the
+    SessionDB file the root gateway owns.
+    """
+    root = tmp_path / ".hermes"
+    profile_home = root / "profiles" / "bot1"
+    profile_home.mkdir(parents=True)
+
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    from_profile = rooms.default_db_path()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    from_root = rooms.default_db_path()
+
+    assert from_profile == from_root, "one coordination file per install"
+    assert from_root.parent == root
+    assert from_root.name != "state.db"

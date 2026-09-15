@@ -79,6 +79,21 @@ def _same_account_jwt_subject(token_a: str, token_b: str) -> bool:
         return False
 
 
+def _jwt_expires_within(token: str, *, skew_seconds: int = 0) -> bool:
+    """True when a JWT-shaped token is expired (or expires within *skew_seconds*).
+
+    Non-JWT/undecodable tokens return False — they cannot be proven dead, so callers
+    keep whatever candidate policy they had. ``_decode_jwt_claims`` already tolerates
+    redacted/masked placeholders.
+    """
+    try:
+        from hermes_cli.auth_constants import _decode_jwt_claims
+        exp = (_decode_jwt_claims(token) or {}).get("exp")
+        return bool(isinstance(exp, (int, float)) and exp <= time.time() + max(0, skew_seconds))
+    except Exception:
+        return False
+
+
 def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb_base_url: str, fb_api_mode: str) -> None:
     """Install the fallback client(s) in place, honoring request_timeout_seconds (None = SDK default)."""
     timeout = get_provider_request_timeout(fb_provider, fb_model)
@@ -594,14 +609,24 @@ class ClientLifecycleMixin:
                     "silent account swap. Reactive credential rotation should go through the pool.", self.provider,
                 )
                 return False
-            logger.debug(
-                "%s singleton holds a newer token for the SAME account (matching JWT subject); adopting it.",
-                self.provider,
-            )
-            return self._adopt_openai_credentials(
-                singleton_key, str(singleton_now.get("base_url") or self.base_url or ""),
-                reason=f"{self.provider}_same_account_adoption",
-            )
+            if _jwt_expires_within(singleton_key, skew_seconds=0):
+                # Same account, but the candidate is already expired (e.g. the root store kept a
+                # dead chain after a sibling profile's rotation wrote its mint only to a shadow
+                # copy). Adopting it would burn the recovery retry on a bearer that cannot
+                # possibly validate; fall through to a real forced refresh instead.
+                logger.debug(
+                    "%s singleton candidate is already expired; skipping adoption in favor of a forced refresh.",
+                    self.provider,
+                )
+            else:
+                logger.debug(
+                    "%s singleton holds a newer token for the SAME account (matching JWT subject); adopting it.",
+                    self.provider,
+                )
+                return self._adopt_openai_credentials(
+                    singleton_key, str(singleton_now.get("base_url") or self.base_url or ""),
+                    reason=f"{self.provider}_same_account_adoption",
+                )
         try:
             creds = resolve(force_refresh=force)
         except Exception as exc:

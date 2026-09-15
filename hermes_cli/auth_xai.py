@@ -124,6 +124,59 @@ def _write_through_xai_oauth_to_global_root(state: Dict[str, Any]) -> None:
         logger.debug("xAI OAuth: write-through to global root failed: %s", exc)
 
 
+def _write_xai_oauth_root_pool_update(state: Dict[str, Any]) -> None:
+    """Write a rotated xAI grant back into the global-root ``credential_pool`` entry.
+
+    When the grant lives ONLY in root's pool (no ``providers.xai-oauth`` anywhere), the profile
+    read fell back to the pool entry. Writing the rotation into a profile providers-shadow would
+    shadow root on every later read and split the token chain across stores (root keeps a
+    consumed single-use refresh token; the profile's next sibling dies on ``invalid_grant``).
+    Updates the pool entry in place under the root store's lock, preserving every non-token
+    field (id, label, status, request_count, ...). Mirrors the #74339 pool-refresh fix.
+    """
+    from hermes_cli.auth import _auth_store_lock, _global_auth_file_path, _load_global_auth_store, _save_auth_store
+    global_path = _global_auth_file_path()
+    if global_path is None:
+        return
+    tokens = state.get("tokens") or {}
+    access_token, refresh_token = _clean(tokens.get("access_token")), _clean(tokens.get("refresh_token"))
+    if not access_token or not refresh_token:
+        return
+    # Same pytest seat belt as _write_through_xai_oauth_to_global_root.
+    real_home_env = os.environ.get("HOME", "") if os.environ.get("PYTEST_CURRENT_TEST") else ""
+    if real_home_env:
+        real_root = Path(real_home_env) / ".hermes" / "auth.json"
+        try:
+            if global_path.resolve(strict=False) == real_root.resolve(strict=False):
+                return
+        except Exception:
+            return
+    try:
+        with _auth_store_lock(target_path=global_path):
+            root_store = _load_global_auth_store()
+            pool = root_store.setdefault("credential_pool", {})
+            entries = pool.get("xai-oauth")
+            if not isinstance(entries, list) or not entries:
+                return
+            target = next(
+                (e for e in entries if isinstance(e, dict) and _clean(e.get("access_token"))),
+                entries[0] if isinstance(entries[0], dict) else None,
+            )
+            if target is None:
+                return
+            target["access_token"] = access_token
+            target["refresh_token"] = refresh_token
+            if tokens.get("token_type"):
+                target["token_type"] = tokens.get("token_type")
+            if state.get("last_refresh"):
+                target["last_refresh"] = state.get("last_refresh")
+            if state.get("auth_mode"):
+                target["auth_mode"] = state.get("auth_mode")
+            _save_auth_store(root_store, target_path=global_path)
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.debug("xAI OAuth: write-back to global-root credential_pool failed: %s", exc)
+
+
 def _save_xai_oauth_tokens(
     tokens: Dict[str, Any], *, discovery: Optional[Dict[str, Any]] = None, redirect_uri: str = "",
     last_refresh: Optional[str] = None, auth_mode: str = "oauth_device_code",
@@ -135,6 +188,7 @@ def _save_xai_oauth_tokens(
     so inference routing is unchanged.
     """
     from hermes_cli.auth import _auth_store_lock, _global_auth_file_path, _load_auth_store, _load_provider_state_with_source, _same_path, _save_auth_store, _store_provider_state, _utc_now_z, _write_through_xai_oauth_to_global_root
+    from hermes_cli.auth import _load_global_auth_store
     if last_refresh is None:
         last_refresh = _utc_now_z()
     with _auth_store_lock():
@@ -142,6 +196,12 @@ def _save_xai_oauth_tokens(
         # A profile lacking its own xai-oauth block reads root's grant via fallback; refreshing it
         # must write the rotated chain back to root or root keeps a revoked refresh token. Decide by
         # where the grant was resolved FROM (key presence lies: _store_provider_state creates it).
+        # The providers-section lookup alone is not enough: a grant can live in root's
+        # ``credential_pool`` (device-code pool entry) while ``providers.xai-oauth`` is absent.
+        # In that case the read fell back to the POOL entry via _xai_oauth_state_from_store, so the
+        # write-back must update the pool entry (mirroring the #74339 fix on the pool refresh path,
+        # _sync_device_code_entry_to_auth_store) — otherwise the refresh lands in a profile
+        # providers-shadow that shadows root on every later read and splits the token chain.
         state, source_path = _load_provider_state_with_source(auth_store, "xai-oauth")
         state = state if state is not None else {}
         state.update(tokens=tokens, last_refresh=last_refresh, auth_mode=auth_mode)
@@ -150,7 +210,21 @@ def _save_xai_oauth_tokens(
         if redirect_uri:
             state["redirect_uri"] = redirect_uri
         global_root = _global_auth_file_path()
-        if source_path is not None and global_root is not None and _same_path(source_path, global_root):
+        root_pool_holds_grant = False
+        if source_path is None and global_root is not None:
+            root_store = _load_global_auth_store()
+            root_pool_entries = (root_store.get("credential_pool") or {}).get("xai-oauth")
+            if isinstance(root_pool_entries, list) and any(
+                _clean(e.get("access_token")) and _clean(e.get("refresh_token"))
+                for e in root_pool_entries if isinstance(e, dict)
+            ):
+                root_pool_holds_grant = True
+        if root_pool_holds_grant:
+            # Grant resolved from root's credential_pool: write the rotated chain back into the
+            # pool entry (and the providers mirror for non-pool readers), never into a profile
+            # shadow that would shadow root forever after.
+            _write_xai_oauth_root_pool_update(state)
+        elif source_path is not None and global_root is not None and _same_path(source_path, global_root):
             # Root-only write-back: a profile copy would shadow root and disable write-through.
             _write_through_xai_oauth_to_global_root(state)
         else:

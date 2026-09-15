@@ -740,7 +740,7 @@ class _Runtime:
         try:
             self._guarded(
                 "Hermes shared-metrics task close failed",
-                self._run_in_task, task, relay_runtime.pop_relay_scope, self.relay, task.handle,
+                self._run_in_task, task, relay_runtime.safe_pop_relay_scope, self.relay, task.handle,
                 output=fields, metadata=self._event_metadata(),
             )
         finally:

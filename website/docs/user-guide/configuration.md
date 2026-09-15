@@ -1070,7 +1070,7 @@ The summary model **must** have a context window at least as large as your main 
 
 By default, an exact silence marker (`[SILENT]`, `SILENT`, `NO_REPLY`, or `NO REPLY`) from a human-origin turn is replaced with a visible retry notice. This protects ordinary request/reply bots from accidentally dropping a request.
 
-Ambient or free-response bots sometimes receive every message in a shared channel and must decide contextually whether to participate. Opt those gateways into true no-delivery semantics:
+Ambient or free-response bots sometimes receive every message in a shared channel and must decide whether to participate. To allow the bot to omit a final reply:
 
 ```yaml
 gateway:
@@ -1081,11 +1081,16 @@ Or set it with:
 
 ```bash
 hermes config set gateway.allow_human_silence_markers true
+hermes gateway restart
 ```
 
-When enabled, a successful human-origin turn containing only an exact silence marker produces no outbound message. Prompts should instruct the agent to return exactly `[SILENT]`, with no explanation or additional characters, when no response is warranted. Format-only output such as a zero-width space is also held back and suppressed so it cannot render as a blank platform message. Failed turns and substantive prose are never hidden.
+The setting applies to **all human turns in the profile, including direct messages**. A multiplexed gateway reads the serving profile's setting; enabling it in the default profile does not enable it in other profiles.
 
-The setting is opt-in and requires a gateway restart.
+Successful turns containing only a recognized silence marker omit the final reply and usage footer. Output made only of whitespace and Unicode format controls (such as zero-width spaces) is also suppressed. Empty output still follows the existing empty-response handling. Failed, partial, or interrupted turns do not qualify for this opt-in; substantive text is delivered normally. Silent turns remain in conversation history.
+
+In the bot's prompt, instruct it: **When no reply is warranted, return exactly `[SILENT]`, with no tools, explanation, or extra characters.** The setting controls final text delivery; it cannot undo tool actions, progress messages, or audio already streamed. A format-only final segment preserves earlier substantive text.
+
+To restore the default behavior, set `gateway.allow_human_silence_markers` to `false` and restart the gateway.
 
 ## Gateway Turn Lease Timeout
 

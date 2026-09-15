@@ -109,6 +109,50 @@ def _sent_and_edited(adapter):
 
 class TestStreamedSilenceSuppression:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("boundary", ["segment", "commentary"])
+    @pytest.mark.parametrize("text", ["No", "\u200b\ufeff", "[SILENT]"])
+    async def test_boundaries_preserve_words_but_do_not_flush_non_content(self, boundary, text):
+        adapter = _make_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_1", StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1),
+        )
+        consumer.on_delta(text)
+        if boundary == "segment":
+            consumer.on_segment_break()
+        else:
+            consumer.on_commentary("Checking now")
+        consumer.on_delta("Final answer")
+        consumer.finish("Final answer")
+        await consumer.run()
+
+        expected = ["No"] if text == "No" else []
+        if boundary == "commentary":
+            expected.append("Checking now")
+        assert _sent_and_edited(adapter) == [*expected, "Final answer"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("transport", ["draft", "native"])
+    async def test_invisible_final_keeps_cumulative_preamble(self, transport):
+        from tests.gateway.test_stream_final_contract import _make_draft_adapter
+        from tests.gateway.test_stream_consumer_wecom_native import _make_native_streaming_adapter
+
+        adapter = _make_draft_adapter() if transport == "draft" else _make_native_streaming_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_1", StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1, cursor=""),
+        )
+        consumer.on_delta("Visible preamble")
+        consumer.on_segment_break()
+        consumer.on_delta("\u200b")
+        consumer.finish("\u200b")
+        await consumer.run()
+
+        if transport == "draft":
+            assert adapter.send_calls[-1]["content"].startswith("Visible preamble")
+        else:
+            assert adapter.frames[-1]["finalize"] is True
+            assert adapter.frames[-1]["text"].startswith("Visible preamble")
+
+    @pytest.mark.asyncio
     async def test_invisible_only_stream_is_fully_suppressed(self):
         """Format-only output must never become a blank platform message."""
         adapter = _make_adapter()
@@ -186,5 +230,4 @@ class TestStreamedSilenceSuppression:
         adapter.delete_message.assert_awaited_once_with("chat_1", "preview_1")
         assert consumer.final_content_delivered is False
         assert consumer.already_sent is False
-
 

@@ -115,10 +115,6 @@ def bound_model_input_without_hygiene(history: List[Any], limit: int) -> List[An
 class GatewayTurnMixin:
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
-    def _allows_human_silence_markers(self) -> bool:
-        """Whether successful human turns may deliberately produce no outbound message."""
-        return bool(getattr(getattr(self, "config", None), "allow_human_silence_markers", False))
-
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
         user_config: Optional[dict] = None,
@@ -319,12 +315,9 @@ class GatewayTurnMixin:
         return None
 
     @staticmethod
-    def _is_intentional_silence(agent_result, response) -> bool:
-        try:
-            from gateway.response_filters import is_intentional_silence_agent_result
-            return is_intentional_silence_agent_result(agent_result, response)
-        except Exception:
-            return False
+    def _is_intentional_silence(agent_result, response, *, allow_invisible: bool = False) -> bool:
+        from gateway.response_filters import is_intentional_silence_agent_result
+        return is_intentional_silence_agent_result(agent_result, response, allow_invisible=allow_invisible)
 
     async def _hmwa_resolve_session(self, event, source):
         """Resolve ``source`` to its session entry (topic recovery, internal-route guards, Telegram
@@ -1449,22 +1442,17 @@ class GatewayTurnMixin:
         # and would be delivered verbatim (peer agents would ingest it as a completed turn).
         if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
             response = ""
-        _intentional_silence = self._is_intentional_silence(agent_result, response)
-        if (
-            not _intentional_silence
-            and self._allows_human_silence_markers()
-            and isinstance(agent_result, dict)
-            and not agent_result.get("failed")
-            and is_invisible_only_response(response)
-        ):
-            _intentional_silence = True
+        _allow_human_silence = self._allows_human_silence_markers(source)
+        _intentional_silence = self._is_intentional_silence(
+            agent_result, response, allow_invisible=_allow_human_silence,
+        )
         # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
-        # opened the chain: an internal follow-up may go silent, a human one must not.
+        # opened the chain: human follow-ups require the same opt-in as standalone turns.
         _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
         if (
             _intentional_silence
             and not is_machinery_display_kind(_silence_kind)
-            and not self._allows_human_silence_markers()
+            and not _allow_human_silence
         ):
             logger.warning(
                 "silence marker rejected on a user turn: platform=%s chat=%s",
@@ -1863,7 +1851,7 @@ class GatewayTurnMixin:
         # Intentional silence is a delivery decision: the [SILENT] turn stays persisted (alternation).
         if _intentional_silence:
             logger.info("Suppressing intentional silence marker for session %s", session_entry.session_id)
-            response = ""
+            return ""
 
         adapter = self._adapter_for_source(source)
         # Auto voice reply (TTS audio before the text) unless streaming TTS already delivered audio.
@@ -3588,29 +3576,21 @@ class GatewayTurnMixin:
         _already_streamed = self._run_agent_stream_confirmed_final_delivery(
             _sc, first_response, previewed=bool(_delivery_result.get("response_previewed")),
         )
-        _invisible_only = is_invisible_only_response(first_response)
-        if _invisible_only and not (
-            self._allows_human_silence_markers() and not _delivery_result.get("failed")
-        ):
+        _allow_human_silence = self._allows_human_silence_markers(turn_ctx.source)
+        # Use the same successful-turn predicate as normal final delivery.
+        _intentional_silence = self._is_intentional_silence(
+            _delivery_result, first_response, allow_invisible=_allow_human_silence,
+        )
+        if is_invisible_only_response(first_response) and not _intentional_silence:
             from gateway.run import _normalize_empty_agent_response, _sanitize_gateway_final_response
 
             first_response = _normalize_empty_agent_response(_delivery_result, "")
             first_response = _sanitize_gateway_final_response(turn_ctx.source.platform, first_response)
             _already_streamed = False
-        # Same silence predicate as the normal path, else this branch leaks a literal marker or
-        # format-only output before the queued follow-up starts.
-        _intentional_silence = self._is_intentional_silence(_delivery_result, first_response)
-        if (
-            not _intentional_silence
-            and self._allows_human_silence_markers()
-            and not _delivery_result.get("failed")
-            and _invisible_only
-        ):
-            _intentional_silence = True
         if _intentional_silence:
             if (
                 is_machinery_display_kind(turn_ctx.persist_user_display_kind)
-                or self._allows_human_silence_markers()
+                or _allow_human_silence
             ):
                 logger.info(
                     "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",

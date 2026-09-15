@@ -1096,13 +1096,14 @@ def _record_task_failure(
 
         # Spawn path (release_claim) is still running and also clears claim
         # state; the timeout/crash path already did.
+        block_kind = "infrastructure" if outcome in {"spawn_failed", "gave_up"} else None
         conn.execute(
-            "UPDATE tasks SET status = 'blocked', "
+            "UPDATE tasks SET status = 'blocked', block_kind = ?, "
             + ("claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
                if release_claim else "")
             + "consecutive_failures = ?, last_failure_error = ? "
             "WHERE id = ? AND status IN ('running', 'ready', 'review')",
-            (failures, error, task_id),
+            (block_kind, failures, error, task_id),
         )
         payload = {
             "failures": failures,

@@ -16,6 +16,7 @@ import { MessagingView } from './index'
 // the mocks still apply.
 
 const getMessagingPlatforms = vi.fn()
+const preflightTeamsConfig = vi.fn()
 const updateMessagingPlatform = vi.fn()
 const getPairing = vi.fn()
 const approvePairing = vi.fn()
@@ -32,6 +33,7 @@ vi.mock('@/hermes', () => ({
   approvePairing: (platformId: string, requestId: string, profile?: null | string) =>
     approvePairing(platformId, requestId, profile),
   getMessagingPlatforms: (profile?: null | string) => getMessagingPlatforms(profile),
+  preflightTeamsConfig: (config: Record<string, string>, profile?: null | string) => preflightTeamsConfig(config, profile),
   getPairing: (profile?: null | string) => getPairing(profile),
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   revokePairing: (platformId: string, userId: string, profile?: null | string) =>
@@ -519,6 +521,30 @@ describe('MessagingView allowlist editor', () => {
       { clear_env: ['TEAMS_ALLOWED_USERS'], env: {} },
       'default'
     )
+  })
+})
+
+describe('MessagingView Teams preflight', () => {
+  it('tests edited configuration without saving or restarting', async () => {
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [platform({
+        env_vars: [
+          { advanced: false, description: 'Client', is_password: false, is_set: false, key: 'TEAMS_CLIENT_ID', prompt: 'Client ID', redacted_value: null, required: true, url: null },
+          { advanced: false, description: 'Secret', is_password: true, is_set: false, key: 'TEAMS_CLIENT_SECRET', prompt: 'Client secret', redacted_value: null, required: true, url: null },
+          { advanced: false, description: 'Tenant', is_password: false, is_set: false, key: 'TEAMS_TENANT_ID', prompt: 'Tenant ID', redacted_value: null, required: true, url: null }
+        ]
+      })]
+    })
+    preflightTeamsConfig.mockResolvedValue({ ok: true, category: 'success', message: 'Passed.' })
+
+    await renderMessaging()
+    fireEvent.change(await screen.findByLabelText('Client ID'), { target: { value: 'client-id' } })
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Testar configuração' })))
+
+    await waitFor(() => expect(preflightTeamsConfig).toHaveBeenCalledWith({ TEAMS_CLIENT_ID: 'client-id' }, undefined))
+    expect(updateMessagingPlatform).not.toHaveBeenCalled()
+    expect(runGatewayRestart).not.toHaveBeenCalled()
+    expect(screen.getByText('Passed.')).toBeTruthy()
   })
 })
 

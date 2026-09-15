@@ -54,4 +54,46 @@ class TestMemoryStatusLabels:
         assert "disabled ✗" in out
 
 
+class TestMemoryStatusLazyPredicate:
+    """Status must agree with the runtime retain path's lazy-deps
+    predicate, not just provider.is_available() — e.g. hindsight reports
+    "available" from config alone, but retain gates on
+    ensure("memory.hindsight")."""
+
+    def test_status_not_available_when_lazy_deps_unsatisfied(self, capfd, monkeypatch):
+        """provider.is_available() True but lazy-deps unsatisfied
+        must still print "not available" (mirrors the runtime predicate)."""
+        from hermes_cli.memory_setup import cmd_status
+
+        class ProviderAvailableNoDeps:
+            def is_available(self):
+                return True
+
+            def get_config_schema(self):
+                return []
+
+        provider = ProviderAvailableNoDeps()
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"memory": {"provider": "hindsight"}},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.memory_setup._get_available_providers",
+            lambda: [("hindsight", "Hindsight memory", provider)],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda *args, **kwargs: {"memory"},
+        )
+        monkeypatch.setattr("tools.lazy_deps.is_available", lambda feature: False)
+
+        cmd_status(args=None)
+        out = capfd.readouterr().out
+
+        assert "Status:    available ✓" not in out
+        assert "Status:    not available ✗" in out
+
+
+
 

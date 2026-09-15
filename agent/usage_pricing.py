@@ -418,22 +418,22 @@ def _pricing_entry_from_metadata(
         return None
     pricing = metadata[model_id].get("pricing") or {}
 
-    def per_million(key: str, *aliases: str) -> Optional[Decimal]:
-        raw = pricing.get(key)
-        for alias in aliases:  # alias chain is truthiness-based (``a or b or c``)
-            raw = raw or pricing.get(alias)
-        value = _to_decimal(raw)
-        return None if value is None else value * _ONE_MILLION
+    # Shape tolerance: endpoints disagree on units ($/token vs $/M), key spellings
+    # (completion/completions), and nesting ({global: {...}}). extract_pricing_fields
+    # infers the container unit and returns dollars-per-MILLION directly.
+    from agent.pricing_shape import extract_pricing_fields
 
-    prompt = per_million("prompt")
-    completion = per_million("completion")
-    request = _to_decimal(pricing.get("request"))
+    fields = extract_pricing_fields(pricing)
+    prompt = fields["prompt"]
+    completion = fields["completion"]
+    request = fields["request"]
+
     if prompt is None and completion is None and request is None:
         return None
     return PricingEntry(
         input_cost_per_million=prompt, output_cost_per_million=completion,
-        cache_read_cost_per_million=per_million("cache_read", "cached_prompt", "input_cache_read"),
-        cache_write_cost_per_million=per_million("cache_write", "cache_creation", "input_cache_write"),
+        cache_read_cost_per_million=fields["cache_read"],
+        cache_write_cost_per_million=fields["cache_write"],
         request_cost=request, source="provider_models_api", source_url=source_url,
         pricing_version=pricing_version, fetched_at=_UTC_NOW(),
     )

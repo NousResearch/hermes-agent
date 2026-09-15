@@ -266,7 +266,10 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     # restart" inside such a body is documentation, not a command this shell will execute.
     from tools.shell_heredoc import strip_inert_heredoc_bodies
 
-    text = strip_inert_heredoc_bodies(text)
+    # Interpreter heredocs are inert to the outer shell but not to the
+    # interpreter: Python/AppleScript source can launch this exact lifecycle
+    # command. Only mask true data-sink bodies for this semantic scanner.
+    text = strip_inert_heredoc_bodies(text, data_sinks_only=True)
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
     if _GATEWAY_LIFECYCLE_PATTERN.search(normalized):
         return True

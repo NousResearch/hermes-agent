@@ -802,8 +802,15 @@ class _CrashSweep:
     exited_hook_payloads: list[dict] = field(default_factory=list)
 
 
-def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
-    """Release every host-local ``running`` task whose worker PID is dead."""
+def _reclaim_dead_workers(
+    conn: sqlite3.Connection, board: Optional[str] = None,
+) -> _CrashSweep:
+    """Release every host-local ``running`` task whose worker PID is dead.
+
+    ``board`` is the dispatch board (the gateway passes each board's slug
+    explicitly); worker logs live under the board's own directory, so the
+    crash-cause lookup must use the same board or it can attach no cause — or
+    the wrong board's task-ID-colliding log — to a crashed run."""
     sweep = _CrashSweep()
     with _kb.write_txn(conn):
         rows = conn.execute(
@@ -826,6 +833,15 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
 
             pid = int(row["worker_pid"])
             dead = _classify_dead_worker(pid, row["claim_lock"])
+            if not dead.rate_limited and not dead.protocol_violation:
+                # Surface the actual crash cause (e.g. "Error: Unknown
+                # skill(s): foo") from the worker log tail instead of only
+                # "pid N exited with code 1" / "pid N not alive".
+                log_cause = _kb._extract_crash_cause_from_log(
+                    row["id"], board=board,
+                )
+                if log_cause:
+                    dead.error_text = f"{dead.error_text}\n  → {log_cause}"
             retry_status = _kb._retry_status_for_run(conn, row["id"])
             dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(
@@ -934,7 +950,9 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
     return auto_blocked
 
 
-def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
+def detect_crashed_workers(
+    conn: sqlite3.Connection, *, board: Optional[str] = None,
+) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
     Restores the source phase immediately (no waiting for the claim TTL), for
@@ -944,7 +962,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     wall, released WITHOUT counting a failure and surfaced via the
     ``_last_rate_limited`` attribute (the return stays crashed-only).
     """
-    sweep = _reclaim_dead_workers(conn)
+    sweep = _reclaim_dead_workers(conn, board=board)
     # Outside the main txn: account each crash and maybe trip the breaker.
     auto_blocked = _account_crashes(conn, sweep.crash_details) if sweep.crash_details else []
     # Side-channel attributes keep the public ``list[str]`` return stable;
@@ -1631,6 +1649,7 @@ def _run_reclaim_phase(
     stale_timeout_seconds: int,
     failure_limit: int,
     reconcile_orphans: bool,
+    board: Optional[str] = None,
 ) -> None:
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
     reap_worker_zombies()
@@ -1638,7 +1657,7 @@ def _run_reclaim_phase(
     if reconcile_orphans:
         result.reconciled_orphans = reconcile_orphaned_running(conn)
     result.stale = detect_stale_running(conn, stale_timeout_seconds=stale_timeout_seconds)
-    result.crashed = detect_crashed_workers(conn)
+    result.crashed = detect_crashed_workers(conn, board=board)
     # Side-channel attributes (see detect_crashed_workers); rate-limited tasks
     # went back to ``ready`` and the respawn guard defers them until quota clears.
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
@@ -1771,6 +1790,7 @@ def _dispatch_once_locked(
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans,
+        board=board,
     )
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,

@@ -3994,6 +3994,41 @@ def read_worker_log(
         return None
 
 
+def _extract_crash_cause_from_log(
+    task_id: str, *, tail_bytes: int = 2048, board: Optional[str] = None,
+) -> Optional[str]:
+    """Read the tail of a worker log and return the most relevant error line.
+
+    Looks for lines starting with common error prefixes (``Error:``,
+    ``Traceback``, ``Exception``, ``Fatal``). Falls back to the last
+    non-empty line if no error-pattern match is found.
+
+    ``board`` must match the board the worker was dispatched on: worker logs
+    are per-board, so an omitted board resolves through the active-board chain
+    and can read the wrong board's task-ID-colliding log.
+
+    Returns ``None`` when the log file does not exist or cannot be read.
+    """
+    log = read_worker_log(task_id, tail_bytes=tail_bytes, board=board)
+    if not log:
+        return None
+    # Scan backwards for an error-like line.
+    _ERROR_PREFIXES = ("error:", "traceback", "exception", "fatal")
+    for line in reversed(log.splitlines()):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        lower = stripped.lower()
+        if any(lower.startswith(p) for p in _ERROR_PREFIXES):
+            return stripped[:300]
+    # Fallback: last non-empty line (often the actual crash message).
+    for line in reversed(log.splitlines()):
+        stripped = line.strip()
+        if stripped:
+            return stripped[:300]
+    return None
+
+
 # --- Assignee enumeration (known profiles + per-profile board stats) ---
 
 def list_profiles_on_disk() -> list[str]:

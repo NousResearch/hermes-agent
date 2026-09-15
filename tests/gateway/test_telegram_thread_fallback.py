@@ -20,6 +20,7 @@ from gateway.config import PlatformConfig, Platform
 from gateway.platforms.base import (
     SendResult,
     _reply_anchor_for_event,
+    _thread_metadata_for_event,
     _thread_metadata_for_source,
 )
 from gateway.platforms.event import MessageEvent, MessageType
@@ -294,6 +295,23 @@ def test_base_gateway_metadata_marks_telegram_dm_topics_as_reply_fallback():
         "telegram_dm_topic_reply_fallback": True,
         "direct_messages_topic_id": "20189",
         "telegram_reply_to_message_id": "462",
+    }
+
+
+def test_scheduled_heartbeat_metadata_does_not_quote_stored_source_message():
+    """Heartbeat delivery stays in its DM topic without inheriting a stale reply anchor."""
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        thread_id="20189",
+        message_id="old-user-message",
+    )
+    event = MessageEvent(text="scheduled heartbeat", source=source)
+    event._heartbeat_session_id = "heartbeat-session"
+
+    assert _thread_metadata_for_event(event) == {
+        "thread_id": "20189",
+        "direct_messages_topic_id": "20189",
     }
 
 
@@ -722,5 +740,4 @@ async def test_thread_fallback_only_fires_once():
     # Second chunk: should use thread_id=None directly (effective_thread_id
     # was cleared per-chunk but the metadata doesn't change between chunks)
     # The key point: the message was delivered despite the invalid thread
-
 

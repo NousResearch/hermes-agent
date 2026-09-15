@@ -269,7 +269,11 @@ class GatewayTurnMixin:
 
     def _event_thread_metadata(self, event, source):
         """Thread metadata for a send that replies to ``event`` on ``source``."""
-        return self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+        return self._thread_metadata_for_source(
+            source,
+            self._reply_anchor_for_event(event),
+            allow_source_message_id_fallback=not bool(getattr(event, "_heartbeat_session_id", None)),
+        )
 
     @staticmethod
     def _pop_post_delivery_callback(adapter, key, generation):
@@ -2053,6 +2057,7 @@ class GatewayTurnMixin:
                 persist_user_display_kind=prepared.persist_user_display_kind,
                 persist_user_display_metadata={"gateway_input_owner": prepared.persistence_owner},
                 message_type=event.message_type,
+                scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -2551,6 +2556,7 @@ class GatewayTurnMixin:
         self, message: str, context_prompt: str, history: List[Dict[str, Any]],
         source: "SessionSource", session_id: str, session_key: str = None,
         run_generation: Optional[int] = None, event_message_id: Optional[str] = None,
+        scheduled_heartbeat: bool = False,
     ) -> Dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of running a local AIAgent.
 
@@ -2607,12 +2613,17 @@ class GatewayTurnMixin:
             headers["X-Hermes-Session-Id"] = session_id
         body = {"model": "hermes-agent", "messages": api_messages, "stream": True}
 
-        _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
-        _stream_consumer = self._proxy_stream_consumer(source, event_message_id, _thread_metadata, _run_still_current)
+        _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(
+            source, event_message_id, allow_source_message_id_fallback=not scheduled_heartbeat,
+        )
+        _stream_consumer = (
+            None if scheduled_heartbeat
+            else self._proxy_stream_consumer(source, event_message_id, _thread_metadata, _run_still_current)
+        )
         stream_task = asyncio.create_task(_stream_consumer.run()) if _stream_consumer else None
 
         _adapter = self._adapter_for_source(source)
-        if _adapter:
+        if _adapter and not scheduled_heartbeat:
             with suppress(Exception):
                 await _adapter.send_typing(source.chat_id, metadata=_thread_metadata)
 
@@ -3998,6 +4009,7 @@ class GatewayTurnMixin:
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
         persist_user_display_metadata: Optional[dict] = None,
+        scheduled_heartbeat: bool = False,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
@@ -4006,12 +4018,24 @@ class GatewayTurnMixin:
             return await self._run_agent_via_proxy(
                 message=message, context_prompt=context_prompt, history=history, source=source,
                 session_id=session_id, session_key=session_key, run_generation=run_generation,
-                event_message_id=event_message_id,
+                event_message_id=event_message_id, scheduled_heartbeat=scheduled_heartbeat,
             )
 
         from run_agent import AIAgent
 
         disp = self._run_agent_display_settings(source)
+        if scheduled_heartbeat:
+            # A heartbeat is proactive work: tool chrome, drafts, thinking and periodic
+            # liveness notices would create a user-visible ping before its final result is known.
+            # Keep status callbacks intact for approvals and actionable failures.
+            disp = dataclasses.replace(
+                disp,
+                tool_progress_enabled=False,
+                interim_assistant_messages_enabled=False,
+                _thinking_enabled=False,
+                _native_slack_task_cards=False,
+                needs_progress_queue=False,
+            )
         turn_ctx, turn_runner, _cleanup_adapter = self._run_agent_build_turn_context(
             disp, AIAgent, message=message, source=source, session_key=session_key,
             run_generation=run_generation, context_prompt=context_prompt, history=history,
@@ -4022,13 +4046,15 @@ class GatewayTurnMixin:
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
             persist_user_display_metadata=persist_user_display_metadata,
+            scheduled_heartbeat=scheduled_heartbeat,
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,
         )
-        self._run_agent_start_streaming_tts(
-            source, message_type, _status_thread_metadata, turn_ctx.streaming_tts_consumer_holder,
-        )
+        if not scheduled_heartbeat:
+            self._run_agent_start_streaming_tts(
+                source, message_type, _status_thread_metadata, turn_ctx.streaming_tts_consumer_holder,
+            )
 
         # Progress sender drains BOTH tool-progress lines and thinking bubbles (needs_progress_queue).
         spawn = asyncio.create_task
@@ -4041,7 +4067,10 @@ class GatewayTurnMixin:
         interrupt_monitor = spawn(self._run_agent_monitor_for_interrupt(turn_ctx, _interrupt_detected))
         # Periodic "still working" notifications so the user knows the agent hasn't died.
         _executor_task_holder: list = [None]  # bound once the executor future exists (see below)
-        _notify_task = spawn(self._run_agent_notify_long_running(disp, turn_ctx, _executor_task_holder))
+        _notify_task = (
+            None if scheduled_heartbeat
+            else spawn(self._run_agent_notify_long_running(disp, turn_ctx, _executor_task_holder))
+        )
 
         try:
             # run_sync is TurnRunner.run_sync (bound method; executor call unchanged).

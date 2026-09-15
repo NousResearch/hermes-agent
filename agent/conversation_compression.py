@@ -1305,6 +1305,66 @@ def context_compression_timed_out(agent: Any) -> bool:
     return getattr(agent, "_last_compression_timed_out", None) is True
 
 
+def _get_context_compression_sanitation_state(
+    agent: Any, *, create: bool
+) -> Optional[Tuple[Any, Optional[dict[int, bool]]]]:
+    """Return the stable lock and per-caller-thread sanitation outcome state."""
+    try:
+        attributes = vars(agent)
+    except TypeError:
+        return None
+    lock = attributes.setdefault(
+        "_context_compression_sanitation_state_lock", threading.Lock()
+    )
+    with lock:
+        state = attributes.get("_context_compression_sanitation_state")
+        if create and not isinstance(state, dict):
+            state = {}
+            attributes["_context_compression_sanitation_state"] = state
+        return lock, state if isinstance(state, dict) else None
+
+
+def _set_context_compression_sanitation_outcome(
+    agent: Any, was_sanitation: bool, *, owner_thread_id: int | None = None
+) -> None:
+    """Write one caller thread's owned sanitation outcome for the latest call."""
+    target_thread_id = (
+        int(owner_thread_id)
+        if isinstance(owner_thread_id, int)
+        else threading.get_ident()
+    )
+    lock, state = _get_context_compression_sanitation_state(
+        agent, create=True
+    ) or (None, None)
+    if state is None:
+        agent._last_compression_was_sanitation = was_sanitation
+        return
+    with lock:
+        state[target_thread_id] = was_sanitation
+        # Legacy mirror for callers that still read the shared attribute.
+        agent._last_compression_was_sanitation = was_sanitation
+
+
+def reset_context_compression_sanitation_outcome(
+    agent: Any, *, owner_thread_id: int | None = None
+) -> None:
+    """Clear one caller thread's sanitation outcome marker."""
+    _set_context_compression_sanitation_outcome(
+        agent, False, owner_thread_id=owner_thread_id
+    )
+
+
+def context_compression_was_sanitation(agent: Any) -> bool:
+    """Whether this caller thread's latest owned compression was sanitation."""
+    locked_state = _get_context_compression_sanitation_state(agent, create=False)
+    if locked_state is not None:
+        lock, state = locked_state
+        with lock:
+            if isinstance(state, dict):
+                return state.get(threading.get_ident(), False) is True
+    return getattr(agent, "_last_compression_was_sanitation", None) is True
+
+
 def _automatic_compression_gate_blocks(agent: Any, bypass_cooldown: bool, *, include_cooldown: bool = True) -> bool:
     """Refresh durable guards, then evaluate the compressor's automatic breaker gate.
     ``bypass_cooldown`` ignores the cooldown when the gate accepts ``ignore_cooldown`` (engines predating it get the
@@ -1375,6 +1435,24 @@ def _rebind_session_context(session_id: str) -> None:
         set_session_context(session_id)
 
 
+def _load_db_conversation_with_row_ids(
+    loader: Callable[..., Any], session_db: Any, session_id: str
+) -> Any:
+    """Load one session transcript with row ids when the loader supports it."""
+    try:
+        parameters = inspect.signature(loader).parameters
+    except (TypeError, ValueError):
+        return loader(session_db, session_id)
+    supports_kwargs = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    kwargs = {"include_row_ids": True} if (
+        supports_kwargs or "include_row_ids" in parameters
+    ) else {}
+    return loader(session_db, session_id, **kwargs)
+
+
 def _adopt_live_compression_child(
     agent: Any, session_db: Any, parent_session_id: str
 ) -> Optional[List[Dict[str, Any]]]:
@@ -1400,7 +1478,9 @@ def _adopt_live_compression_child(
     child = row_getter(session_db, child_session_id)
     if not isinstance(child, dict) or child.get("ended_at") is not None:
         return None
-    recovered = loader(session_db, child_session_id)
+    recovered = _load_db_conversation_with_row_ids(
+        loader, session_db, child_session_id
+    )
     if not (isinstance(recovered, list) and recovered):
         return None
     # Revalidate after loading: the tip may have rotated or a competing
@@ -2575,7 +2655,9 @@ def _adopt_grown_durable_parent(agent: Any, lease: _CompressionLease, messages: 
     durable_loader = getattr(type(lease.db), "get_messages_as_conversation", None)
     if not callable(durable_loader):
         return None
-    durable_parent = durable_loader(lease.db, lease.sid)
+    durable_parent = _load_db_conversation_with_row_ids(
+        durable_loader, lease.db, lease.sid
+    )
     if not (isinstance(durable_parent, list) and len(durable_parent) > len(messages)):
         return None
     # In-memory carries this turn's un-persisted user tail; flush it via the normal
@@ -2602,7 +2684,9 @@ def _adopt_grown_durable_parent(agent: Any, lease: _CompressionLease, messages: 
         )
         return None
     # Re-read after the flush so the adopted snapshot carries the just-persisted tail.
-    durable_parent = durable_loader(lease.db, lease.sid)
+    durable_parent = _load_db_conversation_with_row_ids(
+        durable_loader, lease.db, lease.sid
+    )
     if not (isinstance(durable_parent, list) and len(durable_parent) > len(messages)):
         return None
     logger.info(
@@ -3754,6 +3838,7 @@ def compress_context(
     agent: Any, messages: list, system_message: str, *, approx_tokens: Optional[int] = None,
     task_id: str = "default", focus_topic: Optional[str] = None, force: bool = False,
     bypass_cooldown: bool = False, defer_context_engine_notification: bool = False,
+    sanitation_outcome_owner_thread_id: int | None = None,
     commit_fence: Optional[CompressionCommitFence] = None,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
@@ -3777,7 +3862,9 @@ def compress_context(
     cooperative fence for executor callers that may time out. It prevents a late worker from mutating
     session state after its caller has moved on.
     """
-    agent._last_compression_was_sanitation = False
+    reset_context_compression_sanitation_outcome(
+        agent, owner_thread_id=sanitation_outcome_owner_thread_id
+    )
     attempt = _begin_compression_attempt(agent, force=force, defer_notification=defer_context_engine_notification)
 
     # Codex owns the real thread; route compaction to its own compact (config
@@ -3914,8 +4001,13 @@ def compress_context(
         compressed = commit.compressed
         split_status = commit.split_status
         if pure_sanitation:
-            agent._last_compression_was_sanitation = bool(
+            sanitation_outcome = bool(
                 commit.session_commit_succeeded or not agent._session_db
+            )
+            _set_context_compression_sanitation_outcome(
+                agent,
+                sanitation_outcome,
+                owner_thread_id=sanitation_outcome_owner_thread_id,
             )
             _compressed_est = sanitation.finish_sanitation_commit(
                 agent,

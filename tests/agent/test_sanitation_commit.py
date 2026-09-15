@@ -766,6 +766,43 @@ def test_sanitation_preserves_append_that_precedes_watermark_read(
     ] == "concurrent-before-watermark"
 
 
+def test_sanitation_commit_after_durable_parent_adoption_keeps_row_ids(tmp_path):
+    """A cold durable-parent adoption must still provide row ids for sanitation."""
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1, initial_status=None)
+    harness.agent.compression_in_place = False
+    durable_with_ids = harness.db.get_messages_as_conversation(
+        harness.agent.session_id, include_row_ids=True
+    )
+    expected_candidate = copy.deepcopy(durable_with_ids)
+    expected_candidate[0]["content"] = (
+        'password="'
+        + _placeholder("password_assignment", "a00000")
+        + '"'
+    )
+    harness.agent.context_compressor.candidate = copy.deepcopy(expected_candidate)
+    stale_snapshot = harness.db.get_messages_as_conversation(harness.agent.session_id)[
+        :-1
+    ]
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        stale_snapshot,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert len(harness.agent.context_compressor.operation_claims) == 1
+    assert harness.agent.context_compressor.operation_claims[0] is not None
+    assert _without_persistence_markers(returned) == _without_persistence_markers(
+        expected_candidate
+    )
+    assert _without_persistence_markers(
+        harness.db.get_messages_as_conversation(harness.agent.session_id)
+    ) == _without_persistence_markers(expected_candidate)
+
+
 def test_pure_sanitation_preserves_prompt_and_skips_generic_boundary_hooks(
     tmp_path,
     monkeypatch,
@@ -1211,6 +1248,55 @@ def test_threshold_preflight_does_not_spend_pass_budget_on_sanitation(tmp_path):
         return result
 
     engine.compress = _sanitize_then_enable_generic
+    outcome = CompactionOutcome(
+        messages=harness.messages,
+        active_system_prompt="system",
+        conversation_history=[],
+        current_turn_user_idx=0,
+    )
+
+    _run_preflight_passes(
+        harness.agent,
+        outcome,
+        engine,
+        sanitation_rough_tokens(harness.messages),
+        "system",
+        "default",
+    )
+
+    assert engine.calls == 2
+    assert _without_persistence_markers(outcome.messages) == [
+        {"role": "user", "content": "generic compacted context"}
+    ]
+
+
+def test_preflight_sanitation_budget_ignores_shared_flag_clobber(tmp_path):
+    from agent.turn_context_compaction import CompactionOutcome, _run_preflight_passes
+
+    harness = _make_harness(tmp_path, rounds=1)
+    engine = harness.agent.context_compressor
+    engine.threshold_tokens = 1
+    engine.context_length = 100_000
+    engine.should_compress = lambda tokens: tokens >= engine.threshold_tokens
+    harness.agent.max_compression_attempts = 1
+    real_compress = engine.compress
+
+    def _sanitize_then_enable_generic(*args, **kwargs):
+        kwargs.pop("memory_context", None)
+        result = real_compress(*args, **kwargs)
+        engine.current_operation = None
+        engine.candidate = [{"role": "user", "content": "generic compacted context"}]
+        return result
+
+    engine.compress = _sanitize_then_enable_generic
+    real_compress_context = harness.agent._compress_context
+
+    def _compress_context_with_stale_attr(*args, **kwargs):
+        result = real_compress_context(*args, **kwargs)
+        harness.agent._last_compression_was_sanitation = False
+        return result
+
+    harness.agent._compress_context = _compress_context_with_stale_attr
     outcome = CompactionOutcome(
         messages=harness.messages,
         active_system_prompt="system",

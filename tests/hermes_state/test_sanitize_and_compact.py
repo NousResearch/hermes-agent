@@ -1,5 +1,6 @@
 """Durable sanitation commit invariants."""
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -117,6 +118,25 @@ def test_sanitation_preserves_active_rows_absent_from_noncontiguous_snapshot(
         "clean-last",
         "concurrent-middle",
     ]
+
+
+def test_sanitation_accepts_large_represented_row_id_sets(db: SessionDB) -> None:
+    represented = [
+        db.append_message("sess1", role="user", content=f"represented-{idx}")
+        for idx in range(1_005)
+    ]
+    db._conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 600)
+    assert db.try_acquire_compression_lock("sess1", "sanitizer")
+
+    db.sanitize_and_compact(
+        "sess1",
+        [{"role": "user", "content": "clean"}],
+        watermark=represented[-1],
+        represented_row_ids=tuple(represented),
+        lock_holder="sanitizer",
+    )
+
+    assert [row["content"] for row in db.get_messages("sess1")] == ["clean"]
 
 
 def test_sanitation_does_not_insert_ephemeral_recovery_scaffolding(db: SessionDB) -> None:

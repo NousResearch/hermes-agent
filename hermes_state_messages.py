@@ -15,7 +15,8 @@ from agent.message_sanitization import _sanitize_surrogates
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
-    _legacy_reset_child_sql, _placeholders, _sql_json_extract)
+    _id_chunks, _legacy_reset_child_sql, _placeholders, _sql_json_extract,
+    _SQL_IN_CHUNK)
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
 
@@ -42,6 +43,7 @@ _SET_COUNTERS_SQL = "UPDATE sessions SET message_count = ?, tool_call_count = ?"
 _RESET_COUNTERS_SQL = "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?"
 _SET_DISPLAY_META_SQL = "UPDATE messages SET display_metadata = ? WHERE id = ?"
 _ARCHIVE_ACTIVE_SQL = "UPDATE messages SET active = 0, compacted = 1 WHERE session_id = ? AND active = 1"
+_SANITIZE_REPRESENTED_IDS_TEMP_TABLE = "temp.sanitize_represented_ids"
 _INVALID = object()  # _json_or sentinel where the fallback must be distinguishable from JSON null
 
 
@@ -607,17 +609,41 @@ class SessionMessagesMixin:
                     and not isinstance(row_id, bool)
                     and row_id > 0
                 )
-                exclusion = (
-                    f"AND id NOT IN ({_placeholders(represented)})"
-                    if represented
-                    else ""
-                )
-                tail_ids, tail_tool_calls = self._tail_rows_after_watermark(
-                    conn,
-                    "SELECT id, tool_calls FROM messages "
-                    f"WHERE session_id = ? AND active = 1 {exclusion} ORDER BY id",
-                    (session_id, *represented),
-                )
+                if represented:
+                    conn.execute(
+                        "CREATE TEMP TABLE IF NOT EXISTS "
+                        f"{_SANITIZE_REPRESENTED_IDS_TEMP_TABLE} "
+                        "(id INTEGER PRIMARY KEY)"
+                    )
+                    conn.execute(
+                        f"DELETE FROM {_SANITIZE_REPRESENTED_IDS_TEMP_TABLE}"
+                    )
+                    for chunk in _id_chunks(represented, _SQL_IN_CHUNK):
+                        conn.executemany(
+                            "INSERT OR IGNORE INTO "
+                            f"{_SANITIZE_REPRESENTED_IDS_TEMP_TABLE} (id) "
+                            "VALUES (?)",
+                            ((row_id,) for row_id in chunk),
+                        )
+                    tail_ids, tail_tool_calls = self._tail_rows_after_watermark(
+                        conn,
+                        "SELECT m.id, m.tool_calls FROM messages AS m "
+                        f"LEFT JOIN {_SANITIZE_REPRESENTED_IDS_TEMP_TABLE} AS r "
+                        "ON r.id = m.id "
+                        "WHERE m.session_id = ? AND m.active = 1 "
+                        "AND r.id IS NULL ORDER BY m.id",
+                        (session_id,),
+                    )
+                    conn.execute(
+                        f"DELETE FROM {_SANITIZE_REPRESENTED_IDS_TEMP_TABLE}"
+                    )
+                else:
+                    tail_ids, tail_tool_calls = self._tail_rows_after_watermark(
+                        conn,
+                        "SELECT id, tool_calls FROM messages "
+                        "WHERE session_id = ? AND active = 1 ORDER BY id",
+                        (session_id,),
+                    )
             else:
                 tail_ids, tail_tool_calls = self._tail_rows_after_watermark(
                     conn,

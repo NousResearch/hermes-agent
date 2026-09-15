@@ -351,6 +351,7 @@ def _run_preflight_passes(
     """Threshold-triggered preflight passes (honor ``compression.max_attempts`` like
     the loop's sites, default 3)."""
     from agent import turn_context as _tc
+    from agent.conversation_compression import context_compression_was_sanitation
 
     out.compressed = True
     # Compression is actually running — reset the dedup so a future blocked turn can
@@ -385,9 +386,7 @@ def _run_preflight_passes(
             _preflight_input, system_message, approx_tokens=_preflight_tokens,
             task_id=effective_task_id,
         )
-        _sanitation_only = bool(
-            getattr(agent, "_last_compression_was_sanitation", False)
-        )
+        _sanitation_only = context_compression_was_sanitation(agent)
         if _sanitation_only and _free_sanitation_pass_available:
             _free_sanitation_pass_available = False
         else:

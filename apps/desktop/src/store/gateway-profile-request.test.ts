@@ -111,6 +111,19 @@ describe('requestGatewayForProfile', () => {
     expect($gateway.get()).toBe(primary)
   })
 
+  it('dials the profile with foreground priority when a Settings-scoped caller asks for it (#111651)', async () => {
+    setPrimaryGateway(makePrimary() as never, 'default')
+    const getConnection = vi.fn(async (profile: null | string) =>
+      profile ? { port: 5151, profile, token: 'secondary-token' } : { port: 4242, token: 'primary-token' }
+    )
+    installDesktop(getConnection)
+    await ensureGatewayForProfile('default')
+
+    await requestGatewayForProfile('worker', 'vault.list', {}, undefined, undefined, { spawnPriority: 'foreground' })
+
+    expect(getConnection).toHaveBeenCalledWith('worker', { priority: 'foreground' })
+  })
+
   it('uses the primary socket and adds profile scope for a shared global remote route', async () => {
     const primary = makePrimary()
     setPrimaryGateway(primary as never, 'default')

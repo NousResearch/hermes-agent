@@ -52,6 +52,7 @@ export {
 } from './color'
 export {
   clampDoubleEnterMs,
+  clampHoldMs,
   clampSendGraceMs,
   clampTypingIdleMs,
   COMPOSER_SEND_DEFAULT_MODE,
@@ -61,6 +62,9 @@ export {
   DOUBLE_ENTER_DEFAULT_MS,
   DOUBLE_ENTER_MAX_MS,
   DOUBLE_ENTER_MIN_MS,
+  HOLD_DEFAULT_MS,
+  HOLD_MAX_MS,
+  HOLD_MIN_MS,
   isComposerSendMode,
   isSendGraceScope,
   normalizeComposerSendPrefs,

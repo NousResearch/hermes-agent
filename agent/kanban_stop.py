@@ -15,9 +15,22 @@ _TERMINAL_KANBAN_TOOLS = frozenset({"kanban_complete", "kanban_block"})
 _DEFAULT_MAX_ATTEMPTS = 2
 
 
+def _is_dispatcher_owned_worker() -> bool:
+    try:
+        from agent.delegation_context import is_dispatcher_owned_worker_context
+        return is_dispatcher_owned_worker_context()
+    except Exception:
+        return True
+
+
 def kanban_stop_nudge_enabled() -> bool:
-    """On when ``HERMES_KANBAN_TASK`` is set, unless ``HERMES_KANBAN_STOP_NUDGE`` disables it."""
+    """On when ``HERMES_KANBAN_TASK`` is set, unless ``HERMES_KANBAN_STOP_NUDGE`` disables it
+    or this execution does not own the dispatcher's task. A ``delegate_task`` child and an
+    in-process cron job both inherit the env var without owning the board task, and neither
+    carries the kanban toolset, so neither can call a terminal kanban tool."""
     if (os.environ.get("HERMES_KANBAN_STOP_NUDGE") or "").strip().lower() in {"0", "false", "no", "off"}:
+        return False
+    if not _is_dispatcher_owned_worker():
         return False
     return bool((os.environ.get("HERMES_KANBAN_TASK") or "").strip())
 

@@ -175,6 +175,22 @@ def run_tool_round(
                     agent.stream_delta_callback(None)
         return _verdict("break")
 
+    plugin_halt = None
+    with suppress(Exception):
+        from hermes_cli.plugins import consume_plugin_halt_turn
+        plugin_halt = consume_plugin_halt_turn(agent)
+    if plugin_halt:
+        _turn_exit_reason = "plugin_halt"
+        final_response = plugin_halt
+        append_message(messages, {"role": "assistant", "content": final_response})
+        if final_response:
+            agent._safe_print(f"\n{final_response}\n")
+            if agent.stream_delta_callback:
+                with suppress(Exception):
+                    agent.stream_delta_callback(final_response)
+                    agent.stream_delta_callback(None)
+        return _verdict("break")
+
     # Reset per-turn retry counters so one truncation can't poison the turn.
     truncated_tool_call_retries = 0
     # Defer the paragraph break: _fire_stream_delta() prepends one "\n\n" when real

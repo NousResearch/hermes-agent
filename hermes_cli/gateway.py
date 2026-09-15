@@ -6173,6 +6173,17 @@ def _cmd_install(args):
         _no_backend_exit("install", "termux")
     backend = _service_backend()
     if backend == "systemd":
+        if is_container() and not system:
+            print_error(
+                "Refusing to install a user-scope systemd gateway service inside a container."
+            )
+            _print_info_lines(
+                "A bind-mounted home can make that unit visible to the host user manager.",
+                "If systemd manages this container, install an isolated system service instead:",
+                "  sudo hermes gateway install --system",
+                "Otherwise run the gateway under the container runtime's supervisor.",
+            )
+            sys.exit(1)
         _install_systemd_from_cli(args, force=force, system=system, run_as_user=run_as_user)
     elif backend == "launchd":
         launchd_install(force)

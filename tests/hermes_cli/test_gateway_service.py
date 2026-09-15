@@ -1865,6 +1865,45 @@ class TestDockerAwareGateway:
         assert "Docker" in out or "docker" in out
         assert "restart" in out.lower()
 
+    def test_install_in_systemd_container_refuses_user_scope(self, monkeypatch, capsys):
+        """A bind-mounted home must not receive a host-visible user unit."""
+        monkeypatch.setattr(gateway_cli, "is_managed", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_container", lambda: True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_install_systemd_from_cli",
+            lambda *args, **kwargs: pytest.fail("must not install a user unit in a container"),
+        )
+
+        args = SimpleNamespace(gateway_command="install", force=False, system=False, run_as_user=None)
+        with pytest.raises(SystemExit) as exc_info:
+            gateway_cli.gateway_command(args)
+
+        assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        assert "--system" in out
+        assert "user-scope" in out
+
+    def test_install_in_systemd_container_keeps_explicit_system_scope(self, monkeypatch):
+        """Explicit system installs stay available for systemd-managed containers."""
+        monkeypatch.setattr(gateway_cli, "is_managed", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_container", lambda: True)
+        calls = []
+        monkeypatch.setattr(
+            gateway_cli,
+            "_install_systemd_from_cli",
+            lambda *args, **kwargs: calls.append(kwargs),
+        )
+
+        args = SimpleNamespace(gateway_command="install", force=False, system=True, run_as_user=None)
+        gateway_cli.gateway_command(args)
+
+        assert calls == [{"force": False, "system": True, "run_as_user": None}]
+
 
 class TestLegacyHermesUnitDetection:
     """Tests for _find_legacy_hermes_units / has_legacy_hermes_units.

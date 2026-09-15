@@ -1,4 +1,5 @@
 import asyncio
+import queue
 import time
 
 import pytest
@@ -65,6 +66,20 @@ class FakeWS:
         self.close_code = code
 
 
+class FailingWS(FakeWS):
+    def __init__(self, *, blocked=False):
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.blocked = blocked
+
+    async def send_bytes(self, data):
+        self.started.set()
+        if self.blocked:
+            await self.release.wait()
+        raise RuntimeError("client disconnected")
+
+
 @pytest.mark.asyncio
 async def test_attach_replays_buffer_then_streams_live():
     from hermes_cli.pty_session import PtySession
@@ -76,6 +91,33 @@ async def test_attach_replays_buffer_then_streams_live():
     await s.attach(ws)
     replay = b"".join(p for kind, p in ws.sent if kind == "bytes")
     assert replay == b"hello world"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_replay_detaches_only_the_failed_attachment():
+    from hermes_cli.pty_session import PtySession
+
+    s = PtySession("k", FakeBridge([b""]), buffer_cap=1024, read_timeout=0.01)
+    s.buffer.append(b"replay")
+
+    with pytest.raises(RuntimeError, match="client disconnected"):
+        await s.attach(FailingWS())
+    assert s.attached is False
+    assert s.last_detached_at is not None
+
+    failed = FailingWS(blocked=True)
+    stale_attach = asyncio.create_task(s.attach(failed))
+    await failed.started.wait()
+    replacement = FakeWS()
+    assert await s.attach(replacement) is True
+    failed.release.set()
+    with pytest.raises(RuntimeError, match="client disconnected"):
+        await stale_attach
+
+    assert s.attached is True
+    assert s._ws is replacement
+    assert s.last_detached_at is None
     await s.close()
 
 
@@ -190,6 +232,54 @@ async def test_superseded_failed_write_does_not_kill_replacement_session():
     assert s.alive is True
     assert await s.write(new_ws, b"new input") is True
     assert bytes(bridge.written) == b"\x0cnew input"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_drain_send_failure_detaches_only_the_failed_attachment():
+    from hermes_cli.pty_session import PtySession
+
+    class QueueBridge(FakeBridge):
+        def __init__(self):
+            super().__init__([])
+            self.chunks = queue.Queue()
+
+        def read(self, timeout):
+            try:
+                return self.chunks.get(timeout=timeout)
+            except queue.Empty:
+                return b""
+
+    bridge = QueueBridge()
+    s = PtySession("current", bridge, buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    failed = FailingWS()
+    await s.attach(failed)
+    bridge.chunks.put(b"current failure")
+    await failed.started.wait()
+    for _ in range(20):
+        if not s.attached:
+            break
+        await asyncio.sleep(0)
+    assert s.attached is False
+    assert s.last_detached_at is not None
+    await s.close()
+
+    bridge = QueueBridge()
+    s = PtySession("superseded", bridge, buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    failed = FailingWS(blocked=True)
+    await s.attach(failed)
+    bridge.chunks.put(b"stale failure")
+    await failed.started.wait()
+    replacement = FakeWS()
+    assert await s.attach(replacement) is True
+    failed.release.set()
+    await asyncio.sleep(0)
+
+    assert s.attached is True
+    assert s._ws is replacement
+    assert s.last_detached_at is None
     await s.close()
 
 

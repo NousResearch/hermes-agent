@@ -71,11 +71,13 @@ class PtySession:
                 await asyncio.sleep(0)
                 continue
             self.buffer.append(chunk)
-            try:
-                if self._ws is not None:
-                    await self._ws.send_bytes(chunk)
-            except Exception:
-                pass                                 # detached mid-send; keep buffering
+            ws = self._ws
+            generation = self._attach_generation
+            if ws is not None:
+                try:
+                    await ws.send_bytes(chunk)
+                except Exception:
+                    self._detach_if_current(ws, generation)
 
     async def write(self, ws, data: bytes) -> bool:
         """Serialize input and discard bytes from a superseded socket."""
@@ -105,23 +107,34 @@ class PtySession:
             await _close_ws(self._ws, WS_CLOSE_SUPERSEDED)
         self._ws = ws
         self._attach_generation += 1
+        generation = self._attach_generation
         self.attached = True
         self.last_detached_at = None
-        if snap := self.buffer.snapshot():
-            await ws.send_bytes(snap)
-        if force_redraw:
-            return await self.write(ws, TUI_FORCE_REDRAW)
-        return True
+        completed = False
+        try:
+            if snap := self.buffer.snapshot():
+                await ws.send_bytes(snap)
+            result = await self.write(ws, TUI_FORCE_REDRAW) if force_redraw else True
+            completed = True
+            return result
+        finally:
+            if not completed:
+                self._detach_if_current(ws, generation)
+
+    def _detach_if_current(self, ws, generation: Optional[int] = None) -> None:
+        if self._ws is not ws or (
+            generation is not None and self._attach_generation != generation
+        ):
+            return
+        self._ws = None
+        self.attached = False
+        self.last_detached_at = time.monotonic()
 
     def detach(self, ws) -> None:
         # Only the currently-attached socket may mark the session detached: a superseded socket's
         # handler also calls detach on its way out (after the new tab attached), and flipping
         # ``attached`` then would make a session with a live viewer look idle and reapable.
-        if self._ws is not ws:
-            return
-        self._ws = None
-        self.attached = False
-        self.last_detached_at = time.monotonic()
+        self._detach_if_current(ws)
 
     async def close(self) -> None:
         self.alive = False

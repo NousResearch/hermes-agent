@@ -2004,6 +2004,10 @@ def _(rid, params: dict) -> dict:
             if not (session.get("running") and isinstance(task, dict) and task.get("task_id") == expected):
                 return _ok(rid, {"status": "not_interrupted", "interrupted": False})
     sid = str(params.get("session_id") or "")
+    try:
+        _fence_tui_native_session(sid, session, "user_stop")
+    except Exception:
+        logger.warning("Native turn source stop fence failed", exc_info=True)
     if _session_uses_compute_host(session):
         try:
             _interrupt_session_turn(sid, session, request_id=f"interrupt-{rid}")

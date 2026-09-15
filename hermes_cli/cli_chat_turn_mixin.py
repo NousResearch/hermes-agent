@@ -393,6 +393,10 @@ class CLIChatTurnMixin:
                 interrupt_msg = None
                 continue
             print("\n⚡ New message detected, interrupting...")
+            try:
+                self._fence_native_turn_sources("user_turn")
+            except Exception:
+                pass
             if turn.stop_event is not None:
                 turn.stop_event.set()
             self.agent.interrupt(interrupt_msg)

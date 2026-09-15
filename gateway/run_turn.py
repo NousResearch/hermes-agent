@@ -329,6 +329,13 @@ class GatewayTurnMixin:
         self._cache_session_source(session_key, source)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             session_entry = await self._hmwa_heal_telegram_topic_binding(source, session_entry, session_key)
+        if strict_session and session_entry.session_id != pinned_session_id:
+            logger.warning(
+                "Dropping strictly routed event after topic healing changed session %s -> %s",
+                pinned_session_id,
+                session_entry.session_id,
+            )
+            return
         from gateway.run_heartbeat_acceptance import resolve_heartbeat_owner
         if not await resolve_heartbeat_owner(self, event, session_entry):
             return
@@ -1910,6 +1917,25 @@ class GatewayTurnMixin:
             self._hmwa_auto_load_skills(event, _auto, _quick_key, session_key)
 
         await self._hmwa_acquire_turn_lease(_quick_key, run_generation, session_entry, _session_env_tokens)
+
+        admission = getattr(event, "_native_turn_admission", None)
+        if admission is not None:
+            # The ordinary gateway turn lease is reserved. Commit before the
+            # durable-turn marker, transcript load, prompt cache, or model.
+            expected_view = admission.session
+            if (
+                str(session_entry.session_id) != expected_view.session_id
+                or str(session_entry.session_key) != str(expected_view.session_key or "")
+            ):
+                admission.abort_if_open(
+                    "not_sent", "gateway route changed after native host-slot reservation"
+                )
+                self._clear_session_env(_session_env_tokens)
+                return None, _session_env_tokens
+            accepted = await asyncio.to_thread(admission.commit)
+            if not accepted:
+                self._clear_session_env(_session_env_tokens)
+                return None, _session_env_tokens
 
         # A turn becomes durable recovery work only after it owns the per-session lease; marking
         # earlier would falsely recover a message that never began processing.

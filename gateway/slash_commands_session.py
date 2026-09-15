@@ -152,6 +152,7 @@ class GatewaySessionCommandsMixin:
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
         source = event.source
+        await self._fence_native_gateway_session(source, "new_session")
         session_key = self._session_key_for_source(source)
         self._invalidate_session_run_generation(session_key, reason="session_reset")
         # Evict the running-agent slot now that the generation is bumped: the in-flight run's own
@@ -879,6 +880,7 @@ class GatewaySessionCommandsMixin:
         current_entry = await self.async_session_store.get_or_create_session(source)
         if current_entry.session_id == target_id:
             return t("gateway.resume.already_on", name=name)
+        await self._fence_native_gateway_session(source, "session_switch")
         self._release_running_agent_state(session_key)
         new_entry = await self.async_session_store.switch_session(session_key, target_id)
         if not new_entry:
@@ -1002,6 +1004,7 @@ class GatewaySessionCommandsMixin:
             current_title = await self._session_db.get_session_title(current_entry.session_id)
             branch_title = await self._session_db.get_next_title_in_lineage(current_title or "branch")
         parent_session_id = current_entry.session_id
+        await self._fence_native_gateway_session(source, "session_switch")
         # Full parent origin (same shape as the reset path in gateway/session.py); the live entry's
         # origin may hold richer metadata than the triggering event's source.
         # See #82633.

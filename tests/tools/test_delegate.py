@@ -15,6 +15,7 @@ import threading
 import time
 import types
 import unittest
+from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 from tools.delegate_tool import (
@@ -146,6 +147,28 @@ class TestChildSystemPrompt(unittest.TestCase):
         self.assertIn("Fix the tests", prompt)
         self.assertIn("YOUR TASK", prompt)
         self.assertNotIn("CONTEXT", prompt)
+
+    def test_child_agent_scales_context_files_to_resolved_window(self):
+        parent = _make_mock_parent()
+        parent.enabled_toolsets = ["file"]
+        parent.disabled_toolsets = []
+
+        with TemporaryDirectory() as workspace:
+            parent.cwd = workspace
+            child = MagicMock()
+            child.context_compressor.context_length = 1_000_000
+            with (
+                patch("run_agent.AIAgent", return_value=child),
+                patch("agent.prompt_builder.build_context_files_prompt", return_value="project rules") as build,
+            ):
+                result = _build_child_agent(
+                    task_index=0, goal="Inspect the repo", context=None, toolsets=None, model=None,
+                    max_iterations=10, parent_agent=parent, task_count=1,
+                )
+
+        self.assertIs(result, child)
+        build.assert_called_once_with(cwd=workspace, skip_soul=True, context_length=1_000_000)
+        self.assertIn("project rules", child.ephemeral_system_prompt)
 
 class TestStripBlockedTools(unittest.TestCase):
     def test_removes_blocked_toolsets(self):

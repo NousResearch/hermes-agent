@@ -105,3 +105,26 @@ def test_multi_file_keeps_separate_text(monkeypatch: pytest.MonkeyPatch) -> None
     finally:
         os.unlink(img)
         os.unlink(img2)
+
+
+def test_single_file_with_tag_caption_keeps_body_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A tag caption owns the single file's bubble, so the text body must not vanish with it."""
+    from tools.send_message_tool import _send_telegram
+
+    _no_proxy(monkeypatch)
+    bot = _make_bot()
+    _install_telegram_mock(monkeypatch, MagicMock(return_value=bot))
+    img = _tmpfile(".webp")
+    try:
+        res = asyncio.run(
+            _send_telegram("tok", "123", "Билет 1", media_files=[(img, False)],
+                           media_captions={img: "Вопрос 1: кто уступает?"})
+        )
+        assert res["success"] is True
+        bot.send_photo.assert_awaited_once()
+        assert bot.send_photo.await_args.kwargs.get("caption") == "Вопрос 1: кто уступает?"
+        # The tag caption cannot also carry the body: it is delivered as its own message.
+        bot.send_message.assert_awaited_once()
+        assert "Билет 1" in bot.send_message.await_args.kwargs.get("text", "")
+    finally:
+        os.unlink(img)

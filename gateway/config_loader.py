@@ -261,13 +261,24 @@ def bridge_platform_shared_keys(
                 if isinstance(ov_data, dict)
             }
         enabled_was_explicit = cfg_toplevel and "enabled" in platform_cfg
-        if not bridged and not enabled_was_explicit and not has_channel_overrides:
+        nested_extra = platform_cfg.get("extra") if cfg_toplevel else None
+        has_nested_extra = isinstance(nested_extra, dict)
+        if (
+            not bridged
+            and not enabled_was_explicit
+            and not has_channel_overrides
+            and not has_nested_extra
+        ):
             continue
         plat_data = _dict_slot(platforms_data, plat.value)
         extra = _dict_slot(plat_data, "extra")
         if enabled_was_explicit:
             plat_data["enabled"] = platform_cfg["enabled"]
             extra["_enabled_explicit"] = True
+        # Preserve a platform's own nested ``extra`` values. Top-level bridged
+        # keys are applied afterwards and retain their documented precedence.
+        if has_nested_extra:
+            extra.update(nested_extra)
         extra.update(bridged)
 
 

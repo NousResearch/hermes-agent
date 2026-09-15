@@ -130,6 +130,26 @@ whatsapp:
 - `unauthorized_dm_behavior: pair` is the global default. Unknown DM senders get a pairing code.
 - `whatsapp.unauthorized_dm_behavior: ignore` makes WhatsApp stay silent for unauthorized DMs, which is usually the better choice for a private number.
 
+### Observe group context without replying
+
+The native Baileys bridge can retain authorized participants' messages in an allowlisted group while invoking the agent only for a trusted native WhatsApp mention:
+
+```yaml
+whatsapp:
+  group_policy: allowlist
+  group_allow_from:
+    - "120363001234567890@g.us"
+  extra:
+    observe_unmentioned_group_messages: true
+    observe_group_allow_from:
+      - "*"
+    group_sessions_per_user: false
+```
+
+Observation is disabled by default and is not implemented by the WhatsApp Cloud API adapter. In an observed native-bridge group, plain-text `@name` strings, wake-word regexes, slash commands, and quoted replies do not invoke the agent. Only native mention metadata does, except for chats listed in `free_response_chats`, which dispatch every authorized message.
+
+Authorization and group allowlists are checked before retention. Observed rows remain visible to raw transcript/export surfaces but are never replayed as ordinary user requests; a later addressed turn receives them in a separate context-only block. Cached attachment paths are retained so that block can refer to observed media.
+
 Then start the gateway:
 
 ```bash

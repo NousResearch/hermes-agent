@@ -37,10 +37,14 @@ const { ensureAgent, ensureBotMetadata, notifyError, openRosterBot, requestProfi
 
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
+  const { QueryClient, QueryClientProvider } = await import('@tanstack/react-query')
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   return {
     ...sdk,
     host: { ...sdk.host, ensureAgent, notifyError, requestProfile, warmAgent, warmProfile },
+    queryClient,
+    QueryClientProvider,
     // The plugin bundle normally lands via `ctx.i18n.register` at load, so
     // without this every localized label in the row renders empty.
     usePluginI18n: () => translateBots
@@ -56,6 +60,9 @@ vi.mock('./canonical-chat', () => ({
 }))
 
 vi.mock('./roster-actions', () => ({ openRosterBot }))
+vi.mock('./bot-sessions', () => ({
+  BotSessionsList: () => null
+}))
 
 const noop = () => undefined
 

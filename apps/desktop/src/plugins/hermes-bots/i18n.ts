@@ -122,6 +122,11 @@ type BotsMessages = {
     chatEmpty: string
     /** First line of a brand-new bot's forever-chat — see `kickoffText`. */
     kickoff: string
+    sessionsHeading: string
+    sessionsLoading: string
+    sessionsEmpty: string
+    sessionUntitled: string
+    newSession: string
   }
   /** Avatar picker: shapes, blobs, pets, uploads, generation. */
   avatar: {
@@ -349,7 +354,12 @@ const en: BotsMessages = {
     openAnotherChatUnsupported: 'Update Hermes Desktop to open another Bot chat.',
     remoteConnectionsUnsupported: 'Update Hermes Desktop to chat with bots on other connections.',
     chatEmpty: 'Say something to get started.',
-    kickoff: 'Hey, tell me about yourself!'
+    kickoff: 'Hey, tell me about yourself!',
+    sessionsHeading: 'Sessions',
+    sessionsLoading: 'Loading…',
+    sessionsEmpty: 'No sessions yet',
+    sessionUntitled: 'Untitled',
+    newSession: 'New session'
   },
   avatar: {
     classicShapes: 'Classic shapes',
@@ -568,7 +578,12 @@ const ja: BotsMessages = {
     openAnotherChatUnsupported: '別のボットチャットを開くには Hermes Desktop を更新してください。',
     remoteConnectionsUnsupported: '他の接続上のボットとチャットするには Hermes Desktop を更新してください。',
     chatEmpty: '何か書いて始めましょう。',
-    kickoff: 'こんにちは、自己紹介をしてください！'
+    kickoff: 'こんにちは、自己紹介をしてください！',
+    sessionsHeading: 'セッション',
+    sessionsLoading: '読み込み中…',
+    sessionsEmpty: 'まだセッションはありません',
+    sessionUntitled: '無題',
+    newSession: '新しいセッション'
   },
   avatar: {
     classicShapes: 'クラシックシェイプ',
@@ -783,7 +798,12 @@ const zh: BotsMessages = {
     openAnotherChatUnsupported: '请更新 Hermes Desktop 以打开另一个机器人聊天。',
     remoteConnectionsUnsupported: '请更新 Hermes Desktop 以与其他连接上的机器人聊天。',
     chatEmpty: '说点什么开始吧。',
-    kickoff: '你好，介绍一下你自己吧！'
+    kickoff: '你好，介绍一下你自己吧！',
+    sessionsHeading: '会话',
+    sessionsLoading: '加载中…',
+    sessionsEmpty: '暂无会话',
+    sessionUntitled: '无标题',
+    newSession: '新建会话'
   },
   avatar: {
     classicShapes: '经典形状',
@@ -996,8 +1016,13 @@ const zhHant: BotsMessages = {
     advancedFailed: '進階設定失敗',
     openAnotherChatUnsupported: '請更新 Hermes Desktop 以開啟另一個機器人聊天。',
     remoteConnectionsUnsupported: '請更新 Hermes Desktop 以與其他連線上的機器人聊天。',
-    chatEmpty: '說點什麼開始吧。',
-    kickoff: '你好，介紹一下你自己吧！'
+    chatEmpty: '說些什麼開始吧。',
+    kickoff: '你好，介紹一下自己吧！',
+    sessionsHeading: '對話',
+    sessionsLoading: '載入中…',
+    sessionsEmpty: '尚無對話',
+    sessionUntitled: '無標題',
+    newSession: '新對話'
   },
   avatar: {
     classicShapes: '經典形狀',

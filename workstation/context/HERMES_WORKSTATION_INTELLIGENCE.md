@@ -851,3 +851,15 @@ o `WorkstationBrowserRuntime`; não introduzem transaction manager, SessionDB,
 page store ou control plane adicional. A prova de integração deve permanecer
 junto dos testes C1/C2/C3, para que uma futura alteração do ordering de saves
 não volte a ser mascarada por mocks isolados.
+
+### 15.6. H-053: Kanban híbrido em tempo real
+
+O Hybrid Kanban continua no mesmo domínio e banco `hermes_cli.kanban_db`; não é
+uma store do Electron nem um segundo Execution Journal. O endpoint autenticado
+`/events` transmite `hybrid_events` e `hybrid_cursor` junto de `task_events`.
+Ao receber o frame, o Desktop invalida imediatamente as queries `['kanban',
+'hybrid']`, eliminando a latência do polling. A UI permite reordenação horizontal
+de colunas (`moveHybridColumn`), drawer de atividade com proveniência `human`/
+`agent` e exclusão em cascata de board, coluna e cartão. O domínio aplica
+`expected_revision`, locking/transação e reindexação densa; posição visual não
+altera `tasks.status` nem conclui automaticamente uma tarefa agêntica.

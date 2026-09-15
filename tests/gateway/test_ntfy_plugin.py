@@ -257,6 +257,22 @@ class TestSend:
         posted_url = mock_client.post.call_args[0][0]
         assert posted_url.endswith("/override-out")
 
+    def test_send_caps_multibyte_body_by_utf8_bytes(self):
+        adapter = self._make_adapter()
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = {"id": "utf8"}
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        adapter._http_client = mock_client
+
+        content = "я" * 2049
+        result = _run(adapter.send("hermes-in", content))
+
+        assert result.success is True
+        body = mock_client.post.call_args.kwargs["content"]
+        assert body == ("я" * 2048).encode("utf-8")
+        assert adapter.message_len_fn(content) == len(content.encode("utf-8"))
+
 
     def test_send_handles_timeout(self):
         adapter = self._make_adapter(topic="hermes-in")
@@ -483,12 +499,17 @@ class TestFatalErrorPropagation:
 
 
 class TestTruncateHelper:
-    """``_truncate_body`` is shared between adapter.send() (inline truncation
-    today, may migrate) and ``_standalone_send``. It must cap to
-    MAX_MESSAGE_LENGTH and return bytes."""
+    """``_truncate_body`` caps adapter and standalone publish bodies."""
 
     def test_short_message_passes_through(self):
         assert _ntfy._truncate_body("hi", context="test") == b"hi"
+
+    def test_truncation_preserves_utf8_character_boundary(self):
+        body = _ntfy._truncate_body("x" * 4095 + "😀", context="test")
+
+        assert body == b"x" * 4095
+        assert len(body) <= MAX_MESSAGE_LENGTH
+        body.decode("utf-8")
 
 
 # ---------------------------------------------------------------------------

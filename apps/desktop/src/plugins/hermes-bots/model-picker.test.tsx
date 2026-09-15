@@ -19,7 +19,7 @@
  */
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -74,6 +74,18 @@ function mount(bot: null | RosterRow) {
   return render(<ModelPicker bot={bot} onChange={vi.fn()} value={{ model: '', provider: '' }} />, { wrapper })
 }
 
+function mountWithValue(
+  bot: null | RosterRow,
+  onChange: (patch: unknown) => void,
+  value: { model: string; provider: string }
+) {
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  )
+
+  return render(<ModelPicker bot={bot} onChange={onChange} value={value} />, { wrapper })
+}
+
 /** The fallback the picker paints when the catalog is unavailable. */
 const isFreeText = (container: HTMLElement) =>
   Boolean(container.querySelector('input[placeholder*="omnirouter"]')) &&
@@ -126,6 +138,22 @@ describe('the catalog read', () => {
     expect(hostMock.requestProfile).toHaveBeenCalledTimes(1)
   })
 
+  it('updates the model when typing a known provider slug', async () => {
+    const onChange = vi.fn()
+    hostMock.requestProfile.mockResolvedValue({
+      providers: [
+        { models: ['m1'], name: 'Provider One', slug: 'prov-one' },
+        { models: ['a1', 'a2'], name: 'Provider Two', slug: 'prov-two' }
+      ]
+    })
+
+    mountWithValue(remoteBot, onChange, { model: 'm1', provider: 'prov-one' })
+
+    await waitFor(() => expect(screen.getByLabelText('Provider')).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'PROV-TWO' } })
+
+    expect(onChange).toHaveBeenLastCalledWith({ provider: 'prov-two', model: 'a1' })
+  })
   it('never dispatches for a row whose connection was removed', async () => {
     const orphan = { name: 'ghost', remoteSource: true } as RosterRow
     const { container } = mount(orphan)

@@ -43,6 +43,13 @@ describe('PluginsTab', () => {
     expect(screen.getByRole('switch', { name: 'Agent: demo-plugin' }).getAttribute('aria-checked')).toBe('true')
   })
 
+  it('renders pageBlurb without the one-row changelog residue', () => {
+    render(<PluginsTab profile={null} />)
+
+    expect(screen.queryByText(/One row per plugin/i)).toBeNull()
+    expect(screen.getByText(/each half has its own switch/i)).toBeTruthy()
+  })
+
   it('hides bundled plugins (managed from their own surfaces)', () => {
     $agentPlugins.set([
       {

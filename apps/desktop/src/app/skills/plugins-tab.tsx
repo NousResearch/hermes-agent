@@ -552,7 +552,7 @@ export const PluginsTab = memo(function PluginsTab({
                   <span className="font-medium">{p.halfDesktop}</span>
                 </Tip>
               </div>
-              <div className={HALF_COL} role="columnheader">
+              <div className={`${HALF_COL} min-w-0 overflow-hidden`} role="columnheader">
                 <Package aria-hidden className="size-3.5 shrink-0" />
                 {scopeSelector ?? <span className="truncate font-medium">{p.halfAgentIn(label)}</span>}
               </div>

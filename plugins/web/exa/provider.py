@@ -56,7 +56,10 @@ class ExaWebSearchProvider(BaseWebSearchProvider):
             if use_keyless("exa", provider_env("EXA_API_KEY")):
                 return keyless_extract("Exa", "exa", urls, logger)
             logger.info("Exa extract: %d URL(s)", len(urls))
-            response = _get_exa_client().get_contents(urls, text=True)
+            # Exa serves its index snapshot by default (observed 10 days stale for a
+            # news front page). max_age_hours=0 = always fetch fresh; Exa deprecates
+            # `livecrawl` in favour of this knob.
+            response = _get_exa_client().get_contents(urls, text=True, max_age_hours=0)
             return [document(r.url or "", r.title or "", r.text or "") for r in response.results or []]
 
         return run_extract("Exa", logger, urls, _body, sdk=True)

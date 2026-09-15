@@ -510,8 +510,14 @@ def _plugin_command_handler(name: str):
         return None
 
 
-def _run_plugin_command(handler, arg: str) -> str:
-    return str(_tools_mod("hermes_cli.plugins").resolve_plugin_command_result(handler(arg)) or "")
+def _run_plugin_command(handler, arg: str):
+    """Resolved plugin command result — its text result, or the directive it returned."""
+    return _tools_mod("hermes_cli.plugins").resolve_plugin_command_result(handler(arg))
+
+
+def _plugin_command_directive(value):
+    """The directive a plugin command handler returned (``{"type": "skill", ...}``), else None."""
+    return _tools_mod("hermes_cli.plugins").plugin_command_dispatch(value)
 
 
 @contextlib.contextmanager
@@ -543,7 +549,10 @@ def _is_profile_skill_command(session: dict, base: str) -> bool:
 def _dispatch_plugin(rid, params, session, name, arg):
     if handler := _plugin_command_handler(name):
         with contextlib.suppress(Exception):
-            return _ok(rid, {"type": "plugin", "output": _run_plugin_command(handler, arg)})
+            resolved = _run_plugin_command(handler, arg)
+            if directive := _plugin_command_directive(resolved):
+                return _ok(rid, directive)
+            return _ok(rid, {"type": "plugin", "output": str(resolved or "")})
     return None
 
 
@@ -879,7 +888,10 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4018, f"skill command: use command.dispatch for /{base}")
     if plugin_handler := _plugin_command_handler(base) if base else None:
         try:
-            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg) or "(no output)"})
+            resolved = _run_plugin_command(plugin_handler, arg)
+            if directive := _plugin_command_directive(resolved):
+                return _ok(rid, directive)
+            return _ok(rid, {"output": str(resolved or "") or "(no output)"})
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
     worker = session.get("slash_worker")

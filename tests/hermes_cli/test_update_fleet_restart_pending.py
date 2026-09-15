@@ -349,11 +349,16 @@ def test_run_pending_restart_true_when_no_gateways(monkeypatch, capsys):
     )
     monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
 
-    # An empty PID scan is insufficient; both supervisor scopes must answer empty.
+    # An empty PID scan is insufficient; every supervisor scope must answer empty.
     monkeypatch.setattr(update_cmd_fleet, "_systemd_gateway_unit_listings", lambda: [
         (scope, cmd, SimpleNamespace(returncode=0, stdout=""))
         for scope, cmd in update_cmd_fleet._SYSTEMD_SCOPES
     ])
+    # The launchd scope too: a developer machine with a live fleet would otherwise
+    # drain its real units and report the restart incomplete (#110701).
+    monkeypatch.setattr(
+        update_cmd_fleet, "_restart_macos_launchd_gateways", lambda *a, **k: None
+    )
     assert update_cmd._run_pending_fleet_restart() is True
     assert "Pending fleet restart completed" in capsys.readouterr().out
 

@@ -19,7 +19,8 @@ logger = logging.getLogger("tools.approval")
 
 def prompt_dangerous_approval(command: str, description: str, timeout_seconds: int | None = None,
                               allow_permanent: bool = True, approval_callback=None,
-                              *, allow_session: bool = True, smart_denied: bool = False) -> str:
+                              *, allow_session: bool = True, smart_denied: bool = False,
+                              title: str | None = None) -> str:
     """Prompt the user to approve a dangerous command (CLI only).
 
     allow_permanent=False hides [a]lways (tirith warnings present: broad permanent
@@ -28,6 +29,8 @@ def prompt_dangerous_approval(command: str, description: str, timeout_seconds: i
     protected agent-instruction gate in ``tools/file_tools.py``); offering a scope
     the caller discards makes every later write re-prompt and reads as broken.
     smart_denied: owner override of a Smart DENY, offer only once/deny.
+    title: header for the plain-input prompt when the question is not a dangerous command
+    ("Save to memory?", "<server> is asking"); the default header stays the dangerous-command one.
     approval_callback: CLI prompt_toolkit callback ``(command, description, *,
     allow_permanent=True, allow_session=True, smart_denied=False) -> str``; legacy
     signatures keep working while both keywords hold their defaults.
@@ -45,7 +48,7 @@ def prompt_dangerous_approval(command: str, description: str, timeout_seconds: i
     # See #79719.
     with human_wait_window():
         return _ask_human(command, description, timeout_seconds, allow_permanent,
-                          approval_callback, allow_session, smart_denied)
+                          approval_callback, allow_session, smart_denied, title=title)
 
 
 _CLI_CHOICE_ALIASES = {
@@ -78,8 +81,19 @@ def _read_choice(prompt: str, timeout_seconds: int) -> str | None:
     return None if thread.is_alive() else result["choice"]
 
 
+def callback_accepts(callback, keyword: str) -> bool:
+    """True when *callback* takes ``keyword`` (or ``**kwargs``); approval callbacks predate ``title``
+    and a TypeError inside the callback would read as a deny."""
+    import inspect
+    try:
+        params = inspect.signature(callback).parameters
+    except (TypeError, ValueError):
+        return False
+    return keyword in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
 def _ask_human(command: str, description: str, timeout_seconds: int, allow_permanent: bool,
-               approval_callback, allow_session: bool, smart_denied: bool) -> str:
+               approval_callback, allow_session: bool, smart_denied: bool, title: str | None = None) -> str:
     # Redact before any user-visible rendering; the original `command` still executes after approval. Same redactor as
     # memory/log sanitization so tokens mask consistently across surfaces.
     from agent.redact import redact_sensitive_text
@@ -93,7 +107,8 @@ def _ask_human(command: str, description: str, timeout_seconds: int, allow_perma
             # Non-default scopes only: legacy callbacks lack the newer keywords.
             callback_kwargs = {"allow_permanent": allow_permanent,
                                **({"allow_session": False} if not allow_session else {}),
-                               **({"smart_denied": True} if smart_denied else {})}
+                               **({"smart_denied": True} if smart_denied else {}),
+                               **({"title": title} if title and callback_accepts(approval_callback, "title") else {})}
             return approval_callback(display_command, display_description, **callback_kwargs)
         except Exception as e:
             logger.error("Approval callback failed: %s", e, exc_info=True)
@@ -124,12 +139,13 @@ def _ask_human(command: str, description: str, timeout_seconds: int, allow_perma
         # (prompt key, menu key) by menu shape: once/deny, full, or no [a]lways.
         shape = "smart_deny" if once_only else "long" if allow_permanent else "short"
         prompt_key, menu_key = f"approval.prompt_{shape}", f"approval.choose_{shape}"
-        print(f"\n  {t('approval.dangerous_header', description=display_description)}"
+        header = title or t('approval.dangerous_header', description=display_description)
+        print(f"\n  {header}"
               f"\n      {display_command}\n\n{t(menu_key)}\n")
         sys.stdout.flush()
         choice = _read_choice(t(prompt_key), timeout_seconds)
         if choice is None:
-            print("\n" + t("approval.timeout"))
+            print("\n" + t("approval.timeout", **_ctx.approval_timeout_notice_kwargs()))
             return "timeout"  # distinct from deny: the user never answered
         if once_only:
             decision = {**dict.fromkeys(t("approval.smart_deny_once_inputs").split(","), "once"),
@@ -252,7 +268,7 @@ def _consent(choice, unresolved: str) -> str:
 
 def request_elicitation_consent(message: str, description: str, *,
                                 timeout_seconds: int | None = None,
-                                surface: str = "mcp-elicitation") -> str:
+                                surface: str = "mcp-elicitation", title: str = "Confirm this action?") -> str:
     """Route an MCP elicitation request to the surface owning the active session:
     gateway sessions through ``_await_gateway_decision``, CLI/TUI through
     ``prompt_dangerous_approval``. Always fails closed: a missing notify_cb in a
@@ -289,7 +305,7 @@ def request_elicitation_consent(message: str, description: str, *,
     # allow_permanent=False: elicitation is a per-call confirmation — no pattern to remember.
     try:
         choice = prompt_dangerous_approval(message, description, timeout_seconds=timeout_seconds,
-                                           allow_permanent=False)
+                                           allow_permanent=False, title=title)
     except Exception as exc:
         logger.error("Elicitation CLI prompt failed: %s", exc, exc_info=True)
         return "decline"

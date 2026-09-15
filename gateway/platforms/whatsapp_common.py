@@ -138,10 +138,8 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
     def _normalize_whatsapp_id(value: Optional[str]) -> str:
         if not value:
             return ""
-        normalized = str(value).strip()
-        if ":" in normalized and "@" in normalized:
-            normalized = normalized.replace(":", "@", 1)
-        return normalized
+        # Device-qualified ids (`<user>:<device>@lid`) must equal their bare form.
+        return re.sub(r":\d+(?=@)", "", str(value).strip())
 
     @staticmethod
     def _is_broadcast_chat(chat_id: str) -> bool:

@@ -17,17 +17,19 @@ from agent.tool_result_classification import (
 
 _NO_REPLY = "⚠️ No reply: "
 
+# One text for "the model produced nothing after retries" on every surface (CLI explainer,
+# gateway ``(empty)`` rewrite, desktop); the model name is filled in by the explainer.
+EMPTY_RESPONSE_EXPLANATION = (
+    "{model} didn't produce a reply this time, even after retries. "
+    "Send `continue` to try again, or switch models with /model."
+)
+
 # Exact ``turn_exit_reason`` → explanation body (prefixed with ``_NO_REPLY``).
 _EXIT_REASON_EXPLANATIONS: Dict[str, str] = {
-    "empty_response_exhausted": (
-        "the model returned empty content after retries and any "
-        "fallback providers. Try `continue`, switch model/provider, "
-        "or inspect the tool output above."
-    ),
+    "empty_response_exhausted": EMPTY_RESPONSE_EXPLANATION,
     "all_retries_exhausted_no_response": (
-        "all API retries were exhausted before a response was "
-        "produced (provider errors / rate limits). Try `continue` "
-        "or switch provider."
+        "the model provider didn't answer after all retries. "
+        "Send /retry, or switch models with /model."
     ),
     "partial_stream_recovery": (
         "streaming stopped early and only a partial response was "
@@ -110,29 +112,20 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
         "database). Your message should already be saved — "
         "please send it again in a moment."
     ),
+    # The forensic runbook for both (WAL generations, manifest.json, sidecars) lives in the
+    # logger.error at hermes_state.py::_raise_if_db_replaced — never in the chat reply.
     "replaced": (
-        "the turn was stopped because the state database file "
-        "was replaced underneath this process. Do not run "
-        "`hermes doctor --fix` or in-place FTS repair — stop "
-        "the process, restore the intended state.db, then "
-        "restart. Unwritten messages were diverted to "
-        "sessions/<session_id>.jsonl and, on the gateway, "
-        "pending_messages/pending-*.json."
+        "the session database file was replaced while Hermes was running, so this "
+        "message was not saved (a copy is kept in {home}/sessions/). Stop Hermes "
+        "(`hermes gateway stop`), run `hermes doctor` — not `hermes doctor --fix`, which "
+        "would repair the wrong file in place — then start it again and send your message "
+        "once more. Advanced recovery steps are in the log."
     ),
     "deleted_wal": (
-        "the turn was stopped because a live Hermes process held a retired "
-        "state.db-wal generation after its pathname was deleted or "
-        "replaced. Stop the gateway, dashboard, and cron writers; "
-        "do not overwrite the current state.db or delete its sidecars. "
-        "Check the logs for whether Hermes captured the retired generation, "
-        "then read the adjacent state.db.retired-wal-*/manifest.json. If "
-        "manifest.main.mode is `copied`, inspect that artifact with `hermes "
-        "sessions recover --source <state.db.retired-wal-*/state.db> "
-        "--inspect-only` before deciding whether its committed frames belong "
-        "on the current database. A `header_only` artifact is forensic and "
-        "does not contain a copied state.db to inspect. Unwritten messages "
-        "were diverted to sessions/<session_id>.jsonl and, on the gateway, "
-        "pending_messages/pending-*.json."
+        "the session database was changed or replaced while Hermes was running, so this "
+        "message was not saved (a copy is kept in {home}/sessions/). Stop Hermes "
+        "(`hermes gateway stop`), run `hermes doctor`, then start it again and send your "
+        "message once more. Advanced recovery steps are in the log."
     ),
     "corrupt": (
         "the turn was stopped because the state database "
@@ -162,18 +155,16 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
         "send your message again."
     ),
     "disk": (
-        "the turn was stopped because session storage could not "
-        "be written (the transcript would have been lost on "
-        "restart). This is often a full disk — free some space "
-        "(or fix state.db permissions), then send your message "
-        "again."
+        "Hermes couldn't save this conversation to disk, so it stopped rather than lose "
+        "your messages. The disk is probably full: free some space (or fix the permissions "
+        "on {home}/state.db), then send your message again."
     ),
 }
 _PERSISTENCE_DEFAULT_EXPLANATION = (
-    "the turn was stopped because session storage could not be "
-    "written (the transcript would have been lost on restart). "
-    "Check the state database health (`hermes doctor`), then "
-    "send your message again."
+    "Hermes couldn't save this conversation, so it stopped rather than lose your messages. "
+    "Possible causes: the drive is out of room, or another Hermes process is holding the "
+    "database. Close other Hermes windows, run `hermes doctor` to check storage, then send "
+    "your message again."
 )
 
 
@@ -306,7 +297,7 @@ class TurnExplainersMixin:
 
     @staticmethod
     def _format_turn_completion_explanation(
-        turn_exit_reason: str, persistence_cause: Optional[str] = None, db_path=None
+        turn_exit_reason: str, persistence_cause: Optional[str] = None, db_path=None, model: str = "",
     ) -> str:
         """User-facing explanation for an abnormal turn ending, or "" for normal / unknown reasons.
 
@@ -324,10 +315,14 @@ class TurnExplainersMixin:
                 if reason.startswith(prefix):
                     body = text
                     break
+        if body is not None and "{model}" in body:
+            body = body.format(model=model or "The model")
         if body is None and reason == "session_persistence_failed":
+            from hermes_constants import display_hermes_home
+
             body = _PERSISTENCE_CAUSE_EXPLANATIONS.get(
                 persistence_cause or "unknown", _PERSISTENCE_DEFAULT_EXPLANATION
-            )
+            ).replace("{home}", display_hermes_home())
             if persistence_cause in ("corrupt", "fts_index"):
                 # Copy-pasteable, so name the store that actually failed and pin the profile:
                 # a multi-profile backend (Desktop serve) hosts sessions whose state.db is NOT

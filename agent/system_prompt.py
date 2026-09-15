@@ -312,6 +312,33 @@ def _skills_prompt(agent: Any) -> str:
                                          compact_categories=_compact_cats or None, skills_dir_override=_agent_skills_dir(agent))
 
 
+def _auto_load_parts(agent: Any) -> List[str]:
+    """``skills.auto_load`` blocks, resolved once per agent lifecycle (config, skill files and
+    HERMES_IGNORE_RULES are read on the first build only) so the prompt stays byte-stable
+    across model switches, compression and static-prefix restoration.
+
+    Same gate as ``_skills_prompt``: nothing without the skills toolset, and nothing for agents that skip
+    context files (delegate children, curator/review forks, gateway hygiene agents) — pinned skills are
+    operator guidance for the user's session, not payload for every internal fork."""
+    if getattr(agent, "skip_context_files", False) or not any(
+            name in agent.valid_tool_names for name in ("skills_list", "skill_view", "skill_manage")):
+        return []
+    if not getattr(agent, "_auto_load_skills_resolved", False):
+        result: Tuple[str, List[str], List[str]] = ("", [], [])
+        try:
+            if not is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")):
+                from agent.skill_commands import build_auto_load_prompt
+                result = build_auto_load_prompt(task_id=getattr(agent, "session_id", None), home_override=_agent_home(agent))
+            if result[2]:
+                logger.warning("skills.auto_load: skill(s) not found or disabled, skipped: %s", ", ".join(result[2]))
+        except Exception:
+            logger.debug("skills.auto_load: injection skipped", exc_info=True)  # config errors never block session start
+        agent._auto_load_skills_result = result
+        agent._auto_load_skills_resolved = True
+    prompt = agent._auto_load_skills_result[0]
+    return [prompt] if prompt else []
+
+
 def _bot_mode_parts(agent: Any) -> List[str]:
     """Bot Mode teammate protocol — only in a bot's canonical "Bot Chat" session.
     Marks the prompt timeless (the volatile date line is dropped) since a birth
@@ -519,7 +546,7 @@ def _guidance_parts(agent: Any) -> List[str]:
             parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
     if _model_gate(getattr(agent, "_execution_guidance", "auto"), agent.model, EXECUTION_GUIDANCE_MODELS):
         from agent.prompt_builder import execution_guidance_text
-        parts.append(execution_guidance_text(agent.valid_tool_names))
+        parts.append(execution_guidance_text())
     return parts
 
 
@@ -627,6 +654,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if "skill_view" in (agent.valid_tool_names or set()) and "- hermes-agent:" in skills_prompt:
         stable_parts[_help_guidance_slot] = HERMES_AGENT_HELP_GUIDANCE
     stable_parts.extend(_alibaba_identity_part(agent))
+    # Pinned skills are per-agent constants (resolved once), so they live in the stable prefix.
+    stable_parts.extend(_auto_load_parts(agent))
     # Coding posture: the operating brief stays in the stable prefix. The
     # environment block contains the current cwd/backend and belongs after
     # project context, not ahead of a large shared AGENTS.md block.

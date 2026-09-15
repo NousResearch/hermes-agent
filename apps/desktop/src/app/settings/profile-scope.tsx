@@ -3,8 +3,13 @@ import { useEffect } from 'react'
 
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
-import { $activeGatewayProfile, $profiles, normalizeProfileKey, refreshProfiles } from '@/store/profile'
-import { $settingsScopeOverride, setSettingsScope } from '@/store/settings-scope'
+import { $profiles, normalizeProfileKey, refreshProfiles } from '@/store/profile'
+import {
+  $settingsScopeEditsNonDefault,
+  $settingsScopeOverride,
+  $settingsScopeProfile,
+  setSettingsScope
+} from '@/store/settings-scope'
 
 // The same chip affordance the Gateway page uses for its per-profile
 // connection overrides (gateway-settings ScopeChip). That one stays local to
@@ -37,7 +42,8 @@ export function SettingsProfileScope({ className }: { className?: string }) {
   const { t } = useI18n()
   const scope = t.settings.profileScope
   const override = useStore($settingsScopeOverride)
-  const active = useStore($activeGatewayProfile)
+  const selected = useStore($settingsScopeProfile)
+  const editingNonDefault = useStore($settingsScopeEditsNonDefault)
   const profiles = useStore($profiles)
 
   // Refresh lazily so a profile created elsewhere shows up; the cached list
@@ -49,8 +55,6 @@ export function SettingsProfileScope({ className }: { className?: string }) {
   if (profiles.length < 2) {
     return null
   }
-
-  const selected = normalizeProfileKey(override ?? active)
 
   return (
     <div className={cn('grid gap-2', className)}>
@@ -67,8 +71,20 @@ export function SettingsProfileScope({ className }: { className?: string }) {
           />
         ))}
       </div>
-      {override !== null ? (
-        <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+      {/* Note truth table (override × non-default target, per the store's
+          $settingsScopeEditsNonDefault): non-default target → loud accented
+          note whether or not an override is set (the bot-active misdirect);
+          explicit override onto the default → quiet tertiary note; following
+          the active DEFAULT profile → no note. */}
+      {override !== null || editingNonDefault ? (
+        <p
+          className={cn(
+            'text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height)',
+            editingNonDefault ? 'font-medium text-(--ui-accent)' : 'text-(--ui-text-tertiary)'
+          )}
+          data-scope-loud={editingNonDefault ? 'true' : undefined}
+          role="status"
+        >
           {scope.editsProfile(selected)}
         </p>
       ) : null}

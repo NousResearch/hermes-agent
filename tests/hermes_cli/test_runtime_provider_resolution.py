@@ -86,6 +86,30 @@ def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     assert resolved["source"] == "manual"
 
 
+def test_codex_pool_honors_hermes_codex_base_url(monkeypatch):
+    """The profile-wide Codex endpoint override must apply to pool credentials too."""
+    class _Entry:
+        access_token = "pool-token"
+        source = "manual"
+        base_url = "https://chatgpt.com/backend-api/codex"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", "http://127.0.0.1:8787/v1")
+
+    resolved = rp.resolve_runtime_provider(requested="openai-codex")
+
+    assert resolved["provider"] == "openai-codex"
+    assert resolved["base_url"] == "http://127.0.0.1:8787/v1"
+
+
 class TestCustomProviderPoolLoopbackNoKeyExemption:
     """Regression for issue #86864: legacy custom_providers configs often
     used short/placeholder api_keys ('123', 'm') for local no-auth

@@ -11,6 +11,7 @@ import asyncio
 import logging
 import re
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -81,7 +82,13 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         await super()._initialize()  # HermesProviderMixin: restores metadata from disk, enforces issuer binding
         tokens = self.context.current_tokens
         if tokens is not None and tokens.expires_in is not None:
-            self.context.update_token_expiry(tokens)
+            # The SDK maps a zero TTL to ``time.time()`` and accepts equality
+            # in ``is_token_valid()``.  On a cold load that same-tick boundary
+            # can send an already-expired access token instead of refreshing it.
+            if tokens.expires_in <= 0:
+                self.context.token_expiry_time = time.time() - 1
+            else:
+                self.context.update_token_expiry(tokens)
         if tokens is not None and self.context.oauth_metadata is None:
             try:
                 await self._prefetch_oauth_metadata()

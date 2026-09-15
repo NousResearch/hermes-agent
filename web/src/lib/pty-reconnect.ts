@@ -54,6 +54,8 @@ export interface PtyResumeReconnectInput {
   socketReadyState?: number | null
   ptyState: PtyConnectionState
   connectInFlight?: boolean
+  /** The automatic ladder used its last attempt; only the explicit Reconnect button restarts it. */
+  reconnectGaveUp?: boolean
 }
 
 const WS_CONNECTING = 0
@@ -67,9 +69,15 @@ export function shouldReconnectPtyOnPageResume({
   online,
   socketReadyState,
   ptyState,
-  connectInFlight
+  connectInFlight,
+  reconnectGaveUp
 }: PtyResumeReconnectInput): boolean {
   if (!isActive || !online || visibilityState === 'hidden') {
+    return false
+  }
+  // The overlay says retries stopped: a tab focus or network blip must not
+  // silently restart the whole ladder behind it.
+  if (reconnectGaveUp) {
     return false
   }
   if (ptyState === 'ended') {

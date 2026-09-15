@@ -262,15 +262,6 @@ class PeerHostedRoomTransport(InternalSessionRPC):
             try:
                 self.client.stage_attachments(dispatch=dispatch.as_mapping(), attachments=pending, grant=self.route.grant)
             except Exception as exc:
-                if getattr(exc, "status_code", None) == 413 and not getattr(exc, "retryable", False):
-                    # A definitive byte rejection precedes model admission: settle once.
-                    self._discard_terminal_attachments()
-                    receipt = {
-                        "status": "failed",
-                        "settlement_id": f"attachment-rejected:{dispatch.task_id}:{dispatch.execution_generation}",
-                        "error": "A Group Chat file exceeded the peer gateway's upload limit."}
-                    on_terminal(receipt)
-                    return receipt
                 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
                 failure = PeerRunsHTTPError(
                     "Group Chat files could not be transferred",

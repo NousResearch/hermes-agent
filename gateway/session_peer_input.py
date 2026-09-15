@@ -37,7 +37,12 @@ def peer_input_available(adapter, profile='default', *, connection=None):
 
 def _without_media(payload):
     result = copy.deepcopy(payload)
-    result['api_turn_v1']['settings'].pop('room_input_media', None)
+    turn = result.get('api_turn_v1')
+    if not isinstance(turn, dict) or not isinstance(turn.get('settings'), dict):
+        # Terminal metadata retains identity/digest, not the erased private
+        # payload. Only the durable HTTP receipt can resolve that replay.
+        raise RuntimeStoreError('storage_unavailable')
+    turn['settings'].pop('room_input_media', None)
     return result
 
 

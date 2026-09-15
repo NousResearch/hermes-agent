@@ -733,7 +733,13 @@ class HostedRoomRuntime:
                     transport=transport, profile=profile, session_id=attachment_session_id,
                     execution_generation=attempt.execution_generation, submit_attempted=submit_attempted,
                     not_admitted=bool(getattr(exc, "not_admitted", False)))
-            if submit_attempted and bool(getattr(exc, "not_admitted", False)):
+            if (submit_attempted and fresh_preflight_failure
+                    and getattr(exc, "status_code", None) == 413
+                    and not getattr(exc, "retryable", False)):
+                # Permanent upload failure only settles a newly allocated source
+                # generation; reused identities still require remote observation.
+                self._settle_failure_if_current(attempt, exc)
+            elif submit_attempted and bool(getattr(exc, "not_admitted", False)):
                 try:
                     state.requeue_not_admitted_task(self.db_path, attempt, clock=self.clock)
                 except (state.StaleLeaseError, state.StaleTaskError) as fence_exc:

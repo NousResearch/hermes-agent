@@ -37,7 +37,8 @@ def _manifest(data=b"notes"):
              "kind": "file", "name": "notes.txt", "mime": "text/plain", "size": len(data)}]
 
 
-def _attempt(monkeypatch, tmp_path, transport, *, legacy=False, manifests=None, loader=None):
+def _attempt(monkeypatch, tmp_path, transport, *, legacy=False, manifests=None, loader=None,
+             task_status="queued", prior_generation=1):
     """Invoke the real producer with every control/lifecycle edge inert."""
     runtime = HostedRoomRuntime(
         db_path=tmp_path / "unused.db", rooms=[], turn_lock=lambda _profile: nullcontext(),
@@ -56,8 +57,8 @@ def _attempt(monkeypatch, tmp_path, transport, *, legacy=False, manifests=None, 
     payload = {"target_profile": "ops", "target_member_id": "member-ops", "prompt": PROMPT}
     if manifests is not None:
         payload["attachments"] = manifests
-    runtime._execute_attempt(BINDING, {"identity": TASK, "status": "queued",
-        "execution_generation": 1, "payload": payload}, attempt)
+    runtime._execute_attempt(BINDING, {"identity": TASK, "status": task_status,
+        "execution_generation": prior_generation, "payload": payload}, attempt)
     return runtime
 
 
@@ -424,3 +425,25 @@ def test_service_receipt_only_and_fresh_generation_never_stage(monkeypatch, tmp_
         assert client.recover_dispatch.call_args.kwargs["receipt_only"] is True
     else:
         client.recover_dispatch.assert_not_called()
+
+
+@pytest.mark.parametrize('status,generation,fresh', [('queued', 1, True), ('queued', 2, False),
+                                                     ('running', 1, False)])
+def test_permanent_upload_failure_only_settles_fenced_fresh_generation(monkeypatch, tmp_path, status, generation, fresh):
+    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
+    rpc, client, _, manifests = _peer(tmp_path, monkeypatch)
+    client.stage_attachments.side_effect = PeerRunsHTTPError('upload too large', status_code=413, retryable=False)
+    client.discard_attachments = Mock()
+    runtime = _attempt(monkeypatch, tmp_path, rpc, manifests=manifests,
+                       task_status=status, prior_generation=generation)
+    client.dispatch.assert_not_called()
+    client.discard_attachments.assert_not_called()
+    runtime._on_terminal.assert_not_called()
+    state.requeue_not_admitted_task.assert_not_called()
+    runtime._defer_unavailable_route.assert_not_called()
+    if fresh:
+        runtime._settle_failure_if_current.assert_called_once()
+        runtime._mark_ambiguous.assert_not_called()
+    else:
+        runtime._settle_failure_if_current.assert_not_called()
+        runtime._mark_ambiguous.assert_called_once()

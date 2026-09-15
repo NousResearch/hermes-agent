@@ -24,6 +24,9 @@ from tools.url_safety import (
 import ipaddress
 import pytest
 
+# The toggle is read from the EFFECTIVE user config (user file + managed overlay).
+_CONFIG_READER = "hermes_cli.config_effective.load_user_config_effective"
+
 
 def _resolves_to(*ips):
     """Patch ``socket.getaddrinfo`` so any hostname resolves to *ips*.
@@ -282,7 +285,7 @@ class TestGlobalAllowPrivateUrls:
     def test_default_is_false(self, monkeypatch):
         """Toggle defaults to False when no env var or config is set."""
         monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
-        with patch("hermes_cli.config.read_raw_config", side_effect=Exception("no config")):
+        with patch(_CONFIG_READER, side_effect=Exception("no config")):
             assert _global_allow_private_urls() is False
 
 
@@ -290,7 +293,7 @@ class TestGlobalAllowPrivateUrls:
         """Quoted false must not opt out of SSRF protection."""
         monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
         cfg = {"security": {"allow_private_urls": "false"}}
-        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+        with patch(_CONFIG_READER, return_value=cfg):
             assert _global_allow_private_urls() is False
 
 

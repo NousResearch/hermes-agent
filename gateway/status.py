@@ -1586,6 +1586,25 @@ def planned_stop_stopper_alive() -> bool:
     return True
 
 
+def live_planned_stop_marker_present() -> bool:
+    """True when a TTL-valid planned-stop marker exists, regardless of its stopper.
+
+    Companion to :func:`planned_stop_stopper_alive` for request kinds whose requester does not
+    itself perform the restart (``via_service``): a *live* marker still names a concrete stopper
+    process that took responsibility for the pending stop, so its presence opts those requests
+    back into the orphan probe. Absent/stale/malformed markers report False.
+    """
+    try:
+        return (
+            _read_live_pid_marker(
+                _get_planned_stop_marker_path(), _PLANNED_STOP_MARKER_TTL_S
+            )
+            is not None
+        )
+    except Exception:  # noqa: BLE001 - a probe failure must never cancel a live restart
+        return False
+
+
 def get_running_pid(
     pid_path: Optional[Path] = None, *, cleanup_stale: bool = True
 ) -> Optional[int]:

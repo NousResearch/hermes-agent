@@ -253,8 +253,9 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   // hermes_cli/config.py (local/groq/openai/mistral/elevenlabs).
   'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'],
   // How the desktop voice conversation is wired — tools/voice_live.py owns the
-  // gpt-live branch (one full-duplex voice model delegating to Hermes).
-  'voice.voice_chat_mode': ['chained', 'gpt-live'],
+  // gpt-live branch (one full-duplex voice model delegating to Hermes), and
+  // tools/voice_live_grok.py the grok-live sibling (xAI realtime).
+  'voice.voice_chat_mode': ['chained', 'gpt-live', 'grok-live'],
   'voice.gpt_live.voice': [
     'marin',
     'cedar',

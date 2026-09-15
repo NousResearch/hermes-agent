@@ -13,7 +13,7 @@ import { $voiceConversationStartRequest, takeVoiceConversationStart } from '@/st
 import { resetBrowseState } from '@/store/composer-input-history'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $voiceLiveStatus, refreshVoiceLiveStatus, selectedVoiceChatMode } from '@/store/voice-live'
+import { $voiceLiveGrokStatus, $voiceLiveStatus, refreshAllVoiceLiveStatuses, selectedVoiceChatMode } from '@/store/voice-live'
 import { $autoSpeakReplies, $voiceStopPhrase, setAutoSpeakReplies } from '@/store/voice-prefs'
 import { resumeWakeAfterVoice } from '@/store/wake-word'
 
@@ -26,6 +26,7 @@ import type { ChatBarProps } from '../types'
 import { useAutoSpeakReplies } from './use-auto-speak-replies'
 import { useVoiceConversation } from './use-voice-conversation'
 import { useVoiceLiveConversation } from './use-voice-live-conversation'
+import { useVoiceLiveGrokConversation } from './use-voice-live-grok-conversation'
 import { useVoiceRecorder } from './use-voice-recorder'
 
 interface UseComposerVoiceArgs {
@@ -88,7 +89,9 @@ export function useComposerVoice({
   const [voiceConversationActive, setVoiceConversationActive] = useState(false)
   // Engine selection is latched at conversation START (a Settings change
   // applies to the next conversation, never mid-call).
-  const [liveEngineActive, setLiveEngineActive] = useState(false)
+  const [activeEngine, setActiveEngine] = useState<'chained' | 'gpt-live' | 'grok-live'>('chained')
+  const liveEngineActive = activeEngine === 'gpt-live'
+  const grokEngineActive = activeEngine === 'grok-live'
   const ownsWakeIndicatorRef = useRef(false)
   const previousSessionIdRef = useRef(sessionId)
   const voiceStartRequest = useStore($voiceConversationStartRequest)
@@ -178,6 +181,16 @@ export function useComposerVoice({
     await onSubmit(text, { surface: 'voice-live', voiceContext })
   }
 
+  /** A Grok-Live delegation → Hermes turn. Same surface tag as GPT-Live — the
+   *  delegation semantics are identical (SPEC §5), so it reuses the shared
+   *  `voice-live` surface rather than a new `grok-live` one. */
+  const submitGrokDelegation = async (text: string, voiceContext: string) => {
+    triggerHaptic('submit')
+    resetBrowseState(sessionId)
+    clearDraft()
+    await onSubmit(text, { surface: 'voice-live', voiceContext })
+  }
+
   /** Recent text turns of this chat, as GPT-Live startup history. */
   const seedLiveHistory = () =>
     toLiveHistory(
@@ -206,7 +219,7 @@ export function useComposerVoice({
   const chainedConversation = useVoiceConversation({
     busy,
     consumePendingResponse,
-    enabled: voiceConversationActive && !liveEngineActive,
+    enabled: voiceConversationActive && activeEngine === 'chained',
     onFatalError: () => setVoiceConversationActive(false),
     // Speaking over the model mid-generation interrupts the in-flight turn —
     // the same seam as the Stop button — so the interjection becomes the next
@@ -239,19 +252,46 @@ export function useComposerVoice({
     seedHistory: seedLiveHistory
   })
 
-  const conversation = liveEngineActive ? liveConversation : chainedConversation
+  const grokConversation = useVoiceLiveGrokConversation({
+    activeToolLabel,
+    beforeMicOpen: () => wakePauseBarrierRef.current ?? undefined,
+    busy,
+    consumePendingResponse,
+    enabled: voiceConversationActive && grokEngineActive,
+    onFatalError: () => setVoiceConversationActive(false),
+    onInterrupt,
+    onStopWord: () => setVoiceConversationActive(false),
+    onSubmit: submitGrokDelegation,
+    pendingResponse: pendingTurnResponse
+  })
+
+  const conversation = grokEngineActive ? grokConversation : liveEngineActive ? liveConversation : chainedConversation
 
   /** Turn the conversation on with the engine `voice.voice_chat_mode` selects,
    *  decided in the same state batch so the other engine never sees a frame of
-   *  `enabled`. gpt-live selected but not startable (no OpenAI key on the
+   *  `enabled`. A live engine selected but not startable (no credential on the
    *  gateway) falls back to chained with a notice rather than a dead button. */
   const activateConversation = useCallback(() => {
-    const status = $voiceLiveStatus.get()
-    let live = false
+    const mode = selectedVoiceChatMode()
+    let engine: 'chained' | 'gpt-live' | 'grok-live' = 'chained'
 
-    if (selectedVoiceChatMode(status) === 'gpt-live') {
+    if (mode === 'gpt-live') {
+      const status = $voiceLiveStatus.get()
+
       if (status?.available) {
-        live = true
+        engine = 'gpt-live'
+      } else {
+        notify({
+          id: 'voice-live-unavailable',
+          kind: 'warning',
+          message: t.notifications.voice.liveUnavailable(status?.reason ?? 'not configured')
+        })
+      }
+    } else if (mode === 'grok-live') {
+      const status = $voiceLiveGrokStatus.get()
+
+      if (status?.available) {
+        engine = 'grok-live'
       } else {
         notify({
           id: 'voice-live-unavailable',
@@ -261,14 +301,14 @@ export function useComposerVoice({
       }
     }
 
-    setLiveEngineActive(live)
+    setActiveEngine(engine)
     setVoiceConversationActive(true)
   }, [t])
 
   useEffect(() => {
     if (!voiceConversationActive) {
       // Prefetch so the first press picks the right engine without a round trip.
-      void refreshVoiceLiveStatus().catch(() => undefined)
+      void refreshAllVoiceLiveStatuses().catch(() => undefined)
     }
   }, [voiceConversationActive])
 
@@ -394,8 +434,8 @@ export function useComposerVoice({
   // lease, and the backend unloads resident local models once no surface holds
   // one. Fire-and-forget — the toggle never waits on or fails from this.
   useEffect(() => {
-    void syncTtsLease(CONVERSATION_LEASE, voiceConversationActive && !liveEngineActive)
-  }, [liveEngineActive, voiceConversationActive])
+    void syncTtsLease(CONVERSATION_LEASE, voiceConversationActive && activeEngine === 'chained')
+  }, [activeEngine, voiceConversationActive])
 
   useEffect(() => () => void syncTtsLease(CONVERSATION_LEASE, false), [])
 

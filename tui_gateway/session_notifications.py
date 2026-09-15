@@ -402,11 +402,22 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
     from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
     if (claim := claim_event_delivery(evt, "tui-poller")) is None:
         return
-    kwargs = ({"display_kind": "async_delegation_complete", "display_metadata": _async_delegation_display_metadata(evt)}
+    metadata = _async_delegation_display_metadata(evt) if evt.get("type") == "async_delegation" else None
+    if metadata is not None and (
+        evt.get("truncated") is True or any(
+            isinstance(result, dict) and result.get("truncated") is True
+            for result in (evt.get("results") or [])
+        )
+    ):
+        metadata["goal_execution_incomplete"] = True
+        session["_goal_execution_incomplete_event"] = True
+    kwargs = ({"display_kind": "async_delegation_complete", "display_metadata": metadata}
               if evt.get("type") == "async_delegation" else {})
     try:
         _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text, "notification poller dispatch failed", **kwargs)
     except Exception:
+        if metadata is not None and metadata.get("goal_execution_incomplete") is True:
+            session.pop("_goal_execution_incomplete_event", None)
         release_event_delivery(evt, claim)
         return
     complete_event_delivery(evt, claim)
@@ -452,6 +463,19 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
                         else process_completion_display_text([evt]) if evt_type == "completion" else text)
         _emit("status.update", sid, {"kind": "process", "text": display_text})
         emitted.add(dedup_key)
+    try:
+        from hermes_cli.goals import is_stale_goal_event
+        stale_for_goal = is_stale_goal_event(str(session.get("session_key") or ""), evt)
+    except Exception:
+        stale_for_goal = False
+    if stale_for_goal:
+        # Preserve visibility via status.update, but do not let superseded work re-enter the
+        # replacement Goal's model turn, wait barrier, or completion judge.
+        from tools.async_delegation import claim_event_delivery, complete_event_delivery
+        if (claim := claim_event_delivery(evt, "tui-stale-goal")) is not None:
+            complete_event_delivery(evt, claim)
+        logger.info("Suppressed stale background completion for replacement Goal in session %s", session.get("session_key"))
+        return True
     if evt_type == "completion" and completions is not None:
         completions.append((evt, text))
         return True

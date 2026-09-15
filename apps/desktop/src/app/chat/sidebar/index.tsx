@@ -47,6 +47,7 @@ import {
   $sidebarPrFilter,
   $sidebarProfileFilter,
   $sidebarProjectFilter,
+  $sidebarRecencyFilter,
   $sidebarProjectOrderIds,
   $sidebarRecentsOpen,
   $sidebarSessionOrderIds,
@@ -172,6 +173,7 @@ import {
   StartWorkButton,
   useRepoWorktreeMap
 } from './projects'
+import { sessionMatchesRecencyFilter } from './projects/workspace-groups'
 import { WorktreeDialog } from './projects/worktree-dialog'
 import {
   SidebarBlankState,
@@ -372,6 +374,7 @@ export function ChatSidebar({
   const persistedProjectFilter = useStore($sidebarProjectFilter)
   const profileFilter = useStore($sidebarProfileFilter)
   const prFilter = useStore($sidebarPrFilter)
+  const recencyFilter = useStore($sidebarRecencyFilter)
   const prDataWanted = useStore($sidebarPrDataWanted)
   const prBranchOverrides = useStore($prBranchBySession)
   const pullRequests = useStore($pullRequestsByBranch)
@@ -544,17 +547,32 @@ export function ChatSidebar({
         }
       }
 
+      if (!sessionMatchesRecencyFilter(session, recencyFilter)) {
+        return false
+      }
+
       // Same membership the sidebar groups and colors by, so a filtered row
       // lands in the lane the user picked it from.
       return sessionMatchesProjectFilter(session, projectFilter, projects)
     },
-    [statusFilter, projectFilter, profileFilter, showAllProfiles, prFilter, pullRequests, projects, dotStates]
+    [
+      statusFilter,
+      projectFilter,
+      profileFilter,
+      showAllProfiles,
+      prFilter,
+      recencyFilter,
+      pullRequests,
+      projects,
+      dotStates
+    ]
   )
 
   const filtersNarrow =
     statusFilter.length > 0 ||
     projectFilter.length > 0 ||
     prFilter.length > 0 ||
+    recencyFilter.length > 0 ||
     (showAllProfiles && profileFilter.length > 0)
 
   const visibleSessions = useMemo(

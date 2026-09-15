@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import {
   $sidebarGrouping,
   $sidebarOrdering,
+  $sidebarRecencyFilter,
   $sidebarRowMeta,
   $sidebarShowAllSessions,
   $sidebarViewCustomized,
@@ -11,9 +12,12 @@ import {
   setSidebarOrdering,
   setSidebarShowAllSessions,
   toggleSidebarRowMeta,
+  toggleSidebarRecencyFilter,
   toggleSidebarStatusFilter
 } from './layout'
 import { $showAllProfiles } from './profile'
+import { makeSessionInfo } from '@/test/session-info'
+import { sessionMatchesRecencyFilter } from '@/app/chat/sidebar/projects/workspace-groups'
 
 beforeEach(() => {
   $showAllProfiles.set(false)
@@ -50,6 +54,28 @@ describe('the sidebar as it ships', () => {
     toggleSidebarRowMeta('tokens')
 
     expect($sidebarViewCustomized.get()).toBe(true)
+  })
+
+  it('persists a recency window and clears it with the rest of the filters', () => {
+    toggleSidebarRecencyFilter('1d')
+
+    expect($sidebarRecencyFilter.get()).toEqual(['1d'])
+    expect($sidebarViewCustomized.get()).toBe(true)
+
+    resetSidebarView()
+
+    expect($sidebarRecencyFilter.get()).toEqual([])
+    expect($sidebarViewCustomized.get()).toBe(false)
+  })
+
+  it('includes boundary activity and falls back to started_at for recency windows', () => {
+    const now = 2_000_000
+
+    expect(sessionMatchesRecencyFilter(makeSessionInfo({ last_active: now - 86_400 }), ['1d'], now)).toBe(true)
+    expect(sessionMatchesRecencyFilter(makeSessionInfo({ last_active: now - 86_401 }), ['1d'], now)).toBe(false)
+    expect(
+      sessionMatchesRecencyFilter(makeSessionInfo({ last_active: 0, started_at: now - 172_800 }), ['2d'], now)
+    ).toBe(true)
   })
 
   it('is what reset puts back — every knob, not just the filters', () => {

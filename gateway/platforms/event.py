@@ -81,8 +81,11 @@ class MessageEvent:
     metadata: Dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)
     # May this event resolve gateway commands / control prompts? Proactive plugin events set False
-    # so untrusted payload text stays conversational. Kept last for positional compat.
+    # so untrusted payload text stays conversational.
     allow_gateway_control: bool = True
+    # Trusted adapters may request one skill-command expansion before generic busy routing.
+    # This is not serialized and stays last for positional compatibility.
+    preprocess_skill_command_before_busy: bool = False
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
@@ -105,5 +108,9 @@ class MessageEvent:
             return self.text
         parts = (self.text or "").lstrip().split(maxsplit=1)
         args = parts[1] if len(parts) > 1 else ""
-        # iOS auto-corrects -- to — (em dash) and - to – (en dash)
-        return args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
+        # iOS auto-corrects -- to — (em dash) and - to – (en dash).
+        # Adapter-generated skill commands may carry verbatim user content after
+        # a trusted transport envelope; preserve that content byte-for-byte.
+        if not self.metadata.get("preserve_command_args"):
+            args = args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
+        return args

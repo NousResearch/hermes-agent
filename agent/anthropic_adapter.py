@@ -206,7 +206,7 @@ def _supports_fast_mode(model: str) -> bool:
 # MiniMax's Anthropic-compatible endpoints fail tool-use requests when the tool-streaming beta is
 # present. ``_FAST_MODE_BETA`` enables the ``speed: "fast"`` request parameter.
 _TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14"
-_COMMON_BETAS = ["interleaved-thinking-2025-05-14", _TOOL_STREAMING_BETA]
+_COMMON_BETAS = ["interleaved-thinking-2025-05-14"]
 _CONTEXT_1M_BETA = "context-1m-2025-08-07"
 _FAST_MODE_BETA = "fast-mode-2026-02-01"
 # Required for OAuth/subscription auth; matches Claude Code / pi-ai / OpenCode.

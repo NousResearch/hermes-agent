@@ -7,7 +7,7 @@ frames are re-enveloped as Gateway ``event`` frames; ``result`` resolves a comma
 request arrives on a transport ATTACHED to the session and that transport is the broker-recorded
 owner of the exact attached scope (the broker's exact-scope ``complete`` is the backstop).
 Capabilities come from the broker's explicit allowlist (no raw CDP/eval/uploads). Bodies are
-rebound onto server.py's globals (bind_module publishes this module's helpers too), which is how
+published onto server.py by bind_module (this module's helpers too), which is how
 the session gate reaches ``_session_transport_contains`` with no import of its own.
 """
 
@@ -104,19 +104,19 @@ def _controller_method(
                 denied = precheck(rid, params)
                 if denied is not None:
                     return denied
-            transport = current_transport()
+            transport = srv.current_transport()
             identity = getattr(transport, "auth_identity", None)
             if not _is_authenticated_identity(identity):
-                return _err(rid, _ERR_FORBIDDEN, identity_message)
+                return srv._err(rid, _ERR_FORBIDDEN, identity_message)
             session_id = str(getattr(params, "session_id", "") or "")
-            with _sessions_lock:
-                session = _sessions.get(session_id)
+            with srv._sessions_lock:
+                session = srv._sessions.get(session_id)
                 # Membership, not slot identity: a mirrored session holds a FanoutTransport, which is
                 # identical to no peer's transport, so slot identity would refuse every client here — the
                 # peer that registered the controller included. The broker's is_owner check below still
                 # keys on the transport that attached the scope.
-                if not _session_transport_contains(session, transport):
-                    return _err(rid, _ERR_FORBIDDEN, "session is not owned by this transport")
+                if not srv._session_transport_contains(session, transport):
+                    return srv._err(rid, _ERR_FORBIDDEN, "session is not owned by this transport")
             broker = browser_control_broker.get_browser_control_broker()
             scope = None
             if lookup_scope:
@@ -124,11 +124,11 @@ def _controller_method(
                     session_id=session_id, principal_id=_principal_digest(identity),
                     transport_family=_CLOUD_TRANSPORT_FAMILY)
                 if scope is None:
-                    return _err(rid, _ERR_FORBIDDEN, missing_scope_message)
+                    return srv._err(rid, _ERR_FORBIDDEN, missing_scope_message)
                 # Defense in depth: the broker's exact-scope ops already reject foreign
                 # scopes; the owner check makes the same-transport rule explicit here too.
                 if not broker.is_owner(scope, transport):
-                    return _err(rid, _ERR_FORBIDDEN, _NOT_OWNED)
+                    return srv._err(rid, _ERR_FORBIDDEN, _NOT_OWNED)
             return fn(rid, params, transport, identity, session_id, broker, scope, session)
 
         handler.__doc__ = fn.__doc__
@@ -141,11 +141,11 @@ def _register_precheck(rid, params: BrowserControllerRegisterParams):
     from gateway import browser_control_broker
 
     if not browser_control_broker.browser_control_enabled():
-        return _err(rid, _ERR_FORBIDDEN, "browser.extension_control.enabled is not set")
+        return srv._err(rid, _ERR_FORBIDDEN, "browser.extension_control.enabled is not set")
     broker_mod = browser_control_broker
     if not broker_mod.browser_control_protocol_supported(params.protocol_version):
         expected = broker_mod.BROWSER_CONTROL_PROTOCOL_VERSION
-        return _err(
+        return srv._err(
             rid, _ERR_FORBIDDEN,
             f"unsupported browser-control protocol version; expected {expected}",
         )
@@ -165,7 +165,7 @@ def _(rid, params: BrowserControllerRegisterParams, transport, identity, session
     browser_profile_id = params.browser_profile_id.strip()
     profile_id = str(session.get("profile") or "").strip()
     if not controller_id or not browser_profile_id or not profile_id:
-        return _err(
+        return srv._err(
             rid, _ERR_FORBIDDEN,
             "controller_id, browser_profile_id, and server session profile are required",
         )
@@ -173,12 +173,12 @@ def _(rid, params: BrowserControllerRegisterParams, transport, identity, session
         params.capabilities
     )
     if not capabilities:
-        return _err(rid, _ERR_FORBIDDEN, "no permitted controller capabilities requested")
+        return srv._err(rid, _ERR_FORBIDDEN, "no permitted controller capabilities requested")
     scope = browser_control_broker.ControllerScope(
         principal_id=_principal_digest(identity), profile_id=profile_id, session_id=session_id,
         controller_id=controller_id, browser_profile_id=browser_profile_id,
         transport_family=_CLOUD_TRANSPORT_FAMILY, capabilities=capabilities)
-    broker.attach(scope, _broker_event_writer(transport, session_id), owner=transport)
+    broker.attach(scope, srv._broker_event_writer(transport, session_id), owner=transport)
     return BrowserControllerRegisterResult(scope=ControllerScope(
         principal_id=scope.principal_id or "", profile_id=scope.profile_id or "",
         session_id=scope.session_id or "", controller_id=scope.controller_id or "",
@@ -192,7 +192,7 @@ def _(rid, params: BrowserControllerResultParams, _transport, _identity, _sessio
     cancelled command ids (the broker's idempotent answer, surfaced verbatim)."""
     command_id = params.command_id
     if not command_id:
-        return _err(rid, _ERR_FORBIDDEN, "command_id required")
+        return srv._err(rid, _ERR_FORBIDDEN, "command_id required")
     ok = params.ok is True
     accepted = broker.complete(
         command_id, scope=scope, ok=ok, result=params.result if ok else params.error)
@@ -217,7 +217,7 @@ def _(rid, params: BrowserControllerParams, transport, _identity, _session_id, b
 
 
 def register(server) -> None:
-    """Publish helpers/constants onto ``server`` and install handlers (rebound to its globals)."""
+    """Publish helpers/constants onto ``server`` and install handlers."""
     bind_module(globals(), server, skip=("_",))
 
 
@@ -243,3 +243,7 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----
+
+# Bound last, after every definition, so importing this module first (tests, the gateway process)
+# lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.
+from tui_gateway import server as srv  # noqa: E402

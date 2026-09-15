@@ -1,10 +1,18 @@
 """Session history/message shaping: image-ref messages, content coercion, history->wire messages, in-flight
-turn tracking and turn-failure detail. Bodies are rebound onto server.py's globals (method_ctx.bind_module)."""
+turn tracking and turn-failure detail. Reaches server.py state through ``srv`` (method_ctx.py)."""
 
 from __future__ import annotations
 
 from .method_ctx import bind_module
 from agent.prompt_builder import STEER_DISPLAY_KIND
+from pathlib import Path
+from typing import Any
+from typing import Optional
+import json
+import time
+import logging
+
+logger = logging.getLogger("tui_gateway.server")  # siblings log as the gateway facade (operators and caplog filter on it)
 
 
 def _active_image_routing_identity(agent: Any) -> tuple[str, str]:
@@ -50,7 +58,7 @@ def _build_persist_user_message(user_text: str, image_paths: list[str], run_mess
     """Shape the persisted user turn like the model payload: ``_flush_messages_to_session_db`` ignores a
     plain-string override for a list (native-vision) payload, so swap only the text part for the
     ``@image:`` form, keep image parts, drop API-only text parts (barge-in note)."""
-    persist_text = _build_persist_message_with_image_refs(user_text, image_paths)
+    persist_text = srv._build_persist_message_with_image_refs(user_text, image_paths)
     if not isinstance(run_message, list):
         return persist_text
     image_parts = [p for p in run_message if not (isinstance(p, dict) and p.get("type") == "text")]
@@ -73,11 +81,11 @@ def _history_part_image_url(part: dict) -> str:
 def _history_dict_text(content: dict, *, image_urls: bool) -> str:
     """Placeholder/text rendering of one structured content dict."""
     kind = content.get("type")
-    if kind in _HISTORY_TEXT_KINDS:
+    if kind in srv._HISTORY_TEXT_KINDS:
         return str(content.get("text") or content.get("content") or "")
-    if kind in _HISTORY_IMAGE_KINDS:
-        return (_history_part_image_url(content) if image_urls else "") or "[image]"
-    if kind in _HISTORY_AUDIO_KINDS:
+    if kind in srv._HISTORY_IMAGE_KINDS:
+        return (srv._history_part_image_url(content) if image_urls else "") or "[image]"
+    if kind in srv._HISTORY_AUDIO_KINDS:
         return "[audio]"
     if kind:
         return f"[{kind}]"
@@ -90,7 +98,7 @@ def _content_display_text(content: Any) -> str:
     if isinstance(content, list):
         return "\n".join(t for t in (_content_display_text(part).strip() for part in content) if t)
     if isinstance(content, dict):
-        return _history_dict_text(content, image_urls=False)
+        return srv._history_dict_text(content, image_urls=False)
     return "" if content is None else str(content)
 
 
@@ -104,26 +112,26 @@ def _coerce_message_text(content: Any) -> str:
             if isinstance(part, str) or (isinstance(part, dict) and isinstance(part.get("text"), str)):
                 chunks.append(part if isinstance(part, str) else part["text"])
             elif isinstance(part, dict) and part.get("type"):
-                rendered = _history_dict_text(part, image_urls=True)
-                chunks.append(rendered if part["type"] in _HISTORY_TEXT_KINDS else f"\n{rendered}")
+                rendered = srv._history_dict_text(part, image_urls=True)
+                chunks.append(rendered if part["type"] in srv._HISTORY_TEXT_KINDS else f"\n{rendered}")
         return "".join(chunks)
     if isinstance(content, dict):
-        return _history_dict_text(content, image_urls=True)
+        return srv._history_dict_text(content, image_urls=True)
     return "" if content is None else str(content)
 
 
 def _history_text_only_part(part: dict) -> bool:
     kind = part.get("type")
-    return kind in _HISTORY_TEXT_KINDS or (kind is None and isinstance(part.get("text"), str))
+    return kind in srv._HISTORY_TEXT_KINDS or (kind is None and isinstance(part.get("text"), str))
 
 
 def _is_text_only_busy_payload(content: Any) -> bool:
     """True when a busy submit carries only plain text, not attachments/media."""
     if isinstance(content, list):
         return bool(content) and all(
-            isinstance(part, str) or (isinstance(part, dict) and _history_text_only_part(part)) for part in content
+            isinstance(part, str) or (isinstance(part, dict) and srv._history_text_only_part(part)) for part in content
         )
-    return isinstance(content, (str, int, float)) or (isinstance(content, dict) and _history_text_only_part(content))
+    return isinstance(content, (str, int, float)) or (isinstance(content, dict) and srv._history_text_only_part(content))
 
 
 def _is_display_hidden_marker(role: str | None, text: str) -> bool:
@@ -139,7 +147,7 @@ def _is_display_hidden_marker(role: str | None, text: str) -> bool:
 
 def _skill_scaffold_projection(content_text: str) -> str:
     """The invocation a slash-skill-expanded turn came from, else "" — UIs render ``/work fix the leak``."""
-    return describe_skill_invocation(content_text, separator=" ") or ""
+    return srv.describe_skill_invocation(content_text, separator=" ") or ""
 
 
 def _expand_skill_invocation_for_replay(text: str, task_id: str) -> str:
@@ -165,7 +173,7 @@ _AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn was interrupted m
 def _legacy_display_kind(role: str, text: str) -> str | None:
     """Display type of a synthetic row persisted untyped: new rows are typed at turn start (``persist_user_display_kind``);
     this prefix sniff migrates rows already on disk (a turn killed mid-run never reached the stamp)."""
-    return "auto_continue" if role == "user" and text.lstrip().startswith(_AUTO_CONTINUE_NOTE_PREFIX) else None
+    return "auto_continue" if role == "user" and text.lstrip().startswith(srv._AUTO_CONTINUE_NOTE_PREFIX) else None
 
 
 _HISTORY_ASSISTANT_DETAIL_KEYS = (
@@ -184,15 +192,15 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
     for m in history:
         if not isinstance(m, dict):
             continue
-        m = project_compaction_message_for_display(m)
+        m = srv.project_compaction_message_for_display(m)
         if m is None:
             continue
         role = m.get("role")
         # display_kind="hidden": model-facing scaffolding the "[System:" sniff does not catch.
-        if role not in _HISTORY_ROLES or m.get("display_kind") == "hidden":
+        if role not in srv._HISTORY_ROLES or m.get("display_kind") == "hidden":
             continue
-        content_text = _coerce_message_text(m.get("content"))
-        if _is_display_hidden_marker(role, content_text):
+        content_text = srv._coerce_message_text(m.get("content"))
+        if srv._is_display_hidden_marker(role, content_text):
             continue
         if role == "assistant" and m.get("tool_calls"):
             for tc in m["tool_calls"]:
@@ -212,10 +220,10 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             name = tc_name or m.get("tool_name") or "tool"
             args = tc_args or {}
             # `context` is an 80-char preview; ship args so a full-call renderer isn't truncated.
-            messages.append({"role": "tool", "name": name, "context": _tool_ctx(name, args), **({"args": args} if args else {})})
+            messages.append({"role": "tool", "name": name, "context": srv._tool_ctx(name, args), **({"args": args} if args else {})})
             continue
         # Assistant detail sidecars can carry the only visible reply or reasoning after resume/reload.
-        has_assistant_detail = role == "assistant" and any(m.get(key) for key in _HISTORY_ASSISTANT_DETAIL_KEYS)
+        has_assistant_detail = role == "assistant" and any(m.get(key) for key in srv._HISTORY_ASSISTANT_DETAIL_KEYS)
         if not content_text.strip() and not has_assistant_detail:
             continue
         msg = {"role": role, "text": content_text}
@@ -228,13 +236,13 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if m.get("_row_id") is not None:
             msg["row_id"] = m["_row_id"]
         # A user turn shows its skill invocation, never the expanded body (rewind re-sends by ordinal).
-        invocation = _skill_scaffold_projection(content_text) if role == "user" else ""
+        invocation = srv._skill_scaffold_projection(content_text) if role == "user" else ""
         if invocation:
             msg.update(text=invocation, display_kind="skill_invocation")
         if role == "assistant":
-            msg.update((key, m[key]) for key in _HISTORY_ASSISTANT_DETAIL_KEYS if m.get(key) is not None)
+            msg.update((key, m[key]) for key in srv._HISTORY_ASSISTANT_DETAIL_KEYS if m.get(key) is not None)
         # Display-only timeline metadata (model switches, delegation events).
-        display_kind = m.get("display_kind") or _legacy_display_kind(role, content_text)
+        display_kind = m.get("display_kind") or srv._legacy_display_kind(role, content_text)
         if display_kind:
             msg["display_kind"] = display_kind
         if m.get("display_metadata"):
@@ -261,12 +269,12 @@ def _coerce_seed_history(value: Any) -> list[dict]:
 
 
 def _inflight_text(value: Any) -> str:
-    return _content_display_text(value).strip()
+    return srv._content_display_text(value).strip()
 
 
 def _start_inflight_turn(session: dict, text: Any) -> None:
     now = time.time()
-    session["inflight_turn"] = {"assistant": "", "started_at": now, "streaming": True, "updated_at": now, "user": _inflight_text(text)}
+    session["inflight_turn"] = {"assistant": "", "started_at": now, "streaming": True, "updated_at": now, "user": srv._inflight_text(text)}
 
 
 def _append_inflight_delta(session: dict, delta: Any) -> None:
@@ -283,7 +291,7 @@ def _append_inflight_delta(session: dict, delta: Any) -> None:
 def _record_inflight_correction(session: dict, text: Any) -> None:
     """Record an accepted mid-turn correction on the live turn — appended, never written over ``user``,
     so a resuming client can rebuild BOTH bubbles."""
-    correction = _inflight_text(text)
+    correction = srv._inflight_text(text)
     turn = session.get("inflight_turn")
     if not correction or not isinstance(turn, dict):
         return
@@ -334,8 +342,8 @@ def _strip_prompt_echo(message: str, prompt: Any) -> str:
     char run shared with the prompt (or its JSON-escaped form) becomes ``<prompt>``; shingles keep it linear."""
     if not message or not prompt:
         return message
-    needle = " ".join(str(prompt).split())[:_TURN_PROMPT_ECHO_MAX_PROMPT]
-    window = _TURN_PROMPT_ECHO_WINDOW
+    needle = " ".join(str(prompt).split())[:srv._TURN_PROMPT_ECHO_MAX_PROMPT]
+    window = srv._TURN_PROMPT_ECHO_WINDOW
     if len(needle) < window or len(message) < window:
         return message
     shingles = {needle[i:i + window] for i in range(len(needle) - window + 1)}
@@ -387,13 +395,17 @@ def _turn_failure_detail(error: Any, reason: Any = None, prompt: Any = None) -> 
         message = "<unredactable>"  # never fail open
     message = " ".join(message.split())
     # After the collapse (same shape both sides), before truncation (a quote must not survive the cut).
-    message = _strip_prompt_echo(message, prompt)
-    if len(message) > _TURN_FAILURE_DETAIL_LIMIT:
-        message = message[:_TURN_FAILURE_DETAIL_LIMIT] + "\u2026"
+    message = srv._strip_prompt_echo(message, prompt)
+    if len(message) > srv._TURN_FAILURE_DETAIL_LIMIT:
+        message = message[:srv._TURN_FAILURE_DETAIL_LIMIT] + "\u2026"
     out = " failure_reason=%s" % " ".join(reason_text.split()) if reason_text else ""
     return out + (" cause=%r" % message if message else "")
 
 
 def register(server) -> None:
-    """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
+    """Publish this module's helpers + handlers onto ``server`` and install its handlers."""
     bind_module(globals(), server, skip=("_",))
+
+# Bound last, after every definition, so importing this module first (tests, the gateway process)
+# lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.
+from tui_gateway import server as srv  # noqa: E402

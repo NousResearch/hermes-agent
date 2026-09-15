@@ -1,9 +1,8 @@
 """Prompt / attachment / respond JSON-RPC handlers.
-
-Bodies are rebound onto server.py's globals at install time (see
-method_ctx.bind_module), so they reference server.py globals bare.
+ Reaches server.py state through ``srv`` (method_ctx.py).
 """
 
+import logging
 import contextlib
 
 from tui_gateway.contracts.events import (
@@ -72,8 +71,8 @@ def _mem_db_pair_agrees(mem, db_msg) -> bool:
 def _find_user_turn_by_row_id(history: list, target_row_id: int):
     """``(user_ordinal, history_index)`` for ``target_row_id``, or None."""
     return next(
-        ((u_ord, h_idx) for u_ord, h_idx in enumerate(_history_user_indices(history))
-         if _message_row_id(history[h_idx]) == target_row_id), None)
+        ((u_ord, h_idx) for u_ord, h_idx in enumerate(srv._history_user_indices(history))
+         if srv._message_row_id(history[h_idx]) == target_row_id), None)
 
 
 def _load_durable_truncation_history(
@@ -83,7 +82,7 @@ def _load_durable_truncation_history(
     if not session_key:
         return []
     try:
-        with _session_db(session) as db:
+        with srv._session_db(session) as db:
             get_conv = getattr(db, "get_messages_as_conversation", None)
             if not callable(get_conv):
                 return None
@@ -106,28 +105,28 @@ def _resolve_truncate_row_id(session: dict, history: list, target_row_id: int):
     without stamps (provider-format messages), load the session's durable transcript with
     ``include_row_ids=True`` and map the matched user-turn ordinal onto the live list. See #82959.
     """
-    if (hit := _find_user_turn_by_row_id(history, target_row_id)) is not None:
+    if (hit := srv._find_user_turn_by_row_id(history, target_row_id)) is not None:
         return hit
-    db_history = _load_durable_truncation_history(session)
+    db_history = srv._load_durable_truncation_history(session)
     if db_history is None:
         return None
     # Heal missing stamps only when EVERY pair agrees: the durable copy is alternation-
     # repaired while the live list can carry optimistic/marker rows, and a stamp on a
     # misaligned pair is sticky (re-aims every later rewind at the wrong durable row).
     if len(db_history) == len(history) and all(
-            _mem_db_pair_agrees(mem, db_msg) for mem, db_msg in zip(history, db_history)):
+            srv._mem_db_pair_agrees(mem, db_msg) for mem, db_msg in zip(history, db_history)):
         for mem, db_msg in zip(history, db_history):
-            if (db_rid := _message_row_id(db_msg)) is not None and _message_row_id(mem) is None:
+            if (db_rid := srv._message_row_id(db_msg)) is not None and srv._message_row_id(mem) is None:
                 mem["_row_id"] = db_rid
-        if (hit := _find_user_turn_by_row_id(history, target_row_id)) is not None:
+        if (hit := srv._find_user_turn_by_row_id(history, target_row_id)) is not None:
             return hit
-    if (db_hit := _find_user_turn_by_row_id(db_history, target_row_id)) is None:
+    if (db_hit := srv._find_user_turn_by_row_id(db_history, target_row_id)) is None:
         return None
     db_ord, db_idx = db_hit
-    mem_user_indices = _history_user_indices(history)
+    mem_user_indices = srv._history_user_indices(history)
     # Same-ordinal mapping across lists that can diverge (repair may merge a user;user
     # pair): trust it only when the mapped live turn shows the durable target's content.
-    if db_ord >= len(mem_user_indices) or not _mem_db_pair_agrees(
+    if db_ord >= len(mem_user_indices) or not srv._mem_db_pair_agrees(
             history[mem_user_indices[db_ord]], db_history[db_idx]):
         return None
     return db_ord, mem_user_indices[db_ord]
@@ -139,7 +138,7 @@ def _coerce_truncate_int(rid, value, param_name="truncate_before_user_ordinal"):
     if not isinstance(value, bool):
         with contextlib.suppress(TypeError, ValueError):
             return int(value), None
-    return None, _err(rid, 4004, f"{param_name} must be an integer")
+    return None, srv._err(rid, 4004, f"{param_name} must be an integer")
 
 
 def _pending_reaction_notes(session: dict) -> str:
@@ -149,13 +148,13 @@ def _pending_reaction_notes(session: dict) -> str:
     if not session_key:
         return ""
     try:
-        display = _load_cfg().get("display")
+        display = srv._load_cfg().get("display")
         if not (isinstance(display, dict) and bool(display.get("message_reactions", False))):
             return ""
     except Exception:
         return ""
     try:
-        with _session_db(session) as db:
+        with srv._session_db(session) as db:
             pending = None if db is None else db.take_unseen_reactions(session_key, author="user")
     except Exception:
         logger.debug("Failed to read pending reactions", exc_info=True)
@@ -181,7 +180,7 @@ def _typed_stop_phrase_response(rid, text):
     """RPC reply ending the voice chat when a bare stop phrase is TYPED while backend voice
     mode is on (typed twin of the spoken stop phrase), or None for a normal message."""
     from tui_gateway.contracts.events import VoiceTranscriptPayload
-    if not (isinstance(text, str) and _voice_mode_enabled()):
+    if not (isinstance(text, str) and srv._voice_mode_enabled()):
         return None
     try:
         # Typed bare stop phrase while backend voice mode is active ends the voice chat instead of sending
@@ -193,8 +192,8 @@ def _typed_stop_phrase_response(rid, text):
             return None
     except Exception:
         return None
-    _end_voice_chat(stop_loop=True, stop_tts=True)
-    _voice_emit("voice.transcript", VoiceTranscriptPayload(stop_phrase=True, typed=True))
+    srv._end_voice_chat(stop_loop=True, stop_tts=True)
+    srv._voice_emit("voice.transcript", VoiceTranscriptPayload(stop_phrase=True, typed=True))
     logger.info("prompt.submit: typed stop phrase — voice chat ended")
     return PromptSubmitResult(voice_stopped=True)
 
@@ -205,14 +204,14 @@ _HOSTED_TASK_FIELDS = {"room_id", "task_id", "thread_id", "turn_id", "execution_
 def _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback):
     """Validate the hosted-room turn proof carried by an internal submit."""
     if session.get("source") != "bot_room":
-        return _err(rid, 4120, "hosted room turns require a bot_room session")
+        return srv._err(rid, 4120, "hosted room turns require a bot_room session")
     valid = (
         isinstance(hosted_task, dict) and callable(hosted_terminal_callback)
-        and set(hosted_task) == _HOSTED_TASK_FIELDS
+        and set(hosted_task) == srv._HOSTED_TASK_FIELDS
         and all(isinstance(hosted_task.get(f), str) and hosted_task[f]
-                for f in _HOSTED_TASK_FIELDS - {"execution_generation"})
+                for f in srv._HOSTED_TASK_FIELDS - {"execution_generation"})
         and isinstance(hosted_task.get("execution_generation"), int))
-    return None if valid else _err(rid, 4120, "invalid hosted room turn proof")
+    return None if valid else srv._err(rid, 4120, "invalid hosted room turn proof")
 
 
 def _legacy_group_fence_error(rid, session, params: PromptSubmitParams):
@@ -235,17 +234,17 @@ def _legacy_group_fence_error(rid, session, params: PromptSubmitParams):
                 default_db_path(), room_id=room_id, target_profile=(
                     profile_name_for_home(session.get("profile_home"))
                     or str(params.profile or "").strip()
-                    or str(_current_profile_name() or "default").strip()))
+                    or str(srv._current_profile_name() or "default").strip()))
     except RoomProbeUnavailableError:
-        return _err(rid, 5122, _GROUP_PROBE_FAILED_MSG)
+        return srv._err(rid, 5122, srv._GROUP_PROBE_FAILED_MSG)
     except HostedRoomError:
         # Legacy Desktop sessions used the display name after "Group: " — not a room id.
         return None
     except Exception:
-        return _err(rid, 5122, _GROUP_PROBE_FAILED_MSG)
+        return srv._err(rid, 5122, srv._GROUP_PROBE_FAILED_MSG)
     if hosted or peer:
         owner = "its gateway" if hosted else "its home host"
-        return _err(
+        return srv._err(
             rid, 4122, f"This room is managed by {owner}. Update Hermes Desktop to continue it.")
     return None
 
@@ -258,11 +257,11 @@ def _parse_truncation_params(rid, sid, session, params: PromptSubmitParams, hist
     indistinguishable from a real rewind, and the cut is a destructive replace."""
     target_row_id = client_ordinal = None
     if (truncate_row_id := params.truncate_before_row_id) is not None:
-        target_row_id, err = _coerce_truncate_int(rid, truncate_row_id, "truncate_before_row_id")
+        target_row_id, err = srv._coerce_truncate_int(rid, truncate_row_id, "truncate_before_row_id")
         if err is not None:
             return None, None, err
     if (truncate_user_ordinal := params.truncate_before_user_ordinal) is not None:
-        client_ordinal, err = _coerce_truncate_int(rid, truncate_user_ordinal)
+        client_ordinal, err = srv._coerce_truncate_int(rid, truncate_user_ordinal)
         if err is not None:
             return None, None, err
     if is_truthy_value(params.confirm_truncate):
@@ -272,7 +271,7 @@ def _parse_truncation_params(rid, sid, session, params: PromptSubmitParams, hist
         "ordinal=%s, row_id=%s, message_id=%s). The client attached truncation parameters without "
         "confirm_truncate — likely stale truncation parameters on an ordinary submit.",
         sid, len(history), client_ordinal, target_row_id, params.truncate_before_message_id)
-    return None, None, _err(
+    return None, None, srv._err(
         rid, 4029,
         "truncation parameters require confirm_truncate=true; "
         "an ordinary prompt.submit must not drop session history "
@@ -283,28 +282,28 @@ def _resolve_truncation_ordinal(rid, sid, session, params: PromptSubmitParams, h
     """Resolve the truncation target to ``(ordinal, cut_index, err)``: unresolvable target
     (4018, fail closed — never degrade a missing row_id/message_id into an ordinal cut) ->
     ordinal drift (4030) -> ordinal-only on a durable session (4004)."""
-    target_row_id, client_ordinal, err = _parse_truncation_params(
+    target_row_id, client_ordinal, err = srv._parse_truncation_params(
         rid, sid, session, params, history)
     if err is not None:
         return None, None, err
     truncate_message_id = params.truncate_before_message_id
     # Client ordinals count the full displayed lineage; after compression ancestors live in
     # display_history_prefix, so count their user turns once to translate ordinals.
-    prefix_user_count = len(_history_user_indices(session.get("display_history_prefix") or []))
-    user_indices = _history_user_indices(history)
+    prefix_user_count = len(srv._history_user_indices(session.get("display_history_prefix") or []))
+    user_indices = srv._history_user_indices(history)
 
     def _stale(resolved_ordinal=None):
         # Recovery fields: Desktop resyncs + retries, "compressed away" when segment < 0.
         segment = (
             client_ordinal - prefix_user_count if client_ordinal is not None else resolved_ordinal)
-        return None, None, _err(rid, 4018, _STALE_TARGET_MSG, data={
+        return None, None, srv._err(rid, 4018, srv._STALE_TARGET_MSG, data={
             "user_turn_count": len(user_indices), "ordinal": client_ordinal,
             "segment_ordinal": segment, "prefix_user_count": prefix_user_count})
 
     if target_row_id is not None or truncate_message_id is not None:
         if target_row_id is not None:
             param_name, target_repr = "truncate_before_row_id", target_row_id
-            found_match = _resolve_truncate_row_id(session, history, target_row_id)
+            found_match = srv._resolve_truncate_row_id(session, history, target_row_id)
             not_found = "target row_id %d not found for session %s (in-memory + durable)"
         else:
             param_name = "truncate_before_message_id"
@@ -332,7 +331,7 @@ def _resolve_truncation_ordinal(rid, sid, session, params: PromptSubmitParams, h
                 "Stale truncate_before_user_ordinal detected.",
                 sid, client_ordinal, param_name, ordinal, param_name, target_repr,
                 prefix_user_count)
-            return None, None, _err(
+            return None, None, srv._err(
                 rid, 4030,
                 f"truncate_before_user_ordinal ({client_ordinal}) does not match "
                 f"{param_name} target turn ({ordinal})")
@@ -344,14 +343,14 @@ def _resolve_truncation_ordinal(rid, sid, session, params: PromptSubmitParams, h
         # live-copy annotation (resume paths omitted _row_id stamps); an unreadable
         # durable state fails closed too.
         has_stamped_user = any(
-            _message_row_id(history[h_idx]) is not None for h_idx in user_indices)
-        durable = [] if has_stamped_user else _load_durable_truncation_history(session, sid)
+            srv._message_row_id(history[h_idx]) is not None for h_idx in user_indices)
+        durable = [] if has_stamped_user else srv._load_durable_truncation_history(session, sid)
         if has_stamped_user or durable is None or durable:
             logger.warning(
                 "prompt.submit: REFUSED ordinal-only truncation of durable "
                 "session %s (ordinal=%d); truncate_before_row_id required",
                 sid, client_ordinal)
-            return None, None, _err(
+            return None, None, srv._err(
                 rid, 4004,
                 "ordinal-only truncation is unsafe for durable session history; "
                 "include truncate_before_row_id")
@@ -362,14 +361,14 @@ def _resolve_truncation_ordinal(rid, sid, session, params: PromptSubmitParams, h
 
 
 def _row_ids_of(messages) -> set:
-    return {row_id for message in messages if isinstance((row_id := _message_row_id(message)), int)}
+    return {row_id for message in messages if isinstance((row_id := srv._message_row_id(message)), int)}
 
 
 def _truncate_history_for_submit(rid, sid, session, params: PromptSubmitParams, requested_rebind_ids):
     """Rewind/regenerate cut under ``history_lock``: ``(err, survivor_fields)``; the fields
     are the client rowId-rebind payload."""
-    history = _history_without_ephemeral_scaffolding(session.get("history", []))
-    ordinal, cut_index, err = _resolve_truncation_ordinal(rid, sid, session, params, history)
+    history = srv._history_without_ephemeral_scaffolding(session.get("history", []))
+    ordinal, cut_index, err = srv._resolve_truncation_ordinal(rid, sid, session, params, history)
     if err is not None:
         return err, {}
     from agent.context_compressor import history_before_user_originated_turn
@@ -380,7 +379,7 @@ def _truncate_history_for_submit(rid, sid, session, params: PromptSubmitParams, 
             "prompt.submit: REFUSED empty truncation of session %s "
             "(%d messages would be wiped; ordinal=%d).",
             sid, len(history), ordinal)
-        return _err(
+        return srv._err(
             rid, 4028,
             "truncation would erase the entire session transcript; "
             "resubmit with confirm_empty_truncate=true if this is intended"), {}
@@ -392,7 +391,7 @@ def _truncate_history_for_submit(rid, sid, session, params: PromptSubmitParams, 
     # after the in-memory rewrite would stack the new exchange on the "undone" turns).
     # Writes through _session_db (profile sessions own their state.db).
     fields = {}
-    with _session_db(session) as db:
+    with srv._session_db(session) as db:
         if db is not None:
             try:
                 # NULL session_key (old CLI-origin sessions) would trip an FK violation.
@@ -409,16 +408,16 @@ def _truncate_history_for_submit(rid, sid, session, params: PromptSubmitParams, 
                 # before the session_key default fix have no key, and replace_messages(None) triggers an FK
                 # violation.
                 truncation_key = session.get("session_key") or sid
-                old_active_row_ids = _row_ids_of(history)
+                old_active_row_ids = srv._row_ids_of(history)
                 if requested_rebind_ids is not None:
                     # Un-repaired pre-write active-id set: a rewritten row must never be
                     # mistaken for an untouched archived/ancestor row.
-                    durable_rebind_history = _load_durable_truncation_history(
+                    durable_rebind_history = srv._load_durable_truncation_history(
                         session, truncation_key, repair_alternation=False)
                     if durable_rebind_history is None:
                         raise RuntimeError("could not load durable row identities for truncation")
-                    old_active_row_ids.update(_row_ids_of(durable_rebind_history))
-                old_survivor_row_ids = [_message_row_id(message) for message in truncated]
+                    old_active_row_ids.update(srv._row_ids_of(durable_rebind_history))
+                old_survivor_row_ids = [srv._message_row_id(message) for message in truncated]
                 # active_only: a bare replace would DELETE the compaction archive (active=0
                 # rows) on every edit.  archive_dropped: a mis-aimed cut stays recoverable.
                 db.replace_messages(
@@ -429,18 +428,18 @@ def _truncate_history_for_submit(rid, sid, session, params: PromptSubmitParams, 
                     "prompt.submit: replace_messages failed for session %s (ordinal=%d); refusing "
                     "turn so memory and DB stay aligned: %s",
                     sid, ordinal, exc, exc_info=True)
-                return _err(rid, 5008, f"failed to persist history truncation: {exc}"), {}
+                return srv._err(rid, 5008, f"failed to persist history truncation: {exc}"), {}
             # Survivors were re-inserted as NEW rows: surface the fresh ids so the client
             # rebinds its cached rowIds (else a second rewind refuses with 4018).  None
             # entries: the client must drop its cached id for that turn.
             if requested_rebind_ids is None:
                 fields["survivor_user_row_ids"] = [
-                    _message_row_id(truncated[i]) for i in _history_user_indices(truncated)]
+                    srv._message_row_id(truncated[i]) for i in srv._history_user_indices(truncated)]
             else:
                 fields["survivor_row_id_map"] = row_id_map = {
                     str(old_row_id): new_row_id
                     for old_row_id, new_row_id in zip(
-                        old_survivor_row_ids, (_message_row_id(message) for message in truncated))
+                        old_survivor_row_ids, (srv._message_row_id(message) for message in truncated))
                     if isinstance(old_row_id, int) and isinstance(new_row_id, int)
                     and old_row_id in requested_rebind_ids}
                 for dropped_row_id in requested_rebind_ids.intersection(old_active_row_ids):
@@ -461,39 +460,39 @@ def _persist_session_row_for_submit(rid, session):
     here); the error reply is the only user-visible signal (desktop maps it to a toast)."""
     from hermes_state_user_copy import describe_storage_failure
     try:
-        if _ensure_session_db_row(session) is False:
-            failure = describe_storage_failure(_db_error)
-            error = _err(
+        if srv._ensure_session_db_row(session) is False:
+            failure = describe_storage_failure(srv._db_error)
+            error = srv._err(
                 rid, 5072,
                 f"Session storage is unavailable, so this message was not saved. Cause: {failure.gloss}. "
                 f"{failure.action} Then send your message again.",
-                data=_storage_error_data(failure, _db_error))
+                data=srv._storage_error_data(failure, srv._db_error))
         else:
-            _persist_branch_seed(session)
+            srv._persist_branch_seed(session)
             return None
     except Exception as exc:
         failure = describe_storage_failure(exc)
         if failure.code == "disk_full":
-            error = _err(
+            error = srv._err(
                 rid, 5070,
                 "Session storage could not be written, so this message was not saved: the disk is full. "
                 "Free some disk space, then send your message again.",
-                data=_storage_error_data(failure, exc))
+                data=srv._storage_error_data(failure, exc))
         else:
             logger.warning("prompt.submit: session persist failed: %s", exc, exc_info=True)
-            error = _err(
+            error = srv._err(
                 rid, 5071,
                 f"Session storage could not be written, so this message was not saved. Cause: {failure.gloss}. "
                 f"{failure.action} Then send your message again.",
-                data=_storage_error_data(failure, exc))
+                data=srv._storage_error_data(failure, exc))
     # No turn thread will start, so neither resume nor the busy queue may see
     # this rejected prompt as live. Release the slot a turn would normally own.
     with session["history_lock"]:
         session["running"] = False
         session["last_active"] = time.time()
         session.pop("_hosted_room_task", None)
-        _clear_inflight_turn(session)
-        _release_active_session_slot(session)
+        srv._clear_inflight_turn(session)
+        srv._release_active_session_slot(session)
     return error
 
 
@@ -503,29 +502,29 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
     # The wait delivers the prompt when the still-running build completes, honors a cancel promptly, notices
     # the user once past the slow threshold, and only errors when the build itself fails or the bounded cap
     # expires. See #63078.
-    err = _wait_agent_for_prompt(session, rid, sid)
+    err = srv._wait_agent_for_prompt(session, rid, sid)
     if err:
         # Terminal frame + retained snapshot (not a bare "error" event): the snapshot is
         # the only way resume shows this to a disconnected client.
-        _emit_terminal_turn_error(
+        srv._emit_terminal_turn_error(
             sid, session, (err.get("error") or {}).get("message", "agent initialization failed"),
             error_surface={"layer": "runtime", "code": "agent_init_failed", "retryable": True})
         with session["history_lock"]:
             session["running"] = False
             session["last_active"] = time.time()
-        _emit("session.info", sid, SessionInfoPayload.of(_session_info(session.get("agent"), session)))
+        srv._emit("session.info", sid, SessionInfoPayload.of(srv._session_info(session.get("agent"), session)))
         return
     with session["history_lock"]:
         if session.get("_turn_cancel_requested") or not session.get("running"):
             session["running"] = False
-            _clear_inflight_turn(session)
+            srv._clear_inflight_turn(session)
             # Without this emit the turn vanishes silently after {"status": "streaming"}.
-            _emit("error", sid, ErrorPayload(message=(
+            srv._emit("error", sid, ErrorPayload(message=(
                 "Turn cancelled before the agent was ready"
                 if session.get("_turn_cancel_requested")
                 else "Session no longer running before the agent was ready")))
             return
-    _run_prompt_submit(
+    srv._run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind,
         terminal_callback=hosted_terminal_callback, turn_author=turn_author)
 
@@ -542,15 +541,15 @@ def _lock_in_submit_turn(
     with session["history_lock"]:
         # A watch session's run lives in the PARENT turn (own running flag False); typing
         # mid-run would build a second agent racing the child on the same stored session.
-        if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
-            return _err(rid, 4009, "subagent still running — wait for it to finish"), fields
+        if session.get("lazy") and srv._child_run_active(str(session.get("session_key") or "")):
+            return srv._err(rid, 4009, "subagent still running — wait for it to finish"), fields
         if is_truthy_value(params.confirm_truncate) and not has_truncation:
-            return _err(
+            return srv._err(
                 rid, 4004,
                 "confirm_truncate requires truncate_before_user_ordinal, truncate_before_message_id, or truncate_before_row_id",
             ), fields
         if has_truncation:
-            err, fields = _truncate_history_for_submit(
+            err, fields = srv._truncate_history_for_submit(
                 rid, sid, session, params, requested_rebind_ids)
             if err is not None:
                 return err, {}
@@ -559,7 +558,7 @@ def _lock_in_submit_turn(
         session["last_active"] = time.time()
         if hosted_task is not None:
             session["_hosted_room_task"] = dict(hosted_task)
-        _start_inflight_turn(session, text)
+        srv._start_inflight_turn(session, text)
     return None, fields
 
 
@@ -577,13 +576,13 @@ def _(rid, params: PromptSubmitParams, _turn_author=None, _hosted_task=None, _ho
     # Off-screen sends (widget intents) type the row so no client renders a bubble;
     # whitelisted to "hidden" — this RPC must not mint kinds.
     display_kind = "hidden" if params.display_kind == "hidden" else None
-    if (stopped := _typed_stop_phrase_response(rid, text)) is not None:
+    if (stopped := srv._typed_stop_phrase_response(rid, text)) is not None:
         return stopped
     if params.interrupted:
         # Client-side barge-in: latch so this turn's model message carries the note.
         from tools.tts_streaming import mark_speech_interrupted
         mark_speech_interrupted()
-    session, err = _sess_nowait(params, rid)
+    session, err = srv._sess_nowait(params, rid)
     if err:
         return err
     from tools.bot_relay import DeliveryAuthor
@@ -591,44 +590,44 @@ def _(rid, params: PromptSubmitParams, _turn_author=None, _hosted_task=None, _ho
     # Only the relay handler can build a DeliveryAuthor. A dict here is a client claiming a sender.
     raw_author = _turn_author
     if raw_author is not None and not isinstance(raw_author, DeliveryAuthor):
-        return _err(rid, 4124, "turn author is stamped by the gateway, never by a client")
+        return srv._err(rid, 4124, "turn author is stamped by the gateway, never by a client")
     turn_author = raw_author.author if raw_author is not None else None
     hosted_task = _hosted_task
     hosted_terminal_callback = _hosted_terminal_callback
     internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
     err = (
-        _hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback)
-        if internal_hosted_submit else _legacy_group_fence_error(rid, session, params))
+        srv._hosted_submit_error(rid, session, hosted_task, hosted_terminal_callback)
+        if internal_hosted_submit else srv._legacy_group_fence_error(rid, session, params))
     if err is not None:
         return err
-    if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
+    if (limit_message := srv._ensure_active_session_slot(sid, session)) is not None:
         # Refused HERE — before the busy queue, db row and agent build — so a refusal
         # leaves the session untouched.  The reason travels as machine-readable data.
         reason = getattr(limit_message, "reason", None)
-        return _err(rid, 4090, str(limit_message), {"reason": reason} if reason else None)
+        return srv._err(rid, 4090, str(limit_message), {"reason": reason} if reason else None)
     # Rewritten every submit: a session alternates app window / HUD / live voice; a stale value misinforms.
-    session["client_surface"] = params.surface if params.surface in _CLIENT_SURFACES else ""
+    session["client_surface"] = params.surface if params.surface in srv._CLIENT_SURFACES else ""
     # Live-voice delegations carry the recent spoken transcript for the MODEL INPUT only (the persisted
     # user row stays the words the user said); anything else clears it.
     voice_context = params.voice_context
     session["voice_live_context"] = (
         voice_context[:6000] if session["client_surface"] == "voice-live" and isinstance(voice_context, str) else "")
-    has_truncation = any(getattr(params, k) is not None for k in _TRUNCATION_PARAMS)
+    has_truncation = any(getattr(params, k) is not None for k in srv._TRUNCATION_PARAMS)
     if has_truncation and isinstance(text, str):
         # A rewind replays what the transcript shows: re-expand a skill invocation or
         # `/work fix it` sends nine literal chars.
-        text = _expand_skill_invocation_for_replay(text, str(session.get("session_key") or ""))
-    turn_isolation = _session_uses_compute_host(session, _load_dashboard_process_isolation_config())
+        text = srv._expand_skill_invocation_for_replay(text, str(session.get("session_key") or ""))
+    turn_isolation = srv._session_uses_compute_host(session, srv._load_dashboard_process_isolation_config())
     if internal_hosted_submit and turn_isolation:
-        return _err(rid, 4121, "hosted room turns do not support isolated compute workers yet")
+        return srv._err(rid, 4121, "hosted room turns do not support isolated compute workers yet")
     # Re-bind to the current transport: streaming must stay on the active websocket even
     # if a disconnect/fallback moved the session to stdio.
-    with _session_resume_lock:
-        if (refusal := _reattach_refusal(rid, sid, session)) is not None:
+    with srv._session_resume_lock:
+        if (refusal := srv._reattach_refusal(rid, sid, session)) is not None:
             return refusal
-        if (t := current_transport()) is not None:
-            _attach_session_transport(session, t)
-            _cancel_ws_orphan_reap(sid)
+        if (t := srv.current_transport()) is not None:
+            srv._attach_session_transport(session, t)
+            srv._cancel_ws_orphan_reap(sid)
     # Claim the turn against a possibly-running session (busy/queued reply, else fall
     # through once ``running`` is observed False).  The provider interrupt happens after
     # history_lock is released (a non-interruptible tool may hold it); if the old turn
@@ -639,9 +638,9 @@ def _(rid, params: PromptSubmitParams, _turn_author=None, _hosted_task=None, _ho
             if not session.get("running"):
                 break
             if internal_hosted_submit:
-                return _err(rid, 4091, "hosted room member session is busy")
+                return srv._err(rid, 4091, "hosted room member session is busy")
             busy_transport = t or session.get("transport")
-        busy_response = _handle_busy_submit(
+        busy_response = srv._handle_busy_submit(
             rid, sid, session, text, busy_transport, queued=params.queued, turn_author=turn_author)
         if busy_response is not None:
             return busy_response
@@ -649,7 +648,7 @@ def _(rid, params: PromptSubmitParams, _turn_author=None, _hosted_task=None, _ho
     requested_rebind_ids = (
         {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
         if isinstance(raw_rebind_ids, list) else None)
-    err, survivor_fields = _lock_in_submit_turn(
+    err, survivor_fields = srv._lock_in_submit_turn(
         rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task)
     if err is not None:
         return err
@@ -657,7 +656,7 @@ def _(rid, params: PromptSubmitParams, _turn_author=None, _hosted_task=None, _ho
         if turn_author:
             logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
                          turn_author.get("id"))
-        isolated_response = _submit_prompt_to_compute_host(
+        isolated_response = srv._submit_prompt_to_compute_host(
             rid, sid, session, text, display_kind=display_kind)
         if not isinstance(isolated_response, dict):
             # The truncation already happened inline above (memory + DB).
@@ -673,13 +672,13 @@ def _(rid, params: PromptSubmitParams, _turn_author=None, _hosted_task=None, _ho
         logger.warning(
             "compute-host dispatch failed for session %s; falling back inline: %s", sid,
             isolated_response["error"].get("message", "unknown error"))
-    if (err := _persist_session_row_for_submit(rid, session)) is not None:
+    if (err := srv._persist_session_row_for_submit(rid, session)) is not None:
         return err
     # A completed FAILED build must not wedge the session: rebuild, don't replay it.
-    if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
-        _start_agent_build(sid, session)
+    if not srv._restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
+        srv._start_agent_build(sid, session)
     run_thread = threading.Thread(
-        target=lambda: _run_after_agent_ready(
+        target=lambda: srv._run_after_agent_ready(
             rid, sid, session, text, display_kind, hosted_terminal_callback, turn_author),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
@@ -694,21 +693,21 @@ def _attached_image_result(session, image_path, **extra) -> dict:
     """Common ``{attached, path, count, ...meta}`` reply after queuing an image."""
     return {
         "attached": True, "path": str(image_path), "count": len(session["attached_images"]),
-        **extra, **_image_meta(image_path)}
+        **extra, **srv._image_meta(image_path)}
 
 
 @method("clipboard.paste")
 def _(rid, params: ClipboardPasteParams) -> AttachedImageResult | dict:
     from tui_gateway.contracts.prompt_voice import AttachedImageResult
-    session, err = _sess_building(params, rid)
+    session, err = srv._sess_building(params, rid)
     if err:
         return err
     try:
         from hermes_cli.clipboard import has_clipboard_image, save_clipboard_image
     except Exception as e:
-        return _err(rid, 5027, f"clipboard unavailable: {e}")
+        return srv._err(rid, 5027, f"clipboard unavailable: {e}")
     session["image_counter"] = session.get("image_counter", 0) + 1
-    img_dir = _session_images_dir(session)
+    img_dir = srv._session_images_dir(session)
     img_dir.mkdir(parents=True, exist_ok=True)
     img_path = (
         img_dir / f"clip_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{session['image_counter']}.png")
@@ -719,18 +718,18 @@ def _(rid, params: ClipboardPasteParams) -> AttachedImageResult | dict:
             "Clipboard has image but extraction failed" if has_clipboard_image()
             else "No image found in clipboard"))
     session.setdefault("attached_images", []).append(str(img_path))
-    return AttachedImageResult(**_attached_image_result(session, img_path))
+    return AttachedImageResult(**srv._attached_image_result(session, img_path))
 
 
 @method("image.attach")
 def _(rid, params: ImageAttachParams) -> AttachedImageResult | dict:
     from tui_gateway.contracts.prompt_voice import AttachedImageResult
-    session, err = _sess_building(params, rid)
+    session, err = srv._sess_building(params, rid)
     if err:
         return err
     raw = str(params.path or "").strip()
     if not raw:
-        return _err(rid, 4015, "path required")
+        return srv._err(rid, 4015, "path required")
     try:
         from cli import (
             _IMAGE_EXTENSIONS, _detect_file_drop, _resolve_attachment_path, _split_path_input)
@@ -740,15 +739,15 @@ def _(rid, params: ImageAttachParams) -> AttachedImageResult | dict:
             path_token, remainder = _split_path_input(raw)
             image_path = _resolve_attachment_path(path_token)
             if image_path is None:
-                return _err(rid, 4016, f"image not found: {path_token}")
+                return srv._err(rid, 4016, f"image not found: {path_token}")
         if image_path.suffix.lower() not in _IMAGE_EXTENSIONS:
-            return _err(rid, 4016, f"unsupported image: {image_path.name}")
+            return srv._err(rid, 4016, f"unsupported image: {image_path.name}")
         session.setdefault("attached_images", []).append(str(image_path))
-        return AttachedImageResult(**_attached_image_result(
+        return AttachedImageResult(**srv._attached_image_result(
             session, image_path,
             remainder=remainder, text=remainder or f"[User attached image: {image_path.name}]"))
     except Exception as e:
-        return _err(rid, 5027, str(e))
+        return srv._err(rid, 5027, str(e))
 
 
 @method("image.attach_bytes")
@@ -756,14 +755,14 @@ def _(rid, params: ImageAttachBytesParams) -> AttachedImageResult | dict:
     """Attach an image from base64 bytes (remote client); reply mirrors ``image.attach``.
     ``filename``/``ext`` hint the extension, else magic bytes decide (fallback ``.png``)."""
     from tui_gateway.contracts.prompt_voice import AttachedImageResult
-    session, err = _sess_building(params, rid)
+    session, err = srv._sess_building(params, rid)
     if err:
         return err
     raw_b64 = str(params.content_base64 or params.data or "").strip()
     if not raw_b64:
-        return _err(rid, 4015, "content_base64 required")
-    img_bytes, err = _decode_attach_payload(
-        rid, raw_b64, mime_prefix="image/", max_bytes=_ATTACH_BYTES_MAX_BYTES,
+        return srv._err(rid, 4015, "content_base64 required")
+    img_bytes, err = srv._decode_attach_payload(
+        rid, raw_b64, mime_prefix="image/", max_bytes=srv._ATTACH_BYTES_MAX_BYTES,
         label="image", empty_msg="image is empty")
     if err is not None:
         return err
@@ -771,14 +770,14 @@ def _(rid, params: ImageAttachBytesParams) -> AttachedImageResult | dict:
     ext_hint = str(params.ext or "").strip().lower()
     if ext_hint and not ext_hint.startswith("."):
         ext_hint = "." + ext_hint
-    ext = _sniff_image_ext(img_bytes, filename or (f"x{ext_hint}" if ext_hint else ""))
-    if ext not in _allowed_image_extensions():
-        return _err(rid, 4016, f"unsupported image extension: {ext}")
+    ext = srv._sniff_image_ext(img_bytes, filename or (f"x{ext_hint}" if ext_hint else ""))
+    if ext not in srv._allowed_image_extensions():
+        return srv._err(rid, 4016, f"unsupported image extension: {ext}")
     try:
-        img_path = _queue_attached_image(session, img_bytes, ext, prefix="upload")
+        img_path = srv._queue_attached_image(session, img_bytes, ext, prefix="upload")
     except Exception as e:
-        return _err(rid, 5027, f"write failed: {e}")
-    return AttachedImageResult(**_attached_image_result(
+        return srv._err(rid, 5027, f"write failed: {e}")
+    return AttachedImageResult(**srv._attached_image_result(
         session, img_path,
         remainder="", text=f"[User attached image: {img_path.name}]", bytes=len(img_bytes)))
 
@@ -786,13 +785,13 @@ def _(rid, params: ImageAttachBytesParams) -> AttachedImageResult | dict:
 def _pdf_attach_source(rid, params, td_path, raw_path, raw_b64):
     """Materialize the PDF to render: ``(pdf_path, display_name, err)``."""
     if raw_b64:
-        pdf_bytes, err = _decode_attach_payload(
-            rid, raw_b64, mime_prefix="application/pdf", max_bytes=_PDF_ATTACH_MAX_BYTES,
+        pdf_bytes, err = srv._decode_attach_payload(
+            rid, raw_b64, mime_prefix="application/pdf", max_bytes=srv._PDF_ATTACH_MAX_BYTES,
             label="PDF", empty_msg="decoded PDF is empty")
         if err is not None:
             return None, None, err
         if pdf_bytes[:5] != b"%PDF-":
-            return None, None, _err(rid, 4017, "payload is not a PDF (missing %PDF- magic bytes)")
+            return None, None, srv._err(rid, 4017, "payload is not a PDF (missing %PDF- magic bytes)")
         pdf_path = td_path / "input.pdf"
         pdf_path.write_bytes(pdf_bytes)
         return pdf_path, str(params.filename or "uploaded.pdf"), None
@@ -802,12 +801,12 @@ def _pdf_attach_source(rid, params, td_path, raw_path, raw_b64):
     except Exception:
         resolved = None
     if resolved is None or not (pdf := Path(resolved)).is_file():
-        return None, None, _err(rid, 4016, f"PDF not found: {raw_path}")
+        return None, None, srv._err(rid, 4016, f"PDF not found: {raw_path}")
     if pdf.suffix.lower() != ".pdf":
-        return None, None, _err(rid, 4016, f"not a PDF: {pdf.name}")
-    if pdf.stat().st_size > _PDF_ATTACH_MAX_BYTES:
-        mb = _PDF_ATTACH_MAX_BYTES // (1024 * 1024)
-        return None, None, _err(rid, 4018, f"PDF too large; cap is {mb} MB")
+        return None, None, srv._err(rid, 4016, f"not a PDF: {pdf.name}")
+    if pdf.stat().st_size > srv._PDF_ATTACH_MAX_BYTES:
+        mb = srv._PDF_ATTACH_MAX_BYTES // (1024 * 1024)
+        return None, None, srv._err(rid, 4018, f"PDF too large; cap is {mb} MB")
     return pdf, pdf.name, None
 
 
@@ -817,16 +816,16 @@ def _pdf_page_range(rid, params):
         first_page = int(params.first_page or 1)
         last_page = None if params.last_page is None else int(params.last_page)
     except (TypeError, ValueError):
-        return None, None, _err(rid, 4015, "first_page/last_page must be integers")
+        return None, None, srv._err(rid, 4015, "first_page/last_page must be integers")
     if first_page < 1:
-        return None, None, _err(rid, 4015, "first_page must be >= 1")
+        return None, None, srv._err(rid, 4015, "first_page must be >= 1")
     if last_page is None:
-        last_page = first_page + _PDF_ATTACH_MAX_PAGES - 1
+        last_page = first_page + srv._PDF_ATTACH_MAX_PAGES - 1
     if last_page < first_page:
-        return None, None, _err(rid, 4015, "last_page must be >= first_page")
-    if last_page - first_page + 1 > _PDF_ATTACH_MAX_PAGES:
-        return None, None, _err(
-            rid, 4019, f"page range exceeds cap of {_PDF_ATTACH_MAX_PAGES} pages per attach call")
+        return None, None, srv._err(rid, 4015, "last_page must be >= first_page")
+    if last_page - first_page + 1 > srv._PDF_ATTACH_MAX_PAGES:
+        return None, None, srv._err(
+            rid, 4019, f"page range exceeds cap of {srv._PDF_ATTACH_MAX_PAGES} pages per attach call")
     return first_page, last_page, None
 
 
@@ -838,21 +837,21 @@ def _(rid, params: PdfAttachParams) -> PdfAttachResult | dict:
     import shutil
     import subprocess
     import tempfile
-    session, err = _sess_building(params, rid)
+    session, err = srv._sess_building(params, rid)
     if err:
         return err
     if shutil.which("pdftoppm") is None:
-        return _err(rid, 5028, "pdftoppm not installed (poppler-utils package required)")
+        return srv._err(rid, 5028, "pdftoppm not installed (poppler-utils package required)")
     raw_path = str(params.path or "").strip()
     raw_b64 = str(params.content_base64 or params.data or "").strip()
     if not raw_path and not raw_b64:
-        return _err(rid, 4015, "path or content_base64 required")
+        return srv._err(rid, 4015, "path or content_base64 required")
     with tempfile.TemporaryDirectory(prefix="pdf_attach_") as td:
         td_path = Path(td)
-        pdf_path, display_name, err = _pdf_attach_source(rid, params, td_path, raw_path, raw_b64)
+        pdf_path, display_name, err = srv._pdf_attach_source(rid, params, td_path, raw_path, raw_b64)
         if err is not None:
             return err
-        first_page, last_page, err = _pdf_page_range(rid, params)
+        first_page, last_page, err = srv._pdf_page_range(rid, params)
         if err is not None:
             return err
         argv = [
@@ -866,13 +865,13 @@ def _(rid, params: PdfAttachParams) -> PdfAttachResult | dict:
                 argv, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL,
                 encoding="utf-8", errors="replace", creationflags=windows_hide_flags())
         except subprocess.TimeoutExpired:
-            return _err(rid, 5028, "pdftoppm timed out (>120s)")
+            return srv._err(rid, 5028, "pdftoppm timed out (>120s)")
         if res.returncode != 0:
             tail = (res.stderr or res.stdout or "").strip().splitlines()[-3:]
-            return _err(rid, 5028, "pdftoppm failed: " + " | ".join(tail))
+            return srv._err(rid, 5028, "pdftoppm failed: " + " | ".join(tail))
         rendered = sorted(td_path.glob("page-*.png"))
         if not rendered:
-            return _err(rid, 5028, "pdftoppm produced no pages (corrupt PDF?)")
+            return srv._err(rid, 5028, "pdftoppm produced no pages (corrupt PDF?)")
         attached_pages = []
         for src in rendered:
             page_num = src.stem.split("-", 1)[-1]
@@ -880,9 +879,9 @@ def _(rid, params: PdfAttachParams) -> PdfAttachResult | dict:
                 page_int = int(page_num)
             except ValueError:
                 page_int = first_page + len(attached_pages)
-            dst = _queue_attached_image(
+            dst = srv._queue_attached_image(
                 session, src.read_bytes(), ".png", prefix=f"pdf_p{page_num}")
-            attached_pages.append(PdfPage(path=str(dst), page=page_int, **_image_meta(dst)))
+            attached_pages.append(PdfPage(path=str(dst), page=page_int, **srv._image_meta(dst)))
         return PdfAttachResult(
             attached=True, filename=display_name, pages_attached=len(attached_pages),
             pages=attached_pages, count=len(session["attached_images"]),
@@ -894,33 +893,33 @@ def _(rid, params: FileAttachParams) -> FileAttachResult | dict:
     """Stage a non-image file into the session workspace; returns a workspace-relative
     ``@file:`` ref.  ``data_url`` carries the bytes when ``path`` isn't gateway-visible."""
     from tui_gateway.contracts.prompt_voice import FileAttachResult
-    session, err = _sess_building(params, rid)
+    session, err = srv._sess_building(params, rid)
     if err:
         return err
     raw, data_url, name = (
         str(value or "").strip() for value in (params.path, params.data_url, params.name))
     if not raw and not data_url:
-        return _err(rid, 4015, "path or data_url required")
+        return srv._err(rid, 4015, "path or data_url required")
     try:
-        stored_path, uploaded = _stage_session_file_attachment(
+        stored_path, uploaded = srv._stage_session_file_attachment(
             session, raw_path=raw, data_url=data_url, name=name)
-        ref_path = _attachment_ref_path(session, stored_path)
+        ref_path = srv._attachment_ref_path(session, stored_path)
         return FileAttachResult(
             attached=True, name=stored_path.name, path=str(stored_path),
-            ref_path=ref_path, ref_text=f"@file:{_format_ref_value(ref_path)}", uploaded=uploaded)
+            ref_path=ref_path, ref_text=f"@file:{srv._format_ref_value(ref_path)}", uploaded=uploaded)
     except Exception as e:
-        return _err(rid, 5028, str(e))
+        return srv._err(rid, 5028, str(e))
 
 
 @method("image.detach")
 def _(rid, params: ImageDetachParams) -> ImageDetachResult | dict:
     from tui_gateway.contracts.prompt_voice import ImageDetachResult
-    session, err = _sess_building(params, rid)
+    session, err = srv._sess_building(params, rid)
     if err:
         return err
     raw = str(params.path or "").strip()
     if not raw:
-        return _err(rid, 4015, "path required")
+        return srv._err(rid, 4015, "path required")
     before = len(images := session.setdefault("attached_images", []))
     session["attached_images"] = [path for path in images if path != raw]
     return ImageDetachResult(detached=len(session["attached_images"]) != before, count=len(session["attached_images"]))
@@ -929,7 +928,7 @@ def _(rid, params: ImageDetachParams) -> ImageDetachResult | dict:
 @method("input.detect_drop")
 def _(rid, params: InputDetectDropParams) -> InputDetectDropResult | dict:
     from tui_gateway.contracts.prompt_voice import InputDetectDropResult
-    session, err = _sess_nowait(params, rid)
+    session, err = srv._sess_nowait(params, rid)
     if err:
         return err
     try:
@@ -942,12 +941,12 @@ def _(rid, params: InputDetectDropParams) -> InputDetectDropResult | dict:
             session.setdefault("attached_images", []).append(str(drop_path))
             return InputDetectDropResult(
                 matched=True, is_image=True, path=str(drop_path), count=len(session["attached_images"]),
-                text=remainder or f"[User attached image: {drop_path.name}]", **_image_meta(drop_path))
+                text=remainder or f"[User attached image: {drop_path.name}]", **srv._image_meta(drop_path))
         text = f"[User attached file: {drop_path}]" + (f"\n{remainder}" if remainder else "")
         return InputDetectDropResult(
             matched=True, is_image=False, path=str(drop_path), name=drop_path.name, text=text)
     except Exception as e:
-        return _err(rid, 5027, str(e))
+        return srv._err(rid, 5027, str(e))
 
 
 # ── side agents (background / btw / preview.restart) ────────────────────────
@@ -969,7 +968,7 @@ def _spawn_side_agent(
     extra = extra or {}
 
     def run():
-        session_tokens = _set_session_context(task_id, cwd=(cwd or _session_cwd(session)))
+        session_tokens = srv._set_session_context(task_id, cwd=(cwd or srv._session_cwd(session)))
         # Bug #50233: ephemeral agent threads don't inherit the session's ContextVar scopes (set on the
         # session-create thread), so a side turn under a non-default profile ran against the wrong home.
         # Bind the profile's home + secrets + terminal policy for the whole body, exactly as a prompt turn
@@ -979,15 +978,15 @@ def _spawn_side_agent(
         # background server running under this task_id, and AIAgent.close() would kill every process for
         # the task_id and tear down the very server the restart just started.
         try:
-            with _session_profile_runtime_scope(session):
+            with srv._session_profile_runtime_scope(session):
                 text = body()
-            _emit(event, parent, {"background.complete": BackgroundCompletePayload, "btw.complete": BtwCompletePayload, "preview.restart.complete": PreviewRestartCompletePayload}[event](task_id=task_id, text=text, **extra))
+            srv._emit(event, parent, {"background.complete": BackgroundCompletePayload, "btw.complete": BtwCompletePayload, "preview.restart.complete": PreviewRestartCompletePayload}[event](task_id=task_id, text=text, **extra))
         except Exception as e:
-            _emit(event, parent, {"background.complete": BackgroundCompletePayload, "btw.complete": BtwCompletePayload, "preview.restart.complete": PreviewRestartCompletePayload}[event](task_id=task_id, text=f"error: {e}", **extra))
+            srv._emit(event, parent, {"background.complete": BackgroundCompletePayload, "btw.complete": BtwCompletePayload, "preview.restart.complete": PreviewRestartCompletePayload}[event](task_id=task_id, text=f"error: {e}", **extra))
         finally:
             if cleanup is not None:
                 cleanup()
-            _clear_session_context(session_tokens)
+            srv._clear_session_context(session_tokens)
 
     threading.Thread(target=run, daemon=True).start()
     return TaskIdResult(task_id=task_id)
@@ -995,31 +994,31 @@ def _spawn_side_agent(
 
 def _side_agent_args(rid, params, prefix):
     """Shared admission for the side-agent RPCs: ``(session, text, parent, task_id, err)``."""
-    session, err = _sess(params, rid)
+    session, err = srv._sess(params, rid)
     if err:
         return None, None, None, None, err
     text, parent = params.text, params.session_id
     if not text:
-        return None, None, None, None, _err(rid, 4012, "text required")
+        return None, None, None, None, srv._err(rid, 4012, "text required")
     return session, text, parent, f"{prefix}_{uuid.uuid4().hex[:6]}", None
 
 
 @method("prompt.background")
 def _(rid, params: SideAgentParams) -> TaskIdResult | dict:
     from tui_gateway.contracts.prompt_voice import TaskIdResult
-    session, text, parent, task_id, err = _side_agent_args(rid, params, "bg")
+    session, text, parent, task_id, err = srv._side_agent_args(rid, params, "bg")
     if err:
         return err
 
     def body():
         from run_agent import AIAgent
-        kwargs = _background_agent_kwargs(session["agent"], task_id)
-        with _side_agent_session_db(kwargs.get("session_db")) as session_db:
+        kwargs = srv._background_agent_kwargs(session["agent"], task_id)
+        with srv._side_agent_session_db(kwargs.get("session_db")) as session_db:
             result = AIAgent(**{**kwargs, "session_db": session_db}).run_conversation(
                 user_message=text, task_id=task_id)
-        return _final_response_text(result)
+        return srv._final_response_text(result)
 
-    return _spawn_side_agent(rid, session, task_id, parent, "background.complete", body)
+    return srv._spawn_side_agent(rid, session, task_id, parent, "background.complete", body)
 
 
 @method("prompt.btw")
@@ -1027,7 +1026,7 @@ def _(rid, params: SideAgentParams) -> TaskIdResult | dict:
     """Side question over a snapshot of the live conversation (``agent/side_question.py``);
     history, alternation and prompt cache stay untouched.  Answer: ``btw.complete``."""
     from tui_gateway.contracts.prompt_voice import TaskIdResult
-    session, text, parent, task_id, err = _side_agent_args(rid, params, "btw")
+    session, text, parent, task_id, err = srv._side_agent_args(rid, params, "btw")
     if err:
         return err
     agent = session.get("agent")
@@ -1041,7 +1040,7 @@ def _(rid, params: SideAgentParams) -> TaskIdResult | dict:
         return answer_side_question(
             text, snapshot, parent_agent=agent, main_runtime=main_runtime) or ""
 
-    return _spawn_side_agent(
+    return srv._spawn_side_agent(
         rid, session, task_id, parent, "btw.complete", body, extra={"question": text})
 
 
@@ -1070,15 +1069,15 @@ _PREVIEW_RESTART_HISTORY_NOTE = (
 @method("preview.restart")
 def _(rid, params: PreviewRestartParams) -> TaskIdResult | dict:
     from tui_gateway.contracts.events import PreviewRestartProgressPayload
-    session, err = _sess(params, rid)
+    session, err = srv._sess(params, rid)
     if err:
         return err
     url, cwd, context = (str(value or "").strip() for value in (params.url, params.cwd, params.context))
     if not url:
-        return _err(rid, 4012, "url required")
+        return srv._err(rid, 4012, "url required")
     task_id = f"preview_{uuid.uuid4().hex[:6]}"
     parent = params.session_id
-    parent_history = _preview_restart_history(session)
+    parent_history = srv._preview_restart_history(session)
     prompt = "\n".join(
         line
         for line in [
@@ -1086,8 +1085,8 @@ def _(rid, params: PreviewRestartParams) -> TaskIdResult | dict:
             f"Preview URL: {url}",
             f"Current working directory: {cwd or '(unknown)'}",
             f"Preview console:\n{context}" if context else "",
-            _PREVIEW_RESTART_HISTORY_NOTE if parent_history else None,
-            *_PREVIEW_RESTART_RULES]
+            srv._PREVIEW_RESTART_HISTORY_NOTE if parent_history else None,
+            *srv._PREVIEW_RESTART_RULES]
         if line)
     # A malformed client path (embedded NUL, etc.) is "no validated cwd".
     try:
@@ -1105,17 +1104,17 @@ def _(rid, params: PreviewRestartParams) -> TaskIdResult | dict:
         history_note = (
             f" (with {len(parent_history)} parent-session messages of context)"
             if parent_history else "")
-        _emit(
+        srv._emit(
             "preview.restart.progress", parent,
             PreviewRestartProgressPayload(task_id=task_id, text=f"Starting hidden restart agent{history_note}"))
         # Deliberately NOT closed via AIAgent.close(): it would kill the background
         # server this task exists to leave running.
         result = AIAgent(
-            **_ephemeral_preview_agent_kwargs(session["agent"], task_id),
-            **_preview_restart_callbacks(parent, task_id),
+            **srv._ephemeral_preview_agent_kwargs(session["agent"], task_id),
+            **srv._preview_restart_callbacks(parent, task_id),
         ).run_conversation(
             user_message=prompt, task_id=task_id, conversation_history=parent_history or None)
-        return _final_response_text(result)
+        return srv._final_response_text(result)
 
     def cleanup():
         with contextlib.suppress(Exception):
@@ -1123,7 +1122,7 @@ def _(rid, params: PreviewRestartParams) -> TaskIdResult | dict:
             clear_task_env_overrides(task_id)
 
     # Pin the validated preview cwd, else the parent workspace — never an invalid path.
-    return _spawn_side_agent(
+    return srv._spawn_side_agent(
         rid, session, task_id, parent, "preview.restart.complete", body,
         cwd=preview_cwd, cleanup=cleanup)
 
@@ -1140,16 +1139,16 @@ def _(rid, params: ClarifyLockParams) -> ClarifyLockResult | dict:
     request_id = params.request_id
     question_id = params.question_id
     if not request_id or not question_id:
-        return _err(rid, 4002, "request_id and question_id required")
+        return srv._err(rid, 4002, "request_id and question_id required")
     answer = params.answer
     answer = answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
-    if (proxied := _lock_compute_host_clarify(rid, request_id, question_id, answer)) is not None:
+    if (proxied := srv._lock_compute_host_clarify(rid, request_id, question_id, answer)) is not None:
         return proxied
     from tui_gateway import server_requests
     try:
         remaining = server_requests.lock_answer(request_id, question_id, answer)
     except ValueError as e:
-        return _err(rid, 4002, str(e))
+        return srv._err(rid, 4002, str(e))
     if remaining is None:
         # The wait already ended (timeout / cancel) while the card was still visible: not an error.
         return ClarifyLockResult(status="expired")
@@ -1165,10 +1164,10 @@ def _(rid, params: RequestAnswerParams) -> RequestAnswerResult | dict:
     request_id = params.id
     result = params.result
     if not request_id or not isinstance(result, dict):
-        return _err(rid, 4002, "id and an object result required")
+        return srv._err(rid, 4002, "id and an object result required")
     from tui_gateway import server_requests
     frame = {"jsonrpc": "2.0", "id": request_id, "result": result}
-    if server_requests.resolve_response(frame) or _relay_compute_host_response(frame):
+    if server_requests.resolve_response(frame) or srv._relay_compute_host_response(frame):
         return RequestAnswerResult(status="ok")
     return RequestAnswerResult(status="expired")
 
@@ -1180,13 +1179,13 @@ def _approval_reply(rid, call):
     try:
         return call()
     except Exception as e:
-        return _err(rid, 5004, str(e))
+        return srv._err(rid, 5004, str(e))
 
 
 @method("approval.pending")
 def _(rid, params: ApprovalPendingParams) -> ApprovalPendingResult | dict:
     from tui_gateway.contracts.prompt_voice import ApprovalPendingResult
-    session, err = _sess(params, rid)
+    session, err = srv._sess(params, rid)
     if err:
         return err
 
@@ -1194,24 +1193,24 @@ def _(rid, params: ApprovalPendingParams) -> ApprovalPendingResult | dict:
         from tools.approval import list_gateway_approvals
         return ApprovalPendingResult(approvals=list_gateway_approvals(session["session_key"]))
 
-    return _approval_reply(rid, call)
+    return srv._approval_reply(rid, call)
 
 
 @method("approval.received")
 def _(rid, params: ApprovalReceivedParams) -> ApprovalReceivedResult | dict:
     from tui_gateway.contracts.prompt_voice import ApprovalReceivedResult
-    session, err = _sess(params, rid)
+    session, err = srv._sess(params, rid)
     if err:
         return err
     if not params.request_id:
-        return _err(rid, 4006, "request_id required")
+        return srv._err(rid, 4006, "request_id required")
 
     def call():
         from tools.approval import ack_gateway_approval
         return ApprovalReceivedResult(
             acknowledged=ack_gateway_approval(session["session_key"], params.request_id))
 
-    return _approval_reply(rid, call)
+    return srv._approval_reply(rid, call)
 
 
 def _approval_respond_session_fallback(params: ApprovalRespondParams):
@@ -1225,8 +1224,8 @@ def _approval_respond_session_fallback(params: ApprovalRespondParams):
     if request_id:
         try:
             from tools.approval import list_gateway_approvals
-            with _sessions_lock:
-                live = list(_sessions.items())
+            with srv._sessions_lock:
+                live = list(srv._sessions.items())
             for sid, session in live:
                 key = str(session.get("session_key") or "")
                 if key and any(
@@ -1237,7 +1236,7 @@ def _approval_respond_session_fallback(params: ApprovalRespondParams):
             logger.debug("approval.respond request_id fallback failed", exc_info=True)
     if target := params.session_id:
         try:
-            if (live := _find_live_session_by_key(target)) is not None:
+            if (live := srv._find_live_session_by_key(target)) is not None:
                 return live[1]
         except Exception:
             logger.debug("approval.respond stored-id fallback failed", exc_info=True)
@@ -1247,12 +1246,12 @@ def _approval_respond_session_fallback(params: ApprovalRespondParams):
 @method("approval.respond")
 def _(rid, params: ApprovalRespondParams) -> ApprovalRespondResult | dict:
     from tui_gateway.contracts.prompt_voice import ApprovalRespondResult
-    session, err = _sess(params, rid)
+    session, err = srv._sess(params, rid)
     if err:
         # Session-not-found (4001) only: resolve by durable identity before failing.
         if (err.get("error") or {}).get("code") != 4001:
             return err
-        session = _approval_respond_session_fallback(params)
+        session = srv._approval_respond_session_fallback(params)
         if session is None:
             return err
     def call():
@@ -1260,11 +1259,11 @@ def _(rid, params: ApprovalRespondParams) -> ApprovalRespondResult | dict:
         return ApprovalRespondResult(resolved=resolve_gateway_approval(
             session["session_key"], params.choice, resolve_all=params.all, request_id=params.request_id))
 
-    return _approval_reply(rid, call)
+    return srv._approval_reply(rid, call)
 
 
 def register(server) -> None:
-    """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
+    """Publish this module's helpers + handlers onto ``server`` and install its handlers."""
     bind_module(globals(), server, skip=("_",))
 
 
@@ -1273,4 +1272,18 @@ def register(server) -> None:
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
 # The whole block is removed by reverting the commit that added it.
 import types  # noqa: F401,E402
+from datetime import datetime
+from pathlib import Path
+from utils import is_truthy_value
+import json
+import os
+import threading
+import time
+import uuid
+
+logger = logging.getLogger("tui_gateway.server")  # siblings log as the gateway facade (operators and caplog filter on it)
 # ---- END PLUGIN-COMPAT ----
+
+# Bound last, after every definition, so importing this module first (tests, the gateway process)
+# lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.
+from tui_gateway import server as srv  # noqa: E402

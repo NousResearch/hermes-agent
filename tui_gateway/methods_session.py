@@ -1,9 +1,7 @@
 """Session / delegation / spawn-tree / billing / pet JSON-RPC handlers.
+ Reaches server.py state through ``srv`` (method_ctx.py)."""
 
-Bodies are rebound onto server.py's globals at install time (method_ctx.py), so they use server
-helpers (``_sessions``, ``_ok``, ``_err``, ...) bare; module-level helpers are published onto
-server.py the same way (tests monkeypatching ``server.X`` still intercept)."""
-
+import logging
 import contextlib
 
 from .contracts.base import Result
@@ -42,6 +40,17 @@ from .contracts.sessions import (
     SpawnTreeSaveParams, SpawnTreeSaveResult, TerminalResizeParams, TerminalResizeResult,
     LlmOneshotParams, LlmOneshotResult, SessionCorrectionParams, SessionCorrectionResult)
 from .method_ctx import HandlerRegistry, bind_module
+from datetime import datetime
+from pathlib import Path
+from utils import is_truthy_value
+import json
+import os
+import queue
+import threading
+import time
+import uuid
+
+logger = logging.getLogger("tui_gateway.server")  # siblings log as the gateway facade (operators and caplog filter on it)
 
 _registry = HandlerRegistry()
 method = _registry.method
@@ -59,8 +68,8 @@ def _session_arg(resolve):
     return deco
 
 
-_with_session = _session_arg(lambda params, rid: _sess_nowait(params, rid))  # no agent-build wait
-_with_live_session = _session_arg(lambda params, rid: _sess(params, rid))  # waits for the agent build
+_with_session = _session_arg(lambda params, rid: srv._sess_nowait(params, rid))  # no agent-build wait
+_with_live_session = _session_arg(lambda params, rid: srv._sess(params, rid))  # waits for the agent build
 
 
 def _session_method(name: str, *, live: bool = False):
@@ -72,9 +81,9 @@ def _with_db(code: int, *, session_scoped: bool):
     """Append a db arg — the session's db (after ``_with_session``) or ``_profile_db(params)``; ``code`` when None."""
     def deco(fn):
         def handler(rid, params, *session) -> dict:
-            with (_session_db(session[0]) if session_scoped else _profile_db(params)) as db:
+            with (srv._session_db(session[0]) if session_scoped else srv._profile_db(params)) as db:
                 if db is None:
-                    return _db_unavailable_error(rid, code=code)
+                    return srv._db_unavailable_error(rid, code=code)
                 return fn(rid, params, *session, db)
         return _with_session(handler) if session_scoped else handler
     return deco
@@ -99,7 +108,7 @@ def _int_param(params, key: str, default: int) -> int:
 
 def _new_runtime_ids(params) -> tuple[str, str]:
     """Fresh runtime sid + resolved DB ``source`` for a session minted from ``params``."""
-    return uuid.uuid4().hex[:8], _resolve_session_source((params.source or "").strip() or None)
+    return uuid.uuid4().hex[:8], srv._resolve_session_source((params.source or "").strip() or None)
 
 
 def _profile_build_scope(profile_home):
@@ -107,16 +116,16 @@ def _profile_build_scope(profile_home):
     binds (``_session_profile_runtime_scope``). Home alone leaves ``get_secret()`` on the LAUNCH
     ``.env``; home + secrets alone leaves ``_make_agent``'s terminal probing on the launch process's
     ambient ``TERMINAL_*`` (a ``terminal.backend: docker`` secondary built a ``local`` agent)."""
-    return _session_profile_runtime_scope({"profile_home": str(profile_home) if profile_home else None})
+    return srv._session_profile_runtime_scope({"profile_home": str(profile_home) if profile_home else None})
 
 
 def _make_agent_in_context(sid: str, key: str, **kwargs):
     """``_make_agent`` with the session context bound for the build and cleared after."""
-    tokens = _set_session_context(key)
+    tokens = srv._set_session_context(key)
     try:
-        return _make_agent(sid, key, session_id=key, **kwargs)
+        return srv._make_agent(sid, key, session_id=key, **kwargs)
     finally:
-        _clear_session_context(tokens)
+        srv._clear_session_context(tokens)
 
 
 def _profile_session_db(profile_home):
@@ -124,7 +133,7 @@ def _profile_session_db(profile_home):
     if profile_home:
         from hermes_state_registry import acquire
         return acquire(Path(profile_home) / "state.db"), True
-    return _get_db(), False
+    return srv._get_db(), False
 
 
 def _release_db(db) -> None:
@@ -144,9 +153,9 @@ def _branch_title(db, parent_key: str) -> str:
 def _cwd_info(session: dict, cwd: str, branch=None) -> dict:
     """session.info after a cwd change: the full agent view, or the lazy shape."""
     if (agent := session.get("agent")) is not None:
-        return _session_info(agent, session)
-    return {"cwd": cwd, "branch": git_probe.branch(cwd) if branch is None else branch,
-            "project": _project_info_for_cwd(cwd), "lazy": True}
+        return srv._session_info(agent, session)
+    return {"cwd": cwd, "branch": srv.git_probe.branch(cwd) if branch is None else branch,
+            "project": srv._project_info_for_cwd(cwd), "lazy": True}
 
 
 def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=None) -> dict:
@@ -163,22 +172,22 @@ _LISTING_DENY_SOURCES = frozenset({"kanban", "tool"})
 
 
 def _denied_source(row: dict) -> bool:
-    return (row.get("source") or "").strip().lower() in _LISTING_DENY_SOURCES
+    return (row.get("source") or "").strip().lower() in srv._LISTING_DENY_SOURCES
 
 
 def _listing_rows(db, limit: int, **kwargs) -> list:
     """Human-facing ``list_sessions_rich`` rows (most recent first), deny-list applied."""
     rows = db.list_sessions_rich(source=None, limit=limit, order_by_last_active=True, compact_rows=True, **kwargs)
-    return [row for row in rows if not _denied_source(row)]
+    return [row for row in rows if not srv._denied_source(row)]
 
 
 def _snapshot_sessions(rid):
     """``(list(_sessions.items()), None)`` under the lock, or ``(None, 5036 error)`` — fail CLOSED."""
     try:
-        with _sessions_lock:
-            return list(_sessions.items()), None
+        with srv._sessions_lock:
+            return list(srv._sessions.items()), None
     except Exception as e:
-        return None, _err(rid, 5036, f"could not enumerate active sessions: {e}")
+        return None, srv._err(rid, 5036, f"could not enumerate active sessions: {e}")
 
 
 def _pet_display_cfg() -> dict:
@@ -195,15 +204,15 @@ def _pet_display_cfg() -> dict:
 def _pet_emit(event: str, payload: dict, what: str) -> None:
     """Best-effort progress emit: a transport hiccup must never abort generation."""
     try:
-        _emit(event, "", payload)
+        srv._emit(event, "", payload)
     except Exception as exc:  # noqa: BLE001
         logger.debug("%s emit failed: %s", what, exc)
 
 
 def _pet_gen_abort(rid, token: str, code: int, message: str) -> dict:
     """Release the cancel arm for ``token`` and return ``_err``."""
-    _pet_cancel_release(token)
-    return _err(rid, code, message)
+    srv._pet_cancel_release(token)
+    return srv._err(rid, code, message)
 
 
 def _pet_method(name: str, *, fail_open=None, slug: bool = False, scoped: bool = True):
@@ -213,20 +222,20 @@ def _pet_method(name: str, *, fail_open=None, slug: bool = False, scoped: bool =
         def handler(rid, params) -> dict:
             try:
                 if slug and not (value := params.slug.strip()):
-                    return _err(rid, 4004, "missing slug")
+                    return srv._err(rid, 4004, "missing slug")
                 return fn(rid, params, value) if slug else fn(rid, params)
             except Exception as exc:  # noqa: BLE001 - cosmetic surface
                 logger.debug("%s failed: %s", name, exc)
                 if fail_open is not None:
                     return fail_open(params) if callable(fail_open) else fail_open
-                return _err(rid, 5031, f"{name} failed: {exc}")
+                return srv._err(rid, 5031, f"{name} failed: {exc}")
         return method(name)(_profile_scoped(handler) if scoped else handler)
     return deco
 
 
 def _active_pet():
     """``(pet, scale)`` when the pet display is enabled and the pet exists, else None."""
-    enabled, pet, scale = _pet_active_selection()
+    enabled, pet, scale = srv._pet_active_selection()
     return None if not enabled or pet is None or not pet.exists else (pet, scale)
 
 
@@ -236,7 +245,7 @@ def _billing_call(fn, result_type, extra: dict | None = None):
     try:
         return result_type.model_validate(fn())
     except BillingError as exc:
-        return result_type.model_validate({**_serialize_billing_error(exc), **(extra or {})})
+        return result_type.model_validate({**srv._serialize_billing_error(exc), **(extra or {})})
     except Exception as exc:
         return result_type.model_validate({"ok": False, "error": "error", "message": str(exc), **(extra or {})})
 
@@ -261,7 +270,7 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
     heuristic); NULL ``profile_name`` rows drop out of profile-keyed sidebar matching / deep links. ``compensate``
     deletes a committed row whose transcript/title failed (a durable-but-empty row would defeat the INSERT OR
     IGNORE first-prompt seed) — except on disk-full, where the delete cannot land."""
-    db.create_session(new_key, source=source, model=_resolve_model(), model_config={"_branched_from": parent_key},
+    db.create_session(new_key, source=source, model=srv._resolve_model(), model_config={"_branched_from": parent_key},
                       parent_session_id=parent_key, cwd=cwd, profile_name=profile_name)
     try:
         # Compensation guard (#93959 review): if the transcript copy or title write fails AFTER the row
@@ -290,12 +299,12 @@ def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: li
     renderer's post-create resume re-fetches it via REST/defer_history, so an unpersisted child 404s and
     the fail-latch spins forever. Best-effort — on failure the lazy first-prompt path is the fallback."""
     try:
-        with _session_db(record) as db:
+        with srv._session_db(record) as db:
             if db is None:
                 return
-            _persist_branch(db, key, parent_session_id, _branch_title(db, parent_session_id), history,
+            srv._persist_branch(db, key, parent_session_id, srv._branch_title(db, parent_session_id), history,
                             source=source, cwd=record["cwd"],
-                            profile_name=profile_name_for_home(profile_home) or _current_profile_name(), compensate=True)
+                            profile_name=srv.profile_name_for_home(profile_home) or srv._current_profile_name(), compensate=True)
             record["pending_title"] = None
             # The first submit's _persist_branch_seed is the fallback for a failed seed, not a second copy.
             record["_branch_seed_persisted"] = True
@@ -312,19 +321,19 @@ def _seed_row(record: dict) -> None:
     ``_persist_branch`` applies to branch children) rather than left to be duplicated."""
     key = record.get("session_key")
     try:
-        if _ensure_session_db_row(record) is False:
+        if srv._ensure_session_db_row(record) is False:
             return
-        _persist_branch_seed(record)
+        srv._persist_branch_seed(record)
     except Exception:
         logger.warning("seeded-session persistence failed for %s; falling back to lazy row creation", key, exc_info=True)
     if not record.get("_branch_seed_persisted"):
-        with contextlib.suppress(Exception), _session_db(record) as db:
+        with contextlib.suppress(Exception), srv._session_db(record) as db:
             if db is not None:
                 db.delete_session(key)
         return
     try:
         if title := record.get("pending_title"):
-            with _session_db(record) as db:
+            with srv._session_db(record) as db:
                 if db is not None and db.set_session_title(key, title):
                     record["pending_title"] = None
     except Exception:
@@ -334,12 +343,12 @@ def _seed_row(record: dict) -> None:
 def _create_overrides(params) -> tuple:
     """PER-SESSION (model, reasoning, service_tier) overrides from the composer — never a global config
     write. ``fast`` presence is the contract: omitted inherits, true pins priority, false pins normal ("")."""
-    create_model = _str_param(params, "model")
+    create_model = srv._str_param(params, "model")
     model_override = None
     if create_model:
-        model_override = {"model": create_model, "provider": _str_param(params, "provider") or None}
+        model_override = {"model": create_model, "provider": srv._str_param(params, "provider") or None}
     reasoning_override = None
-    if effort := _str_param(params, "reasoning_effort"):
+    if effort := srv._str_param(params, "reasoning_effort"):
         with contextlib.suppress(Exception):
             from hermes_constants import parse_reasoning_effort
             reasoning_override = parse_reasoning_effort(effort)
@@ -351,9 +360,9 @@ def _create_overrides(params) -> tuple:
 
 @method("session.create")
 def _(rid, params: SessionCreateParams) -> SessionCreateResult | dict:
-    sid, source = uuid.uuid4().hex[:8], _resolve_session_source(params.source)
-    key = _new_session_key()
-    history = _coerce_seed_history([{key: value for key, value in vars(message).items() if value is not None} for message in params.messages or []])
+    sid, source = uuid.uuid4().hex[:8], srv._resolve_session_source(params.source)
+    key = srv._new_session_key()
+    history = srv._coerce_seed_history([{key: value for key, value in vars(message).items() if value is not None} for message in params.messages or []])
     # Branch: links back so list_sessions_rich keeps it visible and the sidebar nests it.
     parent_session_id = params.parent_session_id or None
     # Only an explicitly chosen existing workspace persists as cwd; the launch-dir fallback is "No workspace".
@@ -361,10 +370,10 @@ def _(rid, params: SessionCreateParams) -> SessionCreateResult | dict:
     raw_cwd = (params.cwd or "").strip()  # unguarded, as on BASE: only the path check is best-effort
     with contextlib.suppress(Exception):
         explicit_cwd = bool(raw_cwd) and os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd)))
-    _enable_gateway_prompts()
+    srv._enable_gateway_prompts()
     # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
     profile = (params.profile or "").strip() or None
-    profile_home = _profile_home(profile)
+    profile_home = srv._profile_home(profile)
     create_model = (params.model or "").strip()
     session_model_override = ({"model": create_model, "provider": (params.provider or "").strip() or None}
                               if create_model else None)
@@ -375,8 +384,8 @@ def _(rid, params: SessionCreateParams) -> SessionCreateResult | dict:
             create_reasoning_override = parse_reasoning_effort(effort)
     create_service_tier_override = ("priority" if params.fast else "") if "fast" in params.model_fields_set else None
     now = time.time()
-    with _sessions_lock:
-        _sessions[sid] = {
+    with srv._sessions_lock:
+        srv._sessions[sid] = {
             "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [],
             "close_on_disconnect": params.close_on_disconnect,
             "active_session_lease": None,  # claimed lazily on the first turn (_ensure_active_session_slot)
@@ -384,7 +393,7 @@ def _(rid, params: SessionCreateParams) -> SessionCreateResult | dict:
             "explicit_cwd": explicit_cwd,
             "history": history, "history_lock": threading.Lock(), "history_version": 0, "image_counter": 0,
             "seeded": bool(history),  # gates _persist_branch_seed: only create-time history is unpersisted
-            "cwd": _completion_cwd({"cwd": params.cwd, "profile": params.profile}), "inflight_turn": None, "last_active": now,
+            "cwd": srv._completion_cwd({"cwd": params.cwd, "profile": params.profile}), "inflight_turn": None, "last_active": now,
             "model_override": session_model_override,
             "create_reasoning_override": create_reasoning_override,
             "create_service_tier_override": create_service_tier_override,
@@ -392,11 +401,11 @@ def _(rid, params: SessionCreateParams) -> SessionCreateResult | dict:
             "pending_hidden": params.hidden, "room_plumbing": params.room_plumbing,
             "follow_profile_config": params.follow_profile_config,
             "profile_home": str(profile_home) if profile_home is not None else None,
-            "running": False, "session_key": key, "show_reasoning": _load_show_reasoning(), "source": source,
-            "slash_worker": None, "tool_progress_mode": _load_tool_progress_mode(), "tool_started_at": {},
-            "transport": current_transport() or _stdio_transport,
-            "auth_user_id": _transport_auth_user_id(current_transport())}
-        _register_session_cwd(_sessions[sid])
+            "running": False, "session_key": key, "show_reasoning": srv._load_show_reasoning(), "source": source,
+            "slash_worker": None, "tool_progress_mode": srv._load_tool_progress_mode(), "tool_started_at": {},
+            "transport": srv.current_transport() or srv._stdio_transport,
+            "auth_user_id": srv._transport_auth_user_id(srv.current_transport())}
+        srv._register_session_cwd(srv._sessions[sid])
     # No DB row here (drafts left "Untitled" litter): created on the first prompt — except seeded sessions.
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop launch (and every "New agent" /
     # draft) opens a session here just to paint the composer, so eagerly creating a row left an "Untitled"
@@ -414,24 +423,24 @@ def _(rid, params: SessionCreateParams) -> SessionCreateResult | dict:
     # already written): the transcript exists only in memory, so a restart before the first prompt lost it
     # and the post-create resume 404'd. Persist it up front too; only empty drafts stay lazy.
     if parent_session_id and history:
-        _seed_branch_row(_sessions[sid], key, parent_session_id, history, source, profile_home)
+        srv._seed_branch_row(srv._sessions[sid], key, parent_session_id, history, source, profile_home)
     elif history:
-        _seed_row(_sessions[sid])
+        srv._seed_row(srv._sessions[sid])
     # Return immediately so Ink can paint; the AIAgent builds right after the flush.
-    _schedule_agent_build(sid)
-    _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
-    cwd = _sessions[sid]["cwd"]
+    srv._schedule_agent_build(sid)
+    srv._schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
+    cwd = srv._sessions[sid]["cwd"]
     override = session_model_override or {}
-    messages = _history_to_messages(history)  # hidden seed rows are not on the wire; count what is (as resume does)
+    messages = srv._history_to_messages(history)  # hidden seed rows are not on the wire; count what is (as resume does)
     return SessionCreateResult(
         session_id=sid, stored_session_id=key, message_count=len(messages),
         messages=[TranscriptMessage.model_validate(message) for message in messages],
         info=SessionLiveInfo.model_validate({
-            "model": override.get("model") if override else _resolve_model(),
+            "model": override.get("model") if override else srv._resolve_model(),
             **({"provider": override["provider"]} if override.get("provider") else {}),
-            "tools": {}, "skills": {}, "cwd": cwd, "branch": git_probe.branch(cwd),
-            "project": _project_info_for_cwd(cwd), "lazy": True, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
-            "profile_name": _response_profile_name(profile)}))
+            "tools": {}, "skills": {}, "cwd": cwd, "branch": srv.git_probe.branch(cwd),
+            "project": srv._project_info_for_cwd(cwd), "lazy": True, "desktop_contract": srv.DESKTOP_BACKEND_CONTRACT,
+            "profile_name": srv._response_profile_name(profile)}))
 
 
 def _unarchive_recoverable(db, session_id: str) -> bool:
@@ -457,38 +466,38 @@ def _session_list_by_title(db, title_lookup: str) -> SessionListResult:
     row = db.get_session_by_title(title_lookup)
     if row and row.get("archived"):
         from tools.bot_mode_probe import BOT_CHAT_TITLE
-        if title_lookup == BOT_CHAT_TITLE and _unarchive_recoverable(db, row["id"]):
+        if title_lookup == BOT_CHAT_TITLE and srv._unarchive_recoverable(db, row["id"]):
             row = db.get_session(row["id"])
-    if not row or row.get("archived") or _denied_source(row):
+    if not row or row.get("archived") or srv._denied_source(row):
         return SessionListResult(sessions=[])
     tip = row["id"]
     with contextlib.suppress(Exception):
         tip = db.get_compression_tip(row["id"]) or row["id"]
     tip_row = (db.get_session(tip) or row) if tip != row["id"] else row
-    return SessionListResult(sessions=[_session_row_summary(row, tip_row=tip_row, resolved_id=tip)])
+    return SessionListResult(sessions=[srv._session_row_summary(row, tip_row=tip_row, resolved_id=tip)])
 
 
 @method("session.list")
 @_with_db(5006, session_scoped=False)
 def _(rid, params: SessionListParams, db) -> SessionListResult | dict:
     try:
-        if title_lookup := _str_param(params, "title"):
-            return _session_list_by_title(db, title_lookup)
+        if title_lookup := srv._str_param(params, "title"):
+            return srv._session_list_by_title(db, title_lookup)
         limit = params.limit or 200
         # Over-fetch: per-source filtering + tip merging must not leave us short. ``include_hidden`` is for
         # surfaces that OWN hidden sessions (Bots pane, pickers).
-        rows = _listing_rows(db, max(limit * 2, 200), include_hidden=params.include_hidden)[:limit]
-        return SessionListResult(sessions=[_session_row_summary(row) for row in rows])
+        rows = srv._listing_rows(db, max(limit * 2, 200), include_hidden=params.include_hidden)[:limit]
+        return SessionListResult(sessions=[srv._session_row_summary(row) for row in rows])
     except Exception as e:
-        return _err(rid, 5006, str(e))
+        return srv._err(rid, 5006, str(e))
 
 
 @method("session.most_recent")
 def _(rid, params: SessionMostRecentParams) -> SessionMostRecentResult | dict:
     """Most recent human-facing session (session.list deny-list); errors fold into ``session_id: null``."""
-    with _profile_db(params) as db:
+    with srv._profile_db(params) as db:
         try:
-            for row in _listing_rows(db, 200)[:1] if db is not None else ():
+            for row in srv._listing_rows(db, 200)[:1] if db is not None else ():
                 return SessionMostRecentResult(session_id=row.get("id"), title=row.get("title") or "",
                                                started_at=row.get("started_at") or 0, source=row.get("source") or "")
         except Exception:
@@ -528,43 +537,43 @@ class _Resume:
     def __init__(self, rid, params: SessionResumeParams, target: str) -> None:
         self.rid, self.params, self.target = rid, params, target
         self.db, self.owns_db, self.found, self.profile_resume_cwd = None, False, None, ""
-        self.cols = _int_param(params, "cols", 80)
+        self.cols = srv._int_param(params, "cols", 80)
         # ``profile`` (app-global remote mode): resume from another local profile's state.db.
         self.profile = (params.profile or "").strip() or None
-        self.profile_home = _profile_home(self.profile)
+        self.profile_home = srv._profile_home(self.profile)
         self.lazy, self.defer_history = params.lazy, params.defer_history
         # Desktop hydrates over REST; suppress the duplicate WS copy only when asked.
         self.omit_messages, self.eager_build = params.omit_messages, params.eager_build
 
     def mint(self, prompts: bool = True) -> tuple:
         """``(runtime sid, source, cwd)`` for the live record this resume registers (+ gateway prompts on)."""
-        ids = _new_runtime_ids(self.params)
+        ids = srv._new_runtime_ids(self.params)
         if prompts:
-            _enable_gateway_prompts()
-        return *ids, self.profile_resume_cwd or _default_session_cwd()
+            srv._enable_gateway_prompts()
+        return *ids, self.profile_resume_cwd or srv._default_session_cwd()
 
     def record(self, source: str, cwd: str, history: list, overrides: dict | None = None, **extra) -> dict:
         """``_deferred_session_record`` with this resume's common fields (lease claimed lazily on turn 1);
         ``overrides`` restores the stored model/provider/reasoning/tier so the deferred build matches eager."""
         if overrides is not None:
             extra.update(model_override=overrides.get("model_override"), resume_runtime_overrides=overrides or None)
-        return _deferred_session_record(
+        return srv._deferred_session_record(
             self.target, cols=self.cols, cwd=cwd, history=history, lease=None, source=source,
             close_on_disconnect=self.params.close_on_disconnect,
             profile_home=self.profile_home, explicit_cwd=bool(self.profile_resume_cwd), **extra)
 
     def claim(self, sid: str, record: dict) -> dict | None:
         """Register ``record`` live under the resume lock, or reuse a concurrent winner's session."""
-        live = _claim_or_reuse_live(sid, self.target, record, None)
-        return None if live is None else _resume_reuse_live(self, *live)
+        live = srv._claim_or_reuse_live(sid, self.target, record, None)
+        return None if live is None else srv._resume_reuse_live(self, *live)
 
     def restore(self):
         """``(sanitized model history, display history, raw history)`` for a cold/eager resume."""
         raw, display = self.read_history()
-        return canonicalize_replay_history(raw), display, raw
+        return srv.canonicalize_replay_history(raw), display, raw
 
     def info(self, cwd: str, overrides: dict) -> dict:
-        return _lazy_resume_info(cwd, model=(overrides.get("model_override") or {}).get("model") or "",
+        return srv._lazy_resume_info(cwd, model=(overrides.get("model_override") or {}).get("model") or "",
                                  provider=overrides.get("provider_override") or "", profile=self.profile)
 
     def child_history(self, repair: bool) -> list:
@@ -572,7 +581,7 @@ class _Resume:
         return self.db.get_messages_as_conversation(self.target, repair_alternation=repair, include_row_ids=True)
 
     def messages(self, display: list) -> list:
-        return [] if self.omit_messages else _history_to_messages(display)
+        return [] if self.omit_messages else srv._history_to_messages(display)
 
     def read_history(self) -> tuple:
         """One lineage SELECT, two projections: model-fed copy alternation-repaired (healed once
@@ -591,7 +600,7 @@ def _find_live_unpersisted(needle: str, home) -> str:
     """Runtime sid of a live, not-yet-persisted session matched by stored key or pending title."""
     want_home = str(home) if home is not None else None
     return next((
-        live_sid for live_sid, record in list(_sessions.items())
+        live_sid for live_sid, record in list(srv._sessions.items())
         if isinstance(record, dict) and (record.get("profile_home") or None) == want_home
         and (str(record.get("session_key") or "") == needle or (record.get("pending_title") or "") == needle)), "")
 
@@ -601,18 +610,18 @@ def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> Session
     for never-spoken bots). Attach the transport and cancel the armed orphan-reap Timer (a WS drop may have
     sentinel-parked the record) or it fires against this client."""
     if ctx.owns_db:
-        _release_db(ctx.db)
-    with _session_resume_lock:
-        if (refusal := _reattach_refusal(ctx.rid, live_sid, live)) is not None:
+        srv._release_db(ctx.db)
+    with srv._session_resume_lock:
+        if (refusal := srv._reattach_refusal(ctx.rid, live_sid, live)) is not None:
             return refusal
         live["last_active"] = time.time()
-        if (transport := current_transport()) is not None:
+        if (transport := srv.current_transport()) is not None:
             with live.setdefault("history_lock", threading.Lock()):
-                _rebind_live_transport(live_sid, live, transport)
+                srv._rebind_live_transport(live_sid, live, transport)
         else:
-            _cancel_ws_orphan_reap(live_sid)
+            srv._cancel_ws_orphan_reap(live_sid)
     messages = ctx.messages(live.get("history") or [])  # count the wire, as every other resume path does
-    return SessionResumeResult.model_validate(_attach_todo_state({"session_id": live_sid, "stored_session_id": str(live.get("session_key") or ""), "message_count": len(messages), "messages": messages, "info": {"model": _resolve_model(), "lazy": True, "profile_name": profile_name_for_home(live.get("profile_home")) or _response_profile_name(ctx.profile)}}, live))
+    return SessionResumeResult.model_validate(srv._attach_todo_state({"session_id": live_sid, "stored_session_id": str(live.get("session_key") or ""), "message_count": len(messages), "messages": messages, "info": {"model": srv._resolve_model(), "lazy": True, "profile_name": srv.profile_name_for_home(live.get("profile_home")) or srv._response_profile_name(ctx.profile)}}, live))
 
 
 def _resume_adopt_stranded(ctx: _Resume) -> None:
@@ -627,7 +636,7 @@ def _resume_adopt_stranded(ctx: _Resume) -> None:
         # unreachable instead of misrouted). Adopt the full lineage from the default store into this
         # profile's db, then retry the lookup. Only profile-scoped resumes reach here (owns_db); unknown ids
         # in the default store still 4007 exactly as before.
-        default_db = _get_db()
+        default_db = srv._get_db()
         donor_row = default_db.get_session(ctx.target) if default_db is not None else None
         if not donor_row or donor_row.get("archived"):
             return
@@ -653,17 +662,17 @@ def _resume_locate(ctx: _Resume) -> dict | None:
     if ctx.found:
         ctx.target = ctx.found["id"]
         return None
-    if ctx.lazy and _child_run_active(ctx.target):
+    if ctx.lazy and srv._child_run_active(ctx.target):
         # Fresh subagent watch window: `subagent.start` relays BEFORE the child's first DB flush. Proceed lazily
         # with empty history — the live mirror streams the turn and the row exists by upgrade time.
         ctx.found = {}
         return None
-    live_sid = _find_live_unpersisted(ctx.target, ctx.profile_home)
-    if (live := _sessions.get(live_sid) if live_sid else None) is not None:
-        return _resume_live_unpersisted(ctx, live_sid, live)
+    live_sid = srv._find_live_unpersisted(ctx.target, ctx.profile_home)
+    if (live := srv._sessions.get(live_sid) if live_sid else None) is not None:
+        return srv._resume_live_unpersisted(ctx, live_sid, live)
     if ctx.owns_db:
-        _resume_adopt_stranded(ctx)
-    return None if ctx.found else _err(ctx.rid, 4007, "session not found")
+        srv._resume_adopt_stranded(ctx)
+    return None if ctx.found else srv._err(ctx.rid, 4007, "session not found")
 
 
 def _resume_follow_tip(ctx: _Resume) -> None:
@@ -696,7 +705,7 @@ def _resume_guard(ctx: _Resume) -> dict | None:
         elif (limit := resolved_max_resume_messages()) and (n := int(ctx.found.get("message_count") or 0)) > limit:
             raise SessionResumeTooLargeError(n, limit)
     except SessionResumeTooLargeError as exc:
-        return _err(ctx.rid, 4130, str(exc))
+        return srv._err(ctx.rid, 4130, str(exc))
     except Exception as exc:
         logger.warning("resume safety check failed for %s (proceeding without guard): %s", ctx.target, exc)
     return None
@@ -706,23 +715,23 @@ def _resume_reuse_live(ctx: _Resume, sid: str, session: dict) -> SessionResumeRe
     """Reattach an already-live session under the resume lock (held across the client-gone check,
     transport attach and reap cancel so grace expiry is atomic). _live_session_payload ATTACHES this
     caller alongside the client(s) already streaming instead of taking the slot from them."""
-    with _session_resume_lock:
-        return _resume_reuse_live_locked(ctx, sid, session)
+    with srv._session_resume_lock:
+        return srv._resume_reuse_live_locked(ctx, sid, session)
 
 
 def _resume_reuse_live_locked(ctx: _Resume, sid: str, session: dict) -> SessionResumeResult | dict:
     """Reuse with _session_resume_lock already held (including the eager double-check)."""
-    if (refusal := _reattach_refusal(ctx.rid, sid, session)) is not None:
+    if (refusal := srv._reattach_refusal(ctx.rid, sid, session)) is not None:
         return refusal
-    _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
-    snapshot = _live_session_payload(sid, session, cols=ctx.cols, touch=True, omit_messages=ctx.omit_messages,
-                                     transport=current_transport() or _stdio_transport)
+    srv._cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
+    snapshot = srv._live_session_payload(sid, session, cols=ctx.cols, touch=True, omit_messages=ctx.omit_messages,
+                                     transport=srv.current_transport() or srv._stdio_transport)
     payload = dict(vars(snapshot))
     payload["resumed"] = ctx.target
     if ctx.defer_history:
         payload.update(messages=[], hydrating=bool(session.get("resume_hydrating")),
                        message_count=int(session.get("resume_message_count") or payload["message_count"]))
-    if session.get("agent") is None and _child_run_active(ctx.target):
+    if session.get("agent") is None and srv._child_run_active(ctx.target):
         payload.update(running=True, status="streaming")
     return SessionResumeResult.model_validate(payload)
 
@@ -743,7 +752,7 @@ def _resume_response(
                "started_at": record["created_at"] if started_at is None else started_at, "status": status}
     if auto_continue is not None:
         payload["auto_continue"] = auto_continue
-    return SessionResumeResult.model_validate(_attach_todo_state(payload, record))
+    return SessionResumeResult.model_validate(srv._attach_todo_state(payload, record))
 
 
 def _resume_lazy(ctx: _Resume) -> dict:
@@ -755,12 +764,12 @@ def _resume_lazy(ctx: _Resume) -> dict:
         # repair_alternation heals a durable ``user;user`` once here.
         history = ctx.child_history(repair=True)
     except Exception as e:
-        return _err(ctx.rid, 5000, resume_failed_message(e))
-    record = ctx.record(source, cwd, history, lazy=True, todo_state=_todo_state_from_history(history))
+        return srv._err(ctx.rid, 5000, srv.resume_failed_message(e))
+    record = ctx.record(source, cwd, history, lazy=True, todo_state=srv._todo_state_from_history(history))
     if (reused := ctx.claim(sid, record)) is not None:
         return reused
     # A child mid-run emits no session events — liveness comes from the relay registry.
-    running = _child_run_active(ctx.target)
+    running = srv._child_run_active(ctx.target)
     # Display uses the VERBATIM child-only projection so model-invisible rows survive; repaired ``history``
     # still feeds live replay.
     display = history
@@ -768,26 +777,26 @@ def _resume_lazy(ctx: _Resume) -> dict:
         display = ctx.child_history(repair=False)
     except Exception:
         logger.debug("child-watch display projection read failed", exc_info=True)
-    return _resume_response(ctx, sid, record, info=_lazy_resume_info(cwd, profile=ctx.profile), display=display,
+    return srv._resume_response(ctx, sid, record, info=srv._lazy_resume_info(cwd, profile=ctx.profile), display=display,
                             count_source=display, running=running, status="streaming" if running else "idle")
 
 
 def _resume_deferred(ctx: _Resume) -> dict:
     """Bounded ack; the transcript hydrates in the background (the ONE history read) and pages over REST."""
     sid, source, cwd = ctx.mint()
-    overrides = _stored_session_runtime_overrides(ctx.found)
+    overrides = srv._stored_session_runtime_overrides(ctx.found)
     record = ctx.record(source, cwd, [], overrides)
     record.update(resume_history_ready=threading.Event(), resume_hydrating=True,
                   resume_message_count=int(ctx.found.get("message_count") or 0))
     if (reused := ctx.claim(sid, record)) is not None:
         return reused
     # Desktop owns the visible transcript through bounded REST pages, not this model-history restore.
-    _schedule_resume_hydration(
+    srv._schedule_resume_hydration(
         sid, ctx.target, ctx.db, close_db=ctx.owns_db,
         model_history_only=source == "desktop" and ctx.omit_messages)
     ctx.owns_db = False  # the hydration worker now owns (and closes) the profile-scoped handle
-    _schedule_session_cap_enforcement()
-    return _resume_response(ctx, sid, record, info=ctx.info(cwd, overrides), messages=[],
+    srv._schedule_session_cap_enforcement()
+    return srv._resume_response(ctx, sid, record, info=ctx.info(cwd, overrides), messages=[],
                             message_count=record["resume_message_count"], status="resuming", hydrating=True)
 
 
@@ -799,53 +808,53 @@ def _resume_cold(ctx: _Resume) -> dict:
     try:
         history, display_history, raw_history = ctx.restore()
     except Exception as e:
-        return _err(ctx.rid, 5000, resume_failed_message(e))
-    overrides = _stored_session_runtime_overrides(ctx.found)
+        return srv._err(ctx.rid, 5000, srv.resume_failed_message(e))
+    overrides = srv._stored_session_runtime_overrides(ctx.found)
     record = ctx.record(source, cwd, history, overrides, display_history_prefix=ctx.display_prefix(),
-                        todo_state=_todo_state_from_history(history))
+                        todo_state=srv._todo_state_from_history(history))
     if (reused := ctx.claim(sid, record)) is not None:
         return reused
-    _schedule_agent_build(sid)
-    _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
-    return _resume_response(ctx, sid, record, info=ctx.info(cwd, overrides), display=display_history,
+    srv._schedule_agent_build(sid)
+    srv._schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
+    return srv._resume_response(ctx, sid, record, info=ctx.info(cwd, overrides), display=display_history,
                             count_source=raw_history,
-                            auto_continue=_maybe_schedule_auto_continue(sid, record, ctx.target))
+                            auto_continue=srv._maybe_schedule_auto_continue(sid, record, ctx.target))
 
 
 def _resume_eager(ctx: _Resume) -> dict:
     """Synchronous build OUTSIDE _session_resume_lock (it would stall session.close), then double-checked."""
     sid, source, _cwd = ctx.mint()
-    with _profile_build_scope(ctx.profile_home):
+    with srv._profile_build_scope(ctx.profile_home):
         try:
             history, display_history, raw_history = ctx.restore()
             display_history_prefix = ctx.display_prefix()
             # Profile db so turns persist to the right state.db; stored runtime identity so switching chats does
             # not inherit another chat's global model.
-            stored_runtime_overrides = _stored_session_runtime_overrides(ctx.found)
-            agent = _make_agent_in_context(
+            stored_runtime_overrides = srv._stored_session_runtime_overrides(ctx.found)
+            agent = srv._make_agent_in_context(
                 sid, ctx.target, session_db=ctx.db, platform_override=source,
-                context_cwd_is_launch_artifact=(source in _LAUNCH_CWD_NOT_A_WORKSPACE and not ctx.profile_resume_cwd),
-                auth_user_id=_transport_auth_user_id(current_transport()), **stored_runtime_overrides)
+                context_cwd_is_launch_artifact=(source in srv._LAUNCH_CWD_NOT_A_WORKSPACE and not ctx.profile_resume_cwd),
+                auth_user_id=srv._transport_auth_user_id(srv.current_transport()), **stored_runtime_overrides)
         except Exception as e:
-            return _err(ctx.rid, 5000, resume_failed_message(e))
-    with _session_resume_lock:
-        live = _find_live_session_by_key(ctx.target, ctx.profile_home)
+            return srv._err(ctx.rid, 5000, srv.resume_failed_message(e))
+    with srv._session_resume_lock:
+        live = srv._find_live_session_by_key(ctx.target, ctx.profile_home)
         if live is not None:
             with contextlib.suppress(Exception):
                 agent.close()
-            return _resume_reuse_live_locked(ctx, *live)
+            return srv._resume_reuse_live_locked(ctx, *live)
         try:
-            with _profile_build_scope(ctx.profile_home):
-                _init_session(sid, ctx.target, agent, history, cols=ctx.cols, cwd=ctx.profile_resume_cwd,
+            with srv._profile_build_scope(ctx.profile_home):
+                srv._init_session(sid, ctx.target, agent, history, cols=ctx.cols, cwd=ctx.profile_resume_cwd,
                               session_db=ctx.db, source=source, explicit_cwd=bool(ctx.profile_resume_cwd))
                 # Ownership TRANSFER: the agent holds the handle for life (AIAgent.close() releases it). The
                 # owns_db drop is UNCONDITIONAL — the session is registered against the handle, so the finally
                 # must not close it even if the transfer was refused (a leak beats "closed database" every
                 # turn). Gated on owns_db: the SHARED launch handle must never move onto one session.
                 if ctx.owns_db:
-                    _transfer_db_to_agent(agent, ctx.db)
+                    srv._transfer_db_to_agent(agent, ctx.db)
                 ctx.owns_db = False
-            if (session := _sessions.get(sid)) is not None:
+            if (session := srv._sessions.get(sid)) is not None:
                 if stored_runtime_overrides.get("model_override") is not None:
                     session["model_override"] = stored_runtime_overrides["model_override"]
                 # Each turn re-binds HERMES_HOME (mid-turn memory/skills reads); lease claimed lazily on turn 1.
@@ -856,37 +865,37 @@ def _resume_eager(ctx: _Resume) -> dict:
             # _init_session registers _sessions[sid] BEFORE its first db read; left in place the fast path
             # would serve that dead session forever.
             if ctx.owns_db:
-                with _sessions_lock:
-                    _sessions.pop(sid, None)
-            return _err(ctx.rid, 5000, resume_failed_message(e))
-        session = _sessions.get(sid) or {}
-    return _resume_response(
-        ctx, sid, session, info=_session_info(agent, session), display=display_history, count_source=raw_history,
+                with srv._sessions_lock:
+                    srv._sessions.pop(sid, None)
+            return srv._err(ctx.rid, 5000, srv.resume_failed_message(e))
+        session = srv._sessions.get(sid) or {}
+    return srv._resume_response(
+        ctx, sid, session, info=srv._session_info(agent, session), display=display_history, count_source=raw_history,
         started_at=float(session.get("created_at") or time.time()),
-        auto_continue=_maybe_schedule_auto_continue(sid, session, ctx.target) if session else None)
+        auto_continue=srv._maybe_schedule_auto_continue(sid, session, ctx.target) if session else None)
 
 
 @method("session.resume")
 def _(rid, params: SessionResumeParams) -> SessionResumeResult | dict:
     target = params.session_id
     ctx = _Resume(rid, params, target)
-    ctx.db, ctx.owns_db = _profile_session_db(ctx.profile_home)
+    ctx.db, ctx.owns_db = srv._profile_session_db(ctx.profile_home)
     try:
         if ctx.db is None:
-            return _db_unavailable_error(rid, code=5000)
-        if (resp := _resume_locate(ctx)) is not None:
+            return srv._db_unavailable_error(rid, code=5000)
+        if (resp := srv._resume_locate(ctx)) is not None:
             return resp
-        _resume_follow_tip(ctx)
-        if (resp := _resume_guard(ctx)) is not None:
+        srv._resume_follow_tip(ctx)
+        if (resp := srv._resume_guard(ctx)) is not None:
             return resp
         # ctx.found is the stored DB row (a dict), not a params model.
-        ctx.profile_resume_cwd = str((ctx.found or {}).get("cwd") or "").strip() or _profile_configured_cwd(ctx.profile_home)
-        with _session_resume_lock:
-            live = _find_live_session_by_key(ctx.target, ctx.profile_home)
+        ctx.profile_resume_cwd = str((ctx.found or {}).get("cwd") or "").strip() or srv._profile_configured_cwd(ctx.profile_home)
+        with srv._session_resume_lock:
+            live = srv._find_live_session_by_key(ctx.target, ctx.profile_home)
         if live is not None:
-            return _resume_reuse_live(ctx, *live)
-        response = (_resume_lazy(ctx) if ctx.lazy else _resume_eager(ctx) if ctx.eager_build
-                    else _resume_deferred(ctx) if ctx.defer_history else _resume_cold(ctx))
+            return srv._resume_reuse_live(ctx, *live)
+        response = (srv._resume_lazy(ctx) if ctx.lazy else srv._resume_eager(ctx) if ctx.eager_build
+                    else srv._resume_deferred(ctx) if ctx.defer_history else srv._resume_cold(ctx))
         return response
     finally:
         if ctx.owns_db and ctx.db is not None:
@@ -898,16 +907,16 @@ def _(rid, params: SessionResumeParams) -> SessionResumeResult | dict:
 @_session_method("session.cwd.set")
 def _(rid, params: SessionCwdSetParams, session: dict) -> SessionCwdSetResult | dict:
     if session.get("running"):
-        return _err(rid, 4009, "session busy")
+        return srv._err(rid, 4009, "session busy")
     raw = params.cwd.strip()
     if not raw:
-        return _err(rid, 4016, "cwd required")
+        return srv._err(rid, 4016, "cwd required")
     try:
-        cwd = _set_session_cwd(session, raw)
+        cwd = srv._set_session_cwd(session, raw)
     except ValueError as e:
-        return _err(rid, 4017, str(e))
-    info = SessionCwdSetResult.model_validate(_cwd_info(session, cwd))
-    _emit("session.info", params.session_id, SessionInfoPayload.model_validate(dict(vars(info))))
+        return srv._err(rid, 4017, str(e))
+    info = SessionCwdSetResult.model_validate(srv._cwd_info(session, cwd))
+    srv._emit("session.info", params.session_id, SessionInfoPayload.model_validate(dict(vars(info))))
     return info
 
 
@@ -916,48 +925,48 @@ def _(rid, params: SessionWorkspaceMoveParams) -> SessionWorkspaceMoveResult | d
     """Re-home a stored session's workspace, and its live agent when present."""
     target, raw = params.session_key.strip(), params.cwd.strip()
     if not target:
-        return _err(rid, 4007, "session_key required")
+        return srv._err(rid, 4007, "session_key required")
     if not raw:
-        return _err(rid, 4016, "cwd required")
+        return srv._err(rid, 4016, "cwd required")
     from hermes_constants import translate_cwd_for_wsl_backend
     resolved = os.path.abspath(os.path.expanduser(translate_cwd_for_wsl_backend(raw)))
     if not os.path.isdir(resolved):
-        return _err(rid, 4017, f"working directory does not exist: {raw}")
-    with _sessions_lock:
-        live_sid, live = next(((sid, sess) for sid, sess in list(_sessions.items())
+        return srv._err(rid, 4017, f"working directory does not exist: {raw}")
+    with srv._sessions_lock:
+        live_sid, live = next(((sid, sess) for sid, sess in list(srv._sessions.items())
                                if sess.get("session_key") == target), ("", None))
-    branch, root = git_probe.branch(resolved), git_probe.common_repo_root(resolved)
-    with _profile_db(params, writer=True) as db:
+    branch, root = srv.git_probe.branch(resolved), srv.git_probe.common_repo_root(resolved)
+    with srv._profile_db(params, writer=True) as db:
         if db is None:
-            return _db_unavailable_error(rid, code=5007)
+            return srv._db_unavailable_error(rid, code=5007)
         if not db.get_session(target):
             if live is None:
-                return _err(rid, 4007, "session not found")
+                return srv._err(rid, 4007, "session not found")
         else:
             try:
                 db.update_session_cwd(target, resolved, branch, root, replace_git_meta=True)
             except Exception as e:
-                return _err(rid, 5007, f"move failed: {e}")
+                return srv._err(rid, 5007, f"move failed: {e}")
     if live is not None:
         try:
-            _set_session_cwd(live, resolved)
+            srv._set_session_cwd(live, resolved)
         except ValueError as e:
-            return _err(rid, 4017, str(e))
-        _emit("session.info", live_sid, SessionInfoPayload.model_validate(_cwd_info(live, resolved, branch=branch)))
+            return srv._err(rid, 4017, str(e))
+        srv._emit("session.info", live_sid, SessionInfoPayload.model_validate(srv._cwd_info(live, resolved, branch=branch)))
     return SessionWorkspaceMoveResult(cwd=resolved, branch=branch, git_repo_root=root)
 
 
 @method("session.active_list")
 def _(rid, params: SessionActiveListParams) -> SessionActiveListResult | dict:
     """Live TUI sessions in this process (not a DB browser)."""
-    snapshot, err = _snapshot_sessions(rid)
+    snapshot, err = srv._snapshot_sessions(rid)
     if err:
         return err
     current = params.current_session_id or ""
     # ``_finalized`` sessions linger until the reaper pops them (they inflated the footer). Do NOT filter on
     # the WS-detached sentinel: detached is attachable until grace-reap, and ``hermes --tui`` rides stdio.
     # Keep insertion order (focused must not jump).
-    rows = [_session_live_item(sid, session, current) for sid, session in snapshot if not session.get("_finalized")]
+    rows = [srv._session_live_item(sid, session, current) for sid, session in snapshot if not session.get("_finalized")]
     return SessionActiveListResult(sessions=rows)
 
 
@@ -967,12 +976,12 @@ def _(rid, params: SessionActivateParams, session: dict) -> SessionActivateResul
     sid = params.session_id
     # Only the rebind is atomic with grace expiry; the payload (a DB history read unless
     # ``omit_messages``) must not hold the process-wide resume lock.
-    with _session_resume_lock:
-        if (refusal := _reattach_refusal(rid, sid, session)) is not None:
+    with srv._session_resume_lock:
+        if (refusal := srv._reattach_refusal(rid, sid, session)) is not None:
             return refusal
         with session["history_lock"]:
-            _rebind_live_transport(sid, session, current_transport() or _stdio_transport)
-    snapshot = _live_session_payload(sid, session, touch=True, omit_messages=params.omit_messages)
+            srv._rebind_live_transport(sid, session, srv.current_transport() or srv._stdio_transport)
+    snapshot = srv._live_session_payload(sid, session, touch=True, omit_messages=params.omit_messages)
     # A LiveSessionSnapshot instance is not accepted as its own subclass; validate the attributes.
     return SessionActivateResult.model_validate(snapshot, from_attributes=True)
 
@@ -981,21 +990,21 @@ def _(rid, params: SessionActivateParams, session: dict) -> SessionActivateResul
 def _(rid, params: SessionDeleteParams) -> SessionDeleteResult | dict:
     """Delete a stored session + transcripts; refused while live here (FK trips on the agent's next flush)."""
     target = params.session_id
-    snapshot, err = _snapshot_sessions(rid)
+    snapshot, err = srv._snapshot_sessions(rid)
     if err:
         return err
     if any(s.get("session_key") == target for _sid, s in snapshot):
-        return _err(rid, 4023, "cannot delete an active session")
-    profile_home = _profile_home((params.profile or "").strip() or None)
-    with _profile_db(params, writer=True) as db:
+        return srv._err(rid, 4023, "cannot delete an active session")
+    profile_home = srv._profile_home((params.profile or "").strip() or None)
+    with srv._profile_db(params, writer=True) as db:
         if db is None:
-            return _db_unavailable_error(rid, code=5036)
+            return srv._db_unavailable_error(rid, code=5036)
         try:
-            home = Path(profile_home) if profile_home is not None else get_hermes_home()
+            home = Path(profile_home) if profile_home is not None else srv.get_hermes_home()
             deleted = db.delete_session(target, sessions_dir=home / "sessions")
         except Exception as e:
-            return _err(rid, 5036, f"delete failed: {e}")
-    return SessionDeleteResult(deleted=target) if deleted else _err(rid, 4007, "session not found")
+            return srv._err(rid, 5036, f"delete failed: {e}")
+    return SessionDeleteResult(deleted=target) if deleted else srv._err(rid, 4007, "session not found")
 
 
 def _title_read(session: dict, db, key: str) -> str:
@@ -1022,9 +1031,9 @@ def _title_read(session: dict, db, key: str) -> str:
 def _(rid, params: SessionTitleParams, session: dict, db) -> SessionTitleResult | dict:
     key = session["session_key"]
     if "title" not in params.model_fields_set:
-        result = SessionTitleResult(title=_title_read(session, db, key), session_key=key)
+        result = SessionTitleResult(title=srv._title_read(session, db, key), session_key=key)
     elif not (title := (params.title or "").strip()):
-        return _err(rid, 4021, "title required")
+        return srv._err(rid, 4021, "title required")
     else:
         try:
             if db.set_session_title(key, title):
@@ -1032,16 +1041,16 @@ def _(rid, params: SessionTitleParams, session: dict, db) -> SessionTitleResult 
             elif existing_row := db.get_session(key):
                 pending, value = False, existing_row.get("title") or title
             else:
-                _ensure_session_db_row(session)
-                with _session_db(session) as scoped_db:
+                srv._ensure_session_db_row(session)
+                with srv._session_db(session) as scoped_db:
                     pending, value = not (scoped_db is not None and scoped_db.set_session_title(key, title)), title
         except ValueError as e:
-            return _err(rid, 4022, str(e))
+            return srv._err(rid, 4022, str(e))
         except Exception as e:
-            return _err(rid, 5007, str(e))
+            return srv._err(rid, 5007, str(e))
         session["pending_title"] = value if pending else None
         result = SessionTitleResult(pending=pending, title=value)
-    _emit_session_info_for_session(params.session_id, session)
+    srv._emit_session_info_for_session(params.session_id, session)
     return result
 
 
@@ -1049,10 +1058,10 @@ def _(rid, params: SessionTitleParams, session: dict, db) -> SessionTitleResult 
 def _(rid, params: SessionSetHiddenParams) -> SessionSetHiddenResult | dict:
     """Set/clear hidden on a live or stored session and its lineage."""
     hidden = params.hidden
-    session, err = _sess_nowait(params, rid)
-    with (_profile_db(params, writer=True) if session is None else _session_db(session)) as db:
+    session, err = srv._sess_nowait(params, rid)
+    with (srv._profile_db(params, writer=True) if session is None else srv._session_db(session)) as db:
         if db is None:
-            return _db_unavailable_error(rid, code=5007)
+            return srv._db_unavailable_error(rid, code=5007)
         try:
             if session is not None:
                 key = session["session_key"]
@@ -1065,30 +1074,30 @@ def _(rid, params: SessionSetHiddenParams) -> SessionSetHiddenResult | dict:
                 db.set_session_hidden(key, hidden)
             return SessionSetHiddenResult(hidden=hidden, session_key=key)
         except Exception as e:
-            return _err(rid, 5007, str(e))
+            return srv._err(rid, 5007, str(e))
 
 
 @_session_method("message.react")
 def _(rid, params: MessageReactParams, session: dict) -> MessageReactResult | dict:
     newest_role, row_id, emoji = params.newest_role, params.row_id, params.emoji
     if row_id is None and newest_role not in {"user", "assistant"}:
-        return _err(rid, 4023, "row_id or newest_role required")
+        return srv._err(rid, 4023, "row_id or newest_role required")
     if emoji is not None and not emoji.strip():
-        return _err(rid, 4024, "emoji must be a non-empty string or null")
+        return srv._err(rid, 4024, "emoji must be a non-empty string or null")
     author = (params.author.value if params.author is not None else "user")
-    with _session_db(session) as db:
+    with srv._session_db(session) as db:
         if db is None:
-            return _db_unavailable_error(rid, code=5007)
+            return srv._db_unavailable_error(rid, code=5007)
         try:
             if row_id is None:
                 row_id = db.latest_message_row_id(session["session_key"], role=newest_role)
                 if row_id is None:
-                    return _err(rid, 4040, "no message to react to yet")
+                    return srv._err(rid, 4040, "no message to react to yet")
             reactions = db.set_message_reaction(session["session_key"], int(row_id), emoji, author=author)
         except Exception as e:
-            return _err(rid, 5007, str(e))
+            return srv._err(rid, 5007, str(e))
     if reactions is None:
-        return _err(rid, 4040, "message not found in this session")
+        return srv._err(rid, 4040, "message not found in this session")
     return MessageReactResult.model_validate({"row_id": int(row_id), "reactions": reactions})
 
 
@@ -1101,44 +1110,44 @@ def _(rid, params: LlmOneshotParams) -> LlmOneshotResult | dict:
     project ideas ran on, and billed, the default profile's auxiliary provider."""
     template, instructions, user_input = (params.template or "").strip() or None, params.instructions or "", params.input or ""
     if not template and not instructions.strip() and not user_input.strip():
-        return _err(rid, 4030, "llm.oneshot requires a template or instructions/input")
-    session = _sessions.get(params.session_id or "")
+        return srv._err(rid, 4030, "llm.oneshot requires a template or instructions/input")
+    session = srv._sessions.get(params.session_id or "")
     try:
         from agent.oneshot import run_oneshot
-        with (_session_profile_runtime_scope(session) if session else contextlib.nullcontext()):
+        with (srv._session_profile_runtime_scope(session) if session else contextlib.nullcontext()):
             return LlmOneshotResult(text=run_oneshot(
                 instructions=instructions, user_input=user_input, template=template, variables=params.variables or {},
                 task=(params.task or "title_generation").strip() or "title_generation",
                 max_tokens=params.max_tokens or 1024, temperature=params.temperature if params.temperature is not None else 0.3,
-                main_runtime=_main_runtime_from_agent(session.get("agent")) if session else None))
+                main_runtime=srv._main_runtime_from_agent(session.get("agent")) if session else None))
     except (KeyError, ValueError) as e:
-        return _err(rid, 4031 if isinstance(e, KeyError) else 4032, str(e))
+        return srv._err(rid, 4031 if isinstance(e, KeyError) else 4032, str(e))
     except Exception as e:
         logger.warning("llm.oneshot failed: %s", e)
-        return _err(rid, 5030, f"one-shot generation failed: {e}")
+        return srv._err(rid, 5030, f"one-shot generation failed: {e}")
 
 
 # ── handoff ──────────────────────────────────────────────────────────
 @_session_method("handoff.request")
 def _(rid, params: HandoffRequestParams, session: dict) -> HandoffRequestResult | dict:
-    if session.get("running"): return _err(rid, 4009, "session busy — wait for the current turn to finish, then retry the handoff")
+    if session.get("running"): return srv._err(rid, 4009, "session busy — wait for the current turn to finish, then retry the handoff")
     platform_name = params.platform.strip().lower()
-    if not platform_name: return _err(rid, 4023, "platform required")
+    if not platform_name: return srv._err(rid, 4023, "platform required")
     from gateway.config import Platform, load_gateway_config
     try: platform = Platform(platform_name)
-    except (ValueError, KeyError): return _err(rid, 4024, f"unknown platform '{platform_name}'")
+    except (ValueError, KeyError): return srv._err(rid, 4024, f"unknown platform '{platform_name}'")
     try:
-        with _session_profile_runtime_scope(session): gw_config = load_gateway_config()
-    except Exception as e: return _err(rid, 5021, f"could not load gateway config: {e}")
-    if not getattr(gw_config.platforms.get(platform), "enabled", False): return _err(rid, 4025, f"platform '{platform_name}' is not configured/enabled in the gateway")
-    if not (home := gw_config.get_home_channel(platform)) or not home.chat_id: return _err(rid, 4026, f"no home channel configured for {platform_name} — set one with /sethome on the destination chat first")
-    _ensure_session_db_row(session); key = session["session_key"]
-    with _session_db(session) as db:
-        if db is None: return _db_unavailable_error(rid, code=5007)
+        with srv._session_profile_runtime_scope(session): gw_config = load_gateway_config()
+    except Exception as e: return srv._err(rid, 5021, f"could not load gateway config: {e}")
+    if not getattr(gw_config.platforms.get(platform), "enabled", False): return srv._err(rid, 4025, f"platform '{platform_name}' is not configured/enabled in the gateway")
+    if not (home := gw_config.get_home_channel(platform)) or not home.chat_id: return srv._err(rid, 4026, f"no home channel configured for {platform_name} — set one with /sethome on the destination chat first")
+    srv._ensure_session_db_row(session); key = session["session_key"]
+    with srv._session_db(session) as db:
+        if db is None: return srv._db_unavailable_error(rid, code=5007)
         try:
             if not db.get_session(key): db.set_session_title(key, f"handoff-{key[:8]}")
-            if not db.request_handoff(key, platform_name): return _err(rid, 4027, "session is already in flight for handoff — wait for it to settle, then retry")
-        except Exception as e: return _err(rid, 5007, str(e))
+            if not db.request_handoff(key, platform_name): return srv._err(rid, 4027, "session is already in flight for handoff — wait for it to settle, then retry")
+        except Exception as e: return srv._err(rid, 5007, str(e))
     return HandoffRequestResult(queued=True, session_key=key, platform=platform_name, home_name=home.name)
 
 
@@ -1151,11 +1160,11 @@ def _(rid, params, session: dict, db) -> HandoffStateResult:
 
 @method("handoff.fail")
 def _(rid, params: HandoffFailParams) -> HandoffFailResult | dict:
-    session, err = _sess_nowait(params, rid)
+    session, err = srv._sess_nowait(params, rid)
     if err: return err
     reason = (params.error or "handoff failed").strip()[:500]
-    with _session_db(session) as db:
-        if db is None: return _db_unavailable_error(rid, code=5007)
+    with srv._session_db(session) as db:
+        if db is None: return srv._db_unavailable_error(rid, code=5007)
         key = session["session_key"]
         try: failed = db.fail_handoff(key, reason, only_states=("pending",))
         except TypeError:
@@ -1167,7 +1176,7 @@ def _(rid, params: HandoffFailParams) -> HandoffFailResult | dict:
 # ── usage ────────────────────────────────────────────────────────────
 @_session_method("session.usage")
 def _(rid, params: SessionUsageParams, session: dict) -> SessionUsageResult:
-    usage, credits = _session_usage_snapshot(session), None
+    usage, credits = srv._session_usage_snapshot(session), None
     with contextlib.suppress(Exception):
         from agent.account_usage import nous_credits_lines
         credits = nous_credits_lines() or None
@@ -1177,17 +1186,17 @@ def _(rid, params: SessionUsageParams, session: dict) -> SessionUsageResult:
 @_session_method("session.context_breakdown")
 def _(rid, params: SessionContextBreakdownParams, session: dict) -> SessionContextBreakdownResult | dict:
     if (agent := session.get("agent")) is None:
-        usage = _session_usage_snapshot(session)
+        usage = srv._session_usage_snapshot(session)
         return SessionContextBreakdownResult(
             categories=[], context_max=usage.context_max or 0,
             context_percent=usage.context_percent or 0,
             context_used=usage.context_used or 0, estimated_total=0,
             context_estimated=bool(usage.context_estimated),
             context_source=usage.context_source or "provider_usage",
-            model=_metadata_mirror(session).get("model", ""))
+            model=srv._metadata_mirror(session).get("model", ""))
     with session["history_lock"]:
         history = list(session.get("history", []))
-    tokens = _set_session_context(session["session_key"])
+    tokens = srv._set_session_context(session["session_key"])
     try:
         from agent.context_breakdown import compute_session_context_breakdown
         from agent.context_file_sources import context_file_sources_for_agent
@@ -1196,9 +1205,9 @@ def _(rid, params: SessionContextBreakdownParams, session: dict) -> SessionConte
         payload["context_files"] = context_file_sources_for_agent(agent)
         return SessionContextBreakdownResult.model_validate(payload)
     except Exception as exc:
-        return _err(rid, 5000, f"Could not compute context breakdown: {exc}")
+        return srv._err(rid, 5000, f"Could not compute context breakdown: {exc}")
     finally:
-        _clear_session_context(tokens)
+        srv._clear_session_context(tokens)
 
 
 # ── pet ──────────────────────────────────────────────────────────────
@@ -1212,17 +1221,17 @@ def _pet_cells_off() -> PetCellsResult:
 
 @_pet_method("pet.info", fail_open=lambda _p: _pet_info_off())
 def _(rid, params: PetInfoParams) -> PetInfoResult | dict:
-    if (active := _active_pet()) is None: return _pet_info_off()
-    pet, scale = active; payload = {"enabled": True, "spritesheetUnchanged": None, **_pet_sprite_payload(pet, scale=scale)}
+    if (active := srv._active_pet()) is None: return _pet_info_off()
+    pet, scale = active; payload = {"enabled": True, "spritesheetUnchanged": None, **srv._pet_sprite_payload(pet, scale=scale)}
     if params.knownRevision and params.knownRevision == payload.get("spritesheetRevision"):
         payload["spritesheetBase64"] = None; payload["spritesheetUnchanged"] = True
     return PetInfoResult.model_validate(payload)
 
 @_pet_method("pet.info.meta", fail_open=lambda _p: _pet_meta_off())
 def _(rid, params) -> PetInfoMetaResult | dict:
-    if (active := _active_pet()) is None: return _pet_meta_off()
+    if (active := srv._active_pet()) is None: return _pet_meta_off()
     pet, scale = active
-    return PetInfoMetaResult(enabled=True, slug=pet.slug, displayName=pet.display_name, scale=scale, spritesheetRevision=_pet_sheet_revision(pet.spritesheet))
+    return PetInfoMetaResult(enabled=True, slug=pet.slug, displayName=pet.display_name, scale=scale, spritesheetRevision=srv._pet_sheet_revision(pet.spritesheet))
 
 
 def _pet_kitty_cells(pet, pet_cfg: dict, state: str, scale: float) -> dict | None:
@@ -1247,11 +1256,11 @@ def _pet_kitty_cells(pet, pet_cfg: dict, state: str, scale: float) -> dict | Non
 def _(rid, params: PetCellsParams) -> PetCellsResult | dict:
     from agent.pet import constants, store
     from agent.pet.render import PetRenderer
-    pet_cfg = _pet_display_cfg(); pet = store.resolve_active_pet(str(pet_cfg.get("slug", "") or "")) if is_truthy_value(pet_cfg.get("enabled"), default=False) else None
+    pet_cfg = srv._pet_display_cfg(); pet = store.resolve_active_pet(str(pet_cfg.get("slug", "") or "")) if is_truthy_value(pet_cfg.get("enabled"), default=False) else None
     if pet is None or not pet.exists: return _pet_cells_off()
     state, scale = params.state or constants.PetState.IDLE.value, float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
     cols = params.cols or constants.resolve_cols(scale, pet_cfg.get("unicode_cols", 0)); base = {"enabled": True, "slug": pet.slug, "displayName": pet.display_name, "state": state}
-    if params.graphics and (kitty := _pet_kitty_cells(pet, pet_cfg, state, scale)): return PetCellsResult.model_validate({**base, **kitty})
+    if params.graphics and (kitty := srv._pet_kitty_cells(pet, pet_cfg, state, scale)): return PetCellsResult.model_validate({**base, **kitty})
     renderer = PetRenderer(str(pet.spritesheet), mode="unicode", scale=scale, unicode_cols=cols); count = renderer.frame_count(state) or 1
     frames = [[[[*top, *bottom] for top, bottom in row] for row in renderer.cells(state, i, cols=cols)] for i in range(count)]
     return PetCellsResult.model_validate({**base, "cols": cols, "frameMs": constants.LOOP_MS / max(1, count), "frames": frames, "scale": scale})
@@ -1259,7 +1268,7 @@ def _(rid, params: PetCellsParams) -> PetCellsResult | dict:
 @_pet_method("pet.gallery", fail_open=lambda _p: PetGalleryResult(enabled=False, active="", pets=[]))
 def _(rid, params: PetGalleryParams) -> PetGalleryResult | dict:
     from agent.pet import store
-    pet_cfg, installed = _pet_display_cfg(), {p.slug: p for p in store.installed_pets()}; gallery = []
+    pet_cfg, installed = srv._pet_display_cfg(), {p.slug: p for p in store.installed_pets()}; gallery = []
     try:
         from agent.pet.manifest import fetch_manifest, prefetch
         if params.localOnly: prefetch()
@@ -1279,7 +1288,7 @@ def _(rid, params: PetSlugParams, slug: str) -> PetSlugResult | dict:
     try:
         pet = store.install_pet(slug)
     except (store.PetStoreError, ManifestError) as exc:
-        return _err(rid, 5031, f"could not adopt '{slug}': {exc}")
+        return srv._err(rid, 5031, f"could not adopt '{slug}': {exc}")
     _set_active(slug)
     return PetSlugResult(ok=True, slug=slug, displayName=pet.display_name)
 
@@ -1290,7 +1299,7 @@ def _(rid, params: PetSlugParams, slug: str) -> PetSlugResult | dict:
     from agent.pet import store
     from hermes_cli.pets import _clear_active_if
     removed = store.remove_pet(slug)
-    _pet_config_followup("pet.remove", _clear_active_if, slug)
+    srv._pet_config_followup("pet.remove", _clear_active_if, slug)
     return PetSlugResult(ok=removed, slug=slug, displayName=None)
 
 
@@ -1312,7 +1321,7 @@ def _(rid, params: PetSlugParams, slug: str) -> PetExportResult | dict:
     """Export an installed pet as a re-importable ``.zip``."""
     from agent.pet import store
     filename, data = store.export_pet(slug)
-    return PetExportResult(ok=True, filename=filename, zipBase64=_b64(data))
+    return PetExportResult(ok=True, filename=filename, zipBase64=srv._b64(data))
 
 
 @_pet_method("pet.rename", slug=True)
@@ -1320,13 +1329,13 @@ def _(rid, params: PetRenameParams, slug: str) -> PetSlugResult | dict:
     """Rename a pet's display name + realign its slug/dir; follows the active slug in config."""
     name = params.name.strip()
     if not name:
-        return _err(rid, 4004, "missing name")
+        return srv._err(rid, 4004, "missing name")
     from agent.pet import store
     if not (new_slug := store.rename_pet(slug, name)):
-        return _err(rid, 5031, "pet.rename failed")
+        return srv._err(rid, 5031, "pet.rename failed")
     if new_slug != slug:
         from hermes_cli.pets import _rename_active_if
-        _pet_config_followup("pet.rename", _rename_active_if, slug, new_slug)
+        srv._pet_config_followup("pet.rename", _rename_active_if, slug, new_slug)
     return PetSlugResult(ok=True, slug=new_slug, displayName=name)
 
 
@@ -1336,7 +1345,7 @@ def _(rid, params: PetThumbParams, slug: str) -> PetThumbResult | dict:
     from agent.pet import store
     if not (data := store.thumbnail_png(slug, source_url=params.url or "")):
         return PetThumbResult(ok=False, slug=slug, dataUri=None)
-    return PetThumbResult(ok=True, slug=slug, dataUri="data:image/png;base64," + _b64(data))
+    return PetThumbResult(ok=True, slug=slug, dataUri="data:image/png;base64," + srv._b64(data))
 
 
 @_pet_method("pet.disable")
@@ -1352,13 +1361,13 @@ def _(rid, params: PetScaleParams) -> PetScaleResult | dict:
     """Persist ``display.pet.scale`` (clamped to engine bounds) from the desktop slider."""
     from hermes_cli.pets import set_pet_scale
     scale, err = set_pet_scale(params.scale)
-    return _err(rid, 4004, err) if err else PetScaleResult(ok=True, scale=scale)
+    return srv._err(rid, 4004, err) if err else PetScaleResult(ok=True, scale=scale)
 
 
 @method("pet.cancel")
 def _(rid, params: PetCancelParams) -> PetCancelResult:
     """Stop an in-flight generate/hatch by token (idempotent; off the pool so it lands mid-generation)."""
-    if params.token and params.token.strip(): _pet_cancel_request(params.token.strip())
+    if params.token and params.token.strip(): srv._pet_cancel_request(params.token.strip())
     return PetCancelResult(ok=True)
 
 
@@ -1387,80 +1396,80 @@ def _(rid, params: PetGenerateParams) -> PetGenerateResult | dict:
     prompt = (params.prompt or "").strip()
     ref_raw = (params.referenceImage or "").strip()
     if not prompt and not ref_raw:
-        return _err(rid, 4004, "missing prompt")
+        return srv._err(rid, 4004, "missing prompt")
     count = max(1, min(4, params.count))
     import shutil
     from agent.pet.generate import generate_base_drafts
     from agent.pet.generate.imagegen import GenerationError
-    root = _pet_gen_root()
-    _pet_gen_sweep(root)
+    root = srv._pet_gen_root()
+    srv._pet_gen_sweep(root)
     # Token up front so each draft is staged + streamed the moment it lands.
     token = uuid.uuid4().hex[:12]
-    _pet_cancel_arm(token)
+    srv._pet_cancel_arm(token)
     stage = root / token
     stage.mkdir(parents=True, exist_ok=True)
     reference_images = None
     if ref_raw:
         try:
-            reference_images = _pet_reference_images_from_data_url(ref_raw, stage)
+            reference_images = srv._pet_reference_images_from_data_url(ref_raw, stage)
         except ValueError as exc:
-            return _pet_gen_abort(rid, token, 4004, str(exc))
+            return srv._pet_gen_abort(rid, token, 4004, str(exc))
     try:
-        sprite = _pet_pick_provider(params, require_references=bool(reference_images))
+        sprite = srv._pet_pick_provider(params, require_references=bool(reference_images))
     except GenerationError as exc:
-        return _pet_gen_abort(rid, token, 5031, str(exc))
+        return srv._pet_gen_abort(rid, token, 5031, str(exc))
     out: list[dict] = []
     # Token-only init event so a Stop fired before the first draft can target this run.
-    _pet_emit("pet.generate.progress", {"token": token, "count": count}, "pet.generate init")
+    srv._pet_emit("pet.generate.progress", {"token": token, "count": count}, "pet.generate init")
 
     def _on_draft(index: int, src) -> None:
         dest = stage / f"draft-{index}.png"
         try:
             shutil.copyfile(src, dest)
-            data_uri = _pet_png_data_uri(dest)
+            data_uri = srv._pet_png_data_uri(dest)
         except Exception as exc:  # noqa: BLE001 - skip a bad draft, keep the rest
             logger.debug("pet.generate draft %d failed: %s", index, exc)
             return
         out.append({"index": index, "dataUri": data_uri})
-        _pet_emit("pet.generate.progress", {"token": token, "index": index, "dataUri": data_uri, "count": count},
+        srv._pet_emit("pet.generate.progress", {"token": token, "index": index, "dataUri": data_uri, "count": count},
                   "pet.generate progress")
     try:
         generate_base_drafts(prompt or "a pet based on the reference image", n=count,
                              style=params.style, reference_images=reference_images,
-                             provider=sprite, on_draft=_on_draft, is_cancelled=lambda: _pet_is_cancelled(token))
+                             provider=sprite, on_draft=_on_draft, is_cancelled=lambda: srv._pet_is_cancelled(token))
     except GenerationError as exc:
-        return _pet_gen_abort(rid, token, 5031, str(exc))
-    cancelled = _pet_is_cancelled(token)
-    _pet_cancel_release(token)
+        return srv._pet_gen_abort(rid, token, 5031, str(exc))
+    cancelled = srv._pet_is_cancelled(token)
+    srv._pet_cancel_release(token)
     if cancelled or not out:
-        return _err(rid, 5031, "generation cancelled" if cancelled else "generation produced no usable drafts")
+        return srv._err(rid, 5031, "generation cancelled" if cancelled else "generation produced no usable drafts")
     return PetGenerateResult(token=token, ok=True, drafts=[PetDraft.model_validate(draft) for draft in sorted(out, key=lambda d: d["index"])])
 
 
 @_pet_method("pet.hatch", scoped=False)
 def _(rid, params: PetHatchParams) -> PetHatchResult | dict:
     token, name = params.token.strip(), params.name.strip()
-    if not token or not name: return _err(rid, 4004, "missing token" if not token else "missing name")
+    if not token or not name: return srv._err(rid, 4004, "missing token" if not token else "missing name")
     cancel_token = (params.cancelToken or token).strip() or token
     from agent.pet import store
     from agent.pet.generate import hatch_pet
     from agent.pet.generate.imagegen import GenerationError
-    base = _pet_gen_root() / token / f"draft-{params.index}.png"
-    if not base.is_file(): return _err(rid, 4004, "draft expired — generate again")
-    try: sprite = _pet_pick_provider(params, require_references=True)
-    except GenerationError as exc: return _err(rid, 5031, str(exc))
-    _pet_cancel_arm(cancel_token); slug = store.unique_slug(name)
+    base = srv._pet_gen_root() / token / f"draft-{params.index}.png"
+    if not base.is_file(): return srv._err(rid, 4004, "draft expired — generate again")
+    try: sprite = srv._pet_pick_provider(params, require_references=True)
+    except GenerationError as exc: return srv._err(rid, 5031, str(exc))
+    srv._pet_cancel_arm(cancel_token); slug = store.unique_slug(name)
     def _on_progress(event: str, detail: str) -> None:
         payload = {"event": event, "detail": detail}
         if event == "row" and detail.count(":") == 2:
             state, done, total = detail.split(":"); payload = {"event": "row", "state": state, "done": done, "total": total}
-        _pet_emit("pet.hatch.progress", payload, "pet.hatch progress")
+        srv._pet_emit("pet.hatch.progress", payload, "pet.hatch progress")
     try:
-        result = hatch_pet(base_image=base, slug=slug, display_name=name, description=params.description or "", concept=params.prompt or name, style=params.style, provider=sprite, on_progress=_on_progress, is_cancelled=lambda: _pet_is_cancelled(cancel_token))
-    except GenerationError as exc: return _err(rid, 5031, str(exc))
-    finally: _pet_cancel_release(cancel_token)
+        result = hatch_pet(base_image=base, slug=slug, display_name=name, description=params.description or "", concept=params.prompt or name, style=params.style, provider=sprite, on_progress=_on_progress, is_cancelled=lambda: srv._pet_is_cancelled(cancel_token))
+    except GenerationError as exc: return srv._err(rid, 5031, str(exc))
+    finally: srv._pet_cancel_release(cancel_token)
     pet = store.load_pet(result.slug)
-    return PetHatchResult(ok=True, slug=result.slug, displayName=result.display_name, warnings=result.validation.get("warnings", []), pet=PetSpritePayload.model_validate(_pet_sprite_payload(pet, scale=_pet_config_scale()) if pet else {"slug": None, "displayName": None, "mime": None, "spritesheetBase64": None, "spritesheetRevision": None, "frameW": None, "frameH": None, "framesPerState": None, "framesByState": None, "framesByRow": None, "loopMs": None, "scale": None, "stateRows": None}))
+    return PetHatchResult(ok=True, slug=result.slug, displayName=result.display_name, warnings=result.validation.get("warnings", []), pet=PetSpritePayload.model_validate(srv._pet_sprite_payload(pet, scale=srv._pet_config_scale()) if pet else {"slug": None, "displayName": None, "mime": None, "spritesheetBase64": None, "spritesheetRevision": None, "frameW": None, "frameH": None, "framesPerState": None, "framesByState": None, "framesByRow": None, "loopMs": None, "scale": None, "stateRows": None}))
 
 
 # ── billing / subscription ───────────────────────────────────────────
@@ -1480,7 +1489,7 @@ def _(rid, params) -> BillingStateResult:
         from agent.billing_view import BillingState, build_billing_state
         from hermes_cli.anon_auth import guest_carries_inference
         state = BillingState(logged_in=False) if guest_carries_inference() else build_billing_state()
-        return BillingStateResult.model_validate(_serialize_billing_state(state, free_tier=guest_carries_inference()))
+        return BillingStateResult.model_validate(srv._serialize_billing_state(state, free_tier=guest_carries_inference()))
     except Exception:
         return BillingStateResult(ok=True, logged_in=False, free_tier=False, error="could not load billing state")
 
@@ -1494,7 +1503,7 @@ def _(rid, params: SubscriptionPreviewParams) -> SubscriptionPreviewResult:
     from agent.subscription_view import subscription_change_preview_from_payload
     from hermes_cli.nous_billing import post_subscription_preview
     if not params.subscription_type_id: return _billing_invalid(SubscriptionPreviewResult, "subscription_type_id is required")
-    return _billing_call(lambda: _serialize_subscription_preview(subscription_change_preview_from_payload(post_subscription_preview(subscription_type_id=params.subscription_type_id))), SubscriptionPreviewResult)
+    return _billing_call(lambda: srv._serialize_subscription_preview(subscription_change_preview_from_payload(post_subscription_preview(subscription_type_id=params.subscription_type_id))), SubscriptionPreviewResult)
 
 
 def _billing_route(name: str, call, result_type, *, invalid=None, message: str = "", error: str = "invalid_request", idempotent: bool = False):
@@ -1523,7 +1532,7 @@ def _(rid, params: BillingStepUpParams) -> BillingStepUpResult:
     sid = params.session_id or ""
     def call():
         from hermes_cli.auth import step_up_nous_billing_scope
-        granted = step_up_nous_billing_scope(open_browser=False, on_verification=lambda url, code: _emit("billing.step_up.verification", sid, BillingStepUpVerificationPayload(verification_url=url, user_code=code)))
+        granted = step_up_nous_billing_scope(open_browser=False, on_verification=lambda url, code: srv._emit("billing.step_up.verification", sid, BillingStepUpVerificationPayload(verification_url=url, user_code=code)))
         return {"ok": True, "granted": bool(granted)}
     return _billing_call(call, BillingStepUpResult, {"granted": False})
 
@@ -1533,11 +1542,11 @@ def _status_row(session: dict, params: dict, key: str) -> dict:
     """Stored row for ``key``: the live session's bound profile db first, else params.profile / launch."""
     if not key:
         return {}
-    with _session_db(session) as db:
+    with srv._session_db(session) as db:
         if db is not None:
-            return _try_get_session(db, key)
-        with _profile_db(params) as db2:
-            return _try_get_session(db2, key) if db2 else {}
+            return srv._try_get_session(db, key)
+        with srv._profile_db(params) as db2:
+            return srv._try_get_session(db2, key) if db2 else {}
 
 
 def _try_get_session(db, key: str) -> dict:
@@ -1549,10 +1558,10 @@ def _try_get_session(db, key: str) -> dict:
 @_session_method("session.status")
 def _(rid, params: SessionStatusParams, session: dict) -> SessionStatusResult:
     from hermes_cli.status_report import build_status_fields, status_lines
-    key = session.get("session_key") or params.session_id; mirror, live_agent = _metadata_mirror(session), session.get("agent")
+    key = session.get("session_key") or params.session_id; mirror, live_agent = srv._metadata_mirror(session), session.get("agent")
     agent = None if session.get("_compute_host_active") else live_agent
-    fields = build_status_fields(key, agent, _status_row(session, params, key), model=mirror.get("model") or getattr(live_agent, "model", None), provider=mirror.get("provider") or getattr(live_agent, "provider", None), tokens=_session_usage_snapshot(session).total, agent_running=bool(session.get("running")))
-    project = _project_info_for_cwd(_display_session_cwd(session)); lines = ["Hermes TUI Status", "", *status_lines(fields, "session_id", "path"), *([f"Project: {project.name}"] if project else []), *status_lines(fields, "title", "model", "created", "last_activity", "tokens", "agent_running")]
+    fields = build_status_fields(key, agent, srv._status_row(session, params, key), model=mirror.get("model") or getattr(live_agent, "model", None), provider=mirror.get("provider") or getattr(live_agent, "provider", None), tokens=srv._session_usage_snapshot(session).total, agent_running=bool(session.get("running")))
+    project = srv._project_info_for_cwd(srv._display_session_cwd(session)); lines = ["Hermes TUI Status", "", *status_lines(fields, "session_id", "path"), *([f"Project: {project.name}"] if project else []), *status_lines(fields, "title", "model", "created", "last_activity", "tokens", "agent_running")]
     return SessionStatusResult(output="\n".join(lines))
 
 
@@ -1560,48 +1569,48 @@ def _(rid, params: SessionStatusParams, session: dict) -> SessionStatusResult:
 def _(rid, params: SessionHistoryParams, session: dict) -> SessionHistoryResult | dict:
     history = list(session.get("history", []))
     if session.get("session_key"):
-        with _session_db(session) as db:
+        with srv._session_db(session) as db:
             if db is not None:
                 with contextlib.suppress(Exception):
                     history = db.get_messages_as_conversation(
                         session["session_key"], include_ancestors=True, include_row_ids=True)
-    return SessionHistoryResult(count=len(history), messages=_history_to_messages(history))
+    return SessionHistoryResult(count=len(history), messages=srv._history_to_messages(history))
 
 
 @_session_method("session.undo", live=True)
 def _(rid, params: SessionUndoParams, session: dict) -> SessionUndoResult | dict:
     # Under a running turn the post-run write would clobber the undo — stop the reply first.
-    busy = _err(rid, 4009, busy_message("undo"))
+    busy = srv._err(rid, 4009, srv.busy_message("undo"))
     if session.get("running"):
         return busy
     removed = 0
     with session["history_lock"]:
         if session.get("running"): return busy
-        history = _history_without_ephemeral_scaffolding(session.get("history", []))
+        history = srv._history_without_ephemeral_scaffolding(session.get("history", []))
         from agent.context_compressor import user_originated_turn_view
         if user_turns := sum(1 for message in history if user_originated_turn_view(message) is not None):
-            try: removed = _rewind_active_session_history(session, user_turns - 1)[2]
-            except Exception as exc: return _err(rid, 5008, f"undo: {exc}")
+            try: removed = srv._rewind_active_session_history(session, user_turns - 1)[2]
+            except Exception as exc: return srv._err(rid, 5008, f"undo: {exc}")
     return SessionUndoResult(removed=removed)
 
 
 def _compute_host_ack_error(rid, ack: dict, code: int, default: str):
     """``_err`` for a ``control.error``/``error`` ack, else None."""
     if ack.get("type") in {"control.error", "error"}:
-        return _err(rid, code, str(ack.get("message") or default))
+        return srv._err(rid, code, str(ack.get("message") or default))
     return None
 
 
 def _save_via_compute_host(rid, params: SessionSaveParams) -> SessionSaveResult | dict:
     """``session.save`` for a turn-isolated session: the host owns the transcript file."""
     try:
-        ack = _send_compute_host_control(params.session_id, route_name="session.save", wait=True)
+        ack = srv._send_compute_host_control(params.session_id, route_name="session.save", wait=True)
     except Exception as exc:
-        return _err(rid, 5011, f"compute-host session save failed: {exc}")
-    if (resp := _compute_host_ack_error(rid, ack, 5011, "compute-host session save failed")) is not None:
+        return srv._err(rid, 5011, f"compute-host session save failed: {exc}")
+    if (resp := srv._compute_host_ack_error(rid, ack, 5011, "compute-host session save failed")) is not None:
         return resp
     if not isinstance(result := ack.get("result"), dict):
-        return _err(rid, 5011, "compute-host session save returned an invalid response")
+        return srv._err(rid, 5011, "compute-host session save returned an invalid response")
     return SessionSaveResult.model_validate(result)
 
 
@@ -1611,26 +1620,26 @@ def _compress_via_compute_host(rid, params: SessionCompressParams, session: dict
     focus_topic = params.focus_topic or ""
 
     def _on_late_ack(late: dict, _sid=sid) -> None:
-        _adopt_late_compute_host_compress_ack(_sid, session, late, route_name="session.compress")
+        srv._adopt_late_compute_host_compress_ack(_sid, session, late, route_name="session.compress")
     try:
-        ack = _send_compute_host_control(
+        ack = srv._send_compute_host_control(
             sid, route_name="session.compress", command="/compress" + (f" {focus_topic}" if focus_topic else ""),
             # compression.context_total_ceiling_seconds: the host legitimately runs that long.
-            wait=True, timeout=_compute_host_compress_wait_seconds(), on_late_ack=_on_late_ack)
+            wait=True, timeout=srv._compute_host_compress_wait_seconds(), on_late_ack=_on_late_ack)
     except queue.Empty:
         # Waiter gave up, host still compressing; the late-ack handler adopts the rotated session when it
         # lands. Not an error (a 5019 here reported timeouts that later succeeded).
         return SessionCompressResult(status="pending", turn_isolation=True, message="compression still running in the background; the transcript will refresh when it finishes")
     except Exception as exc:
-        return _err(rid, 5019, f"compute-host compress failed: {exc}")
-    if (resp := _compute_host_ack_error(rid, ack, 4009, "compute-host compress failed")) is not None:
+        return srv._err(rid, 5019, f"compute-host compress failed: {exc}")
+    if (resp := srv._compute_host_ack_error(rid, ack, 4009, "compute-host compress failed")) is not None:
         return resp
-    _apply_compute_host_metadata_mirror(session, ack)
+    srv._apply_compute_host_metadata_mirror(session, ack)
     if isinstance(host_result := ack.get("result"), dict):
         # Host-owned result verbatim (carries `status: aborted` / `summary.aborted`).
         return SessionCompressResult.model_validate({**host_result, "turn_isolation": True})
     host_info = ack.get("session_info") if isinstance(ack.get("session_info"), dict) else {}
-    return SessionCompressResult.model_validate({"status": "compressed", "turn_isolation": True, "host_ack": {key: value for key, value in ack.items() if key != "messages"}, "info": host_info, "messages": _history_to_messages(ack.get("messages")) if isinstance(ack.get("messages"), list) else [], "usage": host_info.get("usage") if isinstance(host_info.get("usage"), dict) else {}})
+    return SessionCompressResult.model_validate({"status": "compressed", "turn_isolation": True, "host_ack": {key: value for key, value in ack.items() if key != "messages"}, "info": host_info, "messages": srv._history_to_messages(ack.get("messages")) if isinstance(ack.get("messages"), list) else [], "usage": host_info.get("usage") if isinstance(host_info.get("usage"), dict) else {}})
 
 
 def _compress_live(rid, sid: str, session: dict, focus_topic: str) -> dict:
@@ -1654,59 +1663,59 @@ def _compress_live(rid, sid: str, session: dict, focus_topic: str) -> dict:
     before_tokens = _tokens(before_messages)
     if before_count >= 4:
         focus_suffix = f', focus: "{focus_topic}"' if focus_topic else ""
-        _status_update(sid, "compressing",
+        srv._status_update(sid, "compressing",
                        f"⠋ compressing {before_count} messages (~{before_tokens:,} tok){focus_suffix}…")
     try:
-        removed, usage = _compress_session_history(
+        removed, usage = srv._compress_session_history(
             session, focus_topic, approx_tokens=before_tokens, before_messages=before_messages,
             history_version=history_version)
         with session["history_lock"]:
             messages = list(session.get("history", []))
         after_tokens = _tokens(messages)
         agent = session["agent"]
-        _sync_session_key_after_compress(sid, session)
+        srv._sync_session_key_after_compress(sid, session)
         summary = summarize_manual_compression(before_messages, messages, before_tokens, after_tokens,
                                                compression_state=getattr(agent, "context_compressor", None))
-        info = _session_info(agent, session)
-        _emit("session.info", sid, SessionInfoPayload.of(info))
+        info = srv._session_info(agent, session)
+        srv._emit("session.info", sid, SessionInfoPayload.of(info))
         finalize_context_engine_compression_notification(agent, committed=True)
-        return SessionCompressResult.model_validate({"status": "aborted" if summary["aborted"] else "compressed", "removed": removed, "before_messages": before_count, "after_messages": len(messages), "before_tokens": before_tokens, "after_tokens": after_tokens, "summary": summary, "usage": usage, "info": info, "messages": _history_to_messages(messages)})
+        return SessionCompressResult.model_validate({"status": "aborted" if summary["aborted"] else "compressed", "removed": removed, "before_messages": before_count, "after_messages": len(messages), "before_tokens": before_tokens, "after_tokens": after_tokens, "summary": summary, "usage": usage, "info": info, "messages": srv._history_to_messages(messages)})
     finally:
         # Always clear the pinned compressing status (success, no-op, or raise).
-        _status_update(sid, "ready")
+        srv._status_update(sid, "ready")
 
 
 @method("session.compress")
 def _(rid, params: SessionCompressParams) -> SessionCompressResult | dict:
-    session, err = _sess_nowait(params, rid)
+    session, err = srv._sess_nowait(params, rid)
     if err:
         return err
-    if _session_uses_compute_host(session):
-        return _compress_via_compute_host(rid, params, session)
-    session, err = _sess(params, rid)
+    if srv._session_uses_compute_host(session):
+        return srv._compress_via_compute_host(rid, params, session)
+    session, err = srv._sess(params, rid)
     if err:
         return err
     if session.get("running"):
-        return _err(rid, 4009, busy_message("compress"))
+        return srv._err(rid, 4009, srv.busy_message("compress"))
     sid = params.session_id
     try:
-        return _compress_live(rid, sid, session, (params.focus_topic or "").strip())
-    except CompressionLockHeld as e:
-        _status_update(sid, "ready")
+        return srv._compress_live(rid, sid, session, (params.focus_topic or "").strip())
+    except srv.CompressionLockHeld as e:
+        srv._status_update(sid, "ready")
         from agent.manual_compression_feedback import describe_compression_lock_skip
         return SessionCompressResult(compressed=False, lock_held=True, message=describe_compression_lock_skip(e.holder))
     except Exception as e:
         from agent.conversation_compression import finalize_context_engine_compression_notification
         finalize_context_engine_compression_notification(session["agent"], committed=False)
-        return _err(rid, 5005, str(e))
+        return srv._err(rid, 5005, str(e))
 
 
 @_session_method("session.save", live=True)
 def _(rid, params: SessionSaveParams, session: dict) -> SessionSaveResult | dict:
-    if _session_uses_compute_host(session): return _save_via_compute_host(rid, params)
-    agent = session["agent"]; saved_dir = get_hermes_home() / "sessions" / "saved"
+    if srv._session_uses_compute_host(session): return srv._save_via_compute_host(rid, params)
+    agent = session["agent"]; saved_dir = srv.get_hermes_home() / "sessions" / "saved"
     try: saved_dir.mkdir(parents=True, exist_ok=True)
-    except Exception as e: return _err(rid, 5011, f"failed to create save directory {saved_dir}: {e}")
+    except Exception as e: return srv._err(rid, 5011, f"failed to create save directory {saved_dir}: {e}")
     path = saved_dir / f"hermes_conversation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     with session["history_lock"]: messages = list(session.get("history", []))
     started = getattr(agent, "session_start", None)
@@ -1714,15 +1723,15 @@ def _(rid, params: SessionSaveParams, session: dict) -> SessionSaveResult | dict
         created_at = session.get("created_at"); started = datetime.fromtimestamp(created_at) if isinstance(created_at, (int, float)) else None
     try:
         with open(path, "w", encoding="utf-8") as f: json.dump({"model": getattr(agent, "model", ""), "session_id": getattr(agent, "session_id", None) or session.get("session_key") or "", "session_start": started.isoformat() if started else "", "system_prompt": getattr(agent, "_cached_system_prompt", "") or "", "messages": messages}, f, indent=2, ensure_ascii=False)
-    except Exception as e: return _err(rid, 5011, str(e))
+    except Exception as e: return srv._err(rid, 5011, str(e))
     return SessionSaveResult(file=str(path))
 
 
 @method("session.close")
 def _(rid, params: SessionCloseParams) -> SessionCloseResult | dict:
-    with _session_resume_lock:  # lock only the ownership claim; finalization must not block resumes
-        session = _pop_session_by_id(params.session_id)
-    return SessionCloseResult(closed=_teardown_popped_session(session, end_reason="tui_close"))
+    with srv._session_resume_lock:  # lock only the ownership claim; finalization must not block resumes
+        session = srv._pop_session_by_id(params.session_id)
+    return SessionCloseResult(closed=srv._teardown_popped_session(session, end_reason="tui_close"))
 
 
 # ── session.branch ───────────────────────────────────────────────────
@@ -1730,32 +1739,32 @@ def _visible_branch_history(messages) -> list:
     """user/assistant rows with visible text, as FULL copies (reasoning + timeline-marker tags survive)."""
     return [dict(message) for message in messages or []
             if isinstance(message, dict) and message.get("role") in {"user", "assistant"}
-            and _coerce_message_text(message.get("content")).strip()]
+            and srv._coerce_message_text(message.get("content")).strip()]
 
 
 def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list, source: str):
     """Build + register the branched agent in the parent's profile; the DEDICATED db handle is ours until
     ``_transfer_db_to_agent`` (released here on failure)."""
     parent_home = session.get("profile_home")
-    parent_user_id = _session_auth_user_id(session)
-    branch_db, branch_owns_db = _profile_session_db(parent_home) if parent_home else (None, False)
+    parent_user_id = srv._session_auth_user_id(session)
+    branch_db, branch_owns_db = srv._profile_session_db(parent_home) if parent_home else (None, False)
     try:
-        with _profile_build_scope(parent_home):
-            agent = _make_agent_in_context(new_sid, new_key, session_db=branch_db, platform_override=source,
-                                           context_cwd_is_launch_artifact=_context_cwd_is_launch_artifact(session),
+        with srv._profile_build_scope(parent_home):
+            agent = srv._make_agent_in_context(new_sid, new_key, session_db=branch_db, platform_override=source,
+                                           context_cwd_is_launch_artifact=srv._context_cwd_is_launch_artifact(session),
                                            auth_user_id=parent_user_id)
-            _init_session(new_sid, new_key, agent, list(history), cols=session.get("cols", 80),
-                          cwd=_session_cwd(session), session_db=branch_db, source=source, profile_home=parent_home,
+            srv._init_session(new_sid, new_key, agent, list(history), cols=session.get("cols", 80),
+                          cwd=srv._session_cwd(session), session_db=branch_db, source=source, profile_home=parent_home,
                           explicit_cwd=bool(session.get("explicit_cwd")))
-            _transfer_db_to_agent(agent, branch_db)
+            srv._transfer_db_to_agent(agent, branch_db)
             branch_owns_db = False
-        if new_sid in _sessions:
-            _sessions[new_sid]["active_session_lease"] = None  # claimed lazily on the first turn
-            _sessions[new_sid]["auth_user_id"] = parent_user_id
+        if new_sid in srv._sessions:
+            srv._sessions[new_sid]["active_session_lease"] = None  # claimed lazily on the first turn
+            srv._sessions[new_sid]["auth_user_id"] = parent_user_id
         return agent
     finally:
         if branch_owns_db and branch_db is not None:
-            _release_db(branch_db)
+            srv._release_db(branch_db)
 
 
 _BRANCH_COPY_FIELDS = (
@@ -1778,48 +1787,48 @@ def _branch_source_history(db, session: dict, old_key: str) -> list:
     if callable(get_resume_conversations := getattr(db, "get_resume_conversations", None)):
         try:
             _, display_history = get_resume_conversations(old_key)
-            history = _visible_branch_history(_reconcile_display_with_live(display_history, in_memory_history))
+            history = srv._visible_branch_history(srv._reconcile_display_with_live(display_history, in_memory_history))
         except Exception:
             logger.debug("branch display projection read failed", exc_info=True)
-    return history or _visible_branch_history(in_memory_history)
+    return history or srv._visible_branch_history(in_memory_history)
 
 
 @_session_method("session.branch", live=True)
 def _(rid, params: SessionBranchParams, session: dict) -> SessionBranchResult | dict:
     # Write into the parent's profile-scoped state.db; the launch handle would orphan rows.
-    with _session_db(session) as db:
+    with srv._session_db(session) as db:
         if db is None:
-            return _db_unavailable_error(rid, code=5008)
+            return srv._db_unavailable_error(rid, code=5008)
         old_key = session["session_key"]
-        history = _branch_source_history(db, session, old_key)
+        history = srv._branch_source_history(db, session, old_key)
         if not history:
-            return _err(rid, 4008, "nothing to branch — send a message first")
+            return srv._err(rid, 4008, "nothing to branch — send a message first")
         if params.count is not None and params.count > 0:
             history = history[:params.count]
-        new_key, new_sid, source = _new_session_key(), uuid.uuid4().hex[:8], _session_source(session)
+        new_key, new_sid, source = srv._new_session_key(), uuid.uuid4().hex[:8], srv._session_source(session)
         try:
-            title = (params.name or "").strip() or _branch_title(db, old_key)
+            title = (params.name or "").strip() or srv._branch_title(db, old_key)
             home = session.get("profile_home")
-            _persist_branch(db, new_key, old_key, title, history, source=source, cwd=_session_cwd(session),
-                            profile_name=profile_name_for_home(home) or _current_profile_name(),
-                            copy_fields=_BRANCH_COPY_FIELDS)
+            srv._persist_branch(db, new_key, old_key, title, history, source=source, cwd=srv._session_cwd(session),
+                            profile_name=srv.profile_name_for_home(home) or srv._current_profile_name(),
+                            copy_fields=srv._BRANCH_COPY_FIELDS)
         except Exception as e:
-            return _err(rid, 5008, f"branch failed: {e}")
+            return srv._err(rid, 5008, f"branch failed: {e}")
     try:
-        agent = _build_branch_agent(session, new_sid, new_key, history, source)
+        agent = srv._build_branch_agent(session, new_sid, new_key, history, source)
     except Exception as e:
-        return _err(rid, 5000, f"agent init failed on branch: {e}")
+        return srv._err(rid, 5000, f"agent init failed on branch: {e}")
     return SessionBranchResult(
         session_id=new_sid, stored_session_id=new_key, title=title, parent=old_key,
-        message_count=len(history), messages=_history_to_messages(history),
-        info=SessionLiveInfo.model_validate(_session_info(agent, _sessions.get(new_sid))))
+        message_count=len(history), messages=srv._history_to_messages(history),
+        info=SessionLiveInfo.model_validate(srv._session_info(agent, srv._sessions.get(new_sid))))
 
 
 # ── interrupt / steer / redirect ─────────────────────────────────────
 @method("session.interrupt")
 def _(rid, params: SessionInterruptParams) -> SessionInterruptResult | dict:
-    _tts_stream_stop()
-    session, err = _sess_nowait(params, rid)
+    srv._tts_stream_stop()
+    session, err = srv._sess_nowait(params, rid)
     if err:
         return err
     expected = (params.expected_hosted_task_id or "").strip()
@@ -1829,19 +1838,19 @@ def _(rid, params: SessionInterruptParams) -> SessionInterruptResult | dict:
             if not (session.get("running") and isinstance(task, dict) and task.get("task_id") == expected):
                 return SessionInterruptResult(status="not_interrupted", interrupted=False)
     sid = params.session_id
-    if _session_uses_compute_host(session):
+    if srv._session_uses_compute_host(session):
         try:
-            _interrupt_session_turn(sid, session, request_id=f"interrupt-{rid}")
+            srv._interrupt_session_turn(sid, session, request_id=f"interrupt-{rid}")
         except Exception as exc:
-            return _err(rid, 5019, f"compute-host interrupt failed: {exc}")
+            return srv._err(rid, 5019, f"compute-host interrupt failed: {exc}")
         return SessionInterruptResult(status="interrupted", turn_isolation=True)
-    session, err = _sess(params, rid)
+    session, err = srv._sess(params, rid)
     if err:
         return err
-    _interrupt_session_turn(sid, session)
+    srv._interrupt_session_turn(sid, session)
     with session["history_lock"]:
         active_marker_key = str(session.pop("_active_turn_marker_key", "") or "")
-    _retire_turn_marker(session, active_marker_key)
+    srv._retire_turn_marker(session, active_marker_key)
     return SessionInterruptResult(status="interrupted")
 
 
@@ -1851,15 +1860,15 @@ def _apply_correction(rid, session: dict, verb: str, text: str, accepted_status:
     try:
         accepted = getattr(session["agent"], verb)(text)
     except Exception as exc:
-        return _err(rid, 5000, f"{verb} failed: {exc}")
+        return srv._err(rid, 5000, f"{verb} failed: {exc}")
     if accepted:
         with session["history_lock"]:
-            _record_inflight_correction(session, text)
+            srv._record_inflight_correction(session, text)
             # #84417: steer does not cancel the live original, but a server queue self-copy of that original
             # must still not re-fire after settle (same class as redirect).
             # #84417: purge server-queue self-duplicates of the live original so post-turn drain cannot
             # restart the pre-correction prompt.
-            _drop_queued_duplicates_of_inflight_user(session)
+            srv._drop_queued_duplicates_of_inflight_user(session)
             session["last_active"] = time.time()
     return SessionCorrectionResult(status=accepted_status if accepted else "rejected", text=text)
 
@@ -1870,19 +1879,19 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
     @method(name)
     def _(rid, params: SessionCorrectionParams) -> SessionCorrectionResult | dict:
         if not (text := (getattr(params, "text", "") or "").strip()):
-            return _err(rid, 4002, "text is required")
-        session, err = _sess_nowait(params, rid)
+            return srv._err(rid, 4002, "text is required")
+        session, err = srv._sess_nowait(params, rid)
         if err:
             return err
         agent = session.get("agent")
         # Redirect during the turn-build window (running=True, agent None): queue for the next turn instead of
         # a misleading 4010 the client swallows into a lost follow-up.
         if verb == "redirect" and agent is None and session.get("running"):
-            _enqueue_prompt(session, text, current_transport() or _stdio_transport)
+            srv._enqueue_prompt(session, text, srv.current_transport() or srv._stdio_transport)
             session["last_active"] = time.time()
             return SessionCorrectionResult(status="queued", text=text)
         if not supported(agent):
-            return _err(rid, 4010, unsupported)
+            return srv._err(rid, 4010, unsupported)
         return _apply_correction(rid, session, verb, text, accepted_status)
 
 
@@ -1913,10 +1922,10 @@ def _(rid, params: DelegationPauseParams) -> DelegationPauseResult:
 def _(rid, params: SubagentSteerParams) -> SubagentSteerResult | dict:
     from tools.delegate_tool import steer_subagent
     subagent_id, text = params.subagent_id.strip(), params.text.strip()
-    if not subagent_id: return _err(rid, 4000, "subagent_id required")
-    if not text: return _err(rid, 4002, "text is required")
-    if (err := _sess_nowait(params, rid)[1]) is not None: return err
-    owner_id = params.session_id; transport, owner = _current_session_steer_authority(owner_id)
+    if not subagent_id: return srv._err(rid, 4000, "subagent_id required")
+    if not text: return srv._err(rid, 4002, "text is required")
+    if (err := srv._sess_nowait(params, rid)[1]) is not None: return err
+    owner_id = params.session_id; transport, owner = srv._current_session_steer_authority(owner_id)
     queued = transport is not None and owner is not None and steer_subagent(subagent_id, text, owner_session_id=owner_id, owner_transport=transport, owner_session_record=owner)
     return SubagentSteerResult(status="queued" if queued else "rejected", subagent_id=subagent_id, text=text)
 
@@ -1924,13 +1933,13 @@ def _(rid, params: SubagentSteerParams) -> SubagentSteerResult | dict:
 @method("spawn_tree.save")
 def _(rid, params: SpawnTreeSaveParams) -> SpawnTreeSaveResult | dict:
     session_id, subagents = params.session_id or "", params.subagents
-    if not subagents: return _err(rid, 4000, "subagents list required")
+    if not subagents: return srv._err(rid, 4000, "subagents list required")
     started_at, label, finished_at = params.started_at, params.label or "", params.finished_at or time.time()
-    d = _spawn_tree_session_dir(session_id or "default"); path = d / f"{datetime.utcfromtimestamp(finished_at).strftime('%Y%m%dT%H%M%S')}.json"
+    d = srv._spawn_tree_session_dir(session_id or "default"); path = d / f"{datetime.utcfromtimestamp(finished_at).strftime('%Y%m%dT%H%M%S')}.json"
     meta = {"session_id": session_id, "started_at": started_at, "finished_at": finished_at, "label": label}
     try: path.write_text(json.dumps({**meta, "subagents": subagents}, ensure_ascii=False), encoding="utf-8")
-    except OSError as exc: return _err(rid, 5000, f"spawn_tree.save failed: {exc}")
-    _append_spawn_tree_index(d, {"path": str(path), **meta, "count": len(subagents)})
+    except OSError as exc: return srv._err(rid, 5000, f"spawn_tree.save failed: {exc}")
+    srv._append_spawn_tree_index(d, {"path": str(path), **meta, "count": len(subagents)})
     return SpawnTreeSaveResult(path=str(path), session_id=session_id)
 
 
@@ -1952,11 +1961,11 @@ def _legacy_spawn_tree_entry(p, session_dir_name: str) -> dict | None:
 @method("spawn_tree.list")
 def _(rid, params: SpawnTreeListParams) -> SpawnTreeListResult:
     session_id = params.session_id or ""
-    roots = [p for p in _spawn_trees_root().iterdir() if p.is_dir()] if params.cross_session else [_spawn_tree_session_dir(session_id or "default")]
+    roots = [p for p in srv._spawn_trees_root().iterdir() if p.is_dir()] if params.cross_session else [srv._spawn_tree_session_dir(session_id or "default")]
     entries = []
     for d in roots:
-        if indexed := _read_spawn_tree_index(d): entries.extend(e for e in indexed if (p := e.get("path")) and Path(p).exists())
-        else: entries.extend(entry for p in d.glob("*.json") if p.name != _SPAWN_TREE_INDEX and (entry := _legacy_spawn_tree_entry(p, d.name)) is not None)
+        if indexed := srv._read_spawn_tree_index(d): entries.extend(e for e in indexed if (p := e.get("path")) and Path(p).exists())
+        else: entries.extend(entry for p in d.glob("*.json") if p.name != srv._SPAWN_TREE_INDEX and (entry := srv._legacy_spawn_tree_entry(p, d.name)) is not None)
     entries.sort(key=lambda e: e.get("finished_at") or 0, reverse=True)
     return SpawnTreeListResult(entries=[SpawnTreeEntry.model_validate(entry) for entry in entries[:params.limit or 50]])
 
@@ -1964,11 +1973,11 @@ def _(rid, params: SpawnTreeListParams) -> SpawnTreeListResult:
 @method("spawn_tree.load")
 def _(rid, params: SpawnTreeLoadParams) -> SpawnTreeLoadResult | dict:
     raw_path = params.path.strip()
-    if not raw_path: return _err(rid, 4000, "path required")
-    try: (resolved := Path(raw_path).resolve()).relative_to(_spawn_trees_root().resolve())
-    except (ValueError, OSError) as exc: return _err(rid, 4030, f"path outside spawn-trees root: {exc}")
+    if not raw_path: return srv._err(rid, 4000, "path required")
+    try: (resolved := Path(raw_path).resolve()).relative_to(srv._spawn_trees_root().resolve())
+    except (ValueError, OSError) as exc: return srv._err(rid, 4030, f"path outside spawn-trees root: {exc}")
     try: payload = json.loads(resolved.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc: return _err(rid, 5000, f"spawn_tree.load failed: {exc}")
+    except (OSError, json.JSONDecodeError) as exc: return srv._err(rid, 5000, f"spawn_tree.load failed: {exc}")
     return SpawnTreeLoadResult.model_validate(payload)
 
 
@@ -1989,7 +1998,7 @@ def _(rid, params: SessionEventsSinceParams) -> SessionEventsSinceResult | dict:
     return SessionEventsSinceResult(
         events=[ReplayedEventFrame.model_validate(frame) for frame in frames], latest_seq=er.latest_seq(sid),
         truncated=er.is_truncated(sid, last_seen), count=len(frames), epoch=er.replay_epoch(),
-        open_requests=[OpenRequestEntry.model_validate(request) for request in _open_requests(sid)])
+        open_requests=[OpenRequestEntry.model_validate(request) for request in srv._open_requests(sid)])
 
 
 @method("session.events.stats")
@@ -2005,3 +2014,7 @@ def register(server) -> None:
         if isinstance(value, type) and issubclass(value, Result):
             setattr(server, value.__name__, value)
     bind_module(globals(), server, skip=("_",))
+
+# Bound last, after every definition, so importing this module first (tests, the gateway process)
+# lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.
+from tui_gateway import server as srv  # noqa: E402

@@ -1,6 +1,5 @@
 """Per-session notification poller: kanban/loop/delegation events routed to the owning session,
-desktop UI wiring, HUD surface note. Bodies are rebound onto server.py's globals at install time
-(method_ctx.bind_module), so they reference server.py globals bare."""
+desktop UI wiring, HUD surface note. Reaches server.py state through ``srv`` (method_ctx.py)."""
 
 from __future__ import annotations
 
@@ -9,30 +8,39 @@ import contextlib
 from .method_ctx import bind_module
 from .contracts.events import StatusUpdatePayload, TerminalClosePayload, TerminalOutputPayload
 from .contracts.tools_commands import CommandDispatchParams
+from pathlib import Path
+from typing import Any
+from typing import Optional
+import sys
+import threading
+import time
+import logging
+
+logger = logging.getLogger("tui_gateway.server")  # siblings log as the gateway facade (operators and caplog filter on it)
 
 
 def _notif_locked_sessions(fn, default):
     """Run ``fn(_sessions)`` under ``_sessions_lock``; ``default`` on failure (poller must never crash)."""
     try:
-        with _sessions_lock:
-            return fn(_sessions)
+        with srv._sessions_lock:
+            return fn(srv._sessions)
     except Exception:
         return default
 
 
 def _notif_current_keys(sid: str, session: dict) -> set:
-    return {str(session.get("session_key") or ""), _session_lookup_key(session, fallback=sid)}
+    return {str(session.get("session_key") or ""), srv._session_lookup_key(session, fallback=sid)}
 
 
 def _notif_session_matches(s: dict, keys) -> bool:
-    return str(s.get("session_key") or "") in keys or _session_lookup_key(s, fallback="") in keys
+    return str(s.get("session_key") or "") in keys or srv._session_lookup_key(s, fallback="") in keys
 
 
 def _notif_live_session_matches(keys, exclude: dict | None = None) -> bool:
     """Any non-finalized live session (other than ``exclude``) matches ``keys``; False if the registry can't be read
     (fail open rather than drop the event)."""
-    return _notif_locked_sessions(
-        lambda ss: any(s is not exclude and not s.get("_finalized") and _notif_session_matches(s, keys)
+    return srv._notif_locked_sessions(
+        lambda ss: any(s is not exclude and not s.get("_finalized") and srv._notif_session_matches(s, keys)
                        for s in ss.values()),
         False)
 
@@ -42,7 +50,7 @@ def _notif_resolve_event_key(evt_key: str, session: dict | None = None) -> str:
     ``session``'s own store: a named-profile session's lineage lives in ``profiles/<x>/state.db``,
     where the launch handle cannot see it."""
     try:
-        with _session_db(session or {}) as db:
+        with srv._session_db(session or {}) as db:
             return (db.resolve_resume_session_id(evt_key) if db is not None else evt_key) or evt_key
     except Exception:
         return evt_key
@@ -55,28 +63,28 @@ def _notification_event_belongs_elsewhere(sid: str, session: dict, evt: dict) ->
     if evt_ui_sid:
         if evt_ui_sid == str(sid or "") and not session.get("_finalized"):
             return False
-        if _notif_locked_sessions(lambda ss: evt_ui_sid in ss and not ss[evt_ui_sid].get("_finalized"), False):
+        if srv._notif_locked_sessions(lambda ss: evt_ui_sid in ss and not ss[evt_ui_sid].get("_finalized"), False):
             return True
         # Exact UI tab gone: fall through to durable session_key routing so a resumed continuation with the same
         # key/lineage can still claim it.
     evt_key = str(evt.get("session_key") or "")
     if not evt_key:
         return False
-    current_keys = _notif_current_keys(sid, session)
+    current_keys = srv._notif_current_keys(sid, session)
     # Compression can rotate AIAgent.session_id while the detached child is still running: map the event's original
     # key to its continuation tip so it reaches the live session instead of becoming an orphan any poller may consume.
     # A live continuation wins over the compressed parent, else a stale parent tab could consume the event first.
-    resolved_key = _notif_resolve_event_key(evt_key, session)
+    resolved_key = srv._notif_resolve_event_key(evt_key, session)
     if resolved_key != evt_key:
         if resolved_key in current_keys:
             return False
-        if _notif_live_session_matches({resolved_key}):
+        if srv._notif_live_session_matches({resolved_key}):
             return True
     if evt_key in current_keys:
         return False
-    if resolved_key == evt_key and _notif_other_profile_session_owns(sid, session, evt):
+    if resolved_key == evt_key and srv._notif_other_profile_session_owns(sid, session, evt):
         return True
-    return _notif_live_session_matches({evt_key, resolved_key}, exclude=session)
+    return srv._notif_live_session_matches({evt_key, resolved_key}, exclude=session)
 
 
 def _notif_other_profile_session_owns(sid: str, session: dict, evt: dict) -> bool:
@@ -85,12 +93,12 @@ def _notif_other_profile_session_owns(sid: str, session: dict, evt: dict) -> boo
     dequeuer's own store; without this, profile B dequeuing an event keyed on profile A's compressed
     parent found no owner anywhere and dropped it for good. Snapshot under the lock, resolve outside it."""
     own_home = str(session.get("profile_home") or "")
-    candidates = _notif_locked_sessions(
+    candidates = srv._notif_locked_sessions(
         lambda ss: [(other_sid, other) for other_sid, other in ss.items()
                     if other is not session and not other.get("_finalized")
                     and str(other.get("profile_home") or "") != own_home],
         [])
-    return any(_session_owns_notification_event(other_sid, other, evt) for other_sid, other in candidates)
+    return any(srv._session_owns_notification_event(other_sid, other, evt) for other_sid, other in candidates)
 
 
 def _session_owns_notification_event(sid: str, session: dict, evt: dict) -> bool:
@@ -101,8 +109,8 @@ def _session_owns_notification_event(sid: str, session: dict, evt: dict) -> bool
     if str(evt.get("origin_ui_session_id") or "") == str(sid or ""):
         return True
     evt_key = str(evt.get("session_key") or "")
-    current_keys = _notif_current_keys(sid, session)
-    return bool(evt_key) and (evt_key in current_keys or _notif_resolve_event_key(evt_key, session) in current_keys)
+    current_keys = srv._notif_current_keys(sid, session)
+    return bool(evt_key) and (evt_key in current_keys or srv._notif_resolve_event_key(evt_key, session) in current_keys)
 
 
 def _notification_event_requires_owner(evt: dict) -> bool:
@@ -129,7 +137,7 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
             task_idx = ((evt.get("results") or [{}])[0] or {}).get("task_index", "")
             return (evt.get("delegation_id", ""), evt_type, "task_failure", task_idx)
         return (evt.get("delegation_id", ""), evt_type)
-    extra = _DEDUP_EXTRA_FIELDS.get("watch_overflow_" if evt_type.startswith("watch_overflow_") else evt_type, ())
+    extra = srv._DEDUP_EXTRA_FIELDS.get("watch_overflow_" if evt_type.startswith("watch_overflow_") else evt_type, ())
     return (evt.get("session_id", ""), evt_type, *(evt.get(f, 0 if f == "suppressed" else "") for f in extra))
 
 
@@ -159,41 +167,41 @@ def _notif_log_failure(what: str, exc: BaseException) -> None:
 def _notif_submit(rid: str, sid: str, session: dict, text: str, what: str, **kwargs) -> None:
     """message.start + _run_prompt_submit for a claimed (running=True) turn; releases on failure."""
     try:
-        _emit("message.start", sid)
-        _run_prompt_submit(rid, sid, session, text, **kwargs)
+        srv._emit("message.start", sid)
+        srv._run_prompt_submit(rid, sid, session, text, **kwargs)
     except Exception as exc:
-        _notif_log_failure(what, exc)
-        _notif_release_turn(session)
+        srv._notif_log_failure(what, exc)
+        srv._notif_release_turn(session)
         raise
 
 
 def _notif_loop_status(sid: str, text: str) -> None:
-    _emit("status.update", sid, StatusUpdatePayload(kind="loop", text=text))
+    srv._emit("status.update", sid, StatusUpdatePayload(kind="loop", text=text))
 
 
 def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str) -> None:
     """Slash-command /loop wakeup: route through the slash pipeline, not the model. No model reply to evaluate, so the
     tick completes immediately — unless the command resolves to a prompt (skill command etc.), which runs as a normal
     turn whose post-turn hook completes the tick."""
-    _notif_release_turn(session)
+    srv._notif_release_turn(session)
     try:
         parts = wakeup.lstrip()[1:].split(None, 1)
-        payload = invoke("command.dispatch", CommandDispatchParams(
+        payload = srv.invoke("command.dispatch", CommandDispatchParams(
             name=parts[0] if parts else "", arg=parts[1] if len(parts) > 1 else "", session_id=sid))
         if out := str(payload.output or "").strip():
-            _notif_loop_status(sid, out)
+            srv._notif_loop_status(sid, out)
         if payload.type == "send" and payload.message:
-            if not _notif_claim_turn(session):
+            if not srv._notif_claim_turn(session):
                 mgr.abandon_tick()
                 return
-            _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, payload.message)
+            srv._emit("message.start", sid)
+            srv._run_prompt_submit(rid, sid, session, payload.message)
             return
     except Exception:
         pass
     decision = mgr.complete_tick("")
     if decision.get("message"):
-        _notif_loop_status(sid, decision["message"])
+        srv._notif_loop_status(sid, decision["message"])
 
 
 def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
@@ -213,20 +221,20 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
     if not (sid_key := session.get("session_key") or ""):
         return
     mgr = HeartbeatManager(session_id=sid_key)
-    if not mgr.is_active() or not mgr.state.is_due() or not _notif_claim_turn(session):
+    if not mgr.is_active() or not mgr.state.is_due() or not srv._notif_claim_turn(session):
         return  # not due, or busy — the tick coalesces to the next idle poll
     if not (prompt := mgr.due_prompt()):
-        _notif_release_turn(session)
+        srv._notif_release_turn(session)
         return
     started = False
     try:
-        _emit("status.update", sid, StatusUpdatePayload(kind="heartbeat", text=f"♥ heartbeat #{mgr.state.fire_count} firing…"))
-        started = bool(_run_prompt_submit(f"__heartbeat__{int(time.time() * 1000)}", sid, session, prompt))
+        srv._emit("status.update", sid, StatusUpdatePayload(kind="heartbeat", text=f"♥ heartbeat #{mgr.state.fire_count} firing…"))
+        started = bool(srv._run_prompt_submit(f"__heartbeat__{int(time.time() * 1000)}", sid, session, prompt))
     except Exception as exc:
-        _notif_log_failure("heartbeat dispatch failed", exc)
+        srv._notif_log_failure("heartbeat dispatch failed", exc)
     if not started:
         # _run_prompt_submit releases ``running`` itself when it refuses the turn; make it unconditional.
-        _notif_release_turn(session)
+        srv._notif_release_turn(session)
         with contextlib.suppress(Exception):
             mgr.abandon_fire()
 
@@ -241,22 +249,22 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
     if not (sid_key := session.get("session_key") or ""):
         return
     mgr = LoopManager(session_id=sid_key)
-    if not mgr.is_due() or goal_blocks_loop_tick(sid_key) or not _notif_claim_turn(session):
+    if not mgr.is_due() or goal_blocks_loop_tick(sid_key) or not srv._notif_claim_turn(session):
         return  # busy — stays due, next poll retries
     if not (wakeup := mgr.fire_tick()):
-        _notif_release_turn(session)
+        srv._notif_release_turn(session)
         return
     rid = f"__loop__{int(time.time() * 1000)}"
     try:
-        _notif_loop_status(sid, f"↻ /loop wakeup #{mgr.state.ticks_fired if mgr.state else '?'} firing…")
+        srv._notif_loop_status(sid, f"↻ /loop wakeup #{mgr.state.ticks_fired if mgr.state else '?'} firing…")
         if wakeup.lstrip().startswith("/"):
-            _notif_slash_loop_tick(rid, sid, session, mgr, wakeup)
+            srv._notif_slash_loop_tick(rid, sid, session, mgr, wakeup)
         else:
-            _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, wakeup)
+            srv._emit("message.start", sid)
+            srv._run_prompt_submit(rid, sid, session, wakeup)
     except Exception as exc:
-        _notif_log_failure("loop wakeup dispatch failed", exc)
-        _notif_release_turn(session)
+        srv._notif_log_failure("loop wakeup dispatch failed", exc)
+        srv._notif_release_turn(session)
         with contextlib.suppress(Exception):
             mgr.abandon_tick()
 
@@ -267,8 +275,8 @@ def _kb_first_line(value: Any, limit: int) -> str:
 
 
 def _kb_completed(task, payload: dict, title: str) -> str:
-    handoff = (_kb_first_line(payload["summary"], 200) if payload.get("summary")
-               else _kb_first_line(task.result, 160) if getattr(task, "result", None) else "")
+    handoff = (srv._kb_first_line(payload["summary"], 200) if payload.get("summary")
+               else srv._kb_first_line(task.result, 160) if getattr(task, "result", None) else "")
     return f" done — {title}{handoff}"
 
 
@@ -293,7 +301,7 @@ _KANBAN_EVENT_FORMATTERS = {
 def _format_kanban_event_text(sub: dict, task, ev, board_slug: str) -> Optional[str]:
     """Single-line notification text for one kanban event; wording mirrors gateway/kanban_watchers.py (reads the same
     as on Telegram). None for silent kinds."""
-    if (entry := _KANBAN_EVENT_FORMATTERS.get(getattr(ev, "kind", ""))) is None:
+    if (entry := srv._KANBAN_EVENT_FORMATTERS.get(getattr(ev, "kind", ""))) is None:
         return None
     glyph, fmt = entry
     task_id = sub.get("task_id", "")
@@ -337,11 +345,11 @@ def _kb_poll_board(_kb, slug: str, session_key: str) -> list:
                 continue
             sub_ident = dict(task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],
                              thread_id=sub.get("thread_id") or "")
-            _old, _new, events = _kbn.claim_unseen_events_for_sub(conn, kinds=_KANBAN_NOTIFY_KINDS, **sub_ident)
+            _old, _new, events = _kbn.claim_unseen_events_for_sub(conn, kinds=srv._KANBAN_NOTIFY_KINDS, **sub_ident)
             if not events:
                 continue
             task = _kb.get_task(conn, sub["task_id"])
-            texts.extend(t for t in (_format_kanban_event_text(sub, task, ev, slug) for ev in events) if t)
+            texts.extend(t for t in (srv._format_kanban_event_text(sub, task, ev, slug) for ev in events) if t)
             # Unsubscribe only on archive: ``done`` is reversible in review/controller flows, so keeping the sub lets a
             # later reopen notify the same session. The claimed cursor prevents replay.
             if task and getattr(task, "status", "") == "archived":
@@ -373,29 +381,29 @@ def _collect_kanban_notifications(session: dict) -> list:
             return []
     # dict keyed by resolved DB identity: first slug per DB wins (a pinned HERMES_KANBAN_DB aliases slugs).
     unique = {}
-    for slug, resolved in (_kb_board_key(_kb, board_meta) for board_meta in boards):
+    for slug, resolved in (srv._kb_board_key(_kb, board_meta) for board_meta in boards):
         unique.setdefault(resolved, slug)
-    return [t for slug in unique.values() for t in _kb_poll_board(_kb, slug, session_key)]
+    return [t for slug in unique.values() for t in srv._kb_poll_board(_kb, slug, session_key)]
 
 
 def _notif_poll_kanban(sid: str, session: dict) -> None:
     """One kanban poll: emit new texts, buffer them, and run the buffered batch as a turn if idle. Events are
     cursor-claimed (never re-queued), so they wait in the buffer instead of dropping the agent turn."""
     try:
-        texts = _collect_kanban_notifications(session)
+        texts = srv._collect_kanban_notifications(session)
     except Exception as exc:
-        _notif_log_failure("kanban notification poll failed", exc)
+        srv._notif_log_failure("kanban notification poll failed", exc)
         texts = []
     for text in texts:
-        _emit("status.update", sid, StatusUpdatePayload(kind="process", text=text))
+        srv._emit("status.update", sid, StatusUpdatePayload(kind="process", text=text))
     if texts:
         session.setdefault("_kanban_pending", []).extend(texts)
-    if not session.get("_kanban_pending") or not _notif_claim_turn(session):
+    if not session.get("_kanban_pending") or not srv._notif_claim_turn(session):
         return
     with session["history_lock"]:
         batch, session["_kanban_pending"] = list(session.get("_kanban_pending") or []), []
     with contextlib.suppress(Exception):
-        _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, "\n".join(batch), "kanban notification dispatch failed")
+        srv._notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, "\n".join(batch), "kanban notification dispatch failed")
 
 
 def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None:
@@ -403,10 +411,10 @@ def _notif_dispatch_event(sid: str, session: dict, evt: dict, text: str) -> None
     from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
     if (claim := claim_event_delivery(evt, "tui-poller")) is None:
         return
-    kwargs = ({"display_kind": "async_delegation_complete", "display_metadata": _async_delegation_display_metadata(evt)}
+    kwargs = ({"display_kind": "async_delegation_complete", "display_metadata": srv._async_delegation_display_metadata(evt)}
               if evt.get("type") == "async_delegation" else {})
     try:
-        _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text, "notification poller dispatch failed", **kwargs)
+        srv._notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text, "notification poller dispatch failed", **kwargs)
     except Exception:
         release_event_delivery(evt, claim)
         return
@@ -421,14 +429,14 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
     drained through ``_session_owns_notification_event`` (the post-turn safety net), so lineage resolves once."""
     queue = registry.completion_queue
     evt_type, is_delegation = evt.get("type", "completion"), evt.get("type") == "async_delegation"
-    if not owned and _notification_event_belongs_elsewhere(sid, session, evt):
+    if not owned and srv._notification_event_belongs_elsewhere(sid, session, evt):
         if deferred is not None:
             deferred.append(evt)
         else:  # otherwise a process started in session A surfaces in whichever poller wakes first
             queue.put(evt)
             time.sleep(0.1)
         return True
-    if not owned and _notification_event_requires_owner(evt) and not _session_owns_notification_event(sid, session, evt):
+    if not owned and srv._notification_event_requires_owner(evt) and not srv._session_owns_notification_event(sid, session, evt):
         origin, key = str(evt.get("origin_ui_session_id") or ""), str(evt.get("session_key") or "")
         if deferred is None:
             (logger.warning if is_delegation else logger.debug)(
@@ -446,23 +454,23 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
         return True
     # Emit once per dedup key: a re-queued completion would otherwise re-emit every 0.5s while the session is busy,
     # while distinct watch_match events from one process must stay visible.
-    dedup_key = _notification_event_dedup_key(evt)
+    dedup_key = srv._notification_event_dedup_key(evt)
     if dedup_key not in emitted:
         from tools.process_registry_notifications import async_delegation_display_text, process_completion_display_text
         display_text = (async_delegation_display_text(evt) if is_delegation
                         else process_completion_display_text([evt]) if evt_type == "completion" else text)
-        _emit("status.update", sid, StatusUpdatePayload(kind="process", text=display_text))
+        srv._emit("status.update", sid, StatusUpdatePayload(kind="process", text=display_text))
         emitted.add(dedup_key)
     if evt_type == "completion" and completions is not None:
         completions.append((evt, text))
         return True
-    if not _notif_claim_turn(session):
+    if not srv._notif_claim_turn(session):
         queue.put(evt)
         if deferred is not None:
             return False
         time.sleep(0.25)  # back off: the re-queued event keeps the queue non-empty, else this loop spins at 100% CPU
         return True
-    _notif_dispatch_event(sid, session, evt, text)
+    srv._notif_dispatch_event(sid, session, evt, text)
     return True
 
 
@@ -472,7 +480,7 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
 
     if not notifications:
         return
-    if not _notif_claim_turn(session):
+    if not srv._notif_claim_turn(session):
         for event, _text in notifications:
             (deferred.append if deferred is not None else registry.completion_queue.put)(event)
         if deferred is None:
@@ -483,10 +491,10 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
     batch = ProcessNotificationBatch(tuple((event, text) for event, text, _claim in claimed))
     text = batch.render(registry)
     if text is None:
-        _notif_release_turn(session)
+        srv._notif_release_turn(session)
     try:
         if text is not None:
-            _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text,
+            srv._notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text,
                           "completion batch dispatch failed", display_kind=PROCESS_COMPLETE_DISPLAY_KIND,
                           display_metadata={"display_text": batch.display_text(registry)})
     except Exception:
@@ -502,20 +510,20 @@ def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred, 
     completions = []
     for index, event in enumerate(events):
         if event.get("type", "completion") != "completion":
-            _notif_dispatch_completions(sid, session, completions, registry, deferred)
+            srv._notif_dispatch_completions(sid, session, completions, registry, deferred)
             completions = []
-        if not _notif_handle_event(sid, session, event, emitted, registry, fmt, deferred, completions, owned=owned):
+        if not srv._notif_handle_event(sid, session, event, emitted, registry, fmt, deferred, completions, owned=owned):
             for remaining in events[index + 1:]:
                 (deferred.append if deferred is not None else registry.completion_queue.put)(remaining)
             break
-    _notif_dispatch_completions(sid, session, completions, registry, deferred)
+    srv._notif_dispatch_completions(sid, session, completions, registry, deferred)
 
 
 def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     """Run one durable envelope only after local FIFO/continuations yield the idle boundary."""
     from tools.bot_live_delivery import claim_pending_delivery, complete_delivery, find_canonical_live_owner
 
-    home = _session_home(session)
+    home = srv._session_home(session)
     with session["history_lock"]:
         if any(session.get(key) for key in (
                 "running", "_closing", "_finalized", "queued_prompt", "queued_prompts",
@@ -550,15 +558,15 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
                           error=error, reason=reason)
 
     try:
-        started = _run_prompt_submit(f"__bot_dm__{delivery_id}", sid, session, claimed["message"],
+        started = srv._run_prompt_submit(f"__bot_dm__{delivery_id}", sid, session, claimed["message"],
                                      image_paths=[], terminal_callback=terminal_receipt,
                                      turn_author=claimed.get("author") or None)
     except Exception as exc:
-        _notif_release_turn(session)
+        srv._notif_release_turn(session)
         terminal_receipt({"status": "failed", "error": str(exc)})
         raise
     if not started:
-        _notif_release_turn(session)
+        srv._notif_release_turn(session)
         terminal_receipt({"status": "failed", "error": "live session owner could not start the delivery turn"})
     return started
 
@@ -576,27 +584,27 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
     from tools.process_registry_notifications import format_process_notification
     queue = process_registry.completion_queue
     emitted = session.setdefault("_notification_emitted", set())
-    handle = lambda events, deferred: _notif_handle_ready(  # noqa: E731
+    handle = lambda events, deferred: srv._notif_handle_ready(  # noqa: E731
         sid, session, events, emitted, process_registry, format_process_notification, deferred)
     last_kanban_poll = last_loop_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         now = time.monotonic()
         try:
-            _poll_bot_live_delivery_once(sid, session)
+            srv._poll_bot_live_delivery_once(sid, session)
         except Exception:
             logger.warning("Bot live-owner delivery poll failed", exc_info=True)
         # /loop and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
         # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
-        if now - last_loop_poll >= _LOOP_POLL_SECONDS:
+        if now - last_loop_poll >= srv._LOOP_POLL_SECONDS:
             last_loop_poll = now
-            for what, fire in (("loop wakeup", _maybe_fire_tui_loop_tick), ("heartbeat", _maybe_fire_tui_heartbeat_tick)):
+            for what, fire in (("loop wakeup", srv._maybe_fire_tui_loop_tick), ("heartbeat", srv._maybe_fire_tui_heartbeat_tick)):
                 try:
                     fire(sid, session)
                 except Exception as tick_exc:
-                    _notif_log_failure(f"{what} poll failed", tick_exc)
-        if now - last_kanban_poll >= _KANBAN_POLL_SECONDS:
+                    srv._notif_log_failure(f"{what} poll failed", tick_exc)
+        if now - last_kanban_poll >= srv._KANBAN_POLL_SECONDS:
             last_kanban_poll = now
-            _notif_poll_kanban(sid, session)
+            srv._notif_poll_kanban(sid, session)
         try:
             evt = queue.get(timeout=0.5)
         except Exception:
@@ -644,7 +652,7 @@ def _wire_desktop_sinks() -> None:
     """Idempotently wire process-registry and desktop-tool sinks to renderer events: `agent.terminal.output` and
     `terminal.close` (drops a tab without killing the process) route to the window owning the process; desktop-only
     tools pass the turn's ``HERMES_UI_SESSION_ID`` as ``sid``. `_emit` is thread-safe."""
-    global _desktop_ui_wired
+    pass  # published state is written through srv
     from tools.process_registry import process_registry
 
     def _owner_sid(session) -> str:
@@ -652,18 +660,18 @@ def _wire_desktop_sinks() -> None:
         session_key = str(getattr(session, "session_key", "") or "") if session is not None else ""
         if not session_key:
             return ""
-        with _sessions_lock:
-            return next((sid for sid, s in _sessions.items() if str(s.get("session_key") or "") == session_key), "")
+        with srv._sessions_lock:
+            return next((sid for sid, s in srv._sessions.items() if str(s.get("session_key") or "") == session_key), "")
     if getattr(process_registry, "on_output", None) is None:
-        process_registry.on_output = lambda session, chunk: _emit(
+        process_registry.on_output = lambda session, chunk: srv._emit(
             "agent.terminal.output", _owner_sid(session), TerminalOutputPayload(process_id=session.id, chunk=chunk))
     if getattr(process_registry, "on_close", None) is None:
-        process_registry.on_close = lambda session, pid: _emit("terminal.close", _owner_sid(session), TerminalClosePayload(process_id=pid))
-    if not _desktop_ui_wired:
+        process_registry.on_close = lambda session, pid: srv._emit("terminal.close", _owner_sid(session), TerminalClosePayload(process_id=pid))
+    if not srv._desktop_ui_wired:
         with contextlib.suppress(Exception):
             from tools import desktop_ui
-            desktop_ui.set_emitter(lambda sid, event, payload: _emit(event, sid, payload))
-            _desktop_ui_wired = True
+            desktop_ui.set_emitter(lambda sid, event, payload: srv._emit(event, sid, payload))
+            srv._desktop_ui_wired = True
 
 
 # (stop_event, thread) for every poller started in this process, pruned of dead threads on each spawn. Test teardowns
@@ -673,10 +681,10 @@ _notification_pollers: list = []
 
 def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     """Start the background notification poller for a TUI session (thread name is greppable)."""
-    _wire_desktop_sinks()
+    srv._wire_desktop_sinks()
     stop = threading.Event()
-    t = threading.Thread(target=_notification_poller_loop, args=(stop, sid, session), daemon=True, name=f"tui-notif-poller-{sid}")
-    _notification_pollers[:] = [(s, th) for (s, th) in _notification_pollers if th.is_alive()] + [(stop, t)]
+    t = threading.Thread(target=srv._notification_poller_loop, args=(stop, sid, session), daemon=True, name=f"tui-notif-poller-{sid}")
+    srv._notification_pollers[:] = [(s, th) for (s, th) in srv._notification_pollers if th.is_alive()] + [(stop, t)]
     t.start()
     return stop
 
@@ -706,5 +714,9 @@ def _prepend_note(run_message: Any, note: str) -> Any:
 
 
 def register(server) -> None:
-    """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
+    """Publish this module's helpers + handlers onto ``server`` and install its handlers."""
     bind_module(globals(), server, skip=("_",))
+
+# Bound last, after every definition, so importing this module first (tests, the gateway process)
+# lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.
+from tui_gateway import server as srv  # noqa: E402

@@ -1,10 +1,13 @@
 """Browser connect/disconnect helpers for the browser.* RPCs (CDP probing, no network I/O on
-status). Bodies are rebound onto server.py's globals at install time (method_ctx.bind_module)."""
+status)."""
 
 from __future__ import annotations
 
 from .contracts.tools_commands import BrowserManageParams, BrowserManageResult
 from .method_ctx import HandlerRegistry, bind_module
+import contextlib
+import os
+import time
 
 _registry = HandlerRegistry()
 
@@ -106,18 +109,18 @@ def _browser_connect(rid, params: BrowserManageParams) -> BrowserManageResult | 
         messages.append(message)
         # Without a session id the TUI prints `messages` from the response (an event would double-render).
         if sid:
-            _emit("browser.progress", sid, {"message": message, "level": level})
+            srv._emit("browser.progress", sid, {"message": message, "level": level})
     parsed = urlparse(url if "://" in url else f"http://{url}")
-    if parsed.scheme not in _CDP_SCHEMES:
-        return _err(rid, 4015, f"unsupported browser url: {url}")
+    if parsed.scheme not in srv._CDP_SCHEMES:
+        return srv._err(rid, 4015, f"unsupported browser url: {url}")
     if not parsed.hostname:
-        return _err(rid, 4015, f"missing host in browser url: {url}")
+        return srv._err(rid, 4015, f"missing host in browser url: {url}")
     try:
         port = parsed.port or (443 if parsed.scheme in {"https", "wss"} else 80)
     except ValueError:
-        return _err(rid, 4015, f"invalid port in browser url: {url}")
+        return srv._err(rid, 4015, f"invalid port in browser url: {url}")
     # Normalize default-local to 127.0.0.1:9222 so comparisons + messaging match what we persist.
-    if _is_default_local_cdp(parsed):
+    if srv._is_default_local_cdp(parsed):
         url = DEFAULT_BROWSER_CDP_URL
         parsed = urlparse(url)
         port = parsed.port or 9222
@@ -130,16 +133,16 @@ def _browser_connect(rid, params: BrowserManageParams) -> BrowserManageResult | 
                 with socket.create_connection((parsed.hostname, port), timeout=2.0):
                     pass
             except OSError as e:
-                return _err(rid, 5031, f"could not reach browser CDP at {url}: {e}")
-        elif _is_default_local_cdp(parsed):
-            discovered = _connect_local_default(port, system, announce)
+                return srv._err(rid, 5031, f"could not reach browser CDP at {url}: {e}")
+        elif srv._is_default_local_cdp(parsed):
+            discovered = srv._connect_local_default(port, system, announce)
             if discovered is None:
                 return BrowserManageResult(connected=False, url=url, messages=messages or None)
             # Adopt whatever loopback/port answered ([::1] and/or an alternate port when 9222 was squatted).
             url = discovered
             parsed = urlparse(url)
-        elif not _cdp_http_reachable(parsed):
-            return _err(rid, 5031, f"could not reach browser CDP at {url}")
+        elif not srv._cdp_http_reachable(parsed):
+            return srv._err(rid, 5031, f"could not reach browser CDP at {url}")
         # Concrete ``/devtools/browser/<id>`` endpoints stay as-is; discovery-style inputs collapse
         # to ``scheme://host:port`` so ``_resolve_cdp_override`` can append ``/json/version``.
         normalized = (parsed.geturl() if parsed.path.startswith("/devtools/browser/")
@@ -150,7 +153,7 @@ def _browser_connect(rid, params: BrowserManageParams) -> BrowserManageResult | 
         os.environ["BROWSER_CDP_URL"] = normalized
         cleanup_all_browsers()
     except Exception as e:
-        return _err(rid, 5031, str(e))
+        return srv._err(rid, 5031, str(e))
     return BrowserManageResult(connected=True, url=normalized, messages=messages or None)
 
 
@@ -168,6 +171,10 @@ def _browser_disconnect(rid) -> BrowserManageResult:
 
 
 def register(server) -> None:
-    """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
+    """Publish this module's helpers + handlers onto ``server`` and install its handlers."""
     setattr(server, BrowserManageResult.__name__, BrowserManageResult)
     bind_module(globals(), server, skip=("_",))
+
+# Bound last, after every definition, so importing this module first (tests, the gateway process)
+# lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.
+from tui_gateway import server as srv  # noqa: E402

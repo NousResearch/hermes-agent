@@ -1,11 +1,12 @@
 """Image-generation JSON-RPC handler (ws twin of the image_generate tool) for UI surfaces
 (avatar pickers, artifact panes). The result is a data URL: a remote desktop can't read a
-gateway file path and hosted URLs are often CORS-opaque to a renderer canvas. Bodies are
-rebound onto server.py's globals (method_ctx.bind_module) and reference them bare.
+gateway file path and hosted URLs are often CORS-opaque to a renderer canvas.
 """
 
 from .contracts.config_free_tier_control import ImageGenerateParams, ImageGenerateResult
 from .method_ctx import HandlerRegistry, bind_module
+from utils import is_truthy_value
+import json
 
 _registry = HandlerRegistry()
 method = _registry.method
@@ -57,21 +58,25 @@ def _(rid, params: ImageGenerateParams) -> ImageGenerateResult | dict:
             error="No image generation backend configured (run `hermes tools` to enable one).")
     prompt = (params.prompt or "").strip()
     if not prompt:
-        return _err(rid, 4071, "prompt required")
+        return srv._err(rid, 4071, "prompt required")
     aspect = (params.aspect_ratio or "square").strip().lower()
     cap = min(params.max_bytes or 8_000_000, 16_000_000)
     try:
         from tools.image_generation_tool import _handle_image_generate
         result = json.loads(_handle_image_generate({"prompt": prompt, "aspect_ratio": aspect}))
     except Exception as e:
-        return _err(rid, 5071, str(e))
+        return srv._err(rid, 5071, str(e))
     if not result.get("success"):
         return ImageGenerateResult(available=True, success=False,
                                    error=str(result.get("error") or "generation failed"))
     image_ref = str(result.get("image") or "")
-    data_url = _image_to_data_url(image_ref, cap) if image_ref else None
+    data_url = srv._image_to_data_url(image_ref, cap) if image_ref else None
     return ImageGenerateResult(available=True, success=True, image=image_ref, image_data=data_url)
 
 
 def register(server) -> None:
     bind_module(globals(), server, skip=("_",))
+
+# Bound last, after every definition, so importing this module first (tests, the gateway process)
+# lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.
+from tui_gateway import server as srv  # noqa: E402

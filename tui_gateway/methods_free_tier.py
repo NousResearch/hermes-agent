@@ -2,8 +2,7 @@
 is pushed except the boot bootstrap's one ``setup.ready`` event. ``free_tier.status`` answers from the
 auth store with zero network and zero side effects; ``free_tier.provision`` is the explicit retry when
 the boot bootstrap could not create the identity (desktop-only entry); ``free_tier.ack_notice``
-persists the one-time notice flag on the free-tier identity itself, so it dies with that identity.
-Bodies are rebound onto server.py's globals (method_ctx.bind_module) and reference them bare.
+persists the one-time notice flag on the free-tier identity itself, so it dies with that identity. Reaches server.py state through ``srv`` (method_ctx.py).
 """
 
 import logging
@@ -47,7 +46,7 @@ def _(rid, params: Params) -> FreeTierStatusResult | dict:
             payload.update(anon_auth.last_mint_failure() or {})
         return FreeTierStatusResult.model_validate(payload)
     except Exception as e:
-        return _err(rid, 5090, str(e))
+        return srv._err(rid, 5090, str(e))
 
 
 @method("free_tier.provision")
@@ -79,7 +78,7 @@ def _(rid, params: Params) -> FreeTierProvisionResult | dict:
             payload.update(anon_auth.last_mint_failure() or {})
         return FreeTierProvisionResult.model_validate(payload)
     except Exception as e:
-        return _err(rid, 5092, str(e))
+        return srv._err(rid, 5092, str(e))
 
 
 @method("free_tier.ack_notice")
@@ -91,9 +90,13 @@ def _(rid, params: Params) -> FreeTierAckNoticeResult | dict:
         from hermes_cli import anon_auth
         return FreeTierAckNoticeResult(acked=bool(anon_auth.mark_guest_notice_shown()))
     except Exception as e:
-        return _err(rid, 5091, str(e))
+        return srv._err(rid, 5091, str(e))
 
 
 def register(server) -> None:
-    """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
+    """Publish this module's helpers + handlers onto ``server`` and install its handlers."""
     bind_module(globals(), server, skip=("_",))
+
+# Bound last, after every definition, so importing this module first (tests, the gateway process)
+# lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.
+from tui_gateway import server as srv  # noqa: E402

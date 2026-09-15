@@ -58,6 +58,12 @@ class ProviderProfile:
     # False → fetch_models returns None without a network call (catalog comes from an SDK/subprocess).
     supports_model_listing: bool = True
 
+    # ── Reasoning echo (replay side) ─────────────────────────
+    # True when replayed assistant messages must keep reasoning_content.
+    # Plain class attribute, NOT a dataclass field, so plugins opt in
+    # without changing stock construction.
+    echo_reasoning_content = False
+
     # ── Vision support ────────────────────────────────────────
     # True when the provider's API accepts image content inside
     # tool-result messages natively.  Set on providers that expose

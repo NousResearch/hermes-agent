@@ -742,6 +742,46 @@ function Get-PowerShellHostExe {
     return "powershell"
 }
 
+# Shared by Install-Uv and Resolve-UvCmd: a managed uv.exe is only usable
+# if `uv --version` exits 0 and prints a version. Resolve-UvCmd may run in
+# a fresh process where Install-Uv never ran, so this must live at script
+# scope rather than nested inside Install-Uv.
+function Get-UsableUvVersion($UvPath) {
+    $prevEAP = $ErrorActionPreference
+    try {
+        # A broken Chocolatey shim commonly writes its failure to stderr.
+        # Do not let PowerShell's global Stop policy turn that probe into a
+        # terminating exception before we can inspect the native exit code.
+        $ErrorActionPreference = "Continue"
+        $global:LASTEXITCODE = 0
+        $versionOutput = @(& $UvPath --version 2>&1)
+        $exitCode = $LASTEXITCODE
+    } catch {
+        return $null
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+    if ($exitCode -ne 0) { return $null }
+    # stderr is merged into the stream, so a warning (e.g. from a wrapper
+    # script) can land before the version line. Anchoring on the joined
+    # stream would misclassify a healthy uv and purge it; match per line.
+    $version = $versionOutput | ForEach-Object { "$_".Trim() } |
+        Where-Object { $_ -match '^uv\s+\d+\.\d+' } | Select-Object -First 1
+    if ($version) { return $version }
+    return $null
+}
+
+# Probe the managed uv and purge it when it does not run, so a broken shim or
+# truncated download is never left in place to fail later in the venv stage.
+function Get-UsableManagedUv($ManagedUv, $FailureMessage) {
+    if (-not (Test-Path $ManagedUv)) { return $null }
+    $version = Get-UsableUvVersion $ManagedUv
+    if ($version) { return $version }
+    Write-Info $FailureMessage
+    Remove-Item $ManagedUv -Force -ErrorAction SilentlyContinue
+    return $null
+}
+
 function Install-Uv {
     # Hermes owns its own uv at $HermesHome\bin\uv.exe.  Always install there --
     # no PATH probing, no conda guards, no multi-location resolution chains.
@@ -749,9 +789,45 @@ function Install-Uv {
     # place, so install.ps1 and `hermes update` stay in sync.
     $managedUv = Join-Path $HermesHome "bin\uv.exe"
 
-    if (Test-Path $managedUv) {
+    function Resolve-ExecutableTarget($ExePath) {
+        if (-not $ExePath -or -not (Test-Path $ExePath)) { return $null }
+
+        # 1. Chocolatey: shim at chocolatey\bin\uv.exe redirects to
+        # chocolatey\lib\uv\tools\uv.exe. Copying the 390KB shim breaks
+        # outside of Chocolatey's tree; resolving the underlying real
+        # executable (~68MB) lets the salvage succeed.
+        $parent = Split-Path $ExePath -Parent
+        $grandparent = Split-Path $parent -Parent
+        $name = [System.IO.Path]::GetFileNameWithoutExtension($ExePath)
+        $chocoTarget = Join-Path $grandparent "lib\$name\tools\$name.exe"
+        if (Test-Path $chocoTarget) { return $chocoTarget }
+
+        # 2. Scoop: companion .shim file contains `path = "..."` pointing
+        # to the real unpacked binary under apps\<pkg>\current.
+        $scoopShim = [System.IO.Path]::ChangeExtension($ExePath, ".shim")
+        if (Test-Path $scoopShim) {
+            $shimContent = Get-Content $scoopShim -Raw -ErrorAction SilentlyContinue
+            if ($shimContent -and $shimContent -match 'path\s*=\s*"?([^"\r\n]+)"?') {
+                $scoopTarget = $matches[1].Trim()
+                if (Test-Path $scoopTarget) { return $scoopTarget }
+            }
+        }
+
+        # 3. Windows symlink / reparse point: resolve underlying target.
+        try {
+            $item = Get-Item $ExePath -ErrorAction SilentlyContinue
+            if ($item.LinkType -and $item.Target) {
+                $target = if ($item.Target -is [array]) { $item.Target[0] } else { $item.Target }
+                if (Test-Path $target) { return $target }
+            }
+        } catch {}
+
+        return $ExePath
+    }
+
+    $version = Get-UsableManagedUv $managedUv "Existing managed uv at $managedUv is not usable; replacing it ..."
+    if ($version) {
         $script:UvCmd = $managedUv
-        $version = & $managedUv --version
         Write-Success "Managed uv found ($version)"
         return $true
     }
@@ -784,15 +860,17 @@ function Install-Uv {
         & $psHostExe -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Tee-Object -Variable astralOut | Out-Null
         $installerOutput += "--- uv installer source: astral.sh ---"
         $installerOutput += @($astralOut | ForEach-Object { "$_" })
-        if (Test-Path $managedUv) {
+        $managedUvVersion = Get-UsableManagedUv $managedUv "astral.sh produced an unusable uv; removing it before trying the mirror ..."
+        if ($managedUvVersion) {
             Write-Info "uv installer succeeded via astral.sh"
         } else {
-            Write-Info "astral.sh uv installer did not produce $managedUv; trying GitHub releases mirror ..."
+            Write-Info "astral.sh uv installer did not produce a usable $managedUv; trying GitHub releases mirror ..."
             $ghOut = @()
             & $psHostExe -ExecutionPolicy ByPass -c "irm https://github.com/astral-sh/uv/releases/latest/download/uv-installer.ps1 | iex" 2>&1 | Tee-Object -Variable ghOut | Out-Null
             $installerOutput += "--- uv installer source: GitHub releases ---"
             $installerOutput += @($ghOut | ForEach-Object { "$_" })
-            if (Test-Path $managedUv) {
+            $managedUvVersion = Get-UsableManagedUv $managedUv "GitHub uv installer produced an unusable binary; removing it ..."
+            if ($managedUvVersion) {
                 Write-Info "uv installer succeeded via GitHub releases"
             }
         }
@@ -804,23 +882,30 @@ function Install-Uv {
         # the managed location so the managed-first invariant holds
         # (hermes_cli/managed_uv.py looks only at $HermesHome\bin\uv.exe).
         if (-not (Test-Path $managedUv)) {
-            $existingUv = $null
             $uvOnPath = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue |
                 Select-Object -First 1
-            if ($uvOnPath -and $uvOnPath.Source -and (Test-Path $uvOnPath.Source)) {
-                $existingUv = $uvOnPath.Source
+            $salvageCandidates = @()
+            if ($uvOnPath -and $uvOnPath.Source) {
+                # Resolve package manager shims (Chocolatey, Scoop) to their real target first
+                $resolved = Resolve-ExecutableTarget $uvOnPath.Source
+                if ($resolved -and (Test-Path $resolved)) {
+                    $salvageCandidates += $resolved
+                }
+                $salvageCandidates += $uvOnPath.Source
             }
-            if (-not $existingUv) {
-                $defaultUv = Join-Path $env:USERPROFILE ".local\bin\uv.exe"
-                if (Test-Path $defaultUv) { $existingUv = $defaultUv }
-            }
-            if ($existingUv) {
+            $salvageCandidates += (Join-Path $env:USERPROFILE ".local\bin\uv.exe")
+            foreach ($existingUv in ($salvageCandidates | Select-Object -Unique)) {
+                if (-not (Test-Path $existingUv)) { continue }
                 Write-Info "Salvaging existing uv from $existingUv"
                 try {
                     Copy-Item $existingUv $managedUv -Force
                     # Verify the salvaged binary actually runs before
                     # trusting it as the managed uv.
-                    $null = & $managedUv --version
+                    $version = Get-UsableUvVersion $managedUv
+                    if (-not $version) {
+                        throw "uv --version failed for salvaged candidate"
+                    }
+                    break
                 } catch {
                     Write-Info "Existing uv at $existingUv could not be salvaged: $_"
                     Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
@@ -830,9 +915,9 @@ function Install-Uv {
 
         $ErrorActionPreference = $prevEAP
 
-        if (Test-Path $managedUv) {
+        $version = Get-UsableManagedUv $managedUv "Installed uv at $managedUv does not run; removing it ..."
+        if ($version) {
             $script:UvCmd = $managedUv
-            $version = & $managedUv --version
             Write-Success "Managed uv installed ($version)"
             return $true
         }
@@ -1130,26 +1215,32 @@ function Resolve-UvCmd {
     # Already resolved (default invocation path: Install-Uv ran earlier
     # in the same process and set $script:UvCmd).
     if ($script:UvCmd) {
+        # Re-probe rather than trusting the cached path: PATH can change
+        # mid-session and a cached binary can be replaced by a broken shim.
         if ($script:UvCmd -eq "uv") {
-            # "uv" on PATH -- verify it's still resolvable (PATH could have
-            # changed mid-session; cheap to recheck).
-            if (Get-Command uv -ErrorAction SilentlyContinue) { return }
-        } elseif (Test-Path $script:UvCmd) {
+            $uvOnPath = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue
+            if ($uvOnPath -and (Get-UsableUvVersion $uvOnPath.Source)) { return }
+        } elseif ((Test-Path $script:UvCmd) -and (Get-UsableUvVersion $script:UvCmd)) {
             return
         }
         # Stale; fall through to re-discover.
     }
 
     # Check the managed location first -- this is where Install-Uv puts it.
+    # Same self-heal as Install-Uv's rerun path: a salvaged Chocolatey shim
+    # (or a truncated download) would otherwise be accepted here and fail
+    # later inside the venv stage with an unrelated-looking error.
     $managedUv = Join-Path $HermesHome "bin\uv.exe"
-    if (Test-Path $managedUv) {
+    if (Get-UsableManagedUv $managedUv "Existing managed uv at $managedUv is not usable; removing it.") {
         $script:UvCmd = $managedUv
         return
     }
 
     # Fall back to PATH (covers edge cases where the installer ran in a
-    # sibling process and HERMES_HOME wasn't propagated).
-    if (Get-Command uv -ErrorAction SilentlyContinue) {
+    # sibling process and HERMES_HOME wasn't propagated).  A PATH uv is the
+    # most likely place to meet a package-manager shim, so probe it too.
+    $uvOnPath = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue
+    if ($uvOnPath -and (Get-UsableUvVersion $uvOnPath.Source)) {
         $script:UvCmd = "uv"
         return
     }
@@ -1157,7 +1248,8 @@ function Resolve-UvCmd {
     # Refresh PATH from registry in case the current process started before
     # Install-Uv updated User PATH.
     $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
-    if (Get-Command uv -ErrorAction SilentlyContinue) {
+    $uvOnPath = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue
+    if ($uvOnPath -and (Get-UsableUvVersion $uvOnPath.Source)) {
         $script:UvCmd = "uv"
         return
     }
@@ -1422,16 +1514,64 @@ function New-GitBashAslrFailureReason {
     ) -join [Environment]::NewLine
 }
 
+function Get-ManagedGitUserPath {
+    param([AllowEmptyString()][string]$UserPath, [string]$GitDir)
+
+    $entries = @("$GitDir\cmd", "$GitDir\bin", "$GitDir\usr\bin")
+    $legacySuffix = $entries -join ""
+    # Keep this an array even for an empty or single-entry User PATH.
+    # Previously += concatenated strings instead of appending PATH entries.
+    $items = @(
+        if ($UserPath) {
+            foreach ($item in ($UserPath -split ";")) {
+                $prefix = $item
+                $repaired = $false
+                # Repair only the exact concatenation emitted by the old
+                # installer, including repeated retries. Do not split arbitrary
+                # drive letters or rewrite unrelated entries.
+                while ($prefix.EndsWith($legacySuffix, [StringComparison]::OrdinalIgnoreCase)) {
+                    $prefix = $prefix.Substring(0, $prefix.Length - $legacySuffix.Length)
+                    $repaired = $true
+                }
+                if (-not $repaired -or $prefix) { $prefix }
+            }
+        }
+    )
+    foreach ($entry in $entries) {
+        if ($items -notcontains $entry) { $items += $entry }
+    }
+    return ($items -join ";")
+}
+
+function Set-ManagedGitPath {
+    # Defaults to the Hermes-managed PortableGit and is a no-op when it is not
+    # installed, so every stage can call it unconditionally before probing git.
+    param([string]$GitDir = (Join-Path $HermesHome "git"))
+
+    if (-not (Test-Path -LiteralPath (Join-Path $GitDir "cmd\git.exe") -PathType Leaf)) { return }
+
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $updated = Get-ManagedGitUserPath -UserPath $userPath -GitDir $GitDir
+    if ($updated -cne $userPath) {
+        [Environment]::SetEnvironmentVariable("Path", $updated, "User")
+    }
+    # Persisted PATH is for later stage processes; this stage needs Git too.
+    if (($env:Path -split ";") -notcontains "$GitDir\cmd") {
+        $env:Path = "$GitDir\cmd;$env:Path"
+    }
+}
+
 function Install-Git {
     <#
     .SYNOPSIS
     Ensure Git (and Git Bash) are installed.  Git for Windows bundles bash.exe
     which Hermes uses to run shell commands.
 
-    Priority order (deliberately simple -- no winget, no registry, no system
+    Discovery order (no winget, registry-based Git discovery, or system
     package manager):
-      1. Existing ``git`` on PATH -- use it as-is (the common fast path).
-      2. Download **PortableGit** from the official git-for-windows GitHub
+      1. Repair PATH visibility for an existing Hermes-managed Git.
+      2. Use ``git`` on the resulting PATH (the common fast path).
+      3. Download **PortableGit** from the official git-for-windows GitHub
          release (self-extracting 7z.exe) and unpack it to
          ``%LOCALAPPDATA%\hermes\git`` -- never touches system Git, never
          requires admin, works even on locked-down machines and machines
@@ -1456,6 +1596,8 @@ function Install-Git {
     #>
     $script:GitInstallFailureReason = $null
     Write-Info "Checking Git..."
+
+    Set-ManagedGitPath
 
     if (Get-Command git -ErrorAction SilentlyContinue) {
         $version = git --version
@@ -1562,29 +1704,10 @@ function Install-Git {
             throw "Git extraction did not produce git.exe at $gitExe"
         }
 
-        # Add to session PATH so the rest of this install run can use git.
-        $env:Path = "$gitDir\cmd;$env:Path"
-
         # Persist to User PATH so fresh shells see it.  PortableGit needs
         # cmd\ (for git.exe), bin\ (for bash.exe + core tools), and
         # usr\bin\ (for perl, ssh, curl, and other POSIX coreutils).
-        $newPathEntries = @(
-            "$gitDir\cmd",
-            "$gitDir\bin",
-            "$gitDir\usr\bin"
-        )
-        $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-        $userPathItems = if ($userPath) { $userPath -split ";" } else { @() }
-        $changed = $false
-        foreach ($entry in $newPathEntries) {
-            if ($userPathItems -notcontains $entry) {
-                $userPathItems += $entry
-                $changed = $true
-            }
-        }
-        if ($changed) {
-            [Environment]::SetEnvironmentVariable("Path", ($userPathItems -join ";"), "User")
-        }
+        Set-ManagedGitPath -GitDir $gitDir
 
         $version = & $gitExe --version
         Write-Success "Git $version installed to $gitDir (portable, user-scoped)"
@@ -2133,6 +2256,20 @@ function Install-SystemPackages {
 
 function Install-Repository {
     Write-Info "Installing to $InstallDir..."
+
+    # A missing/unlaunchable Git is not evidence of a broken checkout. Resolve
+    # the managed install again in this fresh stage before any probe or move.
+    Set-ManagedGitPath
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        throw "Git is not available on PATH. Rerun the Git installation stage. The existing checkout has not been moved."
+    }
+    try {
+        $global:LASTEXITCODE = 0
+        $null = & git --version
+        if ($LASTEXITCODE -ne 0) { throw "git --version exited $LASTEXITCODE" }
+    } catch {
+        throw "Git could not run: $_. The existing checkout has not been moved."
+    }
 
     $didUpdate = $false
 
@@ -4771,9 +4908,10 @@ $InstallStages += @(
 # Stages that depend on uv (anything after Stage-Uv) call Resolve-UvCmd
 # first so they work in cross-process driver mode where $script:UvCmd
 # set by Stage-Uv in a sibling powershell process is not visible here.
-# Resolve-UvCmd is a fast no-op when $script:UvCmd is already populated
-# (the default-invocation case where Main runs everything in one
-# process), and throws cleanly if uv truly isn't installed yet.
+# Resolve-UvCmd re-probes even when $script:UvCmd is already populated
+# (a cached path can be replaced by a broken shim mid-session), falls back
+# to the managed location and PATH, and throws cleanly if uv truly isn't
+# installed yet.
 function Stage-Uv               { if (-not (Install-Uv))     { throw "uv installation failed" } }
 function Stage-Python           { Resolve-UvCmd; if (-not (Test-Python))    { throw "Python $PythonVersion not available" } }
 function Stage-Git              {

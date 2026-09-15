@@ -42,59 +42,66 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # (HERMES_PYTHON is exported by the devShell hook and ships [dev] extras:
 # pytest, pytest-asyncio, pytest-timeout, ruff, ty).
 #
-# A candidate must have pytest INSTALLED, not merely exist. The release venv
-# at ~/.hermes/hermes-agent/venv has bin/activate but no pytest, so an
-# existence-only probe selected it in checkouts/worktrees without a local
-# .venv — every file then died with "No module named pytest" and the run
-# reported "0 tests passed" (which reads green at a glance even though the
-# exit code is 1). Skip such a venv and keep probing instead.
+# A candidate needs both test dependencies declared in the dev extra. A
+# release venv with pytest but no pytest-asyncio cannot collect or execute
+# async tests; skip it before compilation or test dispatch, just as we skip
+# an environment without pytest. Optional plugins are not required here.
+has_test_dependencies() {
+  local missing
+  if missing=$("$1" -c '
+import importlib
+import sys
+
+missing = []
+for module in ("pytest", "pytest_asyncio"):
+    try:
+        importlib.import_module(module)
+    except Exception:
+        missing.append(module)
+print(", ".join(missing))
+sys.exit(bool(missing))
+' 2>/dev/null); then
+    return 0
+  fi
+  echo "▶ skipping test interpreter $1: cannot import ${missing:-test dependencies}" >&2
+  return 1
+}
+
 VENV=""
 VENV_PYTHON=""
-SKIPPED_VENVS=""
 for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
   if [ -f "$candidate/bin/activate" ]; then
-    if "$candidate/bin/python" -c 'import pytest' 2>/dev/null; then
+    if has_test_dependencies "$candidate/bin/python"; then
       VENV="$candidate"
       VENV_PYTHON="$candidate/bin/python"
       break
     fi
-    SKIPPED_VENVS="$SKIPPED_VENVS $candidate"
   fi
   # Native Windows venv layout: python.exe and activate live under
   # Scripts/, and there is no bin/. Anyone running this script from
   # Git Bash / MSYS with a `python -m venv`- or uv-created venv hits
   # this branch — without it the canonical runner refuses to start.
   if [ -f "$candidate/Scripts/activate" ]; then
-    if "$candidate/Scripts/python.exe" -c 'import pytest' 2>/dev/null; then
+    if has_test_dependencies "$candidate/Scripts/python.exe"; then
       VENV="$candidate"
       VENV_PYTHON="$candidate/Scripts/python.exe"
       break
     fi
-    SKIPPED_VENVS="$SKIPPED_VENVS $candidate"
   fi
 done
-
-if [ -n "$SKIPPED_VENVS" ]; then
-  for skipped in $SKIPPED_VENVS; do
-    echo "▶ skipping venv without pytest: $skipped" >&2
-  done
-fi
 
 if [ -n "$VENV" ]; then
   PYTHON="$VENV_PYTHON"
 elif [ -n "${HERMES_PYTHON:-}" ] && [ -x "$HERMES_PYTHON" ] \
-    && "$HERMES_PYTHON" -c 'import pytest' 2>/dev/null; then
+    && has_test_dependencies "$HERMES_PYTHON"; then
   # Guard with an import check: HERMES_PYTHON may point at the RELEASE
-  # venv (no pytest) when inherited from a wrapped `hermes` binary rather
+  # venv (incomplete test dependencies) when inherited from a wrapped `hermes` binary rather
   # than the devShell hook.
   PYTHON="$HERMES_PYTHON"
   echo "▶ no local venv — using Nix dev venv via HERMES_PYTHON: $PYTHON"
 else
-  echo "error: no virtualenv with pytest found in $REPO_ROOT/.venv or $REPO_ROOT/venv," >&2
-  echo "       and HERMES_PYTHON is not a python with pytest (enter the Nix devShell or create a venv)" >&2
-  if [ -n "$SKIPPED_VENVS" ]; then
-    echo "       (skipped for missing pytest:$SKIPPED_VENVS — install dev extras there, or create $REPO_ROOT/.venv)" >&2
-  fi
+  echo "error: no interpreter with pytest and pytest_asyncio found in the local or release venvs," >&2
+  echo "       or via HERMES_PYTHON (install dev extras in a local venv or enter the Nix devShell)" >&2
   exit 1
 fi
 

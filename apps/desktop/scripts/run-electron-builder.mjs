@@ -6,7 +6,7 @@
 
 import fs from "node:fs"
 import path from "node:path"
-import { spawnSync } from "node:child_process"
+import { runDesktopBuilder } from "./desktop-pack-runner.mjs"
 import { createRequire } from "node:module"
 
 const require = createRequire(import.meta.url)
@@ -57,9 +57,10 @@ if (dist && fs.existsSync(distBinary(dist))) {
 }
 args.push(...process.argv.slice(2))
 
-const result = spawnSync(process.execPath, [electronBuilderCli(), ...args], {
-  stdio: "inherit",
-})
+const result = runDesktopBuilder(process.execPath, [electronBuilderCli(), ...args])
+for (const failure of result.settlement?.failures ?? []) {
+  console.error(`[run-electron-builder] ${failure.reason}`)
+}
 if (result.error) {
   console.error(`[run-electron-builder] spawn failed: ${result.error.message}`)
   process.exit(1)

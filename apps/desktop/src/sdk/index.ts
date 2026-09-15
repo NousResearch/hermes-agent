@@ -62,6 +62,7 @@ import {
   $gatewaySwapTarget,
   $hydrationSyncProfile,
   $profiles,
+  ambientNewChatProfile,
   ensureGatewayAgent,
   ensureGatewayProfile,
   newSessionInAgent,
@@ -1236,7 +1237,7 @@ export const host = {
     if (profile && typeof profile !== 'string') {
       newSessionInAgent({ ...profile })
     } else {
-      newSessionInProfile((profile ?? '').trim() || $activeGatewayProfile.get())
+      newSessionInProfile((profile ?? '').trim() || ambientNewChatProfile())
     }
 
     window.location.hash = '#/'

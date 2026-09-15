@@ -47,7 +47,6 @@ def test_current_successors_settle_historical_obligations(monkeypatch, profiles)
         "down",
         "stale",
         "wrong-sha",
-        "wrong-kind",
         "unknown-profile",
         "marker",
     ],
@@ -59,8 +58,6 @@ def test_every_owed_identity_requires_current_evidence(monkeypatch, bad):
     if bad == "marker":
         (home / "fleet_restart_pending").write_text("expected_sha=new\n")
     owed = {"kind": "gateway", "profile": "beta", "code_sha": "old"}
-    if bad == "wrong-kind":
-        owed["kind"] = "serve"
     if bad == "unknown-profile":
         owed["profile"] = "unknown"
     (directory / "latest.json").write_text(
@@ -84,3 +81,25 @@ def test_every_owed_identity_requires_current_evidence(monkeypatch, bad):
     monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: "new")
     monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda: rows)
     assert update_cmd_fleet._pending_fleet_restart_needed()
+
+
+def test_non_gateway_runtimes_do_not_block_gateway_reconciliation(monkeypatch):
+    """Non-gateway runtimes (dashboard/serve) in update receipt plan do not block gateway fleet restart reconciliation (#107817)."""
+    home = get_hermes_home()
+    directory = home / "logs" / "update_receipts"
+    directory.mkdir(parents=True)
+    (directory / "latest.json").write_text(
+        json.dumps({
+            "outcome": "success",
+            "plan": {
+                "runtimes": [
+                    {"kind": "gateway", "profile": "default", "code_sha": "old"},
+                    {"kind": "dashboard", "profile": "default", "code_sha": "old"},
+                ]
+            },
+        })
+    )
+    rows = [{"profile": "default", "state": "current", "code_sha": "new"}]
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: "new")
+    monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda: rows)
+    assert not update_cmd_fleet._pending_fleet_restart_needed()

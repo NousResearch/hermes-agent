@@ -137,7 +137,9 @@ def _receipt_reports_stale_runtime(expected_sha: str | None = None) -> bool:
     if not isinstance(plan, dict):
         return False
     return any(
-        isinstance(runtime, dict) and _sha_mismatch(runtime.get("code_sha"))
+        isinstance(runtime, dict)
+        and runtime.get("kind", "gateway") == "gateway"
+        and _sha_mismatch(runtime.get("code_sha"))
         for runtime in plan.get("runtimes") or []
     )
 
@@ -166,7 +168,9 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
                 return False
             kind = entry.get("kind", default_kind)
             profile = entry.get("profile")
-            if kind != "gateway" or not profile or profile == "unknown":
+            if kind != "gateway":
+                continue
+            if not profile or profile == "unknown":
                 return False
             owed.add((kind, profile))
         if not owed:

@@ -186,6 +186,36 @@ class TestLifecycle:
 # ---- turn loop ----
 
 class TestRunTurn:
+    @pytest.mark.parametrize(("reply_delay", "turn_timeout", "completes"), [
+        (12.0, 600.0, True),
+        (6.0, 5.0, False),
+        (65.0, 600.0, False),
+    ])
+    def test_turn_start_waits_within_a_bounded_budget(
+        self, monkeypatch, reply_delay, turn_timeout, completes,
+    ):
+        client = FakeClient()
+        request = client.request
+
+        def delayed_request(method, params=None, timeout=30.0):
+            response = request(method, params, timeout=timeout)
+            if method == "turn/start" and reply_delay > timeout:
+                raise TimeoutError(f"turn/start reply missed its {timeout}s deadline")
+            return response
+
+        monkeypatch.setattr(client, "request", delayed_request)
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "turn-fake-001", "status": "completed"},
+        )
+        result = make_session(client).run_turn("hi", turn_timeout=turn_timeout)
+
+        assert [method for method, _ in client.requests].count("turn/start") == 1
+        assert (result.error is None) is completes
+        assert result.should_retire is not completes
+        if not completes:
+            assert "turn/start timed out" in result.error
+
     def test_simple_text_turn_returns_final_message(self):
         client = FakeClient()
         client.queue_notification("turn/started", threadId="t", turn={"id": "tu1"})

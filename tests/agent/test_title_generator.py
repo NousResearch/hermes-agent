@@ -7,10 +7,23 @@ from unittest.mock import MagicMock, patch
 from agent.title_generator import (
     generate_title,
     auto_title_session,
+    is_titleable_user_message,
     maybe_auto_title,
     _title_language,
 )
 from hermes_state import SessionDB
+
+
+class TestDerivedTitle:
+    @pytest.mark.parametrize(
+        "wrapper",
+        [
+            '[Replying to: "Cronjob Response: media-inbox-mirror"]',
+            '[Replying to your previous message: "Cronjob Response: media-inbox-mirror"]',
+        ],
+    )
+    def test_reply_context_wrapper_is_not_titleable(self, wrapper):
+        assert is_titleable_user_message(f"{wrapper}\n\nReparieren") is False
 
 
 class TestGenerateTitle:

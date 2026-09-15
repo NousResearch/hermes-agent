@@ -9,11 +9,17 @@ deny), ``_check_binary_document_write``, ``_check_protected_instruction_write``
 """
 
 import fnmatch
+import hashlib
+import logging
 import os
+import threading
+import time
 from pathlib import Path
 
 from tools.binary_extensions import has_opaque_document_extension, is_pdf_path
 from tools.file_tools_paths import _expand_tilde, _resolve_path_for_task
+
+logger = logging.getLogger(__name__)
 
 # Prefixes matched after realpath. macOS: /private/var mirrors /var — block the
 # sensitive subtrees only; a blanket "/private/var/" refuses every temp-file
@@ -232,13 +238,70 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
 _APPROVAL_UNAVAILABLE = "requires approval but the approval subsystem is unavailable."
 _NO_HUMAN = "requires approval but no interactive user or gateway is present to approve it."
 
+# A turn's serial batch of protected-instruction writes (e.g. three patch
+# calls to AGENTS.md) used to re-prompt per call: one "Allow Once" covered
+# only the first, and the rest failed closed as timed out for a batch the
+# human had answered. An IDENTICAL follow-up in the same turn reuses the
+# fresh grant — "identical" includes a digest of the exact operation payload,
+# so a later write of different content/patch to the same path re-asks.
+# Deny/timeout never record, nothing persists past the window, and no turn or
+# payload identity means no reuse.
+_PROTECTED_GRANT_REUSE_WINDOW_S = 120.0
+_protected_grant_times: "dict[tuple[str, str, str, str, str], float]" = {}
+_protected_grant_lock = threading.Lock()
 
-def _request_protected_instruction_approval(reasons: list[str], task_id: str = "default") -> str | None:
+
+def protected_write_digest(*parts: object) -> str:
+    """Digest an operation's identity: tool tag, target path(s), payload text.
+
+    Built by the write/patch entry points and again over the paths in
+    ``_check_protected_instruction_write``. Length-prefixed so no two different
+    payloads can concatenate to one string.
+    """
+    payload = "\x00".join(f"{len(text)}:{text}" for text in (str(part) for part in parts))
+    return hashlib.sha256(payload.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def _prune_expired_protected_grants(now: float) -> None:
+    """Drop grants past the reuse window (caller holds ``_protected_grant_lock``)."""
+    for stale in [key for key, ts in _protected_grant_times.items()
+                  if now - ts > _PROTECTED_GRANT_REUSE_WINDOW_S]:
+        _protected_grant_times.pop(stale, None)
+
+
+def _protected_grant_key(session_key: str, turn_id: str, display: str, description: str,
+                         write_digest: str) -> tuple[str, str, str, str, str]:
+    return (session_key or "", turn_id or "", display or "", description or "", write_digest or "")
+
+
+def _protected_grant_is_fresh(key: tuple[str, str, str, str, str]) -> bool:
+    if not key[1] or not key[4]:
+        # Fail closed to prompting: without a turn identity AND a payload digest
+        # a grant cannot be scoped to the exact write the human was shown.
+        return False
+    with _protected_grant_lock:
+        _prune_expired_protected_grants(time.monotonic())
+        return key in _protected_grant_times
+
+
+def _record_protected_grant(key: tuple[str, str, str, str, str]) -> None:
+    if not key[1] or not key[4]:
+        return
+    with _protected_grant_lock:
+        now = time.monotonic()
+        _prune_expired_protected_grants(now)
+        _protected_grant_times[key] = now
+
+
+def _request_protected_instruction_approval(reasons: list[str], task_id: str = "default",
+                                            write_digest: str = "") -> str | None:
     """Ask the human to approve a write to protected instruction file(s); ``None`` when approved.
 
     Deliberately NOT routed through ``_run_approval_gate`` (honors --yolo and
-    allowlists): this gate is one-operation approval EVERY time, no persisted
-    scope, fail-closed without a human channel.
+    allowlists): this gate is one-operation approval, no persisted scope,
+    fail-closed without a human channel. The ONE relaxation: on the gateway
+    surface, an identical follow-up request within the SAME TURN reuses a
+    freshly granted decision — a serial batch is one human answer, not N.
     """
     targets = ", ".join(dict.fromkeys(reasons))
     description = (
@@ -256,7 +319,7 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
 
     try:
         import tools.approval as _approval
-        from tools.approval_context import get_current_session_key
+        from tools.approval_context import get_current_session_key, get_current_turn_id
         from tools.approval_gateway_wait import _await_gateway_decision
         from tools.approval_prompt import prompt_dangerous_approval
     except Exception:
@@ -279,10 +342,22 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
             "description": description,
             "allow_permanent": False,
             "allow_session": False}
+        grant_key = _protected_grant_key(
+            session_key, get_current_turn_id(), display, description, write_digest)
+        if _protected_grant_is_fresh(grant_key):
+            # A batch follow-up this turn: the human granted this exact request
+            # moments ago — don't stack another card they answered.
+            logger.info("Protected-instruction write covered by a fresh identical grant (session=%s, target=%s)",
+                        session_key, targets)
+            return None
         decision = _await_gateway_decision(session_key, notify_cb, approval_data, surface="gateway")
         if decision.get("notify_failed"):
             return blocked.format(why="requires approval but the approval request could not be delivered.")
         choice, timed = decision.get("choice"), not decision.get("resolved")
+        if not timed and choice in {"once", "session", "always"}:
+            # Remember this grant for the turn's identical follow-ups; it
+            # expires with the reuse window and never leaves this process.
+            _record_protected_grant(grant_key)
     else:
         # CLI surface: per-thread approval callback (prompt_toolkit panel).
         try:
@@ -303,9 +378,11 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
     return timed_out if timed else denied
 
 
-def _check_protected_instruction_write(paths: list[str], task_id: str = "default") -> str | None:
+def _check_protected_instruction_write(paths: list[str], task_id: str = "default",
+                                       write_digest: str = "") -> str | None:
     """Gate a write/patch touching protected instruction files. ONE protected file gates
-    the ENTIRE multi-file patch (one prompt, all-or-nothing)."""
+    the ENTIRE multi-file patch (one prompt, all-or-nothing). ``write_digest`` identifies the
+    exact operation payload a gateway approval may be reused for this turn."""
     enabled, extra = _protected_instruction_config()
     if not enabled:
         return None
@@ -313,7 +390,10 @@ def _check_protected_instruction_write(paths: list[str], task_id: str = "default
                            for p in paths) if r]
     if not reasons:
         return None
-    return _request_protected_instruction_approval(reasons, task_id)
+    # The grant identity includes the paths themselves: two same-basename
+    # targets in different directories must not share one answered card.
+    return _request_protected_instruction_approval(
+        reasons, task_id, protected_write_digest(write_digest, *paths))
 
 
 def _check_approval_required_write(paths: list[str], task_id: str = "default") -> str | None:

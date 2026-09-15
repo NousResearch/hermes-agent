@@ -675,11 +675,13 @@ def parse_welcome_refusal(body: Any) -> Optional[Dict[str, Any]]:
             "upgrade_url": upgrade_url if isinstance(upgrade_url, str) else ""}
 
 
-def welcome_refusal_copy(refusal: Dict[str, Any], *, model: str = "", in_chat: bool = True) -> str:
+def welcome_refusal_copy(refusal: Dict[str, Any], *, model: str = "", in_chat: bool = True, door: bool = True) -> str:
     """User copy for a structured welcome-tier refusal: what happened and the one way forward.
 
-    Never guest / anonymous / claim; ``in_chat`` picks ``/login`` over the terminal verb."""
-    signin = _SIGNIN_CHAT if in_chat else _SIGNIN_TERMINAL
+    Never guest / anonymous / claim; ``in_chat`` picks ``/login`` over the terminal verb.
+    ``door=False`` leaves the "To sign in: …" tail off, for a surface that renders the sign-in as
+    a button beside the sentence (the desktop's error card)."""
+    signin = (_SIGNIN_CHAT if in_chat else _SIGNIN_TERMINAL) if door else ""
     reason = str(refusal.get("reason") or "")
     alternates = refusal.get("alternates") or []
     serves = alternates[0] if alternates else GUEST_MODEL
@@ -690,17 +692,17 @@ def welcome_refusal_copy(refusal: Dict[str, Any], *, model: str = "", in_chat: b
         return (f"{what} available without signing in, so Hermes uses {serves} for now. "
                 f"Sign in for more models. {signin}")
     if reason == "feature_not_free":
-        return f"That isn't available without signing in. Sign in to use it, it's free. {signin}"
+        return f"That isn't available without signing in. Sign in to use it, it's free. {signin}".rstrip()
     if reason == "at_capacity":
         return ("Chatting without signing in is really busy right now. Sign in to skip the queue, "
-                f"it's free, or try again in {wait}. {signin}")
+                f"it's free, or try again in {wait}. {signin}").rstrip()
     if reason == "admission_closed":
         return ("Chatting without signing in is full right now. Sign in to keep going, "
-                f"it's free, or try again in {wait}. {signin}")
+                f"it's free, or try again in {wait}. {signin}").rstrip()
     if reason == "rate_limited":
         return (f"You've used up the allowance for chatting without signing in. It refreshes in {wait}. "
-                f"Sign in for a bigger allowance, it's free. {signin}")
-    return f"Hermes couldn't send that without signing in. Signing in is free. {signin}"
+                f"Sign in for a bigger allowance, it's free. {signin}").rstrip()
+    return f"Hermes couldn't send that without signing in. Signing in is free. {signin}".rstrip()
 
 
 def welcome_route_refusal(status: Any, message: Any, base_url: Any = None) -> Optional[str]:
@@ -723,11 +725,11 @@ def welcome_route_refusal(status: Any, message: Any, base_url: Any = None) -> Op
     return kind
 
 
-def welcome_route_refusal_copy(kind: str, *, in_chat: bool = True) -> str:
+def welcome_route_refusal_copy(kind: str, *, in_chat: bool = True, door: bool = True) -> str:
     template = _WELCOME_ROUTE_COPY.get(kind) or "Hermes couldn't reach the free model on this route."
     return template.format(
-        host=DEFAULT_NOUS_WELCOME_URL, signin=_SIGNIN_CHAT if in_chat else _SIGNIN_TERMINAL,
-        model_hint=_MODEL_HINT_CHAT if in_chat else _MODEL_HINT_TERMINAL)
+        host=DEFAULT_NOUS_WELCOME_URL, signin=(_SIGNIN_CHAT if in_chat else _SIGNIN_TERMINAL) if door else "",
+        model_hint=_MODEL_HINT_CHAT if in_chat else _MODEL_HINT_TERMINAL).rstrip()
 
 
 def note_model_switch(agent: Any, headers: Any) -> Optional[str]:
@@ -1034,6 +1036,7 @@ from hermes_cli.anon_sign_in import (  # noqa: E402
     Code as Code,
     Completed as Completed,
     Declined as Declined,
+    FREE_TIER_RATE_LIMIT_CARD as FREE_TIER_RATE_LIMIT_CARD,
     FREE_TIER_RATE_LIMIT_CHAT as FREE_TIER_RATE_LIMIT_CHAT,
     Failed as Failed,
     LOGIN_BUSY_ELSEWHERE as LOGIN_BUSY_ELSEWHERE,

@@ -181,8 +181,11 @@ class TestTerminalResultsCarryTheFreeTierBlock:
             self._terminal_agent(), err, classified, status_code=403, api_kwargs=None, api_messages=[],
             messages=[], conversation_history=[], api_call_count=1, approx_tokens=10,
             provider="nous", base_url=WELCOME, model="nous/welcome")
-        assert result["free_tier"] == {"kind": "disabled", "message": result["final_response"]}
+        # The chat text names /login; the card text (a button beside it) leaves that tail off.
         assert "switched off" in result["final_response"] and "/login" in result["final_response"]
+        assert result["free_tier"]["kind"] == "disabled"
+        assert result["free_tier"]["message"] == result["final_response"].replace(" To sign in: /login.", "")
+        assert "/login" not in result["free_tier"]["message"]
         assert result["error"] == "HTTP 403: no permissions"      # the technical detail stays in the log line
 
     def test_an_exhausted_capacity_refusal_is_stamped_at_capacity(self):
@@ -194,8 +197,8 @@ class TestTerminalResultsCarryTheFreeTierBlock:
             api_kwargs=None, api_messages=[], messages=[], conversation_history=[], api_call_count=3,
             approx_tokens=10, provider="nous", base_url=WELCOME, model="nous/welcome")
         assert result["free_tier"]["kind"] == "at_capacity"
-        assert result["free_tier"]["message"] == result["final_response"]
-        assert "really busy" in result["final_response"]
+        assert "really busy" in result["free_tier"]["message"] and "/login" not in result["free_tier"]["message"]
+        assert "/login" in result["final_response"]
 
     def test_a_spent_outage_on_the_welcome_host_is_stamped_outage(self):
         from agent.turn_recovery import max_retries_exhausted_result

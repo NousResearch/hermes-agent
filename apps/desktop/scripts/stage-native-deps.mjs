@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve, join } from 'node:path'
 import {
   chmodSync,
+  copyFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -31,6 +32,29 @@ const require = createRequire(import.meta.url)
 
 function makeExecutable(filePath) {
   chmodSync(filePath, 0o755)
+}
+
+// Copy a directory tree one file at a time instead of recursive cpSync.
+//
+// Recursive cpSync from a source path containing non-ASCII characters fails on
+// Windows with EIO/errno 5 ("Access is denied") and on Node 24 can fail-fast
+// the whole process (0xC0000409) when copying node-pty's conpty prebuild
+// directory (#70779) — while copying the exact same files one by one with
+// copyFileSync always succeeds. The per-file walk keeps the staging working
+// on the Turkish/CJK/accented user-profile paths the installer otherwise
+// dies on; nested subdirectories are walked recursively, symlinks are not
+// followed (prebuilds ship regular files only).
+function copyDirByFile(srcDir, destDir) {
+  mkdirSync(destDir, { recursive: true })
+  for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
+    const src = join(srcDir, entry.name)
+    const dest = join(destDir, entry.name)
+    if (entry.isDirectory()) {
+      copyDirByFile(src, dest)
+    } else if (entry.isFile()) {
+      copyFileSync(src, dest)
+    }
+  }
 }
 
 function patchUnixTerminalAsarPaths(destRoot) {
@@ -261,7 +285,7 @@ export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platfor
     mkdirSync(destPrebuild, { recursive: true })
     for (const entry of readdirSync(prebuildDir, { withFileTypes: true })) {
       if (entry.name === 'conpty' && entry.isDirectory()) {
-        cpSync(join(prebuildDir, 'conpty'), join(destPrebuild, 'conpty'), { recursive: true })
+        copyDirByFile(join(prebuildDir, 'conpty'), join(destPrebuild, 'conpty'))
         continue
       }
       if (entry.isFile() && /\.(node|dll|exe)$/.test(entry.name)) {

@@ -51,6 +51,45 @@ class TestIsImagePart:
         assert _is_image_part(None) is False
         assert _is_image_part(42) is False
 
+    def test_non_scalar_type_does_not_raise(self):
+        """A dict- or list-valued ``type`` (JSON-Schema sub-schema / multi-type list)
+        must not crash the frozenset membership test — the raise permanently broke
+        compression for the session (#107628)."""
+        assert _is_image_part({"type": {"type": "string"}}) is False
+        assert _is_image_part({"type": ["string", "null"]}) is False
+
+
+class TestNonScalarPartTypeGuards:
+    """#107628: compression must survive content parts whose ``type`` is a JSON-Schema
+    node or multi-type list (both legal, both unhashable). Same guard as the merged
+    #104840 sibling in chat_completion_helpers._payload_chars."""
+
+    @pytest.mark.parametrize("ptype", [
+        {"type": "string"},
+        {"enum": ["a", "b"]},
+        ["string", "null"],
+        7,
+    ])
+    def test_content_has_images_never_raises(self, ptype):
+        assert _content_has_images([{"type": ptype, "text": "x"}]) is False
+
+    @pytest.mark.parametrize("ptype", [
+        {"type": "string"},
+        ["string", "null"],
+    ])
+    def test_summary_part_text_renders_a_marker_not_a_crash(self, ptype):
+        from agent.context_compressor import _summary_part_text
+        out = _summary_part_text({"type": ptype})
+        assert isinstance(out, str) and out.startswith("[")
+
+    def test_summary_part_text_non_dict_part(self):
+        from agent.context_compressor import _summary_part_text
+        assert _summary_part_text(42) == "[attachment]"
+
+    def test_real_image_parts_still_detected(self):
+        assert _content_has_images([IMG_URL, TEXT]) is True
+        assert _content_has_images([INPUT_IMG]) is True
+
 
 class TestContentHasImages:
 

@@ -149,26 +149,31 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
 
 
 def _session_count(state_db_path: Path):
-    """COUNT(*) through a read-only SessionDB — never a writer, so schema auto-repair cannot run."""
-    from hermes_state import SessionDB
-    db = SessionDB(db_path=state_db_path, read_only=True)
+    import sqlite3
+    # mode=ro: doctor is a reader; a writable open of a gateway-held WAL DB is the second-writer class (#103339).
+    # as_uri() percent-encodes '?' / '#' in the home path; a raw f-string URI truncates there.
+    conn = sqlite3.connect(Path(state_db_path).resolve().as_uri() + "?mode=ro", uri=True)
     try:
-        return db.session_count()
+        return conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
     finally:
-        db.close()
+        conn.close()
 
 
 def _write_health_reason(state_db_path: Path, *, isolate: bool):
     """FTS/write-health probe. Isolated copies never join the live store WAL lifecycle."""
-    from hermes_state_repair import _db_opens_cleanly
-    if not isolate:
+    from hermes_state_repair import _connect_repair_durable, _db_opens_cleanly
+    from hermes_state_holders import live_writer_holds_db
+    # Even under --fix the probe's BEGIN IMMEDIATE is a second writer against a gateway-held DB (#103339):
+    # only probe the live file when the holder scan proves it quiet, else fall back to a snapshot.
+    if not isolate and not live_writer_holds_db(state_db_path, connect_repair_durable=_connect_repair_durable):
         return _db_opens_cleanly(state_db_path)
     import sqlite3
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
         snapshot = Path(tmp) / "state.db"
         try:
-            src = sqlite3.connect(f"file:{state_db_path}?mode=ro", uri=True, timeout=1.0)
+            # as_uri() percent-encodes '?' / '#' in the home path; a raw f-string URI truncates there.
+            src = sqlite3.connect(Path(state_db_path).resolve().as_uri() + "?mode=ro", uri=True, timeout=1.0)
         except sqlite3.Error as exc:
             return str(exc)
         try:

@@ -642,8 +642,9 @@ class SessionDB(
     def _connect_read_only(self, timeout: float) -> sqlite3.Connection:
         """``mode=ro`` tracked connection with Row factory. check_same_thread=False: pooled connections
         are borrowed by whichever thread reads next; exclusive ownership is enforced by pool checkout."""
+        # as_uri() percent-encodes '?' / '#' in the home path; a raw f-string URI truncates there.
         conn = _connect_tracked_db(
-            f"file:{self.db_path}?mode=ro", tracking_path=self.db_path, uri=True,
+            Path(self.db_path).resolve().as_uri() + "?mode=ro", tracking_path=self.db_path, uri=True,
             check_same_thread=False, timeout=timeout, isolation_level=None,
         )
         conn.row_factory = sqlite3.Row

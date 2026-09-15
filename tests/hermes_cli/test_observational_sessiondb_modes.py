@@ -20,42 +20,6 @@ def test_status_session_summary_opens_a_read_only_store(monkeypatch):
     db.close.assert_called_once()
 
 
-def test_doctor_without_fix_counts_sessions_through_read_only_store(monkeypatch, tmp_path):
-    from hermes_cli.doctor_report import Finding
-    from hermes_cli.doctor_state import _state_db_health
-
-    db_path = tmp_path / "state.db"
-    db_path.touch()
-    db = MagicMock()
-    db.session_count.return_value = 3
-    factory = MagicMock(return_value=db)
-    monkeypatch.setattr("hermes_state.SessionDB", factory)
-    monkeypatch.setattr("hermes_state_repair._db_opens_cleanly", lambda _path: None)
-
-    _state_db_health(Finding(), False, db_path, "~/hermes")
-
-    factory.assert_called_once_with(db_path=db_path, read_only=True)
-    db.close.assert_called_once()
-
-
-def test_doctor_with_fix_also_counts_through_read_only_store(monkeypatch, tmp_path):
-    from hermes_cli.doctor_report import Finding
-    from hermes_cli.doctor_state import _state_db_health
-
-    db_path = tmp_path / "state.db"
-    db_path.touch()
-    db = MagicMock()
-    db.session_count.return_value = 3
-    factory = MagicMock(return_value=db)
-    monkeypatch.setattr("hermes_state.SessionDB", factory)
-    monkeypatch.setattr("hermes_state_repair._db_opens_cleanly", lambda _path: None)
-
-    _state_db_health(Finding(), True, db_path, "~/hermes")
-
-    factory.assert_called_once_with(db_path=db_path, read_only=True)
-    db.close.assert_called_once()
-
-
 def test_sessions_list_stats_and_pinned_open_a_read_only_store(monkeypatch):
     factory = MagicMock()
     monkeypatch.setattr("hermes_state.SessionDB", factory)

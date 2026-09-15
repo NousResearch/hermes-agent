@@ -204,7 +204,7 @@ def _blank_slate_minimize_config(config: dict):
 
 
 def _set_bundled_skills_opt_out(opt_out: bool, log_label: str, on_success=None, on_error=None) -> None:
-    """Record the bundled-skills opt-out marker and sync (essential skills are always seeded);
+    """Record the bundled-skills opt-out marker and sync (no bundled skills are seeded);
     ``on_success(sync_result)`` / ``on_error(exc)`` report the outcome."""
     try:
         from tools.skills_sync import sync_skills
@@ -233,8 +233,7 @@ def _run_blank_slate_setup(config: dict, hermes_home, is_existing: bool):
           "Forced on: Provider & Model, File Operations, Terminal, Vision, Skills.",
           "Everything else (web, browser, code exec, memory,",
           "delegation, cron, plugins, MCP, …) starts disabled. The",
-          "essential `hermes-agent` skill is always kept so the agent",
-          "can help you drive and configure Hermes itself.", None)
+          "bundled skills are seeded until you explicitly opt in.", None)
 
     # Step 1: Provider & Model (REQUIRED — the agent cannot run without it)
     print_header("Step 1 — Provider & Model (required)")
@@ -286,12 +285,11 @@ def _blank_slate_walkthrough(config: dict, hermes_home):
         print_success(f"Seeded {copied} bundled skills.")
 
     def _opted_out(_result) -> None:
-        _info("No skills seeded (except the essential `hermes-agent`",
-              "skill). A .no-bundled-skills marker keeps future",
+        _info("No bundled skills seeded. A .no-bundled-skills marker keeps future",
               "`hermes update` runs from re-injecting them. Opt back in any",
               "time with `hermes skills opt-in --sync`.")
 
-    # Seeding first clears any stale opt-out marker; declining sets it (essential skills still seed).
+    # Seeding first clears any stale opt-out marker; declining prevents every bundled skill from seeding.
     _set_bundled_skills_opt_out(
         not seed_skills, "skill handling", on_success=_seeded if seed_skills else _opted_out,
         on_error=lambda exc: print_warning(f"Skill setup step encountered an error: {exc}"),

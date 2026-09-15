@@ -713,9 +713,10 @@ class TestNoBundledSkillsOptOut:
 
     def test_marker_skips_sync_and_removal_seeds_normally(self, tmp_path):
         bundled = tmp_path / "bundled"
-        skill = bundled / "category" / "new-skill"
-        skill.mkdir(parents=True)
-        (skill / "SKILL.md").write_text("---\nname: new-skill\n---\nbody\n")
+        for name in ("new-skill", "hermes-agent"):
+            skill = bundled / "category" / name
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text(f"---\nname: {name}\n---\nbody\n")
 
         skills_dir = tmp_path / "user_skills"
         manifest_file = skills_dir / ".bundled_manifest"
@@ -743,6 +744,7 @@ class TestNoBundledSkillsOptOut:
         assert opted_out["copied"] == []
         assert opted_out["total_bundled"] == 0
         assert not (skills_dir / "category" / "new-skill" / "SKILL.md").exists()
+        assert not (skills_dir / "category" / "hermes-agent" / "SKILL.md").exists()
 
         marker.unlink()
         with _patches():
@@ -750,6 +752,7 @@ class TestNoBundledSkillsOptOut:
 
         assert seeded.get("skipped_opt_out") is not True
         assert "new-skill" in seeded["copied"]
+        assert "hermes-agent" in seeded["copied"]
         assert (skills_dir / "category" / "new-skill" / "SKILL.md").exists()
 
 

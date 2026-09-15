@@ -12399,6 +12399,24 @@ def test_inflight_snapshot_carries_arrival_order_offsets():
     assert snapshot["correction_offsets"] == [len("Moving."), len("Moving.Still.")]
 
 
+def test_turn_admission_carries_synthetic_display_metadata_into_inflight_snapshot(monkeypatch):
+    """A reconnect must retain the typed synthetic user bubble (#112144)."""
+    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *_args: None)
+    agent = Mock()
+    session = {"agent": agent, "attached_images": [], "history_lock": threading.RLock()}
+    display_metadata = {"display_text": "Finished syncing the workspace"}
+
+    assert server._admit_prompt_turn(
+        "sid", session, "process completed", None, None, "process_complete", display_metadata,
+    ) == ([], agent)
+
+    snapshot = server._inflight_snapshot(session)
+
+    assert snapshot is not None
+    assert snapshot["display_kind"] == "process_complete"
+    assert snapshot["display_metadata"] == {"display_text": "Finished syncing the workspace"}
+
+
 def test_inflight_snapshot_omits_offsets_when_not_fully_recorded():
     """A pre-upgrade in-memory turn may carry corrections without offsets.
 

@@ -37,7 +37,9 @@ def _is_bot_mode_session(session: dict) -> bool:
     """
     from tools.bot_mode_probe import BOT_CHAT_TITLE
     hint = str(getattr(session.get("agent"), "_session_title_hint", "") or "").strip()
-    return (hint or _session_live_title(session, _session_lookup_key(session))) == BOT_CHAT_TITLE
+    if hint:  # any explicit hint decides; only an empty one costs a session-store read
+        return hint == BOT_CHAT_TITLE
+    return _session_live_title(session, _session_lookup_key(session)) == BOT_CHAT_TITLE
 
 
 def _hook_failure(what: str, exc: BaseException) -> None:

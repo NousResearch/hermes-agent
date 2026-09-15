@@ -1414,6 +1414,14 @@ platform_toolsets:
 # Use `hermes tools` to configure interactively, or edit platform_toolsets directly.
 #
 # CLI override: hermes chat --toolsets terminal,web,file
+#
+# Remove single tools everywhere while keeping the rest of their toolset
+# (applied after every toolset rule; also filters Tool Search and memory /
+# context-engine tools):
+# tools:
+#   disabled_functions:
+#     - skill_manage
+#     - web_extract
 
 # =============================================================================
 # MCP (Model Context Protocol) Servers

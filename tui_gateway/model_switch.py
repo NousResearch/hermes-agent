@@ -9,6 +9,7 @@ import contextlib
 import copy
 
 from .method_ctx import HandlerRegistry, bind_module
+from .contracts.events import ErrorPayload, NoticePayload
 from pathlib import Path
 from typing import Any
 import threading
@@ -357,7 +358,7 @@ def _sync_bot_capabilities(sid: str, session: dict) -> None:
         finally:
             srv._clear_session_context(tokens)
         new_agent._session_title_hint = "Bot Chat"
-        srv._emit("notice", sid, {"message": "Capabilities updated — this bot's tools and prompt were refreshed."})
+        srv._emit("notice", sid, NoticePayload(message="Capabilities updated — this bot's tools and prompt were refreshed."))
     except Exception as e:
         logger.warning("Bot capability sync failed for %s: %s", sid, e)
 
@@ -388,7 +389,7 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
             sid, session, raw, confirm_expensive_model=True, pin_session_override=False,
             persist_override=False)
     except Exception as e:
-        srv._emit("error", sid, {"message": f"Could not switch to configured model {model}: {e}"})
+        srv._emit("error", sid, ErrorPayload(message=f"Could not switch to configured model {model}: {e}"))
 
 
 def _pending_switch_selection_warning(model: str, provider: str) -> str | None:

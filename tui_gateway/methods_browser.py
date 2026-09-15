@@ -4,6 +4,7 @@ status)."""
 from __future__ import annotations
 
 from .contracts.tools_commands import BrowserManageParams, BrowserManageResult
+from .contracts.events import BrowserProgressPayload
 from .method_ctx import HandlerRegistry, bind_module
 import contextlib
 import os
@@ -109,7 +110,7 @@ def _browser_connect(rid, params: BrowserManageParams) -> BrowserManageResult | 
         messages.append(message)
         # Without a session id the TUI prints `messages` from the response (an event would double-render).
         if sid:
-            srv._emit("browser.progress", sid, {"message": message, "level": level})
+            srv._emit("browser.progress", sid, BrowserProgressPayload(message=message, level=level))
     parsed = urlparse(url if "://" in url else f"http://{url}")
     if parsed.scheme not in srv._CDP_SCHEMES:
         return srv._err(rid, 4015, f"unsupported browser url: {url}")

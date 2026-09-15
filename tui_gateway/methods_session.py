@@ -4,7 +4,7 @@ Reaches server.py state through ``srv`` (method_ctx.py)."""
 import logging
 import contextlib
 
-from .contracts.base import Result
+from .contracts.base import Payload, Result
 
 from .contracts.billing_delegation_pets import (
     BillingChargeParams, BillingChargeResult, BillingChargeStatusParams, BillingChargeStatusResult,
@@ -18,7 +18,7 @@ from .contracts.billing_delegation_pets import (
     SubscriptionResumeResult, SubscriptionStateResult, SubscriptionUpgradeParams, SubscriptionUpgradeResult, UsageModel)
 from .contracts.common import OkResult, SessionLiveInfo, TranscriptMessage, Usage
 from .contracts.config_free_tier_control import VerificationStatusParams, VerificationStatusResult
-from .contracts.events import BillingStepUpVerificationPayload, SessionInfoPayload
+from .contracts.events import BillingStepUpVerificationPayload, PetGenerateProgressPayload, SessionInfoPayload
 from .contracts.projects_pets import (
     PetCellsParams, PetCellsResult, PetExportResult, PetGalleryParams, PetGalleryResult,
     PetInfoMetaResult, PetInfoParams, PetInfoResult, PetRenameParams, PetScaleParams,
@@ -201,7 +201,7 @@ def _pet_display_cfg() -> dict:
         return {}
 
 
-def _pet_emit(event: str, payload: dict, what: str) -> None:
+def _pet_emit(event: str, payload: Payload, what: str) -> None:
     """Best-effort progress emit: a transport hiccup must never abort generation."""
     try:
         srv._emit(event, "", payload)
@@ -1420,7 +1420,7 @@ def _(rid, params: PetGenerateParams) -> PetGenerateResult | dict:
         return srv._pet_gen_abort(rid, token, 5031, str(exc))
     out: list[dict] = []
     # Token-only init event so a Stop fired before the first draft can target this run.
-    srv._pet_emit("pet.generate.progress", {"token": token, "count": count}, "pet.generate init")
+    srv._pet_emit("pet.generate.progress", PetGenerateProgressPayload(token=token, count=count), "pet.generate init")
 
     def _on_draft(index: int, src) -> None:
         dest = stage / f"draft-{index}.png"
@@ -1431,7 +1431,7 @@ def _(rid, params: PetGenerateParams) -> PetGenerateResult | dict:
             logger.debug("pet.generate draft %d failed: %s", index, exc)
             return
         out.append({"index": index, "dataUri": data_uri})
-        srv._pet_emit("pet.generate.progress", {"token": token, "index": index, "dataUri": data_uri, "count": count},
+        srv._pet_emit("pet.generate.progress", PetGenerateProgressPayload(token=token, index=index, dataUri=data_uri, count=count),
                   "pet.generate progress")
     try:
         generate_base_drafts(prompt or "a pet based on the reference image", n=count,

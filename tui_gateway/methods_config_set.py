@@ -8,7 +8,7 @@ import os
 
 from hermes_constants import INDICATOR_STYLES
 
-from .contracts.events import SessionInfoPayload
+from .contracts.events import SessionInfoPayload, SkinPayload
 from .contracts.config_free_tier_control import ConfigSetParams, ConfigSetResult
 from .method_ctx import HandlerRegistry, bind_module
 from utils import is_truthy_value
@@ -445,7 +445,7 @@ def _set_personality(rid, params, key, value, session):
 def _set_skin(rid, params, key, value, session):
     srv._write_config_key("display.skin", value)
     # Every surface repaints; sync the watcher baseline so the poll loop doesn't re-broadcast.
-    srv._broadcast_global_event("skin.changed", srv.resolve_skin())
+    srv._broadcast_global_event("skin.changed", SkinPayload.model_validate(srv.resolve_skin()))
     srv._note_skin_broadcast()
     return srv._kv(rid, key, value)
 

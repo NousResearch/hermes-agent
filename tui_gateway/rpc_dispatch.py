@@ -36,6 +36,16 @@ def _handle_admitted_request(req: dict) -> dict | None:
         srv._current_rpc_method.reset(token)
 
 
+def _handler_error(req: dict, exc: Exception) -> dict:
+    """One error frame for a handler crash, inline or pooled. The model boundary raises ``TypeError`` on a
+    contract slip (a handler returning a dict, an emit handing a dict to a typed event); on stdio the
+    entry loop writes whatever ``dispatch`` returns and has no catch of its own, so an unwound inline
+    handler would end ``hermes --tui``. ``handle_request`` itself still raises: the pool worker and the
+    tests want the exception, not a frame."""
+    logger.exception("RPC handler crashed method=%r id=%r", req.get("method"), req.get("id"), exc_info=exc)
+    return srv._err(req.get("id"), -32000, f"handler error: {exc}")
+
+
 def dispatch(req: dict, transport: srv.Transport | None = None) -> dict | None:
     """Route inbound RPCs — long handlers to the pool (returns None; the worker writes its own
     response via the bound transport), everything else inline (returns the response dict).
@@ -54,7 +64,10 @@ def dispatch(req: dict, transport: srv.Transport | None = None) -> dict | None:
         if isinstance(normalized, dict):
             return normalized
         if normalized[1] not in srv._LONG_HANDLERS:
-            return srv.handle_request(req)
+            try:
+                return srv.handle_request(req)
+            except Exception as exc:
+                return srv._handler_error(req, exc)
         from hermes_cli.backend_retirement import retirement
 
         # Reserve BEFORE enqueueing: a queued handler has accepted work even though no worker runs yet.
@@ -69,7 +82,7 @@ def dispatch(req: dict, transport: srv.Transport | None = None) -> dict | None:
                 try:
                     resp = srv._handle_admitted_request(req)
                 except Exception as exc:
-                    resp = srv._err(req.get("id"), -32000, f"handler error: {exc}")
+                    resp = srv._handler_error(req, exc)
                 if resp is not None:
                     t.write(resp)
             future = srv._pool.submit(lambda: ctx.run(run))

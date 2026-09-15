@@ -73,6 +73,18 @@ def test_dispatch_rejects_non_error_dict_handler_result():
             server.handle_request({"id": "rpc-4", "method": name, "params": {"count": 7}})
 
 
+def test_inline_contract_slip_is_an_error_frame_on_the_transport():
+    """``dispatch`` (what stdio and WS call) answers an inline handler's contract slip with a JSON-RPC
+    error instead of unwinding into the entry loop; ``handle_request`` above still raises for the pool."""
+    with _registered(lambda rid, params: {"count": params.count}) as name:
+        response = server.dispatch({"jsonrpc": "2.0", "id": "rpc-5", "method": name, "params": {"count": 7}})
+
+    assert response is not None
+    assert response["id"] == "rpc-5"
+    assert response["error"]["code"] == -32000
+    assert "not an error frame" in response["error"]["message"]
+
+
 def test_event_frame_rejects_dict_payload():
     with pytest.raises(TypeError, match="payload must be"):
         server._event_frame("error", "sid", cast(Payload, {"message": "not a model"}))

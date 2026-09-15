@@ -914,6 +914,7 @@ def _current_session_steer_authority(session_id: str) -> tuple[Transport | None,
 
 
 
+
 def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
     ready = session.get("agent_ready")
     if ready is not None and not ready.wait(timeout=timeout):

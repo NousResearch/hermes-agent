@@ -23,6 +23,7 @@
 #   scripts/run_tests.sh tests/foo.py -v --tb=long  # bare flags "just work"
 #   scripts/run_tests.sh -k 'pattern'               # value flags pass through too
 #   scripts/run_tests.sh tests/foo.py -- --tb=long  # explicit '--' still works
+#   scripts/run_tests.sh --print-env                 # print the hermetic child env
 #
 # Bare pytest flags (anything starting with '-' that isn't one of this
 # runner's own options: -j/--jobs, --paths, --slice, --file-timeout, etc.)
@@ -162,8 +163,13 @@ cd "$REPO_ROOT"
 # Pre-building the bytecode cache once here (instead of each subprocess
 # compiling on first import) avoids redundant work across ~2000 processes.
 # Uses git to list tracked .py files (skips venv, node_modules, etc).
-echo "▶ pre-compiling bytecode cache"
-"$PYTHON" -m compileall -q -j 0 -- $(git ls-files '*.py') >/dev/null 2>&1 || true
+if [ "${1:-}" = "--print-env" ]; then
+  RUNNER_COMMAND=(env)
+else
+  echo "▶ pre-compiling bytecode cache"
+  "$PYTHON" -m compileall -q -j 0 -- $(git ls-files '*.py') >/dev/null 2>&1 || true
+  RUNNER_COMMAND=("$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "$@")
+fi
 
 echo "▶ launching test runner"
 exec env -i \
@@ -176,8 +182,10 @@ exec env -i \
   LC_ALL=C.UTF-8 \
   PYTHONHASHSEED=0 \
   PYTHONUTF8=1 \
+  NO_PROXY=127.0.0.1,localhost,::1 \
+  no_proxy=127.0.0.1,localhost,::1 \
   ${HERMES_RUN_SLOW_PET_TESTS:+HERMES_RUN_SLOW_PET_TESTS="$HERMES_RUN_SLOW_PET_TESTS"} \
   ${HERMES_E2E_BROWSER:+HERMES_E2E_BROWSER="$HERMES_E2E_BROWSER"} \
   ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \
   ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"} \
-  "$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "$@"
+  "${RUNNER_COMMAND[@]}"

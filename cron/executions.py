@@ -123,7 +123,10 @@ def _owner_is_live(pid: int, started_at: Optional[int]) -> bool:
     if started_at is None:
         return pid == os.getpid()
     current = _process_start_time(pid)
-    return current is not None and current == started_at
+    # The ms-resolution start-time readout drifts (~±1s/day observed on long-lived
+    # processes), so strict equality misjudges live owners as dead across day
+    # boundaries and the reap loop rewrites their executions to 'unknown'.
+    return current is not None and abs(float(current) - float(started_at)) <= 1000
 
 
 def _prune_unlocked(conn: sqlite3.Connection) -> None:

@@ -115,6 +115,14 @@ class TestTickReapsDeadOwnerClaims:
 
         assert executions.latest_execution("live-job")["status"] == "running"
 
+    def test_live_owner_start_time_tolerates_readout_drift(self, monkeypatch, executions):
+        """Long-lived owners remain live when start-time reads drift by milliseconds."""
+        monkeypatch.setattr(executions, "_process_start_time", lambda _pid: 99_999_300)
+        monkeypatch.setattr("gateway.status._pid_exists", lambda _pid: True)
+
+        assert executions._owner_is_live(1234, 100_000_000) is True
+        assert executions._owner_is_live(1234, 100_000_301) is False
+
     def test_reap_is_throttled_between_ticks(self, monkeypatch, executions):
         calls = []
         monkeypatch.setattr(

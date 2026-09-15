@@ -930,17 +930,12 @@ def _warm_turn_machinery_sync() -> int:
     """Synchronously initialize first-turn prerequisites (executor thread); returns the schema count.
 
     Covers the lazy init seen in skeleton turns: ``run_agent`` import graph, tool schemas (+ ``check_fn``
-    TTL cache), context files, the local Python toolchain probe (#106064)."""
+    TTL cache), and the local Python toolchain probe (#106064). Context files remain lazy because they
+    need the active turn's agent and model context."""
     import run_agent  # noqa: F401  # heavy import graph, cached in sys.modules
     import model_tools
 
     tool_defs = model_tools.get_tool_definitions(quiet_mode=True)
-    try:
-        from agent.prompt_builder import build_context_files_prompt
-
-        build_context_files_prompt()
-    except Exception:
-        logger.debug("context-file warm-up failed (non-fatal)", exc_info=True)
     from hermes_cli.config import load_config_readonly
 
     agent_cfg = load_config_readonly().get("agent")

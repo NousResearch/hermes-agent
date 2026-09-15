@@ -2,6 +2,7 @@
 
 import pytest
 
+from agent import prompt_builder
 import model_tools
 from gateway import run as gateway_run
 from tools import env_probe
@@ -35,6 +36,16 @@ def test_warmup_leaves_probe_cached_for_first_prompt(tmp_path, monkeypatch):
     assert env_probe._PROBE_DONE.is_set()
     assert env_probe.get_environment_probe_line() == "Python toolchain: fixture."
     assert calls == [1]  # single worker; the first turn reuses the cache
+
+
+def test_warmup_does_not_build_context_files_without_turn_context(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        prompt_builder,
+        "build_context_files_prompt",
+        lambda: pytest.fail("gateway warm-up must not build context files"),
+    )
+
+    _warm(tmp_path, monkeypatch, {}, "local")
 
 
 @pytest.mark.parametrize("agent_section,backend", [({"environment_probe": False}, "local"), ({}, "ssh")])

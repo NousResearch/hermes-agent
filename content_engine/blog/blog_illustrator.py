@@ -101,7 +101,16 @@ def _load_codex_pool():
     return load_pool("openai-codex")
 
 
-def _codex_auth_payload(entry) -> dict:
+def _codex_auth_payload(entry, *, refresher=None) -> dict:
+    """Build a Codex CLI auth payload for an isolated CODEX_HOME.
+
+    Recent Codex CLI versions refuse an auth file that lacks ``id_token`` at
+    parse time ("missing field id_token"). Pool entries only carry
+    access/refresh, so when no id_token is present we obtain a full token set
+    via ``refresher`` (the shared refresh path rotates and persists the grant,
+    and keeps a short-lived local cache so hero + section images share one
+    rotation).
+    """
     tokens = {
         "access_token": entry.access_token,
         "refresh_token": entry.refresh_token,
@@ -110,7 +119,46 @@ def _codex_auth_payload(entry) -> dict:
         value = getattr(entry, key, None)
         if value:
             tokens[key] = value
+    if "id_token" not in tokens and refresher is not None:
+        fresh = refresher(entry)
+        if fresh:
+            for key in ("access_token", "refresh_token", "id_token", "account_id"):
+                value = fresh.get(key)
+                if value:
+                    tokens[key] = value
     return {"tokens": tokens}
+
+
+# One rotation per entry per short window: a backlog run renders hero + inline
+# sections in the same process and each image would otherwise rotate again.
+_CODEX_IMAGE_TOKEN_CACHE: dict[str, tuple[float, dict]] = {}
+_CODEX_IMAGE_TOKEN_TTL_SECONDS = 600
+
+
+def _refresh_entry_tokens(entry) -> Optional[dict]:
+    """Refresh one pool entry's tokens; rotation persists via hermes auth."""
+    key = str(getattr(entry, "id", "") or entry.refresh_token)
+    now = time.time()
+    cached = _CODEX_IMAGE_TOKEN_CACHE.get(key)
+    if cached and now - cached[0] < _CODEX_IMAGE_TOKEN_TTL_SECONDS:
+        return cached[1]
+    try:
+        from hermes_cli.auth_codex import _refresh_codex_auth_tokens
+
+        fresh = _refresh_codex_auth_tokens(
+            {
+                "access_token": str(entry.access_token or ""),
+                "refresh_token": str(entry.refresh_token or ""),
+            },
+            timeout_seconds=30.0,
+        )
+    except Exception as exc:
+        print(f"[blog_illustrator] codex token refresh failed for {key}: {exc}")
+        return None
+    if isinstance(fresh, dict) and fresh.get("access_token"):
+        _CODEX_IMAGE_TOKEN_CACHE[key] = (now, fresh)
+        return fresh
+    return None
 
 
 def _write_private_json(path: Path, payload: dict) -> None:
@@ -165,7 +213,10 @@ def _generate_codex_image(full_prompt: str, out_path: str,
             with tempfile.TemporaryDirectory(prefix="hermes-codex-image-") as codex_home:
                 codex_home_path = Path(codex_home)
                 auth_path = codex_home_path / "auth.json"
-                _write_private_json(auth_path, _codex_auth_payload(entry))
+                _write_private_json(
+                    auth_path,
+                    _codex_auth_payload(entry, refresher=_refresh_entry_tokens),
+                )
                 child_env = os.environ.copy()
                 child_env["CODEX_HOME"] = codex_home
                 result = subprocess.run(

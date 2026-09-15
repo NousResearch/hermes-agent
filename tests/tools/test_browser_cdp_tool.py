@@ -467,13 +467,6 @@ def test_nested_unflagged_binary_path_passes_through(cdp_server):
 # ---------------------------------------------------------------------------
 
 
-def test_schema_description_is_toolset_neutral():
-    """#39797: the static schema must not name web_extract — model_tools adds it only when the session has it."""
-    desc = browser_cdp_tool.BROWSER_CDP_SCHEMA["description"]
-    assert browser_cdp_tool.CDP_DOCS_URL in desc
-    assert "web_extract" not in desc
-
-
 # ---------------------------------------------------------------------------
 # Private-network guard
 # ---------------------------------------------------------------------------

@@ -1092,10 +1092,6 @@ class TestOpenAIModelExecutionGuidance:
         assert "correctness" in text
 
 
-    def test_guidance_does_not_mandate_specific_web_tool(self):
-        # #39797: naming web_search here overrode SOUL.md and dangled when the web toolset was off.
-        assert "web_search" not in OPENAI_MODEL_EXECUTION_GUIDANCE
-        assert "web_extract" not in OPENAI_MODEL_EXECUTION_GUIDANCE
 
     def test_guidance_is_string(self):
         assert isinstance(OPENAI_MODEL_EXECUTION_GUIDANCE, str)

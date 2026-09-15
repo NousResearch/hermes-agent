@@ -466,11 +466,11 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
 )
 
 
-def execution_guidance_text(valid_tool_names=None) -> str:
-    """OPENAI_MODEL_EXECUTION_GUIDANCE for the session's toolset (cache-safe: the toolset is fixed per session).
+def execution_guidance_text() -> str:
+    """OPENAI_MODEL_EXECUTION_GUIDANCE as injected into the system prompt.
 
     The guidance names no web tool (#39797: a hard "use web_search" overrode SOUL.md and dangled in Blank Slate),
-    so the text is the same for every toolset; the seam stays so a future toolset-dependent line has a home.
+    so the text is toolset-neutral and needs no per-session filtering.
     """
     return OPENAI_MODEL_EXECUTION_GUIDANCE
 

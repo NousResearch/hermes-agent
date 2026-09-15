@@ -26,25 +26,11 @@ class TestHermesAgentHelpGuidance:
 
 
 class TestExecutionGuidanceText:
-    def test_full_text_when_web_search_available(self):
-        from agent.prompt_builder import (
-            OPENAI_MODEL_EXECUTION_GUIDANCE,
-            execution_guidance_text,
-        )
-        assert execution_guidance_text({"web_search", "terminal"}) == (
-            OPENAI_MODEL_EXECUTION_GUIDANCE
-        )
-
-    def test_full_text_when_toolset_unknown(self):
-        from agent.prompt_builder import (
-            OPENAI_MODEL_EXECUTION_GUIDANCE,
-            execution_guidance_text,
-        )
-        assert execution_guidance_text(None) == OPENAI_MODEL_EXECUTION_GUIDANCE
-
     def test_no_web_tool_named_without_web_tools(self):
-        from agent.prompt_builder import execution_guidance_text
-        text = execution_guidance_text({"terminal", "read_file"})
+        # #39797: naming web_search here overrode SOUL.md and dangled when the web toolset was off.
+        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE, execution_guidance_text
+        text = execution_guidance_text()
+        assert text == OPENAI_MODEL_EXECUTION_GUIDANCE
         assert "web_search" not in text and "web_extract" not in text
         # The surrounding structure survives.
         assert "<mandatory_tool_use>" in text

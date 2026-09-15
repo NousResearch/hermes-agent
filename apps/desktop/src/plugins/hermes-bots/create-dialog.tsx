@@ -45,7 +45,14 @@ import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
-import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
+import {
+  GROUP_CHAT_MAX_MEMBERS,
+  GROUP_CHAT_MEMBER_LIMIT_CEILING,
+  mintGroupRoomId,
+  resolveGroupChatMemberLimit,
+  uniqueGroupChatName,
+  updateGroupChat
+} from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { GroupImageControls } from './group-chat-parts'
 import {
@@ -1132,6 +1139,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   const [checked, setChecked] = useState<Record<string, boolean>>({})
   const [name, setName] = useState('')
   const [image, setImage] = useState<null | string>(null)
+  const [memberLimitInput, setMemberLimitInput] = useState(String(GROUP_CHAT_MAX_MEMBERS))
 
   // Reset per open so a cancelled draft doesn't leak into the next one.
   useEffect(() => {
@@ -1140,6 +1148,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       setChecked({})
       setName('')
       setImage(null)
+      setMemberLimitInput(String(GROUP_CHAT_MAX_MEMBERS))
     }
   }, [open])
 
@@ -1148,18 +1157,19 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
   const selectableRoster = roster.filter(bot => !bot?.ghost)
   const selected = selectableRoster.filter(bot => checked[botRosterKey(bot)])
   const visible: RosterRow[] = filterBots(selectableRoster, allMeta, query)
-  const atCap = selected.length >= GROUP_CHAT_MAX_MEMBERS
+  const memberLimit = resolveGroupChatMemberLimit(memberLimitInput)
+  const atCap = selected.length >= memberLimit
 
   const placeholder = selected.length
     ? selected.map(bot => displayName(bot, botRosterMeta(bot, allMeta))).join(', ')
     : b.group.nameLabel
 
-  const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length)
+  const canCreate = selected.length >= 2 && selected.length <= memberLimit && Boolean(name.trim() || selected.length)
 
   const create = () => {
     const base = (name.trim() || placeholder).slice(0, 64)
 
-    if (selected.length < 2 || !base) {
+    if (selected.length < 2 || selected.length > memberLimit || !base) {
       return
     }
 
@@ -1192,6 +1202,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     const roomMembers = durableGroupChatMembers(selected)
     updateGroupChat(groupName, (room: GroupChatRoom) => {
       room.members = roomMembers
+      room.memberLimit = memberLimit
       room.roomId = roomId
 
       if (image) {
@@ -1220,8 +1231,25 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>{b.group.newTitle}</DialogTitle>
-          <DialogDescription>{`Pick 2–${GROUP_CHAT_MAX_MEMBERS} bots. Local memberships sync through each Bot profile; cross-machine members stay scoped to this room.`}</DialogDescription>
+          <DialogDescription>{`Pick 2–${memberLimit} bots. Local memberships sync through each Bot profile; cross-machine members stay scoped to this room.`}</DialogDescription>
         </DialogHeader>
+        <label className="grid grid-cols-[1fr_5rem] items-center gap-3 text-xs text-(--ui-text-secondary)">
+          <span>
+            Maximum bots
+            <span className="block text-[0.625rem] text-(--ui-text-quaternary)">
+              Default {GROUP_CHAT_MAX_MEMBERS}, maximum {GROUP_CHAT_MEMBER_LIMIT_CEILING}
+            </span>
+          </span>
+          <Input
+            aria-label="Maximum bots"
+            max={GROUP_CHAT_MEMBER_LIMIT_CEILING}
+            min={2}
+            onBlur={() => setMemberLimitInput(String(memberLimit))}
+            onChange={event => setMemberLimitInput(event.target.value)}
+            type="number"
+            value={memberLimitInput}
+          />
+        </label>
         {/* TODO(bot-mode-types): this search box never takes focus when the dialog
             opens — SearchField accepts no `autoFocus` prop and forwards no extra
             props, so the `autoFocus` that used to sit here was inert. */}
@@ -1343,7 +1371,13 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
           <Button
             disabled={!canCreate}
             onClick={create}
-            title={selected.length < 2 ? 'Pick at least 2 bots' : undefined}
+            title={
+              selected.length < 2
+                ? 'Pick at least 2 bots'
+                : selected.length > memberLimit
+                  ? `Reduce the selection to ${memberLimit} bots`
+                  : undefined
+            }
           >{`Create Group${selected.length ? ` (${selected.length})` : ''}`}</Button>
         </DialogFooter>
       </DialogContent>

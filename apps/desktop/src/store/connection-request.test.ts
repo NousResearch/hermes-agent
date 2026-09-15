@@ -1,5 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+vi.mock('./session-states', () => ({
+  requestForOwnedSession: vi.fn(
+    (
+      _sessionId: null | string,
+      ambientRequest: (method: string, params?: Record<string, unknown>) => Promise<unknown>,
+      method: string,
+      params?: Record<string, unknown>
+    ) => ambientRequest(method, params)
+  )
+}))
+
 import {
   $connectionRequests,
   applyConnectionUpdate,
@@ -16,6 +27,7 @@ import {
   updateConnectionRequest
 } from './connection-request'
 import { $gateway } from './gateway'
+import { requestForOwnedSession } from './session-states'
 
 const WIRE = {
   deadline_at: 1_800_000_000,
@@ -60,6 +72,7 @@ function frame(
 describe('connection-request store', () => {
   beforeEach(() => {
     $connectionRequests.set({})
+    vi.mocked(requestForOwnedSession).mockClear()
   })
 
   afterEach(() => {
@@ -180,6 +193,26 @@ describe('connection-request store', () => {
     updateConnectionRequest('a', frame({ gmail: 'connected', notion: 'skipped' }, { settled: true, settled_by: 'all_resolved' }))
     expect(await respondToConnectionRequest(req, { settled_by: 'continue' })).toBe(false)
     expect(hasConnectionRequest('a')).toBe(false)
+  })
+
+  it('routes connection.respond through the session owner, not the ambient gateway directly (#91684/#94640 class)', async () => {
+    const rpc = vi.fn().mockResolvedValue({ status: 'ok', settled: false })
+    $gateway.set(fakeGateway(rpc))
+    const req = request('secondary-session')
+    setConnectionRequest(req)
+
+    await skipConnectionTarget(req, 'notion')
+
+    // reissue() on this same card already dials the owner via requestGatewayForAgent (#91684 /
+    // #94640); respondToConnectionRequest (Continue / Not now) must go through the identical
+    // owner-resolution chokepoint instead of reading $gateway ambiently, or a card for a session
+    // owned by a secondary/registered connection answers on the wrong backend.
+    expect(requestForOwnedSession).toHaveBeenCalledWith(
+      'secondary-session',
+      expect.any(Function),
+      'connection.respond',
+      { op_id: 'op-1', result: { targets: [{ name: 'notion', status: 'skipped' }] }, session_id: 'secondary-session' }
+    )
   })
 
   it('typing while the card is open sends Continue, not a per-target decline', async () => {

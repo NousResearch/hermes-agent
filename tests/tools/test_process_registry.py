@@ -2635,6 +2635,44 @@ class TestSystemdCgroupIsolation:
         assert "DBUS_SESSION_BUS_ADDRESS" not in os.environ
 
     @pytest.mark.linux_only
+    def test_scoped_spawn_lost_user_bus_honours_configured_runtime_dir(self, monkeypatch, request):
+        """The lost-bus check must derive from the env the worker was spawned with: when the bus
+        lives under a configured ``XDG_RUNTIME_DIR`` (not ``/run/user/<uid>``), an unrelated wrapper
+        exit is not a lost bus and must not flip the cached scope verdict to unscoped dispatch."""
+        import socket
+        import tempfile
+
+        import tools.process_registry as pr
+
+        runtime_dir = pr.Path(tempfile.mkdtemp(prefix="hbus-", dir="/tmp"))
+        runtime_dir.chmod(0o700)
+        bus_path = runtime_dir / "bus"
+        bus_socket = socket.socket(socket.AF_UNIX)
+        bus_socket.bind(str(bus_path))
+
+        def _cleanup():
+            bus_socket.close()
+            bus_path.unlink(missing_ok=True)
+            runtime_dir.rmdir()
+
+        request.addfinalizer(_cleanup)
+
+        monkeypatch.setattr(pr, "_default_user_runtime_dir", lambda: pr.Path("/nonexistent/run/user/0"))
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", True)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", pr.time.monotonic())
+        spawn_env = pr.systemd_user_bus_env({"XDG_RUNTIME_DIR": str(runtime_dir)})
+        assert spawn_env["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={bus_path}"
+
+        assert pr.scoped_spawn_lost_user_bus(spawn_env) is False
+        assert pr._SYSTEMD_SCOPE_AVAILABLE is True
+
+        # Same spawn env, bus actually gone: now it is a lost bus and the verdict flips.
+        bus_socket.close()
+        bus_path.unlink()
+        assert pr.scoped_spawn_lost_user_bus(spawn_env) is True
+        assert pr._SYSTEMD_SCOPE_AVAILABLE is False
+
+    @pytest.mark.linux_only
     def test_probe_succeeds_without_bin_true(self, monkeypatch):
         """An absent ``/bin/true`` must not make a usable scope fail its probe."""
         import tools.process_registry as pr

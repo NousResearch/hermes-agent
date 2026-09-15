@@ -3261,7 +3261,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
             with _running_lock:
                 _restart_safe_waiter_job_ids.discard(job_id)
             payload_path.unlink(missing_ok=True)
-            if dispatch.mode == "scoped" and scoped_spawn_lost_user_bus():
+            if dispatch.mode == "scoped" and scoped_spawn_lost_user_bus(worker_env):
                 # systemd-run itself failed (stderr is DEVNULL): name the cause, not the exit code.
                 raise RuntimeError(
                     "restart-safe systemd scope could not be created: the user D-Bus session at "

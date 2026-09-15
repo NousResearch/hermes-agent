@@ -325,13 +325,20 @@ class GatewayChildDispatch(NamedTuple):
     argv: List[str]
 
 
-def scoped_spawn_lost_user_bus() -> bool:
+def scoped_spawn_lost_user_bus(spawn_env: Dict[str, str]) -> bool:
     """After a ``systemd-run --user --scope`` wrapper exits before its child could start: True
     when the user bus is gone (:func:`systemd_user_bus_env` derives nothing), in which case the
     cached True verdict is replaced so the next dispatch re-probes and degrades instead of
-    consuming another occurrence on the same dead wrapper (#110803)."""
+    consuming another occurrence on the same dead wrapper (#110803).
+
+    *spawn_env* is the environment the wrapper was launched with: re-deriving from it (minus the
+    bus address it carried) honours a configured ``XDG_RUNTIME_DIR`` exactly as the spawn did, so
+    an unrelated wrapper exit on a host whose bus lives outside ``/run/user/<uid>`` is not
+    misread as a lost bus."""
     global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT
-    if systemd_user_bus_env({}):
+    base_env = dict(spawn_env)
+    base_env.pop("DBUS_SESSION_BUS_ADDRESS", None)
+    if "DBUS_SESSION_BUS_ADDRESS" in systemd_user_bus_env(base_env):
         return False
     with _SYSTEMD_SCOPE_PROBE_LOCK:
         _SYSTEMD_SCOPE_AVAILABLE = False

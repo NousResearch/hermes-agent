@@ -98,6 +98,78 @@ def test_recover_inserts_via_append_message_and_deletes_file(tmp_path, monkeypat
     assert not flush_file.exists()
 
 
+def test_recover_payload_without_session_id_uses_resolver_and_deletes_file(
+    tmp_path, monkeypatch
+):
+    """A str-pending payload carries session_key but no session_id; a resolver
+    maps key→id so the message replays and the file is removed."""
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    ts = int(time.time())
+    payload = {
+        "session_key": "agent:main:whatsapp:dm:15551234567",
+        "reason": "shutdown",
+        "ts": ts,
+        "data": {"text": "lost message"},
+    }
+    flush_file = flush_dir / "no_sid.json"
+    flush_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    mock_db = MagicMock()
+    resolver = MagicMock(return_value="sid-resolved")
+    count = recover_pending_to_db(mock_db, resolve_session_id=resolver)
+
+    assert count == 1
+    resolver.assert_called_once_with("agent:main:whatsapp:dm:15551234567", payload)
+    mock_db.append_message.assert_called_once_with(
+        session_id="sid-resolved", role="user", content="lost message", timestamp=ts
+    )
+    assert not flush_file.exists()
+
+
+def test_recover_payload_without_session_id_resolver_none_preserves_file(
+    tmp_path, monkeypatch
+):
+    """When the resolver cannot map the key, the file is preserved (never delete an
+    unrecoverable message)."""
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    payload = {
+        "session_key": "agent:main:whatsapp:dm:15551234567",
+        "data": {"text": "lost message"},
+    }
+    flush_file = flush_dir / "no_sid.json"
+    flush_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    mock_db = MagicMock()
+    count = recover_pending_to_db(mock_db, resolve_session_id=lambda key, payload: None)
+
+    assert count == 0
+    mock_db.append_message.assert_not_called()
+    assert flush_file.exists()
+
+
+def test_recover_payload_without_session_id_no_resolver_preserves_file(
+    tmp_path, monkeypatch
+):
+    """Existing behaviour: without a resolver, a session_id-less payload is preserved."""
+    flush_dir = _make_flush_dir(tmp_path)
+    monkeypatch.setattr("gateway.shutdown_flush._get_flush_dir", lambda: flush_dir)
+    payload = {
+        "session_key": "agent:main:whatsapp:dm:15551234567",
+        "data": {"text": "lost message"},
+    }
+    flush_file = flush_dir / "no_sid.json"
+    flush_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    mock_db = MagicMock()
+    count = recover_pending_to_db(mock_db)
+
+    assert count == 0
+    mock_db.append_message.assert_not_called()
+    assert flush_file.exists()
+
+
 def test_recover_closes_owned_db_when_unexpected_exception_escapes(
     tmp_path, monkeypatch
 ):

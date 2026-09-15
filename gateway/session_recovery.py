@@ -178,6 +178,76 @@ class SessionRecoveryMixin:
                 raise
             return None
 
+    @staticmethod
+    def _platform_from_session_key(session_key: Optional[str]) -> Optional[str]:
+        """Platform value encoded in a gateway session key (``parts[2]``), or None."""
+        if not session_key:
+            return None
+        parts = str(session_key).split(":")
+        if len(parts) < 3 or parts[0] != "agent":
+            return None
+        return parts[2] or None
+
+    @staticmethod
+    def _whatsapp_alias_session_keys(session_key: str, chat_id: Optional[str] = None) -> list:
+        """Rebuild *session_key* under every WhatsApp alias of its chat id (phone<->LID drift).
+
+        The flush key may carry the phone-form chat id while the durable row's key carries the
+        LID form (or vice versa); ``expand_whatsapp_aliases`` lets each alias resolve. Non-WhatsApp
+        keys yield no aliases. ``chat_id`` overrides the key's chat-id slot when provided.
+        """
+        parts = str(session_key).split(":")
+        if len(parts) < 5 or parts[0] != "agent" or parts[2] != Platform.WHATSAPP.value:
+            return []
+        source_id = chat_id or parts[4]
+        try:
+            from gateway.whatsapp_identity import expand_whatsapp_aliases
+            aliases = expand_whatsapp_aliases(str(source_id))
+        except Exception as exc:
+            logger.debug("WhatsApp alias expansion failed for %s: %s", source_id, exc)
+            return []
+        rebuilt = []
+        for alias in aliases:
+            alias = str(alias)
+            if alias and alias != parts[4]:
+                rebuilt.append(":".join(parts[:4] + [alias] + parts[5:]))
+        return rebuilt
+
+    def resolve_session_id_for_key(
+        self, session_key: str, *, chat_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Resolve a gateway session key to a live session_id at shutdown-flush recovery.
+
+        Recovery runs before the in-memory routing map is rebuilt, so this reads the durable row
+        directly (via the profile-aware ``_db_for_key`` and the exact-key peer finder, which keeps
+        the reset fence: rows ended only by recoverable reasons match; explicit boundaries do not).
+        WhatsApp keys are also tried under every phone<->LID alias of their chat id. Never mints a
+        session; returns None when the row is absent or unrecoverable (the caller must then preserve
+        the flush file). ``chat_id`` optionally overrides the key's chat-id slot for alias expansion.
+        """
+        if not session_key:
+            return None
+        db = self._db_for_key(session_key)
+        finder = getattr(db, "find_latest_gateway_session_for_peer", None) if db else None
+        if not callable(finder):
+            return None
+        platform = self._platform_from_session_key(session_key)
+        if not platform:
+            return None
+        candidates = [session_key]
+        for alias_key in self._whatsapp_alias_session_keys(session_key, chat_id=chat_id):
+            if alias_key and alias_key not in candidates:
+                candidates.append(alias_key)
+        for candidate in candidates:
+            try:
+                row = finder(source=platform, session_key=candidate)
+            except Exception as exc:
+                logger.debug("Session key->id resolution failed for %s: %s", candidate, exc)
+                continue
+            if isinstance(row, dict) and row.get("id"):
+                return str(row["id"])
+        return None
+
     def _recover_session_from_db(
         self, *, session_key: str, source: SessionSource, now: datetime,
         raise_on_lookup_error: bool = False) -> Optional[SessionEntry]:

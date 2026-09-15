@@ -198,11 +198,15 @@ def _serialise_value(value: Any) -> Optional[dict]:
     return {"text": str(value)}
 
 
-def recover_pending_to_db(session_db=None) -> int:
+def recover_pending_to_db(session_db=None, *, resolve_session_id=None, session_store=None) -> int:
     """Replay flush-dir ``*.json`` files via ``SessionDB.append_message``, deleting each on success.
 
     ``session_db=None`` opens (and afterwards releases) the shared default ``state.db``.
-    Returns the number of messages recovered.
+    ``resolve_session_id`` (optional ``(session_key, payload) -> Optional[str]``) maps a
+    session_key to a session_id when the payload carries only a key (plain-str pending values).
+    ``session_store`` (optional) routes the append to the profile owning the key (multiplexed
+    gateways); shutdown_flush stays decoupled — neither is imported at module level. Returns the
+    number of messages recovered.
     """
     flush_files = sorted(_get_flush_dir().glob("*.json"))
     if not flush_files:
@@ -218,7 +222,10 @@ def recover_pending_to_db(session_db=None) -> int:
             # Agent-history snapshots are for manual operator recovery, not automatic DB insertion.
             if payload.get("reason") == "shutdown-with-unpersisted-agent-history":
                 continue
-            if _recover_one_payload(session_db, path, payload):
+            if _recover_one_payload(
+                session_db, path, payload,
+                resolve_session_id=resolve_session_id, session_store=session_store,
+            ):
                 recovered += 1
                 path.unlink(missing_ok=True)
     finally:
@@ -231,8 +238,13 @@ def recover_pending_to_db(session_db=None) -> int:
     return recovered
 
 
-def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any]) -> bool:
-    """Append one flush payload to ``session_db``; False (file kept) when structurally invalid."""
+def _recover_one_payload(
+    session_db, path: Path, payload: Dict[str, Any], *,
+    resolve_session_id=None, session_store=None,
+) -> bool:
+    """Append one flush payload to its owning ``session_db``; False (file kept) when structurally
+    invalid or unrecoverable. ``resolve_session_id`` maps a session_key to a session_id when the
+    payload lacks one; ``session_store`` routes the append to the profile owning the key."""
     # Cap-dropped transcript payloads carry the full message dict keyed by session_id — replay directly
     # (#78182). This handles spool files that were never drained before a restart.
     if payload.get("reason") == TRANSCRIPT_CAP_DROP_REASON:
@@ -254,15 +266,27 @@ def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any]) -> boo
                        "the flush file has been preserved", path)
         return False
     # session_key is a gateway routing key (e.g. "agent:main:telegram:..."); appending a row
-    # needs the real session_id, which only the serialised data can supply at this stage.
+    # needs the real session_id, which the serialised data may lack for plain-str pending values.
     session_id = data.get("session_id", "")
+    if not session_id and resolve_session_id is not None:
+        session_id = resolve_session_id(session_key, payload)
     if not session_id:
         logger.warning("Cannot recover pending message for %s: no session_id in flush file and "
-                       "session_key-to-id resolution is not available at this recovery stage. "
+                       "session_key-to-id resolution failed. "
                        "The message text is preserved in %s", session_key, path)
         return False
-    session_db.append_message(session_id=session_id, role="user", content=text,
-                              timestamp=payload.get("ts", int(time.time())))
+    target_db: Any = session_db
+    if session_store is not None and session_key:
+        store_db = getattr(session_store, "_db_for_key", None)
+        if callable(store_db):
+            try:
+                routed = store_db(session_key)
+            except Exception:
+                routed = None
+            if routed is not None:
+                target_db = routed
+    target_db.append_message(session_id=session_id, role="user", content=text,
+                             timestamp=payload.get("ts", int(time.time())))
     return True
 
 

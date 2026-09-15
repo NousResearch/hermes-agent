@@ -266,7 +266,10 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
                     # compression splits back to the reaped child, forever).
                     if _is_gateway_owned_source((db.get_session(session_id) or {}).get("source", "")):
                         _tui_owns_lifecycle = False
-                    elif _tui_owns_lifecycle:
+                    elif _tui_owns_lifecycle and not _desktop_automatic_cleanup:
+                        # Automatic Desktop cleanup (ws_orphan_reap, idle_timeout, etc.) reclaims
+                        # runtime but must not end the durable row — the conversation stays open
+                        # and resumable until the user explicitly closes or archives it.  #105588
                         db.end_session(session_id, end_reason)
     # In-flight async delegations end WITH the session (no return address left). Always interrupt by THIS live UI
     # sid; by durable session_key only when the TUI owns the lifecycle — a viewer tab must not kill gateway work.

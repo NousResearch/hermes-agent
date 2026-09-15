@@ -344,7 +344,8 @@ def test_automatic_cleanup_reclaims_own_orphan_lease_not_treated_as_sibling(
 
     server._finalize_session(session, end_reason="ws_orphan_reap")
 
-    assert ended == [(session_id, "ws_orphan_reap")]
+    # Automatic Desktop cleanup must NOT end the durable row (#105588).
+    assert ended == []
     assert active_session_registry_snapshot(registry_home=profile_home) == []
 
 
@@ -501,6 +502,9 @@ def test_automatic_desktop_cleanup_preserves_sibling_and_ends_sole_owner(
             server._finalize_session(_session(sole_lease), end_reason=reason)
             assert active_session_registry_snapshot(registry_home=profile_home) == []
 
-        assert ended == [(session_id, reason) for reason in reasons]
+        # Automatic Desktop cleanup must NOT end the durable row, even for
+        # sole owners — the conversation stays open until the user explicitly
+        # closes or archives it.  (#105588)
+        assert ended == []
     finally:
         _stop_child(child, release_file)

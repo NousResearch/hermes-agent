@@ -155,8 +155,10 @@ describe('turn arc', () => {
 describe('epoch scoping', () => {
   it('queues follow-ups without cancelling the active turn or losing its reply delta', async () => {
     let release!: (reply: string) => void
-    const first = new Promise<string>(resolve => { release = resolve })
-    const room = await loadRoom({ turn: ({ n }) => n === 1 ? first : '(pass)' })
+    const first = new Promise<string>(resolve => {
+      release = resolve
+    })
+    const room = await loadRoom({ turn: ({ n }) => (n === 1 ? first : '(pass)') })
     const member: GroupMember[] = [{ name: 'research', title: '' }]
     const thread = room.rounds.sendToGroupChat('Busy', member, 'first ask')!
     await drain(() => room.gateway.calls.length < 1, 50)

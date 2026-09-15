@@ -13,11 +13,12 @@ from fastapi import APIRouter, HTTPException
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
     _AUX_TASK_SLOTS, _UNSET, _apply_model_assignment_sync, _dashboard_code_skew_guard,
+    _prepare_main_assignment,
 )
 from agent.model_metadata import is_local_endpoint
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import ModelAssignment, MoaConfigPayload, MoaModelSlot
-from hermes_cli.web_routers._common import config_write_scope, http_failure
+from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, config_write_scope, http_failure
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
@@ -299,10 +300,16 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
         reasoning_effort = body.reasoning_effort if "reasoning_effort" in body.model_fields_set else _UNSET
 
         def _apply_assignment():
-            # Same RMW span as PUT /api/config: applyMainModel fires this while
-            # the settings-page autosave is in flight — hold the mutation lock.
-            with config_write_scope(body.profile or profile):
-                return _apply_model_assignment_sync(
-                    scope, provider, model, task, base_url, api_key, reasoning_effort=reasoning_effort)
+            # Same RMW span as PUT /api/config: applyMainModel fires this while the
+            # settings-page autosave is in flight — hold the mutation lock. switch_model's
+            # catalog fetches / endpoint probes are network I/O, so they run BEFORE the lock;
+            # only load→apply→save holds it.
+            with _profile_scope(body.profile or profile):
+                prepared = (_prepare_main_assignment(load_config(), provider, model, base_url, api_key)
+                            if scope == "main" else None)
+                with _CONFIG_MUTATION_LOCK:
+                    return _apply_model_assignment_sync(
+                        scope, provider, model, task, base_url, api_key,
+                        reasoning_effort=reasoning_effort, prepared=prepared)
 
         return await asyncio.to_thread(_apply_assignment)

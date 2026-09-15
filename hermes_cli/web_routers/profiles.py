@@ -125,7 +125,7 @@ def _disable_unselected_skills(profile_dir: Path, keep: List[str]) -> int:
     from hermes_cli.config import load_config
     from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
     keep_set = {s.strip() for s in keep if s and s.strip()}
-    with _hermes_home_scope(profile_dir):
+    with _hermes_home_scope(profile_dir), _CONFIG_MUTATION_LOCK:  # RMW span
         skills_root = profile_dir / "skills"
         installed = ([md.parent.name for md in skills_root.rglob("SKILL.md")]
                      if skills_root.is_dir() else [])

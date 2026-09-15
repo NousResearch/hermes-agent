@@ -2486,6 +2486,81 @@ def mark_job_run(
     return _under_fire_fence(job_id, locked)
 
 
+# The reason recorded for an interrupted run is free text: the shutdown path supplies the phase
+# ("Gateway shutdown (post-interrupt) killed the job's tool subprocess before the run finished."),
+# and the scheduler's own paths phrase it for themselves. Nothing canonical exists to compare
+# against, so attribution is by marker and FAILS CLOSED: a reason that cannot be attributed to an
+# interruption is real information and is kept, never cleared.
+_INTERRUPTION_REASON_MARKERS = (
+    "killed the job's tool subprocess",
+    "gateway shutdown",
+    "interrupted",
+)
+
+
+def _is_interruption_reason(error: Any) -> bool:
+    """True when *error* is recognisably a shutdown's interruption reason (see the markers above)."""
+    text = str(error or "").lower()
+    return any(marker in text for marker in _INTERRUPTION_REASON_MARKERS)
+
+
+def reconcile_job_record(
+    job_id: str, *, execution_id: str, success: bool, note: Optional[str] = None,
+) -> bool:
+    """Repair a job's record after one of its interrupted runs was reconciled from evidence.
+
+    An interruption is not an outcome: a job left reading ``last_status = "interrupted"`` keeps the
+    question open in `cronjob list` long after the answer became known elsewhere. Once the attempt's
+    outcome is settled, the job record can say what actually happened — ``ok`` for a run that
+    completed, ``error`` for one that failed.
+
+    Applies ONLY when both hold, because a repair is worth exactly what its evidence is worth:
+
+    * ``execution_id`` is that job's most recent execution. A reconcile of an older attempt says
+      nothing about the state the job is in now, and a newer attempt in the ledger is enough to
+      disqualify it — so this can never overwrite the record of a run that started since. (Read
+      under the same lock as the record itself. A claim landing between that read and the save is
+      not represented here, and cannot be: it would be transient anyway, because the live run
+      writes its own outcome when it ends, which is the later write.)
+    * the job currently reads ``last_status == "interrupted"``. Anything else (a newer run, a manual
+      edit, an operator's own fix) has already moved past the interruption.
+
+    ``ok``: ``failure_streak`` resets to 0 and ``last_error`` is cleared ONLY when it is the
+    interruption's own reason (see ``_is_interruption_reason``). ``error``: the interruption's
+    reason is kept and the streak is left alone — the interruption was deliberately not counted as
+    a consecutive failure, and neither its repair nor its reason should pretend otherwise. *note* is
+    not written here: it belongs to the ledger's ``reconciled_note``, where the evidence lives.
+
+    This is not a run. It never advances ``next_run_at``, never touches the fire claim, and never
+    bumps ``repeat.completed``: a reconcile must move neither the schedule nor the at-most-once
+    dispatch accounting.
+    """
+    from cron.executions import latest_execution
+
+    def apply(jobs, _i, job):
+        # The ledger read sits inside the callback so it is evaluated with the record's own state
+        # under one lock: the repair rests on both conditions being true together.
+        latest = latest_execution(str(job_id))
+        if not latest or latest.get("id") != str(execution_id):
+            return False
+        if job.get("last_status") != "interrupted":
+            return False
+        if success:
+            job["last_status"] = "ok"
+            if _is_interruption_reason(job.get("last_error")):
+                job["last_error"] = None
+            job["failure_streak"] = 0
+        else:
+            job["last_status"] = "error"
+        save_jobs(jobs)
+        logger.info(
+            "Reconciled job %s to last_status=%s (execution %s): %s",
+            job_id, job["last_status"], execution_id, note or "no operator note")
+        return True
+
+    return bool(_with_job(job_id, apply, False))
+
+
 def _write_oneshot_diagnostic(job: Dict[str, Any], text: str, what: str) -> bool:
     """Best-effort operator-visible trace in the job's output dir; never breaks the caller."""
     try:

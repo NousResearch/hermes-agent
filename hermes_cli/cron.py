@@ -274,6 +274,68 @@ def cron_runs(job_id: Optional[str] = None, limit: int = 20):
               f"{record.get('claimed_at', '?')}")
         if record.get("error"):
             print(f"    {record['error']}")
+        if record.get("reconciled_at"):
+            print("    reconciled %s by %s on %s" % (
+                record["reconciled_at"], record.get("reconciled_by") or "?",
+                record.get("reconciled_evidence") or "?"))
+
+
+def cron_reconcile(args) -> int:
+    """Close a shutdown-interrupted execution against an authoritative record.
+
+    ``--evidence`` is required and must be readable: the verb exists to replace "we don't know"
+    with a checked outcome, not with an assertion. The row records the evidence path, its digest,
+    the caller, and the time, so the conclusion stays auditable after this process is gone.
+    """
+    from cron.executions import get_execution, reconcile_execution
+    from cron.jobs import reconcile_job_record
+
+    execution_id = (getattr(args, "execution", None) or "").strip()
+    status = (getattr(args, "status", None) or "").strip()
+    evidence = (getattr(args, "evidence", None) or "").strip()
+    note = getattr(args, "note", None)
+    if not execution_id or status not in ("completed", "failed") or not evidence:
+        print(color("✗ Usage: hermes cron reconcile --execution <execution_id> "
+                    "--status completed|failed --evidence <path> [--note <text>]", Colors.RED))
+        return 2
+    try:
+        record = reconcile_execution(execution_id, status=status, evidence=evidence, note=note)
+    except ValueError as exc:
+        print(color(f"✗ Refused: {exc}", Colors.RED))
+        return 1
+    if record is None:
+        # The refusal itself is the guarded UPDATE; this read is only to say WHY, and a row that
+        # moved on between the two calls falls through to the generic message rather than a wrong one.
+        existing = get_execution(execution_id)
+        if existing is None:
+            print(color(f"✗ No execution {execution_id} in this profile's ledger.", Colors.RED))
+        else:
+            print(color(f"✗ Refused: execution {execution_id} is '{existing.get('status')}'. Only an "
+                        "'unknown' attempt — owner proved gone, outcome never recorded — can be "
+                        "reconciled; every other state is either live or immutable.", Colors.RED))
+        return 1
+
+    print(color(f"✓ Execution {execution_id} reconciled: {status} "
+                f"(job {record.get('job_id', '?')}).", Colors.GREEN))
+    for label, value in (("Evidence", record.get("reconciled_evidence")),
+                         ("SHA-256", record.get("reconciled_evidence_sha256")),
+                         ("Caller", record.get("reconciled_by")),
+                         ("At", record.get("reconciled_at")),
+                         ("Note", record.get("reconciled_note"))):
+        if value:
+            print(f"    {label + ':':<10}{value}")
+    repaired = reconcile_job_record(
+        record.get("job_id", ""), execution_id=execution_id, success=(status == "completed"),
+        note=note)
+    if repaired:
+        print(f"    {'Job:':<10}last_status -> "
+              f"{'ok' if status == 'completed' else 'error'}")
+    else:
+        print("    Job:      not repaired (not this job's most recent execution, or its record "
+              "no longer reads 'interrupted')")
+    print(color("    A reconcile is not a run: next_run_at and the fire claim are untouched.",
+                Colors.DIM))
+    return 0
 
 
 _INCIDENT_STATE_COLORS = {"detected": Colors.RED, "alerted": Colors.YELLOW, "resolved": Colors.GREEN,
@@ -780,6 +842,7 @@ _CRON_SUBCOMMANDS = {
     "doctor": lambda a: cron_doctor(),
     "tick": lambda a: cron_tick(),
     "runs": lambda a: cron_runs(getattr(a, "job_id", None), getattr(a, "limit", 20)) or 0,
+    "reconcile": lambda a: cron_reconcile(a),
     "incidents": lambda a: cron_incidents(a),
     "notepad": lambda a: cron_notepad(a),
     "create": lambda a: cron_create(a),
@@ -801,7 +864,8 @@ def cron_command(args):
     if handler is not None:
         return handler(args)
     print(f"Unknown cron command: {subcmd}\n"
-          "Usage: hermes cron [list|create|edit|pause|resume|run|remove|resnap|status|runs|doctor|tick]")
+          "Usage: hermes cron [list|create|edit|pause|resume|run|remove|resnap|status|runs|"
+          "reconcile|doctor|tick]")
     sys.exit(1)
 
 

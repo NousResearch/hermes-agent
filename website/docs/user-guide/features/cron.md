@@ -368,6 +368,26 @@ Inspect recent attempts with `hermes cron runs [job-id] --limit 20` (alias:
 `history`). Terminal history is bounded; active attempts are never pruned. The
 ledger is included in quick backups.
 
+An `unknown` attempt can be closed once its outcome is knowable from outside -
+the detached pipeline's own report, an idempotency check against the system it
+wrote to:
+
+```bash
+hermes cron reconcile --execution <execution_id> --status completed|failed \
+  --evidence /path/to/record [--note "why"]
+```
+
+`--evidence` is required and must be readable: the verb replaces "we don't
+know" with a checked outcome, never with an assertion. The row keeps the
+evidence path, its SHA-256, the calling profile, and the time, so the
+conclusion stays auditable afterwards; a closed row is not silently
+re-openable (a second reconcile of it is refused, provenance untouched), and
+`claimed`/`running` rows - which have a live owner - are refused too. When the
+reconciled attempt is also that job's most recent execution, the job record the
+shutdown left reading `interrupted` is repaired to match it (`ok`, or `error`
+with the interruption's reason kept). A reconcile is not a run: it never moves
+`next_run_at`, the fire claim, or `repeat.completed`.
+
 Scheduled attempts also record their exact scheduled instant, separately from
 the time they were claimed. If an old `jobs.json` snapshot re-arms an occurrence
 that the retained ledger records as completed, Hermes skips that replay and

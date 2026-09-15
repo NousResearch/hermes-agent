@@ -147,7 +147,12 @@ dropped silently. The mechanics, in the order the due scan applies them
 3. **Already fired → never twice.** `completed_occurrence()` consults the
    executions ledger for a `completed` row with that exact `scheduled_instant`
    before anything is due; a slot that ran before the restart advances without
-   firing. `failed` / `unknown` rows do not count as completion.
+   firing. `failed` / `unknown` rows do not count as completion. Closing an
+   `unknown` row with `hermes cron reconcile`
+   (`cron/executions.py::reconcile_execution`) is what makes it count — the
+   outcome an operator established from evidence settles that occurrence too, so
+   a slot whose attempt was abandoned mid-flight is not restored and re-run
+   merely because the ledger never heard how it ended.
 4. **Late within grace → fire late.** Grace = half the period clamped to
    `[120 s, 2 h]` (`_compute_grace_seconds`); the dispatch is stamped
    `last_dispatch.kind = late`.

@@ -174,6 +174,12 @@ _SPECS = [
              help="Skill to force-load into the worker (repeatable). The kanban "
                   "lifecycle is already injected automatically. Example: --skill "
                   "translation --skill github-code-review"),
+        _arg("--review", "--independent", action="store_true", dest="review",
+             help="Mark this card as a review/verifier role: adds the "
+                  f"'{kbd.REVIEW_TAG_SKILL_DEFAULT}' skill so the dispatcher spawns its "
+                  "worker with --ignore-rules (no profile MEMORY.md/USER.md/preloaded "
+                  "skills). Use it whenever the card judges work the same profile did, "
+                  "so the reviewer cannot inherit the self-report it is checking."),
         _arg("--max-retries", type=int, metavar="N",
              help="Per-task override for the consecutive-failure "
                   f"circuit breaker. Trip on the Nth failure — e.g. --max-retries 1 blocks on the "

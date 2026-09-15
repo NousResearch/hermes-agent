@@ -13,6 +13,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Iterable, Optional
 import json
+import re
+import shlex
 import time
 
 
@@ -678,6 +680,111 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+# Title shapes that mean "this card's job is to judge someone else's work".
+# Deliberately anchored, not a bare ``\breview\b``: a title may mention review
+# in passing ("fix the review lane deadlock", "close review findings") without
+# being a review card. Two shapes fire:
+#   1. the title OPENS with the role verb — "Review X", "Audit Y", "[Spec] QA Z"
+#   2. an independence qualifier immediately precedes it — "Independent review",
+#      "Cold-review", "Uavhengig slutt-review", "adversarial audit"
+# Title only, never the body: bodies name review tooling and review criteria on
+# ordinary implementation cards, so body matching is almost pure noise.
+#
+# Measured against all four live board DBs (362 rows) before shipping, because
+# an over-firing heuristic is worse than no rule — this card's own parent was
+# halted for exactly that. Title+body with a bare keyword alternation fires on
+# 247/348 assigned cards (71%); title-only on that same loose pattern, 96 (28%).
+# The anchored pattern below fires on 55/348 across all history and **1 of 12**
+# live assigned cards — and it does fire on ``t_4540ec07``, the untagged
+# adversarial-review card that reported reviewing its own author's work. It is
+# a heuristic regardless, hence ``warning`` and a single dismissable signal;
+# set ``cfg["review_intent_pattern"] = ""`` to disable it entirely.
+REVIEW_INTENT_PATTERN = (
+    r"^\s*(?:\[[^\]]*\]\s*)?(?:re-?)?(?:review|verify|verification|audit|qa)\b"
+    r"|\b(?:independent(?:ly)?|adversarial(?:ly)?|cold|blind|external|uavhengig)[\s-]+"
+    r"(?:[\w-]+[\s-]+){0,2}?(?:re-?)?(?:review|verif\w+|audit|check)\b"
+)
+
+# Terminal statuses: the worker already ran (or never will), so tagging is moot.
+# ``review`` is excluded for a different reason: cards sitting in the review
+# LANE are isolated structurally by the dispatcher (it force-adds
+# ``sdlc-review``, a REVIEW_TAG_SKILLS member, at spawn), so their stored
+# ``skills`` being untagged is not a defect and must not be reported as one.
+_REVIEW_INTENT_DEAD_STATUSES = frozenset({"done", "archived", "review"})
+
+
+def _review_tag_skills() -> frozenset:
+    """The dispatcher's own review-tag set — imported, never re-listed here, so
+    this rule cannot drift from the isolation check it is warning about."""
+    from hermes_cli.kanban_db_dispatch import REVIEW_TAG_SKILLS
+
+    return REVIEW_TAG_SKILLS
+
+
+def _rule_review_intent_untagged(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """An assigned, still-dispatchable card whose TITLE reads as a review /
+    verification role but whose ``skills`` carry none of the dispatcher's
+    review tags. Such a worker spawns WITHOUT ``--ignore-rules``, inheriting the
+    profile's MEMORY.md/USER.md and preloaded skills — which can contain the
+    very self-report it is supposed to judge (see the
+    kanban-independent-verification skill). The failure is silent: nothing errors,
+    the card just quietly reviews itself. Heuristic by construction, hence
+    ``warning``; set ``cfg["review_intent_pattern"] = ""`` to disable."""
+    pattern = cfg.get("review_intent_pattern", REVIEW_INTENT_PATTERN)
+    if not pattern:
+        return []
+    status = _task_field(task, "status")
+    if status in _REVIEW_INTENT_DEAD_STATUSES:
+        return []
+    # Unassigned cards never dispatch — the dispatcher's own skipped_unassigned
+    # path owns that signal, and an untagged draft is not yet a contamination.
+    assignee = (_task_field(task, "assignee") or "").strip()
+    if not assignee:
+        return []
+    skills = _task_field(task, "skills") or ()
+    if isinstance(skills, str):
+        try:
+            skills = json.loads(skills) or ()
+        except Exception:
+            skills = ()
+    if any(sk in _review_tag_skills() for sk in skills):
+        return []
+
+    title = _task_field(task, "title") or ""
+    match = re.search(pattern, title, re.IGNORECASE)
+    if not match:
+        return []
+
+    task_id = str(_task_field(task, "id") or "")
+    # A task's skills are create-only (no edit/PATCH path writes them), so the
+    # recovery really is "create the card again, tagged" — not "edit this one".
+    recreate = (
+        "hermes kanban create --review "
+        f"{shlex.quote(title)} --assignee {shlex.quote(assignee)}"
+    )
+    actions = [
+        _cli_hint("Re-create this card review-tagged (skills are set at creation)",
+                  recreate, suggested=True),
+        DiagnosticAction(kind="comment", label="Or note here why ambient profile context is wanted",
+                         payload={"task_id": task_id}),
+    ]
+    created_at = int(_task_field(task, "created_at", default=0) or 0) or int(now)
+    return [Diagnostic(
+        kind="review_intent_untagged", severity="warning",
+        title="Review card is not review-tagged — worker will inherit profile context",
+        detail="This card's title reads as a review/verification role, but its skills contain "
+               "neither 'kanban-independent-verification' nor 'requesting-code-review', so the "
+               "dispatcher will NOT spawn its worker with --ignore-rules. The worker then loads "
+               "the profile's MEMORY.md/USER.md and preloaded skills — possibly including the "
+               "work it is meant to judge. Re-create the card with --review, or dismiss this if "
+               "the card is not actually a review role.",
+        actions=actions,
+        first_seen_at=created_at, last_seen_at=created_at, count=1,
+        data={"matched_text": match.group(0).strip(), "assignee": assignee,
+              "skills": list(skills), "status": status},
+    )]
+
+
 # Order matters: earlier rules render first on severity ties.
 _RULES: list[RuleFn] = [
     _rule_hallucinated_cards,
@@ -689,6 +796,7 @@ _RULES: list[RuleFn] = [
     _rule_stuck_in_blocked,
     _rule_block_unblock_cycling,
     _rule_stranded_in_ready,
+    _rule_review_intent_untagged,
 ]
 
 
@@ -703,6 +811,9 @@ DEFAULT_CONFIG = {
     # Below 30 min the signal is dominated by tasks about to be claimed on
     # the next dispatcher tick.
     "stranded_threshold_seconds": 30 * 60,
+    # Empty string disables the review-intent heuristic
+    # (``kanban.diagnostics.review_intent_pattern: ""``).
+    "review_intent_pattern": REVIEW_INTENT_PATTERN,
 }
 
 

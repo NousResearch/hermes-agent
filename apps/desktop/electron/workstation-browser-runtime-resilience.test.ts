@@ -171,7 +171,6 @@ const electron = vi.hoisted(() => {
     session: { fromPath: () => browserSession }
   }
 })
-
 vi.mock('electron', () => ({
   app: electron.app,
   BrowserWindow: electron.FakeBrowserWindow,
@@ -712,4 +711,3 @@ test('browser_type handles clear and append options without errors', async () =>
   assert.equal(appended.success, true)
   await runtime.destroy()
 })
-

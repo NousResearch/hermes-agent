@@ -124,7 +124,6 @@ _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
     "FIRECRAWL_BROWSER_TTL",
 )
 
-
 def _build_browser_env() -> dict:
     """Credential-scrubbed env for an agent-browser subprocess.
 
@@ -5806,4 +5805,3 @@ registry.register(
     check_fn=lambda: check_browser_routed_requirements("browser_extract_items"),
     emoji="📦",
 )
-

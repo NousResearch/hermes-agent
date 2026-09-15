@@ -1,0 +1,5 @@
+name: gemini-image-gen
+kind: backend
+version: 1.0.0
+description: Native Google AI Studio Gemini image generation using GOOGLE_API_KEY or GEMINI_API_KEY.
+author: Nous Research

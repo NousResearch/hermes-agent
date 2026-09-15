@@ -255,13 +255,26 @@ REFLECT_SCHEMA = {
 }
 
 
-def _load_config() -> dict:
-    """$HERMES_HOME/hindsight/config.json (profile-scoped), else ~/.hindsight/config.json
-    (legacy, shared), else environment variables."""
+def _load_file_config() -> dict | None:
+    """Load config from disk only (no env fallback); None when no file parses.
+
+    Used at the daemon (re)spawn boundary, where the question is "what does
+    the on-disk config say *now*" — distinct from :func:`_load_config`, whose
+    env fallback always returns a dict and would clobber explicitly-set
+    config in env-only setups.
+    """
     for path in (get_hermes_home() / "hindsight" / "config.json", Path.home() / ".hindsight" / "config.json"):
         # A corrupt (or empty) file falls through to the next source, as before the dedup.
         if path.exists() and (data := read_json_or_empty(path)):
             return data
+    return None
+
+
+def _load_config() -> dict:
+    """$HERMES_HOME/hindsight/config.json (profile-scoped), else ~/.hindsight/config.json
+    (legacy, shared), else environment variables."""
+    if (file_config := _load_file_config()) is not None:
+        return file_config
     # Mode, bank (the data partition), endpoint and retain shaping are per-profile .env values like
     # the key beside them: read through the secret scope so a multiplexed secondary never inherits
     # the default profile's bank/mode. Tuning knobs (timeouts, budget) stay process-global.
@@ -473,6 +486,19 @@ class HindsightMemoryProvider(MemoryProvider):
         _ensure_client_dependency()
         from hindsight import HindsightEmbedded
         HindsightEmbedded.__del__ = lambda self: None
+        # Client creation is the daemon (re)spawn boundary: the embedded
+        # manager materializes ~/.hindsight/profiles/<p>.env from these
+        # kwargs. Re-read config.json here so a long-running gateway that
+        # recreates the client (idle shutdown / stale-connection retry) uses
+        # current on-disk settings instead of its initialize()-time snapshot —
+        # otherwise an edit like an llm_model bump is silently reverted at the
+        # next respawn. File-gated on purpose: env-only setups keep their
+        # existing config, and session-shaping fields (banks, recall tuning)
+        # keep their initialize()-time values for in-session stability.
+        fresh_config = _load_file_config()
+        if fresh_config is not None:
+            self._config = fresh_config
+            self._llm_base_url = fresh_config.get("llm_base_url", "")
         cfg = self._config
         llm_provider = _daemon_llm_provider(cfg.get("llm_provider", ""))
         logger.debug("Creating HindsightEmbedded client (profile=%s, provider=%s)",

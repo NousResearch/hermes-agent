@@ -347,7 +347,7 @@ class TestConfig:
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "0"
 
 
-    def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
+    def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, tmp_path, monkeypatch):
         captured = {}
 
         class FakeHindsightEmbedded:
@@ -356,6 +356,13 @@ class TestConfig:
 
         monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
         monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+        # The fake module stands in for the optional hindsight-client dep;
+        # don't let the lazy-installer try to fetch it.
+        monkeypatch.setattr("plugins.memory.hindsight._ensure_client_dependency", lambda: None)
+        # Hermetic against a real host config: client creation re-reads the
+        # on-disk config when one exists, so point the lookup at an empty tmp.
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))  # legacy ~/.hindsight fallback
 
         p = HindsightMemoryProvider()
         p._mode = "local_embedded"
@@ -372,6 +379,61 @@ class TestConfig:
 
         assert captured["idle_timeout"] == 0
         assert captured["llm_provider"] == "openai"
+
+    def test_get_client_rereads_disk_config_at_respawn(self, tmp_path, monkeypatch):
+        """Client recreation must pick up config.json edits made after init.
+
+        A long-running gateway recreates the embedded client after daemon
+        idle-shutdown or stale-connection retries; the embedded manager then
+        re-materializes the profile .env from the client kwargs. Before the
+        fix it used the initialize()-time snapshot, silently reverting
+        on-disk edits (e.g. an llm_model bump) at the next respawn.
+        """
+        captured = {}
+
+        class FakeHindsightEmbedded:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
+        monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+        monkeypatch.setattr("plugins.memory.hindsight._ensure_client_dependency", lambda: None)
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps({
+            "mode": "local_embedded",
+            "profile": "hermes",
+            "llm_provider": "openai",
+            "llm_api_key": "test-key",
+            "llm_model": "old-model",
+            "idle_timeout": 0,
+        }))
+
+        p = HindsightMemoryProvider()
+        p._mode = "local_embedded"
+        p._config = json.loads(config_path.read_text())  # initialize()-time snapshot
+        p._llm_base_url = ""
+
+        # Operator edits config.json while the gateway keeps running.
+        config_path.write_text(json.dumps({
+            "mode": "local_embedded",
+            "profile": "hermes",
+            "llm_provider": "openai",
+            "llm_api_key": "test-key",
+            "llm_model": "new-model",
+            "llm_base_url": "http://localhost:9001/v1",
+            "idle_timeout": 0,
+        }))
+
+        # Respawn boundary: stale-connection retry recreates the client.
+        p._client = None
+        p._get_client()
+
+        assert captured["llm_model"] == "new-model"
+        assert captured["llm_base_url"] == "http://localhost:9001/v1"
+        assert p._config["llm_model"] == "new-model"
 
 
 class TestPostSetup:

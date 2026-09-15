@@ -294,6 +294,52 @@ async def test_the_terminal_turn_of_a_chain_is_ledgered_under_its_own_inbound_id
 
 
 @pytest.mark.asyncio
+async def test_a_steer_triggered_terminal_turn_gets_its_own_inbound_id():
+    """A queued follow-up with no originating event (a leftover /steer, or a bare control
+    interrupt_message) must still carry an inbound id distinct from the chain's other turns.
+
+    Before this fix, next_inbound_id stayed None on this branch, so queued_terminal_inbound_id
+    resolved to None -- the truthiness check at the call site (agent_result.get(...) then
+    `if _terminal_inbound:`) then left event.ledger_message_id untouched, falling back to the
+    event that OPENED the chain. An identical-text reply from this branch would collide with an
+    earlier reply's obligation id exactly like the bug #106312/#106316 fixed for the
+    pending_event branch -- just reached from the one branch that saga didn't cover.
+    """
+    from gateway.run import GatewayRunner
+
+    runner = _runner()
+    runner._MAX_INTERRUPT_DEPTH = 8
+    runner._run_agent = AsyncMock(return_value={"final_response": "done", "messages": []})
+    runner._run_agent_deliver_first_response = AsyncMock()
+    runner._adapter_for_source = MagicMock(return_value=None)
+    runner._refresh_agent_cache_message_count = AsyncMock()
+    turn_ctx = SimpleNamespace(
+        source=_source(), session_id="sid", session_key=SESSION_KEY, run_generation=1,
+        _interrupt_depth=0, history=[], _status_thread_metadata={},
+        context_prompt=None, result_holder=[None])
+
+    merged = await GatewayRunner._run_agent_queued_followup(
+        runner, turn_ctx, adapter=None, pending="leftover steer text", pending_event=None,
+        response="resp",
+        result={"interrupted": False, "messages": [], "pending_steer": "leftover steer text"},
+        stream_task=None)
+
+    inbound_id = runner._run_agent.await_args.kwargs["inbound_message_id"]
+    assert inbound_id, "must resolve to a truthy id, or the ledger override is silently skipped"
+    assert runner._run_agent.await_args.kwargs["event_message_id"] is None
+    assert merged["queued_terminal_inbound_id"] == inbound_id
+
+    # A second occurrence (another steer drain later in the same session) must not reuse the id.
+    runner._run_agent.reset_mock()
+    merged_2 = await GatewayRunner._run_agent_queued_followup(
+        runner, turn_ctx, adapter=None, pending="leftover steer text", pending_event=None,
+        response="resp",
+        result={"interrupted": False, "messages": [], "pending_steer": "leftover steer text"},
+        stream_task=None)
+    assert merged_2["queued_terminal_inbound_id"] != inbound_id
+
+
+@pytest.mark.asyncio
 async def test_a_deeper_chain_keeps_the_innermost_inbound_id():
     """Chained follow-ups nest, and the LAST message answered owns the ledger identity, so an id
     already set by a deeper recursion must not be overwritten on the way out."""

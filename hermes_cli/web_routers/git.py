@@ -8,7 +8,6 @@ wrappers (git/gh can block).
 
 import asyncio
 import shutil
-import subprocess
 import time
 from typing import Optional
 

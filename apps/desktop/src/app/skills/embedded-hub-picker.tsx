@@ -225,7 +225,8 @@ export const EmbeddedHubPicker = memo(function EmbeddedHubPicker({
             }}
           >
             <iframe
-              sandbox="allow-scripts allow-same-origin"
+              allow="clipboard-write"
+              sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox"
               src={HUB_PICKER_URL}
               style={{
                 background: 'transparent',

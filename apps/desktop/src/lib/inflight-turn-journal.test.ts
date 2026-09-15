@@ -62,6 +62,34 @@ afterEach(() => {
 })
 
 describe('persistInFlightTurnState', () => {
+  it.each([true, false])('retains explicit user provenance %s through the recovery journal', userOriginated => {
+    persistInFlightTurnState(journalState({
+      messages: [
+        { ...user('u1', 'same text'), userOriginated },
+        assistant('assistant-stream-1', 'partial', { pending: true })
+      ]
+    }))
+    vi.advanceTimersByTime(400)
+
+    const entry = readInFlightTurnJournal('stored-1')
+    expect(entry?.messages[0].userOriginated).toBe(userOriginated)
+    const recovered = recoverInFlightTurnJournal('stored-1', [], { keepPending: true })
+    expect(recovered.messages[0].userOriginated).toBe(userOriginated)
+  })
+
+  it('does not bind a journaled runtime wake to identical human input', () => {
+    const current = { ...user('human', 'same text'), userOriginated: true }
+    const notice = { ...user('runtime-notice', 'same text'), userOriginated: false }
+
+    const result = mergeInFlightMessages(
+      [current],
+      [notice, assistant('assistant-stream-1', 'partial', { pending: true })],
+      { keepPending: true }
+    )
+
+    expect(result.messages.filter(message => message.role === 'user')).toMatchObject([current, notice])
+  })
+
   it('sweeps expired and oldest session entries once before the first write', () => {
     const now = Date.now()
 
@@ -421,6 +449,29 @@ describe('persistInFlightTurnState', () => {
 
     expect(() => recoverInFlightTurnJournal('stored-1', base)).not.toThrow()
     expect(readInFlightTurnJournal('stored-1')).toBeNull()
+  })
+})
+
+describe('runtime journal result coverage', () => {
+  it('retains a tool result until the persisted call also has a result', () => {
+    const anchor = assistant('anchor', 'old answer', { rowId: 1, timestamp: 2 })
+    const result = 'UNSAVED TOOL OUTPUT'
+    const call = { type: 'tool-call' as const, toolName: 'terminal', toolCallId: 'tc', args: {} }
+
+    const journal = [anchor, assistant('assistant-stream-runtime', '', {
+      runtimeTurnStartedAt: 10, pending: true, parts: [{ ...call, result }]
+    })]
+
+    const storedCall = assistant('stored-call', '', { timestamp: 11, parts: [call] })
+
+    const recovered = mergeInFlightMessages([anchor, storedCall], journal, { keepPending: false })
+    expect(recovered.caughtUp).toBe(false)
+    expect(recovered.messages.flatMap(message => message.parts)).toContainEqual({ ...call, result })
+
+    const completed = [anchor, { ...storedCall, parts: [{ ...call, result }] }]
+    const caughtUp = mergeInFlightMessages(completed, journal, { keepPending: false })
+    expect(caughtUp.caughtUp).toBe(true)
+    expect(caughtUp.messages).toBe(completed)
   })
 })
 

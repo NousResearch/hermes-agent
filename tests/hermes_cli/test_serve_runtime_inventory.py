@@ -9,11 +9,12 @@ registered at serve startup) through inventory → guard rung → relaunch.
 
 from __future__ import annotations
 
+import atexit
 import sys
 from types import SimpleNamespace
 from unittest.mock import patch  # noqa: F401 - kept for parity with siblings
 
-import hermes_cli.update_cmd as update_cmd
+import hermes_cli.update_cmd_windows as update_cmd
 import hermes_cli.update_inventory as update_inventory
 from hermes_cli import main as cli_main
 import hermes_cli.main_install_repair as main_install_repair
@@ -98,6 +99,23 @@ def test_inventory_includes_manual_serve_from_ledger(monkeypatch):
     assert row.detail["port"] == 9119
 
 
+def test_inventory_includes_manual_webapp_from_ledger(monkeypatch):
+    entry = _ledger_entry(purpose="webapp", argv="hermes webapp --port 9119")
+    fake_pi = SimpleNamespace(
+        ledger_entries=lambda **k: [entry],
+        spawner_is_dead=lambda e: None,
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
+
+    plan = update_inventory.collect_runtime_inventory()
+
+    webapps = [runtime for runtime in plan.runtimes if runtime.kind == "webapp"]
+    assert len(webapps) == 1
+    assert webapps[0].pid == 4321
+    assert webapps[0].supervisor == "manual-serve"
+    assert webapps[0].restart_via == "respawn-argv"
+
+
 def test_inventory_classifies_desktop_owned_serve(monkeypatch):
     entry = _ledger_entry(spawner_pid=999, spawner_create=1.0)
     fake_pi = SimpleNamespace(
@@ -126,19 +144,31 @@ def test_ledger_manual_serve_holders_filters_correctly(monkeypatch):
     desktop_owned = _ledger_entry(pid=200, spawner_pid=999, spawner_create=1.0)
     gateway = _ledger_entry(pid=300, purpose="gateway")
     not_a_holder = _ledger_entry(pid=400)
+    webapp = _ledger_entry(pid=500, purpose="webapp")
 
     fake_pi = SimpleNamespace(
-        ledger_entries=lambda **k: [manual, desktop_owned, gateway, not_a_holder],
+        ledger_entries=lambda **k: [
+            manual,
+            desktop_owned,
+            gateway,
+            not_a_holder,
+            webapp,
+        ],
         spawner_is_dead=lambda e: False if e["pid"] == 200 else None,
     )
     monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
-    holders = [(100, "python.exe", "..."), (200, "python.exe", "..."), (300, "python.exe", "...")]
+    holders = [
+        (100, "python.exe", "..."),
+        (200, "python.exe", "..."),
+        (300, "python.exe", "..."),
+        (500, "python.exe", "..."),
+    ]
 
     result = update_cmd._ledger_manual_serve_holders(holders)
     pids = [e["pid"] for e in result]
-    assert pids == [100], (
-        "only the manual serve holder qualifies: desktop-owned keeps the "
-        "refusal, gateways belong to the pause machinery, non-holders skipped"
+    assert pids == [100, 500], (
+        "manual serve and Webapp holders qualify: desktop-owned keeps the "
+        "refusal, gateways belong to the pause machinery, and non-holders skip"
     )
 
 
@@ -150,12 +180,43 @@ def test_serve_relaunch_commands_built_from_structured_identity(monkeypatch):
         _ledger_entry(pid=5000, profile="work", port=9200, host=""),
         _ledger_entry(pid=6000, port=None),               # no port → skipped
         _ledger_entry(pid=7000, purpose="dashboard", host="0.0.0.0", port=9300),
+        _ledger_entry(pid=8000, purpose="webapp", host="127.0.0.1", port=9400),
     ]
     cmds = update_cmd._serve_relaunch_commands(entries)
     assert ["hermes", "serve", "--host", "100.94.65.93", "--port", "9119"] in cmds
     assert ["hermes", "--profile", "work", "serve", "--port", "9200"] in cmds
     assert ["hermes", "dashboard", "--host", "0.0.0.0", "--port", "9300"] in cmds
-    assert len(cmds) == 3  # the port-less entry is skipped
+    assert ["hermes", "webapp", "--host", "127.0.0.1", "--port", "9400"] in cmds
+    assert len(cmds) == 4  # the port-less entry is skipped
+
+
+def test_pause_manual_webapp_holder_stops_and_registers_relaunch(monkeypatch):
+    webapp = _ledger_entry(pid=8100, purpose="webapp")
+    stopped: list[list[int]] = []
+    registered: list[tuple[object, dict]] = []
+    monkeypatch.setattr(
+        update_cmd,
+        "_ledger_manual_serve_holders",
+        lambda _holders: [webapp],
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "_stop_process_trees",
+        lambda pids: stopped.append(pids),
+    )
+    monkeypatch.setattr(
+        atexit,
+        "register",
+        lambda callback, token: registered.append((callback, token)),
+    )
+
+    token = update_cmd._pause_manual_web_servers(
+        [(8100, "python.exe", "python.exe -m hermes_cli.main webapp")]
+    )
+
+    assert stopped == [[8100]]
+    assert token == {"pending": True, "entries": [webapp]}
+    assert registered == [(update_cmd._relaunch_stopped_serves, token)]
 
 
 def test_relaunch_stopped_serves_is_idempotent(monkeypatch):
@@ -168,12 +229,15 @@ def test_relaunch_stopped_serves_is_idempotent(monkeypatch):
     )
     monkeypatch.setattr(cli_main, "_venv_scripts_dir", lambda: None)
     monkeypatch.setattr(main_install_repair, "_venv_scripts_dir", lambda: None)
-    token = {"pending": True, "entries": [_ledger_entry()]}
+    token = {"pending": True, "entries": [_ledger_entry(purpose="webapp")]}
 
     update_cmd._relaunch_stopped_serves(token)
     update_cmd._relaunch_stopped_serves(token)  # atexit double-fire
 
     assert len(calls) == 1, "relaunch must fire exactly once"
+    assert calls[0] == [
+        ["hermes", "webapp", "--host", "100.94.65.93", "--port", "9119"]
+    ]
     assert token["pending"] is False
 
 

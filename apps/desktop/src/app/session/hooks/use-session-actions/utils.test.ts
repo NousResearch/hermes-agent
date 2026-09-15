@@ -1374,13 +1374,15 @@ describe('appendLiveSessionProjection', () => {
     // been lifted into attachmentRefs and the visible text is the bare caption.
     const stored = [
       msg('stored-user', 'user', 'current running prompt', {
-        attachmentRefs: ['@image:/tmp/cat.png']
+        attachmentRefs: ['@image:/tmp/cat.png'],
+        timestamp: 11
       }),
-      msg('stored-assistant', 'assistant', 'earlier answer')
+      msg('stored-assistant', 'assistant', 'partial tool activity', { timestamp: 12 })
     ]
 
     const restored = appendLiveSessionProjection(stored, {
       session_id: 'runtime-1',
+      turn_started_at: 10,
       inflight: {
         user: 'current running prompt',
         assistant: 'partial answer',
@@ -1399,6 +1401,82 @@ describe('appendLiveSessionProjection', () => {
     const userText = userRows[0].parts.map(part => ('text' in part ? part.text : '')).join('')
 
     expect(userText).toBe('current running prompt')
+  })
+
+  it.each([
+    [
+      'background-process notice',
+      '[IMPORTANT: Background process proc_123 completed normally with exit code 0.]'
+    ],
+    [
+      'compaction task snapshot',
+      '[Your active task list was preserved across context compression]\n- [>] current task'
+    ]
+  ])('keeps an attached inflight prompt anchored before a later %s', (_kind, syntheticNotice) => {
+    const stored = [
+      msg('stored-user', 'user', 'current running prompt', {
+        attachmentRefs: ['@image:/tmp/screenshot.png'],
+        timestamp: 11
+      }),
+      msg('stored-assistant', 'assistant', 'partial tool activity', { timestamp: 12 }),
+      msg('synthetic-notice', 'user', syntheticNotice, { timestamp: 13 })
+    ]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      turn_started_at: 10,
+      inflight: {
+        user: 'current running prompt',
+        assistant: 'partial answer',
+        streaming: true
+      }
+    })
+
+    const promptRows = restored.filter(message => chatMessageText(message) === 'current running prompt')
+
+    expect(promptRows).toHaveLength(1)
+    expect(promptRows[0]).toMatchObject({
+      id: 'stored-user',
+      attachmentRefs: ['@image:/tmp/screenshot.png']
+    })
+    expect(restored.map(message => message.id)).toEqual([
+      'stored-user',
+      'stored-assistant',
+      'synthetic-notice',
+      'assistant-stream-runtime-1'
+    ])
+  })
+
+  it('keeps a newly accepted repeated prompt after a completed turn and trailing synthetic notice', () => {
+    const stored = [
+      msg('stored-user', 'user', 'repeat this', { timestamp: 1 }),
+      msg('stored-assistant', 'assistant', 'finished answer', { timestamp: 2 }),
+      msg(
+        'synthetic-notice',
+        'user',
+        '[IMPORTANT: Background process proc_123 completed normally with exit code 0.]',
+        { timestamp: 3 }
+      )
+    ]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      turn_started_at: 4,
+      inflight: {
+        user: 'repeat this',
+        assistant: 'new partial answer',
+        streaming: true
+      }
+    })
+
+    expect(restored.filter(message => chatMessageText(message) === 'repeat this')).toHaveLength(2)
+    expect(restored.map(message => message.id)).toEqual([
+      'stored-user',
+      'stored-assistant',
+      'synthetic-notice',
+      'user-inflight-runtime-1',
+      'assistant-stream-runtime-1'
+    ])
   })
 
   it('restores the running turn and accepted queued prompt after a renderer restart', () => {
@@ -1571,6 +1649,102 @@ describe('dedupeInflightUserAgainstTranscript', () => {
     expect(deduped.inflight?.assistant).toBe('partial answer')
   })
 
+  it('uses the local committed prefix when an older gateway omits runtime history and turn timing', () => {
+    const committed = [
+      msg('committed-user', 'user', 'earlier prompt', { timestamp: 1 }),
+      msg('committed-assistant', 'assistant', 'earlier answer', { timestamp: 2 })
+    ]
+
+    const local = [
+      ...committed,
+      msg('user-optimistic', 'user', 'current prompt'),
+      msg('assistant-stream-runtime-1', 'assistant', 'partial', { pending: true })
+    ]
+
+    const persisted = [
+      ...committed,
+      msg('persisted-current', 'user', 'current prompt', { timestamp: 3 }),
+      msg(
+        'persisted-background-notice',
+        'user',
+        '[IMPORTANT: Background process proc_123 completed normally with exit code 0.]',
+        { timestamp: 4 }
+      )
+    ]
+
+    const projection = runningProjection('current prompt')
+    const deduped = dedupeInflightUserAgainstTranscript(persisted, [], projection, local)
+    const restored = appendLiveSessionProjection(persisted, deduped)
+
+    expect(restored.filter(message => chatMessageText(message) === 'current prompt')).toHaveLength(1)
+    expect(restored.map(message => message.id)).not.toContain('user-inflight-runtime-1')
+  })
+
+  it('keeps a newly accepted repeated prompt when the local committed prefix ends after its historical twin', () => {
+    const committed = [
+      msg('committed-user', 'user', 'repeat this', { timestamp: 1 }),
+      msg('committed-assistant', 'assistant', 'finished answer', { timestamp: 2 })
+    ]
+
+    const local = [
+      ...committed,
+      msg('user-optimistic', 'user', 'repeat this'),
+      msg('assistant-stream-runtime-1', 'assistant', 'new partial answer', { pending: true })
+    ]
+
+    const persisted = [
+      ...committed,
+      msg(
+        'persisted-background-notice',
+        'user',
+        '[IMPORTANT: Background process proc_123 completed normally with exit code 0.]',
+        { timestamp: 3 }
+      )
+    ]
+
+    const projection = {
+      ...runningProjection('repeat this'),
+      inflight: { user: 'repeat this', assistant: 'new partial answer', streaming: true }
+    }
+
+    const deduped = dedupeInflightUserAgainstTranscript(persisted, [], projection, local)
+    const restored = appendLiveSessionProjection(persisted, deduped)
+
+    expect(restored.filter(message => chatMessageText(message) === 'repeat this')).toHaveLength(2)
+    expect(restored.map(message => message.id)).toContain('user-inflight-runtime-1')
+  })
+
+  it('uses a durable renderer-owned user row as the old-gateway prefix anchor', () => {
+    const committed = [msg('user-previous', 'user', 'repeat this', { rowId: 41, timestamp: 1 })]
+
+    const local = [
+      ...committed,
+      msg('user-optimistic', 'user', 'repeat this'),
+      msg('assistant-stream-runtime-1', 'assistant', 'new partial answer', { pending: true })
+    ]
+
+    const persisted = [
+      msg('persisted-previous', 'user', 'repeat this', { rowId: 41, timestamp: 1 }),
+      msg(
+        'persisted-background-notice',
+        'user',
+        '[IMPORTANT: Background process proc_123 completed normally with exit code 0.]',
+        { rowId: 42, timestamp: 2 }
+      )
+    ]
+
+    const projection = {
+      ...runningProjection('repeat this'),
+      inflight: { user: 'repeat this', assistant: 'new partial answer', streaming: true }
+    }
+
+    const deduped = dedupeInflightUserAgainstTranscript(persisted, [], projection, local)
+    const restored = appendLiveSessionProjection(persisted, deduped)
+
+    expect(restored.filter(message => chatMessageText(message) === 'repeat this')).toHaveLength(2)
+    expect(restored.map(message => message.id)).toContain('user-inflight-runtime-1')
+  })
+
   it('preserves the assistant boundary before a queued turn when the persisted in-flight user has no delta', () => {
     const runtime = [
       msg('runtime-user', 'user', 'earlier prompt', { timestamp: 1 }),
@@ -1620,15 +1794,32 @@ describe('dedupeInflightUserAgainstTranscript', () => {
       msg('persisted-repeat-answer', 'assistant', 'finished repeat answer', { timestamp: 4 })
     ]
 
-    const projection = runningProjection('repeat this')
-    const unchanged = dedupeInflightUserAgainstTranscript(persisted, runtime, projection)
+    const local = [
+      ...runtime,
+      msg('user-optimistic', 'user', 'repeat this'),
+      msg('assistant-stream-runtime-1', 'assistant', 'partial answer', { pending: true })
+    ]
 
-    expect(unchanged).toBe(projection)
-    expect(unchanged.inflight?.user).toBe('repeat this')
+    const projection = runningProjection('repeat this')
+    const deduped = dedupeInflightUserAgainstTranscript(persisted, runtime, projection, local)
+    const restored = appendLiveSessionProjection(persisted, deduped)
+
+    expect(deduped.inflight?.user).toBe('repeat this')
+    expect(restored.filter(message => chatMessageText(message) === 'repeat this')).toHaveLength(2)
+    expect(restored.map(message => message.id)).toContain('user-inflight-runtime-1')
   })
 })
 
 describe('removeRepresentedLocalLiveProjection', () => {
+  it('matches a cached stream when the activation projection has advanced', () => {
+    const previous = [
+      msg('user-current', 'user', 'current prompt'),
+      msg('assistant-stream-current', 'assistant', 'partial', { pending: true })
+    ]
+
+    expect(removeRepresentedLocalLiveProjection(previous, runningProjection('current prompt'))).toEqual([])
+  })
+
   it('removes only matched synthetic rows from the open local tail', () => {
     const previous = [
       msg('user-old-optimistic', 'user', 'current prompt'),

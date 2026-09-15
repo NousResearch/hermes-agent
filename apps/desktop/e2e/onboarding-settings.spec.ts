@@ -57,7 +57,7 @@ for (const lifecycleEvent of ['focus', 'navigation'] as const) {
       const appWindow = await app.browserWindow(page)
 
       // The same lifecycle callback that fires when another window takes focus
-      // must restore our input scale, not the original 90% preference.
+      // must restore our input scale, not the original 100% preference.
       if (lifecycleEvent === 'focus') {
         await appWindow.evaluate(win => win.emit('focus'))
       } else {

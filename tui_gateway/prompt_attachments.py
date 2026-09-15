@@ -93,19 +93,38 @@ def _session_images_dir(session: dict) -> Path:
 
 
 def _queue_attached_image(session: dict, img_bytes: bytes, ext: str, *, prefix: str) -> Path:
-    """Write image bytes into the session images dir and queue them for the next submit."""
-    session["image_counter"] = session.get("image_counter", 0) + 1
-    img_dir = _session_images_dir(session)
-    img_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    img_path = img_dir / f"{prefix}_{ts}_{session['image_counter']}{ext}"
-    try:
-        img_path.write_bytes(img_bytes)
-    except Exception:
-        session["image_counter"] = max(0, session["image_counter"] - 1)
-        raise
-    session.setdefault("attached_images", []).append(str(img_path))
-    return img_path
+    """Write image bytes into the gateway's images dir and queue them.
+
+    Mirrors what ``image.attach`` does for a local path: appends to
+    ``session["attached_images"]`` so the next ``prompt.submit`` picks it up via
+    the existing native-image-attach pipeline. Returns the written path.
+    """
+    profile_home = session.get("profile_home")
+    profile_incarnation = session.get("profile_incarnation")
+    # Profile mutation takes the lifecycle lease before retiring sessions, so
+    # attachment writes use the same order: lifecycle → sessions → pathname.
+    with _profile_home_lease(profile_home, profile_incarnation):
+        with _sessions_lock:
+            session["image_counter"] = session.get("image_counter", 0) + 1
+            img_dir = _session_images_dir(session)
+            img_path = None
+            try:
+                if not img_dir.parent.is_dir():
+                    raise FileNotFoundError(
+                        "Profile home is missing or being deleted: "
+                        f"{img_dir.parent}"
+                    )
+                img_dir.mkdir(parents=False, exist_ok=True)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                img_path = img_dir / f"{prefix}_{ts}_{session['image_counter']}{ext}"
+                img_path.write_bytes(img_bytes)
+            except Exception:
+                if img_path is not None:
+                    img_path.unlink(missing_ok=True)
+                session["image_counter"] = max(0, session["image_counter"] - 1)
+                raise
+            session.setdefault("attached_images", []).append(str(img_path))
+            return img_path
 
 
 def _format_ref_value(value: str) -> str:
@@ -131,6 +150,58 @@ def _sanitize_attachment_name(name: str) -> str:
     import re as _re
     candidate = _re.sub(r"[\x00-\x1f]+", "_", Path(str(name or "").strip()).name)
     return candidate.strip().strip(".") or "attachment"
+
+
+def _stage_browser_file_attachment(
+    session: dict,
+    staged_upload: object,
+    name: str,
+) -> tuple[Path, bool]:
+    """Copy an upload from its captured owner into this session's workspace.
+
+    Source and destination may be different profiles on the same installation
+    (an owner-routed tile can receive a foreground browser pick). Lease both
+    generations; do not infer either identity from the ambient profile.
+    """
+    from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
+    from hermes_cli.install_identity import get_install_id
+
+    if not isinstance(staged_upload, dict):
+        raise ValueError("invalid staged upload")
+    install_id = get_install_id()
+    if not install_id or staged_upload.get("install_id") != install_id:
+        raise ValueError("Staged attachment belongs to another Hermes backend; select the file again")
+    raw_home = staged_upload.get("profile_home")
+    raw_path = staged_upload.get("path")
+    incarnation = staged_upload.get("profile_incarnation")
+    if (
+        not isinstance(raw_home, str) or not raw_home
+        or not isinstance(raw_path, str) or not raw_path
+        or (incarnation is not None and not isinstance(incarnation, str))
+    ):
+        raise ValueError("invalid staged upload source")
+
+    with _profile_home_lease(raw_home, incarnation) as home:
+        with _profile_home_lease(
+            session.get("profile_home"), session.get("profile_incarnation")
+        ):
+            source = Path(raw_path)
+            if source.is_symlink():
+                raise ValueError("staged upload is no longer a regular file")
+            source = source.resolve(strict=True)
+            if (
+                source.parent != (home / "uploads").resolve(strict=True)
+                or not source.name.startswith("web-")
+                or not source.is_file()
+            ):
+                raise ValueError("staged upload is outside its source profile")
+            if source.stat().st_size > WEBAPP_ATTACHMENT_MAX_BYTES:
+                raise ValueError("staged upload exceeds the browser attachment size limit")
+            # Keep the existing out-of-workspace copy into attachments/, which
+            # is visible to container/SSH terminal backends through cache mounts.
+            return _stage_session_file_attachment(
+                session, raw_path=str(source), data_url="", name=name
+            )
 
 
 def _stage_session_file_attachment(
@@ -173,18 +244,28 @@ def _stage_session_file_attachment(
         except (ValueError, _binascii.Error) as exc:
             raise ValueError("invalid data_url payload") from exc
         filename = _sanitize_attachment_name(name or Path(str(raw_path or "")).name)
-    root = _session_home_dir(session, "attachments")
-    root.mkdir(parents=True, exist_ok=True)
-    filename = _sanitize_attachment_name(filename)
-    target = root / filename
-    if target.exists():
-        stem = Path(filename).stem or "attachment"
-        suffix = Path(filename).suffix
-        counter = 2
-        while (target := root / f"{stem}-{counter}{suffix}").exists():
-            counter += 1
-    target.write_bytes(payload)
-    return target.resolve(), True
+    with _profile_home_lease(session.get("profile_home"), session.get("profile_incarnation")):
+        with _sessions_lock:
+            root = _session_home_dir(session, "attachments")
+            from hermes_constants import profile_deletion_marker_path
+            named_profile = profile_deletion_marker_path(root.parent) is not None
+            if _profile_home_rejected(session.get("profile_home"), session.get("profile_incarnation")) or (named_profile and not root.parent.is_dir()):
+                raise FileNotFoundError(f"Profile home is missing or being deleted: {root.parent}")
+            root.mkdir(parents=not named_profile, exist_ok=True)
+            filename = _sanitize_attachment_name(filename)
+            target = root / filename
+            if target.exists():
+                stem = Path(filename).stem or "attachment"
+                suffix = Path(filename).suffix
+                counter = 2
+                while (target := root / f"{stem}-{counter}{suffix}").exists():
+                    counter += 1
+            try:
+                target.write_bytes(payload)
+            except Exception:
+                target.unlink(missing_ok=True)
+                raise
+            return target.resolve(), True
 
 
 def register(server) -> None:

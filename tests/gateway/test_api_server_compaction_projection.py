@@ -140,7 +140,8 @@ class TestMessageProjection:
         )
         projected = project_compaction_message_for_display(message)
 
-        assert projected == message
+        assert projected == {**message, "user_originated": True}
+        assert "user_originated" not in message
         assert projected is not message
 
     def test_unrelated_hidden_message_is_not_reclassified_as_compaction(self):

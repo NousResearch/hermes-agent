@@ -33,6 +33,8 @@ class InflightTurn(Result):
     assistant: str = ""
     streaming: bool = False
     user: str = ""
+    user_originated: bool | None = None
+    display_kind: str | None = None
     corrections: list[str] | None = None
     correction_offsets: list[int] | None = None
     error: str | None = None

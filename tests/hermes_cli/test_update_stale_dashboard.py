@@ -210,10 +210,10 @@ class TestKillStaleDashboardPosix:
         assert result["failed"] == []
 
         out = capsys.readouterr().out
-        assert "Stopping 2 dashboard" in out
+        assert "Stopping 2 Hermes web server" in out
         assert "✓ stopped PID 12345" in out
         assert "✓ stopped PID 12346" in out
-        assert "Restart the dashboard" in out
+        assert "Restart the browser surface or backend" in out
 
 
 

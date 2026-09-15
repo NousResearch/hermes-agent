@@ -2207,6 +2207,14 @@ export interface FileAttachParams {
   path?: string | null
   data_url?: string | null
   name?: string | null
+  staged_upload?: StagedFileUpload | null
+}
+/** Source identity returned by the browser upload route, checked against the live profile. */
+export interface StagedFileUpload {
+  install_id: string
+  path: string
+  profile_home: string
+  profile_incarnation?: string | null
 }
 export interface FileAttachResult {
   attached: boolean
@@ -2478,6 +2486,7 @@ export interface TranscriptMessage {
   row_id?: number | null
   display_kind?: string | null
   display_metadata?: unknown | null
+  user_originated?: boolean | null
   name?: string | null
   context?: string | null
   args?: Record<string, unknown> | null
@@ -2523,6 +2532,8 @@ export interface InflightTurn {
   assistant?: string
   streaming?: boolean
   user?: string
+  user_originated?: boolean | null
+  display_kind?: string | null
   corrections?: string[] | null
   correction_offsets?: number[] | null
   error?: string | null

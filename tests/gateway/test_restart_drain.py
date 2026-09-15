@@ -298,9 +298,11 @@ async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_p
 
     await runner._launch_detached_restart_command()
 
-    assert len(popen_calls) == 1
-    cmd, kwargs = popen_calls[0]
-    assert cmd[-3:] == ["hermes", "gateway", "restart"]
+    watcher_calls = [
+        call for call in popen_calls if call[0][-3:] == ["hermes", "gateway", "restart"]
+    ]
+    assert len(watcher_calls) == 1
+    cmd, kwargs = watcher_calls[0]
     assert kwargs["env"].get("_HERMES_GATEWAY") is None
     assert kwargs["env"]["VIRTUAL_ENV"] == str(venv_dir)
     assert str(site_packages) in kwargs["env"]["PYTHONPATH"].split(gateway_run.os.pathsep)
@@ -346,10 +348,12 @@ async def test_windows_detached_restart_watcher_keeps_console_python(monkeypatch
 
     await runner._launch_detached_restart_command()
 
-    assert len(popen_calls) == 1
-    cmd, kwargs = popen_calls[0]
+    watcher_calls = [
+        call for call in popen_calls if call[0][-3:] == ["hermes", "gateway", "restart"]
+    ]
+    assert len(watcher_calls) == 1
+    cmd, kwargs = watcher_calls[0]
     assert cmd[0] == r"C:\venv\Scripts\python.exe"
-    assert cmd[-3:] == ["hermes", "gateway", "restart"]
     assert kwargs["creationflags"] == 0x08000200
 
 

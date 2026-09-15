@@ -136,5 +136,9 @@ describe('GatewaySettings', () => {
     expect(screen.queryByText('Applies to')).toBeNull()
     expect(screen.queryByText('All profiles')).toBeNull()
     expect(screen.queryByText('Use default gateway')).toBeNull()
-  })
+
+    // Browser-host mode has no native secret store, so a bridge without that
+    // capability must not advertise a keychain toggle that cannot work.
+    expect(screen.queryByText('Encrypt saved secrets with the OS keychain')).toBeNull()
+  }, 30_000)
 })

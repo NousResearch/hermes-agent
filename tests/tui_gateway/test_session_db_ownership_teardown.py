@@ -399,19 +399,31 @@ def test_deferred_build_uses_the_preserved_desktop_workspace_provenance(
 def test_deferred_build_closes_the_handle_when_the_session_is_reaped_midbuild(
     build_env, registered, monkeypatch
 ):
-    """A discarded agent is never torn down, so transferring to it would leak.
+    """A discarded agent and its dedicated DB are closed at the build boundary.
 
-    ``_build`` already computes ``replaced`` for the approval-notifier cleanup.
-    When the session was swapped out from under the build, the agent it produced
-    is unreachable — ``_teardown_session`` will never call close() on it — so the
-    handle has to be closed right here instead of handed over.
+    When the session is swapped out while ``_make_agent`` runs, the result is
+    unreachable by teardown. The build must not publish it into the stale record,
+    and must close both the discarded agent and its still-caller-owned handle.
     """
+
+    discarded = []
+
+    class DiscardedAgent:
+        def __init__(self, session_db):
+            self._session_db = session_db
+            self._owns_session_db = False
+            self.closed = False
+
+        def close(self):
+            self.closed = True
 
     def _fake_make_agent(sid, key, session_db=None, **_kwargs):
         # Simulate a concurrent reap landing while the agent was being built.
         with server._sessions_lock:
             server._sessions[sid] = {"session_key": "someone-else"}
-        return types.SimpleNamespace(_session_db=session_db, _owns_session_db=False)
+        agent = DiscardedAgent(session_db)
+        discarded.append(agent)
+        return agent
 
     monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
     sid, session = "sid-reaped", _session(build_env.profile_home)
@@ -421,7 +433,9 @@ def test_deferred_build_closes_the_handle_when_the_session_is_reaped_midbuild(
 
     db = build_env.opened[0]
     assert db.closed == 1
-    assert session["agent"]._owns_session_db is False
+    assert "agent" not in session
+    assert discarded and discarded[0].closed is True
+    assert discarded[0]._owns_session_db is False
 
 
 def test_deferred_build_never_opens_or_closes_for_the_launch_profile(

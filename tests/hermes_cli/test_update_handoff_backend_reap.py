@@ -64,6 +64,12 @@ def _serve_argv(profile: str = "mr-tester") -> list[str]:
     ]
 
 
+def _webapp_argv(profile: str = "mr-tester") -> list[str]:
+    argv = _serve_argv(profile)
+    argv[argv.index("serve")] = "webapp"
+    return argv
+
+
 def _holder(pid: int, cmdline: str):
     return (pid, "python.exe", cmdline)
 
@@ -95,6 +101,14 @@ def test_dashboard_backend_reaped():
     fake = _fake_psutil({200: backend})
     with patch.dict(sys.modules, {"psutil": fake}):
         holders = [_holder(200, "python.exe -m hermes_cli.main dashboard")]
+        assert cli_main._handoff_reapable_backend_pids(holders) == [200]
+
+
+def test_webapp_backend_reaped():
+    backend = _proc(200, _webapp_argv())
+    fake = _fake_psutil({200: backend})
+    with patch.dict(sys.modules, {"psutil": fake}):
+        holders = [_holder(200, "python.exe -m hermes_cli.main webapp")]
         assert cli_main._handoff_reapable_backend_pids(holders) == [200]
 
 

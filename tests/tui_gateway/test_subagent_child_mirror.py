@@ -16,14 +16,18 @@ import pytest
 
 
 @pytest.fixture()
-def server():
+def server(tmp_path):
+    launch_home = tmp_path / "hermes"
+    launch_home.mkdir()
     # Mocks are scoped to the initial import only (see
     # tests/tui_gateway/test_protocol.py for the rationale).
     with patch.dict(
         "sys.modules",
         {
             "hermes_constants": MagicMock(
-                get_hermes_home=MagicMock(return_value="/tmp/hermes_test_child_mirror")
+                get_hermes_home=MagicMock(return_value=str(launch_home)),
+                named_profile_home_is_unavailable=MagicMock(return_value=False),
+                profile_deletion_marker_path=MagicMock(return_value=None),
             ),
             "hermes_cli.env_loader": MagicMock(),
             "hermes_cli.banner": MagicMock(),
@@ -33,6 +37,7 @@ def server():
         import importlib
 
         mod = importlib.import_module("tui_gateway.server")
+    setattr(mod, "_hermes_home", launch_home)
 
     yield mod
     mod._sessions.clear()

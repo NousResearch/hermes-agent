@@ -552,6 +552,7 @@ def test_desktop_agent_rebuild_preserves_workspace_provenance(
     monkeypatch.setattr(server, "_emit", lambda *_args: None)
     monkeypatch.setattr(server, "_restart_slash_worker", lambda *_args: None)
 
+    monkeypatch.setitem(server._sessions, "live-session", session)
     server._reset_session_agent("live-session", session)
 
     assert captured["context_cwd_is_launch_artifact"] is launch_artifact

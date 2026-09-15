@@ -537,6 +537,9 @@ SDK.utils.isoTimeAgo         // "5m ago" from ISO string
 
 // Hooks
 SDK.useI18n                  // i18n hook for multi-language plugins
+
+// Profile scope (SDK 1.2.0+, read-only)
+SDK.profileScope             // management-profile switcher: profile, currentProfile, profiles, subscribe(cb)
 ```
 
 #### Calling your plugin's backend
@@ -560,6 +563,30 @@ SDK.api.getSessions(10).then((resp) => console.log(resp.sessions.length));
 ```
 
 See [Web Dashboard → REST API](./web-dashboard#rest-api) for the full list.
+
+#### Reading the management-profile scope
+
+`SDK.profileScope` (SDK 1.2.0+) is a live, read-only view of the sidebar profile switcher: which profile the management pages are scoped to (`profile`, where `""` means the dashboard's own profile), which profile the dashboard process itself runs under (`currentProfile`), and the known profile names (`profiles`, a frozen array).
+
+`subscribe(cb)` fires the callback once immediately with the current state and again on every change, so subscribing is all a plugin needs to do; there is no gap to poll around even though plugin bundles load after the host boots. It returns an unsubscribe function. Always call it when your plugin tears down.
+
+```javascript
+const scope = SDK.profileScope;
+
+// The field is optional in the contract: absent on hosts older than SDK 1.2.0.
+if (typeof scope === "object") {
+  const unsubscribe = scope.subscribe(() => {
+    // Re-read the live getters inside the callback.
+    console.log("managing profile:", scope.profile || "(dashboard's own)");
+    console.log("known profiles:", [...scope.profiles]);
+  });
+
+  // Later, on plugin teardown:
+  unsubscribe();
+}
+```
+
+The surface is read + subscribe only. There is no setter, and mutating `profiles` throws or is ignored; changing the scope stays an operator action in the host UI.
 
 ### Shell slots
 

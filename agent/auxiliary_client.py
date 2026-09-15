@@ -2764,6 +2764,12 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
     return CodexAuxiliaryClient(real_client, model), model
 
 
+def _codex_base_url_override() -> str:
+    """Profile-scoped ``HERMES_CODEX_BASE_URL`` (same read as the API-key env vars: under a
+    multiplexer the routed profile's .env decides the endpoint, never a sibling's process env)."""
+    return _scoped_key_env("HERMES_CODEX_BASE_URL").rstrip("/")
+
+
 def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
     """CodexAuxiliaryClient for an explicit model; (None, None) without a Codex OAuth token.
 
@@ -2777,9 +2783,7 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
         return None, None
     pool_present, entry = _select_pool_entry("openai-codex")
     codex_token = _pool_runtime_api_key(entry) if pool_present else None
-    # Same profile-scoped read as the API-key env vars: under a multiplexer the routed profile's
-    # .env decides the endpoint, never a sibling profile's process env.
-    codex_override = _scoped_key_env("HERMES_CODEX_BASE_URL").rstrip("/")
+    codex_override = _codex_base_url_override()
     if codex_token:
         base_url = codex_override or _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
     else:
@@ -4646,8 +4650,9 @@ def _resolve_openai_codex_branch(req: _ResolveRequest) -> _ResolveResult:
         if not codex_token:
             logger.warning(no_token_msg)
             return None, None
-        raw_client = _create_openai_client(api_key=codex_token, base_url=_CODEX_AUX_BASE_URL,
-                                           default_headers=_codex_cloudflare_headers(codex_token))
+        base_url = _codex_base_url_override() or _CODEX_AUX_BASE_URL
+        raw_client = _create_openai_client(api_key=codex_token, base_url=base_url,
+                                           default_headers=_codex_cloudflare_headers(codex_token, base_url=base_url))
         return raw_client, _normalize_resolved_model(model, req.provider)
     client, default = _build_codex_client(model)
     return _route_or_warn(req, client, default, no_token_msg)

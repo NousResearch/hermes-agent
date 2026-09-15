@@ -744,6 +744,22 @@ class TestBuildCodexClient:
         assert model == "gpt-5.4"
         assert mock_openai.call_args.kwargs["base_url"] == "http://127.0.0.1:8787/v1"
 
+    def test_profile_codex_base_url_applies_to_raw_codex_client(self, monkeypatch):
+        """The main agent's raw Codex client honours the same endpoint override."""
+        with (
+            patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-auth-token"),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            monkeypatch.setenv("HERMES_CODEX_BASE_URL", "http://127.0.0.1:8787/v1")
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client("openai-codex", "gpt-5.4", raw_codex=True)
+
+        assert client is not None
+        assert model == "gpt-5.4"
+        assert mock_openai.call_args.kwargs["base_url"] == "http://127.0.0.1:8787/v1"
+
     def test_rejects_missing_model(self):
         """Callers must pass an explicit model; no hardcoded default."""
         from agent.auxiliary_client import _build_codex_client

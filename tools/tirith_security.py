@@ -11,6 +11,8 @@ import json
 import logging
 import os
 import platform
+import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -477,6 +479,9 @@ _EXIT_ACTIONS = {0: "allow", 1: "block", 2: "warn"}
 _NO_DETAILS_SUMMARY = {
     "block": "security issue detected (details unavailable)",
     "warn": "security warning detected (details unavailable)"}
+_LEADING_TILDE_EXECUTABLE = re.compile(
+    r"^[ \t]*(?P<home>~[^/ \t\r\n'\"\\$`;&|(){}<>]*)(?=/)"
+)
 
 
 def _verdict(action: str, summary: str = "", findings: list | None = None) -> dict:
@@ -491,6 +496,22 @@ def _crash(fail_open: bool, open_summary: str, closed_summary: str) -> dict:
     """An operational failure: count it toward the circuit breaker, then fail open/closed."""
     _record_tirith_crash()
     return _fail(fail_open, open_summary, closed_summary)
+
+
+def _expand_leading_tilde_executable(command: str) -> str:
+    """Resolve a bare tilde home prefix on the first command word.
+
+    Tirith 0.4.1 mistakes that deterministic shell expansion for a dynamic
+    executable body. Quoted, escaped, and non-leading tildes are left alone;
+    all syntax after the home prefix remains available to the scanner.
+    """
+    if not (match := _LEADING_TILDE_EXECUTABLE.match(command)):
+        return command
+    home = match.group("home")
+    expanded = os.path.expanduser(home)
+    if expanded == home:
+        return command
+    return command[:match.start("home")] + shlex.quote(expanded) + command[match.end("home"):]
 
 
 def check_command_security(command: str) -> dict:
@@ -515,7 +536,8 @@ def check_command_security(command: str) -> dict:
         return _fail(fail_open, "tirith path unavailable", "tirith path unavailable (fail-closed)")
     try:
         result = subprocess.run(
-            [tirith_path, "check", "--json", "--non-interactive", "--shell", "posix", "--", command],
+            [tirith_path, "check", "--json", "--non-interactive", "--shell", "posix", "--",
+             _expand_leading_tilde_executable(command)],
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout,
             stdin=subprocess.DEVNULL)
     except OSError as exc:

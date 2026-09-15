@@ -2774,7 +2774,7 @@ Hermes uses two different context scopes:
 - **Project context files use a priority system** — only ONE type is loaded (first match wins): `.hermes.md` → `AGENTS.override.md` / `AGENTS.md` chain → `CLAUDE.md` → `.cursorrules`. Within the AGENTS chain, `AGENTS.override.md` wins over `AGENTS.md` in each directory. SOUL.md is always loaded independently.
 - **AGENTS.md** is hierarchical: if subdirectories also have AGENTS.md, all are combined.
 - Hermes automatically seeds a default `SOUL.md` if one does not already exist.
-- All loaded context files are capped at `context_file_max_chars` characters (default 20,000) with smart truncation.
+- Loaded context files use `context_file_max_chars` when explicitly set; otherwise the cap scales with the model context window from 20,000 to 500,000 characters, with smart truncation.
 
 See also:
 - [Personality & SOUL.md](/user-guide/features/personality)

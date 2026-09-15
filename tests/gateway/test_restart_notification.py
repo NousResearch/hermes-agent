@@ -8,7 +8,8 @@ import pytest
 
 import gateway.run as gateway_run
 from gateway.config import HomeChannel, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType, SendResult
+from gateway.platforms.base import SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import build_session_key
 from tests.gateway.restart_test_helpers import (
     make_restart_runner,
@@ -77,7 +78,6 @@ async def test_restart_command_uses_atomic_json_writes_for_marker_files(tmp_path
     # run.py); it uses that module's top-level atomic_json_write import.
     import gateway.slash_commands as gateway_slash
     monkeypatch.setattr(gateway_slash, "atomic_json_write", _fake_atomic_json_write)
-    monkeypatch.setattr(gateway_run, "atomic_json_write", _fake_atomic_json_write)
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
@@ -385,11 +385,11 @@ async def test_shutdown_notifications_use_cached_live_thread_source_when_origin_
 
     await runner._notify_active_sessions_of_shutdown()
 
-    adapter.send.assert_awaited_once_with(
-        "parent-42",
-        "⚠️ Gateway shutting down — Your current task will be interrupted.",
-        metadata={"thread_id": "topic-7"},
-    )
+    adapter.send.assert_awaited_once()
+    chat_id, message = adapter.send.await_args.args
+    assert chat_id == "parent-42"
+    assert "shutting down" in message and "send any message" in message.lower()
+    assert adapter.send.await_args.kwargs == {"metadata": {"thread_id": "topic-7"}}
 
 
 @pytest.mark.asyncio

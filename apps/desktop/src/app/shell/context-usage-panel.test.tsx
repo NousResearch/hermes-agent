@@ -101,6 +101,20 @@ describe('useContextBreakdown', () => {
 })
 
 describe('ContextUsagePanel', () => {
+  it('marks estimates but preserves the provider-usage header', () => {
+    for (const estimated of [true, false]) {
+      const { container, unmount } = render(
+        <ContextUsagePanel breakdown={breakdown} loading={false} usage={{ ...usage, context_estimated: estimated }} />
+      )
+
+      const header = container.querySelector('[data-slot="context-usage-panel"] > div')?.textContent ?? ''
+
+      expect(header.includes('~')).toBe(estimated)
+      expect(container.querySelector('li')?.textContent).toContain('~')
+      unmount()
+    }
+  })
+
   it('renders the usage it is handed, so the popover matches the bar', () => {
     render(<ContextUsagePanel breakdown={breakdown} loading={false} usage={usage} />)
 

@@ -161,16 +161,16 @@ class FileStateRegistryUnitTests(unittest.TestCase):
         task_id = "finished-task"
         file_state.record_read(task_id, p)
 
-        from tools import file_tools
+        from tools import file_tools_read_tracking as rt
 
-        file_tools._read_tracker[task_id] = {"dedup": {}}
-        file_tools._patch_failure_tracker[task_id] = {p: 2}
+        rt._read_tracker[task_id] = {"dedup": {}}
+        rt._patch_failure_tracker[task_id] = {p: 2}
 
         clear_file_ops_cache(task_id)
 
         self.assertEqual(file_state.known_reads(task_id), [])
-        self.assertNotIn(task_id, file_tools._read_tracker)
-        self.assertNotIn(task_id, file_tools._patch_failure_tracker)
+        self.assertNotIn(task_id, rt._read_tracker)
+        self.assertNotIn(task_id, rt._patch_failure_tracker)
 
 
     def test_kill_switch_env_var(self):
@@ -211,20 +211,23 @@ class FileToolsIntegrationTests(unittest.TestCase):
             f.write(content)
         return p
 
-    def test_sibling_agent_write_surfaces_warning_through_handler(self):
+    def test_sibling_agent_write_refuses_stale_overwrite_through_handler(self):
         p = self._write_seed("shared.txt")
         r = json.loads(read_file_tool(path=p, task_id="agentA"))
         self.assertNotIn("error", r)
 
+        self.assertNotIn("error", json.loads(read_file_tool(path=p, task_id="agentB")))
         w_b = json.loads(write_file_tool(path=p, content="B wrote\n", task_id="agentB"))
         self.assertNotIn("error", w_b)
 
         w_a = json.loads(write_file_tool(path=p, content="A stale\n", task_id="agentA"))
-        warn = w_a.get("_warning", "")
-        self.assertTrue(warn, f"expected warning, got: {w_a}")
-        # The cross-agent message names the sibling task_id.
-        self.assertIn("agentB", warn)
-        self.assertIn("sibling", warn.lower())
+        err = w_a.get("error", "")
+        self.assertTrue(w_a.get("stale_write_blocked"), f"expected stale write refusal, got: {w_a}")
+        # The cross-agent message names the sibling task_id; B's write survives.
+        self.assertIn("agentB", err)
+        self.assertIn("sibling", err.lower())
+        with open(p) as f:
+            self.assertEqual(f.read(), "B wrote\n")
 
 
     def test_net_new_file_no_warning(self):

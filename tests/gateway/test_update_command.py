@@ -11,7 +11,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 
@@ -491,6 +491,31 @@ class TestSendUpdateNotification:
         assert not pending_path.exists()
         assert not output_path.exists()
         assert not exit_code_path.exists()
+
+
+    @pytest.mark.asyncio
+    async def test_failed_update_notice_says_still_running_and_trims_log(self, tmp_path):
+        """A failed update must tell the chat the old version still runs and where to see the
+        full error; the raw log is quoted only as a short tail, never the whole 3500-char dump."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / ".update_pending.json").write_text(
+            json.dumps({"platform": "discord", "chat_id": "111", "user_id": "222"}))
+        (hermes_home / ".update_output.txt").write_text("x" * 3000 + "\nERROR: pip failed\n")
+        (hermes_home / ".update_exit_code").write_text("1")
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.DISCORD: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._send_update_notification()
+
+        sent_text = mock_adapter.send.call_args[0][1]
+        assert "previous version is still running" in sent_text
+        assert "hermes update" in sent_text and "/update" in sent_text
+        assert "ERROR: pip failed" in sent_text
+        assert len(sent_text) < 1200
+        assert "exit code" not in sent_text.lower()
 
 
 # ---------------------------------------------------------------------------

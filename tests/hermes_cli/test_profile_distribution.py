@@ -450,7 +450,7 @@ class TestDescribe:
 
 
     def test_describe_missing_profile_raises(self, profile_env):
-        with pytest.raises(DistributionError, match="does not exist"):
+        with pytest.raises(DistributionError, match="No profile named .*hermes profile list"):
             describe_distribution("nonexistent")
 
 

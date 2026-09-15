@@ -74,6 +74,16 @@ export function cronJobHasExecutionContent(
   return Boolean(asString(job.prompt).trim() || asString(job.script).trim() || skills.length);
 }
 
+/** Focus a cron editor input by id (the editor renders `${idPrefix}-script`, etc.). */
+export function focusCronField(id: string): void {
+  if (typeof document === "undefined") return;
+  const el = document.getElementById(id);
+  if (el instanceof HTMLElement) {
+    el.focus();
+    el.scrollIntoView?.({ block: "center" });
+  }
+}
+
 export function cronJobFormFromJob(job: CronJob): CronJobFormState {
   const storedRefs = splitCronList(job.context_from);
   // Raw store records carry the reserved "self" entry inside context_from;

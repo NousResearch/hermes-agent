@@ -11,6 +11,7 @@ All run zero LLM calls.
 import inspect
 import json
 import time
+from datetime import datetime, timezone
 
 import pytest
 
@@ -19,7 +20,6 @@ from tools.session_search_tool import (
     SESSION_SEARCH_SCHEMA,
     _format_timestamp,
     _is_compacted_message,
-    _is_compression_ended,
     _resolve_to_parent,
     _session_link,
     session_search,
@@ -99,7 +99,13 @@ class TestSchema:
             "sort",
             "profile",
         ]
-        assert parameters == [*historical_prefix, "detail"]
+        assert parameters == [
+            *historical_prefix,
+            "detail",
+            "after",
+            "before",
+            "exclude_session_ids",
+        ]
 
 
 class TestFormatTimestamp:
@@ -152,9 +158,9 @@ class TestBrowseShape:
                 return []
 
         db = _DB()
-        monkeypatch.setattr("hermes_state.get_shared_session_db", lambda: db)
+        monkeypatch.setattr("hermes_state_registry.acquire", lambda: db)
         monkeypatch.setattr(
-            "hermes_state.release_or_close",
+            "hermes_state_registry.release_or_close",
             lambda _: setattr(db, "released", db.released + 1),
         )
 
@@ -524,14 +530,14 @@ class TestCrossProfileRead:
         monkeypatch.setattr(profiles_mod, "profile_exists", lambda n: exists)
         monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: home)
 
-    def test_bare_id_locates_across_profiles(self, db, tmp_path, monkeypatch):
-        # The real-world failure: model dropped the owning profile and passed a
-        # bare id. The tool must scan profiles and find it anyway.
+    def test_bare_id_never_reads_another_profiles_store(self, db, tmp_path, monkeypatch):
+        # #106761: profiles are isolated islands. A bare id that misses the caller's
+        # store must NOT be located by scanning every other profile's state.db.
         other_home = tmp_path / "asdf_home"
         other_home.mkdir()
         other = SessionDB(other_home / "state.db")
         other.create_session("s_far", source="cli")
-        other.append_message("s_far", role="user", content="hi")
+        other.append_message("s_far", role="user", content="secret")
         other._conn.commit()
 
         from collections import namedtuple
@@ -540,12 +546,15 @@ class TestCrossProfileRead:
         monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda n: tmp_path / "default_home")
         monkeypatch.setattr(profiles_mod, "list_profiles", lambda: [Info("asdf", other_home)])
 
-        # `db` (current profile) lacks s_far; no profile passed → scan finds it.
         result = json.loads(session_search(session_id="s_far", db=db))
-        assert result["success"] is True
-        assert result["mode"] == "read"
-        assert result["profile"] == "asdf"
+        assert result["success"] is False
+        assert "messages" not in result and "secret" not in json.dumps(result)
+        assert "profile=" in result["error"]
 
+        # Naming the owning profile is still the sanctioned cross-profile read.
+        self._patch_profiles(monkeypatch, other_home)
+        named = json.loads(session_search(session_id="s_far", profile="asdf", db=db))
+        assert named["success"] is True and named["message_count"] == 1
 
     def test_combined_value_autosplits(self, db, tmp_path, monkeypatch):
         # Agent passed the raw "@session:<profile>/<id>" value as session_id with
@@ -922,30 +931,16 @@ class TestRewindExclusion:
         ))
         assert result_compact["count"] >= 1
 
-        # Rewound content should NOT be discoverable
+        # Rewound content should NOT be discoverable. The OR-relaxed zero-result
+        # retry may legitimately surface OTHER active rows sharing the common term
+        # "content"; the invariant is that the rewound row itself never comes back.
         result_rewind = json.loads(session_search(
             query="rewound content gamma", db=db,
             current_session_id="s_mixed",
         ))
-        assert result_rewind["count"] == 0
-
-
-class TestCompressionEndedHelper:
-    """Unit tests for _is_compression_ended."""
-
-    def test_compression_ended_session(self, db):
-        db.create_session("s1", source="cli")
-        db.end_session("s1", "compression")
-        assert _is_compression_ended(db, "s1") is True
-
-    def test_delegation_child_not_ended(self, db):
-        """A delegation child under a compression continuation does NOT have
-        end_reason='compression' itself."""
-        db.create_session("s_parent", source="cli")
-        db.end_session("s_parent", "compression")
-        db.create_session("s_continuation", source="cli", parent_session_id="s_parent")
-        db.create_session("s_delegate_child", source="cli", parent_session_id="s_continuation")
-        assert _is_compression_ended(db, "s_delegate_child") is False
+        for entry in result_rewind["results"]:
+            assert entry["match_message_id"] != mid2
+            assert "gamma" not in (entry.get("snippet") or "").lower()
 
 
 class TestLegacyContinuationPlusDelegation:
@@ -1175,3 +1170,93 @@ class TestNewResetLineageBrowse:
         sids = [r["session_id"] for r in result["results"]]
         assert "s_legacy_child" in sids
 
+
+def _unix(year, month, day):
+    return int(datetime(year, month, day, tzinfo=timezone.utc).timestamp())
+
+
+def _set_started(db, **started_at_by_sid):
+    for sid, ts in started_at_by_sid.items():
+        db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (ts, sid))
+    db._conn.commit()
+
+
+class TestDiscoveryTemporalNarrowing:
+    @pytest.mark.parametrize("value, expected", [
+        ("24h", 86400), ("1d", 86400), ("2w", 2 * 604800), ("7D", 7 * 86400), (" 3 d ", 3 * 86400),
+        ("2026-06-01", _unix(2026, 6, 1)), ("2026-06-01T12:00:00Z", _unix(2026, 6, 1) + 43200),
+        (None, None), ("", None), ("7x", ValueError), ("not-a-date", ValueError),
+    ])
+    def test_parse_bound(self, value, expected):
+        """Relative durations are now-minus-N (checked as an offset); ISO is absolute UTC."""
+        from tools.session_search_tool import _parse_iso_bound
+        if expected is ValueError:
+            with pytest.raises(ValueError):
+                _parse_iso_bound(value)
+        elif isinstance(value, str) and value.strip() and value.strip()[-1].lower() in "hdw":
+            assert abs((int(time.time()) - _parse_iso_bound(value)) - expected) < 5
+        else:
+            assert _parse_iso_bound(value) == expected
+
+    def test_iso_window_is_applied_in_sql_not_as_a_post_filter(self, db, monkeypatch):
+        """A June hit must survive even when FTS rank would fill the scan with August rows, so the
+        bound has to live in the WHERE clause rather than trim the already-truncated top-N. An
+        invalid bound is a tool error, not a silent unbounded search."""
+        monkeypatch.setattr("tools.session_search_tool._DISCOVER_SCAN_LIMIT", 2)
+        for i in range(4):
+            sid = f"s_aug_{i}"
+            db.create_session(sid, source="cli")
+            db.append_message(sid, role="user", content="modpack modpack modpack modpack")
+            db.append_message(sid, role="assistant", content="modpack details " * 20)
+            _set_started(db, **{sid: _unix(2026, 8, 10)})
+        db.create_session("s_june", source="cli")
+        db.append_message("s_june", role="user", content="modpack")
+        db.append_message("s_june", role="assistant", content="ok")
+        _set_started(db, s_june=_unix(2026, 6, 15))
+
+        result = json.loads(session_search(
+            query="modpack", limit=5, after="2026-06-01", before="2026-07-01", db=db))
+        assert result["success"] is True
+        assert [r["session_id"] for r in result["results"]] == ["s_june"]
+        assert json.loads(session_search(query="modpack", after="not-a-date", db=db))["success"] is False
+
+    def test_relative_bounds_reach_the_tool_through_the_inline_executor(self, db):
+        """after="7d" keeps the last week, before="7d" keeps everything older — and both must
+        survive the production dispatch (INLINE_TOOL_EXECUTORS), which maps schema args to kwargs
+        explicitly and used to drop the new parameters on the floor."""
+        from types import SimpleNamespace
+
+        from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+
+        _seed_modpack_sessions(db)
+        now = int(time.time())
+        _set_started(db, s_newest=now - 2 * 86400, s_middle=now - 30 * 86400, s_oldest=now - 60 * 86400)
+        agent = SimpleNamespace(_get_session_db_for_recall=lambda: db, session_id="current")
+        ctx = InlineToolContext(effective_task_id="task-1", tool_call_id="call-1")
+
+        def run(**args):
+            out = json.loads(INLINE_TOOL_EXECUTORS["session_search"](
+                agent, {"query": "modpack", "limit": 5, **args}, ctx))
+            assert out["success"] is True
+            return {r["session_id"] for r in out["results"]}
+
+        assert run(after="7d") == {"s_newest"}
+        assert run(before="7d") == {"s_middle", "s_oldest"}
+        assert run(exclude_session_ids=["s_newest"]) == {"s_middle", "s_oldest"}
+
+
+class TestDiscoverySessionExclusion:
+    def test_exclude_session_ids_drops_whole_lineage(self, db):
+        db.create_session("s_root", source="cli")
+        db.append_message("s_root", role="user", content="unique lineage token alpha")
+        db.append_message("s_root", role="assistant", content="noted unique lineage token alpha")
+        db.create_session("s_child", source="cli", parent_session_id="s_root")
+        db.append_message("s_child", role="user", content="follow-up unique lineage token alpha")
+        db.append_message("s_child", role="assistant", content="child unique lineage token alpha")
+        _set_started(db, s_root=_unix(2026, 6, 1), s_child=_unix(2026, 6, 2))
+
+        found = json.loads(session_search(query="unique lineage token alpha", limit=5, db=db))
+        assert {r["session_id"] for r in found["results"]} & {"s_root", "s_child"}
+        excluded = json.loads(session_search(
+            query="unique lineage token alpha", limit=5, exclude_session_ids=["s_child"], db=db))
+        assert not {r["session_id"] for r in excluded["results"]} & {"s_root", "s_child"}

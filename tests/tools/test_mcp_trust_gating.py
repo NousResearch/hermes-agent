@@ -25,6 +25,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from tools import mcp_tool
+from tools import mcp_tool_handlers as _mcp_handlers
+from tools import mcp_tool_registration as _mcp_registration
 
 
 class _FakeContentBlock:
@@ -63,7 +65,7 @@ def fake_session():
     )
     server = SimpleNamespace(session=session, _rpc_lock=None)
     with patch.dict(mcp_tool._servers, {"srv": server}), \
-         patch("tools.mcp_tool._run_on_mcp_loop",
+         patch("tools.mcp_tool_loop._run_on_mcp_loop",
                side_effect=_fake_run_on_mcp_loop), \
          patch.dict(mcp_tool._server_error_counts, {}, clear=True):
         yield session
@@ -94,9 +96,9 @@ class TestTrustGateAtCallTime:
         """Approval consulted; 'accept' lets the RPC through."""
         _set_trust("srv", "untrusted")
         # No readOnlyHint recorded for delete_repo → write-capable.
-        handler = mcp_tool._make_tool_handler("srv", "delete_repo", 30.0)
+        handler = _mcp_handlers._make_tool_handler("srv", "delete_repo", 30.0)
         with patch(
-            "tools.approval.request_elicitation_consent",
+            "tools.approval_prompt.request_elicitation_consent",
             return_value="accept",
         ) as consent:
             raw = handler({"repo": "x"})
@@ -107,9 +109,9 @@ class TestTrustGateAtCallTime:
     def test_denied_approval_blocks_rpc(self, fake_session):
         """'decline' blocks the call — the RPC must never fire."""
         _set_trust("srv", "untrusted")
-        handler = mcp_tool._make_tool_handler("srv", "delete_repo", 30.0)
+        handler = _mcp_handlers._make_tool_handler("srv", "delete_repo", 30.0)
         with patch(
-            "tools.approval.request_elicitation_consent",
+            "tools.approval_prompt.request_elicitation_consent",
             return_value="decline",
         ):
             raw = handler({"repo": "x"})
@@ -123,9 +125,9 @@ class TestTrustGateAtCallTime:
         """readOnlyHint=True tools pass without consulting approval."""
         _set_trust("srv", "untrusted")
         _set_read_only("srv", "list_repos", True)
-        handler = mcp_tool._make_tool_handler("srv", "list_repos", 30.0)
+        handler = _mcp_handlers._make_tool_handler("srv", "list_repos", 30.0)
         with patch(
-            "tools.approval.request_elicitation_consent"
+            "tools.approval_prompt.request_elicitation_consent"
         ) as consent:
             raw = handler({})
         consent.assert_not_called()
@@ -136,9 +138,9 @@ class TestTrustGateAtCallTime:
     ):
         """trust: full (and the default) never consults approval."""
         _set_trust("srv", "full")
-        handler = mcp_tool._make_tool_handler("srv", "delete_repo", 30.0)
+        handler = _mcp_handlers._make_tool_handler("srv", "delete_repo", 30.0)
         with patch(
-            "tools.approval.request_elicitation_consent"
+            "tools.approval_prompt.request_elicitation_consent"
         ) as consent:
             raw = handler({"repo": "x"})
         consent.assert_not_called()
@@ -146,9 +148,9 @@ class TestTrustGateAtCallTime:
 
     def test_unconfigured_server_defaults_to_full_trust(self, fake_session):
         """Backward compat: servers with no trust key behave as before."""
-        handler = mcp_tool._make_tool_handler("srv", "delete_repo", 30.0)
+        handler = _mcp_handlers._make_tool_handler("srv", "delete_repo", 30.0)
         with patch(
-            "tools.approval.request_elicitation_consent"
+            "tools.approval_prompt.request_elicitation_consent"
         ) as consent:
             raw = handler({"repo": "x"})
         consent.assert_not_called()
@@ -158,9 +160,9 @@ class TestTrustGateAtCallTime:
         """An explicit readOnlyHint=False is write-capable."""
         _set_trust("srv", "untrusted")
         _set_read_only("srv", "write_file", False)
-        handler = mcp_tool._make_tool_handler("srv", "write_file", 30.0)
+        handler = _mcp_handlers._make_tool_handler("srv", "write_file", 30.0)
         with patch(
-            "tools.approval.request_elicitation_consent",
+            "tools.approval_prompt.request_elicitation_consent",
             return_value="decline",
         ) as consent:
             handler({"path": "/etc/passwd"})
@@ -170,9 +172,9 @@ class TestTrustGateAtCallTime:
     def test_approval_exception_fails_closed(self, fake_session):
         """Any exception in the consent path blocks the call."""
         _set_trust("srv", "untrusted")
-        handler = mcp_tool._make_tool_handler("srv", "delete_repo", 30.0)
+        handler = _mcp_handlers._make_tool_handler("srv", "delete_repo", 30.0)
         with patch(
-            "tools.approval.request_elicitation_consent",
+            "tools.approval_prompt.request_elicitation_consent",
             side_effect=RuntimeError("approval backend down"),
         ):
             raw = handler({"repo": "x"})
@@ -183,14 +185,14 @@ class TestTrustGateAtCallTime:
 class TestTrustNormalization:
     def test_unknown_trust_value_treated_as_untrusted(self):
         """Garbage trust strings fail closed to untrusted."""
-        assert mcp_tool._normalize_server_trust("banana") == "untrusted"
+        assert _mcp_registration._normalize_server_trust("banana") == "untrusted"
 
     def test_known_values(self):
-        assert mcp_tool._normalize_server_trust("full") == "full"
-        assert mcp_tool._normalize_server_trust("UNTRUSTED") == "untrusted"
-        assert mcp_tool._normalize_server_trust("  Full ") == "full"
+        assert _mcp_registration._normalize_server_trust("full") == "full"
+        assert _mcp_registration._normalize_server_trust("UNTRUSTED") == "untrusted"
+        assert _mcp_registration._normalize_server_trust("  Full ") == "full"
         # Missing key → default full (backward compatible; documented).
-        assert mcp_tool._normalize_server_trust(None) == "full"
+        assert _mcp_registration._normalize_server_trust(None) == "full"
 
 
 class TestAnnotationCaptureAtDiscovery:
@@ -221,8 +223,8 @@ class TestAnnotationCaptureAtDiscovery:
             "tools": {"resources": False, "prompts": False},
         }
         with patch("tools.registry.registry", ToolRegistry()), \
-             patch("tools.mcp_tool._track_mcp_tool_server"):
-            mcp_tool._register_server_tools("srv", server, config)
+             patch("tools.mcp_tool_registration._track_mcp_tool_server"):
+            _mcp_registration._register_server_tools("srv", server, config)
 
         assert mcp_tool._server_trust_levels["srv"] == "untrusted"
         hints = mcp_tool._tool_read_only_hints["srv"]
@@ -233,15 +235,15 @@ class TestAnnotationCaptureAtDiscovery:
 
     def test_dict_annotations_supported(self):
         """Cached/JSON annotations arrive as plain dicts."""
-        assert mcp_tool._annotation_read_only_hint(
+        assert _mcp_registration._annotation_read_only_hint(
             SimpleNamespace(annotations={"readOnlyHint": True})
         ) is True
-        assert mcp_tool._annotation_read_only_hint(
+        assert _mcp_registration._annotation_read_only_hint(
             SimpleNamespace(annotations={"readOnlyHint": "yes"})
         ) is False  # non-bool truthy → NOT read-only (hint must be True)
-        assert mcp_tool._annotation_read_only_hint(
+        assert _mcp_registration._annotation_read_only_hint(
             SimpleNamespace(annotations=None)
         ) is False
-        assert mcp_tool._annotation_read_only_hint(
+        assert _mcp_registration._annotation_read_only_hint(
             SimpleNamespace()
         ) is False

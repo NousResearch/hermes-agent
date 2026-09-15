@@ -118,6 +118,15 @@ type BotsMessages = {
     advancedFailed: string
     openAnotherChatUnsupported: string
     remoteConnectionsUnsupported: string
+    /** Bot-open failure toasts (canonical-chat.ts notifyBotOpenFailure). The
+     *  raw RPC/connection error travels in the toast `detail`, never here. */
+    openNeedsUpdateTitle: string
+    openNeedsUpdateMessage: (connectionLabel: string) => string
+    openUnreachableTitle: string
+    openUnreachableMessage: string
+    openChatFailedTitle: (botName: string) => string
+    openChatFailedMessage: string
+    openGateways: string
     /** Stands under the bot's name in a chat it has not spoken in yet. */
     chatEmpty: string
     /** First line of a brand-new bot's forever-chat — see `kickoffText`. */
@@ -163,6 +172,7 @@ type BotsMessages = {
     deleteTitle: string
     deleteAction: string
     composerPlaceholder: string
+    slashCommandsUnsupported: string
     attachHint: string
     newThread: string
     reply: string
@@ -181,6 +191,7 @@ type BotsMessages = {
     heldMembersStatus: (members: string) => string
     holdReleaseHint: string
     needsYourInput: string
+    noMembersToSend: (group: string) => string
     pictureGenerationFailed: string
     nameTaken: (name: string) => string
     memberCount: (count: number) => string
@@ -347,6 +358,13 @@ const en: BotsMessages = {
     advancedFailed: 'Advanced configuration failed',
     openAnotherChatUnsupported: 'Update Hermes Desktop to open another Bot chat.',
     remoteConnectionsUnsupported: 'Update Hermes Desktop to chat with bots on other connections.',
+    openNeedsUpdateTitle: 'This bot lives on an older Hermes',
+    openNeedsUpdateMessage: connectionLabel => `Update ${connectionLabel}, then try again.`,
+    openUnreachableTitle: 'Hermes couldn’t reach the computer this bot runs on',
+    openUnreachableMessage: 'Check it is online and try again.',
+    openChatFailedTitle: botName => `Could not open ${botName}’s chat`,
+    openChatFailedMessage: 'Try again.',
+    openGateways: 'Open Gateways',
     chatEmpty: 'Say something to get started.',
     kickoff: 'Hey, tell me about yourself!'
   },
@@ -387,6 +405,8 @@ const en: BotsMessages = {
     deleteTitle: 'Delete group chat?',
     deleteAction: 'Delete',
     composerPlaceholder: 'Say something — every bot in this group hears the room.',
+    slashCommandsUnsupported:
+      'Slash commands are not supported in group chats. Open an individual bot chat to use them.',
     attachHint: 'Attach files — every responding bot sees them',
     newThread: 'New Thread',
     reply: 'Reply',
@@ -405,6 +425,7 @@ const en: BotsMessages = {
     heldMembersStatus: members => `Paused: ${members}`,
     holdReleaseHint: 'Mention a paused bot or send @all resume to release them.',
     needsYourInput: 'A bot in this group chat needs your input',
+    noMembersToSend: group => `${group} has no members to send to — add a bot, or reopen the room if members are still loading.`,
     pictureGenerationFailed: 'Group picture generation failed',
     nameTaken: name => `A group named “${name}” already exists.`,
     memberCount: count => `${count} bots`,
@@ -541,9 +562,7 @@ const tr: BotsMessages = {
     newSectionEllipsis: 'Yeni bölüm…',
     removeFromSection: 'Bölümden kaldır',
     deleted: (name, count) =>
-      count === 0
-        ? `“${name}” silindi`
-        : `“${name}” silindi — ${count} bot Atanmamış bölümüne taşındı`,
+      count === 0 ? `“${name}” silindi` : `“${name}” silindi — ${count} bot Atanmamış bölümüne taşındı`,
     undo: 'Geri al'
   },
   bot: {
@@ -565,6 +584,13 @@ const tr: BotsMessages = {
     advancedFailed: 'Gelişmiş yapılandırma başarısız oldu',
     openAnotherChatUnsupported: 'Başka bir Bot Sohbeti açmak için Hermes Masaüstü’nü güncelleyin.',
     remoteConnectionsUnsupported: 'Diğer bağlantılardaki botlarla sohbet etmek için Hermes Masaüstü’nü güncelleyin.',
+    openNeedsUpdateTitle: 'Bu bot eski bir Hermes sürümünde çalışıyor',
+    openNeedsUpdateMessage: connectionLabel => `${connectionLabel} bağlantısını güncelleyin ve tekrar deneyin.`,
+    openUnreachableTitle: 'Hermes bu botun çalıştığı bilgisayara ulaşamadı',
+    openUnreachableMessage: 'Bilgisayarın çevrimiçi olduğunu kontrol edip tekrar deneyin.',
+    openChatFailedTitle: botName => `${botName} sohbeti açılamadı`,
+    openChatFailedMessage: 'Lütfen tekrar deneyin.',
+    openGateways: 'Ağ geçitlerini aç',
     chatEmpty: 'Başlamak için bir şey söyleyin.',
     kickoff: 'Merhaba, bana kendinden bahset!'
   },
@@ -605,6 +631,8 @@ const tr: BotsMessages = {
     deleteTitle: 'Grup sohbeti silinsin mi?',
     deleteAction: 'Sil',
     composerPlaceholder: 'Bir şey söyleyin — bu gruptaki her bot odayı duyar.',
+    slashCommandsUnsupported:
+      'Grup sohbetlerinde eğik çizgi komutları desteklenmiyor. Kullanmak için botun bireysel sohbetini açın.',
     attachHint: 'Dosya ekleyin — yanıt veren her bot bunları görür',
     newThread: 'Yeni ileti dizisi',
     reply: 'Yanıtla',
@@ -623,6 +651,8 @@ const tr: BotsMessages = {
     heldMembersStatus: members => `Duraklatıldı: ${members}`,
     holdReleaseHint: 'Duraklatılmış bir bottan bahsedin veya onları serbest bırakmak için @all resume gönderin.',
     needsYourInput: 'Bu grup sohbetindeki bir bot girdinizi bekliyor',
+    noMembersToSend: group =>
+      `${group} grubunda mesaj gönderilecek üye yok. Bir bot ekleyin veya üyeler hâlâ yükleniyorsa odayı yeniden açın.`,
     pictureGenerationFailed: 'Grup görseli oluşturma başarısız oldu',
     nameTaken: name => `“${name}” adlı bir grup zaten var.`,
     memberCount: count => `${count} bot`,
@@ -783,6 +813,13 @@ const ja: BotsMessages = {
     advancedFailed: '詳細設定に失敗しました',
     openAnotherChatUnsupported: '別のボットチャットを開くには Hermes Desktop を更新してください。',
     remoteConnectionsUnsupported: '他の接続上のボットとチャットするには Hermes Desktop を更新してください。',
+    openNeedsUpdateTitle: 'このボットは古い Hermes 上で動いています',
+    openNeedsUpdateMessage: connectionLabel => `${connectionLabel} を更新してから、もう一度お試しください。`,
+    openUnreachableTitle: 'このボットが動いているコンピューターに Hermes が接続できませんでした',
+    openUnreachableMessage: 'オンラインか確認して、もう一度お試しください。',
+    openChatFailedTitle: botName => `${botName} のチャットを開けませんでした`,
+    openChatFailedMessage: 'もう一度お試しください。',
+    openGateways: 'ゲートウェイを開く',
     chatEmpty: '何か書いて始めましょう。',
     kickoff: 'こんにちは、自己紹介をしてください！'
   },
@@ -823,6 +860,8 @@ const ja: BotsMessages = {
     deleteTitle: 'グループチャットを削除しますか？',
     deleteAction: '削除',
     composerPlaceholder: '何か書いてください — このグループのすべてのボットが部屋の内容を受け取ります。',
+    slashCommandsUnsupported:
+      'グループチャットではスラッシュコマンドを使用できません。個別のボットチャットを開いて使用してください。',
     attachHint: 'ファイルを添付 — 応答するすべてのボットが見ます',
     newThread: '新しいスレッド',
     reply: '返信',
@@ -841,6 +880,7 @@ const ja: BotsMessages = {
     heldMembersStatus: members => `一時停止中: ${members}`,
     holdReleaseHint: '一時停止中のボットにメンションするか、@all resume を送信して再開します。',
     needsYourInput: 'このグループチャットのボットが入力を待っています',
+    noMembersToSend: group => `${group} に送信先のメンバーがいません。ボットを追加するか、メンバーの読み込み中であればルームを開き直してください。`,
     pictureGenerationFailed: 'グループ画像の生成に失敗しました',
     nameTaken: name => `「${name}」という名前のグループはすでに存在します。`,
     memberCount: count => `ボット${count}体`,
@@ -996,6 +1036,13 @@ const zh: BotsMessages = {
     advancedFailed: '高级配置失败',
     openAnotherChatUnsupported: '请更新 Hermes Desktop 以打开另一个机器人聊天。',
     remoteConnectionsUnsupported: '请更新 Hermes Desktop 以与其他连接上的机器人聊天。',
+    openNeedsUpdateTitle: '这个机器人运行在较旧的 Hermes 上',
+    openNeedsUpdateMessage: connectionLabel => `请更新 ${connectionLabel}，然后重试。`,
+    openUnreachableTitle: 'Hermes 无法连接到运行这个机器人的电脑',
+    openUnreachableMessage: '请确认它在线后重试。',
+    openChatFailedTitle: botName => `无法打开 ${botName} 的聊天`,
+    openChatFailedMessage: '请重试。',
+    openGateways: '打开网关',
     chatEmpty: '说点什么开始吧。',
     kickoff: '你好，介绍一下你自己吧！'
   },
@@ -1036,6 +1083,7 @@ const zh: BotsMessages = {
     deleteTitle: '删除群聊？',
     deleteAction: '删除',
     composerPlaceholder: '说点什么 — 这个群里的每个机器人都会听到。',
+    slashCommandsUnsupported: '群聊不支持斜杠命令。请打开单个机器人的聊天来使用。',
     attachHint: '附加文件 — 每个回应的机器人都能看到',
     newThread: '新帖子',
     reply: '回复',
@@ -1054,6 +1102,7 @@ const zh: BotsMessages = {
     heldMembersStatus: members => `已暂停：${members}`,
     holdReleaseHint: '提及已暂停的机器人，或发送 @all resume 以恢复它们。',
     needsYourInput: '此群聊中有机器人需要你输入',
+    noMembersToSend: group => `${group} 没有可发送的成员——请添加机器人，如果成员仍在加载，请重新打开该群聊。`,
     pictureGenerationFailed: '群组图片生成失败',
     nameTaken: name => `已存在名为“${name}”的群聊。`,
     memberCount: count => `${count} 个机器人`,
@@ -1209,6 +1258,13 @@ const zhHant: BotsMessages = {
     advancedFailed: '進階設定失敗',
     openAnotherChatUnsupported: '請更新 Hermes Desktop 以開啟另一個機器人聊天。',
     remoteConnectionsUnsupported: '請更新 Hermes Desktop 以與其他連線上的機器人聊天。',
+    openNeedsUpdateTitle: '這個機器人運行在較舊的 Hermes 上',
+    openNeedsUpdateMessage: connectionLabel => `請更新 ${connectionLabel}，然後再試一次。`,
+    openUnreachableTitle: 'Hermes 無法連線到運行這個機器人的電腦',
+    openUnreachableMessage: '請確認它在線上後再試一次。',
+    openChatFailedTitle: botName => `無法開啟 ${botName} 的聊天`,
+    openChatFailedMessage: '請再試一次。',
+    openGateways: '開啟閘道',
     chatEmpty: '說點什麼開始吧。',
     kickoff: '你好，介紹一下你自己吧！'
   },
@@ -1249,6 +1305,7 @@ const zhHant: BotsMessages = {
     deleteTitle: '刪除群組聊天？',
     deleteAction: '刪除',
     composerPlaceholder: '說點什麼 — 這個群組裡的每個機器人都會聽到。',
+    slashCommandsUnsupported: '群組聊天不支援斜線命令。請開啟個別機器人的聊天來使用。',
     attachHint: '附加檔案 — 每個回應的機器人都能看到',
     newThread: '新討論串',
     reply: '回覆',
@@ -1267,6 +1324,7 @@ const zhHant: BotsMessages = {
     heldMembersStatus: members => `已暫停：${members}`,
     holdReleaseHint: '提及已暫停的機器人，或傳送 @all resume 以恢復它們。',
     needsYourInput: '此群組聊天中有機器人需要您的輸入',
+    noMembersToSend: group => `${group} 沒有可傳送的成員——請新增機器人，若成員仍在載入中，請重新開啟該群組聊天。`,
     pictureGenerationFailed: '群組圖片產生失敗',
     nameTaken: name => `已存在名為「${name}」的群組聊天。`,
     memberCount: count => `${count} 個機器人`,

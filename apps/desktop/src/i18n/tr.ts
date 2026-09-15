@@ -158,7 +158,6 @@ export const tr = defineLocale({
         'Masaüstü arka ucu bu isteği reddetti (405 Method Not Allowed). Hermes Desktop’ı yeniden başlatmayı deneyin.',
       microphonePermission: 'Mikrofon izni reddedildi.',
       openaiRejectedApiKey: 'OpenAI API anahtarını reddetti.',
-      openaiRejectedApiKeyWithStatus: status => `OpenAI API anahtarını reddetti (${status} invalid_api_key).`,
       openaiTtsNeedsKey: 'OpenAI TTS için VOICE_TOOLS_OPENAI_KEY veya OPENAI_API_KEY gerekli.'
     },
     voice: {
@@ -393,8 +392,7 @@ export const tr = defineLocale({
       archivedChats: 'Arşivlenmiş Sohbetler',
       about: 'Hakkında',
       billing: 'Faturalandırma',
-      notifications: 'Bildirimler',
-      plugins: 'Eklentiler'
+      notifications: 'Bildirimler'
     },
     plugins: {
       title: 'Masaüstü eklentileri',
@@ -408,20 +406,6 @@ export const tr = defineLocale({
       failed: 'başarısız',
       empty: 'Henüz masaüstü eklentisi yüklü değil.',
       kinds: { bundled: 'paketli', disk: 'diskte', runtime: 'çalışma zamanı' },
-      agent: {
-        title: 'Ajan eklentileri',
-        blurb:
-          'Hermes arka ucuna yüklediğiniz eklentiler — araçlar, beceriler, MCP sunucuları, kancalar ve eğik çizgi komutları. Taşınabilir olanlar diğer ajanlarda da çalışan Ajan Eklentisi paketleridir (beceri + MCP paketleri). Değişiklikler yeni oturumlarda geçerli olur.',
-        appliesTo: 'Geçerli olduğu yer:',
-        empty: 'Henüz ajan eklentisi yüklü değil.',
-        loadFailed: 'Ajan eklentileri yüklenemedi',
-        portable: 'taşınabilir',
-        search: 'Eklentilerde ara…',
-        noMatches: 'Aramanızla eşleşen eklenti bulunamadı.',
-        toggleFailed: (name: string) => `${name} değiştirilemedi`,
-        updateBackendToManage: 'Bu eklentiyi Masaüstü üzerinden yönetmek için Hermes arka ucunu güncelleyin.',
-        sources: { bundled: 'paketli', user: 'kullanıcı', git: 'git', project: 'proje', entrypoint: 'pip' }
-      },
       installModal: {
         title: 'Eklenti yükle',
         description: 'Yüklemeden önce bu deponun neler içerdiğini inceleyin.',
@@ -3537,22 +3521,18 @@ export const tr = defineLocale({
         'Bu istem artık beklemede değil. Takip mesajı olarak taslak oluşturmak için bir seçenek belirleyin.'
     },
     mcpSetup: {
-      installTitle: server => `${server} MCP sunucusu eklensin mi?`,
-      enableTitle: server => `${server} MCP sunucusu etkinleştirilsin mi?`,
-      authorizeTitle: server => `${server} MCP sunucusu yetkilendirilsin mi?`,
+      installTitle: 'MCP sunucuları ekle',
+      enableTitle: 'MCP sunucularını etkinleştir',
+      authorizeTitle: 'MCP sunucularını yetkilendir',
       installAction: 'Yükle',
       enableAction: 'Etkinleştir',
       authorizeAction: 'Yetkilendir',
-      decline: 'Şimdi değil',
-      declined: 'Reddedildi',
       installed: server => `${server} yüklendi`,
       enabled: server => `${server} etkinleştirildi`,
       authorized: server => `${server} yetkilendirildi`,
       failed: server => `${server} kurulumu başarısız oldu`,
-      unanswered: 'Yanıt yok',
       toolCount: count => (count === 1 ? '1 araç' : `${count} araç`),
       notInCatalog: server => `“${server}” MCP kataloğunda değil`,
-      catalogSource: 'Nous onaylı katalogdan',
       envRequired: 'Önce gerekli kimlik bilgilerini doldurun',
       sendFailed: 'MCP kurulum yanıtı gönderilemedi',
       reloadFailed: 'Sunucu kaydedildi ancak MCP araçları yeniden yüklenemedi — bir sonraki oturumda yüklenecekler',

@@ -40,13 +40,7 @@ def _force_local_terminal(monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "local")
 
 
-from tools.code_execution_tool import (
-    DEFAULT_KERNEL_MODE,
-    KERNEL_MODES,
-    _get_kernel_mode,
-    build_execute_code_schema,
-    execute_code,
-)
+from tools.code_execution_tool import build_execute_code_schema, execute_code
 from tools.code_kernel import _KERNELS, shutdown_all_kernels
 
 
@@ -68,24 +62,6 @@ def _fresh_kernel_registry():
 
 def _run(code, **kwargs):
     return json.loads(execute_code(code, task_id="kernel-test", **kwargs))
-
-
-class TestKernelModeResolution(unittest.TestCase):
-    """kernel_mode is retired: session kernels are always on for local runs.
-
-    _get_kernel_mode() survives only as a compat shim; a leftover
-    kernel_mode key in user config (any value) must be ignored."""
-
-    def test_session_is_always_on(self):
-        self.assertEqual(DEFAULT_KERNEL_MODE, "session")
-        with patch("tools.code_execution_tool._load_config", return_value={}):
-            self.assertEqual(_get_kernel_mode(), "session")
-
-    def test_leftover_config_key_is_ignored(self):
-        for stale in ("per-call", "forever", "", None):
-            with patch("tools.code_execution_tool._load_config",
-                       return_value={"kernel_mode": stale}):
-                self.assertEqual(_get_kernel_mode(), "session")
 
 
 class TestSessionStatePersistence(unittest.TestCase):
@@ -240,7 +216,7 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
     """
 
     def _run_as(self, session_key, code, task_id, **kwargs):
-        from tools.approval import reset_current_session_key, set_current_session_key
+        from tools.approval_context import reset_current_session_key, set_current_session_key
 
         token = set_current_session_key(session_key)
         try:
@@ -306,6 +282,57 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
                     task_id="t",
                 )
         self.assertIn("ISOLATED", peek.get("output", ""), peek)
+
+    def test_live_children_keep_their_kernels_past_the_lru_cap(self):
+        """A fan-out wider than max_session_kernels used to evict LIVE children's kernels (each
+        child's execute_code spawned a kernel, the cap reaped the oldest sibling's), so a child's
+        second call hit NameError on state its first call had set — 48 NameErrors across 28 lanes,
+        while the schema promised persistence. A live child's kernel is pinned for the child's life."""
+        import contextvars
+
+        from agent.delegation_context import delegated_child_context
+
+        with _kernel_config(max_session_kernels=2):
+            contexts = []
+            for index in range(5):
+                def _set(index=index):
+                    with delegated_child_context(f"child-{index}"):
+                        self._run_as("conv", f"v = {index}", task_id=f"child-{index}")
+                ctx = contextvars.copy_context()
+                ctx.run(_set)
+                contexts.append(ctx)
+            outcomes = {}
+            for index, ctx in enumerate(contexts):
+                def _read(index=index):
+                    with delegated_child_context(f"child-{index}"):
+                        outcomes[index] = self._run_as("conv", "print(v)", task_id=f"child-{index}")
+                ctx.run(_read)
+        for index, outcome in outcomes.items():
+            self.assertEqual(outcome["status"], "success", outcome)
+            self.assertTrue(outcome["kernel"]["reused"], outcome)
+            self.assertIn(str(index), outcome["output"])
+
+    def test_finished_children_release_their_kernels(self):
+        """The pin is not a leak: when the child is torn down (the delegate_task cleanup path calls
+        ``shutdown_kernels_for_delegated_child``) its kernels die and stop counting."""
+        from agent.delegation_context import delegated_child_context
+        from tools.code_kernel import shutdown_kernels_for_delegated_child
+
+        with _kernel_config():
+            with delegated_child_context("child-done"):
+                self._run_as("conv", "v = 1", task_id="child-done")
+            with delegated_child_context("child-live"):
+                self._run_as("conv", "v = 2", task_id="child-live")
+            doomed = [k for k in _KERNELS.values() if k.owner.endswith("::child::child-done")]
+            self.assertEqual(len(doomed), 1)
+            shutdown_kernels_for_delegated_child("child-done")
+            self.assertEqual([k for k in _KERNELS.values() if k.owner.endswith("::child::child-done")], [])
+            doomed[0].proc.wait(timeout=10)
+            self.assertFalse(doomed[0].alive())
+            # The sibling's kernel is untouched.
+            with delegated_child_context("child-live"):
+                still = self._run_as("conv", "print(v)", task_id="child-live")
+        self.assertIn("2", still["output"])
 
     def test_session_clear_disposes_the_owners_kernels(self):
         from tools.approval import clear_session
@@ -391,7 +418,7 @@ class TestPerCellRpcAuthority(unittest.TestCase):
         def _handle(tool_name, tool_args, task_id=None):
             from tools.thread_context import _callback_api
 
-            get_approval, _get_sudo, _set_a, _set_s = _callback_api()
+            (get_approval, _set_a), *_rest = _callback_api()
             seen.append(
                 {
                     "tool": tool_name,

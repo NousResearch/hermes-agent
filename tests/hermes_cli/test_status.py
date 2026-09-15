@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from hermes_cli.status import show_status
+import subprocess
 
 
 def test_show_status_all_does_not_print_keenable_key_value(monkeypatch, capsys, tmp_path):
@@ -48,7 +49,7 @@ def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys,
     def _unexpected_systemctl(*args, **kwargs):
         raise AssertionError("systemctl should not be called in the Termux status view")
 
-    monkeypatch.setattr(status_mod.subprocess, "run", _unexpected_systemctl)
+    monkeypatch.setattr(subprocess, "run", _unexpected_systemctl)
 
     status_mod.show_status(SimpleNamespace(all=False, deep=False))
 
@@ -233,6 +234,9 @@ def test_show_status_reports_gateway_session_last_activity(monkeypatch, capsys, 
     monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
 
     class _FakeDB:
+        def __init__(self, **_kwargs):
+            pass
+
         def list_gateway_sessions(self, active_only=True):
             return [
                 {"id": "gw-old", "last_active": time.time() - 7200},

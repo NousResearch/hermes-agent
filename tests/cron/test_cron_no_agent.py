@@ -147,6 +147,7 @@ def test_timed_out_no_agent_script_delivery_is_not_mislabeled_as_provider_failur
     """
     from cron.jobs import create_job
     import cron.scheduler as scheduler
+    from cron import scheduler_script as sched_script
 
     (hermes_env / "scripts" / "slow.py").write_text("import time; time.sleep(999)\n")
     job = create_job(
@@ -184,10 +185,8 @@ def test_timed_out_no_agent_script_delivery_is_not_mislabeled_as_provider_failur
             self.returncode = -9
 
     monkeypatch.setattr(scheduler.subprocess, "Popen", _NeverFinishes)
-    monkeypatch.setattr(scheduler, "_get_script_timeout", lambda: 1)
-    monkeypatch.setattr(
-        scheduler,
-        "_terminate_cron_script_process",
+    monkeypatch.setattr(sched_script, "_get_script_timeout", lambda: 1)
+    monkeypatch.setattr(sched_script, "_terminate_cron_script_process",
         lambda proc: setattr(proc, "returncode", -15),
     )
     monkeypatch.setattr(
@@ -207,6 +206,7 @@ def test_agent_provider_timeout_delivery_keeps_fallback_guidance(hermes_env, mon
     """Provider timeout classification remains available to agent-backed jobs."""
     from cron.jobs import create_job
     import cron.scheduler as scheduler
+    from cron import scheduler_script as sched_script
 
     job = create_job(
         prompt="Summarize the overnight logs.",
@@ -234,10 +234,10 @@ def test_agent_provider_timeout_delivery_keeps_fallback_guidance(hermes_env, mon
 
     assert scheduler.run_one_job(job) is True
     assert len(delivered) == 1
-    assert "provider timeout" in delivered[0].lower()
-    # Chain wording is now honest (#85508): exhausted when configured,
-    # "no fallback chain configured" guidance otherwise.
-    assert "fallback chain" in delivered[0].lower()
+    assert "did not respond in time" in delivered[0].lower()
+    # Chain wording is honest (#85508): "no backup provider succeeded" when configured,
+    # "no backup provider is configured" guidance otherwise.
+    assert "backup provider" in delivered[0].lower()
 
 
 # ---------------------------------------------------------------------------
@@ -247,7 +247,7 @@ def test_agent_provider_timeout_delivery_keeps_fallback_guidance(hermes_env, mon
 
 def test_run_job_script_path_traversal_still_blocked(hermes_env):
     """Security regression: shell-script support must NOT loosen containment."""
-    from cron.scheduler import _run_job_script
+    from cron.scheduler_script import _run_job_script
 
     # Absolute path outside the scripts dir should be rejected.
     ok, output = _run_job_script("/etc/passwd")
@@ -268,7 +268,7 @@ def test_run_job_script_nul_path_fails_cleanly(hermes_env):
     expanduser() ValueError and report a generic invalid-path message, so
     a bare "Blocked" assertion could not tell the fixed code from the
     unfixed code; on Windows the unfixed code crashes outright."""
-    from cron.scheduler import _run_job_script
+    from cron.scheduler_script import _run_job_script
 
     ok, output = _run_job_script("~user\x00bad.sh")
     assert ok is False
@@ -285,12 +285,13 @@ def test_run_job_script_nul_rejected_before_any_path_call(hermes_env, monkeypatc
     proves the rejection happens before any pathlib call on every
     platform, not just the ones where expanduser happens to raise."""
     import cron.scheduler as scheduler_module
+    from cron import scheduler_script as sched_script
 
     def boom(*_args, **_kwargs):
         raise AssertionError("Path must not be touched for a NUL-bearing script path")
 
     monkeypatch.setattr(scheduler_module, "Path", boom)
-    ok, output = scheduler_module._run_job_script("nul\x00byte.sh")
+    ok, output = sched_script._run_job_script("nul\x00byte.sh")
     assert ok is False
     assert "NUL byte" in output
 
@@ -303,7 +304,7 @@ def test_run_job_script_accepts_pathlike_script_path(hermes_env):
     scheduler at the guard itself. The guard coerces with str() first;
     a valid Path must still run the script end-to-end (regression for
     the #86832 review point)."""
-    from cron.scheduler import _run_job_script
+    from cron.scheduler_script import _run_job_script
 
     script = hermes_env / "scripts" / "probe.py"
     script.write_text('print("pathlike ok")\n', encoding="utf-8")
@@ -347,8 +348,8 @@ def test_no_agent_failure_never_blamed_on_a_provider(error):
     job = {"name": "nightly-job", "no_agent": True, "script": "nightly.sh"}
     msg = _summarize_cron_failure_for_delivery(job, error)
 
-    assert "provider" not in msg.lower()
-    assert "fallback chain" not in msg.lower()
+    assert "ai model service" not in msg.lower()
+    assert "backup provider" not in msg.lower()
     # The operator must be pointed at what actually failed.
     assert "script" in msg.lower()
 
@@ -356,9 +357,9 @@ def test_no_agent_failure_never_blamed_on_a_provider(error):
 @pytest.mark.parametrize(
     ("error", "expected"),
     [
-        ("ReadTimeout: provider did not respond", "provider timeout"),
-        ("HTTP 429 rate limit exceeded", "provider rate limit"),
-        ("HTTP 401 authentication failed", "provider authentication error"),
+        ("ReadTimeout: provider did not respond", "did not respond in time"),
+        ("HTTP 429 rate limit exceeded", "rate-limited"),
+        ("HTTP 401 authentication failed", "rejected the sign-in"),
     ],
 )
 def test_agent_job_provider_classification_unchanged(error, expected):

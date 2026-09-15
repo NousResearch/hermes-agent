@@ -57,7 +57,27 @@ class TestDetectToolFailureTerminal:
         assert suffix.startswith(" [")
         assert suffix.endswith("]")
 
+    def test_degraded_backend_shows_full_reason_and_retry_hint(self):
+        """A degraded backend (Docker down, SSH host unreachable) is an infrastructure problem: the user
+        needs the whole reason plus the fix hint, not the 48-char trimmed 'Terminal backend degraded: ...'."""
+        result = json.dumps({
+            "output": "", "exit_code": -1, "status": "degraded",
+            "reason": "Docker daemon is not reachable at unix:///var/run/docker.sock",
+            "retry_hint": "Start Docker, or run `hermes setup terminal` to switch to Local, then retry",
+            "error": "Terminal backend degraded: Docker daemon is not reachable at unix:///var/run/docker.sock",
+        })
+        is_failure, suffix = _detect_tool_failure("terminal", result)
+        assert is_failure is True
+        assert "unix:///var/run/docker.sock" in suffix
+        assert "hermes setup terminal" in suffix
+        assert "Terminal backend degraded:" not in suffix
 
+    def test_degraded_backend_without_hint_shows_reason_alone(self):
+        result = json.dumps({"output": "", "exit_code": -1, "status": "degraded",
+                             "reason": "SSH connection to bob@host timed out", "retry_hint": "",
+                             "error": "Terminal backend degraded: SSH connection to bob@host timed out"})
+        _, suffix = _detect_tool_failure("terminal", result)
+        assert suffix == " [SSH connection to bob@host timed out]"
 
 
 class TestDetectToolFailureMemory:

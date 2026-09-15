@@ -42,6 +42,15 @@ describe('desktop i18n runtime translator', () => {
     expect(translateNow('composer.wakingProfile', 'iş profili')).toBe('iş profili uyandırılıyor…')
   })
 
+  it('translates Turkish MCP setup titles and server-specific results', () => {
+    setRuntimeI18nLocale('tr')
+
+    expect(translateNow('assistant.mcpSetup.installTitle')).toBe('MCP sunucuları ekle')
+    expect(translateNow('assistant.mcpSetup.enableTitle')).toBe('MCP sunucularını etkinleştir')
+    expect(translateNow('assistant.mcpSetup.authorizeTitle')).toBe('MCP sunucularını yetkilendir')
+    expect(translateNow('assistant.mcpSetup.installed', 'GitHub')).toBe('GitHub yüklendi')
+  })
+
   it('translates settings copy for newly supported locales', () => {
     setRuntimeI18nLocale('ja')
     expect(translateNow('settings.appearance.title')).toBe('外観')

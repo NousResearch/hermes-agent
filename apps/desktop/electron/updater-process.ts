@@ -1,8 +1,29 @@
 import { spawn, type SpawnOptions } from 'node:child_process'
-import { statSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import path from 'node:path'
 
 import { hiddenWindowsChildOptions } from './windows-child-options'
+
+/** File prerequisites only: dependency recovery must remain reachable through update. */
+export function windowsUpdatePrerequisiteError(updateRoot: string): string | null {
+  const maintainedDir = path.join(updateRoot, 'scripts', 'desktop-update')
+  const required = [path.join(updateRoot, 'venv', 'Scripts', 'python.exe')]
+
+  // Pre-reorg flat scripts remain supported; damaged modern trees do not.
+  if (existsSync(maintainedDir)) {
+    required.push(path.join(maintainedDir, 'windows.ps1'))
+  }
+
+  for (const candidate of required) {
+    if (stagedFileExists(candidate)) {
+      continue
+    }
+
+    return `Update aborted: ${candidate} is missing or unreadable. Repair the installation and review antivirus quarantine before retrying.`
+  }
+
+  return null
+}
 
 export interface UpdaterChild {
   pid?: number
@@ -334,6 +355,20 @@ export interface UpdaterHandoffOutcome {
 export interface ObserveUpdaterHandoffDeps {
   setTimeoutFn?: (callback: () => void, ms: number) => unknown
   clearTimeoutFn?: (timer: unknown) => void
+}
+
+/**
+ * User-facing copy for a hand-off that did not take (spawn error or early exit).
+ * The lead sentence is plain: nothing changed and Hermes keeps running. The raw
+ * outcome message (exit code / signal / spawn error) stays on a trailing
+ * "Details:" line for logs and support.
+ */
+export function describeUpdaterHandoffFailure(outcome: Pick<UpdaterHandoffOutcome, 'message'>): string {
+  const lead =
+    "The updater couldn't start, so nothing was changed and Hermes keeps running as before. " +
+    'Try again; if it keeps failing, open the logs and send them to support.'
+
+  return outcome.message ? `${lead}\n\nDetails: ${outcome.message}` : lead
 }
 
 /**

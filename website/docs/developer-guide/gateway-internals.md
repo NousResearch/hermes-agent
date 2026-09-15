@@ -12,7 +12,7 @@ The messaging gateway is the long-running process that connects Hermes to 20+ ex
 
 | File | Purpose |
 |------|---------|
-| `gateway/run.py` | `GatewayRunner` — main loop, slash commands, message dispatch (large file; check git for current LOC) |
+| `gateway/run.py` | `GatewayRunner` facade — composes the `gateway/run_*.py` sibling mixins (startup, adapters, inbound, turn, busy, goals, notifications, shutdown, …) and `gateway/slash_commands_*.py` handlers |
 | `gateway/session.py` | `SessionStore` — conversation persistence and session key construction |
 | `gateway/delivery.py` | Outbound message delivery to target platforms/channels |
 | `gateway/pairing.py` | DM pairing flow for user authorization |
@@ -85,7 +85,7 @@ When an agent is actively running, incoming messages pass through two sequential
 
 1. **Level 1 — Base adapter** (`gateway/platforms/base.py`): Checks `_active_sessions`. If the session is active, queues the message in `_pending_messages` and sets an interrupt event. This catches messages *before* they reach the gateway runner.
 
-2. **Level 2 — Gateway runner** (`gateway/run.py`): Checks `_running_agents`. Intercepts specific commands (`/stop`, `/new`, `/queue`, `/status`, `/approve`, `/deny`) and routes them appropriately. Everything else triggers `running_agent.interrupt()`.
+2. **Level 2 — Gateway runner** (`gateway/run_inbound.py`): Checks `_running_agents`. Intercepts specific commands (`/stop`, `/new`, `/queue`, `/status`, `/approve`, `/deny`) and routes them appropriately. Everything else triggers `running_agent.interrupt()`.
 
 Commands that must reach the runner while the agent is blocked (like `/approve`) are dispatched **inline** via `await self._message_handler(event)` — they bypass the background task system to avoid race conditions.
 
@@ -96,7 +96,7 @@ The gateway uses a multi-layer authorization check, evaluated in order:
 1. **Per-platform allow-all flag** (e.g., `TELEGRAM_ALLOW_ALL_USERS`) — if set, all users on that platform are authorized
 2. **Platform allowlist** (e.g., `TELEGRAM_ALLOWED_USERS`) — comma-separated user IDs
 3. **DM pairing** — authenticated users can pair new users via a pairing code
-4. **Global allow-all** (`GATEWAY_ALLOW_ALL_USERS`) — if set, all users across all platforms are authorized
+4. **Global allow-all** (`GATEWAY_ALLOW_ALL_USERS`, or `gateway.allow_all_users` in `config.yaml`, bridged to the env var by `gateway/config_loader.py::bridge_core_env_settings`) — if set, all users across all platforms are authorized
 5. **Default: deny** — unauthorized users are rejected
 
 ### DM Pairing Flow
@@ -116,20 +116,16 @@ All slash commands in the gateway flow through the same resolution pipeline:
 
 1. `resolve_command()` from `hermes_cli/commands.py` maps input to canonical name (handles aliases, prefix matching)
 2. The canonical name is checked against `GATEWAY_KNOWN_COMMANDS`
-3. Handler in `_handle_message()` dispatches based on canonical name
+3. `_handle_message()` (`gateway/run_inbound.py`) looks the handler up by name — `_handle_<name>_command` on the `gateway/slash_commands_*.py` mixins — via `_command_handler_table` over `_IDLE_COMMANDS` / `_PLAIN_COMMANDS` in `gateway/run_busy.py`; there is no `if canonical == ...` chain
 4. Some commands are gated on config (`gateway_config_gate` on `CommandDef`)
 
 ### Running-Agent Guard
 
 Commands that must NOT execute while the agent is processing are rejected early:
 
-```python
-if _quick_key in self._running_agents:
-    if canonical == "model":
-        return "⏳ Agent is running — wait for it to finish or /stop first."
-```
+While `_quick_key in self._running_agents`, `_dispatch_busy_slash_command()` in `gateway/run_busy.py` routes each recognized command by its `CommandDef.busy_policy` / `busy_handler`: a mid-run variant (`_busy_<key>_command`) if one exists, otherwise the normal handler when `busy_policy` allows it, otherwise a reject message ("⏳ Agent is running — `/model` can't run mid-turn…").
 
-Bypass commands (`/stop`, `/new`, `/approve`, `/deny`, `/queue`, `/status`) have special handling.
+Bypass commands (`/stop`, `/new`, `/approve`, `/deny`, `/queue`, `/status`) have mid-run handlers and are dispatched inline.
 
 ## Config Sources
 
@@ -180,12 +176,22 @@ gateway/platforms/                  # core base + legacy direct adapters
 
 **Deferred loading:** Bundled `kind: platform` plugins register cheap `register_deferred` loaders in `gateway/platform_registry.py` (via `hermes_cli/plugins.py`) so platform SDKs import only when the gateway starts, delivers, or runs setup/status — not on plain `hermes chat`. Resolution loads one adapter on lookup; full enumeration runs pending loaders only on paths that need every platform.
 
-Experimental connector-backed platforms use the generic relay adapter in `gateway/relay/` instead of a direct platform module. When `GATEWAY_RELAY_URL` or `gateway.relay_url` is configured, the gateway registers the `relay` platform, dials the connector over an outbound WebSocket, and receives `descriptor`, `inbound`, and `interrupt_inbound` frames on that same socket. The connector advertises a `CapabilityDescriptor`; Hermes can send normal outbound replies, token-less `follow_up` operations, and interrupt frames back through the relay. The source-grounded wire contract lives in [`docs/relay-connector-contract.md`](https://github.com/NousResearch/hermes-agent/blob/main/docs/relay-connector-contract.md).
+Experimental connector-backed platforms use the generic relay adapter in `gateway/relay/` instead of a direct platform module. When `GATEWAY_RELAY_URL` or `gateway.relay_url` is configured, the gateway registers the `relay` platform, dials the connector over an outbound WebSocket, and receives `descriptor`, `inbound`, and `interrupt_inbound` frames on that same socket. The connector advertises a `CapabilityDescriptor`; Hermes can send normal outbound replies, token-less `follow_up` operations, and interrupt frames back through the relay. The source-grounded wire contract lives in [Relay ↔ Connector contract](relay-connector-contract.md).
 
 Adapters implement a common interface:
 - `connect()` / `disconnect()` — lifecycle management
 - `send()` — outbound message delivery
 - inbound events are normalized into a `MessageEvent` and forwarded via `handle_message()`
+
+Internal push wakes use `gateway.wake.admit_internal_event`: the public
+`handle_message()` still returns `None`, but the event's process-local
+`_gateway_accepted` receipt is set only after scheduling or queue insertion.
+A missing handler, mismatched explicit session key, or queue-cap drop is not
+acceptance. Custom adapters overriding ingress should delegate internal events to
+`BasePlatformAdapter.handle_message()` (or explicitly record actual admission),
+not equate a consumed/dropped callback with acceptance. This receipt is separate
+from heartbeat execution accounting and does not bypass authorization, emergency
+stop, or later turn-preparation gates.
 
 ### Token Locks
 
@@ -241,19 +247,17 @@ AIAgent._invoke_tool()
 
 ### Memory Flush Lifecycle
 
-When a session is reset, resumed, or expires:
-1. Built-in memories are flushed to disk
-2. Memory provider's `on_session_end()` hook fires
-3. A temporary `AIAgent` runs a memory-only conversation turn
-4. Context is then discarded or archived
+Explicit conversation boundaries (such as `/new`, `/reset`, or `/resume`) flush and finalize the outgoing session. Idle time and daily boundaries never finalize it.
+
+Resource-only TTL, LRU, and memory-pressure eviction commits the cached transcript to configured memory providers before releasing the agent's clients. It does not close the durable conversation: the next turn reloads the same transcript and identity.
 
 ## Background Maintenance
 
 The gateway runs periodic maintenance alongside message handling:
 
 - **Cron ticking** — checks job schedules and fires due jobs
-- **Session expiry** — cleans up abandoned sessions after timeout
-- **Memory flush** — proactively flushes memory before session expiry
+- **Session housekeeping** — reclaims cached resources without ending transcripts
+- **Memory flush** — commits memory before soft cache eviction
 - **Cache refresh** — refreshes model lists and provider status
 
 ## Process Management

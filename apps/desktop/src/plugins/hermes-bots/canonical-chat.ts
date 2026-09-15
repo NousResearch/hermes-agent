@@ -12,6 +12,7 @@ import * as sdk from '@hermes/plugin-sdk'
 import { host } from '@hermes/plugin-sdk'
 
 import { $botMeta, botMetaKey, botOwner, persistBotMetaSnapshot } from './data'
+import { botsText } from './i18n'
 import { backendTargetProfile, botConnectionRoute, botRosterMeta, botWorkspaceOwnerKey, requestForBot } from './routing'
 import type { RpcErrorLike } from './routing'
 import { getPluginCtx } from './shared'
@@ -157,19 +158,63 @@ function botModeGatewayNeedsUpdate(error: unknown) {
   return /(?:method not found|no handler for|unknown method|unsupported rpc)/i.test(message)
 }
 
-export function notifyBotOpenFailure(error: unknown, bot: RosterRow, fallbackMessage: string) {
+/** The one deep link to the Gateways settings tab (the route
+ *  profile-switcher.tsx reaches via SETTINGS_ROUTE; plugins don't import app
+ *  routes, so the literal lives here). */
+const GATEWAY_SETTINGS_PATH = '/settings?tab=gateway'
+
+/** Raw error text for the toast's muted `detail` line — never the body. */
+function errorDetail(error: unknown): string | undefined {
+  const text = String((error as RpcErrorLike)?.message || error || '').trim()
+
+  return text || undefined
+}
+
+/** What the caller was doing when the open failed: `'reach'` — activating
+ *  the bot's connection (a failure here means the computer the bot runs on
+ *  could not be reached); `'open'` — resolving/opening the forever-chat. */
+export type BotOpenStep = 'open' | 'reach'
+
+/** Toast a failed bot open. Titles and bodies come from the plugin bundle and
+ *  say what happened + what to do; the raw RPC/connection error only ever
+ *  rides in `detail`. Every toast offers the Gateways settings tab. */
+export function notifyBotOpenFailure(error: unknown, bot: RosterRow, step: BotOpenStep, botName?: string) {
+  const b = botsText().bot
+  const action = { label: b.openGateways, onClick: () => host.navigate(GATEWAY_SETTINGS_PATH) }
+  const detail = errorDetail(error)
+
   if (botModeGatewayNeedsUpdate(error)) {
-    const gateway = bot.connectionLabel || bot.connectionId || 'this gateway'
+    const connectionLabel = bot.connectionLabel || bot.connectionId || 'Hermes'
     host.notify?.({
       kind: 'error',
-      title: 'Update this gateway to use Bot Mode',
-      message: `Update ${gateway}, then try again.`
+      title: b.openNeedsUpdateTitle,
+      message: b.openNeedsUpdateMessage(connectionLabel),
+      ...(detail ? { detail } : {}),
+      action
     })
 
     return
   }
 
-  host.notifyError?.(error, fallbackMessage)
+  if (step === 'reach') {
+    host.notify?.({
+      kind: 'error',
+      title: b.openUnreachableTitle,
+      message: b.openUnreachableMessage,
+      ...(detail ? { detail } : {}),
+      action
+    })
+
+    return
+  }
+
+  host.notify?.({
+    kind: 'error',
+    title: b.openChatFailedTitle(botName || bot.name),
+    message: b.openChatFailedMessage,
+    ...(detail ? { detail } : {}),
+    action
+  })
 }
 
 /** THE identity lookup: the profile's session titled exactly "Bot Chat",

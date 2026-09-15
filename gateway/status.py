@@ -1577,12 +1577,12 @@ def planned_stop_stopper_alive() -> bool:
     stopper_pid = parsed[0].get("stopper_pid")
     if not isinstance(stopper_pid, int) or stopper_pid <= 0 or stopper_pid == os.getpid():
         return True
-    try:
-        os.kill(stopper_pid, 0)
-    except ProcessLookupError:
+    # _pid_exists (same module) is the sanctioned cross-platform liveness probe:
+    # os.kill(pid, 0) sends CTRL_C_EVENT to the console group on Windows (bpo-14484).
+    # False only when the stopper is truly gone (a zombie stopper can never revive
+    # the gateway either); any doubt still reports alive so a live stop is never cancelled.
+    if not _pid_exists(stopper_pid):
         return False
-    except OSError:
-        return True  # e.g. EPERM: the process exists but belongs to another user
     return True
 
 

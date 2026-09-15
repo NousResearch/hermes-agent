@@ -37,6 +37,7 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from _hermes_home import get_hermes_home
+from utils import atomic_json_write as _write_private_json
 
 HERMES_HOME = get_hermes_home()
 TOKEN_PATH = HERMES_HOME / "google_token.json"
@@ -252,11 +253,10 @@ def get_credentials():
     creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), _stored_token_scopes())
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
-        TOKEN_PATH.write_text(
-            json.dumps(
-                _normalize_authorized_user_payload(json.loads(creds.to_json())),
-                indent=2,
-            ), encoding="utf-8"
+        _write_private_json(
+            TOKEN_PATH,
+            _normalize_authorized_user_payload(json.loads(creds.to_json())),
+            mode=0o600,
         )
     if not creds.valid:
         print("Token is invalid. Re-run setup.", file=sys.stderr)

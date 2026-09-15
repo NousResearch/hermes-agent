@@ -16,6 +16,7 @@ Two fixes, both covered here:
 
 from __future__ import annotations
 
+import errno
 import threading
 import time
 from pathlib import Path
@@ -91,3 +92,26 @@ def test_first_init_connect_is_bounded_when_lock_held(kanban_home, monkeypatch):
     finally:
         release.set()
         t.join(timeout=5)
+
+
+@pytest.mark.windows_only
+def test_first_init_retries_transient_permission_error_opening_lock(
+    kanban_home, monkeypatch,
+):
+    """A transient Windows ACL/share denial must not escape from lock setup."""
+    db_path = kb.kanban_db_path(board="default")
+    lock_path = db_path.with_name(db_path.name + ".init.lock")
+    real_open = Path.open
+    attempts = 0
+
+    def transient_open(path: Path, *args, **kwargs):
+        nonlocal attempts
+        if path == lock_path and attempts < 2:
+            attempts += 1
+            raise PermissionError(errno.EACCES, "synthetic transient denial", str(path))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", transient_open)
+    with kbc._cross_process_init_lock(db_path):
+        pass
+    assert attempts == 2

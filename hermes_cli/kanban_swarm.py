@@ -227,9 +227,17 @@ def _create_swarm_uncommitted(
         conn,
         title=verifier_title,
         body=(
-            "Review every worker handoff and blackboard update. Gate the swarm: "
-            "complete only with metadata {\"gate\": \"pass\"} when evidence is "
-            "sufficient; otherwise block with exact missing work."
+            "Review every worker handoff and blackboard update. Gate the swarm. "
+            "When evidence is sufficient, call kanban_complete with "
+            "metadata={\"gate\": \"pass\"}; only that terminal transition releases "
+            "synthesis. When a worker can repair missing work, create a bounded "
+            "rework card with kanban_create assigned to that worker's profile and "
+            "with no parents, then make it a new parent of this verifier using "
+            "kanban_link. After every rework dependency is linked, call "
+            "kanban_block(kind=\"dependency\") so this verifier returns to todo and "
+            "auto-runs after the rework completes. For a genuine human or capability "
+            "gate, block with the matching typed kind and exact missing evidence; "
+            "never pass or release synthesis on incomplete evidence."
             + context_suffix
         ),
         assignee=verifier_assignee,

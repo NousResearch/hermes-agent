@@ -45,6 +45,11 @@ def test_create_swarm_builds_parallel_workers_verifier_and_synthesizer(tmp_path)
         assert set(kb.parent_ids(conn, created.verifier_id)) == set(created.worker_ids)
         assert kb.parent_ids(conn, created.synthesizer_id) == [created.verifier_id]
         assert all(created.root_id in (task.body or "") for task in workers)
+        verifier_protocol = verifier.body or ""
+        assert "kanban_create" in verifier_protocol
+        assert "kanban_link" in verifier_protocol
+        assert 'kanban_block(kind="dependency")' in verifier_protocol
+        assert 'metadata={"gate": "pass"}' in verifier_protocol
     finally:
         conn.close()
 
@@ -259,5 +264,40 @@ def test_swarm_verifier_and_synthesis_are_dependency_gated(tmp_path):
         synthesizer = kb.get_task(conn, created.synthesizer_id)
         assert synthesizer is not None
         assert synthesizer.status == "ready"
+    finally:
+        conn.close()
+
+
+def test_swarm_rework_regates_verifier_without_releasing_synthesis(tmp_path):
+    conn = kbc.connect(tmp_path / "kanban.db")
+    try:
+        created = create_swarm(
+            conn,
+            goal="Verify, repair, then synthesize.",
+            workers=[SwarmWorkerSpec(profile="builder", title="Build", body="Build")],
+            verifier_assignee="reviewer",
+            synthesizer_assignee="writer",
+        )
+        assert kb.complete_task(conn, created.worker_ids[0], summary="initial attempt")
+        kb.recompute_ready(conn)
+        review = kb.claim_task(conn, created.verifier_id, claimer="reviewer:test")
+        assert review is not None
+
+        rework_id = kb.create_task(conn, title="Repair verifier finding", assignee="builder")
+        kb.link_tasks(conn, rework_id, created.verifier_id)
+        assert kb.block_task(
+            conn,
+            created.verifier_id,
+            reason="wait for bounded repair",
+            kind="dependency",
+            expected_run_id=review.current_run_id,
+        )
+
+        assert kb.get_task(conn, created.verifier_id).status == "todo"
+        assert kb.get_task(conn, created.synthesizer_id).status == "todo"
+        assert kb.complete_task(conn, rework_id, summary="repair complete")
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, created.verifier_id).status == "ready"
+        assert kb.get_task(conn, created.synthesizer_id).status == "todo"
     finally:
         conn.close()

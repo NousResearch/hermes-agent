@@ -128,11 +128,23 @@ def _cross_process_init_lock(path: Path):
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_name(path.name + ".init.lock")
-    handle = lock_path.open("a+b")
+    handle = None
     acquired = False
+    deadline = time.monotonic() + _INIT_LOCK_TIMEOUT_SECONDS
+    open_error: Optional[OSError] = None
     try:
-        deadline = time.monotonic() + _INIT_LOCK_TIMEOUT_SECONDS
-        while True:
+        # On Windows open("a+b") can transiently raise EACCES during
+        # concurrent access. Opening is part of the bounded acquisition
+        # protocol; letting it escape turns contention into a failed command.
+        while handle is None:
+            try:
+                handle = lock_path.open("a+b")
+            except OSError as exc:
+                open_error = exc
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(_INIT_LOCK_POLL_SECONDS)
+        while handle is not None:
             try:
                 acquired = _try_lock_nb(handle)
             except OSError:
@@ -141,20 +153,22 @@ def _cross_process_init_lock(path: Path):
                 break
             time.sleep(_INIT_LOCK_POLL_SECONDS)
         if not acquired:
+            detail = f"; last open error: {open_error}" if handle is None and open_error else ""
             _kb._log.warning(
                 "kanban init lock for %s not acquired within %.0fs — proceeding "
                 "without the cross-process lock (in-process lock + idempotent "
                 "init are the correctness backstop). A stuck holder is no longer "
-                "able to block this connect indefinitely (#36644).",
-                lock_path, _INIT_LOCK_TIMEOUT_SECONDS,
+                "able to block this connect indefinitely (#36644)%s.",
+                lock_path, _INIT_LOCK_TIMEOUT_SECONDS, detail,
             )
         yield
     finally:
-        try:
-            if acquired:
-                _unlock(handle)
-        finally:
-            handle.close()
+        if handle is not None:
+            try:
+                if acquired:
+                    _unlock(handle)
+            finally:
+                handle.close()
 
 
 @contextlib.contextmanager

@@ -157,11 +157,18 @@ def _nous_portal_env_override() -> Optional[str]:
 
     Documented dev/staging escape hatch (e.g. hosted agents on the staging Portal). Trusted env
     source: must NOT be gated by ``_NOUS_PORTAL_ALLOWED_HOSTS``, which rejects untrusted
-    NETWORK-provided values persisted to auth.json, not operator config.
+    NETWORK-provided values persisted to auth.json, not operator config. Read through the
+    profile secret scope like ``_nous_inference_env_override``: it is reached on every routed
+    turn (``_nous_effective_routing``), and a raw environ read would POST a multiplexed
+    secondary's refresh token to the DEFAULT profile's Portal.
     """
     from hermes_cli.auth import _optional_base_url
-    return _optional_base_url(
-        os.getenv("HERMES_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL"))
+    from agent.secret_scope import UnscopedSecretError, get_secret
+    try:
+        override = get_secret("HERMES_PORTAL_BASE_URL") or get_secret("NOUS_PORTAL_BASE_URL")
+    except UnscopedSecretError:
+        override = os.getenv("HERMES_PORTAL_BASE_URL") or os.getenv("NOUS_PORTAL_BASE_URL")  # unscoped default-profile/CLI path: environ IS its own value
+    return _optional_base_url(override)
 
 
 def _scope_values(raw_scope: Any) -> set[str]:
@@ -793,9 +800,7 @@ def _nous_effective_routing(state: Dict[str, Any]) -> tuple[str, str, str, str]:
     layers the runtime-only ``NOUS_INFERENCE_BASE_URL`` override on top and is never persisted.
     """
     from hermes_cli.auth import _NOUS_PORTAL_ALLOWED_HOSTS, _optional_base_url
-    portal_url = (
-        _optional_base_url(state.get("portal_base_url")) or os.getenv("HERMES_PORTAL_BASE_URL")
-        or os.getenv("NOUS_PORTAL_BASE_URL") or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
+    portal_url = (_optional_base_url(state.get("portal_base_url")) or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
     # A persisted/stale portal_base_url is where the refresh token gets POSTed — reject any host
     # outside the allowlist so a poisoned value can't exfiltrate the bearer, healing to the
     # default. Trusted operator env overrides bypass this network-value gate.

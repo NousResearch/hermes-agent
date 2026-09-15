@@ -20,6 +20,7 @@ from agent.kanban_turn_recovery import (
     recover_failed_kanban_turns,
     recovery_delay_seconds,
     should_recover_turn,
+    turn_is_unfinished,
 )
 
 
@@ -302,27 +303,10 @@ def test_single_query_non_kanban_unchanged(monkeypatch):
     assert "summary" in calls
 
 
-def test_quiet_single_query_kanban_recovers(monkeypatch):
-    """The -Q path gets the same in-place recovery before its exit-code block."""
+def _install_quiet_fake_cli(monkeypatch, run_conversation):
+    """Quiet (-Q) harness: minimal HermesCLI whose agent runs the given function."""
     import cli as cli_mod
     from types import SimpleNamespace
-    import agent.kanban_turn_recovery as rec
-
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_probe")
-    monkeypatch.setenv("HERMES_KANBAN_TURN_RECOVERY", "2")
-    monkeypatch.setattr(rec, "RECOVERY_DELAYS_SECONDS", (0.0,))
-    monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
-
-    runs: list = []
-
-    def run_conversation(*, user_message, conversation_history):
-        runs.append(user_message)
-        if len(runs) == 1:
-            return {"final_response": "", "error": "boom", "failed": True,
-                    "failure_retryable": True, "failure_reason": "timeout", "messages": []}
-        return {"final_response": "done", "failed": False, "messages": []}
-
-    calls: list = []
 
     class FakeCLI:
         def __init__(self, **_kwargs):
@@ -353,6 +337,28 @@ def test_quiet_single_query_kanban_recovers(monkeypatch):
     monkeypatch.setattr(cli_mod.atexit, "register", lambda *a, **k: None)
     monkeypatch.setattr(cli_mod, "_finalize_single_query", lambda fake_cli: None)
     monkeypatch.setattr(cli_mod, "_collect_kanban_task_images", lambda imgs: [])
+    return cli_mod
+
+
+def test_quiet_single_query_kanban_recovers(monkeypatch):
+    """The -Q path gets the same in-place recovery before its exit-code block."""
+    import agent.kanban_turn_recovery as rec
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_probe")
+    monkeypatch.setenv("HERMES_KANBAN_TURN_RECOVERY", "2")
+    monkeypatch.setattr(rec, "RECOVERY_DELAYS_SECONDS", (0.0,))
+    monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
+
+    runs: list = []
+
+    def run_conversation(*, user_message, conversation_history):
+        runs.append(user_message)
+        if len(runs) == 1:
+            return {"final_response": "", "error": "boom", "failed": True,
+                    "failure_retryable": True, "failure_reason": "timeout", "messages": []}
+        return {"final_response": "done", "failed": False, "messages": []}
+
+    cli_mod = _install_quiet_fake_cli(monkeypatch, run_conversation)
 
     with pytest.raises(SystemExit) as exc_info:
         cli_mod.main(query="hello", quiet=True, toolsets="terminal")
@@ -409,9 +415,6 @@ def test_whitespace_task_id_is_not_a_worker_anywhere(monkeypatch):
 
 def test_quiet_kanban_exits_nonzero_when_no_settled_outcome(monkeypatch):
     """D1 on the quiet (-Q) path: no settled outcome in kanban context -> exit 1."""
-    import cli as cli_mod
-    from types import SimpleNamespace
-
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_probe")
     monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
 
@@ -421,38 +424,93 @@ def test_quiet_kanban_exits_nonzero_when_no_settled_outcome(monkeypatch):
         runs.append(user_message)
         return None
 
-    class FakeCLI:
-        def __init__(self, **_kwargs):
-            self.provider = "test-provider"
-            self.model = "test-model"
-            self.session_id = "quiet-session"
-            self.conversation_history = []
-            self._active_agent_route_signature = "same-route"
-            self.agent = SimpleNamespace(
-                session_id="quiet-session", platform="cli", quiet_mode=False,
-                suppress_status_output=False, stream_delta_callback=object(),
-                tool_gen_callback=object(), run_conversation=run_conversation,
-            )
-
-        def _claim_active_session(self, surface, *, stderr=False):
-            return True
-
-        def _ensure_runtime_credentials(self):
-            return True
-
-        def _resolve_turn_agent_config(self, effective_query):
-            return {"signature": "same-route", "model": None, "runtime": None, "request_overrides": None}
-
-        def _init_agent(self, **kwargs):
-            return True
-
-    monkeypatch.setattr(cli_mod, "HermesCLI", FakeCLI)
-    monkeypatch.setattr(cli_mod.atexit, "register", lambda *a, **k: None)
-    monkeypatch.setattr(cli_mod, "_finalize_single_query", lambda fake_cli: None)
-    monkeypatch.setattr(cli_mod, "_collect_kanban_task_images", lambda imgs: [])
+    cli_mod = _install_quiet_fake_cli(monkeypatch, run_conversation)
 
     with pytest.raises(SystemExit) as exc_info:
         cli_mod.main(query="hello", quiet=True, toolsets="terminal")
 
     assert exc_info.value.code == 1
     assert len(runs) == 1  # None result -> no in-place retry, honest exit instead
+
+
+# ── D5: an INCOMPLETE turn (partial / completed=False) is unfinished work ──
+
+
+def test_partial_turn_policy(clear_kanban_env):
+    """D5: incomplete turns are recoverable in place; non-retryable failures are not."""
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_probe")
+    partial = {"partial": True, "completed": False, "final_response": "cut off", "error": "truncated"}
+    assert turn_is_unfinished(partial) is True
+    assert turn_is_unfinished(_success()) is False
+    assert should_recover_turn(partial, attempt=0) is True
+    assert should_recover_turn({"completed": False, "final_response": "x"}, attempt=0) is True
+    # a FAILED turn keeps its own policy even when also flagged partial
+    assert should_recover_turn({**_failed(retryable=False), "partial": True}, attempt=0) is False
+    assert should_recover_turn(_success(), attempt=0) is False
+    clear_kanban_env.delenv("HERMES_KANBAN_TASK", raising=False)
+    assert should_recover_turn(partial, attempt=0) is False
+
+
+def test_partial_turn_recovers_in_place_then_exits(monkeypatch):
+    """D5: a partial turn retries in place; still partial after the budget -> exit 1."""
+    import agent.kanban_turn_recovery as rec
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_probe")
+    monkeypatch.setenv("HERMES_KANBAN_TURN_RECOVERY", "1")
+    monkeypatch.setattr(rec, "RECOVERY_DELAYS_SECONDS", (0.0,))
+    partial = {"partial": True, "completed": False, "final_response": "cut off", "error": "truncated"}
+    calls: list = []
+    cli_mod = _install_fake_cli(monkeypatch, [partial, partial], calls)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_mod.main(query="hello", quiet=False, oneshot=True, toolsets="terminal")
+
+    assert exc_info.value.code == 1
+    chats = [c for c in calls if isinstance(c, tuple) and c[0] == "chat"]
+    assert len(chats) == 2
+    assert "Do NOT start over" in chats[1][1]
+
+
+def test_partial_turn_recovers_cleanly(monkeypatch):
+    """D5: a partial turn followed by a settled success exits clean (no SystemExit)."""
+    import agent.kanban_turn_recovery as rec
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_probe")
+    monkeypatch.setenv("HERMES_KANBAN_TURN_RECOVERY", "2")
+    monkeypatch.setattr(rec, "RECOVERY_DELAYS_SECONDS", (0.0,))
+    partial = {"partial": True, "completed": False, "final_response": "cut off", "error": "truncated"}
+    calls: list = []
+    cli_mod = _install_fake_cli(
+        monkeypatch, [partial, {"failed": False, "final_response": "done", "messages": []}], calls
+    )
+
+    cli_mod.main(query="hello", quiet=False, oneshot=True, toolsets="terminal")
+
+    chats = [c for c in calls if isinstance(c, tuple) and c[0] == "chat"]
+    assert len(chats) == 2
+    assert "summary" in calls
+
+
+def test_quiet_partial_turn_exits_nonzero_after_recovery(monkeypatch):
+    """D5 on the quiet path: partial -> one in-place retry -> still partial -> exit 1."""
+    import agent.kanban_turn_recovery as rec
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_probe")
+    monkeypatch.setenv("HERMES_KANBAN_TURN_RECOVERY", "1")
+    monkeypatch.setattr(rec, "RECOVERY_DELAYS_SECONDS", (0.0,))
+    monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
+
+    runs: list = []
+
+    def run_conversation(*, user_message, conversation_history):
+        runs.append(user_message)
+        return {"partial": True, "completed": False, "final_response": "cut off", "error": "truncated"}
+
+    cli_mod = _install_quiet_fake_cli(monkeypatch, run_conversation)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_mod.main(query="hello", quiet=True, toolsets="terminal")
+
+    assert exc_info.value.code == 1
+    assert len(runs) == 2  # original + one in-place recovery attempt
+    assert "Do NOT start over" in runs[1]

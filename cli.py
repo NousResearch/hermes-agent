@@ -4138,7 +4138,7 @@ def _run_quiet_single_query(cli, effective_query):
         # Kanban worker: same in-place turn recovery as the non-quiet path (see
         # agent/kanban_turn_recovery.py) — a failed API call must not silently end the run.
         from agent.kanban_turn_recovery import recover_failed_kanban_turns as _recover_turns
-        from agent.kanban_turn_recovery import kanban_task_id
+        from agent.kanban_turn_recovery import kanban_task_id, turn_is_unfinished
 
         def _quiet_recover_turn(nudge):
             nonlocal result
@@ -4188,10 +4188,10 @@ def _run_quiet_single_query(cli, effective_query):
                 _exit_code = _RL_CODE
             except Exception:
                 _exit_code = 1
-    elif kanban_task_id() and not isinstance(result, dict):
-        # Kanban worker with NO settled outcome at all (credentials/init failure, a
-        # raising settle, a blocked context reference): rc=0 here is the silent
-        # protocol-violation class the recovery exists to kill — book it honestly.
+    elif kanban_task_id() and turn_is_unfinished(result):
+        # Kanban worker whose turn did NOT finish (nothing settled, partial/
+        # completed=False, or a failed dict the branch above already graded): rc=0
+        # here is the silent protocol-violation class the recovery exists to kill.
         _exit_code = 1
     sys.exit(_exit_code)
 
@@ -4517,7 +4517,7 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
         # conversation history); when the budget is exhausted exit non-zero so the run is
         # booked honestly instead of masquerading as a clean exit.
         from agent.kanban_turn_recovery import recover_failed_kanban_turns
-        from agent.kanban_turn_recovery import kanban_task_id
+        from agent.kanban_turn_recovery import kanban_task_id, turn_is_unfinished
         recover_failed_kanban_turns(
             lambda nudge: cli.chat(nudge),
             lambda: getattr(cli, "_last_turn_result", None),
@@ -4529,8 +4529,7 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
         # a raising settle, a blocked context reference) is as unfinished as a failed
         # one — and rc=0 there is exactly the silent protocol-violation class this
         # recovery exists to kill. Only a settled, non-failed dict exits clean.
-        _settled_ok = isinstance(_final_result, dict) and not _final_result.get("failed")
-        if kanban_task_id() and not _settled_ok:
+        if kanban_task_id() and turn_is_unfinished(_final_result):
             sys.exit(1)
     finally:
         _finalize_single_query(cli)

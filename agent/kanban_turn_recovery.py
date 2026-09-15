@@ -85,25 +85,44 @@ def recovery_delay_seconds(attempt: int) -> float:
     return RECOVERY_DELAYS_SECONDS[index]
 
 
+def turn_is_unfinished(result: Any) -> bool:
+    """True when a settled one-shot result says the turn did NOT finish its job.
+
+    Three shapes count as unfinished: nothing settled (``None``/non-dict), a
+    failed turn, and an INCOMPLETE turn (``partial`` / ``completed=False`` —
+    truncation, deferred or exhausted compression, tool-validation give-up).
+    Used by both the exit-code guards and the recovery policy so they cannot
+    disagree (see ``kanban_task_id`` for the same rule on the env side).
+    """
+    if not isinstance(result, dict):
+        return True
+    if result.get("failed") or result.get("partial"):
+        return True
+    return result.get("completed") is False
+
+
 def should_recover_turn(result: Any, *, attempt: int) -> bool:
     """True when a settled worker turn result should be retried in place.
 
     ``attempt`` is the number of recovery attempts ALREADY made. All must hold:
-    the recovery is enabled, the budget is not exhausted, the result is a failed
-    turn, the classifier marked the failure retryable, and the reason is not a
-    quota/billing wall.
+    the recovery is enabled, the budget is not exhausted, and the turn is
+    unfinished — either a retryable failed turn (quota/billing walls excluded),
+    or an incomplete turn. An incomplete turn is the same class of "work not
+    done": retrying in place keeps the session context a cold restart discards.
     """
     if not kanban_turn_recovery_enabled():
         return False
     if attempt >= max_recovery_attempts():
         return False
-    if not isinstance(result, dict) or not result.get("failed"):
+    if not isinstance(result, dict):
         return False
-    if result.get("failure_retryable") is not True:
-        return False
-    if str(result.get("failure_reason") or "") in _NON_RECOVERABLE_REASONS:
-        return False
-    return True
+    if result.get("failed"):
+        if result.get("failure_retryable") is not True:
+            return False
+        if str(result.get("failure_reason") or "") in _NON_RECOVERABLE_REASONS:
+            return False
+        return True
+    return turn_is_unfinished(result)
 
 
 def _truncate(text: str, limit: int = 300) -> str:
@@ -124,9 +143,9 @@ def build_recovery_nudge(result: Any, *, attempt: int, max_attempts: int) -> str
         error = _truncate(str(result.get("error") or result.get("final_response") or ""))
     task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip() or "this task"
     return (
-        "[System: the previous turn died on a provider error — the API call failed "
-        f"after all retries and the turn was interrupted (recovery attempt {attempt}/{max_attempts}). "
-        f"Error: {error or 'provider stream failure'}.\n\n"
+        "[System: the previous turn ended UNFINISHED — either the API call failed after "
+        f"all retries, or the turn stopped incomplete mid-work (recovery attempt {attempt}/{max_attempts}). "
+        f"Detail: {error or 'the turn did not complete'}.\n\n"
         f"Task `{task_id}` is still `running`. This is the SAME session, with your full "
         "context — nothing you already read, wrote, or computed is lost. Do NOT start over.\n\n"
         "Do this immediately:\n"
@@ -161,7 +180,7 @@ def recover_failed_kanban_turns(
         delay = recovery_delay_seconds(attempts)
         task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
         message = (
-            f"[kanban] provider failure on {task_id or 'task'} — retrying the turn in place "
+            f"[kanban] unfinished turn on {task_id or 'task'} — retrying in place "
             f"(attempt {attempts}/{max_recovery_attempts()}) after {int(delay)}s; session context preserved"
         )
         logger.warning("%s", message)
@@ -178,9 +197,11 @@ __all__ = [
     "DEFAULT_MAX_RECOVERY_ATTEMPTS",
     "RECOVERY_DELAYS_SECONDS",
     "build_recovery_nudge",
+    "kanban_task_id",
     "kanban_turn_recovery_enabled",
     "max_recovery_attempts",
     "recover_failed_kanban_turns",
     "recovery_delay_seconds",
     "should_recover_turn",
+    "turn_is_unfinished",
 ]

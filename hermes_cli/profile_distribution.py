@@ -401,6 +401,30 @@ def _refuse_symlink(path: Path) -> None:
         )
 
 
+def _is_container(path: Path) -> bool:
+    """A shipped directory holding no files (a skills category) is a container of roots,
+    not a root itself; a skill dir always holds at least SKILL.md."""
+    return path.is_dir() and not any(p.is_file() for p in path.iterdir())
+
+
+def _merge_dir(src: Path, dest: Path) -> None:
+    """Replace only the roots *src* ships inside *dest*; a nested container
+    (``skills/<category>``) is merged, not replaced, so sibling roots the user
+    added under the same category survive."""
+    for child in src.iterdir():
+        if _is_container(child):
+            _merge_dir(child, _real_dir(dest, (child.name,)))
+        else:
+            _replace_entry(child, dest / child.name)
+
+
+def _refuse_symlinked_containers(src: Path, dest: Path) -> None:
+    for child in src.iterdir():
+        if _is_container(child):
+            _refuse_symlink(dest / child.name)
+            _refuse_symlinked_containers(child, dest / child.name)
+
+
 def _refuse_symlinked_targets(target: Path, entries) -> None:
     """Refuse before the first write. The per-entry check in ``_real_dir`` fires mid-loop,
     after earlier entries were already replaced and before the manifest is rewritten,
@@ -413,6 +437,8 @@ def _refuse_symlinked_targets(target: Path, entries) -> None:
         for part in rel_parts[:depth]:
             path = path / part
             _refuse_symlink(path)
+        if src.is_dir() and len(rel_parts) == 1:
+            _refuse_symlinked_containers(src, path)
 
 
 def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifest, preserve_config: bool) -> None:
@@ -439,9 +465,7 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
             if name == "config.yaml" and preserve_config and (target / "config.yaml").exists():
                 continue
             if src.is_dir():
-                container = _real_dir(target, rel_parts)
-                for child in src.iterdir():
-                    _replace_entry(child, container / child.name)
+                _merge_dir(src, _real_dir(target, rel_parts))
                 continue
         parent = _real_dir(target, rel_parts[:-1])
         _replace_entry(src, parent / rel_parts[-1])

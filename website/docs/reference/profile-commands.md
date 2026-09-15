@@ -360,8 +360,8 @@ Re-clones the distribution from its recorded source and applies updates.
 Distribution-owned files (SOUL.md, mcp.json) are overwritten and the
 skills and cron jobs the distribution ships are replaced; skills or cron
 jobs you added under `skills/` or `cron/` yourself stay in place. User data
-(memories, sessions, auth, .env) is never touched. A symlinked `skills/` or
-`cron/` is refused before anything is written — replace the link with a real
+(memories, sessions, auth, .env) is never touched. A symlinked `skills/`,
+`cron/` or skill category directory is refused before anything is written — replace the link with a real
 directory and re-run.
 
 `config.yaml` is preserved by default to keep your local overrides.

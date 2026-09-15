@@ -390,10 +390,19 @@ class TestUpdate:
         (staged / "skills" / "demo" / "SKILL.md").write_text("updated demo\n", encoding="utf-8")
         (staged / "skills" / "new").mkdir()
         (staged / "skills" / "new" / "SKILL.md").write_text("new skill\n", encoding="utf-8")
+        # Categorised skill (skills/<category>/<skill>): the category is a container too,
+        # so a sibling the user added inside it survives (issue #25120's literal repro).
+        (staged / "skills" / "devops" / "team-deploy").mkdir(parents=True)
+        (staged / "skills" / "devops" / "team-deploy" / "SKILL.md").write_text("team deploy\n", encoding="utf-8")
+        mine = plan.target_dir / "skills" / "devops" / "my-custom-skill"
+        mine.mkdir(parents=True)
+        (mine / "SKILL.md").write_text("my custom skill\n", encoding="utf-8")
 
         update_distribution("skills_safe")
 
         assert (custom / "SKILL.md").read_text(encoding="utf-8") == "custom skill\n"
+        assert (mine / "SKILL.md").read_text(encoding="utf-8") == "my custom skill\n"
+        assert (plan.target_dir / "skills" / "devops" / "team-deploy" / "SKILL.md").exists()
         assert (plan.target_dir / "cron" / "mine.json").read_text(encoding="utf-8") == '{"schedule": "* * * * *"}\n'
         assert (plan.target_dir / "skills" / "demo" / "SKILL.md").read_text(encoding="utf-8") == "updated demo\n"
         assert (plan.target_dir / "skills" / "new" / "SKILL.md").read_text(encoding="utf-8") == "new skill\n"
@@ -412,6 +421,16 @@ class TestUpdate:
         (shared / "mine").mkdir(parents=True)
         (shared / "mine" / "SKILL.md").write_text("shared skill\n", encoding="utf-8")
         before = sorted((p.relative_to(shared), p.read_bytes()) for p in shared.rglob("*") if p.is_file())
+
+        # A symlinked category (skills/devops -> shared dir) is a container too and is refused
+        # rather than unlinked and replaced by the shipped copy.
+        (staged / "skills" / "devops" / "team-deploy").mkdir(parents=True)
+        (staged / "skills" / "devops" / "team-deploy" / "SKILL.md").write_text("team deploy\n", encoding="utf-8")
+        _symlink_file_or_skip(plan.target_dir / "skills" / "devops", shared)
+        with pytest.raises(DistributionError, match="symlink"):
+            update_distribution("link_safe")
+        assert (plan.target_dir / "skills" / "devops").is_symlink()
+        (plan.target_dir / "skills" / "devops").unlink()
 
         skills = plan.target_dir / "skills"
         shutil.rmtree(skills)

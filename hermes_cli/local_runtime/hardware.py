@@ -9,6 +9,7 @@ stripped PATH — gateway and service sessions don't inherit the interactive env
 from __future__ import annotations
 
 from contextlib import suppress
+import csv
 import logging
 import os
 import re
@@ -142,20 +143,20 @@ def _nvidia_smi_path() -> str | None:
     return found
 
 
-def _nvidia_vram() -> tuple[int, int] | None:
-    """(total, free) MiB->bytes from nvidia-smi, or None."""
+def _nvidia_vram() -> tuple[int, int, str] | None:
+    """(total bytes, free bytes, name) from the same nvidia-smi query, or None."""
     exe = _nvidia_smi_path()
     if exe is None:
         return None
     with suppress(OSError, ValueError, subprocess.TimeoutExpired):
         out = subprocess.run(
-            [exe, "--query-gpu=memory.total,memory.free",
+            [exe, "--query-gpu=memory.total,memory.free,name",
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=10)
         if out.returncode != 0 or not out.stdout.strip():
             return None
-        total_mib, free_mib = (int(x) for x in out.stdout.strip().splitlines()[0].split(","))
-        return total_mib << 20, free_mib << 20
+        total_mib, free_mib, name = next(csv.reader(out.stdout.strip().splitlines()))
+        return int(total_mib) << 20, int(free_mib) << 20, name.strip()
     return None
 
 
@@ -250,10 +251,10 @@ def _unified_pool_bytes(smi_total: int, ram_total: int) -> int | None:
     return None
 
 
-def _uma_budget(base: int, total: int) -> HardwareBudget:
+def _uma_budget(base: int, total: int, *, gpu_name: str = "") -> HardwareBudget:
     usable = max(0, int(base * (1 - _UMA_HEADROOM_FRACTION)))
     return HardwareBudget(usable_vram_bytes=usable, total_device_bytes=total,
-                          ram_available_bytes=0, uma=True)
+                          ram_available_bytes=0, uma=True, gpu_name=gpu_name, platform=sys.platform)
 
 
 def probe_budget(*, planning: bool = False) -> HardwareBudget:
@@ -287,16 +288,16 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
             # measured soft cliff: decode collapses ~3.5x when concurrent demand hits it).
             live = (vram[1] + ram_avail) if vram else ram_avail
             base = min(unified, live)
-        return _uma_budget(base, unified)
+        return _uma_budget(base, unified, gpu_name=vram[2] if vram else "")
 
     if vram is None:
         # No NVIDIA device visible: Metal/Vulkan/CPU paths budget from RAM as UMA (Apple
         # Silicon) — conservative for discrete AMD until a vendor probe lands.
         return _uma_budget(ram_total if planning else ram_avail, ram_total)
 
-    total, free = vram
+    total, free, gpu_name = vram
     margin = max(_MARGIN_FLOOR, int(total * _MARGIN_FRACTION))
     return HardwareBudget(usable_vram_bytes=max(0, (total if planning else free) - margin),
                           total_device_bytes=total,
                           ram_available_bytes=ram_total if planning else ram_avail,
-                          uma=False)
+                          uma=False, gpu_name=gpu_name, platform=sys.platform)

@@ -74,7 +74,12 @@ describe('titlebarToolsRightCss', () => {
     expect(titlebarToolsRightCss(0, { darwinMajor: 25, isFullscreen: true })).toBe(`${TITLEBAR_EDGE_INSET}px`)
   })
 
+  it('mirrors the traffic-light inset on macOS so the titlebar ends are symmetric', () => {
+    expect(titlebarToolsRightCss(0, { windowButtonPosition: { x: 20, y: 10 } })).toBe('20px')
+  })
+
   it('keeps the default chrome inset otherwise', () => {
     expect(titlebarToolsRightCss(0)).toBe('0.75rem')
+    expect(titlebarToolsRightCss(0, { windowButtonPosition: null })).toBe('0.75rem')
   })
 })

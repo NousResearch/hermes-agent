@@ -16,7 +16,7 @@ export function titlebarIconSizeCss(scale = 1): string {
   return `${TITLEBAR_ICON_SIZE * scale}px`
 }
 
-export const TITLEBAR_FALLBACK_WINDOW_BUTTON_X = 24
+export const TITLEBAR_FALLBACK_WINDOW_BUTTON_X = 20
 // Edge inset used when no left-side native controls take up that space —
 // Windows/Linux (native overlay is on the right) and macOS fullscreen
 // (traffic lights are hidden). Matches the right-cluster's 0.75rem padding.
@@ -51,7 +51,7 @@ export function titlebarControlsYNudge({
 /** Right-cluster inset — WCO width when present; macOS fullscreen matches left edge inset. */
 export function titlebarToolsRightCss(
   nativeOverlayWidth: number,
-  { darwinMajor = 0, isFullscreen = false }: Pick<TitlebarChromeContext, 'darwinMajor' | 'isFullscreen'> = {}
+  { darwinMajor = 0, isFullscreen = false, windowButtonPosition }: TitlebarChromeContext = {}
 ): string {
   if (nativeOverlayWidth > 0) {
     return `${nativeOverlayWidth}px`
@@ -59,6 +59,12 @@ export function titlebarToolsRightCss(
 
   if (isFullscreen && darwinMajor > 0) {
     return `${TITLEBAR_EDGE_INSET}px`
+  }
+
+  // macOS with visible traffic lights: mirror the left inset so both ends of
+  // the titlebar band sit the same distance from the window edges.
+  if (windowButtonPosition) {
+    return `${windowButtonPosition.x}px`
   }
 
   return '0.75rem'

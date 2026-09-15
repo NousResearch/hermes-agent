@@ -1744,7 +1744,10 @@ body.guest-pointer-lock :is(webview, iframe) {
   overflow-anchor: auto;
 }
 
+/* CW-02: thread fills the chat pane. --composer-width is 100%.
+   padding-inline is the gutter; do not add a leftover max-width column. */
 [data-slot='aui_thread-content'] {
+  width: 100%;
   max-width: var(--composer-width);
   padding-inline: 1.5rem;
 }
@@ -1829,9 +1832,15 @@ body.guest-pointer-lock :is(webview, iframe) {
 
 /* The dock column owns the composer's width; the composer keeps the 5px
    transparent grab margin that the peel-out drag needs. +10px width compensates
-   that padding so the visible surface keeps its exact width/position. */
+   that padding so the visible surface keeps its exact width/position.
+
+   CW-02: fill the chat pane. --composer-width is already 100%; do not min()
+   against calc(100% - 2rem) — that leftover column sat inside the pane while
+   the thread already used only padding-inline gutters. max-width 100%+10px
+   caps any future token so the dock cannot exceed the pane (+ grab). */
 [data-slot='composer-dock'] {
-  width: calc(min(var(--composer-width), calc(100% - 2rem)) + 10px);
+  width: calc(var(--composer-width) + 10px);
+  max-width: calc(100% + 10px);
   padding-bottom: var(--composer-shell-pad-block-end);
 }
 

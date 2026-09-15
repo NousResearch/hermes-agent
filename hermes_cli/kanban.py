@@ -233,12 +233,9 @@ def _is_delegated_child_cli_mutation(args: argparse.Namespace) -> bool:
             return False
     elif action not in _DELEGATED_CHILD_DENIED_ACTIONS:
         return False
-    try:
-        from agent.delegation_context import is_delegated_child_process_context
+    from agent.delegation_context import kanban_path_is_fenced
 
-        return is_delegated_child_process_context()
-    except Exception:
-        return bool(os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT"))
+    return kanban_path_is_fenced(kb.kanban_home()) or kanban_path_is_fenced(kb.kanban_db_path())
 
 
 def _joined_words(words) -> Optional[str]:

@@ -672,8 +672,8 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
     :func:`kanban_db_path` (``HERMES_KANBAN_DB`` -> ``HERMES_KANBAN_BOARD`` ->
     ``<root>/kanban/current`` -> ``default``)."""
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
-    from agent.delegation_context import is_delegated_child_process_context
-    if is_delegated_child_process_context():
+    from agent.delegation_context import kanban_path_is_fenced
+    if kanban_path_is_fenced(path):
         # Reads must not enter schema/backfill write transactions. Never create a
         # missing board or migrate on a descendant's behalf; the owner initializes it.
         conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
@@ -1141,6 +1141,17 @@ def _execute_boundary_with_retry(conn: sqlite3.Connection, sql: str) -> None:
             time.sleep(random.uniform(_BUSY_RETRY_MIN_S, _BUSY_RETRY_MAX_S))
 
 
+def _main_db_file(conn: sqlite3.Connection) -> Optional[str]:
+    """Filesystem path of *conn*'s main database (None for in-memory / unreadable)."""
+    try:
+        for _seq, name, file in conn.execute("PRAGMA database_list") or ():
+            if name == "main":
+                return file or None
+    except (sqlite3.Error, TypeError, ValueError):
+        pass
+    return None
+
+
 @contextlib.contextmanager
 def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
     """IMMEDIATE write transaction; a claim CAS inside is atomic — at most one
@@ -1152,7 +1163,7 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
     (``complete_task`` & co.) must never run under an open outer transaction,
     since those side effects would fire while the outer txn can still roll back.
     """
-    _kb._assert_not_delegated_child_mutation()
+    _kb._assert_not_delegated_child_mutation(_main_db_file(conn))
     if getattr(conn, "in_transaction", False):
         if not allow_nested:
             raise RuntimeError(

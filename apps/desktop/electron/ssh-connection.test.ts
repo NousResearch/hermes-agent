@@ -1139,8 +1139,29 @@ test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#11
 
     assert.ok(err2 && err2.code !== 0, 'hung launcher must exit non-zero')
 
-    const { stdout: grandStrays } = await execFileAsync('sh', ['-c', `ps -eo args | grep "[s]leep ${grandSecs}$" || true`])
+    const { stdout: grandStrays } = await execFileAsync('sh', [
+      '-c',
+      `ps -eo args | grep "[s]leep ${grandSecs}$" || true`
+    ])
 
     assert.equal(grandStrays.trim(), '', 'watchdog killed the launcher’s grandchild too')
+  }
+
+  // … `set -m`/`set +m` are skipped under zsh, whose job-control
+  // notifications for the backgrounded probe would otherwise corrupt
+  // captured stdout.
+  const zsh = await execFileAsync('sh', ['-c', 'command -v zsh || true']).then(r => r.stdout.trim())
+
+  if (zsh) {
+    const { stdout: zshOut } = await execFileAsync(zsh, ['-c', withRemoteTimeout('echo hello', 5)])
+
+    assert.equal(zshOut, 'hello\n', 'zsh job-control chatter does not leak into captured stdout')
+
+    const zshErr: any = await execFileAsync(zsh, ['-c', withRemoteTimeout(`sleep ${hungSecs}`, 1)]).then(
+      () => null,
+      e => e
+    )
+
+    assert.ok(zshErr && zshErr.code !== 0, 'hung command under zsh must exit non-zero')
   }
 })

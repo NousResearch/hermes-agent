@@ -14,6 +14,9 @@ from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
 logger = logging.getLogger("tools.tool_search")
 
 _SCHEMA_LITERAL_KEYS = frozenset({"const", "default", "enum", "example", "examples"})
+_SCHEMA_MAP_KEYS = frozenset({
+    "$defs", "definitions", "dependencies", "dependentSchemas", "patternProperties", "properties",
+})
 
 
 def _schema_for_local_validation(node: Any) -> Any:
@@ -24,9 +27,21 @@ def _schema_for_local_validation(node: Any) -> Any:
     if not isinstance(node, dict):
         return node
     # Literal keywords hold instance data, not schemas: copy byte-for-byte.
-    normalized = {key: (copy.deepcopy(value) if key in _SCHEMA_LITERAL_KEYS
-                        else _schema_for_local_validation(value))
-                  for key, value in node.items() if key != "nullable"}
+    normalized = {}
+    for key, value in node.items():
+        if key == "nullable":
+            continue
+        if key in _SCHEMA_LITERAL_KEYS:
+            normalized[key] = copy.deepcopy(value)
+        elif key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
+            # Keys in schema maps are instance/definition names.  A tool parameter may
+            # legitimately be named ``nullable``; only its schema value is normalized.
+            normalized[key] = {
+                name: _schema_for_local_validation(schema)
+                for name, schema in value.items()
+            }
+        else:
+            normalized[key] = _schema_for_local_validation(value)
     if node.get("nullable") is not True:
         return normalized
     schema_type = normalized.get("type")

@@ -13,7 +13,6 @@ from gateway.session import SessionEntry, SessionSource
 from gateway.response_filters import (
     is_intentional_silence_agent_result,
     is_intentional_silence_response,
-    should_swallow_silence,
 )
 
 
@@ -95,14 +94,6 @@ def test_failed_agent_result_never_counts_as_intentional_silence():
     assert not is_intentional_silence_agent_result({"failed": True}, "NO_REPLY")
 
 
-def test_only_synthetic_turns_can_swallow_silence():
-    result = {"failed": False}
-    assert should_swallow_silence(result, "NO_REPLY", display_kind="internal_notification")
-
-    for display_kind in (None, "steer", "", "model_switch"):
-        assert not should_swallow_silence(result, "NO_REPLY", display_kind=display_kind)
-
-
 @pytest.mark.asyncio
 async def test_human_turn_gets_a_visible_fallback_for_a_silence_marker(monkeypatch, tmp_path):
     runner = _runner(monkeypatch, tmp_path)
@@ -124,7 +115,7 @@ async def test_human_turn_gets_a_visible_fallback_for_a_silence_marker(monkeypat
     )
 
     assert "silence marker" in response
-    assert "try again or rephrase" in response
+    assert "Try again or rephrase" in response
 
 
 @pytest.mark.asyncio

@@ -85,23 +85,19 @@ def is_intentional_silence_agent_result(agent_result: dict | None, response: Any
     return isinstance(agent_result, dict) and not agent_result.get("failed") and is_intentional_silence_response(response)
 
 
-def should_swallow_silence(
-    agent_result: dict | None,
-    response: Any,
-    *,
-    display_kind: Any = None,
-) -> bool:
-    """allow bare silence only for the current synthetic gateway turn.
+def display_kind_for_event(event: Any) -> str | None:
+    """The persisted user-row kind for a gateway turn: only self-injected events are machinery."""
+    return "internal_notification" if getattr(event, "internal", False) else None
 
-    the caller passes the current turn's persisted display kind instead of asking
-    us to infer it from the old transcript. the inbound user row is not in that
-    transcript yet, and a previous internal row must never authorize a human turn.
+
+def is_machinery_display_kind(display_kind: Any) -> bool:
+    """Only a machinery turn may vanish on a bare silence marker; a human turn gets a visible fallback.
+
+    The caller passes the current turn's persisted display kind instead of inferring it from the
+    transcript: the inbound user row is not persisted yet, and a previous internal row must never
+    authorize silence on a human turn.
     """
-    return (
-        is_intentional_silence_agent_result(agent_result, response)
-        and isinstance(display_kind, str)
-        and display_kind in MACHINERY_DISPLAY_KINDS
-    )
+    return display_kind in MACHINERY_DISPLAY_KINDS
 
 
 def is_partial_silence_marker(text: Any) -> bool:

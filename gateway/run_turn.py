@@ -23,6 +23,7 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
+from gateway.response_filters import display_kind_for_event, is_machinery_display_kind
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
@@ -52,8 +53,8 @@ _CONTEXT_OVERFLOW_ERROR_PHRASES = (
 )
 
 _UNEXPECTED_SILENCE_REPLY = (
-    "⚠️ the model returned only a silence marker for a message that needed a reply. "
-    "try again or rephrase."
+    "⚠️ The model returned only a silence marker for a message that needed a reply. "
+    "Try again or rephrase."
 )
 
 
@@ -278,14 +279,6 @@ class GatewayTurnMixin:
         try:
             from gateway.response_filters import is_intentional_silence_agent_result
             return is_intentional_silence_agent_result(agent_result, response)
-        except Exception:
-            return False
-
-    @staticmethod
-    def _should_swallow_silence(agent_result, response, *, display_kind=None) -> bool:
-        try:
-            from gateway.response_filters import should_swallow_silence
-            return should_swallow_silence(agent_result, response, display_kind=display_kind)
         except Exception:
             return False
 
@@ -1396,11 +1389,7 @@ class GatewayTurnMixin:
         _silence_kind = persist_user_display_kind
         if isinstance(agent_result, dict) and "queued_terminal_display_kind" in agent_result:
             _silence_kind = agent_result["queued_terminal_display_kind"]
-        if _intentional_silence and not self._should_swallow_silence(
-            agent_result, response, display_kind=_silence_kind,
-        ):
-            # the current inbound row is not in ``history`` yet, so use the turn metadata we
-            # already carried into the agent run instead of guessing from an older row.
+        if _intentional_silence and not is_machinery_display_kind(_silence_kind):
             logger.warning(
                 "silence marker rejected on a user turn: platform=%s chat=%s",
                 _platform_name, source.chat_id or "unknown",
@@ -1919,7 +1908,7 @@ class GatewayTurnMixin:
         _session_env_tokens = self._set_session_env(context)
         # Self-injected turns (MessageEvent(internal=True)) persist with a DB-only display_kind so
         # UIs render timeline notices, not user bubbles; role/content untouched.
-        persist_user_display_kind = "internal_notification" if getattr(event, "internal", False) else None
+        persist_user_display_kind = display_kind_for_event(event)
         _redact_pii = False  # privacy.redact_pii, re-read per message
         with suppress(Exception):
             _redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
@@ -3518,9 +3507,7 @@ class GatewayTurnMixin:
         )
         # Same silence predicate as the normal path, else this branch leaks the literal marker.
         if self._is_intentional_silence(_delivery_result, first_response):
-            if self._should_swallow_silence(
-                _delivery_result, first_response, display_kind=turn_ctx.persist_user_display_kind,
-            ):
+            if is_machinery_display_kind(turn_ctx.persist_user_display_kind):
                 logger.info(
                     "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
                     session_key or "?",
@@ -3606,8 +3593,7 @@ class GatewayTurnMixin:
         # distinct from the reply anchor above (None in forum topics). Carry it or two chained
         # topic turns with the same text would collide on one obligation id (queued-final-ledger).
         next_inbound_id = None
-        # Same rule as the top-level turn (see _prepare_turn): only self-injected events are machinery.
-        next_display_kind = "internal_notification" if getattr(pending_event, "internal", False) else None
+        next_display_kind = display_kind_for_event(pending_event)
         # See #60671.
         if pending_event is not None:
             next_source = getattr(pending_event, "source", None) or source

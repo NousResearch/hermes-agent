@@ -1011,6 +1011,17 @@ class GatewayStartupMixin:
                         "No adapter for '%s' -- is the plugin installed? "
                         "(platform is enabled in config.yaml but no plugin registered it)", platform.value,
                     )
+                # Clear stale health from a previous run even when there is no
+                # adapter to report its own connection failure.
+                self._update_platform_runtime_status(
+                    platform.value,
+                    platform_state="failed",
+                    error_code="adapter_unavailable",
+                    error_message=(
+                        "Adapter creation failed -- missing dependencies or "
+                        "no plugin registered for this platform."
+                    ),
+                )
                 continue
             # Under multiplexing the default profile needs the same whole-handler runtime scope as a
             # secondary (authorization and prompt rendering run before the agent-turn scope).

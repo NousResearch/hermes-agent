@@ -651,7 +651,7 @@ export default function ChannelsPage() {
   );
 }
 
-function WhatsAppOnboardingPanel({
+export function WhatsAppOnboardingPanel({
   onChanged,
   onRestartNeeded,
   platform,
@@ -679,6 +679,7 @@ function WhatsAppOnboardingPanel({
     configuredMode ?? "bot",
   );
   const [allowedUsers, setAllowedUsers] = useState("");
+  const [savingAllowlist, setSavingAllowlist] = useState(false);
   const [error, setError] = useState("");
   const [tick, setTick] = useState(0);
 
@@ -847,6 +848,43 @@ function WhatsAppOnboardingPanel({
     }
   };
 
+  // #109776: while no onboarding session is running, the allowed-numbers field
+  // had no persistence path — it was editable but only lived in React state.
+  // Route idle edits through the normal messaging config endpoint (same one the
+  // Configure dialog uses): non-empty input replaces the allowlist, an empty
+  // input explicitly clears it (apply_whatsapp_onboarding keeps blanks as "keep").
+  const saveAllowedUsers = async () => {
+    setSavingAllowlist(true);
+    setError("");
+    try {
+      const trimmed = allowedUsers.trim();
+      const result = await api.updateMessagingPlatform(
+        platform.id,
+        trimmed
+          ? { env: { WHATSAPP_ALLOWED_USERS: trimmed } }
+          : { clear_env: ["WHATSAPP_ALLOWED_USERS"] },
+      );
+      if (result.hot_served) {
+        showToast(
+          "WhatsApp allowlist saved; the running gateway reloaded it",
+          "success",
+        );
+      } else {
+        onRestartNeeded();
+        showToast(
+          "WhatsApp allowlist saved — restart the gateway to apply it",
+          "success",
+        );
+      }
+      setAllowedUsers("");
+      await onChanged();
+    } catch (saveError) {
+      showToast(`Failed to save allowlist: ${saveError}`, "error");
+    } finally {
+      setSavingAllowlist(false);
+    }
+  };
+
   const expiresIn = useMemo(
     () => (setup ? formatExpiry(setup.expires_at) : ""),
     // tick keeps the memo fresh without recalculating on every render branch.
@@ -944,6 +982,24 @@ function WhatsAppOnboardingPanel({
               disabled={phase === "waiting" || phase === "applying"}
               placeholder="15551234567,15557654321"
             />
+            {!setup && platform.configured && (
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  className="uppercase"
+                  onClick={() => void saveAllowedUsers()}
+                  disabled={savingAllowlist || phase !== "idle"}
+                  prefix={savingAllowlist ? <Spinner /> : <Save className="h-4 w-4" />}
+                >
+                  Save allowlist
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  {hasSavedAllowedUsers
+                    ? "A saved allowlist is active. Enter numbers to replace it, or save an empty field to remove it."
+                    : "No allowlist saved yet. Enter numbers to restrict who can message Hermes, then save."}
+                </span>
+              </div>
+            )}
           </div>
         </div>
 

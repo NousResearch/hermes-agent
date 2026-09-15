@@ -316,6 +316,8 @@ async def test_handle_thread_create_slash_reports_success(adapter):
     args, kwargs = interaction.followup.send.await_args
     assert "<#555>" in args[0]
     assert kwargs["ephemeral"] is True
+    assert adapter._thread_owners.owner_for("555") == "99999"
+    assert "555" in adapter._threads
 
 
 @pytest.mark.asyncio
@@ -344,6 +346,27 @@ async def test_handle_thread_create_slash_falls_back_to_seed_message(adapter):
         reason="Requested by Jezza via /thread",
     )
     interaction.followup.send.assert_awaited()
+    assert adapter._thread_owners.owner_for("555") == "99999"
+    assert "555" in adapter._threads
+
+
+@pytest.mark.asyncio
+async def test_handle_thread_create_slash_failure_does_not_claim_owner(adapter):
+    adapter._create_thread = AsyncMock(return_value={"error": "nope"})
+    interaction = SimpleNamespace(
+        channel=SimpleNamespace(),
+        channel_id=123,
+        user=SimpleNamespace(display_name="Jezza", id=42),
+        guild=SimpleNamespace(name="TestGuild"),
+        followup=SimpleNamespace(send=AsyncMock()),
+        response=SimpleNamespace(defer=AsyncMock()),
+    )
+
+    await adapter._handle_thread_create_slash(interaction, "Planning")
+
+    interaction.followup.send.assert_awaited()
+    assert adapter._thread_owners.owner_for("555") is None
+    assert "555" not in adapter._threads
 
 
 # ------------------------------------------------------------------

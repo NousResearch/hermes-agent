@@ -643,6 +643,26 @@ def _override_for(provider: str, model: str, *, catalog_hit: bool) -> Optional[D
     return explicit if explicit is not None or catalog_hit else _default_model_override(provider)
 
 
+def explicit_supports_reasoning_override(provider: str, model: str) -> Optional[bool]:
+    """User-declared ``supports_reasoning`` for *provider+model*, or None if unset.
+
+    Deliberately narrower than :func:`get_model_capabilities`: that function fills a
+    catalog MISS with a ``False`` default (see ``_UNKNOWN_MODEL_BASE``), which would make
+    every uncatalogued custom/local endpoint look reasoning-incapable and silently drop a
+    configured ``reasoning_effort``. This reports ONLY an explicit
+    ``model_overrides.<provider>.<model>.supports_reasoning`` entry (never a fill-gap
+    ``_default`` and never a catalog-derived value), so a provider profile can gate wire
+    output on "the user told us this model can't take reasoning params" without
+    regressing the common case of no override (#89xxx — custom:ollama-local qwen3-coder
+    400'd on ``reasoning_effort`` because the profile had no way to see the operator's
+    ``supports_reasoning: false`` override).
+    """
+    override = _explicit_model_override(provider, model)
+    if override is None or "supports_reasoning" not in override:
+        return None
+    return bool(override["supports_reasoning"])
+
+
 def _override_int(override: Dict[str, Any], key: str) -> Optional[int]:
     """Coerce an override field to a positive int, warning once on garbage."""
     raw = override.get(key)

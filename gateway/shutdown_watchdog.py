@@ -353,13 +353,28 @@ async def loop_heartbeat_forever(
                         tick_tcp_port = int(_sname[1])
                         break
     except Exception:
-        tick_server = tick_tcp_port = None
-        logger.warning("Loop tick socket unavailable — liveness probes will have no "
-                       "loop-scheduling witness and will not escalate on a stale heartbeat",
-                       exc_info=True)
-    extra = {"loop_tick_socket": tick_server is not None, "loop_tick_tcp_port": tick_tcp_port}
-    try:
-        while True:  # first write is immediate so monitors see a fresh file at once
+        tick_server = None
+        tick_tcp_port = None
+        # On Windows the witness is expected to be absent (AF_UNIX unsupported;
+        # TCP fallback may also fail due to firewall/policy). Log at DEBUG to
+        # avoid spamming WARNING on every Windows start (deliberate fail-safe,
+        # probes classify as UNKNOWN, never WEDGED). Keep WARNING on POSIX where
+        # a bind failure is genuinely unexpected. See #101963.
+        if os.name == "nt":
+            logger.debug(
+                "Loop tick socket unavailable — liveness probes will have no "
+                "loop-scheduling witness and will not escalate on a stale heartbeat "
+                "(expected on Windows)",
+                exc_info=True,
+            )
+        else:
+            logger.warning(
+                "Loop tick socket unavailable — liveness probes will have no "
+                "loop-scheduling witness and will not escalate on a stale heartbeat",
+                exc_info=True,
+            )
+
+    async def _write_off_loop() -> None:
             try:
                 await asyncio.to_thread(write_loop_heartbeat, start_time=start_time, home=home,
                                         extra=extra)

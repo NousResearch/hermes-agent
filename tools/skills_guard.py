@@ -523,6 +523,9 @@ def _mask_markdown_link_destinations(line: str) -> str:
 # fence uses the same marker, is at least as long, and carries nothing else — so a ``~~~`` line
 # inside a backtick fence, a shorter fence, or a fence line with an info string is all content.
 _FENCE_LINE = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})(?P<info>.*)$")
+# A fence may open (and close) inside a container: a bullet ``- ```sh``, an ordered item ``1. ```sh``,
+# a blockquote ``> ```sh``, or a nest of them (§5.1/§5.2). Strip those prefixes before fence matching.
+_CONTAINER_PREFIX = re.compile(r"^(?: {0,3}(?:>|(?:[-*+]|\d{1,9}[.)]) {1,4}))+")
 
 
 def _mask_prose_link_destinations(lines: List[str]) -> List[str]:
@@ -534,7 +537,7 @@ def _mask_prose_link_destinations(lines: List[str]) -> List[str]:
     out: List[str] = []
     fence = None  # (marker char, opener length) while a fenced block is open
     for line in lines:
-        match = _FENCE_LINE.match(line)
+        match = _FENCE_LINE.match(_CONTAINER_PREFIX.sub("", line))
         if fence is not None:
             if (match and match["marker"][0] == fence[0] and len(match["marker"]) >= fence[1]
                     and not match["info"].strip()):

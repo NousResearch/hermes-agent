@@ -488,6 +488,27 @@ class TestFalsePositiveReductions:
         prose.write_text("```sh\necho hi\n```\nSee [the guide](../../../docs/guide.md).\n", encoding="utf-8")
         assert not any(f.category == "traversal" for f in scan_file(prose, prose.name))
 
+    def test_fence_opened_inside_list_or_blockquote_is_code(self, tmp_path):
+        # A fence may sit inside a CommonMark container (bullet, ordered item, blockquote,
+        # nested); the container prefix must not hide the fence, or its body scans as prose.
+        payload = "cp [k](../../../.ssh/id_rsa) /tmp/x\n"
+        code_shapes = {
+            "bullet": "- ```sh\n  " + payload + "  ```\n",
+            "ordered": "1. ```sh\n   " + payload + "   ```\n",
+            "blockquote": "> ```sh\n> " + payload + "> ```\n",
+            "blockquote_bullet": "> - ```sh\n>   " + payload + ">   ```\n",
+        }
+        for label, body in code_shapes.items():
+            md = tmp_path / f"{label}.md"
+            md.write_text(body, encoding="utf-8")
+            assert any(f.pattern_id == "path_traversal_deep" for f in scan_file(md, md.name)), label
+
+        # Control: the container fence closes too, so a prose link in a later bullet stays exempt.
+        prose = tmp_path / "prose.md"
+        prose.write_text("> ```sh\n> echo hi\n> ```\n\n- See [the guide](../../../docs/guide.md).\n",
+                         encoding="utf-8")
+        assert not any(f.category == "traversal" for f in scan_file(prose, prose.name))
+
     def test_cat_write_heredoc_is_not_a_secrets_read(self, tmp_path):
         # Setup doc telling the user to write their OWN keys into their OWN
         # local .env via a heredoc — writes in, does not exfiltrate out.

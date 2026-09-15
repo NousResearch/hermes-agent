@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional, Tuple
 from agent.message_metadata import append_message
 from agent.message_sanitization import coalesce_tool_call_id
 from agent.turn_preflight import compress_after_tool_results
+from agent.turn_recovery import emit_terminal_stream_response
 from agent.turn_tool_validation import validate_tool_calls
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -167,12 +168,7 @@ def run_tool_round(
         append_message(messages, {"role": "assistant", "content": final_response})
         # Emit the halt so it isn't mistaken for a crash; the stream callback is still
         # alive, so SSE/TUI clients see the explanation.
-        if final_response:
-            agent._safe_print(f"\n{final_response}\n")
-            if agent.stream_delta_callback:
-                with suppress(Exception):
-                    agent.stream_delta_callback(final_response)
-                    agent.stream_delta_callback(None)
+        emit_terminal_stream_response(agent, final_response)
         return _verdict("break")
 
     # Reset per-turn retry counters so one truncation can't poison the turn.

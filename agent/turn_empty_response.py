@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from agent import empty_response_guard as _empty_guard
 from agent.message_metadata import append_message
-from agent.turn_recovery import interruptible_backoff_sleep
+from agent.turn_recovery import emit_terminal_stream_response, interruptible_backoff_sleep
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -174,6 +174,7 @@ def recover_empty_response(
         # A streamed fragment isn't a confirmed preview: gateway fallback delivery
         # sends the text plus the abnormal-turn explanation.
         agent._response_was_previewed = False
+        emit_terminal_stream_response(agent, final_response)
         return _verdict("break")
 
     # Prior turn had real content + ONLY housekeeping tools: model is done, reuse it.
@@ -190,6 +191,7 @@ def recover_empty_response(
         # Do NOT modify the assistant message content (injected text poisoned history).
         final_response = agent._strip_think_blocks(fallback).strip()
         agent._response_was_previewed = True
+        emit_terminal_stream_response(agent, final_response)
         return _verdict("break")
 
     # Post-tool-call empty (no prior content, or only mid-task narration): nudge once.

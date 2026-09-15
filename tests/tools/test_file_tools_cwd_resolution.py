@@ -16,6 +16,7 @@ Core invariant these tests pin:
 """
 
 import os
+import sys
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -32,8 +33,8 @@ def _isolated_cwd(tmp_path, monkeypatch):
     decoy = tmp_path / "decoy"
     workspace.mkdir()
     decoy.mkdir()
-    (workspace / "target.py").write_text("WORKSPACE_ORIGINAL\n")
-    (decoy / "target.py").write_text("DECOY_ORIGINAL\n")
+    (workspace / "target.py").write_text("WORKSPACE_ORIGINAL\n", encoding="utf-8")
+    (decoy / "target.py").write_text("DECOY_ORIGINAL\n", encoding="utf-8")
     # Process cwd = decoy, analogous to "main repo" while the terminal is in
     # the worktree.
     monkeypatch.chdir(decoy)
@@ -221,7 +222,7 @@ def _two_worktree_sessions(tmp_path, monkeypatch):
     main = tmp_path / "main"
     for d in (wt_a, wt_b, main):
         d.mkdir()
-        (d / "target.py").write_text(f"{d.name}\n")
+        (d / "target.py").write_text(f"{d.name}\n", encoding="utf-8")
     monkeypatch.chdir(main)
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
@@ -308,6 +309,275 @@ def test_v4a_patch_applies_to_resolved_workspace_not_backend_cwd(
     assert out.get("resolved_path") == expected
     assert out.get("files_modified") == [expected]
     # The workspace file — which the tool locked and reported — was edited.
-    assert (workspace / "target.py").read_text() == "WORKSPACE_PATCHED\n"
+    assert (workspace / "target.py").read_text(encoding="utf-8") == "WORKSPACE_PATCHED\n"
     # The decoy (backend cwd) was left untouched.
-    assert (decoy / "target.py").read_text() == "DECOY_ORIGINAL\n"
+    assert (decoy / "target.py").read_text(encoding="utf-8") == "DECOY_ORIGINAL\n"
+
+
+# ── #67185: cwd-shaped relative input (absolute path missing leading /) ──────
+# A model echoing an absolute path without its leading separator
+# (``home/user/dev/notes/x.md``) joins onto the base and silently creates a
+# DOUBLED tree inside the workspace, so the out-of-workspace warning above
+# never fires. These tests pin the doubled-path warning.
+
+
+def _workspace_echo_input(workspace: Path, *tail: str) -> str:
+    """Build a relative input that replays *workspace*'s own directories."""
+    return str(Path(*workspace.parts[1:], *tail))
+
+
+def test_warning_fires_for_cwd_shaped_relative_input(_isolated_cwd, monkeypatch):
+    workspace, decoy = _isolated_cwd
+    terminal_tool.record_session_cwd("default", str(workspace))
+
+    echo_input = _workspace_echo_input(workspace, "notes", "x.md")
+    resolved = ft._resolve_path_for_task(echo_input, task_id="default")
+
+    # Sanity: this is the doubled path, INSIDE the workspace.
+    assert resolved == workspace.joinpath(*workspace.parts[1:], "notes", "x.md")
+
+    warn = ft._path_resolution_warning(echo_input, resolved, task_id="default")
+
+    assert warn is not None
+    assert warn.startswith(ft._DOUBLED_PATH_MARKER)
+    # Paths are embedded repr-style ({...!r}), matching the existing
+    # out-of-workspace message format.
+    assert repr(str(resolved)) in warn
+    # The suggested fix names the intended absolute path.
+    assert repr(str(workspace / "notes" / "x.md")) in warn
+
+
+def test_warning_fires_for_bare_workspace_echo(_isolated_cwd, monkeypatch):
+    """The echo with no trailing segments is still a doubled target."""
+    workspace, decoy = _isolated_cwd
+    terminal_tool.record_session_cwd("default", str(workspace))
+
+    echo_input = _workspace_echo_input(workspace)
+    resolved = ft._resolve_path_for_task(echo_input, task_id="default")
+
+    warn = ft._path_resolution_warning(echo_input, resolved, task_id="default")
+
+    assert warn is not None
+    assert warn.startswith(ft._DOUBLED_PATH_MARKER)
+
+
+def test_no_warning_for_ordinary_relative_path(_isolated_cwd, monkeypatch):
+    """A first segment merely equal to the workspace's first segment is fine."""
+    workspace, decoy = _isolated_cwd
+    terminal_tool.record_session_cwd("default", str(workspace))
+
+    # Shares only a partial prefix with the workspace parts — not a full echo.
+    partial = str(Path(workspace.parts[1], "notes", "x.md"))
+    resolved = ft._resolve_path_for_task(partial, task_id="default")
+
+    warn = ft._path_resolution_warning(partial, resolved, task_id="default")
+
+    assert warn is None
+
+
+def test_no_warning_for_subdir_named_like_root_tail(_isolated_cwd, monkeypatch):
+    """workspace/<its-own-basename>/f.py is a legitimate subdirectory."""
+    workspace, decoy = _isolated_cwd
+    terminal_tool.record_session_cwd("default", str(workspace))
+
+    inner = str(Path(workspace.name, "f.py"))
+    resolved = ft._resolve_path_for_task(inner, task_id="default")
+
+    warn = ft._path_resolution_warning(inner, resolved, task_id="default")
+
+    assert warn is None
+
+
+def test_write_file_surfaces_doubled_path_warning(_isolated_cwd, monkeypatch):
+    """End to end: write_file_tool returns _warning for the doubled path."""
+    import json
+
+    workspace, decoy = _isolated_cwd
+    terminal_tool.record_session_cwd("t-echo", str(workspace))
+
+    echo_input = _workspace_echo_input(workspace, "notes", "x.md")
+    out = json.loads(ft.write_file_tool(echo_input, "digest\n", task_id="t-echo"))
+
+    assert not out.get("error")
+    assert out.get("_warning", "").startswith(ft._DOUBLED_PATH_MARKER)
+    assert repr(str(workspace / "notes" / "x.md")) in out["_warning"]
+
+
+def test_cwd_echo_warning_container_posix_semantics():
+    """Container roots are PurePosixPath — the echo check must stay POSIX."""
+    root = PurePosixPath("/home/user/dev")
+    resolved = PurePosixPath("/home/user/dev/home/user/dev/notes/x.md")
+
+    warn = ft._cwd_echo_warning("home/user/dev/notes/x.md", resolved, root)
+
+    assert warn is not None
+    assert warn.startswith(ft._DOUBLED_PATH_MARKER)
+    assert "'/home/user/dev/notes/x.md'" in warn
+
+
+def test_cwd_echo_warning_container_no_false_positive():
+    root = PurePosixPath("/home/user/dev")
+
+    warn = ft._cwd_echo_warning("notes/x.md", PurePosixPath("/home/user/dev/notes/x.md"), root)
+
+    assert warn is None
+
+
+def test_cwd_echo_warning_single_component_root_is_not_an_echo():
+    """A one-segment root (the common container ``/workspace``) cannot be told
+    apart from a subdirectory that merely shares its name: ``workspace/x.md``
+    under ``/workspace`` is far more often a real ``/workspace/workspace/x.md``
+    than an echo, so a single matching segment is not evidence of doubling."""
+    root = PurePosixPath("/workspace")
+
+    warn = ft._cwd_echo_warning("workspace/x.md", PurePosixPath("/workspace/workspace/x.md"), root)
+
+    assert warn is None
+    # Two echoed segments are evidence again: the replayed prefix is specific.
+    root2 = PurePosixPath("/srv/workspace")
+    warn2 = ft._cwd_echo_warning(
+        "srv/workspace/x.md", PurePosixPath("/srv/workspace/srv/workspace/x.md"), root2)
+    assert warn2 is not None and warn2.startswith(ft._DOUBLED_PATH_MARKER)
+
+
+def test_stale_refusal_precedes_doubled_path_warning_for_write_file(_isolated_cwd, monkeypatch):
+    """write_file refuses a stale overwrite BEFORE any disk mutation (#65604), so
+    when cross-agent staleness fires on an existing doubled target the refusal
+    wins and nothing is written; the doubled-path warning applies to writes that
+    proceed (new target: test_write_file_surfaces_doubled_path_warning) and to
+    patch, which stays warning-only (test_patch_tool_doubled_path_warning_wins_over_staleness).
+    """
+    import json
+
+    workspace, decoy = _isolated_cwd
+    terminal_tool.record_session_cwd("t-prio", str(workspace))
+    doubled = workspace.joinpath(*workspace.parts[1:], "notes", "x.md")
+    doubled.parent.mkdir(parents=True)
+    doubled.write_text("OLD\n", encoding="utf-8")
+    monkeypatch.setattr(
+        ft.file_state, "check_stale", lambda task_id, resolved: "sibling subagent touched this file"
+    )
+
+    echo_input = _workspace_echo_input(workspace, "notes", "x.md")
+    out = json.loads(ft.write_file_tool(echo_input, "digest\n", task_id="t-prio"))
+
+    assert out.get("stale_write_blocked") is True
+    assert doubled.read_text(encoding="utf-8") == "OLD\n"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Symlinks require elevated privileges on Windows")
+def test_warning_fires_when_workspace_root_is_a_symlink(tmp_path, monkeypatch):
+    """The echo check must also match the symlinked (display) form of the root.
+
+    The model echoes the cwd the terminal reports — the symlink path — while
+    the containment root is resolve()d to the real path, so comparing against
+    the resolved form alone misses the echo.
+    """
+    real = tmp_path / "real-workspace"
+    real.mkdir()
+    link = tmp_path / "linked-workspace"
+    link.symlink_to(real, target_is_directory=True)
+    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+    terminal_tool.record_session_cwd("default", str(link))
+
+    echo_input = _workspace_echo_input(link, "notes", "x.md")
+    resolved = ft._resolve_path_for_task(echo_input, task_id="default")
+
+    warn = ft._path_resolution_warning(echo_input, resolved, task_id="default")
+
+    assert warn is not None
+    assert warn.startswith(ft._DOUBLED_PATH_MARKER)
+
+
+def test_patch_tool_doubled_path_warning_wins_over_staleness(_isolated_cwd, monkeypatch):
+    """patch stays warning-only, so the doubled-path warning must win over the
+    staleness warning there (write_file refuses a stale overwrite first; see
+    test_stale_refusal_precedes_doubled_path_warning_for_write_file)."""
+    import json
+
+    workspace, decoy = _isolated_cwd
+    terminal_tool.record_session_cwd("t-patch-prio", str(workspace))
+    monkeypatch.setattr(
+        ft.file_state, "check_stale", lambda task_id, resolved: "sibling subagent touched this file"
+    )
+
+    echo_input = _workspace_echo_input(workspace, "target.py")
+    doubled = workspace.joinpath(*workspace.parts[1:], "target.py")
+    doubled.parent.mkdir(parents=True)
+    doubled.write_text("OLD\n", encoding="utf-8")
+
+    out = json.loads(
+        ft.patch_tool(
+            mode="replace",
+            path=echo_input,
+            old_string="OLD",
+            new_string="NEW",
+            task_id="t-patch-prio",
+        )
+    )
+
+    warning = out.get("_warning") or " ".join(out.get("_warnings", []))
+    assert ft._DOUBLED_PATH_MARKER in warning
+
+
+def test_dotdot_that_undoes_the_echo_does_not_warn(_isolated_cwd, monkeypatch):
+    """'<echo>/../../..' collapses back out of the doubled tree — no warning."""
+    workspace, decoy = _isolated_cwd
+    terminal_tool.record_session_cwd("default", str(workspace))
+
+    n = len(workspace.parts) - 1
+    collapsing = str(Path(*workspace.parts[1:], *[".."] * n, "plain.md"))
+    resolved = ft._resolve_path_for_task(collapsing, task_id="default")
+
+    warn = ft._path_resolution_warning(collapsing, resolved, task_id="default")
+
+    assert warn is None
+
+
+def test_dotdot_hidden_echo_is_still_detected(_isolated_cwd, monkeypatch):
+    """'junk/../<echo>/x' lexically collapses to the echo — must warn."""
+    workspace, decoy = _isolated_cwd
+    terminal_tool.record_session_cwd("default", str(workspace))
+
+    hidden = str(Path("junk", "..", *workspace.parts[1:], "notes", "x.md"))
+    resolved = ft._resolve_path_for_task(hidden, task_id="default")
+
+    warn = ft._path_resolution_warning(hidden, resolved, task_id="default")
+
+    assert warn is not None
+    assert warn.startswith(ft._DOUBLED_PATH_MARKER)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="UNC path semantics are Windows-specific")
+def test_unc_root_echo_detection_and_no_false_positive():
+    """UNC anchors hold server+share — they must join the comparison parts."""
+    root = Path("\\\\server\\share\\work")
+    doubled = Path("\\\\server\\share\\work\\server\\share\\work\\notes\\x.md")
+
+    warn = ft._cwd_echo_warning(r"server\share\work\notes\x.md", doubled, root)
+    assert warn is not None
+    assert warn.startswith(ft._DOUBLED_PATH_MARKER)
+    assert repr(str(Path("\\\\server\\share\\work\\notes\\x.md"))) in warn
+
+    # A path that merely starts with the root's LAST component is legitimate.
+    ok = ft._cwd_echo_warning(r"work\x.md", Path("\\\\server\\share\\work\\work\\x.md"), root)
+    assert ok is None
+
+
+def test_doubled_warning_precedes_out_of_workspace_check(_isolated_cwd, monkeypatch):
+    """The echo check runs BEFORE the containment check in
+    _path_resolution_warning(): an input that replays the workspace root is
+    diagnosed as a doubled path even when the resolved location lies outside
+    the workspace, so the generic out-of-workspace message can't mask the
+    more specific diagnosis.
+    """
+    workspace, decoy = _isolated_cwd
+    terminal_tool.record_session_cwd("default", str(workspace))
+
+    echo_input = _workspace_echo_input(workspace, "notes", "x.md")
+    outside = decoy / "x.md"
+
+    warn = ft._path_resolution_warning(echo_input, outside, task_id="default")
+
+    assert warn is not None
+    assert warn.startswith(ft._DOUBLED_PATH_MARKER)

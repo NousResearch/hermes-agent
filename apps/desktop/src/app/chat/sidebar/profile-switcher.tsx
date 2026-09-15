@@ -71,7 +71,6 @@ import {
   $profileCreateRequest,
   $profileOrder,
   $profiles,
-  $profilesByConnection,
   $profileScope,
   ALL_PROFILES,
   normalizeProfileKey,
@@ -150,7 +149,6 @@ export function ProfileRail() {
   const { t } = useI18n()
   const p = t.profiles
   const profiles = useStore($profiles)
-  const profilesByConnection = useStore($profilesByConnection)
   const scope = useStore($profileScope)
   const gatewayProfile = useStore($activeGatewayProfile)
   const order = useStore($profileOrder)
@@ -179,31 +177,21 @@ export function ProfileRail() {
 
   const connections = registry?.connections
 
-  const groups = useMemo(
-    () =>
-      buildRestGroups({ activeConnectionId: null, connections: connections ?? [], profilesByConnection, roster }).map(
-        group => ({
-          ...group,
-          named: sortByProfileOrder(
-            group.named.map(agent => ({ name: agent.profile, agent })),
-            order
-          ).map(({ agent }) => agent)
-        })
-      ),
-    [connections, order, profilesByConnection, roster]
-  )
-
+  // At-rest named squares follow the same user order as the active strip, so
+  // a gateway's squares do not rearrange when it becomes inactive.
   const restGroups = useMemo(
-    () => (multipleConnections ? groups.filter(group => group.connectionId !== activeConnectionId) : []),
-    [activeConnectionId, groups, multipleConnections]
+    () =>
+      multipleConnections
+        ? buildRestGroups({ activeConnectionId, connections: connections ?? [], roster }).map(group => ({
+            ...group,
+            named: sortByProfileOrder(
+              group.named.map(agent => ({ name: agent.profile, agent })),
+              order
+            ).map(({ agent }) => agent)
+          }))
+        : [],
+    [activeConnectionId, connections, multipleConnections, order, roster]
   )
-
-  // Until this source has served its first list, retain the roster's exact
-  // routes rather than borrowing outgoing profiles or collapsing its squares.
-  const activeFallback =
-    profiles.length === 0 && activeConnectionId && !profilesByConnection.has(activeConnectionId)
-      ? groups.find(group => group.connectionId === activeConnectionId)
-      : undefined
 
   // Fleet mode needs something to show beside the active gateway. Two
   // registrations of one backend collapse to a single roster source, which
@@ -246,9 +234,7 @@ export function ProfileRail() {
   // ahead of the wheel effect, which re-binds when the strip mounts/unmounts.
   // The threshold counts the whole fleet: fourteen squares are fourteen
   // squares wherever they live.
-  const condensed =
-    profiles.length + countRestAgents(activeFallback ? [...restGroups, activeFallback] : restGroups) >
-    PROFILE_DROPDOWN_THRESHOLD
+  const condensed = profiles.length + countRestAgents(restGroups) > PROFILE_DROPDOWN_THRESHOLD
 
   const switchToRest = (agent: FleetAgent) => {
     const key = fleetRouteKey(agent.connectionId, agent.profile)
@@ -481,7 +467,7 @@ export function ProfileRail() {
             onSelect={selectProfile}
             onSelectRest={switchToRest}
             profiles={named}
-            restGroups={activeFallback ? [activeFallback, ...restGroups] : restGroups}
+            restGroups={restGroups}
           />
         </div>
       ) : (
@@ -494,21 +480,7 @@ export function ProfileRail() {
               strip keeps one shape whichever gateway is active. */}
           {fleet
             ? fleetSequence.map((entry, index) =>
-                entry.kind === 'active' && activeFallback ? (
-                  <FleetRestGroup
-                    activeProfile={isAll ? null : activeKey}
-                    colors={colors}
-                    first={index === 0}
-                    group={activeFallback}
-                    key={activeFallback.connectionId}
-                    onDelete={setPendingRestDelete}
-                    onEditSoul={setPendingRestSoul}
-                    onRecolor={(agent, color) => setProfileColor(agent.profile, color)}
-                    onRename={setPendingRestRename}
-                    onSelect={switchToRest}
-                    pendingRoute={pendingRoute}
-                  />
-                ) : entry.kind === 'active' ? (
+                entry.kind === 'active' ? (
                   <Fragment key="active">
                     <FleetDivider
                       connection={activeConnection}
@@ -983,7 +955,6 @@ function FleetDivider({
 // yours), then its home square and named squares, dimmed. Clicking any of
 // them re-homes onto that exact (gateway, profile).
 function FleetRestGroup({
-  activeProfile,
   colors,
   first,
   group,
@@ -997,7 +968,6 @@ function FleetRestGroup({
   colors: Record<string, string>
   first: boolean
   group: FleetGroup
-  activeProfile?: null | string
   onDelete: (agent: FleetAgent) => void
   onEditSoul: (agent: FleetAgent) => void
   onRecolor: (agent: FleetAgent, color: null | string) => void
@@ -1016,25 +986,24 @@ function FleetRestGroup({
       <span
         aria-label={p.fleet.gateway(group.label)}
         className="flex shrink-0 items-center gap-1"
-        data-active={activeProfile !== undefined}
+        data-active="false"
         data-connection-id={group.connectionId}
         data-reachable={group.reachable}
         data-slot="profile-rail-gateway"
         role="group"
       >
         <ProfilePill
-          active={activeProfile === group.defaultAgent.profile}
+          active={false}
           connectionId={group.connectionId}
           glyph="home"
           label={p.fleet.onGateway(group.defaultAgent.profile, group.label)}
-          muted={activeProfile === undefined}
+          muted
           onSelect={() => onSelect(group.defaultAgent)}
           pending={pendingRoute === defaultKey}
           slot="profile-rail-rest-home"
         />
         {group.named.map(agent => (
           <RestSquare
-            active={activeProfile === agent.profile}
             agent={agent}
             color={resolveProfileColor(agent.profile, colors)}
             key={agent.profile}
@@ -1057,7 +1026,6 @@ function FleetRestGroup({
 // different machines never read alike; the right-click actions run against
 // the square's owning gateway.
 function RestSquare({
-  active,
   agent,
   color,
   onDelete,
@@ -1067,7 +1035,6 @@ function RestSquare({
   onSelect,
   pending
 }: {
-  active: boolean
   agent: FleetAgent
   color: null | string
   onDelete: () => void
@@ -1100,8 +1067,7 @@ function RestSquare({
                   <button
                     aria-busy={pending || undefined}
                     aria-label={label}
-                    aria-pressed={active}
-                    className="aria-pressed:opacity-100 relative grid size-5 shrink-0 select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none opacity-35 transition-opacity hover:opacity-100 aria-busy:opacity-100"
+                    className="relative grid size-5 shrink-0 select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none opacity-35 transition-opacity hover:opacity-100 aria-busy:opacity-100"
                     data-connection-id={agent.connectionId}
                     data-profile={agent.profile}
                     data-slot="profile-rail-rest-square"

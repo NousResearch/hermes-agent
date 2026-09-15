@@ -77,7 +77,6 @@ vi.mock('@/store/profile', async importOriginal => ({
   $profileCreateRequest: atom(0),
   $profileOrder: atom([]),
   $profiles: atom([{ is_default: true, name: 'default' }]),
-  $profilesByConnection: atom(new Map()),
   $profileScope: atom('default'),
   ALL_PROFILES: '*',
   normalizeProfileKey: (name: string) => name,
@@ -130,7 +129,7 @@ const connectionsRegistry = connectionsStore.$connectionsRegistry as ReturnType<
   typeof atom<DesktopConnectionsRegistry | null>
 >
 
-const { $profileOrder, $profiles, $profilesByConnection, $profileScope } = await import('@/store/profile')
+const { $profileOrder, $profiles, $profileScope } = await import('@/store/profile')
 const profiles = $profiles as ReturnType<typeof atom<Array<{ is_default: boolean; name: string }>>>
 const profileScope = $profileScope as ReturnType<typeof atom<string>>
 const { _resetFleetRosterForTests } = await import('@/store/fleet-roster')
@@ -216,7 +215,6 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   $profileOrder.set([])
-  $profilesByConnection.set(new Map())
   vi.clearAllMocks()
   _resetFleetRosterForTests()
   hasMultipleConnections.set(false)
@@ -231,7 +229,19 @@ describe('ProfileRail fleet mode', () => {
   it('keeps the custom named-profile order when a source becomes inactive', async () => {
     armFleet()
     profiles.set([...profiles.get(), { name: 'editor', is_default: false }])
-    $profilesByConnection.set(new Map([['gateway-a', $profiles.get()]]))
+    getAgentRoster.mockResolvedValue({
+      ...roster,
+      agents: [
+        ...roster.agents,
+        {
+          connectionId: 'gateway-a',
+          connectionKind: 'remote',
+          connectionLabel: 'Gateway A',
+          profile: 'editor',
+          handle: 'editor'
+        }
+      ]
+    })
     $profileOrder.set(['scout', 'editor'])
     const container = await renderFleet()
 
@@ -250,32 +260,19 @@ describe('ProfileRail fleet mode', () => {
     expect(labels()).toEqual(activeOrder)
   })
 
-  it('keeps each source’s known squares in place when the incoming profile read has no result', async () => {
+  it('never renders the outgoing source’s squares under an incoming source whose profile read failed', async () => {
     armFleet()
-    // A newly discovered outgoing profile is newer than the fleet roster.
-    profiles.set([...profiles.get(), { name: 'editor', is_default: false }])
-    $profilesByConnection.set(new Map([['gateway-a', $profiles.get()]]))
     const container = await renderFleet()
-    const groups = () => Array.from(container.querySelectorAll('[data-slot="profile-rail-gateway"]'))
-
-    const before = groups().map(group => [
-      group.getAttribute('data-connection-id'),
-      group.querySelectorAll('button').length
-    ])
 
     await act(async () => {
       activeConnectionId.set('local')
       profiles.set([]) // No successful REST result on the incoming source (e.g. 401).
     })
 
-    expect(
-      groups().map(group => [group.getAttribute('data-connection-id'), group.querySelectorAll('button').length])
-    ).toEqual(before)
     const active = container.querySelector('[data-active="true"][data-connection-id="local"]') as HTMLElement
-    expect(within(active).queryByRole('button', { name: /scout|editor/ })).toBeNull()
-    expect(within(active).getByRole('button', { name: /builder/ })).toBeTruthy()
-    fireEvent.click(within(active).getByRole('button', { name: /builder/ }))
-    expect(selectConnection).toHaveBeenCalledWith('local', { profile: 'builder' })
+    expect(within(active).queryByRole('button', { name: /scout/ })).toBeNull()
+    // The outgoing gateway keeps its own roster squares, at rest.
+    expect(screen.getByRole('button', { name: 'scout · Gateway A' })).toBeTruthy()
   })
 
   it('stays on the single-gateway path with one registered gateway', async () => {

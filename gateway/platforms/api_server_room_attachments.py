@@ -100,6 +100,27 @@ def _attempt_scope(dispatch: HostedMemberDispatch) -> tuple[Any, ...]:
     )
 
 
+def _record_staging_origin(
+    conn: sqlite3.Connection, *, batch_key: str, origin: str | None, new_batch: bool = False,
+) -> None:
+    """Keep first-origin evidence immutable; unknown/mixed history is not ownership."""
+    if new_batch:
+        conn.execute(
+            "UPDATE roomlink_attachment_batches SET staging_origin_json=? WHERE batch_key=?",
+            (origin, batch_key),
+        )
+    else:
+        # Canonical JSON compares the whole verified origin, including receiver
+        # identity. An unguarded touch also makes a known origin ambiguous.
+        # NULL history stays NULL forever, and no retry can clear ambiguity.
+        conn.execute(
+            """UPDATE roomlink_attachment_batches SET staging_origin_ambiguous=1
+                WHERE batch_key=? AND staging_origin_json IS NOT NULL
+                  AND staging_origin_json IS NOT ?""",
+            (batch_key, origin),
+        )
+
+
 class RoomAttachmentSpool:
     """Private atomic target spool keyed to one exact peer-run attempt."""
 
@@ -146,6 +167,9 @@ class RoomAttachmentSpool:
                 manifest_digest TEXT NOT NULL,
                 manifest_json TEXT NOT NULL,
                 dispatch_json TEXT,
+                staging_origin_json TEXT,
+                staging_origin_ambiguous INTEGER NOT NULL DEFAULT 0
+                    CHECK (staging_origin_ambiguous IN (0, 1)),
                 complete INTEGER NOT NULL DEFAULT 0 CHECK (complete IN (0, 1)),
                 created_at REAL NOT NULL,
                 expires_at REAL NOT NULL
@@ -188,6 +212,14 @@ class RoomAttachmentSpool:
         }
         if "dispatch_json" not in batch_columns:
             conn.execute("ALTER TABLE roomlink_attachment_batches ADD COLUMN dispatch_json TEXT")
+        if "staging_origin_json" not in batch_columns:
+            conn.execute("ALTER TABLE roomlink_attachment_batches ADD COLUMN staging_origin_json TEXT")
+        if "staging_origin_ambiguous" not in batch_columns:
+            conn.execute(
+                """ALTER TABLE roomlink_attachment_batches
+                   ADD COLUMN staging_origin_ambiguous INTEGER NOT NULL DEFAULT 0
+                   CHECK (staging_origin_ambiguous IN (0, 1))"""
+            )
         if "authority_gateway_id" not in batch_columns:
             conn.execute(
                 """ALTER TABLE roomlink_attachment_batches
@@ -399,8 +431,8 @@ class RoomAttachmentSpool:
         self.prune(now=now)
         retired: list[tuple[str, str]] = []
         with self._lock, ExitStack() as grant_locks, self._transaction(immediate=True) as conn:
-            if authorize_write is not None:
-                grant_locks.enter_context(authorize_write(conn))
+            origin = (grant_locks.enter_context(authorize_write(conn))
+                      if authorize_write is not None else None)
             scope = _attempt_scope(dispatch)
             existing = conn.execute(
                 "SELECT * FROM roomlink_attachment_batches WHERE batch_key=?",
@@ -544,6 +576,7 @@ class RoomAttachmentSpool:
                     "complete": False,
                     "idempotent": False,
                 }
+            _record_staging_origin(conn, batch_key=key, origin=origin, new_batch=existing is None)
         for old_key, attachment_id in retired:
             self._file_path(old_key, attachment_id).unlink(missing_ok=True)
         return result
@@ -565,8 +598,8 @@ class RoomAttachmentSpool:
         now = float(self.clock())
         self.prune(now=now)
         with self._lock, ExitStack() as grant_locks, self._transaction(immediate=True) as conn:
-            if authorize_write is not None:
-                grant_locks.enter_context(authorize_write(conn))
+            origin = (grant_locks.enter_context(authorize_write(conn))
+                      if authorize_write is not None else None)
             batch = conn.execute(
                 """SELECT * FROM roomlink_attachment_batches
                     WHERE room_id=? AND home_install_id=?
@@ -618,6 +651,7 @@ class RoomAttachmentSpool:
                 complete = self._mark_complete_if_ready(
                     conn, str(batch["batch_key"])
                 )
+                _record_staging_origin(conn, batch_key=str(batch["batch_key"]), origin=origin)
                 return {
                     "complete": complete,
                     "idempotent": True,
@@ -665,6 +699,7 @@ class RoomAttachmentSpool:
             complete = self._mark_complete_if_ready(
                 conn, str(batch["batch_key"])
             )
+            _record_staging_origin(conn, batch_key=str(batch["batch_key"]), origin=origin)
         return {"complete": complete, "idempotent": False}
 
     @staticmethod
@@ -1057,13 +1092,25 @@ def _write_guard(adapter, request, expected, permission, dispatch=None):
                     (str(request.match_info['task_id']), int(request.match_info['execution_generation']))).fetchone()
                 if row is not None:
                     bound = HostedMemberDispatch.from_mapping(json.loads(row[0]))
-            _require_receiver(adapter, claims, profile, connection=profile_conn, dispatch=bound)
+            authority, _ = _require_receiver(adapter, claims, profile, connection=profile_conn, dispatch=bound)
             try:
                 require_current_grant(conn, claims)
                 require_current_grant(profile_conn, claims)
             except RuntimeStoreError as exc:
                 raise RoomGrantReauthorizationRequired(exc.reason) from exc
-            yield
+            # An immutable, canonical private value from the redecoded bearer
+            # and retained owner, only after BOTH held grant checks succeed.
+            yield json.dumps({
+                "version": 1,
+                **{key: claims[key] for key in (
+                    "_token_sha256", "grant_id", "issued_at", "expires_at", "status_expires_at",
+                    "room_id", "home_install_id", "authority_gateway_id", "authority_epoch",
+                    "member_id", "target_install_id", "target_profile",
+                )},
+                "receiver_home": authority.profile_id,
+                "receiver_epoch": authority.epoch,
+                "receiver_instance_id": authority.instance_id,
+            }, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return authorize
 
 

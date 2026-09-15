@@ -563,6 +563,30 @@ DEFAULT_CONFIG = {
         # A prune only commits when it reclaims at least this many tokens, then waits for a
         # trigger-sized runway to regrow before rearming. 0 = no minimum-savings gate.
         "proactive_prune_min_reclaim_tokens": 4096,
+        # tool_result_projection: wire-only counterpart of the prune above, OFF by default.
+        # Old, large tool results are replaced in the request by a stub (tool, args, sha256,
+        # bytes, archived path) while the canonical transcript, session resume and the UI keep
+        # every byte. The full result is persisted and the path verified readable — host-side,
+        # or sandbox-visible on a remote backend — BEFORE the row is projected; a row whose
+        # recovery cannot be confirmed is left intact. This reclaims space on large windows,
+        # where the ratio threshold rarely fires. Opt-in because it changes what the model
+        # sees: enable once task-success parity has been measured on real sessions.
+        "tool_result_projection": "off",
+        # Stale tool payload (tokens) required before a pass is considered; also the pass's
+        # minimum reclaim. 0 = derive from the route: 16K without prompt caching, 32K with it
+        # (a cached route pays for each pass with a cache break), capped at a quarter of the
+        # window. A pass is charged only for rows that became stale since the previous one, and
+        # also declines unless it reclaims at least the region its rewrite invalidates.
+        "tool_result_projection_min_tokens": 0,
+        # Only tool results larger than this (chars) are eligible; floor 200 so a stub is always
+        # smaller than what it replaces. Errors, multimodal results and results declaring
+        # projection_safe: false are never projected.
+        "tool_result_projection_min_result_chars": 4000,
+        # The newest messages keep their full results: this fraction of the context window is the
+        # protected verbatim tail (floored at 12K tokens), whose message floor and cap are internal
+        # constants (currently 8-60 messages, deliberately NOT derived from protect_last_n) so a
+        # session of tiny messages cannot swallow the whole history.
+        "tool_result_projection_tail_ratio": 0.025,
         # micro_compact: opt-in — after each turn fold the oldest un-absorbed exchange into a
         # rolling summary, amortizing compression cost. Off by default because every pass rewrites
         # sent history and breaks the prompt-cache prefix EVERY turn; enable only if the amortized

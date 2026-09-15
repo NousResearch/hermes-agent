@@ -747,6 +747,40 @@ compression:
   # prune. Default 4096.
   proactive_prune_min_reclaim_tokens: 4096
 
+  # Wire-only projection of stale tool results (default: off).
+  # Old, large tool results are replaced by a stub (tool, args, bytes, sha256,
+  # archived path) IN THE REQUEST ONLY. The canonical transcript, session
+  # resume, the UI timeline and summarization keep every byte. The full result
+  # is persisted immediately before the row is projected, and its path is
+  # verified readable by the agent — a host path on a local backend, a
+  # sandbox-visible path on docker/ssh/modal — so a row whose recovery cannot
+  # be confirmed keeps its bytes instead. This reclaims space on large windows,
+  # where the ratio threshold rarely fires and old tool output would otherwise
+  # be re-sent on every turn. "auto" enables it; opt-in because it changes what
+  # the model sees (old output becomes metadata + a pointer to the archive).
+  tool_result_projection: off
+
+  # Stale tool payload (tokens) required before a pass is considered; also the
+  # pass's minimum reclaim. 0 = derive from the route: 16000 without prompt
+  # caching, 32000 with it (a cached route pays for each pass with a cache
+  # break), capped at a quarter of the context window. A pass is charged only
+  # for rows that became stale since the previous one, and also declines unless
+  # it reclaims at least the region its rewrite invalidates. Default 0.
+  tool_result_projection_min_tokens: 0
+
+  # Only tool results larger than this many characters are eligible (clamped to
+  # >= 200 so a stub is always smaller than what it replaces). Errors,
+  # multimodal results and results declaring `projection_safe: false` are never
+  # projected. Default 4000.
+  tool_result_projection_min_result_chars: 4000
+
+  # The newest messages keep their full results: this fraction of the context
+  # window is the protected verbatim tail (floored at 12000 tokens), and its
+  # message safety bounds are internal constants (currently 8-60 messages) and
+  # are deliberately NOT derived from `protect_last_n` above, so a session of tiny
+  # messages cannot swallow the whole history into the tail. Default 0.025.
+  tool_result_projection_tail_ratio: 0.025
+
   # To pin a specific model/provider for compression summaries, use the
   # auxiliary section below (auxiliary.compression.provider / model).
 

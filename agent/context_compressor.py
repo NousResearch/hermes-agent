@@ -2301,6 +2301,11 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
+        # Wire-only tool-result projection (agent/tool_result_projection.py). Default "off":
+        # it changes what the model sees, so it ships opt-in. See the module docstring.
+        tool_result_projection: str = "off", tool_result_projection_min_tokens: int = 0,
+        tool_result_projection_min_result_chars: int = 4000,
+        tool_result_projection_tail_ratio: float = 0.025,
         custom_providers: list | None = None,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
@@ -2327,6 +2332,19 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self.proactive_prune_min_reclaim_tokens = max(0, int(proactive_prune_min_reclaim_tokens or 0))
         # A committed prune is a cache boundary: rearm only after the prompt regrows the reclaimed tokens.
         self._proactive_prune_rearm_tokens: int = 0
+        # Wire-only projection knobs. Unlike the prune above these never rewrite the canonical
+        # transcript, but the default is still OFF: archiving a result is a semantic change to what
+        # the model can see, and it ships behind an explicit opt-in until task-success
+        # benchmarking exists. Once enabled, the trigger and the cache-break gate — not the flag —
+        # are what keep a pass rare and profitable.
+        self.tool_result_projection = str(tool_result_projection or "off").strip().lower() or "off"
+        self.tool_result_projection_min_tokens = max(0, int(tool_result_projection_min_tokens or 0))
+        # Same 200-char floor rationale as proactive_prune_min_result_chars: a stub must stay
+        # strictly smaller than what it replaces.
+        self.tool_result_projection_min_result_chars = max(
+            _PRUNE_MIN_CHARS, int(tool_result_projection_min_result_chars or 4000)
+        )
+        self.tool_result_projection_tail_ratio = max(0.0, float(tool_result_projection_tail_ratio or 0.0))
         # Dedup key for the over-threshold "reclamation no-oped" warning
         # (#101889) so a tool loop riding above the threshold warns once per
         # distinct reason + rearm snapshot instead of every iteration.

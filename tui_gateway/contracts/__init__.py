@@ -6,6 +6,7 @@ from . import (  # noqa: F401
     common,
     config_free_tier_control,
     connectors_operation,
+    display,
     events,
     groups_bot_relay,
     liveness,

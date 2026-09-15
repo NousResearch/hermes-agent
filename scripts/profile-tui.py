@@ -26,7 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import pty
+import pty  # windows-footgun: ok — dev profiling script, POSIX pty by design
 import select
 import signal
 import sqlite3

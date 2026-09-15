@@ -100,12 +100,28 @@ def _computer_use_max_image_dimension() -> Optional[int]:
         dim = 1456
     return dim if dim > 0 else None
 
+def desktop_identity(env: Optional[Dict[str, str]] = None) -> str:
+    """The screen a backend spawned from ``env`` acts on: its DISPLAY (``''`` when none). Recorded next to the
+    cached backend so a Bot Desktop that starts (or restarts on another number) AFTER the backend was cached is
+    noticed — the cached cua-driver still points at the old seat or at no display at all."""
+    return str((cua_driver_child_env(env) if env is None else env).get("DISPLAY") or "")
+
+
+def backend_display_stale(recorded: str, current: str) -> bool:
+    """True when a cached backend's recorded display identity no longer matches the one a fresh spawn would get."""
+    return (recorded or "") != (current or "")
+
+
 def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """Env for spawning cua-driver: ``base_env`` (default ``os.environ``) plus ``CUA_DRIVER_RS_TELEMETRY_ENABLED=0``
     unless the user opted in, plus the native-Wayland bridge (``computer_use.native_wayland`` config opt-in, only when
     the child has a Wayland display). Used by every spawn site (MCP, status, doctor, install) so CLI and gateway
     runtimes share one policy."""
     env = dict(os.environ if base_env is None else base_env)
+    # A running Bot Desktop for this profile owns the agent's screen: DISPLAY/XAUTHORITY/DBUS point there so
+    # cua-driver never acts on a seat the human is sitting at (#90374 class) and headless hosts get a display.
+    from tools.bot_desktop.runtime import desktop_env as _bot_desktop_env
+    env = _bot_desktop_env(env)
     if _cua_telemetry_disabled():
         env[_CUA_TELEMETRY_ENV_VAR] = "0"
     if sys.platform == "linux" and env.get("WAYLAND_DISPLAY") and bool(_computer_use_cfg().get("native_wayland", False)):

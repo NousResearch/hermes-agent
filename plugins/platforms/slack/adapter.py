@@ -385,15 +385,47 @@ def _slack_mention_detection_text(event: dict) -> str:
 
 
 def _rewrite_known_bang_command(text: str) -> str:
-    """Rewrite a known leading ``!cmd`` to the gateway ``/cmd`` form."""
+    """Rewrite a known leading ``!cmd`` to the gateway ``/cmd`` form.
+
+    Resolves built-in gateway commands first, then skill commands and
+    skill bundles (both with ``_`` ≡ ``-`` normalization), mirroring
+    Matrix's ``_resolve_matrix_bang_command``. Without the skill/bundle
+    branches, ``!my-skill`` fell through as plain text and Slack thread
+    users had no way to invoke skills — native slashes are blocked in
+    threads (#101871). Casual exclamations (``!nice work``) still pass
+    through: the rewrite only fires when the first token resolves.
+    """
     if not text.startswith("!"):
         return text
     try:
-        from hermes_cli.commands import is_gateway_known_command
         first_token = text[1:].split(maxsplit=1)[0]
+        # Strip "@suffix" the same way get_command() does, so
+        # forms like ``!stop@hermes`` still resolve.
         cmd_name = first_token.split("@", 1)[0].lower()
-        if cmd_name and "/" not in cmd_name and is_gateway_known_command(cmd_name):
+        if not cmd_name or "/" in cmd_name:
+            return text
+        from hermes_cli.commands import is_gateway_known_command
+        if is_gateway_known_command(cmd_name):
             return "/" + text[1:]
+        # Skill keys are stored slash-prefixed ("./arxiv"); underscored
+        # tokens hyphenate to match Telegram's bot-command round-trip.
+        candidates = [cmd_name]
+        hyphenated = cmd_name.replace("_", "-")
+        if hyphenated != cmd_name:
+            candidates.append(hyphenated)
+        try:
+            from agent.skill_commands import get_skill_commands
+            skill_commands = get_skill_commands() or {}
+            if any(f"/{c}" in skill_commands for c in candidates):
+                return "/" + text[1:]
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("Slack: get_skill_commands failed for %r", cmd_name, exc_info=True)
+        try:
+            from agent.skill_bundles import resolve_bundle_command_key
+            if any(resolve_bundle_command_key(c) for c in candidates):
+                return "/" + text[1:]
+        except Exception:  # pragma: no cover - defensive
+            logger.debug("Slack: resolve_bundle_command_key failed for %r", cmd_name, exc_info=True)
     except Exception:  # pragma: no cover - defensive
         pass
     return text

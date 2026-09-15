@@ -432,10 +432,13 @@ class TestSkillManageDispatcher:
             usage = load_usage()
         result = json.loads(raw)
         assert result["success"] is True
-        # No provenance marker on a foreground create — record either missing
+        # No curator marker on a foreground create — record either missing
         # entirely (telemetry best-effort) or present with created_by unset.
+        # Authorship (provenance="agent") IS recorded on every create so the
+        # learning graph can identify agent-created skills (#80596).
         rec = usage.get("test-skill") or {}
         assert rec.get("created_by") in {None, "", False}
+        assert rec.get("provenance") == "agent"
 
     def test_successful_mutations_emit_lifecycle_with_correlation(self, tmp_path):
         with (
@@ -473,6 +476,7 @@ class TestSkillManageDispatcher:
         record_created.assert_called_once_with(
             "test-skill",
             agent_created=False,
+            provenance="agent",
             task_id="task-mutation",
             session_id="session-mutation",
         )

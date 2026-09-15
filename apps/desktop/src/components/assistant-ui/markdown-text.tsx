@@ -18,6 +18,7 @@ import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
+import { ghRefFromMarkdownHref } from '@/lib/gh-refs'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
@@ -41,7 +42,7 @@ import { isDirectiveInProgress } from '@/lib/transcript-directives'
 import { cn } from '@/lib/utils'
 
 import { ArtifactCard } from './artifact-card'
-import { SessionRefLink } from './directive-text'
+import { GhRefLink, SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
 import { paragraphPlainText, TranscriptDirectiveLeaf, useResolvedParagraph } from './transcript-directive'
@@ -294,6 +295,12 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
 
   if (sessionRef) {
     return <SessionRefLink value={sessionRef} />
+  }
+
+  const ghRefNumber = ghRefFromMarkdownHref(href)
+
+  if (ghRefNumber !== null) {
+    return <GhRefLink label={childrenToText(children) || `#${ghRefNumber}`} number={ghRefNumber} />
   }
 
   const target = href ? normalizeExternalUrl(href) : href

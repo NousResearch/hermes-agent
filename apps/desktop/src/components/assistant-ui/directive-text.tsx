@@ -2,13 +2,16 @@
 
 import type { Unstable_DirectiveFormatter, Unstable_DirectiveSegment, Unstable_TriggerItem } from '@assistant-ui/core'
 import type { TextMessagePartComponent, TextMessagePartProps } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import type { FC } from 'react'
 import { Fragment, useEffect, useMemo, useState } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import type { I18nContextValue } from '@/i18n'
 import { extractEmbeddedImages } from '@/lib/embedded-images'
 import { openLink } from '@/lib/external-link'
+import { ghIssueUrl } from '@/lib/gh-refs'
 import { triggerHaptic } from '@/lib/haptics'
 import { gatewayMediaDataUrl, isRemoteGateway } from '@/lib/media'
 import { useSessionLinkTitle } from '@/lib/session-link-title'
@@ -526,6 +529,98 @@ export const SessionRefLink: FC<{
     >
       <DirectiveIcon type="session" />
       {resolved}
+    </a>
+  )
+}
+
+/** A `#123` reference in assistant markdown (`#gh-ref/` links rewritten in
+ *  `preprocessMarkdown`), resolved against the session's repo: plain text until
+ *  `git.repo_refs` reports a github.com origin, then a real github.com link.
+ *  Reads `useSessionView`, so a split tile resolves its OWN session's repo —
+ *  the RPC answers from the backend's authoritative session cwd, and the
+ *  per-key promise cache keeps one git spawn per repo across every chip. */
+interface GhRepoRefs {
+  available: boolean
+  host: string
+  owner: string
+  repo: string
+}
+
+const ghRepoRefsPromises = new Map<string, Promise<GhRepoRefs | null>>()
+
+/** Test seam — same convention as `__resetSessionLinkTitleCache`. */
+export function __resetGhRepoRefsCache(): void {
+  ghRepoRefsPromises.clear()
+}
+
+function fetchGhRepoRefs(sessionId: string): Promise<GhRepoRefs | null> {
+  const cached = ghRepoRefsPromises.get(sessionId)
+
+  if (cached) {
+    return cached
+  }
+
+  // Lazy-import so the composer's rich editor (which also imports this module
+  // for its chips) never pulls the gateway stack at boot — same story as
+  // `openSessionRef` below.
+  const promise = import('@/store/gateway')
+    .then(({ activeGatewayProfileKey, requestGatewayForProfile }) =>
+      requestGatewayForProfile<GhRepoRefs>(
+        activeGatewayProfileKey(),
+        'git.repo_refs',
+        { session_id: sessionId },
+        4_000
+      )
+    )
+    .then(result => (result.available ? result : null))
+    .catch(() => null)
+
+  ghRepoRefsPromises.set(sessionId, promise)
+
+  return promise
+}
+
+export const GhRefLink: FC<{
+  label: string
+  number: number
+}> = ({ label, number }) => {
+  const view = useSessionView()
+  const runtimeId = useStore(view.$runtimeId)
+  const storedId = useStore(view.$storedId)
+  const [refs, setRefs] = useState<GhRepoRefs | null>(null)
+  const sessionId = runtimeId ?? storedId
+
+  useEffect(() => {
+    if (!sessionId) {
+      return
+    }
+
+    let cancelled = false
+
+    void fetchGhRepoRefs(sessionId).then(resolved => {
+      if (!cancelled && resolved) {
+        setRefs(resolved)
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [sessionId])
+
+  if (!refs) {
+    return <>{label}</>
+  }
+
+  return (
+    <a
+      {...refAttrs('git', 'wrap-anywhere')}
+      href={ghIssueUrl(refs.owner, refs.repo, number)}
+      rel="noopener noreferrer"
+      target="_blank"
+      title={`${refs.owner}/${refs.repo}#${number}`}
+    >
+      {label}
     </a>
   )
 }

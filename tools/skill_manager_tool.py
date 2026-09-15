@@ -8,6 +8,7 @@ existing skills (bundled, hub, user) are modified in place. Layout:
 """
 
 import contextvars as _ctxvars
+import hashlib
 import json
 from contextlib import ExitStack, suppress
 import logging
@@ -83,10 +84,10 @@ def _skills_dir() -> Path:
 def _skill_lock_path(name: str) -> Path:
     """Per-skill lock file under ``<skills>/.locks/`` (same idiom as the usage ledger's
     ``.usage.json.lock``), never inside the skill dir so delete/recreate cannot unlink it under a
-    waiting writer. Keyed by the resolved skill dir so ``foo`` and ``category/foo`` share one lock."""
-    existing = _find_skill(name)
-    skill_dir = Path(existing["path"]) if existing else _resolve_skill_dir(name)
-    return _skills_dir() / ".locks" / f"{skill_dir.name}.lock"
+    waiting writer. Keyed by a digest of the basename so ``foo`` and ``category/foo`` share one
+    lock and no name can hit a filesystem limit (callers validate the basename first)."""
+    digest = hashlib.sha256(Path(name).name.encode("utf-8", "surrogatepass")).hexdigest()
+    return _skills_dir() / ".locks" / f"{digest}.lock"
 
 
 def _skill_mutation_lock(name: str):
@@ -785,6 +786,10 @@ def skill_manage(
     for arg, missing, message in _REQUIRED_ARGS.get(action, ()):
         if missing(args[arg]):
             return tool_error(message, success=False)
+    # Validate before the lock is keyed on the name, so a rejected name never touches .locks/
+    # (create takes a bare name; the other actions also accept ``category/name``).
+    if (name_err := _validate_name(name if action == "create" or not name else Path(name).name)) is not None:
+        return json.dumps(_err(name_err), ensure_ascii=False)
     # A mutation is read-modify-write even when its action eventually delegates
     # to a helper: guards, ledger capture, patch matching, validation, rollback,
     # and the atomic replacement all belong to the same ownership window.

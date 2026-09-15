@@ -1,5 +1,6 @@
 """Tests for tools/skill_manager_tool.py — skill creation, editing, and deletion."""
 
+import hashlib
 import json
 import threading
 from contextlib import contextmanager
@@ -21,6 +22,7 @@ from tools.skill_manager_tool import (
     _write_file,
     _remove_file,
     _find_skill,
+    _skill_lock_path,
     skill_manage,
 )
 from agent.skill_utils import (
@@ -358,6 +360,26 @@ class TestSkillMutationLock:
         assert all(result["success"] for result in results)
         assert "# Test Skill Updated" in content
         assert "Step 1 Updated:" in content
+
+    @pytest.mark.parametrize("name", ["a" * 300, "bad\x00name", "../../etc", ""])
+    def test_rejected_name_returns_json_and_leaves_no_lock_file(self, tmp_path, name):
+        """Name validation runs before the lock is opened: an over-long / NUL / traversal / empty
+        name yields the create handler's JSON error (never OSError/ValueError from the lock
+        path) and leaves nothing behind in ``<skills>/.locks/``."""
+        with _skill_dir(tmp_path):
+            result = json.loads(skill_manage(action="create", name=name, content=VALID_SKILL_CONTENT))
+        assert result["success"] is False
+        assert result["error"] == _validate_name(name)
+        assert not (tmp_path / ".locks").exists()
+
+    def test_lock_path_is_digest_keyed_and_shared_across_name_forms(self, tmp_path):
+        """``foo`` and ``category/foo`` share one lock, keyed on a fixed-width digest of the
+        basename so the filename never depends on the skill name's length or characters."""
+        with _skill_dir(tmp_path):
+            lock = _skill_lock_path("mlops/foo")
+            assert lock == _skill_lock_path("foo")
+            assert lock.parent == tmp_path / ".locks"
+            assert lock.name == hashlib.sha256(b"foo").hexdigest() + ".lock"
 
 
 class TestDeleteSkill:

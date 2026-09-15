@@ -267,14 +267,15 @@ class TourStep(Params):
 class TourRequestParams(ServerRequestParams):
     """Closed guided-tour DOM operation from ``tools.tour_tool``."""
 
+    # tools/tour_tool.py drops None fields before calling back, so every optional key defaults here.
     action: TourAction
-    surface: TourSurface | None
-    selector: str | None
-    title: str | None
-    text: str | None
-    side: TourSide | None
-    steps: list[TourStep] | None
-    step_index: int | None
+    surface: TourSurface | None = None
+    selector: str | None = None
+    title: str | None = None
+    text: str | None = None
+    side: TourSide | None = None
+    steps: list[TourStep] | None = None
+    step_index: int | None = None
 
 
 server_request("tour", params=TourRequestParams, result=ValueResult,

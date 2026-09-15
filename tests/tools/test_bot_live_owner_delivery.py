@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -79,12 +80,14 @@ def test_only_canonical_capable_owner_receives_across_compression(tmp_path, capa
         if not capable:
             assert owner is None
             return
+        assert owner is not None
         assert owner["lease_id"] == lease.lease_id
         queued = mailbox.deliver_to_live_owner(tmp_path, owner, "before compression")
         db.end_session("chat", "compression")
         db.create_session(session_id="tip", source="cli", parent_session_id="chat")
         assert transfer_active_session(lease, session_id="tip", metadata=meta)
         current = mailbox.find_canonical_live_owner(tmp_path)
+        assert current is not None
         assert current["session_id"] == "tip"
         claim = mailbox.claim_pending_delivery(tmp_path, current)
         assert claim["delivery_id"] == queued["delivery_id"]
@@ -160,7 +163,7 @@ def test_unreadable_ticket_keeps_exact_id_reads_fail_closed(tmp_path):
         mailbox.read_delivery_result(tmp_path, "e" * 32)
 
 
-def test_non_dict_ticket_is_skipped_by_scans_and_fails_exact_id_reads_closed(tmp_path, caplog):
+def test_non_dict_ticket_is_quarantined_by_scans_and_fails_exact_id_reads_closed(tmp_path, caplog):
     import logging
 
     from tools import bot_live_delivery as mailbox
@@ -170,19 +173,200 @@ def test_non_dict_ticket_is_skipped_by_scans_and_fails_exact_id_reads_closed(tmp
     queued = mailbox.deliver_to_live_owner(tmp_path, owner, "readable", delivery_id="d" * 32)
     bad = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME / f"{'e' * 32}.json"
     bad.write_text('"oops"', encoding="utf-8")  # parses, but is not a record
+    # Malformed is not absent: while the ticket is still in place an exact-id read fails
+    # closed rather than minting a fresh receipt over a possibly-live one.
+    with pytest.raises(ValueError):
+        mailbox.deliver_to_live_owner(tmp_path, owner, "same id", delivery_id="e" * 32)
+    with pytest.raises(ValueError):
+        mailbox.read_delivery_result(tmp_path, "e" * 32)
     with caplog.at_level(logging.WARNING, logger="tools.bot_live_delivery"):
         admitted = mailbox.deliver_to_live_owner(tmp_path, owner, "second", delivery_id="f" * 32)
         assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == queued["delivery_id"]
         assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == admitted["delivery_id"]
         assert mailbox.claim_pending_delivery(tmp_path, owner) is None
-    assert sum(r.message.startswith(f"bot_live_delivery: skipping unreadable ticket {'e' * 32}.json")
+    assert sum(r.message.startswith(f"Quarantined unreadable delivery record {'e' * 32}.json")
                for r in caplog.records) == 1
-    # Malformed is not absent: exact-id reads fail closed rather than overwrite the receipt.
+    # Provably-dead content is preserved, never deleted, and never re-read on the next pass.
+    quarantine = bad.parent / mailbox.QUARANTINE_DIR_NAME
+    assert (quarantine / bad.name).read_text(encoding="utf-8") == '"oops"'
+    assert not bad.exists()
+
+
+def _live_owner(profile_home):
+    """A real registered Bot Chat consumer — the only thing that counts as a live owner."""
+    from hermes_cli.active_sessions import try_acquire_active_session
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=profile_home / "state.db")
+    db.create_session(session_id="chat", source="cli")
+    db.set_session_title("chat", "Bot Chat")
+    lease, refusal = try_acquire_active_session(
+        session_id="chat", surface="desktop", config={}, registry_home=profile_home,
+        metadata=dict(live_session_id="live", bot_live_delivery_consumer=True))
+    assert refusal is None
+    assert lease is not None
+    return db, lease
+
+
+def test_stopped_poll_loop_is_not_a_live_owner(tmp_path):
+    from tools import bot_live_delivery as mailbox
+
+    db, lease = _live_owner(tmp_path)
+    try:
+        owner = mailbox.find_canonical_live_owner(tmp_path)
+        assert owner is not None
+        assert owner["lease_id"] == lease.lease_id
+        # The process is still alive; its poll loop is not. Past the TTL an entry that
+        # only proves "the process exists" must stop being a destination at all.
+        stale_at = time.time() + mailbox.LIVE_CONSUMER_TTL_SECONDS + 1
+        assert mailbox.find_canonical_live_owner(tmp_path, now=stale_at) is None
+        assert mailbox.find_canonical_live_owner(tmp_path, ttl_seconds=0.0) is None
+        assert mailbox._owner_is_live_consumer(tmp_path, owner, now=stale_at) is False
+    finally:
+        lease.release()
+        db.close()
+
+
+def test_corrupt_ticket_is_quarantined_once_and_preserved(tmp_path, caplog):
+    import logging
+
+    from tools import bot_live_delivery as mailbox
+
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
+                 lease_id="lease", live_session_id="live")
+    readable = mailbox.deliver_to_live_owner(tmp_path, owner, "readable", delivery_id="a" * 32)
+    root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+    (root / f"{'b' * 32}.json").write_text("{not json", encoding="utf-8")
+    (root / f"{'c' * 32}.json").write_bytes(b"\xff\xfe\x00garbage")  # invalid UTF-8, not just bad JSON
+    (root / f"{'d' * 32}.json").write_text("[1, 2, 3]", encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="tools.bot_live_delivery"):
+        claim = mailbox.claim_pending_delivery(tmp_path, owner)
+        quarantined = [record for record in caplog.records
+                       if record.message.startswith("Quarantined unreadable delivery record")]
+        for _ in range(10):  # the idle poller rescans twice a second
+            assert mailbox.claim_pending_delivery(tmp_path, owner) is None
+    assert claim["delivery_id"] == readable["delivery_id"]
+    quarantine = root / mailbox.QUARANTINE_DIR_NAME
+    assert sorted(path.name for path in quarantine.iterdir()) == [
+        f"{'b' * 32}.json", f"{'c' * 32}.json", f"{'d' * 32}.json"]
+    assert (quarantine / f"{'b' * 32}.json").read_text(encoding="utf-8") == "{not json"
+    assert len(quarantined) == 3, "dead content is quarantined once, not re-read on every pass"
+    # The sequence high-water mark outlives the tickets it was built from.
+    later = mailbox.deliver_to_live_owner(tmp_path, owner, "later", delivery_id="f" * 32)
+    assert later["sequence"] > readable["sequence"]
+
+
+@pytest.mark.skipif(os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0,
+                    reason="needs POSIX file permissions for an unreadable ticket")
+def test_unreadable_ticket_does_not_wedge_a_live_claimant(tmp_path):
+    from tools import bot_live_delivery as mailbox
+
+    db, lease = _live_owner(tmp_path)
+    try:
+        owner = mailbox.find_canonical_live_owner(tmp_path)
+        assert owner is not None
+        queued = mailbox.deliver_to_live_owner(tmp_path, owner, "readable", delivery_id="a" * 32)
+        root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+        denied = root / f"{'b' * 32}.json"
+        denied.write_text('{"status": "queued"}', encoding="utf-8")
+        denied.chmod(0)
+        # A live consumer is the one caller whose sweep reaches the reclaim lanes: an
+        # uninspectable ticket must be skipped there too, not subscripted.
+        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == queued["delivery_id"]
+        for _ in range(3):
+            assert mailbox.claim_pending_delivery(tmp_path, owner) is None
+    finally:
+        lease.release()
+        db.close()
+
+
+def test_foreign_json_in_the_spool_does_not_wedge_a_live_sweep(tmp_path):
+    from tools import bot_live_delivery as mailbox
+
+    db, lease = _live_owner(tmp_path)
+    try:
+        owner = mailbox.find_canonical_live_owner(tmp_path)
+        assert owner is not None
+        queued = mailbox.deliver_to_live_owner(tmp_path, owner, "readable", delivery_id="a" * 32)
+        root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+        foreign = root / "hand-written.json"
+        foreign.write_text('{"note": "not a delivery record"}', encoding="utf-8")
+        assert mailbox.claim_pending_delivery(tmp_path, owner)["delivery_id"] == queued["delivery_id"]
+        assert mailbox.claim_pending_delivery(tmp_path, owner) is None
+        assert foreign.read_text(encoding="utf-8") == '{"note": "not a delivery record"}'
+        assert not (root / mailbox.QUARANTINE_DIR_NAME).exists()
+        later = mailbox.deliver_to_live_owner(tmp_path, owner, "later", delivery_id="b" * 32)
+        assert later["sequence"] > queued["sequence"]
+    finally:
+        lease.release()
+        db.close()
+
+
+def test_reclaim_settles_a_body_the_store_already_has(tmp_path):
+    from tools import bot_live_delivery as mailbox
+
+    db, lease = _live_owner(tmp_path)
+    try:
+        current = mailbox.find_canonical_live_owner(tmp_path)
+        assert current is not None
+        ghost = dict(current, lease_id="ghost-lease", live_session_id="ghost-live")
+        already_ran = "an ask already answered by the lease this chat replaced, verbatim"
+        db.append_message("chat", "user", already_ran)
+        settled = mailbox.deliver_to_live_owner(tmp_path, ghost, already_ran, delivery_id="a" * 32)
+        fresh = mailbox.deliver_to_live_owner(tmp_path, ghost, "an ask the store does not have",
+                                              delivery_id="b" * 32)
+        claim = mailbox.claim_pending_delivery(tmp_path, current)
+        assert claim["delivery_id"] == fresh["delivery_id"], "a body the store has must not run twice"
+        receipt = mailbox.read_delivery_result(tmp_path, settled["delivery_id"])
+        assert (receipt["status"], receipt["reason"]) == ("settled", "already_present")
+        assert receipt["message"] == already_ran
+    finally:
+        lease.release()
+        db.close()
+
+
+def test_unreachable_queued_delivery_expires_with_a_reason(tmp_path, monkeypatch):
+    from tools import bot_live_delivery as mailbox
+
+    db, lease = _live_owner(tmp_path)
+    try:
+        current = mailbox.find_canonical_live_owner(tmp_path)
+        assert current is not None
+        other = dict(current, session_id="other-chat", lease_id="ghost-lease",
+                     live_session_id="ghost-live")
+        monkeypatch.setattr(mailbox.time, "time_ns",
+                            lambda: int((time.time() - 2 * mailbox.UNREACHABLE_AFTER_SECONDS) * 1e9))
+        expired = mailbox.deliver_to_live_owner(tmp_path, other, "an ask this chat cannot reach",
+                                                delivery_id="a" * 32)
+        monkeypatch.undo()
+        young = mailbox.deliver_to_live_owner(tmp_path, other, "an ask its owner may still claim",
+                                              delivery_id="b" * 32)
+        assert mailbox.claim_pending_delivery(tmp_path, current) is None
+        receipt = mailbox.read_delivery_result(tmp_path, expired["delivery_id"])
+        assert (receipt["status"], receipt["reason"]) == ("failed", "no_live_consumer")
+        assert receipt["message"] == expired["message"]
+        assert mailbox.read_delivery_result(tmp_path, young["delivery_id"])["status"] == "queued"
+    finally:
+        lease.release()
+        db.close()
+
+
+def test_exact_id_reads_fail_closed_on_a_corrupt_ticket(tmp_path):
+    from tools import bot_live_delivery as mailbox
+
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
+                 lease_id="lease", live_session_id="live")
+    root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+    root.mkdir(parents=True, exist_ok=True)
+    corrupt = root / f"{'e' * 32}.json"
+    corrupt.write_text("{not json", encoding="utf-8")
+    # Uninspectable is not absent: an exact-id read must fail closed instead of
+    # minting a fresh receipt over a ticket whose bytes it could not read.
     with pytest.raises(ValueError):
         mailbox.deliver_to_live_owner(tmp_path, owner, "same id", delivery_id="e" * 32)
     with pytest.raises(ValueError):
         mailbox.read_delivery_result(tmp_path, "e" * 32)
-    assert bad.read_text(encoding="utf-8") == '"oops"'
+    assert corrupt.read_text(encoding="utf-8") == "{not json"
 
 
 def test_schema_damaged_ticket_does_not_wedge_bulk_scans(tmp_path, caplog):

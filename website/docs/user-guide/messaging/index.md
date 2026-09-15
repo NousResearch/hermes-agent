@@ -854,4 +854,5 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [IRC Setup](irc.md)
 - [Buzz Setup](buzz.md)
 - [A2A (Agent-to-Agent) Setup](a2a.md)
+- [MCP HTTP (chat from Claude Code)](mcp-http.md)
 - [Webhooks](webhooks.md)

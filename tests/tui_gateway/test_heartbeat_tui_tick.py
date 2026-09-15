@@ -65,6 +65,8 @@ def test_notification_poller_fires_due_heartbeat_when_idle(server, session):
     """The session-owner poller loop itself dispatches a due heartbeat exactly once; the same state on
     the base loop never fired (armed-but-dead)."""
     sid, key, s = session
+    s["source"] = "desktop"
+    server._get_db().create_session(key, source="desktop")
     _arm_due(key)
     dispatched: list[str] = []
 
@@ -88,6 +90,24 @@ def test_notification_poller_fires_due_heartbeat_when_idle(server, session):
     assert len(dispatched) == 1 and "report backend health" in dispatched[0]
     assert s["running"] is True  # claimed for the heartbeat turn
     assert load_heartbeat(key).fire_count == 1 and not load_heartbeat(key).is_due()
+
+
+def test_desktop_poller_leaves_gateway_owned_heartbeat_for_gateway(server, session):
+    """A Desktop viewer must not consume a messaging session's routed heartbeat."""
+    sid, key, s = session
+    s["source"] = "desktop"
+    server._get_db().create_session(key, source="telegram")
+    _arm_due(key)
+
+    p_submit, p_emit = _submits(server, MagicMock())
+    with p_submit as submit, p_emit:
+        server._maybe_fire_tui_heartbeat_tick(sid, s)
+
+    from hermes_cli.heartbeat import load_heartbeat
+
+    submit.assert_not_called()
+    assert s["running"] is False
+    assert load_heartbeat(key).fire_count == 0 and load_heartbeat(key).is_due()
 
 
 @pytest.mark.parametrize("running,due", [(True, True), (False, False)])

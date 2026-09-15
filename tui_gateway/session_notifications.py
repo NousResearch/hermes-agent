@@ -195,6 +195,22 @@ def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str) 
         _notif_loop_status(sid, decision["message"])
 
 
+def _notif_gateway_owns_heartbeat(session: dict, session_key: str) -> bool:
+    """Whether the persisted conversation route owns heartbeat delivery.
+
+    Desktop/TUI can attach to a messaging conversation, but its session-owner
+    poller has no adapter route for the reply.  The gateway's heartbeat poller
+    retains that route, so leave its due tick untouched.  A missing row is
+    fail-open for a newly-created local session.
+    """
+    try:
+        with _session_db(session) as db:
+            row = db.get_session(session_key) if db is not None else None
+        return bool(row and _is_gateway_owned_source(str(row.get("source") or "")))
+    except Exception:
+        return False
+
+
 def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
     """Fire a due /heartbeat prompt for an idle TUI/Desktop/dashboard session (#102056, #103044).
 
@@ -211,6 +227,8 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
         return
     if not (sid_key := session.get("session_key") or ""):
         return
+    if _notif_gateway_owns_heartbeat(session, sid_key):
+        return  # the gateway poller owns the persisted messaging route
     mgr = HeartbeatManager(session_id=sid_key)
     if not mgr.is_active() or not mgr.state.is_due() or not _notif_claim_turn(session):
         return  # not due, or busy — the tick coalesces to the next idle poll

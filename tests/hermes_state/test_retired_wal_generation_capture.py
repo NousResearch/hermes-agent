@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 import hermes_state
-from hermes_state import DeletedWalGenerationError, SessionDB
+from hermes_state import DeletedWalGenerationError, SessionDB, _close_time_checkpoint_configurable
 from hermes_state_dbfile import (
     RETIRED_GENERATION_MANIFEST, RetiredGenerationCaptureError, capture_retired_wal_generation,
 )
@@ -178,7 +178,8 @@ def test_failed_capture_still_pins_the_handle_and_surfaces_through_the_registry(
     _wal_only_sentinel(db, "gw-0")
     lose_sidecars(path, rename=False)
     pins = []
-    if db._retire_connection is not None:
+    retires_unclosed = not _close_time_checkpoint_configurable()
+    if retires_unclosed:
         monkeypatch.setattr(db, "_retire_connection", pins.append)
 
     def refuse(*args, **kwargs):
@@ -189,7 +190,7 @@ def test_failed_capture_still_pins_the_handle_and_surfaces_through_the_registry(
         release_or_close(db)  # must not raise
     assert db._conn is not None
     assert "no space left on device" in caplog.text
-    if db._retire_connection is not None:  # no setconfig: the pin must already be taken
+    if retires_unclosed:  # no setconfig: the pin must already be taken
         assert pins == [db._conn]
         monkeypatch.undo()
         monkeypatch.setattr(db, "_retire_connection", pins.append)

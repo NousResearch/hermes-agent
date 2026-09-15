@@ -1074,6 +1074,25 @@ test('stopTunnelChild waits for process exit', async () => {
   assert.equal(stopped, true)
 })
 
+test.skipIf(process.platform === 'win32')('withRemoteTimeout runs a healthy probe under a zsh login shell (#111949)', async t => {
+  // SSH runs the remote command through the account's login shell. In
+  // non-interactive zsh, a bare `set -m` is fatal, so the wrapper must still
+  // run a healthy probe rather than reporting the remote as unsupported.
+  const zsh = await execFileAsync('sh', ['-c', 'command -v zsh || true']).then(r => r.stdout.trim())
+
+  // CI installs zsh (js-tests.yml); locally a missing zsh must show as a
+  // skip, not a pass, or a wrapper regression stays green unnoticed.
+  if (!zsh) {
+    t.skip('zsh not installed')
+
+    return
+  }
+
+  const { stdout: zshStdout } = await execFileAsync(zsh, ['-fc', withRemoteTimeout('echo zsh-ok', 5)])
+
+  assert.equal(zshStdout, 'zsh-ok\n')
+})
+
 test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#110478)', async () => {
   if (process.platform === 'win32') {
     return
@@ -1091,17 +1110,6 @@ test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#11
     'defaults to REMOTE_PROBE_TIMEOUT_SECS'
   )
   assert.ok(REMOTE_PROBE_TIMEOUT_SECS * 1000 < 20_000, 'remote watchdog fires before the local exec timeout')
-
-  // SSH runs the remote command through the account's login shell. In
-  // non-interactive zsh, a bare `set -m` is fatal, so the wrapper must still
-  // run a healthy probe rather than reporting the remote as unsupported.
-  const zsh = await execFileAsync('sh', ['-c', 'command -v zsh || true']).then(r => r.stdout.trim())
-
-  if (zsh) {
-    const { stdout: zshStdout } = await execFileAsync(zsh, ['-fc', withRemoteTimeout('echo zsh-ok', 5)])
-
-    assert.equal(zshStdout, 'zsh-ok\n')
-  }
 
   // Behavior through a real POSIX shell: healthy output passes through …
   const healthyStart = Date.now()

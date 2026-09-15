@@ -1813,17 +1813,17 @@ test('remote SSH ownership capability requires both secure bootstrap flags', asy
   assert.equal(await remoteSupportsSshOwnership(unsupported, '/x/hermes'), false)
 })
 
-test('capability probe survives a zsh login shell on the remote (#111949)', async () => {
-  if (process.platform === 'win32') {
-    return
-  }
-
+test.skipIf(process.platform === 'win32')('capability probe survives a zsh login shell on the remote (#111949)', async t => {
   // sshd runs the remote command under the account's LOGIN shell. A bare
   // `set -m` is fatal in a non-interactive zsh, so the watchdog-wrapped probe
   // used to return nothing and a current remote was reported as unsupported.
   const zsh = await exec('command -v zsh || true').then(r => r.stdout.trim())
 
+  // CI installs zsh (js-tests.yml); locally a missing zsh must show as a
+  // skip, not a pass, or a wrapper regression stays green unnoticed.
   if (!zsh) {
+    t.skip('zsh not installed')
+
     return
   }
 

@@ -531,6 +531,38 @@ async function remotePidAlive(ssh, pid) {
   }
 }
 
+// `kill -0 … && echo ALIVE || echo DEAD` runs through the same SSH channel
+// that is often mid-teardown when the dashboard's served token has just been
+// resolved. An exec that returns nothing — the channel died before the remote
+// shell could run — is indistinguishable from a dead child by output alone,
+// yet it used to be read as death: a live backend was torn down as "exited
+// while its served token was being resolved" and the reap was skipped because
+// the ownership probe ran on the same broken channel. Retry the probe before
+// trusting a death verdict; only a clean `DEAD` line settles the question.
+async function verifyRemotePidAlive(ssh, pid, { attempts = 3, intervalMs = 500 } = {}) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt > 0) {
+      await new Promise(resolve => setTimeout(resolve, intervalMs))
+    }
+
+    const out = String(
+      await ssh.exec(`kill -0 ${Number(pid)} 2>/dev/null && echo ALIVE || echo DEAD`).catch(() => '')
+    ).trim()
+
+    if (out === 'ALIVE') {
+      return true
+    }
+
+    if (out === 'DEAD') {
+      return false
+    }
+  }
+
+  const error: any = new Error('Could not verify the SSH backend process.')
+  error.kind = 'transient-transport-error'
+  throw error
+}
+
 // Stable kernel process-start identity used to fence a later managed-update
 // termination against PID recycling. Linux exposes boot-relative start ticks;
 // Darwin's `ps lstart` is only second-resolution, so the signal boundary also
@@ -572,7 +604,10 @@ async function remoteProcessCreationTime(ssh, pid) {
 
 // A pid is "provably ours" only if its remote cmdline carries our dashboard
 // args — never kill a pid we can't positively identify as our dashboard.
-async function pidIsOurDashboard(
+// `readOwnershipVerdict` keeps the raw three-way answer: OWNED / FOREIGN are
+// definite verdicts from the remote probe, `unknown` means the channel
+// answered with neither (it died before the remote python could run).
+async function readOwnershipVerdict(
   ssh,
   pid,
   spawnNonce,
@@ -582,66 +617,115 @@ async function pidIsOurDashboard(
   profile = ''
 ) {
   if (!pid || !/^[0-9a-f]{16}$/.test(String(spawnNonce || '')) || !hermesPath) {
-    return false
+    return 'foreign'
   }
 
+  const script =
+    'import os,shlex,subprocess,sys\n' +
+    `pid=${Number(pid)}\n` +
+    `expected=os.path.expanduser(${shq(hermesPath)})\n` +
+    // The installer-facing launcher is intentionally preserved for invocation
+    // (#74411), but it may `exec python <install-dir>/hermes`, leaving neither
+    // launcher nor HERMES_HOME-derived entrypoint in argv. The ownership-scoped
+    // token path + random nonce + exact profile below are the alternative proof.
+    `hermes_home=os.path.expanduser(${shq(hermesHome)}) if ${shq(hermesHome)} else ""\n` +
+    'expected_entries={expected}\n' +
+    'if hermes_home:\n' +
+    ' expected_entries.add(os.path.join(hermes_home,"hermes-agent","venv","bin","hermes"))\n' +
+    `expected_token=os.path.expanduser(${shq(ownershipId ? spawnTokenPath(ownershipId, spawnNonce) : '')})\n` +
+    `expected_profile=${shq(profile)}\n` +
+    `nonce=${shq(spawnNonce)}\n` +
+    'try:\n' +
+    ' raw=open(f"/proc/{pid}/cmdline","rb").read()\n' +
+    ' args=[x.decode("utf-8","surrogateescape") for x in raw.split(b"\\0") if x]\n' +
+    'except OSError:\n' +
+    ' try:\n' +
+    '  line=subprocess.check_output(["ps","-ww","-o","command=","-p",str(pid)],text=True).strip()\n' +
+    ' except subprocess.CalledProcessError:\n' +
+    '  # pid already gone — a dead process is FOREIGN, not a transport error\n' +
+    '  print("FOREIGN");sys.exit(0)\n' +
+    ' args=shlex.split(line)\n' +
+    'ok=False\n' +
+    'try:\n' +
+    ' serve=args.index("serve")\n' +
+    ' owner=args.index("--ssh-owner-nonce",serve+1)\n' +
+    ' token=args.index("--ssh-session-token-file",serve+1) if expected_token else -1\n' +
+    ' isolated=args.index("--isolated",serve+1)\n' +
+    ' profile_arg=args.index("--profile") if expected_profile else -1\n' +
+    ' serve_count=args.count("serve")\n' +
+    ' owner_count=args.count("--ssh-owner-nonce")\n' +
+    ' token_count=args.count("--ssh-session-token-file")\n' +
+    ' isolated_count=args.count("--isolated")\n' +
+    ' profile_count=args.count("--profile")\n' +
+    ' direct=args[0] in expected_entries\n' +
+    ' python_entry=len(args)>1 and args[1] in expected_entries and os.path.basename(args[0]).startswith("python")\n' +
+    ' token_ok=not expected_token or args[token+1]==expected_token\n' +
+    ' isolated_ok=isolated_count==1 and isolated>serve\n' +
+    ' profile_ok=(profile_count==1 and profile_arg<serve and args[profile_arg+1]==expected_profile) if expected_profile else profile_count==0\n' +
+    ' spawn_proof=bool(expected_token) and owner_count==1 and token_count==1 and token_ok and profile_ok\n' +
+    ' ok=(direct or python_entry or spawn_proof) and serve_count==1 and isolated_ok and owner_count==1 and args[owner+1]==nonce and token_ok and profile_ok\n' +
+    'except (ValueError,IndexError):pass\n' +
+    'print("OWNED" if ok else "FOREIGN")'
+
+  const out = await ssh.exec(`python3 -c ${shq(script)}`)
+  const verdict = String(out || '').trim()
+
+  return verdict === 'OWNED' ? 'owned' : verdict === 'FOREIGN' ? 'foreign' : 'unknown'
+}
+
+async function pidIsOurDashboard(
+  ssh,
+  pid,
+  spawnNonce,
+  hermesPath = '',
+  hermesHome = '',
+  ownershipId = '',
+  profile = ''
+) {
   try {
-    const script =
-      'import os,shlex,subprocess,sys\n' +
-      `pid=${Number(pid)}\n` +
-      `expected=os.path.expanduser(${shq(hermesPath)})\n` +
-      // The installer-facing launcher is intentionally preserved for invocation
-      // (#74411), but it may `exec python <install-dir>/hermes`, leaving neither
-      // launcher nor HERMES_HOME-derived entrypoint in argv. The ownership-scoped
-      // token path + random nonce + exact profile below are the alternative proof.
-      `hermes_home=os.path.expanduser(${shq(hermesHome)}) if ${shq(hermesHome)} else ""\n` +
-      'expected_entries={expected}\n' +
-      'if hermes_home:\n' +
-      ' expected_entries.add(os.path.join(hermes_home,"hermes-agent","venv","bin","hermes"))\n' +
-      `expected_token=os.path.expanduser(${shq(ownershipId ? spawnTokenPath(ownershipId, spawnNonce) : '')})\n` +
-      `expected_profile=${shq(profile)}\n` +
-      `nonce=${shq(spawnNonce)}\n` +
-      'try:\n' +
-      ' raw=open(f"/proc/{pid}/cmdline","rb").read()\n' +
-      ' args=[x.decode("utf-8","surrogateescape") for x in raw.split(b"\\0") if x]\n' +
-      'except OSError:\n' +
-      ' try:\n' +
-      '  line=subprocess.check_output(["ps","-ww","-o","command=","-p",str(pid)],text=True).strip()\n' +
-      ' except subprocess.CalledProcessError:\n' +
-      '  # pid already gone — a dead process is FOREIGN, not a transport error\n' +
-      '  print("FOREIGN");sys.exit(0)\n' +
-      ' args=shlex.split(line)\n' +
-      'ok=False\n' +
-      'try:\n' +
-      ' serve=args.index("serve")\n' +
-      ' owner=args.index("--ssh-owner-nonce",serve+1)\n' +
-      ' token=args.index("--ssh-session-token-file",serve+1) if expected_token else -1\n' +
-      ' isolated=args.index("--isolated",serve+1)\n' +
-      ' profile_arg=args.index("--profile") if expected_profile else -1\n' +
-      ' serve_count=args.count("serve")\n' +
-      ' owner_count=args.count("--ssh-owner-nonce")\n' +
-      ' token_count=args.count("--ssh-session-token-file")\n' +
-      ' isolated_count=args.count("--isolated")\n' +
-      ' profile_count=args.count("--profile")\n' +
-      ' direct=args[0] in expected_entries\n' +
-      ' python_entry=len(args)>1 and args[1] in expected_entries and os.path.basename(args[0]).startswith("python")\n' +
-      ' token_ok=not expected_token or args[token+1]==expected_token\n' +
-      ' isolated_ok=isolated_count==1 and isolated>serve\n' +
-      ' profile_ok=(profile_count==1 and profile_arg<serve and args[profile_arg+1]==expected_profile) if expected_profile else profile_count==0\n' +
-      ' spawn_proof=bool(expected_token) and owner_count==1 and token_count==1 and token_ok and profile_ok\n' +
-      ' ok=(direct or python_entry or spawn_proof) and serve_count==1 and isolated_ok and owner_count==1 and args[owner+1]==nonce and token_ok and profile_ok\n' +
-      'except (ValueError,IndexError):pass\n' +
-      'print("OWNED" if ok else "FOREIGN")'
-
-    const out = await ssh.exec(`python3 -c ${shq(script)}`)
-
-    return String(out || '').trim() === 'OWNED'
+    return (await readOwnershipVerdict(ssh, pid, spawnNonce, hermesPath, hermesHome, ownershipId, profile)) === 'owned'
   } catch (cause) {
     const error: any = new Error('Could not verify SSH backend process ownership.')
     error.kind = 'transient-transport-error'
     error.cause = cause
     throw error
   }
+}
+
+// The argv proof is only as good as the channel it runs on. A lost answer is
+// not a FOREIGN verdict, but it used to be read as one: the reap was skipped
+// while the lockfile was still removed, leaving a live `serve --isolated`
+// parented to init with no ownership trail. Retry until the probe returns a
+// definite verdict; if none arrives, report `unknown` so callers can keep the
+// ownership record for a later connect to reap.
+async function verifyPidOwnership(ssh, lock, ownershipId, { attempts = 3, intervalMs = 500 } = {}) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt > 0) {
+      await new Promise(resolve => setTimeout(resolve, intervalMs))
+    }
+
+    let verdict
+
+    try {
+      verdict = await readOwnershipVerdict(
+        ssh,
+        lock.pid,
+        lock.spawnNonce,
+        lock.hermesPath,
+        lock.hermesHome,
+        ownershipId,
+        lock.profile
+      )
+    } catch {
+      continue
+    }
+
+    if (verdict !== 'unknown') {
+      return verdict
+    }
+  }
+
+  return 'unknown'
 }
 
 // Kill the stale dashboard ONLY if provably ours, then drop the lockfile.
@@ -652,19 +736,26 @@ async function cleanupStale(ssh, ownershipId, lock, pidAlive = true) {
     return
   }
 
-  if (
-    pidAlive &&
-    lock &&
-    (await pidIsOurDashboard(
-      ssh,
-      lock.pid,
-      lock.spawnNonce,
-      lock.hermesPath,
-      lock.hermesHome,
-      ownershipId,
-      lock.profile
-    ))
-  ) {
+  let owned = false
+
+  if (pidAlive && lock) {
+    // Re-verify the argv proof instead of trusting a single answer: a probe
+    // whose channel died mid-teardown is not evidence of a foreign backend.
+    const verdict = await verifyPidOwnership(ssh, lock, ownershipId)
+
+    if (verdict === 'unknown') {
+      // No definite verdict — removing the record here would orphan a live
+      // child with no ownership trail. Keep it so the next connect retries
+      // the reap against the recorded pid/nonce.
+      const error: any = new Error('Could not verify the SSH backend process ownership during cleanup.')
+      error.kind = 'transient-transport-error'
+      throw error
+    }
+
+    owned = verdict === 'owned'
+  }
+
+  if (owned && lock) {
     try {
       const result = (
         await ssh.exec(
@@ -730,7 +821,7 @@ async function disconnect(ssh, ownershipId) {
     return
   }
 
-  const pidAlive = await remotePidAlive(ssh, lock.pid)
+  const pidAlive = await verifyRemotePidAlive(ssh, lock.pid)
   await cleanupStale(ssh, ownershipId, lock, pidAlive)
 }
 
@@ -1355,7 +1446,7 @@ async function adoptOwnedServedToken(adoptServedToken, baseUrl, expectedToken, s
     label
   })
 
-  if (!(await remotePidAlive(ssh, pid))) {
+  if (!(await verifyRemotePidAlive(ssh, pid))) {
     const error: any = new Error(`${label} exited while its served token was being resolved.`)
     error.kind = token === expectedToken ? 'spawn-failed' : 'foreign-backend'
     throw error
@@ -1442,7 +1533,7 @@ async function connect(deps) {
   }
 
   if (lock) {
-    const pidAlive = await remotePidAlive(ssh, lock.pid)
+    const pidAlive = await verifyRemotePidAlive(ssh, lock.pid)
 
     const owned =
       pidAlive &&
@@ -1607,7 +1698,7 @@ async function connect(deps) {
     await writeLockfile(ssh, ownershipId, ownedSpawn)
     remotePort = await scrapeReadyPort(ssh, logPath, {
       timeoutMs: readyTimeoutMs,
-      isAlive: () => remotePidAlive(ssh, pid),
+      isAlive: () => verifyRemotePidAlive(ssh, pid),
       signal
     })
     assertBootstrapNotSuperseded(signal)
@@ -1655,7 +1746,13 @@ async function connect(deps) {
       void 0
     }
 
-    await cleanupStale(ssh, ownershipId, ownedSpawn)
+    // The record describes the child this attempt just spawned, so an unproven
+    // probe must not become "leave it running": when liveness cannot be
+    // verified, assume alive and let cleanupStale re-run the ownership proof —
+    // it keeps the record when nothing can be proven, so the next connect
+    // still reaps the child instead of inheriting a lockless orphan.
+    const pidAlive = await verifyRemotePidAlive(ssh, pid).catch(() => true)
+    await cleanupStale(ssh, ownershipId, ownedSpawn, pidAlive)
     throw error
   }
 }

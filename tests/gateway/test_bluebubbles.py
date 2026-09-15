@@ -6,8 +6,9 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.event import MessageType
 
 
 def _make_adapter(monkeypatch, **extra):
@@ -45,6 +46,17 @@ class TestBlueBubblesConfigLoading:
         assert bc.extra["webhook_port"] == 9999
         assert bc.extra["require_mention"] is True
         assert bc.extra["mention_patterns"] == ["(?i)^amos\\b"]
+
+    def test_allowed_chats_is_config_only_and_preserves_empty(self):
+        configured = GatewayConfig.from_dict({
+            "platforms": {"bluebubbles": {"enabled": True, "allowed_chats": ["iMessage;+;approved"]}}
+        }).platforms[Platform.BLUEBUBBLES]
+        deny_all = GatewayConfig.from_dict({
+            "platforms": {"bluebubbles": {"enabled": True, "allowed_chats": []}}
+        }).platforms[Platform.BLUEBUBBLES]
+
+        assert configured.extra["allowed_chats"] == ["iMessage;+;approved"]
+        assert deny_all.extra["allowed_chats"] == []
 
 
 class TestBlueBubblesHelpers:
@@ -174,6 +186,108 @@ class TestBlueBubblesWebhookParsing:
         }
         record = adapter._extract_payload_record(payload)
         assert record == payload["data"][0]
+
+
+class TestBlueBubblesChatAdmission:
+    @staticmethod
+    def _payload(
+        chat_guid="iMessage;+;approved", *, top_level_guid=None, attachments=None, include_nested=True
+    ):
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "message-guid",
+                "text": "hello",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "isGroup": ";+;" in chat_guid,
+                "chats": [{"guid": chat_guid}] if include_nested else [],
+                "attachments": attachments or [],
+            },
+        }
+        if top_level_guid is not None:
+            payload["guid"] = top_level_guid
+        return payload
+
+    @pytest.mark.asyncio
+    async def test_absent_gate_preserves_legacy_top_level_guid_precedence(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def capture(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", capture)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest(
+            self._payload(top_level_guid="legacy-session-id")
+        ))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert len(handled) == 1
+        assert handled[0].source.chat_id == "legacy-session-id"
+
+    @pytest.mark.asyncio
+    async def test_configured_gate_rejects_ambiguous_legacy_guid_before_side_effects(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, allowed_chats=["iMessage;+;approved"])
+
+        async def unexpected(*args, **kwargs):
+            pytest.fail("denied chat reached a side effect")
+
+        monkeypatch.setattr(adapter, "_collect_attachments", unexpected)
+        monkeypatch.setattr(adapter, "handle_message", unexpected)
+        monkeypatch.setattr(adapter, "mark_read", unexpected)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest(
+            self._payload(top_level_guid="message-guid", include_nested=False)
+        ))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+
+    @pytest.mark.asyncio
+    async def test_exact_allowed_chat_reaches_attachment_and_dispatch(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch, allowed_chats=["iMessage;+;approved"], send_read_receipts=False
+        )
+        collected = []
+        handled = []
+
+        async def collect(record):
+            collected.append(record)
+            return ["/tmp/photo.jpg"], ["image/jpeg"], MessageType.PHOTO
+
+        async def capture(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "_collect_attachments", collect)
+        monkeypatch.setattr(adapter, "handle_message", capture)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest(self._payload(
+            attachments=[{"guid": "attachment-guid", "mimeType": "image/jpeg"}]
+        )))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert len(collected) == 1
+        assert len(handled) == 1
+        assert handled[0].source.chat_id == "iMessage;+;approved"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("allowed_chats", [[], ["iMessage;+;somewhere-else"]])
+    async def test_empty_or_nonmatching_gate_denies_before_side_effects(self, monkeypatch, allowed_chats):
+        adapter = _make_adapter(monkeypatch, allowed_chats=allowed_chats)
+
+        async def unexpected(*args, **kwargs):
+            pytest.fail("denied chat reached a side effect")
+
+        monkeypatch.setattr(adapter, "_collect_attachments", unexpected)
+        monkeypatch.setattr(adapter, "handle_message", unexpected)
+        monkeypatch.setattr(adapter, "mark_read", unexpected)
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest(self._payload(
+            attachments=[{"guid": "attachment-guid", "mimeType": "image/jpeg"}]
+        )))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
 
 
 class TestBlueBubblesGuidResolution:

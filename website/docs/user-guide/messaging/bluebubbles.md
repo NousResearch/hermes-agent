@@ -63,6 +63,25 @@ platforms:
         - '(?<![\w@])@?amos\b[,:\-]?'
 ```
 
+#### Optional: Admit only specific chats
+
+Sender authorization controls who may contact Hermes. To also restrict which iMessage conversations
+may enter Hermes, list their exact BlueBubbles chat GUIDs:
+
+```yaml
+platforms:
+  bluebubbles:
+    enabled: true
+    allowed_chats:
+      - 'iMessage;-;user@example.com'
+      - 'iMessage;+;group-chat-guid'
+```
+
+`allowed_chats` is an early ingress boundary: unlisted chats are dropped before attachment downloads,
+agent sessions, tools, read receipts, or replies. Omitting the setting preserves the default behavior.
+An explicitly empty list denies all chats. Matching is exact; wildcards and participant-derived matches
+are not accepted. Sender allowlisting or pairing remains a separate authorization layer.
+
 ### 4. Authorize Users
 
 Choose one approach:

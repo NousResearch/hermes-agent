@@ -130,6 +130,54 @@ whatsapp:
 - `unauthorized_dm_behavior: pair` is the global default. Unknown DM senders get a pairing code.
 - `whatsapp.unauthorized_dm_behavior: ignore` makes WhatsApp stay silent for unauthorized DMs, which is usually the better choice for a private number.
 
+### Public number hardening
+
+If the WhatsApp number is public or customer-facing, treat it as an untrusted internet-facing chat surface rather than a private assistant.
+
+Recommended setup:
+
+1. **Create a dedicated profile** for the public number instead of pairing it to your default or admin profile:
+
+   ```bash
+   hermes profile create public-whatsapp
+   public-whatsapp setup
+   public-whatsapp whatsapp
+   ```
+
+2. **Keep the profile-local `.env` minimal.** Put only the model credentials and WhatsApp settings that this public bot needs in `~/.hermes/profiles/public-whatsapp/.env`. Do not copy unrelated service credentials into the profile.
+
+3. **Choose access control deliberately.** For a private bot, list allowed senders explicitly. For a public support or intake number, use `WHATSAPP_ALLOWED_USERS=*` only when you really intend to accept messages from anyone.
+
+4. **Minimize tool exposure.** Public profiles should avoid broad local-control and data-access toolsets. If you do not need them, disable them in that profile's `config.yaml`:
+
+   ```yaml
+   agent:
+     disabled_toolsets:
+       - terminal
+       - file
+       - browser
+       - web
+       - search
+       - memory
+       - skills
+       - messaging
+   ```
+
+   Add back only narrow, purpose-built toolsets that validate inputs, redact sensitive fields, and fail closed when a backend is unavailable.
+
+5. **Hide internal progress in public chats.** Tool progress can expose implementation details or confuse non-technical users. For public deployments, prefer:
+
+   ```yaml
+   display:
+     platforms:
+       whatsapp:
+         tool_progress: 'off'
+   ```
+
+6. **Use human handoff for risky operations.** For bookings, payments, account changes, cancellations, or other irreversible actions, collect only the minimum needed context and route to a human or trusted backend workflow instead of giving a public chat broad write access.
+
+Before going live, test from an unrecognized phone number and from an allowed/public sender. Verify that unauthorized users are ignored or paired as intended, that the bot cannot call unintended tools, and that failures produce a safe handoff instead of raw internal errors.
+
 Then start the gateway:
 
 ```bash

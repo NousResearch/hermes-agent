@@ -2158,19 +2158,24 @@ def _configured_worker_route(hermes_home: Optional[str]) -> Optional[tuple[str, 
     """Return the assigned profile's complete opt-in Kanban worker route.
 
     The dispatcher may belong to a different profile, so read the target
-    profile's config explicitly. A missing, malformed, or partial route must
-    retain the historical behavior: let the worker resolve its own profile
-    model and provider at startup.
+    profile's current config explicitly. This opt-in must fail closed: a
+    malformed current config must not reuse ``load_config_readonly()``'s
+    last-known-good fallback. A missing, malformed, or partial route retains
+    the historical behavior: let the worker resolve its own profile model and
+    provider at startup.
     """
     if not hermes_home:
         return None
     try:
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-        from hermes_cli.config import load_config_readonly
+        from hermes_cli.config import read_user_config_raw
 
         token = set_hermes_home_override(hermes_home)
         try:
-            kanban_cfg = (load_config_readonly() or {}).get("kanban")
+            # Read the current file directly instead of the effective config.
+            # The latter deliberately retains a last-known-good value on YAML
+            # parse failures, which is unsafe for this opt-in launch route.
+            kanban_cfg = read_user_config_raw().get("kanban")
         finally:
             reset_hermes_home_override(token)
         if not isinstance(kanban_cfg, dict):

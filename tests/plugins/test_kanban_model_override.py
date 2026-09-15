@@ -222,6 +222,48 @@ def test_partial_worker_route_keeps_profile_default(monkeypatch, tmp_path, conn)
     assert "--provider" not in cmd
 
 
+def test_malformed_current_worker_config_drops_prior_valid_route(tmp_path):
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    config = profile / "config.yaml"
+    config.write_text(
+        "kanban:\n  default_model: gpt-5.6-luna\n  default_provider: openai-codex\n",
+        encoding="utf-8",
+    )
+
+    assert kbd._configured_worker_route(str(profile)) == ("gpt-5.6-luna", "openai-codex")
+
+    config.write_text("kanban: [unterminated\n", encoding="utf-8")
+
+    assert kbd._configured_worker_route(str(profile)) is None
+
+
+def test_missing_worker_config_keeps_profile_default(tmp_path):
+    profile = tmp_path / "profile"
+    profile.mkdir()
+
+    assert kbd._configured_worker_route(str(profile)) is None
+
+
+@pytest.mark.parametrize(
+    "config_text",
+    [
+        "   \n\t\n",
+        "kanban: not-a-mapping\n",
+        "kanban:\n  default_model: '   '\n  default_provider: openai-codex\n",
+        "kanban:\n  default_model: gpt-5.6-luna\n  default_provider: '   '\n",
+        "kanban:\n  default_model: gpt-5.6-luna\n",
+    ],
+    ids=["blank", "non-mapping-kanban", "blank-model", "blank-provider", "partial"],
+)
+def test_incomplete_worker_routes_keep_profile_default(tmp_path, config_text):
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    profile.joinpath("config.yaml").write_text(config_text, encoding="utf-8")
+
+    assert kbd._configured_worker_route(str(profile)) is None
+
+
 # ---------------------------------------------------------------------------
 # Dashboard API — PATCH / bulk / create / model-options
 # ---------------------------------------------------------------------------

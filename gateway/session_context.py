@@ -37,6 +37,7 @@ _SESSION_VARS = (
     _SESSION_USER_NAME, _SESSION_SCOPE_ID, _SESSION_KEY, _SESSION_ID,
     _SESSION_UI_SESSION_ID, _SESSION_MESSAGE_ID, _SESSION_PROFILE,
     _BROWSER_CONTROL_PRINCIPAL, _BROWSER_CONTROL_TRANSPORT_FAMILY, _CRON_SESSION, _SESSION_PARENT_CHAT_ID,
+    _SESSION_IDENTITY, _SESSION_IDENTITY_PUBLIC_KEY,
 ) = tuple(ContextVar(name, default=_UNSET) for name in (
     "HERMES_SESSION_PLATFORM", "HERMES_SESSION_SOURCE", "HERMES_SESSION_CHAT_ID",
     "HERMES_SESSION_CHAT_TYPE", "HERMES_SESSION_CHAT_NAME", "HERMES_SESSION_THREAD_ID",
@@ -45,6 +46,7 @@ _SESSION_VARS = (
     "HERMES_UI_SESSION_ID", "HERMES_SESSION_MESSAGE_ID", "HERMES_SESSION_PROFILE",
     "HERMES_BROWSER_CONTROL_PRINCIPAL", "HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY",
     "HERMES_CRON_SESSION", "HERMES_SESSION_PARENT_CHAT_ID",
+    "HERMES_SESSION_IDENTITY", "HERMES_SESSION_IDENTITY_PUBLIC_KEY",
 ))
 
 # Whether this channel can route an ASYNC completion back AFTER the turn ends (see
@@ -137,6 +139,10 @@ def set_session_vars(
         user_name, scope_id, session_key, session_id, ui_session_id, message_id, profile,
         browser_control_principal, browser_control_transport_family, cron_session, parent_chat_id,
     )
+    from gateway.identity_sig import sign_session_identity
+    identity, identity_public_key = sign_session_identity(
+        platform=platform, chat_id=chat_id, user_id=user_id)
+    values += (identity, identity_public_key)
     tokens = [var.set(value) for var, value in zip(_SESSION_VARS, values)]
     tokens.append(_SESSION_ASYNC_DELIVERY.set(bool(async_delivery)))
     tokens.append(_SESSION_HISTORY_DELIVERY.set(_UNSET if session_history_delivery is None else session_history_delivery))

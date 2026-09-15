@@ -117,15 +117,7 @@ def build_models_payload(
         rows = [moa_row] + _without_slug(rows, "moa")
 
     if explicit_only:
-        rows = _filter_explicit_provider_rows(rows, ctx)
-        # If the current provider lost its credential, list_authenticated_providers() omits it; keep
-        # that one row so the UI shows the saved selection + a re-auth affordance instead of appearing
-        # to jump providers. Exception: a "custom" current on the managed local server is already
-        # represented by the Local row — the skeleton would resurrect the duplicate removed above.
-        _local_owns_current = bool(local_row and local_row.get("is_current")
-                                   and (ctx.current_provider or "").lower() == "custom")
-        if not _local_owns_current:
-            rows = list(rows) + _append_unconfigured_rows(rows, ctx, current_only=True)
+        rows = filter_explicit_provider_rows(rows, ctx)
 
     # A local proxy serving a model also in an aggregator's catalog would show under both, and picking
     # the aggregator row silently breaks the call — aggregators only list models no specific provider has.
@@ -407,10 +399,16 @@ def _append_unconfigured_rows(
     """Empty setup skeletons for canonical providers missing from ``rows`` — except the *current* one:
     if config.yaml still points at it but credentials are gone, keep a row carrying the saved model so
     GUI pickers don't silently snap to another provider."""
-    from hermes_cli.models import CANONICAL_PROVIDERS, _model_requires_account_discovery
+    from hermes_cli.config import coerce_provider_id
+    from hermes_cli.models import CANONICAL_PROVIDERS, _model_requires_account_discovery, normalize_provider
 
-    seen = {r["slug"].lower() for r in rows}
-    cur = (ctx.current_provider or "").lower()
+    seen = {
+        normalize_provider(slug)
+        for row in rows
+        if (slug := _slug(row))
+    }
+    raw_current = coerce_provider_id(ctx.current_provider)
+    cur = normalize_provider(raw_current) if raw_current else ""
     cur_model = str(ctx.current_model or "").strip()
     extras: list[dict] = []
     for entry in CANONICAL_PROVIDERS:
@@ -471,14 +469,18 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
     """Keep only rows backed by explicit user configuration — ``list_authenticated_providers`` also
     discovers ambient credentials (e.g. GitHub CLI -> Copilot) Desktop chat pickers must not show."""
     from hermes_cli.auth import is_provider_explicitly_configured
+    from hermes_cli.config import coerce_provider_id
+    from hermes_cli.models import normalize_provider
 
-    current_slug = str(ctx.current_provider or "").strip().lower()
+    raw_current = coerce_provider_id(ctx.current_provider)
+    current_slug = normalize_provider(raw_current) if raw_current else ""
 
     def _is_explicit(row: dict, slug: str) -> bool:
         # Managed local models are explicit configuration by existence (gigabytes downloaded into the
         # machine-scoped dir); there is deliberately no config credential, so without the source clause
         # the row would only survive on the profile where Use was last clicked.
-        if (row.get("is_user_defined") or (current_slug and slug == current_slug)
+        if (row.get("is_current") or row.get("is_user_defined")
+                or (current_slug and slug == current_slug)
                 or row.get("source") == "local-runtime"):
             return True
         if slug == "moa":
@@ -496,6 +498,23 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
 
     return [row for row in rows
             if (slug := str(row.get("slug", "")).strip().lower()) and _is_explicit(row, slug)]
+
+
+def filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list[dict]:
+    """Filter existing picker rows while retaining an unauthenticated current provider."""
+    from hermes_cli.config import coerce_provider_id
+    from hermes_cli.models import normalize_provider
+
+    filtered = _filter_explicit_provider_rows(rows, ctx)
+    raw_current = coerce_provider_id(ctx.current_provider)
+    current_slug = normalize_provider(raw_current) if raw_current else ""
+    local_owns_current = bool(
+        current_slug == "custom"
+        and any(row.get("is_current") and row.get("source") == "local-runtime" for row in filtered)
+    )
+    if not local_owns_current:
+        filtered = list(filtered) + _append_unconfigured_rows(filtered, ctx, current_only=True)
+    return filtered
 
 
 def _external_process_signed_in(slug: str) -> bool:

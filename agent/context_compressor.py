@@ -2705,6 +2705,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     def _pressure_demote_tail(
         self, result: List[Dict[str, Any]], prune_boundary: int, protect_tail_tokens: int,
         call_id_to_tool: Dict[str, tuple[str, str]], min_prune_chars: int,
+        first_pending_idx: int,
     ) -> int:
         """Pass 4: demote inside the protected tail when it alone exceeds the soft budget (#61932).
         Keeps a short recent floor verbatim; overrides the skill guard (else the dead-end recurs).
@@ -2724,7 +2725,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars):
                 demoted += 1
                 pressure_hits += 1
-            if self._truncate_tool_call_args_at(result, i):
+            if i < first_pending_idx and self._truncate_tool_call_args_at(result, i):
                 pressure_hits += 1
 
         if demote_end <= prune_boundary or _protected_region_tokens() <= soft_ceiling:
@@ -2781,8 +2782,15 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # Newest frames stay live for follow-up QA; older ones become placeholders. See #92699.
         pruned += _retire_stale_tool_result_images(result)
         if protect_tail_tokens is not None and protect_tail_tokens > 0 and result:
+            executed_tool_ids = {str(msg.get("tool_call_id") or "") for msg in result if msg.get("role") == "tool" and msg.get("tool_call_id")}
+            first_pending_idx = len(result)
+            for i, msg in enumerate(result):
+                if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                    if any(str(_tc_get(tc, "id") or "") not in executed_tool_ids for tc in msg["tool_calls"]):
+                        first_pending_idx = i
+                        break
             pruned += self._pressure_demote_tail(
-                result, prune_boundary, protect_tail_tokens, call_id_to_tool, min_prune_chars,
+                result, prune_boundary, protect_tail_tokens, call_id_to_tool, min_prune_chars, first_pending_idx,
             )
         return result, pruned
 

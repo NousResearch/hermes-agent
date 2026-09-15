@@ -68,6 +68,9 @@ FLAT_INSTALL_RUNTIME_STATE = (
     "mcp-tokens/server.json",
     "pairing/telegram.json",
     "platforms/pairing/x.json",
+    "backups/2026-09-14T06-00-00-pre-update/state.db",
+    "vault.key",
+    "vault.json.enc",
 )
 
 

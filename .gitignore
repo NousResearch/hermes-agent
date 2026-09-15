@@ -174,8 +174,9 @@ docs/superpowers/*
 # WAL/SHM/journal sidecars and retired-WAL capture dirs, the legacy transcripts,
 # the cron job store (jobs.json) and executions ledger, gateway lock/pid/state
 # files, cache/spill directories, and the profile's own config/credential/
-# memory/profile/pairing roots are Hermes-managed runtime state, never code
-# changes. (`*-snapshots/` above already covers state-snapshots/.)
+# memory/profile/pairing roots, the pre-update backups (the very copies a
+# swept state.db is restored from) and the secret vault are Hermes-managed
+# runtime state, never code changes. (`*-snapshots/` above already covers state-snapshots/.)
 # Ignore them so `hermes update`'s `git stash push --include-untracked` cannot
 # sweep the live state.db/-wal into the stash and unlink it under the running
 # gateway (#110648). Nested installs keep all of this under $HERMES_HOME outside
@@ -219,6 +220,9 @@ docs/superpowers/*
 /mcp-tokens/
 /pairing/
 /platforms/
+/backups/
+/vault.key
+/vault.json.enc
 
 # Persistent dev sandbox dir (scripts/dev-sandbox.sh --persistent)
 .hermes-sandbox/

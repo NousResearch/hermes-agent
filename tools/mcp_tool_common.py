@@ -8,6 +8,8 @@ import random
 import re
 from typing import Any, Optional
 
+from agent.redact import _redact_strict_url_credentials
+
 logger = logging.getLogger("tools.mcp_tool")
 
 
@@ -83,8 +85,14 @@ def _env_ref_name(ref: str) -> str:
 
 
 def _sanitize_error(text: str) -> str:
-    """Replace credential-like patterns with [REDACTED] before text reaches the LLM."""
-    return _CREDENTIAL_PATTERN.sub("[REDACTED]", text)
+    """Replace credential-like patterns with [REDACTED] before text reaches the LLM.
+
+    URL query values that the plain pattern does not name (e.g. ``signature``,
+    ``x-amz-signature``, ``code``) are additionally masked with strict
+    credential-URL redaction.
+    """
+    masked = _CREDENTIAL_PATTERN.sub("[REDACTED]", text)
+    return _redact_strict_url_credentials(masked)
 
 
 def _exc_str(exc: BaseException) -> str:

@@ -23,6 +23,13 @@ _ZIP_STAGING_ARTIFACT_SUFFIXES = ".hermes-update-staging", ".hermes-update-old"
 # Single source of truth for entries the ZIP swap preserves — used by the dirty-tree filter and the swap loop.
 _ZIP_PRESERVED_TOP_LEVEL = {"venv", "node_modules", ".git", ".env"}
 
+# eman717, #90495 comment5557504436: source archives omit these nested runtime
+# artifacts. Keep this map shared by the graft and ignored-file admission.
+_ZIP_PRESERVED_NESTED = {
+    "apps": ("desktop/release", "desktop/dist", "desktop/node_modules"),
+    "hermes_cli": ("web_dist",),
+}
+
 _STASH_HINT = "  Stash or commit your changes, then rerun `hermes update`."
 
 
@@ -164,7 +171,15 @@ def _is_zip_preserved_entry_status_line(line: str) -> bool:
     """
     status, payload = (line[:2], line[3:]) if len(line) >= 3 else ("", line)
     paths = payload.split(" -> ") if any(code in "RC" for code in status) else [payload]
-    return all(_status_top_level(path) in _ZIP_PRESERVED_TOP_LEVEL for path in paths)
+    if all(_status_top_level(path) in _ZIP_PRESERVED_TOP_LEVEL for path in paths):
+        return True
+    # Only known ignored outputs qualify. Tracked modifications, rename/copy
+    # records, and other untracked user files still block the source overlay.
+    if status != "!!":
+        return False
+    path = payload.strip().strip('"').replace("\\", "/").rstrip("/")
+    return any(path == f"{top}/{nested}" or path.startswith(f"{top}/{nested}/")
+               for top, nested_paths in _ZIP_PRESERVED_NESTED.items() for nested in nested_paths)
 
 
 def _is_zip_staging_artifact_status_line(line: str) -> bool:
@@ -241,6 +256,30 @@ def _require_staging_space(extracted: str, entries: list[str], project_root: str
         )
 
 
+def _link_or_copy_artifact(source: str, destination: str) -> str:
+    """Hardlink same-volume artifacts; filesystems without links use a byte copy."""
+    try:
+        os.link(source, destination)
+        return destination
+    except OSError:
+        return shutil.copy2(source, destination)
+
+
+def _graft_nested_artifacts(item: str, live: str, staging: str) -> None:
+    """Preserve missing generated outputs without overwriting archive contents."""
+    for nested in _ZIP_PRESERVED_NESTED.get(item, ()):
+        source = os.path.join(live, *nested.split("/"))
+        destination = os.path.join(staging, *nested.split("/"))
+        if os.path.lexists(destination) or not os.path.lexists(source):
+            continue
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        if os.path.islink(source):
+            # Preserve a link's identity rather than traversing its target.
+            os.symlink(os.readlink(source), destination, target_is_directory=True)
+        else:
+            shutil.copytree(source, destination, symlinks=True, copy_function=_link_or_copy_artifact)
+
+
 def _stage_entries(extracted: str, entries: list[str], project_root: str) -> list[tuple[str, str]]:
     """Phase 1 for every entry; on failure nothing is live yet, so drop partial staging copies so a retry
     starts from the same free space."""
@@ -249,17 +288,9 @@ def _stage_entries(extracted: str, entries: list[str], project_root: str) -> lis
         for item in entries:
             dst = os.path.join(project_root, item)
             staged.append((_stage_replacement(os.path.join(extracted, item), dst), dst))
-            # The source ZIP lacks apps/desktop/release/ (the BUILT desktop app); swapping `apps` without
-            # it deletes the build and breaks the shortcut. Graft the live release dir in BEFORE the swap.
-            # #70337/#87331: the GitHub source ZIP contains only source — apps/desktop/release/ (the BUILT
-            # desktop app, win-unpacked/ Hermes.exe) exists only in the LIVE tree. Graft the live release
-            # dir into the staged copy BEFORE the swap so the commit preserves it atomically.
-            if item == "apps":
-                live_release = os.path.join(dst, "desktop", "release")
-                staged_release = os.path.join(staged[-1][0], "desktop", "release")
-                if os.path.isdir(live_release) and not os.path.exists(staged_release):
-                    os.makedirs(os.path.dirname(staged_release), exist_ok=True)
-                    shutil.copytree(live_release, staged_release)
+            # Extend the #70337/#87331 release-only graft. Nothing live is
+            # modified; graft failures discard staging before any swap occurs.
+            _graft_nested_artifacts(item, dst, staged[-1][0])
     except Exception:
         _discard_staged(staged)
         raise

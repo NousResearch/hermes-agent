@@ -516,6 +516,81 @@ class TestRunEvents:
 
 
 # ---------------------------------------------------------------------------
+# GET /v1/runs/{run_id}/events — CORS on the SSE stream
+# ---------------------------------------------------------------------------
+
+
+class TestRunEventsCORS:
+    """StreamResponse flushes headers on prepare(), so the CORS middleware cannot
+    inject them afterwards — the handler must resolve them up front (#6358)."""
+
+    @staticmethod
+    def _primed_adapter(api_key="sk-secret"):
+        adapter = _make_adapter(api_key=api_key)
+        adapter._cors_origins = ("http://localhost:3000",)
+        return adapter
+
+    @staticmethod
+    def _prime_closed_stream(adapter, run_id):
+        _claim_run(adapter, run_id)
+        q: asyncio.Queue = asyncio.Queue()
+        q.put_nowait(None)  # run finished: handler writes ": stream closed" and returns
+        adapter._run_streams[run_id] = q
+
+    @pytest.mark.asyncio
+    async def test_events_cors_headers_present_for_allowed_origin(self):
+        adapter = self._primed_adapter()
+        self._prime_closed_stream(adapter, "cors_run_1")
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(
+                "/v1/runs/cors_run_1/events",
+                headers={
+                    "Authorization": "Bearer sk-secret",
+                    "Origin": "http://localhost:3000",
+                    "Accept": "text/event-stream",
+                },
+            )
+            assert resp.status == 200
+            assert resp.headers.get("Content-Type") == "text/event-stream"
+            assert resp.headers.get("Access-Control-Allow-Origin") == "http://localhost:3000"
+            assert "GET" in resp.headers.get("Access-Control-Allow-Methods", "")
+            assert "Authorization" in resp.headers.get("Access-Control-Allow-Headers", "")
+            await resp.text()
+
+    @pytest.mark.asyncio
+    async def test_events_cors_headers_absent_without_origin(self):
+        adapter = self._primed_adapter()
+        self._prime_closed_stream(adapter, "cors_run_2")
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(
+                "/v1/runs/cors_run_2/events",
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert resp.status == 200
+            assert resp.headers.get("Access-Control-Allow-Origin") is None
+            await resp.text()
+
+    @pytest.mark.asyncio
+    async def test_events_rejects_disallowed_origin(self):
+        adapter = self._primed_adapter()
+        self._prime_closed_stream(adapter, "cors_run_3")
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(
+                "/v1/runs/cors_run_3/events",
+                headers={
+                    "Authorization": "Bearer sk-secret",
+                    "Origin": "http://evil.example",
+                },
+            )
+            assert resp.status == 403
+            assert resp.headers.get("Access-Control-Allow-Origin") is None
+            await resp.text()
+
+
+# ---------------------------------------------------------------------------
 # POST /v1/runs/{run_id}/steer — steer a running agent
 # ---------------------------------------------------------------------------
 

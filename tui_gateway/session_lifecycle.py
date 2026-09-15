@@ -271,6 +271,8 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
                     # compression splits back to the reaped child, forever).
                     if _is_gateway_owned_source((db.get_session(session_id) or {}).get("source", "")):
                         _tui_owns_lifecycle = False
+                        if agent is not None:
+                            agent._end_session_on_close = _tui_owns_lifecycle
                     elif _tui_owns_lifecycle:
                         db.end_session(session_id, end_reason)
     # In-flight async delegations end WITH the session (no return address left). Always interrupt by THIS live UI

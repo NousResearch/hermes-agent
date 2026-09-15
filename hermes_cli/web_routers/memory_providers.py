@@ -22,7 +22,7 @@ from hermes_cli.web_server_memory import (
     _coerce_bool, _field_default, _field_is_set, _field_value, _field_visible, _load_memory_provider, _memory_provider_manifest, _memory_provider_setup_info, _memory_provider_setup_manifest, _normalize_memory_provider_schema, _read_memory_provider_existing_values, _require_memory_provider_ready, _run_setup_command,
 )
 from hermes_cli.web_models import MemoryProviderConfigUpdate, MemoryProviderSetupRequest
-from hermes_cli.web_routers._common import scoped_to_thread
+from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, scoped_to_thread
 from plugins.memory.config_schema import (
     STORAGE_HONCHO_HOST_BLOCK, ProviderConfigSchema, ProviderField, get_provider_config_schema,
 )
@@ -304,11 +304,12 @@ def _memory_section(config: Dict[str, Any]) -> Dict[str, Any]:
 def _update_memory_provider_config(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
     writer = _write_provider_honcho if provider.storage == STORAGE_HONCHO_HOST_BLOCK else _write_provider_flat
     writer(provider, values)
-    config = load_config()
-    memory_config = _memory_section(config)
-    if memory_config.get("provider") != provider.name:
-        memory_config["provider"] = provider.name
-        save_config(config)
+    with _CONFIG_MUTATION_LOCK:  # RMW span vs. the dashboard's config autosave
+        config = load_config()
+        memory_config = _memory_section(config)
+        if memory_config.get("provider") != provider.name:
+            memory_config["provider"] = provider.name
+            save_config(config)
 
 
 # ── Setup: dependency installation ────────────────────────────────────────────
@@ -468,11 +469,12 @@ def _save_memory_provider_native_config(name: str, provider: Any, values: Dict[s
         if _BaseMemoryProvider is None or type(provider).save_config is not _BaseMemoryProvider.save_config:
             provider.save_config(values, str(get_hermes_home()))
             return
-    cfg = load_config()
-    memory_cfg = _memory_section(cfg)
-    current = memory_cfg.get(name)
-    memory_cfg[name] = {**(current if isinstance(current, dict) else {}), **values}
-    save_config(cfg)
+    with _CONFIG_MUTATION_LOCK:  # RMW span vs. the dashboard's config autosave
+        cfg = load_config()
+        memory_cfg = _memory_section(cfg)
+        current = memory_cfg.get(name)
+        memory_cfg[name] = {**(current if isinstance(current, dict) else {}), **values}
+        save_config(cfg)
 
 
 def _write_memory_provider_config_values(name: str, provider: Any, values: Dict[str, Any]) -> None:
@@ -567,9 +569,10 @@ async def update_memory_provider_config(
             raise _unknown_provider(name)
         _write_memory_provider_config_values(name, provider, values)
         _require_memory_provider_ready(name)
-        config = load_config()
-        _memory_section(config)["provider"] = name
-        save_config(config)
+        with _CONFIG_MUTATION_LOCK:  # RMW span vs. the dashboard's config autosave
+            config = load_config()
+            _memory_section(config)["provider"] = name
+            save_config(config)
         _invalidate_plugins_hub_cache()
         return {"ok": True, "active": name}
 

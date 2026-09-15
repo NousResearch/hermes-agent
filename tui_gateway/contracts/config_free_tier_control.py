@@ -15,6 +15,7 @@ from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
 from .common import OpenModel, ProfileParams, SessionLiveInfo
+from .connectors_operation import ConnectionOperationStatus
 from .registry import method
 
 # ── config.get ────────────────────────────────────────────────────────────────────────────────
@@ -314,23 +315,17 @@ class ConnectorsConnectParams(ProfileParams):
     reconnect: bool = False
 
 
-class ConnectorConnectEntry(OpenModel):
-    """``tools/connections_tool.py`` per-connector authorization outcome."""
+class ConnectorsConnectResult(ConnectionOperationStatus):
+    """The operation the connect opened (or re-minted on): ``tools/connectors/managed.py``
+    ``_off_desktop_result`` / ``methods_connectors._reissue``. ``status``/``note`` ride along from
+    the tool result when the call ran through ``manage_connections``."""
 
-    connector: str = ""
     status: str | None = None
-    connect_url: str | None = None
     note: str | None = None
-    instruction: str | None = None
-
-
-class ConnectorsConnectResult(Result):
-    results: list[ConnectorConnectEntry]
-    summary: dict[str, JsonValue]
 
 
 method("connectors.connect", params=ConnectorsConnectParams, result=ConnectorsConnectResult,
-       doc="Start (or re-initiate) authorization for named connectors; returns per-connector links/status.")
+       doc="Start (or re-initiate) authorization for named connectors on the session's connection operation.")
 
 
 # ── image.generate ────────────────────────────────────────────────────────────────────────────

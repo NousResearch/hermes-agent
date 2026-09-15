@@ -103,7 +103,7 @@ def test_ambiguous_send_reaches_wait_for_response():
         fut, clarify_id="cid123", session_key="sk", clarify_mod=clarify_mod
     )
 
-    assert out == "user picked B"
+    assert out == ("user picked B", True)
     clarify_mod.clear_session.assert_not_called()
     clarify_mod.wait_for_response.assert_called_once_with("cid123", timeout=600.0)
 
@@ -119,7 +119,7 @@ def test_sent_reaches_wait_for_response():
         _clarify_send_then_wait(
             fut, clarify_id="cid123", session_key="sk", clarify_mod=clarify_mod
         )
-        == "answer"
+        == ("answer", True)
     )
     clarify_mod.wait_for_response.assert_called_once_with("cid123", timeout=600.0)
 
@@ -133,7 +133,7 @@ def test_definitive_failure_never_waits():
         _clarify_send_then_wait(
             fut, clarify_id="cid123", session_key="sk", clarify_mod=clarify_mod
         )
-        == SENTINEL
+        == (SENTINEL, False)
     )
     clarify_mod.wait_for_response.assert_not_called()
     clarify_mod.clear_session.assert_called_once_with("sk")
@@ -150,7 +150,7 @@ def test_no_response_returns_timeout_sentinel():
         _clarify_send_then_wait(
             fut, clarify_id="cid123", session_key="sk", clarify_mod=clarify_mod
         )
-        == "[user did not respond within 10m]"
+        == ("[user did not respond within 10m]", False)
     )
 
 

@@ -438,28 +438,42 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
     return None, fields
 
 
+def _storage_error_data(failure, raw) -> dict:
+    """Machine-readable error data: ``code`` lets a GUI pick a "Run doctor" / "Retry" action."""
+    from hermes_state_user_copy import storage_failure_details
+    return {"code": failure.code, "cause": failure.cause, "details": storage_failure_details(raw)}
+
+
 def _persist_session_row_for_submit(rid, session):
     """Lazily persist the DB row now that the user sent a message (a branch becomes real
     here); the error reply is the only user-visible signal (desktop maps it to a toast)."""
+    from hermes_state_user_copy import describe_storage_failure
     try:
         if _ensure_session_db_row(session) is False:
+            failure = describe_storage_failure(_db_error)
             error = _err(
                 rid, 5072,
-                "session storage unavailable: "
-                f"{_db_error or 'state.db could not be opened'} — the message "
-                "was not saved; repair state.db and try again")
+                f"Session storage is unavailable, so this message was not saved. Cause: {failure.gloss}. "
+                f"{failure.action} Then send your message again.",
+                data=_storage_error_data(failure, _db_error))
         else:
             _persist_branch_seed(session)
             return None
     except Exception as exc:
-        from hermes_state_errors import is_disk_full_error
-        if is_disk_full_error(exc):
+        failure = describe_storage_failure(exc)
+        if failure.code == "disk_full":
             error = _err(
                 rid, 5070,
-                "disk full: session storage could not be written — free some disk space and try again")
+                "Session storage could not be written, so this message was not saved: the disk is full. "
+                "Free some disk space, then send your message again.",
+                data=_storage_error_data(failure, exc))
         else:
             logger.warning("prompt.submit: session persist failed: %s", exc, exc_info=True)
-            error = _err(rid, 5071, f"session storage could not be written: {exc}")
+            error = _err(
+                rid, 5071,
+                f"Session storage could not be written, so this message was not saved. Cause: {failure.gloss}. "
+                f"{failure.action} Then send your message again.",
+                data=_storage_error_data(failure, exc))
     # No turn thread will start, so neither resume nor the busy queue may see
     # this rejected prompt as live. Release the slot a turn would normally own.
     with session["history_lock"]:

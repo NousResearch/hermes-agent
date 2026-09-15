@@ -220,6 +220,23 @@ def _model_consumes_thought_signature(model: Any) -> bool:
     return "gemini" in m or "gemma" in m
 
 
+def _has_replayable_thought_signature(extra_content: Any) -> bool:
+    """Whether OpenRouter's Gemini sidecar contains a usable thought signature.
+
+    Gemini accepts the signature either directly or under its ``google``
+    namespace.  Replaying an empty or non-string value makes a multimodal
+    request fail with ``Corrupted thought signature``; omit that sidecar while
+    leaving the stored history untouched.
+    """
+    if not isinstance(extra_content, dict):
+        return False
+    candidate = extra_content.get("thought_signature")
+    google = extra_content.get("google")
+    if candidate is None and isinstance(google, dict):
+        candidate = google.get("thought_signature")
+    return isinstance(candidate, str) and bool(candidate.strip())
+
+
 def _attr_or_model_extra(obj: Any, name: str) -> Any:
     """``obj.<name>``, else the same key from pydantic ``model_extra`` (some SDKs park fields there)."""
     value = getattr(obj, name, None)
@@ -332,7 +349,9 @@ def _sanitize_message(msg: Any, strip_extra_content: bool) -> dict | None:
             if not isinstance(tc, dict):
                 continue
             keys = [k for k in _STRIP_TC_KEYS if k in tc]
-            if strip_extra_content and "extra_content" in tc:
+            if "extra_content" in tc and (
+                strip_extra_content or not _has_replayable_thought_signature(tc["extra_content"])
+            ):
                 keys.append("extra_content")
             if keys:
                 if copied_tool_calls is None:

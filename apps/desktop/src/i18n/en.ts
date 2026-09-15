@@ -3506,7 +3506,7 @@ export const en: Translations = {
         "The Nous server asked for a proof of work, but that isn't implemented in your Agent yet. Sign in or create a free Nous account to continue.",
       locked: "This session can't continue without signing in. Sign in or create a free Nous account to keep going.",
       generic: "Hermes couldn't set up free access without signing in. Signing in is free, or connect another provider.",
-      signInBelow: 'Signing in is free and keeps the free model. Pick Nous below.',
+      signInBelow: 'Signing in is free. Pick Nous below.',
       tryAgain: 'Try again',
       retrying: 'Trying again…'
     }
@@ -4057,7 +4057,7 @@ export const en: Translations = {
         // and the way forward); these bodies stand in for an older backend that sent none.
         free_tier_disabled: {
           title: 'Using Hermes without signing in is switched off right now',
-          body: "Sign in with a Nous account to keep chatting, it's free and keeps the free model."
+          body: "Sign in with a Nous account to keep chatting, it's free."
         },
         free_tier_rate_limited: {
           title: "You've used up the allowance for chatting without signing in",

@@ -105,7 +105,7 @@ ANON_UNREACHABLE_CODES = frozenset({ANON_UNREACHABLE, ANON_SERVER_ERROR})
 
 # Copy per code: what happened, then the one honest way forward. The free MODEL is never "off":
 # what is unavailable is using Hermes without signing in, and signing in is free.
-_SIGNIN_IS_FREE = "Signing in is free and keeps the free model."
+_SIGNIN_IS_FREE = "Signing in is free."
 ANON_FAILURE_COPY = {
     ANON_GATE_CLOSED: f"This version can't be used without a Nous account. {_SIGNIN_IS_FREE}",
     ANON_GATE_PAUSED: f"Using Hermes without signing in is paused for a moment. {_SIGNIN_IS_FREE}",
@@ -640,7 +640,7 @@ _WELCOME_ROUTE_COPY = {
                          "Unset it to use the free model, or sign in. {signin}",
     "named_on_welcome_host": "This Nous account needs to reconnect. {model_hint}",
     "tier_disabled": "Using Hermes without signing in is switched off right now. "
-                     "Sign in to keep chatting, it's free and keeps the free model. {signin}",
+                     "Sign in to keep chatting, it's free. {signin}",
 }
 # The sign-in door, phrased for a chat surface (slash command) and for a terminal.
 _SIGNIN_CHAT = "To sign in: /login."

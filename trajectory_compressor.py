@@ -471,6 +471,10 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 if delay is None:
                     return _SUMMARY_FALLBACK
                 time.sleep(delay)
+        # The retry loop never executes when max_retries=0 — without this the
+        # function returns implicit None, which is then injected as message
+        # content downstream and crashes string ops.
+        return _SUMMARY_FALLBACK
 
     async def _generate_summary_async(self, content: str, metrics: TrajectoryMetrics) -> str:
         """Async twin of ``_generate_summary``."""
@@ -490,6 +494,10 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 if delay is None:
                     return _SUMMARY_FALLBACK
                 await asyncio.sleep(delay)
+        # The retry loop never executes when max_retries=0 — without this the
+        # function returns implicit None, which is then injected as message
+        # content downstream and crashes string ops.
+        return _SUMMARY_FALLBACK
 
     def _plan_compression(self, trajectory: List[Dict[str, str]], metrics: TrajectoryMetrics) -> Optional[Tuple[int, int]]:
         """Choose the ``[start, until)`` region to summarize, or None if nothing can be.

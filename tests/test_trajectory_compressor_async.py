@@ -199,3 +199,36 @@ async def test_generate_summary_async_public_moonshot_cn_kimi_k2_5_omits_tempera
 
     assert result.startswith("[CONTEXT SUMMARY]:")
     assert "temperature" not in async_client.chat.completions.create.call_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_generate_summary_async_with_zero_retries_returns_string_not_none():
+    """Async variant of the max_retries=0 regression guard for issue #32847."""
+    from trajectory_compressor import (
+        _SUMMARY_FALLBACK,
+        CompressionConfig,
+        TrajectoryCompressor,
+        TrajectoryMetrics,
+    )
+
+    config = CompressionConfig(max_retries=0)
+    compressor = TrajectoryCompressor.__new__(TrajectoryCompressor)
+    compressor.config = config
+    compressor.logger = MagicMock()
+    compressor._use_call_llm = False
+    async_client = MagicMock()
+    async_client.chat.completions.create = MagicMock(
+        return_value=SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="unused"))]
+        )
+    )
+    compressor._get_async_client = MagicMock(return_value=async_client)
+    metrics = TrajectoryMetrics()
+
+    summary = await compressor._generate_summary_async("Turn content", metrics)
+
+    assert summary is not None
+    assert isinstance(summary, str)
+    assert summary == _SUMMARY_FALLBACK
+    assert metrics.summarization_api_calls == 0
+    async_client.chat.completions.create.assert_not_called()

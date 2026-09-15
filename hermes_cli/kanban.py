@@ -338,6 +338,43 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_ensure_escalation(args: argparse.Namespace) -> int:
+    """Create or reuse the single open [ESC] for an [AUD-*] incident."""
+    from hermes_cli.kanban_escalation import EnsureEscalationError, ensure_escalation
+
+    try:
+        if getattr(args, "input", None) and args.input != "-":
+            raw = Path(args.input).read_text(encoding="utf-8")
+        else:
+            raw = sys.stdin.read()
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            return _err("kanban ensure-escalation: input must be a JSON object", 2)
+    except (OSError, json.JSONDecodeError) as exc:
+        return _err(f"kanban ensure-escalation: {exc}", 2)
+
+    sub_board = getattr(args, "board", None)
+    board_scope = contextlib.nullcontext()
+    if sub_board:
+        try:
+            normed = kb._normalize_board_slug(sub_board)
+        except ValueError as exc:
+            return _err(f"kanban: {exc}", 2)
+        if normed != kb.DEFAULT_BOARD and not kb.board_exists(normed):
+            return _err(f"kanban: board {normed!r} does not exist.")
+        board_scope = kb.scoped_current_board(normed)
+
+    try:
+        with board_scope:
+            with kbc.connect_closing() as conn:
+                result = ensure_escalation(conn, payload)
+    except EnsureEscalationError as exc:
+        _print_json({"ok": False, "error": str(exc)})
+        return 2
+    _print_json(result)
+    return 0
+
+
 def _cmd_create(args: argparse.Namespace) -> int:
     from agent.delegation_context import is_dispatcher_owned_worker_context
 
@@ -1238,7 +1275,7 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
 
 
 _HANDLERS = {
-    "init": _cmd_init, "create": _cmd_create, "swarm": _cmd_swarm,
+    "init": _cmd_init, "ensure-escalation": _cmd_ensure_escalation, "create": _cmd_create, "swarm": _cmd_swarm,
     "list": _cmd_list, "ls": _cmd_list, "show": _cmd_show,
     "assign": _cmd_assign, "set-model": _cmd_set_model,
     "reclaim": _cmd_reclaim, "reassign": _cmd_reassign,

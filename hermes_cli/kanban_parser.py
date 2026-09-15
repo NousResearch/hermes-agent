@@ -145,6 +145,12 @@ _SPECS = [
              "loop — tasks on one board cannot collide with tasks on another. The first board is "
              "'default' and always exists."
          )),
+    _cmd("ensure-escalation", [
+        _arg("--input", help="JSON file (default: stdin) with incident_id, reason, source"),
+        _arg("--board", default=None, metavar="<slug>",
+             help="Board slug (same as hermes kanban --board; subcommand form)"),
+        _json_flag(help="Emit JSON (default behaviour is JSON on stdout)"),
+    ], help="Create or reuse one ready [ESC] card for an [AUD-*] incident (assignee=default)"),
     _cmd("create", [
         _arg("title", help="Task title"),
         _arg("--body", help="Optional opening post"),

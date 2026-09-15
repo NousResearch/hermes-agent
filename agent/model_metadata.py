@@ -48,8 +48,8 @@ def __getattr__(name: str):
 
 def _resolve_requests_verify(base_url: str = "") -> bool | str:
     """SSL ``verify`` for ``requests`` probes; mirrors ``agent.ssl_verify.resolve_httpx_verify``.
-    Priority: per-provider ``ssl_verify: false`` -> per-provider ``ssl_ca_cert`` (else probes log
-    spurious CERTIFICATE_VERIFY_FAILED while the httpx chat path succeeds) -> CA env vars -> certifi."""
+    Priority: per-provider ``ssl_verify: false`` -> per-provider ``ssl_ca_cert`` -> CA env vars
+    -> merged Windows CA bundle (#43294) -> True (httpx/requests default verify)."""
     if base_url:
         try:
             from hermes_cli.config import get_custom_provider_tls_settings
@@ -65,6 +65,15 @@ def _resolve_requests_verify(base_url: str = "") -> bool | str:
         val = os.getenv(env_var)
         if val and os.path.isfile(val):
             return val
+    # 4. Merged Windows CA bundle (Task 2, #43294): default when no env override set.
+    #    Fail-open: any failure preserves today's behavior (True).
+    try:
+        from agent.win_ca_bundle import windows_merged_ca_bundle
+        merged = windows_merged_ca_bundle()
+        if merged:
+            return merged
+    except Exception as exc:
+        logger.warning("Windows merged CA bundle unavailable: %s", exc)
     return True
 
 

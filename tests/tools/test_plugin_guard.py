@@ -383,6 +383,81 @@ class TestInstallIntegration:
         assert result["scan_findings"]
 
 
+class TestMainBlockSelfTestTokens:
+    """A root-level `if __name__ == "__main__":` block is a plugin's own self-test
+    harness: it never runs when the loader imports the module, and a root-level
+    runtime file has no tests/ tree to hold its sample fixtures. Sample tokens
+    there must cap at `caution` instead of an un-overridable `dangerous`, while
+    the same literal above the guard is still a real hardcoded credential."""
+
+    SELF_TEST_ENGINE = (
+        "def make_execution_decision(payload):\n"
+        "    return payload.get(\"token\") is not None\n"
+        "\n"
+        "\n"
+        "if __name__ == \"__main__\":\n"
+        '    assert make_execution_decision(token="USR-session123-abc123def4567890")\n'
+        "    print(\"self-test ok\")\n"
+    )
+
+    def test_main_block_sample_token_is_caution_not_dangerous(self, tmp_path):
+        files = dict(BASE_FILES)
+        files["policy_engine.py"] = self.SELF_TEST_ENGINE
+        result = scan_plugin(_mk_plugin(tmp_path, files))
+        assert result.verdict == "caution", [
+            (f.pattern_id, f.severity, f.file, f.line) for f in result.findings]
+        secrets = [f for f in result.findings if f.pattern_id == "hardcoded_secret"]
+        assert secrets and all(f.severity == "high" for f in secrets)
+        assert should_allow_plugin_install(result)[0] is None
+        assert should_allow_plugin_install(result, force=True)[0] is True
+
+    def test_same_token_above_the_guard_stays_dangerous(self, tmp_path):
+        files = dict(BASE_FILES)
+        files["policy_engine.py"] = (
+            "def make_execution_decision(payload):\n"
+            "    return payload.get(\"token\") is not None\n"
+            "\n"
+            "\n"
+            'sample_token = "USR-session123-abc123def4567890"\n'
+            "assert make_execution_decision(token=sample_token)\n"
+        )
+        result = scan_plugin(_mk_plugin(tmp_path, files))
+        assert result.verdict == "dangerous"
+        critical = {f.pattern_id for f in result.findings if f.severity == "critical"}
+        assert "hardcoded_secret" in critical
+        assert should_allow_plugin_install(result, force=True)[0] is False
+
+    def test_reversed_operand_order_demotes_unparseable_file_does_not(self, tmp_path):
+        files = dict(BASE_FILES)
+        files["reversed.py"] = (
+            "if \"__main__\" == __name__:\n"
+            '    token = "USR-session123-abc123def4567890"\n'
+        )
+        files["broken.py"] = (
+            "if __name__ == \"__main__\":\n"
+            '    token = "USR-session123-abc123def4567890"\n'
+            "def broken(:\n"
+        )
+        result = scan_plugin(_mk_plugin(tmp_path, files))
+        severities = {(f.file, f.severity) for f in result.findings
+                      if f.pattern_id == "hardcoded_secret"}
+        assert ("reversed.py", "high") in severities
+        assert ("broken.py", "critical") in severities
+        assert should_allow_plugin_install(result, force=True)[0] is False
+
+    def test_destructive_finding_inside_main_block_keeps_full_severity(self, tmp_path):
+        files = dict(BASE_FILES)
+        files["engine.py"] = (
+            "import os\n"
+            "\n"
+            "if __name__ == \"__main__\":\n"
+            "    os.system('rm -rf /')\n"
+        )
+        result = scan_plugin(_mk_plugin(tmp_path, files))
+        assert result.verdict == "dangerous"
+        assert should_allow_plugin_install(result, force=True)[0] is False
+
+
 class TestDocProseFalsePositives:
     """#103364: Markdown prose (plan docs, design notes, isolation descriptions) must not
     hard-block a plugin; the same content in runtime code keeps its critical severity."""

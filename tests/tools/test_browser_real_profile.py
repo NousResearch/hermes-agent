@@ -63,6 +63,47 @@ class TestRealProfileResolvers:
         assert m["bravehtml"] == "brave"
         assert m["braveohtml"] == "brave-origin"
 
+    def test_windows_helium_progid_and_profile(self, tmp_path):
+        import hermes_cli.browser_connect as bc
+        m = dict(bc._WINDOWS_PROGID_MAP)
+        assert m["heliumhtm"] == "helium"
+        assert bc._classify_default(
+            "heliumhtm.deadbeef", bc._WINDOWS_CHANNEL_PROGIDS,
+            bc._WINDOWS_PROGID_MAP, str.startswith) == "helium"
+        # Positive ProgIds (case-insensitive via existing .lower() + startswith).
+        for progid in ("HeliumHTM.deadbeef", "heliumhtm", "heliumhtm.ABC123"):
+            assert bc._classify_default(
+                progid.lower(), bc._WINDOWS_CHANNEL_PROGIDS,
+                bc._WINDOWS_PROGID_MAP, str.startswith) == "helium"
+        # fail-open
+        assert bc._classify_default(
+            "firefoxhtml", bc._WINDOWS_CHANNEL_PROGIDS,
+            bc._WINDOWS_PROGID_MAP, str.startswith) is None
+        assert dict(bc._WINDOWS_PROGID_MAP)["chromehtml"] == "chrome"
+        with patch.dict(os.environ, {"LOCALAPPDATA": r"C:\Users\T\AppData\Local"}, clear=False):
+            got = bc.real_profile_data_dir("helium", "Windows")
+        assert got and (got.endswith(ntpath.join("imput", "Helium", "User Data"))
+                        or got.endswith("imput\\Helium\\User Data"))
+        # win_bins must not steal chrome.exe
+        helium = bc._BROWSER_BY_KEY["helium"]
+        assert "chrome.exe" not in helium.win_bins
+        assert helium.win_bins == ("helium.exe",)
+        assert any(b.key == "helium" for b in bc._BROWSERS)
+        # chromium_executable resolves via win_install under LOCALAPPDATA, not PATH chrome.exe.
+        exe = tmp_path / "imput" / "Helium" / "Application" / "chrome.exe"
+        exe.parent.mkdir(parents=True)
+        exe.write_bytes(b"")
+        with patch.dict(os.environ, {
+            "LOCALAPPDATA": str(tmp_path),
+            "PROGRAMFILES": str(tmp_path / "no-pf"),
+            "PROGRAMFILES(X86)": str(tmp_path / "no-pfx86"),
+        }, clear=False):
+            found = bc.chromium_executable("helium", "Windows")
+        assert found and os.path.isfile(found)
+        assert found.endswith(os.path.join("imput", "Helium", "Application", "chrome.exe"))
+        reason = bt_real_profile._real_profile_unsupported_reason(None)
+        assert reason and "Helium" in reason
+
     def test_brave_origin_data_dirs(self):
         import hermes_cli.browser_connect as bc
         with patch.dict(os.environ, {"LOCALAPPDATA": r"C:\Users\T\AppData\Local"}, clear=False):

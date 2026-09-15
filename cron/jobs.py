@@ -3219,10 +3219,17 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
             new_next = d.recompute_next() if recurring else None
             if new_next:
                 scan.persist(job["id"], next_run_at=new_next)
-            detail = note_completed_occurrence_skip(
-                job, scheduled_instant(next_run), occurrence_row)
-            if detail:
-                scan.persist(job["id"], last_fire_error=_fire_error_stamp(detail))
+            # Report the skip only once the identity's slot has actually come due. A completed row
+            # can already carry a FUTURE next_run_at (a stale off-tick stamp minted the identity
+            # before the occurrence existed, #111414 class); an early scan that alarmed on it would
+            # call a slot missed while its scheduled time has not arrived — and a one-shot repeats
+            # that false alarm every tick, since it never advances next_run_at. The suppression
+            # itself stays unconditional, exactly as before this reporting was added.
+            if d.next_run_dt <= now:
+                detail = note_completed_occurrence_skip(
+                    job, scheduled_instant(next_run), occurrence_row)
+                if detail:
+                    scan.persist(job["id"], last_fire_error=_fire_error_stamp(detail))
             return False
     if kind == "cron" and not manual_run and _repair_timezone_shifted_cron(d):
         return False

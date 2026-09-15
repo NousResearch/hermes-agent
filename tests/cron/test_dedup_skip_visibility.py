@@ -130,3 +130,29 @@ def test_claim_gate_backdated_skip_also_alarms(cron_world):
     stored = _load_job(jobs, "weekly")
     assert stored["next_run_at"] != slot
     assert stored.get("last_fire_error"), "backdated identity skip must be surfaced"
+
+
+def test_future_slot_identity_is_not_reported_before_it_is_due(cron_world, caplog):
+    """A slot that has not come due yet is not a missed fire.
+
+    A retained completed row can already carry the identity of a FUTURE next_run_at (the same
+    stale off-tick stamping shape as the backdated case above). The skip reporting must wait for
+    the occurrence to be due, or an ordinary early scan alarms on — and a one-shot re-alarms on
+    every tick, since it never advances next_run_at.
+    """
+    from cron import executions
+
+    jobs, cron_dir = cron_world
+    future = (now() + timedelta(minutes=30)).isoformat()
+    _store_job(cron_dir, "weekly", future)
+    _completed_row(executions, "weekly", future, now() - timedelta(days=7))
+
+    with caplog.at_level(logging.WARNING, logger="cron.occurrences"):
+        due = jobs.get_due_jobs()
+
+    assert [j["id"] for j in due] == []
+    stored = _load_job(jobs, "weekly")
+    assert not stored.get("last_fire_error"), "a slot that is not due yet is not a missed fire"
+    assert not [r for r in caplog.records if r.name == "cron.occurrences"], (
+        "no skip report until the occurrence is due"
+    )

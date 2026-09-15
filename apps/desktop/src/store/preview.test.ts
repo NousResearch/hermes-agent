@@ -85,6 +85,19 @@ describe('preview store', () => {
     expect($rightRailActiveTabId.get()).toBe(urlTabs[0].id)
   })
 
+  it('opens an explicit link in a new Browser without replacing the current page', () => {
+    openPreview(urlTarget('https://news.ycombinator.com'), 'tool-result')
+    const existingId = $previewTabs.get()[0].id
+
+    openPreview(urlTarget('https://www.reddit.com'), 'explicit-link')
+
+    const urlTabs = $previewTabs.get().filter(tab => tab.target.kind === 'url')
+
+    expect(urlTabs).toHaveLength(2)
+    expect(urlTabs.find(tab => tab.id === existingId)?.target.url).toBe('https://news.ycombinator.com')
+    expect($previewTarget.get()?.url).toBe('https://www.reddit.com')
+  })
+
   it('commits the live page onto a Browser tab without changing its id', () => {
     openPreview(urlTarget('https://news.ycombinator.com'), 'tool-result')
     const id = $previewTabs.get()[0].id

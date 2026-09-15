@@ -334,7 +334,7 @@ hermes config set desktop.manage_launcher_entry false
 
 A missing entry is still created; the flag only stops `hermes desktop` from rewriting an entry that already exists.
 
-When you start Hermes from the application grid or menu (the launcher sets `DESKTOP_STARTUP_ID`), the entry is written only after the window is on screen, or after the app exits if no window ever appeared. Some GNOME Shell versions lose track of an app whose `.desktop` file changes while it is still starting, and that can crash the whole session later; waiting for the window avoids it. Terminal launches and the updater's relaunch still write the entry immediately.
+When you start Hermes from the application grid or menu (the launcher sets `DESKTOP_STARTUP_ID`), the entry is written only after the window is on screen. If the app exits before a window appears, nothing is written that time; the next terminal launch, updater relaunch, or grid launch that shows a window installs it. Some GNOME Shell versions lose track of an app whose `.desktop` file changes while it is still starting (they keep it in that state until the startup notification completes or times out, not until the process exits), and that can crash the whole session later; waiting for the window avoids it. Terminal launches and the updater's relaunch still write the entry immediately.
 
 | Flag                 | Description                                                                               |
 | -------------------- | ----------------------------------------------------------------------------------------- |

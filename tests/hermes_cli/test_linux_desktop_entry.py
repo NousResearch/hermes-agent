@@ -1150,10 +1150,11 @@ def test_install_resizes_decodable_png_to_panel_sizes(
     assert struct.unpack(">II", dest_256.read_bytes()[16:24]) == (256, 256)
 
 
-def test_deferred_install_heals_exactly_once_after_exit_without_reveal():
-    """Electron exiting without ever revealing a window (crash, --version, closed at the
-    onboarding step) must still self-heal the entry — once, after the exit, when no
-    STARTING app object exists (#111906)."""
+def test_deferred_install_skips_heal_after_exit_without_reveal():
+    """Electron exiting without ever revealing a window (boot crash, --version, early quit) must
+    NOT heal the entry: gnome-shell keeps the ShellApp in STARTING until the startup-notification
+    sequence completes or times out, not until the process dies, so a write right after the exit
+    is exactly the #111906 arming condition. The next terminal/updater or revealed launch heals."""
     calls: list[Path] = []
     deferred = lde.DeferredDesktopEntryInstall(
         Path("/proj"), install=lambda root: calls.append(root) or Path("/entry"), settle_seconds=0
@@ -1163,5 +1164,5 @@ def test_deferred_install_heals_exactly_once_after_exit_without_reveal():
     assert calls == []  # nothing is written while the app may still be STARTING
 
     deferred.finish()
-    assert calls == [Path("/proj")]
+    assert calls == []
     assert not deferred._thread.is_alive()

@@ -28,6 +28,7 @@ DESKTOP_ENTRY_NAME = "hermes.desktop"
 SHELL_LAUNCH_ENV_VAR = "DESKTOP_STARTUP_ID"
 # Write end of the reveal pipe handed to Electron; one byte means "main window is on screen".
 READY_FD_ENV_VAR = "HERMES_DESKTOP_READY_FD"
+REVEAL_BYTE = b"r"  # what linux-launcher-ready.ts writes; anything else is finish()'s wake-up
 
 _SHELL_NAMES = ("bash", "sh", "dash", "zsh", "ksh")
 
@@ -647,9 +648,11 @@ class DeferredDesktopEntryInstall:
 
     The launcher hands Electron the write end of a pipe (``HERMES_DESKTOP_READY_FD``); Electron
     writes one byte when the main window is revealed and a worker thread then installs the entry.
-    ``finish()`` runs after Electron exits and covers the app never revealing a window (a STOPPED
-    app has no STARTING object, so writing there is safe). Terminal and detached launches never
-    build one of these: they install immediately, as before.
+    An exit without a reveal (boot crash, early quit) does NOT heal: gnome-shell keeps the ShellApp
+    in STARTING until the startup-notification sequence completes or times out (mutter, ~15 s),
+    not until the process dies, so a write right after such an exit still lands in the arming
+    window. The next terminal/updater launch or revealed grid launch installs the entry instead.
+    Terminal and detached launches never build one of these: they install immediately, as before.
     """
 
     def __init__(
@@ -665,8 +668,6 @@ class DeferredDesktopEntryInstall:
         # after the condition, not a substitute for it.
         self._settle_seconds = settle_seconds
         self._read_fd, self.write_fd = os.pipe()
-        self._lock = threading.Lock()
-        self._done = False
         self._thread = threading.Thread(target=self._wait_for_reveal, name="desktop-entry-install", daemon=True)
 
     def child_env(self, env: dict) -> dict:
@@ -685,17 +686,10 @@ class DeferredDesktopEntryInstall:
             data = os.read(self._read_fd, 1)
         except OSError:
             return
-        if self._done:  # woken by finish(): the app already exited, finish() owns the heal
+        if data != REVEAL_BYTE:  # woken by finish(): the app exited without a reveal, skip the heal
             return
-        if data and self._settle_seconds:
+        if self._settle_seconds:
             time.sleep(self._settle_seconds)
-        self._heal()
-
-    def _heal(self) -> None:
-        with self._lock:
-            if self._done:
-                return
-            self._done = True
         try:
             entry = self._install(self._project_root)
             if entry:
@@ -704,10 +698,9 @@ class DeferredDesktopEntryInstall:
             print(f"⚠ Could not install the desktop launcher entry: {exc}")
 
     def finish(self) -> None:
-        """Electron exited: heal now if the reveal never came, and let an in-flight heal complete."""
-        self._heal()
+        """Electron exited: let a heal already triggered by the reveal complete, never start one."""
         try:
-            os.write(self.write_fd, b"x")  # wake the reader so join() returns promptly
+            os.write(self.write_fd, b"x")  # wake a still-waiting reader so join() returns promptly
         except OSError:
             pass
         self._thread.join(timeout=15)

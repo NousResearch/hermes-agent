@@ -152,6 +152,30 @@ class TestSlackSendClarify:
         assert "&lt;A&gt;" in section_text
         assert "&amp;" in section_text
 
+    @pytest.mark.asyncio
+    async def test_free_prose_cancellation_rewrites_card_without_actions(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "1.2"})
+        mock_client.chat_update = AsyncMock()
+
+        await adapter.send_clarify(
+            chat_id="C1",
+            question="Which environment?",
+            choices=["staging", "production"],
+            clarify_id="cid-cancel",
+            session_key="sk-cancel",
+        )
+
+        await adapter.cancel_clarify_message("cid-cancel")
+
+        kwargs = mock_client.chat_update.call_args.kwargs
+        assert kwargs["channel"] == "C1"
+        assert kwargs["ts"] == "1.2"
+        assert "cancelled" in kwargs["text"].lower()
+        assert all(block["type"] != "actions" for block in kwargs["blocks"])
+        assert adapter._clarify_resolved["1.2"] is True
+
 
 # ===========================================================================
 # _handle_clarify_action — choice click resolves (b)

@@ -998,6 +998,7 @@ class SlackAdapter(BasePlatformAdapter):
     _REACTING_MESSAGE_IDS_MAX = _TITLED_ASSISTANT_THREADS_MAX = 5000
     _CHANNEL_TEAM_MAX = 10000
     _APPROVAL_RESOLVED_MAX = _CLARIFY_RESOLVED_MAX = _ACTIVE_STATUS_THREADS_MAX = 1000
+    _CLARIFY_MESSAGE_MAX = 1000
     # Tighter cap than the approval/clarify dicts: each entry holds the
     # full provider list, and a picker is only live for minutes.
     _MODEL_PICKER_STATE_MAX = 100
@@ -1046,6 +1047,9 @@ class SlackAdapter(BasePlatformAdapter):
         # Bounded: never-clicked prompts would otherwise leak forever.
         self._approval_resolved: Dict[Any, bool] = {}
         self._clarify_resolved: Dict[Any, bool] = {}
+        # clarify_id → (channel_id, message_ts, rendered_question). This lets the inbound
+        # free-prose path retire a native card that will no longer accept a response.
+        self._clarify_messages: Dict[str, Tuple[str, str, str]] = {}
         # Model picker state keyed by workspace message marker (team_id, ts) →
         # picker context (providers, session_key, on_model_selected, stage).
         # Mirrors _approval_resolved / _clarify_resolved: bounded, and the
@@ -5200,10 +5204,16 @@ class SlackAdapter(BasePlatformAdapter):
 
         # Bare-ts key (not workspace-scoped) so the action handler's atomic-pop guard
         # can reject double-clicks (mirrors _approval_resolved).
-        return await self._send_interactive_prompt(
+        result = await self._send_interactive_prompt(
             chat_id, metadata, _build, "send_clarify",
             resolved=self._clarify_resolved, resolved_max=self._CLARIFY_RESOLVED_MAX,
             team_scoped_key=False, sanitize=False)
+        if result.success and result.message_id:
+            question_text, _blocks = _build()
+            response_channel = str((result.raw_response or {}).get("channel") or chat_id)
+            self._clarify_messages[clarify_id] = (response_channel, result.message_id, question_text)
+            self._trim_oldest_dict_entries(self._clarify_messages, self._CLARIFY_MESSAGE_MAX)
+        return result
 
     def _is_interactive_user_authorized(
         self, user_id: str, *, channel_id: str = "", user_name: Optional[str] = None,
@@ -5405,6 +5415,23 @@ class SlackAdapter(BasePlatformAdapter):
             channel_id, msg_ts, question_text, decision_text, "Clarification", "clarify", sanitize=False
         )
 
+    async def cancel_clarify_message(self, clarify_id: str) -> None:
+        """Retire a Block Kit clarify card released by unmatched free prose.
+
+        The generic inbound path intentionally lets that prose continue as a normal follow-up.
+        Slack alone needs to edit its already-posted interactive card so its buttons do not
+        advertise an answer path that the released clarify can no longer accept.
+        """
+        target = self._clarify_messages.pop(clarify_id, None)
+        if target is None:
+            return
+        channel_id, msg_ts, question_text = target
+        # A late action handler must be a no-op while the best-effort chat.update is in flight.
+        self._clarify_resolved[msg_ts] = True
+        await self._update_clarify_message(
+            channel_id, msg_ts, question_text,
+            "↩️ Clarification cancelled — your message will be handled as a follow-up.")
+
     async def _handle_clarify_action(self, ack, body, action) -> None:
         """Handle a clarify button click (a choice or "Other") from Block Kit."""
         started = await self._begin_interaction(ack, body, action, "clarify", team_scoped=False)
@@ -5418,6 +5445,7 @@ class SlackAdapter(BasePlatformAdapter):
         # Double-click guard — atomic pop (mirrors approval).
         if self._clarify_resolved.pop(msg_ts, True):
             return
+        self._clarify_messages.pop(clarify_id, None)
         original_text = self._section_text(message, limit=None)
         from tools import clarify_gateway as _clarify_mod
         # "Other" → text-capture mode: mark_awaiting_text flips the entry and the

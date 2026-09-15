@@ -367,7 +367,18 @@ class GatewayInboundMixin:
             # Native-choice prompts reject unmatched prose so it continues through normal busy
             # routing. Release this clarify first: redirect() degrades to steer() while tools
             # execute, and that steer cannot drain until the clarify tool returns.
-            _clarify_mod.resolve_gateway_clarify(_pending_clarify.clarify_id, "")
+            if _clarify_mod.resolve_gateway_clarify(_pending_clarify.clarify_id, ""):
+                # Slack's native clarify prompt is a persistent Block Kit card. Once this
+                # unmatched prose releases the wait, retire that card before routing the prose
+                # normally so its buttons cannot advertise a stale answer path. Other adapters
+                # intentionally have no callback and retain the existing generic behaviour.
+                _clarify_adapter = self._adapter_for_source(source)
+                _cancel_card = getattr(_clarify_adapter, "cancel_clarify_message", None)
+                if source.platform == Platform.SLACK and callable(_cancel_card):
+                    try:
+                        await _cancel_card(_pending_clarify.clarify_id)
+                    except Exception:
+                        logger.debug("Failed to retire clarify card after prose cancellation", exc_info=True)
         return None
 
     # Reply → choice for a pending slash-confirm prompt; the command spelling wins over the

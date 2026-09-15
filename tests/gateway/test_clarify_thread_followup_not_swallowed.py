@@ -52,6 +52,17 @@ class _StubAdapter(BasePlatformAdapter):
         return {"id": chat_id, "type": "im"}
 
 
+class _SlackClarifyCancelAdapter(_StubAdapter):
+    """Records the Slack-only stale-card cancellation callback."""
+
+    def __init__(self):
+        super().__init__()
+        self.cancelled_clarify_ids: list[str] = []
+
+    async def cancel_clarify_message(self, clarify_id: str) -> None:
+        self.cancelled_clarify_ids.append(clarify_id)
+
+
 class _FellThroughIntercept(Exception):
     """Sentinel: _handle_message got PAST the clarify text-intercept."""
 
@@ -129,6 +140,23 @@ async def test_thread_prose_not_swallowed_by_native_multi_choice_clarify():
     assert entry is not None
     assert entry.event.is_set()
     assert entry.response == ""
+    _clear_clarify_state()
+
+
+@pytest.mark.asyncio
+async def test_thread_prose_cancels_the_slack_clarify_card_before_falling_through():
+    """Slack receives a stale-card update while the prose keeps normal follow-up routing."""
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _SlackClarifyCancelAdapter()
+    runner = _make_runner(adapter)
+    cm.register("cl-slack-card", SESSION_KEY, "Pick a UI variant", ["buttons", "dropdown"])
+
+    with pytest.raises(_FellThroughIntercept):
+        await _dispatch(runner, _event("just checking the visual UI, no need to pass any data"))
+
+    assert adapter.cancelled_clarify_ids == ["cl-slack-card"]
     _clear_clarify_state()
 
 
@@ -262,4 +290,3 @@ async def test_prose_still_accepted_after_other_flips_text_capture():
     assert entry.event.is_set()
     assert entry.response == "a carousel actually"
     _clear_clarify_state()
-

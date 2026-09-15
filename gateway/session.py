@@ -830,6 +830,43 @@ class SessionStore(
             setattr(self, name, value)
         return value
 
+    def _fence_native_route_entry(self, entry: SessionEntry, reason: str) -> None:
+        """Synchronously fence an exact route before automatic identity rotation."""
+        try:
+            from hermes_constants import get_hermes_home, profile_name_for_home
+            from hermes_cli.native_turn_sources import NativeSessionView, fence_native_turn_sources
+
+            profile_home = Path(get_hermes_home()).resolve()
+            origin = entry.origin
+            profile = str(
+                (origin.profile if origin is not None else None)
+                or profile_name_for_home(profile_home)
+                or "default"
+            )
+            lineage = (entry.session_id,)
+            db = self._db
+            getter = getattr(db, "get_compression_lineage", None)
+            if callable(getter):
+                raw_lineage = getter(entry.session_id)
+                if isinstance(raw_lineage, (list, tuple)):
+                    lineage = tuple(str(value) for value in raw_lineage) or lineage
+            platform = origin.platform if origin is not None else entry.platform
+            fence_native_turn_sources(
+                NativeSessionView(
+                    profile=profile,
+                    profile_home=profile_home,
+                    session_id=entry.session_id,
+                    surface="gateway",
+                    compression_lineage=lineage,
+                    session_key=entry.session_key,
+                    owner_token=f"gateway:{profile}:{entry.session_key}",
+                    metadata={"platform": platform.value if platform is not None else "unknown"},
+                ),
+                reason,
+            )
+        except Exception:
+            logger.warning("gateway.session: native route fence failed", exc_info=True)
+
     def _has_active_processes_safe(self, session_key: str, *, context: str) -> bool:
         """Whether a session has active work, failing closed (True) on registry errors."""
         if self._has_active_processes_fn is None:
@@ -910,12 +947,19 @@ class SessionStore(
             observed = self._entries.get(session_key)
         # Phase 1b (no lock): compression tip + stale check + explicit suspension.
         checks = None
-        if not force_new and observed is not None:
+        if observed is not None and force_new:
+            self._fence_native_route_entry(observed, "force_new_route")
+        elif observed is not None:
             sid = observed.session_id
             checks = _RouteChecks(
                 sid, self._compression_tip_for_session_id(sid), self._is_session_ended_in_db(sid),
                 self._route_reset_reason(observed),
             )
+            if checks.is_stale or checks.reset_reason:
+                self._fence_native_route_entry(
+                    observed,
+                    checks.reset_reason or "stale_route_reset",
+                )
         # Phase 2 (lock): apply the decisions to _entries.
         decision = self._apply_route_checks(session_key, checks, force_new, touch_activity, now)
 

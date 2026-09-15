@@ -584,6 +584,10 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
             _poll_bot_live_delivery_once(sid, session)
         except Exception:
             logger.warning("Bot live-owner delivery poll failed", exc_info=True)
+        try:
+            _poll_native_turn_once(sid, session)
+        except Exception:
+            logger.warning("Native turn source poll failed", exc_info=True)
         # /loop and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
         # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:
@@ -619,6 +623,113 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
     handle(ready, deferred)
     for evt in deferred:
         queue.put(evt)
+
+
+def _native_session_view(sid: str, session: dict):
+    """Snapshot exact identity/ownership facts for the current TUI session."""
+    from pathlib import Path
+
+    from hermes_constants import get_hermes_home
+    from hermes_cli.native_turn_sources import NativeSessionView
+
+    agent = session.get("agent")
+    session_id = str(getattr(agent, "session_id", "") or "")
+    profile_home = Path(str(session.get("profile_home") or get_hermes_home())).resolve()
+    profile = str(profile_name_for_home(profile_home) or "default")
+    lineage = (session_id,)
+    try:
+        with _session_db(session) as db:
+            getter = getattr(db, "get_compression_lineage", None)
+            if callable(getter):
+                lineage = tuple(getter(session_id)) or lineage
+    except Exception:
+        logger.debug("Native turn compression-lineage lookup failed", exc_info=True)
+    lease = session.get("active_session_lease")
+    owner_token = str(getattr(lease, "lease_id", "") or "") or None
+    surface = "tui"
+    return NativeSessionView(
+        profile=profile,
+        profile_home=profile_home,
+        session_id=session_id,
+        surface=surface,
+        compression_lineage=lineage,
+        session_key=str(session.get("session_key") or "") or None,
+        owner_token=owner_token,
+        metadata={"ui_session_id": sid, "client_surface": _session_source(session)},
+    )
+
+
+def _poll_native_turn_once(sid: str, session: dict) -> bool:
+    """Admit one source lease through the ordinary prompt entrypoint."""
+    from hermes_cli.native_turn_sources import poll_native_turn
+
+    with _sessions_lock:
+        if (
+            _sessions.get(sid) is not session
+            or session.get("_finalized")
+            or session.get("_closing")
+            or session.get("running")
+            or session.get("active_session_lease") is None
+            or session.get("queued_prompt") is not None
+            or session.get("queued_prompts")
+        ):
+            return False
+    # SessionDB lineage reads and plugin polling must never hold the process-wide
+    # TUI session lock.
+    view = _native_session_view(sid, session)
+    admission = poll_native_turn(view)
+    if admission is None:
+        return False
+    with _sessions_lock:
+        with session["history_lock"]:
+            active_lease = session.get("active_session_lease")
+            eligible = (
+                _sessions.get(sid) is session
+                and not session.get("_finalized")
+                and not session.get("_closing")
+                and not session.get("running")
+                and active_lease is not None
+                and not getattr(active_lease, "released", False)
+                and str(getattr(active_lease, "lease_id", "") or "")
+                == str(view.owner_token or "")
+                and session.get("queued_prompt") is None
+                and not session.get("queued_prompts")
+                and str(session.get("session_key") or "") == str(view.session_key or "")
+                and str(getattr(session.get("agent"), "session_id", "") or "")
+                == view.session_id
+            )
+            if not eligible:
+                admission.abort_if_open(
+                    "not_sent", "session became busy or changed before host admission"
+                )
+                return False
+            # Reserve the normal TUI slot atomically against human submission,
+            # before the plugin's pre-model commit.
+            session["running"] = True
+            session["_turn_cancel_requested"] = False
+            session["last_active"] = time.time()
+    started = _run_prompt_submit(
+        f"__native__{admission.lease.lease_id}",
+        sid,
+        session,
+        admission.lease.prompt,
+        display_kind=admission.lease.display_kind,
+        image_paths=[],
+        pre_model_admission=admission.commit,
+        turn_author={"type": "native", "source": admission.lease.display_kind},
+    )
+    if not started:
+        admission.abort_if_open("not_sent", "TUI session was not admitted")
+    return started
+
+
+def _fence_tui_native_session(sid: str, session: dict, reason: str) -> None:
+    """Fence source work for one exact TUI identity before a user boundary."""
+    from hermes_cli.native_turn_sources import fence_native_turn_sources
+
+    if not str(getattr(session.get("agent"), "session_id", "") or ""):
+        return
+    fence_native_turn_sources(_native_session_view(sid, session), reason)
 
 
 def _async_delegation_display_metadata(evt: dict) -> dict:

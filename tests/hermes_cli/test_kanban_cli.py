@@ -72,6 +72,19 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     assert "Cannot operate on a closed database" not in output
 
 
+def test_cli_complete_persists_evidence_receipt(kanban_home):
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="CLI evidence", completion_contract="evidence-required")
+    output = kc.run_slash(
+        f'''complete {task_id} --summary done --evidence '[{{"kind":"test","detail":"CLI targeted test"}}]' '''
+    )
+    assert f"Completed {task_id}" in output
+    with kbc.connect() as conn:
+        assert kb.latest_run(conn, task_id).metadata["completion_evidence"] == [
+            {"kind": "test", "detail": "CLI targeted test"},
+        ]
+
+
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):
     kb.create_board("alpha")
     kb.create_board("beta")
@@ -180,5 +193,4 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 # /kanban help / no-args / unknown-action UX (issue #21794)
 # ---------------------------------------------------------------------------
-
 

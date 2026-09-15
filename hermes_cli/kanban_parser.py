@@ -284,6 +284,8 @@ _SPECS = [
         _arg("--metadata",
              help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                   '"tests_run": 12}\'). Stored on the closing run.'),
+        _arg("--evidence",
+             help='JSON list of concrete receipts (e.g. \'[{"kind":"test", "detail":"scripts/run_tests.sh tests/..."}]\'). Required by evidence-required cards.'),
     ], help="Mark one or more tasks done"),
     _cmd("edit", [
         _TASK_ID,

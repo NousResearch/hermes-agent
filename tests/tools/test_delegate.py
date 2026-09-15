@@ -73,11 +73,17 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("goal", task_props)
         self.assertIn("context", task_props)
         self.assertIn("output_schema", task_props)
-        # toolsets is intentionally NOT exposed to the model — subagents always
-        # inherit the parent's toolsets. Letting the model name toolsets was a
-        # capability-selection surface the model should not control.
+        # Top-level toolsets stays unexposed: capability selection is not a
+        # batch-wide, model-controlled knob.
         self.assertNotIn("toolsets", props)
-        self.assertNotIn("toolsets", props["tasks"]["items"]["properties"])
+        # Per-task toolsets IS exposed, but capability selection still is not
+        # model-controlled: delegation.provider_toolsets decides what a provider
+        # may receive, and a child carrying anything outside that grant aborts
+        # the call. The per-task list can only narrow within the operator's
+        # grant, which is what makes exposing it safe. "It can only narrow the
+        # PARENT's set" is NOT sufficient on its own — the parent holds the
+        # vault, so narrowing to it is still a leak.
+        self.assertIn("toolsets", props["tasks"]["items"]["properties"])
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.

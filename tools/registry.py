@@ -488,6 +488,13 @@ class ToolRegistry:
             self._toolset_aliases[alias] = toolset
             self._generation += 1
 
+    def unregister_toolset_alias(self, alias: str) -> None:
+        """Drop an explicit toolset alias. Bumps the generation like registration does, so memoized
+        tool definitions keyed on it cannot survive the removal."""
+        with self._lock:
+            if self._toolset_aliases.pop(alias, None) is not None:
+                self._generation += 1
+
     def get_registered_toolset_aliases(self) -> Dict[str, str]:
         with self._lock:
             return dict(self._toolset_aliases)

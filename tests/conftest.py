@@ -19,6 +19,7 @@ remain (CPU count, xdist worker count) are addressed by the canonical
 test runner at ``scripts/run_tests.sh``.
 """
 
+import ast
 import asyncio
 import atexit
 import importlib
@@ -1344,6 +1345,54 @@ def _reject_multiple_os_marks(items):
         )
 
 
+def _shadowed_siblings(body):
+    """``(name, first_line, later_line)`` for every collectible name defined twice in one scope.
+
+    Siblings only, and recursive into class bodies: a module and a class are separate scopes, as are two
+    classes, so the same method name in two different ``Test*`` classes is legal and must not trip this.
+    """
+    seen, shadowed = {}, []
+    for node in body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        if node.name.startswith("test_") or node.name.startswith("Test"):
+            if node.name in seen:
+                shadowed.append((node.name, seen[node.name], node.lineno))
+            else:
+                seen[node.name] = node.lineno
+        if isinstance(node, ast.ClassDef):
+            shadowed.extend(_shadowed_siblings(node.body))
+    return shadowed
+
+
+def _reject_shadowed_tests(items):
+    """Fail collection when a test module defines the same collectible name twice in one scope.
+
+    Python keeps the LAST definition, so a duplicated ``test_*`` function or method is never collected,
+    never skipped and never named anywhere in the output — the run reports green while the coverage is
+    gone. Same silent-coverage-loss as two host-OS markers above, so it gets the same hard collection
+    error rather than a warning nobody reads. Checked for module top level AND every class body, since a
+    duplicated method inside a ``Test*`` class is the identical bug.
+
+    Read off the source: by the time pytest has imported the module, the losing definition no longer
+    exists to be counted. Scoped to names pytest would collect — a shadowed helper or fixture is a bug
+    too, but it changes a test rather than deleting one, and the narrow rule costs no false positives on
+    conditional definitions or ``@overload`` stubs. Only collected modules are examined, which is this
+    repo's ``tests/`` tree and nothing else.
+    """
+    offenders = []
+    for path in sorted({item.path for item in items if item.path is not None}):
+        if path.suffix != ".py":
+            continue
+        for name, first, later in _shadowed_siblings(ast.parse(path.read_text(encoding="utf-8")).body):
+            offenders.append(f"  {path}:{later}: {name} — already defined at line {first}")
+    if offenders:
+        raise pytest.UsageError(
+            "a test module may define each test name once per scope; these define some twice, so the "
+            "earlier definition is shadowed and never runs:\n" + "\n".join(offenders)
+        )
+
+
 def pytest_collection_modifyitems(config, items):  # noqa: D401 — pytest hook
     """Apply host-OS gating, then skip ``requires_wal`` where WAL is unusable.
 
@@ -1357,6 +1406,7 @@ def pytest_collection_modifyitems(config, items):  # noqa: D401 — pytest hook
     skip is diagnosable rather than mysterious.
     """
     _reject_multiple_os_marks(items)
+    _reject_shadowed_tests(items)
 
     for mark_name, (is_host, label) in _OS_MARKS.items():
         if is_host():

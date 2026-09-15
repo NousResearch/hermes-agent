@@ -65,31 +65,43 @@ def _blocked_toolsets_for_role(role: str) -> List[str]:
         name for name, defn in TOOLSETS.items() if defn.get("tools") and set(defn.get("tools", ())).issubset(blocked_names)
     )
 
+def _parent_toolsets(parent_agent) -> set:
+    """The parent's own enabled toolsets. enabled_toolsets=None means "all tools", so derive from the
+    loaded tool names instead. Shared so a caller vetting a requested list sees exactly the set
+    _resolve_child_toolsets will intersect against."""
+    parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
+    if parent_enabled is not None:
+        return set(parent_enabled)
+    if parent_agent and hasattr(parent_agent, "valid_tool_names"):
+        import model_tools
+        return {
+            ts for name in parent_agent.valid_tool_names if (ts := model_tools.get_toolset_for_tool(name)) is not None
+        }
+    return set(DEFAULT_TOOLSETS)
+
+def _unknown_toolset_names(toolsets: List[str]) -> List[str]:
+    """Requested names that are neither a static toolset nor a registered MCP toolset/alias."""
+    return [name for name in toolsets if name not in TOOLSETS and not _is_mcp_toolset_name(name)]
+
 def _resolve_child_toolsets(
-    parent_agent, toolsets: Optional[List[str]], effective_role: str
+    parent_agent, toolsets: Optional[List[str]], effective_role: str, *, exact: bool = False
 ) -> tuple[List[str], List[str]]:
     """``(enabled_toolsets, disabled_toolsets)`` for a child. Children never gain tools the parent lacks: explicit
     ``toolsets`` are intersected with the parent's (composite-expanded) set, else the parent's enabled set is
-    inherited. Blocked tools are stripped twice — whole blocked toolsets here, and exact one-tool deny toolsets via
+    inherited. ``toolsets=None`` inherits; an explicit ``[]`` means NO toolsets (a pure reasoning child), never a
+    fallback to inherit. ``exact`` suppresses the MCP re-add below, so a caller that narrowed a child on purpose
+    does not silently get the parent's MCP servers — and with them the parent's data — handed back. Blocked tools
+    are stripped twice — whole blocked toolsets here, and exact one-tool deny toolsets via
     ``disabled_toolsets`` so blocked names inside mixed bundles (hermes-cli) are subtracted AFTER composite
     expansion and survive registry refreshes. Orchestrators get ``delegation`` re-added unconditionally
     (role-granted, not inherited)."""
-    # enabled_toolsets=None means "all tools", so derive from loaded tool names.
     parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
-    if parent_enabled is not None:
-        parent_toolsets = set(parent_enabled)
-    elif parent_agent and hasattr(parent_agent, "valid_tool_names"):
-        import model_tools
-        parent_toolsets = {
-            ts for name in parent_agent.valid_tool_names if (ts := model_tools.get_toolset_for_tool(name)) is not None
-        }
-    else:
-        parent_toolsets = set(DEFAULT_TOOLSETS)
+    parent_toolsets = _parent_toolsets(parent_agent)
 
-    if toolsets:
+    if toolsets is not None:
         expanded_parent = _expand_parent_toolsets(parent_toolsets)
         child_toolsets = [t for t in toolsets if t in expanded_parent]
-        if _get_inherit_mcp_toolsets():
+        if not exact and _get_inherit_mcp_toolsets():
             # Append any parent MCP toolsets missing from the narrowed child.
             child_toolsets += [
                 name for name in sorted(parent_toolsets) if _is_mcp_toolset_name(name) and name not in child_toolsets

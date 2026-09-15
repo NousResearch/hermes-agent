@@ -8,11 +8,13 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, wait as _cf_wait
 from dataclasses import dataclass, replace
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
+from agent.fallback_cooldown import _RATE_LIMIT_FAILOVER_REASONS
 from tools.async_delegation import _new_delegation_id, record_unit_child
 from tools.delegate_tool_child_run import _attach_child, _detach_child, _fabricated_entry, _signal_child_stop
 from tools.delegate_tool_progress import (
@@ -22,6 +24,94 @@ from tools.delegate_tool_registry import _capture_gateway_steer_authority
 from tools.delegate_tool_results import _finalize_child_results
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
+
+# The quota walls a per-task ``fallback`` route exists to step around, as the string the child stamps into
+# ``failure_reason`` (``ClassifiedError.reason.value``). Derived from the classifier's own rate-limit family
+# rather than re-listed, so the two cannot drift: ``billing`` and ``rate_limit`` are the route's own wall,
+# and ``upstream_rate_limit`` is an aggregator's upstream throttling a healthy key — the one case
+# agent_runtime_helpers already resolves by "let fallback switch models" instead of rotating credentials.
+# Deliberately NOT keyed off ``should_fallback``, which is also set on format_error, model_not_found and
+# auth_permanent: those are the task's own failure and must stay loud.
+_QUOTA_WALL_REASONS = frozenset(r.value for r in _RATE_LIMIT_FAILOVER_REASONS)
+
+# Child construction runs on the main thread for the whole batch; a fallback child is built late, from
+# whichever worker thread hit the wall, so sibling retries are serialized against each other here.
+_FALLBACK_BUILD_LOCK = threading.Lock()
+
+
+class _Rung(NamedTuple):
+    """One vetted step of a task's descent: a label for the record, and the resolved route to run it on."""
+    label: str
+    creds: Dict[str, Any]
+    routing: Dict[str, Any]
+    toolsets: tuple
+
+
+class _Descent(NamedTuple):
+    """A task's descent plan, parked on its child by ``_build_children`` as ``_delegate_descent``.
+
+    ``rungs`` is every vetted model BELOW this child, in order, and is the walk's only bound: it is finite,
+    operator-declared, consumed left to right and never refilled, so there is no wrap-around and no way to
+    revisit a rung. ``halted`` says why an EMPTY ladder is empty — an opt-out, an unconfigured order, a
+    model nobody listed, or the bottom rung — because "walled and did not descend" is unactionable without
+    it. ``build`` re-runs the SAME construction the primary went through, differing only in credentials,
+    so a descended child cannot drift from the one it replaces; rungs are deliberately not pre-built, since
+    a spare child holds its own session-db handle and most batches never hit a wall at all.
+    """
+    label: str
+    rungs: tuple
+    halted: Optional[str]
+    build: Callable[..., tuple]
+
+
+def _hop(label: str, entry: Dict[str, Any]) -> Dict[str, Any]:
+    """One attempt's line in ``route_history``: where it ran, how it ended, and what it cost.
+
+    Per-rung cost is carried here rather than only summed, because the number that makes a long walk worth
+    reviewing is which rung burned the budget, not the total.
+    """
+    hop = {
+        "route": label, "status": entry.get("status", "?"),
+        "cost_usd": entry.get("cost_usd", 0.0), "duration_seconds": entry.get("duration_seconds", 0.0),
+    }
+    reason = entry.get("failure_reason")
+    if reason:
+        hop["failure_reason"] = reason
+    return hop
+
+
+def _stamp_descent(entry: Dict[str, Any], history: List[Dict[str, Any]], plan: "_Descent",
+                   build_err: Optional[str]) -> Dict[str, Any]:
+    """Make the walk legible on the result entry, and fold in what the abandoned attempts cost.
+
+    A walk of one hop that never moved is byte-identical to the pre-change result, EXCEPT when it ended on
+    a wall it could not descend from — that case owes the caller ``descent_halted``, since an operator
+    cannot otherwise tell a deliberate opt-out from a model nobody put in the order.
+    """
+    if build_err:
+        entry["descent_error"] = build_err
+    if len(history) == 1:
+        if entry.get("failure_reason") in _QUOTA_WALL_REASONS and plan.halted:
+            entry["descent_halted"] = plan.halted
+        return entry
+    entry["switched_from"] = history[0]["route"]
+    entry["switched_to"] = history[-1]["route"]
+    entry["switched_reason"] = history[0].get("failure_reason")
+    # The full path, not just the last hop: a result that walked three rungs is otherwise indistinguishable
+    # from one that walked one, and the cost difference between those is the whole point of reading it.
+    entry["route_history"] = history
+    if entry.get("failure_reason") in _QUOTA_WALL_REASONS and plan.halted is None:
+        entry["descent_halted"] = "delegation.descent_order is exhausted below this rung"
+    # Every abandoned attempt burned tokens and wall time before its wall. The surviving entry carries only
+    # its own, so without this fold the batch under-reports what a descent actually cost — which is exactly
+    # the number someone reviewing a seven-rung walk needs.
+    entry["_child_cost_usd"] = sum(float(h.get("cost_usd") or 0.0) for h in history[:-1]) + float(
+        entry.get("_child_cost_usd") or 0.0)
+    entry["cost_usd"] = round(entry["_child_cost_usd"], 6)
+    entry["duration_seconds"] = round(
+        sum(float(h.get("duration_seconds") or 0.0) for h in history[:-1])
+        + float(entry.get("duration_seconds") or 0.0), 1)
+    return entry
 
 
 @dataclass
@@ -58,7 +148,58 @@ class _Batch:
 
     def run_child(self, i: int, task: Dict[str, Any], child: Any) -> Dict[str, Any]:
         from tools.delegate_tool import _run_single_child
-        return _run_single_child(task_index=i, goal=task["goal"], child=child, parent_agent=self.parent_agent, **self.owner_kwargs())
+        entry = _run_single_child(task_index=i, goal=task["goal"], child=child, parent_agent=self.parent_agent, **self.owner_kwargs())
+        plan = getattr(child, "_delegate_descent", None)
+        # The type check is not decoration: an attribute that merely EXISTS is not a plan, and a truthiness
+        # test would dispatch a descent against anything that auto-creates attributes.
+        if not isinstance(plan, _Descent):
+            return entry
+        return self._walk_descent(i, task, plan, entry)
+
+    def _swap_child(self, i: int, child: Any) -> None:
+        """Point the batch's child list at the child that is actually running task ``i`` now.
+
+        Finalization resolves child_session_id through ``children`` (_notify_memory_manager,
+        _fire_subagent_stop_hooks); leaving a walled child there would file the descent's real summary under
+        a session that produced nothing. Submission has long finished, and item assignment is atomic.
+        """
+        for k, (idx, task, _child) in enumerate(self.children):
+            if idx == i:
+                self.children[k] = (idx, task, child)
+                return
+
+    def _walk_descent(self, i: int, task: Dict[str, Any], plan: "_Descent",
+                      entry: Dict[str, Any]) -> Dict[str, Any]:
+        """Walk task ``i`` down its ladder, ONE rung per quota wall, and stamp the whole path on the result.
+
+        Only a quota wall advances the walk: every other ``failure_reason`` (and a success) ends it where it
+        stands, because retrying a format_error or a blown iteration budget on another model would report a
+        real task failure as a route problem, which is the expensive direction of wrong. The walk stops when
+        the rungs run out — they are consumed left to right and never refilled, so an exhausted ladder fails
+        loud with no wrap-around. Siblings are untouched: this runs on the walled task's own worker thread.
+        """
+        from tools.delegate_tool import _run_single_child
+        history = [_hop(plan.label, entry)]
+        rungs, build_err = plan.rungs, None
+        while entry.get("failure_reason") in _QUOTA_WALL_REASONS and rungs:
+            rung, rungs = rungs[0], rungs[1:]
+            with _FALLBACK_BUILD_LOCK:
+                child, build_err = plan.build(rung.creds, rung.routing, rung.toolsets)
+            if build_err:
+                # The rung passed preflight, so this is a late construction failure. Reported ON the entry
+                # rather than swallowed: the caller must not read a bare quota wall and conclude the ladder
+                # was walked and did not help.
+                logger.error("[subagent-%d] quota wall on %s; descent rung %s could not be built: %s",
+                             i, history[-1]["route"], rung.label, build_err)
+                break
+            logger.warning("[subagent-%d] %s hit a quota wall (%s) — descending to %s (%d rung%s left below)",
+                           i, history[-1]["route"], entry.get("failure_reason"), rung.label,
+                           len(rungs), "" if len(rungs) == 1 else "s")
+            self._swap_child(i, child)
+            entry = _run_single_child(task_index=i, goal=task["goal"], child=child,
+                                      parent_agent=self.parent_agent, **self.owner_kwargs())
+            history.append(_hop(rung.label, entry))
+        return _stamp_descent(entry, history, plan, build_err)
 
 
 def _announce_batch(parent_agent, n_tasks: int, live_deleg_id: Optional[str]) -> None:

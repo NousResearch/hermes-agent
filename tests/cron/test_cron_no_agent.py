@@ -84,6 +84,60 @@ def test_cronjob_tool_create_no_agent_without_script_errors(hermes_env):
     assert "no_agent=True requires a script" in result.get("error", "")
 
 
+def test_cronjob_tool_create_rejects_invalid_no_agent_scripts_in_active_profile(
+    hermes_env, monkeypatch,
+):
+    from cron.jobs import load_jobs
+    from tools.cronjob_tools import cronjob
+
+    monkeypatch.setattr(pathlib.Path, "home", lambda: hermes_env.parent)
+    missing_result = json.loads(cronjob(
+        action="create",
+        schedule="every 5m",
+        script="missing.sh",
+        no_agent=True,
+        deliver="local",
+    ))
+    absolute_result = json.loads(cronjob(
+        action="create",
+        schedule="every 5m",
+        script=str(hermes_env.parent / "outside.sh"),
+        no_agent=True,
+        deliver="local",
+    ))
+
+    assert missing_result.get("success") is False
+    assert "Script file not found: ~/.hermes/scripts/missing.sh" in missing_result.get("error", "")
+    assert absolute_result.get("success") is False
+    assert "~/.hermes/scripts" in absolute_result.get("error", "")
+    assert str(hermes_env) not in missing_result.get("error", "")
+    assert str(hermes_env) not in absolute_result.get("error", "")
+    assert load_jobs() == []
+
+
+def test_cronjob_tool_update_rejects_missing_no_agent_script_without_mutation(hermes_env):
+    from cron.jobs import get_job
+    from tools.cronjob_tools import cronjob
+
+    (hermes_env / "scripts" / "present.sh").write_text("echo ok\n")
+    created = json.loads(cronjob(
+        action="create",
+        schedule="every 5m",
+        script="present.sh",
+        no_agent=True,
+        deliver="local",
+    ))
+
+    result = json.loads(cronjob(
+        action="update",
+        job_id=created["job_id"],
+        script="missing.sh",
+    ))
+
+    assert result.get("success") is False
+    assert get_job(created["job_id"])["script"] == "present.sh"
+
+
 # ---------------------------------------------------------------------------
 # scheduler.run_job: short-circuit behavior
 # ---------------------------------------------------------------------------

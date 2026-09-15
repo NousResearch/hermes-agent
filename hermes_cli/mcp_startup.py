@@ -56,8 +56,24 @@ def _has_configured_mcp_servers() -> bool:
         from hermes_cli.config import read_raw_config
 
         raw_config = read_raw_config() or {}
-        if isinstance(raw_config.get("mcp_servers"), dict) and raw_config["mcp_servers"]:
-            return True
+        mcp_servers = raw_config.get("mcp_servers")
+        if isinstance(mcp_servers, dict):
+            # A disabled server is configuration metadata, not an active MCP
+            # server. Treating any entry as configured starts discovery unnecessarily.
+            def _is_enabled(server_cfg: object) -> bool:
+                if not isinstance(server_cfg, dict):
+                    return False
+                value = server_cfg.get("enabled", True)
+                if value is None or isinstance(value, bool):
+                    return value is not False
+                if isinstance(value, int):
+                    return value != 0
+                if isinstance(value, str):
+                    return value.strip().lower() not in {"false", "0", "no", "off"}
+                return True
+
+            if any(_is_enabled(server_cfg) for server_cfg in mcp_servers.values()):
+                return True
         from hermes_cli.agent_plugins import has_enabled_agent_plugin_mcp
 
         return has_enabled_agent_plugin_mcp(raw_config)

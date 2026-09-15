@@ -98,6 +98,30 @@ def _send_result_error(result: Any) -> Optional[str]:
     return None if get("success", True) is not False else str(get("error") or "")
 
 
+def apply_final_gateway_send_policy(
+    platform: Platform, chat_id: str, content: str, metadata: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Apply registered final-send policy decisions in registration order."""
+    from hermes_cli.lifecycle import invoke_hook
+
+    final_content = content
+    for decision in invoke_hook(
+        "final_gateway_send_policy",
+        platform=platform.value,
+        chat_id=chat_id,
+        content=final_content,
+        metadata=metadata,
+    ):
+        if not isinstance(decision, dict):
+            continue
+        action = str(decision.get("action") or "").lower()
+        if action == "rewrite" and isinstance(decision.get("content"), str):
+            final_content = decision["content"]
+        elif action == "block":
+            raise PermissionError(str(decision.get("reason") or "gateway send blocked by policy"))
+    return final_content
+
+
 @dataclass
 class DeliveryTarget:
     """One target: "origin", "local", "telegram" (home channel) or "telegram:123456[:thread]"."""
@@ -302,6 +326,9 @@ class DeliveryRouter:
                 else:
                     send_metadata["telegram_dm_topic_reply_fallback"] = True
 
+        content = apply_final_gateway_send_policy(
+            target.platform, target.chat_id, content, send_metadata or None,
+        )
         for retry in (False, True):
             result = await transport.send(target.platform, target.chat_id, content, metadata=send_metadata or None)
             error = _send_result_error(result)

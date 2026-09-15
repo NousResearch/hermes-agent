@@ -409,6 +409,31 @@ def build_anthropic_client(api_key, base_url: str = None, timeout: float = None,
         # get these from profile.default_headers, but this route never sees the profile.
         for k, v in _attribution_headers().items():
             headers.setdefault(k, v)
+    # Generic registered-profile header merge. The OpenAI-wire client-construction
+    # path resolves a provider's ProviderProfile.default_headers automatically
+    # (agent_init.py / agent_runtime_helpers.py::_provider_supplied_client); this
+    # function is the only client builder for api_mode="anthropic_messages" and
+    # never went through that seam, so any Anthropic-compatible provider plugin
+    # (beyond the hardcoded OpenCode case above) declaring default_headers — e.g.
+    # a mandatory workspace/tenant header — was silently dropped. Match the
+    # profile by base_url prefix (host-matched registered profiles carry one
+    # canonical endpoint each) and merge its default_headers under whatever the
+    # auth branch above already set, so provider-declared auth headers win.
+    try:
+        from providers import list_providers as _list_anthropic_profiles
+
+        _normalized_for_match = (normalized_base_url or "").rstrip("/").lower()
+        if _normalized_for_match:
+            for _candidate in _list_anthropic_profiles():
+                _candidate_base = str(getattr(_candidate, "base_url", "") or "").rstrip("/").lower()
+                if _candidate_base and _normalized_for_match.startswith(_candidate_base):
+                    if getattr(_candidate, "default_headers", None):
+                        _merged = dict(_candidate.default_headers)
+                        _merged.update(headers)
+                        headers = _merged
+                    break
+    except Exception:
+        logger.debug("registered-profile header merge skipped", exc_info=True)
     return _new_sdk_client(sdk, kwargs, headers)
 
 

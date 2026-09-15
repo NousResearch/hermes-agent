@@ -93,8 +93,8 @@ no `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`; keeps `execu
 `delegation.max_spawn_depth`, default 2). Config knobs under `delegation:`:
 `max_concurrent_children, independent_completions, max_spawn_depth, child_timeout_seconds, orchestrator_enabled,
 subagent_auto_approve, inherit_mcp_toolsets, max_iterations, quality_gate`. **Quality gate** (`delegation_quality_gate.py`,
-opt-in via `quality_gate.command`, an argv list never run through a shell): the config is frozen onto the child at
-spawn (`child._delegate_quality_gate`, `_build_child_agent`) — never re-read after completion. After `output_schema`
+opt-in via `quality_gate.command`, an argv list executed directly, without a shell): the config is frozen onto the child at
+spawn (`child._delegate_quality_gate`, `_build_child_agent`) and used as frozen after completion. After `output_schema`
 validation and BEFORE the steer boundary in `_run_single_child`, the judge reads the child's answer as JSON on stdin
 (with the child's OWN workspace from `_ChildRun.child_workspace()`) and answers pass/warn/retry/reject; `retry` drives
 correction turns through `_ChildRun.run_correction_turn` (same daemon/approval/`child_timeout_seconds` envelope as the

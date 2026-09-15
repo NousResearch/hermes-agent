@@ -64,4 +64,3 @@ class TestTuiApprovalEmitRedaction:
         )
 
         assert emitted["payload"]["choices"] == expected
-

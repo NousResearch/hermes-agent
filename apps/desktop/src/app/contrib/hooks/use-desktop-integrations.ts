@@ -32,6 +32,7 @@ import type { SessionInfo } from '@/types/hermes'
 
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
 import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, routeSessionId, sessionRoute } from '../../routes'
+import { installDesktopFolderDrop } from '../desktop-folder-drop'
 
 type RememberedSession = Pick<SessionInfo, '_lineage_root_id' | 'id' | 'profile'>
 
@@ -370,6 +371,11 @@ export function useDesktopIntegrations({
 
     return () => unsubscribe?.()
   }, [])
+
+  // Finder/Explorer folder drop → the same project upsert/session flow. Only
+  // the accepted directory shape is claimed; files and malformed drops keep
+  // propagating to the existing composer and file-drop surfaces.
+  useEffect(() => installDesktopFolderDrop(openFolderAsProject), [])
 
   // Another window mutated the shared session list -> re-pull the sidebar.
   useEffect(() => {

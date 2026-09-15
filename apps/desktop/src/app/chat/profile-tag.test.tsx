@@ -1,6 +1,6 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Keep store/profile's side-effecting imports inert (gateway socket layer +
 // REST client) — same seam as store/profile.test.ts.
@@ -16,12 +16,28 @@ vi.mock('@/lib/query-client', () => ({ queryClient: { invalidateQueries: vi.fn()
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
 
 const { ProfileTag } = await import('./profile-tag')
-const { setProfileColor } = await import('@/store/profile')
+const { $profileColors, $profiles, setProfileColor } = await import('@/store/profile')
 
 afterEach(cleanup)
 
+beforeEach(() => {
+  $profileColors.set({})
+  $profiles.set([])
+})
+
 describe('ProfileTag', () => {
-  it('shows the profile initial with an accessible owner label', () => {
+  it('uses the matching profile display name for the glyph and owner label', () => {
+    $profiles.set([{ display_name: 'Homelab', name: 'it-homelab' }] as never)
+
+    render(<ProfileTag profile="it-homelab" />)
+
+    const tag = screen.getByRole('img', { name: 'Profile: Homelab (it-homelab)' })
+    expect(tag.textContent).toBe('H')
+  })
+
+  it('falls back to the canonical profile name when no display name exists', () => {
+    $profiles.set([{ name: 'xavier' }] as never)
+
     render(<ProfileTag profile="xavier" />)
 
     const tag = screen.getByRole('img', { name: 'Profile: xavier' })
@@ -39,12 +55,13 @@ describe('ProfileTag', () => {
     expect(tag.style.color).toBe('')
   })
 
-  it('uses the profile identity color (user override wins)', () => {
-    setProfileColor('xavier', 'hsl(120 68% 58%)')
+  it('uses the canonical profile identity color when a display name is set', () => {
+    $profiles.set([{ display_name: 'Homelab', name: 'it-homelab' }] as never)
+    setProfileColor('it-homelab', 'hsl(120 68% 58%)')
 
-    render(<ProfileTag profile="xavier" />)
+    render(<ProfileTag profile="it-homelab" />)
 
-    const tag = screen.getByRole('img', { name: 'Profile: xavier' })
+    const tag = screen.getByRole('img', { name: 'Profile: Homelab (it-homelab)' })
     // jsdom normalizes hsl() to rgb(); assert the override landed, not the format.
     expect(tag.style.color).toBe('rgb(75, 221, 75)')
   })

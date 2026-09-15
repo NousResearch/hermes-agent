@@ -2584,7 +2584,13 @@ def complete_task(
                    AND status IN ('running', 'ready', 'blocked', 'review')
                 """
         params: tuple = (result, now, task_id)
-        if expected_run_id is not None:
+        if expected_run_id is None:
+            # A claim-less caller may complete a never-claimed/manual task,
+            # but must not close whichever worker currently owns this task.
+            # Keeping this in the transition CAS also prevents a claim from
+            # racing in between authorization and the terminal update.
+            sql += " AND current_run_id IS NULL"
+        else:
             sql += " AND current_run_id = ?"
             params = (*params, int(expected_run_id))
         if conn.execute(sql, params).rowcount != 1:

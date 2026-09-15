@@ -438,6 +438,34 @@ def test_stale_run_cannot_block_or_heartbeat_new_attempt(kanban_home, monkeypatc
         conn.close()
 
 
+def test_claimless_complete_cannot_end_a_live_foreign_run(kanban_home):
+    """A manual caller cannot close or take credit for another worker's run."""
+    conn = kbc.connect()
+    try:
+        running = kb.create_task(conn, title="owned by a worker", assignee="worker")
+        kb.claim_task(conn, running)
+        foreign_run = kb.latest_run(conn, running)
+
+        assert not kb.complete_task(conn, running, summary="foreign completion")
+
+        task = kb.get_task(conn, running)
+        assert task.status == "running"
+        assert task.current_run_id == foreign_run.id
+        assert kb.latest_run(conn, running).ended_at is None
+        assert not any(event.kind == "completed" for event in kb.list_events(conn, running))
+
+        # The actual worker can still finish its own claimed run.
+        assert kb.complete_task(conn, running, summary="worker completion", expected_run_id=foreign_run.id)
+        assert kb.latest_run(conn, running).outcome == "completed"
+
+        # A never-claimed task remains available for legitimate manual completion.
+        manual = kb.create_task(conn, title="manual task")
+        assert kb.complete_task(conn, manual, summary="manual completion")
+        assert kb.get_task(conn, manual).status == "done"
+    finally:
+        conn.close()
+
+
 
 
 
@@ -1414,5 +1442,3 @@ def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
         assert events == [], "historical events must not replay to a new sub"
     finally:
         conn.close()
-
-

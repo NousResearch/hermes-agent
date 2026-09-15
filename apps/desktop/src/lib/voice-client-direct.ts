@@ -278,14 +278,14 @@ export async function directTtsConfig(): Promise<DirectTtsConfig | null> {
   return config?.tts && config.tts.mode === 'direct' ? config.tts : null
 }
 
-/** Synthesize one text segment to audio bytes (mp3). Throws on provider rejection. */
+/** Synthesize one text segment to audio bytes (mp3/opus). Throws on provider rejection. */
 export async function synthesizeSpeechClientDirect(tts: DirectTtsConfig, text: string): Promise<ArrayBuffer> {
   if (tts.wire === 'openai-speech') {
     const body: Record<string, unknown> = {
       model: tts.model,
       voice: tts.voice,
       input: text,
-      response_format: 'mp3'
+      response_format: 'opus'
     }
 
     if (tts.speed && tts.speed !== 1) {

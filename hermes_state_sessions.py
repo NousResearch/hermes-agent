@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import sqlite3
+import sys
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -311,6 +312,8 @@ class SessionSessionsMixin:
             profile_name = self._own_profile_name()
         def _do(conn):
             system_prompt_hash = self._store_system_prompt(conn, system_prompt)
+            # Enrich a reset identity row without changing its stored creation evidence;
+            # a legacy marker-only row must not acquire that evidence from a later upsert.
             conn.execute(
                 """INSERT INTO sessions (
                    id, source, user_id, session_key, chat_id, chat_type, thread_id,
@@ -327,10 +330,17 @@ class SessionSessionsMixin:
                                     sessions.model_config, '$._reset_from'
                                 ) IS NOT NULL
                                 AND json_remove(
-                                    sessions.model_config, '$._reset_from'
+                                    sessions.model_config, '$._reset_from', '$._reset_created_from'
                                 ) = '{}'
                            THEN json_set(
-                               excluded.model_config,
+                               CASE
+                                   WHEN json_type(sessions.model_config, '$._reset_created_from') IS NOT NULL
+                                   THEN json_set(
+                                       excluded.model_config, '$._reset_created_from',
+                                       json_extract(sessions.model_config, '$._reset_created_from')
+                                   )
+                                   ELSE json_remove(excluded.model_config, '$._reset_created_from')
+                               END,
                                '$._reset_from',
                                json_extract(
                                    sessions.model_config, '$._reset_from'
@@ -448,16 +458,37 @@ class SessionSessionsMixin:
         return changed
 
     def reopen_session(self, session_id: str) -> None:
-        """Clear ended_at/end_reason so a session can be resumed; first stamp markerless legacy reset
-        children that depend on the parent's mutable end_reason (WHERE shared with the listing predicate
-        so they cannot drift)."""
+        """Resume a session, preserving only defensible legacy reset evidence before clearing its end.
+
+        The shared listing heuristic remains a prefilter; a durable backfill needs a finite,
+        ordered boundary and no conflicting lineage. ``_reset_from`` is compatibility evidence,
+        never creation authority: this path must not write ``_reset_created_from``.
+        """
+        # CASE guards every JSON lookup: one corrupt child must not prevent its parent reopening.
+        config = (
+            "(CASE WHEN child.model_config IS NULL THEN '{}' WHEN json_valid(child.model_config) "
+            "THEN child.model_config ELSE 'null' END)"
+        )
         def _do(conn):
             conn.execute(
-                "UPDATE sessions AS child SET model_config = json_set("
-                "COALESCE(child.model_config, '{}'), '$._reset_from', child.parent_session_id) "
-                f"WHERE child.parent_session_id = ? AND {_sql_json_extract('child.model_config', '$._reset_from')} IS NULL "
-                f"AND {_legacy_reset_child_sql('child', _session_ids_placeholders(_RESET_END_REASONS))}",
-                (session_id, *_RESET_END_REASONS),
+                f"UPDATE sessions AS child SET model_config = json_set({config}, "
+                "'$._reset_from', child.parent_session_id) "
+                "WHERE child.parent_session_id = ? "
+                f"AND {_legacy_reset_child_sql('child', _session_ids_placeholders(_RESET_END_REASONS))} "
+                "AND LENGTH(TRIM(child.session_key)) > 0 "
+                f"AND json_type({config}) = 'object' "
+                f"AND json_type({config}, '$._reset_from') IS NULL "
+                f"AND json_type({config}, '$._reset_created_from') IS NULL "
+                f"AND json_type({config}, '$._branched_from') IS NULL "
+                f"AND json_type({config}, '$._delegate_from') IS NULL "
+                "AND LOWER(TRIM(COALESCE(child.source, ''))) NOT IN ('subagent', 'tool') "
+                "AND EXISTS (SELECT 1 FROM sessions parent WHERE parent.id = child.parent_session_id "
+                "AND typeof(child.started_at) IN ('integer', 'real') "
+                "AND typeof(parent.ended_at) IN ('integer', 'real') "
+                "AND child.started_at BETWEEN -? AND ? "
+                "AND parent.ended_at BETWEEN -? AND ? "
+                "AND child.started_at >= parent.ended_at)",
+                (session_id, *_RESET_END_REASONS, *([sys.float_info.max] * 4)),
             )
             conn.execute(
                 "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?", (session_id,),

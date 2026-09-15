@@ -3705,8 +3705,11 @@ class FeishuAdapter(BasePlatformAdapter):
             log_level=lark.LogLevel.INFO,
             event_handler=self._event_handler,
             domain=domain,
-            # Without the "channel" UA tag Feishu won't push group @mention events over WS.
-            extra_ua_tags=["channel"],
+            # Do NOT tag this connection with extra_ua_tags=["channel"]:
+            # Feishu classifies UA-tagged connections as channel connections
+            # and stops pushing regular group messages to them (DMs still
+            # arrive). Untagged connections receive group @mentions fine —
+            # verified A/B on 2026-09-15. See #50656 history and #111420.
         )
         # The lark SDK owns this thread and fires every event/card callback on it; those hop back
         # to the adapter loop via run_coroutine_threadsafe, which copies the CALLER's context — so

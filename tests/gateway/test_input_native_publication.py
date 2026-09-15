@@ -2,7 +2,6 @@
 import asyncio
 import hashlib
 import os
-from pathlib import Path
 from threading import Event
 
 import pytest
@@ -114,6 +113,8 @@ async def test_competing_winner_survives_failed_handoff_then_reclaims(tmp_path, 
             assert observations['reused'] == winner
             assert bool(authorization) is (failure == 'refusal')
             assert bool(observations.get('rolled_back')) is (failure == 'before_commit')
+        assert observations['intent']['state'] == 'preparing'
+        assert (observations['intent']['device'], observations['intent']['inode']) == (None, None)
         after_handoff = native_row(db)
         assert not list(native._media_root().glob('.capture-*'))
         assert image.stat().st_nlink == 1
@@ -124,6 +125,12 @@ async def test_competing_winner_survives_failed_handoff_then_reclaims(tmp_path, 
             assert image.exists(), 'A lease must outlive ordinary B terminal release'
         db._execute_write(lambda conn: conn.execute('UPDATE input_custody_preparations SET expires_at=0'))
         db = reopen(db, owner, tmp_path)
+        if not live_b and failure == 'after_publish':
+            foreign_link = tmp_path / 'foreign-link.png'
+            os.link(image, foreign_link)
+            assert collect_legacy_input_aliases(db, epoch=owner.epoch)['removed'] == 0
+            assert image.exists() and native_row(db)['device'] is None
+            foreign_link.unlink()  # Release only this test-owned holder, never repair custody metadata.
         result = collect_legacy_input_aliases(db, epoch=owner.epoch)
         if live_b:
             assert image.exists() and result['removed'] == 0, 'live B must retain provisional or ready bytes'
@@ -140,9 +147,11 @@ async def test_competing_winner_survives_failed_handoff_then_reclaims(tmp_path, 
             assert (native_row(db)['device'], native_row(db)['inode']) == winner
     finally:
         release.set()
-        if task is not None and not task.done():
-            await asyncio.wait_for(asyncio.shield(task), 20)
-        close(db, tmp_path)
+        try:
+            if task is not None:
+                await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 20)
+        finally:
+            close(db, tmp_path)
 
 
 @pytest.mark.asyncio
@@ -177,6 +186,12 @@ async def test_cold_equal_images_preserve_order_with_one_physical_owner(tmp_path
             normalized.append(payload)
             return payload
         monkeypatch.setattr('gateway.session_submission_payload.normalize_submission_payload', observe_payload)
+        publications = []
+        publish = native._publish_native_media
+        def observe_publication(staged, references):
+            publications.append(list(references))
+            return publish(staged, references)
+        monkeypatch.setattr(native, '_publish_native_media', observe_publication)
         rpc.authorizer = lambda *args: not refused
         if refused:
             with pytest.raises(RuntimeStoreError, match='permission_denied'):
@@ -188,6 +203,12 @@ async def test_cold_equal_images_preserve_order_with_one_physical_owner(tmp_path
         assert resolved == [[item['attachment_id'] for item, _ in bound]]
         expected = {'path': str(image), 'sha256': digest, 'size': len(PNG)}
         assert payload['attachments_v1'] == {'media': [expected, expected], 'media_types': ['image/png', 'image/png']}
+        assert publications and all(references == [expected] for references in publications)
+        if not refused:
+            from gateway.session_admission import admission_fingerprint
+            row = get_session_admission(db, admission_id=receipt['admission_id'])
+            assert row['payload_digest'] == admission_fingerprint(canonical_target=rpc.ref.session_id,
+                payload={'input': normalized[0], 'intent': 'queue'})
         copy = native_row(db)
         assert copy['state'] == 'ready'
         assert (copy['device'], copy['inode']) == verified_identity(image, digest, len(PNG))
@@ -228,6 +249,10 @@ async def test_ready_native_identity_never_becomes_provisional_deletion_authorit
         expire(db, prepared.handle)
         db._execute_write(lambda conn: conn.execute('UPDATE input_custody_preparations SET expires_at=0'))
         db = reopen(db, owner, tmp_path)
+        if mutation in {'replace', 'symlink'}:
+            # Expiry does not turn an existing replacement into a new generation.
+            with pytest.raises(RuntimeStoreError, match='input_preparation_busy|storage_unavailable'):
+                prepare_hosted_input(rpc, request_id='unheld-replacement', **args)
         if mutation == 'missing':
             # Normal native settlement can remove a bound path; a new generation may publish anew.
             next_prepared = prepare_hosted_input(rpc, request_id='third', **args)

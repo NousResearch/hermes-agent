@@ -14,8 +14,14 @@ export interface SessionRowFormatters {
 const modelLabel = (model: null | string) => model?.split('/').pop()?.trim() || null
 const oneLine = (value: null | string) => value?.replace(/\s+/g, ' ').trim() || null
 
-export const sessionRowEstimate = (density: SessionListDensity) =>
-  ({ compact: 28, comfortable: 45, detailed: 63 })[density]
+/** Shared contract for rendered minimum height and virtual-list placement. */
+export const SESSION_ROW_HEIGHT_PX: Record<SessionListDensity, number> = {
+  compact: 28,
+  comfortable: 48,
+  detailed: 64
+}
+
+export const sessionRowEstimate = (density: SessionListDensity) => SESSION_ROW_HEIGHT_PX[density]
 
 export function sessionRowDetails(session: SessionInfo, fmt: SessionRowFormatters): SessionRowDetails {
   const preview = oneLine(session.preview)

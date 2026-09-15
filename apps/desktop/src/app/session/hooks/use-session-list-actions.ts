@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 
-import { listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/hermes'
+import { getHermesConfigRecord, listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/hermes'
 import { sameCronSignature } from '@/lib/session-signatures'
 import {
   isMessagingSource,
   LOCAL_SESSION_SOURCE_IDS,
-  MESSAGING_SESSION_SOURCE_IDS,
   normalizeSessionSource
 } from '@/lib/session-source'
+import { resolveSidebarRecentsExclude } from '@/lib/sidebar-excluded-sources'
 import { gatewayActivationEpoch } from '@/store/gateway'
 import {
   $pinnedSessionIds,
@@ -42,15 +42,10 @@ import { $sessionTiles, $workingSessionIds, getRecentlySettledSessionIds } from 
 
 import { refreshCronJobs as refreshCronJobsStore } from '../../cron/cron-actions'
 
-// The recents list is local-only: cron rows have their own section, kanban
-// dispatcher workers are read on the board, and each messaging platform
-// (telegram, discord, …) is fetched separately into its own self-managed
-// sidebar section (refreshMessagingSessions). Excluding them here keeps
-// "Load more" paging through interactive local chats instead of
-// interleaving gateway threads that bury them.
-const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'kanban', 'subagent', 'tool', ...MESSAGING_SESSION_SOURCE_IDS]
-// The messaging slice is the inverse: drop cron + every local source so only
-// external-platform conversations remain, then split per platform in the UI.
+// The messaging slice is the inverse of recents: drop cron + every local
+// source so only external-platform conversations remain, then split per
+// platform in the UI. Recents excludes live in sidebar-excluded-sources
+// (built-in ∪ sessions.exclude_sources, defaulting to a2a).
 const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
 
 // Drop rows the user just deleted/archived: ANY list fetch (full refresh,
@@ -276,10 +271,11 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         // Batched: one request opens each profile DB once and returns all three
         // source-scoped slices, instead of three separate listAllProfileSessions
         // calls that each reopened + re-counted every profile DB per refresh.
+        const recentsExclude = await resolveSidebarRecentsExclude(getHermesConfigRecord)
         const result = await listSidebarSessions({
           recentsProfile: sessionProfile,
           recentsLimit: limit,
-          recentsExclude: SIDEBAR_EXCLUDED_SOURCES,
+          recentsExclude,
           cronLimit: CRON_SECTION_LIMIT,
           messagingLimit: MESSAGING_SECTION_LIMIT,
           messagingExclude: MESSAGING_EXCLUDED_SOURCES

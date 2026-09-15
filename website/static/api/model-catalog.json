@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-09-10T16:09:08Z",
+  "updated_at": "2026-09-13T10:29:51Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -376,6 +376,12 @@
         },
         {
           "id": "nvidia/nemotron-3-super-120b-a12b"
+        },
+        {
+          "id": "meta/muse-spark-1.2"
+        },
+        {
+          "id": "meta/muse-spark-1.3"
         },
         {
           "id": "sakana/fugu-ultra"

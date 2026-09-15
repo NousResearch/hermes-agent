@@ -508,3 +508,61 @@ class TestManifestMatchesInRepoLists:
             "Run: python scripts/build_model_catalog.py && "
             "git add website/static/api/model-catalog.json"
         )
+
+
+# -----------------------------------------------------------------------------
+# Regression: ids the Nous Portal actually serves must not be filtered out of
+# the Nous picker by ``_OPENROUTER_ONLY``.
+#
+# History: ``meta/muse-spark-1.2`` and ``meta/muse-spark-1.3`` were listed in
+# ``_OPENROUTER_ONLY`` alongside their ``-contributor`` twins, so the Nous row
+# of /model (and the published manifest built from the same list) hid two
+# models the Portal serves. ``GET https://inference-api.nousresearch.com/v1/models``
+# (keyless) returns both with ``context_length`` 1048576; only the
+# ``-contributor`` twins are genuinely OpenRouter-only.
+# -----------------------------------------------------------------------------
+
+
+class TestPortalServedIdsReachTheNousPicker:
+    """Pinned ids — deliberately hardcoded so the suite never hits the network."""
+
+    # Served by the Portal catalog (verified against /v1/models, both 1048576 ctx).
+    PORTAL_SERVED = ("meta/muse-spark-1.2", "meta/muse-spark-1.3")
+    # Not served by the Portal — OpenRouter-only, must stay filtered out.
+    OPENROUTER_ONLY = ("meta/muse-spark-1.2-contributor", "meta/muse-spark-1.3-contributor")
+
+    def test_portal_served_ids_are_offered_to_nous(self):
+        from hermes_cli.models_catalog_static import _OPENROUTER_ONLY, _PROVIDER_MODELS
+
+        nous_models = _PROVIDER_MODELS["nous"]
+        for mid in self.PORTAL_SERVED:
+            assert mid not in _OPENROUTER_ONLY, (
+                f"{mid} is served by the Nous Portal; listing it in _OPENROUTER_ONLY "
+                "hides it from the Nous picker"
+            )
+            assert mid in nous_models, f"{mid} missing from the curated nous list"
+
+    def test_contributor_twins_stay_openrouter_only(self):
+        from hermes_cli.models_catalog_static import _OPENROUTER_ONLY, _PROVIDER_MODELS
+
+        nous_models = _PROVIDER_MODELS["nous"]
+        for mid in self.OPENROUTER_ONLY:
+            assert mid in _OPENROUTER_ONLY, f"{mid} is not on the Portal and must be filtered"
+            assert mid not in nous_models, f"{mid} is not on the Portal but reached the nous list"
+
+    def test_shipped_manifest_offers_portal_served_ids(self):
+        """The published manifest wins over the in-repo snapshot at runtime
+        (``get_curated_nous_model_ids``), so it has to carry them too."""
+        repo_root = Path(__file__).resolve().parents[2]
+        manifest_path = repo_root / "website" / "static" / "api" / "model-catalog.json"
+        if not manifest_path.exists():
+            pytest.skip(f"manifest missing at {manifest_path}")
+
+        with open(manifest_path, encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        nous_ids = [m["id"] for m in manifest["providers"]["nous"]["models"]]
+
+        for mid in self.PORTAL_SERVED:
+            assert mid in nous_ids, f"{mid} missing from the published nous manifest block"
+        for mid in self.OPENROUTER_ONLY:
+            assert mid not in nous_ids, f"{mid} is not on the Portal but is in the nous manifest"

@@ -47,10 +47,11 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     )
 ]
 
-# OpenRouter entries the Nous Portal does not carry (routing/fast variants, free tier).
+# OpenRouter entries the Nous Portal does not carry (routing/fast variants, contributor twins,
+# free tier). The Portal DOES serve the plain muse-spark 1.2/1.3 SKUs — only the twins are here.
 _OPENROUTER_ONLY = {
-    "anthropic/claude-opus-5-fast", "anthropic/claude-opus-4.8-fast", "meta/muse-spark-1.2",
-    "meta/muse-spark-1.2-contributor", "meta/muse-spark-1.3", "meta/muse-spark-1.3-contributor", "openrouter/pareto-code",
+    "anthropic/claude-opus-5-fast", "anthropic/claude-opus-4.8-fast",
+    "meta/muse-spark-1.2-contributor", "meta/muse-spark-1.3-contributor", "openrouter/pareto-code",
 }
 
 

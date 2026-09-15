@@ -24,6 +24,43 @@ def lower_key(name: str) -> str:
     return name.strip().lower()
 
 
+class DeferredLoaders:
+    """One-shot loaders a registry runs on its first real read (:meth:`materialize`).
+
+    A bundled backend plugin registers its import here instead of importing at startup, so a
+    process that never uses the capability never pays for the module import. Cancellation is the
+    caller's job (the loader itself checks a flag after taking the discovery lock); a cancelled
+    loader is simply a no-op that is dropped on the next materialize.
+    """
+
+    def __init__(self, logger: logging.Logger, label: str) -> None:
+        self._logger = logger
+        self._label = label
+        self._loaders: List[Callable[[], None]] = []
+        self._lock = threading.Lock()
+
+    def register(self, loader: Callable[[], None]) -> None:
+        """Queue *loader* for the next :meth:`materialize`."""
+        with self._lock:
+            self._loaders.append(loader)
+
+    def materialize(self) -> None:
+        """Run every pending loader once, in registration order. A raising loader is logged, never
+        propagated — one broken plugin must not break the read (or the other plugins)."""
+        with self._lock:
+            loaders, self._loaders = self._loaders, []
+        for loader in loaders:
+            try:
+                loader()
+            except Exception as exc:  # noqa: BLE001
+                self._logger.warning("Deferred %s load failed: %s", self._label, exc, exc_info=True)
+
+    def clear(self) -> None:
+        """Drop pending loaders without running them. **Test-only.**"""
+        with self._lock:
+            self._loaders.clear()
+
+
 class ProviderRegistry(Generic[P]):
     """Global + per-scope provider map with plugin snapshot/restore support.
 
@@ -52,6 +89,8 @@ class ProviderRegistry(Generic[P]):
         self._lock = threading.Lock()
         # "TTS provider" but "Registered browser provider": acronyms keep their case.
         self._log_label = label if label.isupper() else label[0].lower() + label[1:]
+        # Bundled backends queue their import here; the first real read materializes them.
+        self._deferred = DeferredLoaders(logger, self._log_label)
 
     def _target(self, scope: Optional[str], *, create: bool) -> Dict[str, P]:
         if scope is None:
@@ -96,8 +135,14 @@ class ProviderRegistry(Generic[P]):
                 f"Registered {self._log_label} provider '%s' (%s)", key, type(provider).__name__,
             )
 
+    def register_deferred(self, loader: Callable[[], None]) -> None:
+        """Queue a bundled backend's import for this registry's first real read (see
+        :class:`DeferredLoaders`). Callers wire cancellation themselves."""
+        self._deferred.register(loader)
+
     def merged(self, scope: Optional[str] = None) -> Dict[str, P]:
         """Global map overlaid with the active profile's scoped map (a copy)."""
+        self._deferred.materialize()
         with self._lock:
             merged = dict(self._providers)
             merged.update(self._scoped_providers.get(scope or hermes_home_key(), {}))
@@ -111,6 +156,7 @@ class ProviderRegistry(Generic[P]):
         """Return the provider registered under *name* (scoped first), or None."""
         if not isinstance(name, str):
             return None
+        self._deferred.materialize()
         key = self.normalize(name)
         with self._lock:
             return (
@@ -154,13 +200,15 @@ class ProviderRegistry(Generic[P]):
             self._scoped_providers.clear()
             self._scoped_generations.clear()
             self._generation += 1
+        self._deferred.clear()
 
     def export(self, namespace: Dict[str, Any]) -> None:
         """Bind the historical module-level API (+ ``_providers``/``_scoped_providers``/
         ``_lock`` test hooks) into a ``*_registry`` module namespace."""
         namespace.update(
             _providers=self._providers, _scoped_providers=self._scoped_providers, _lock=self._lock,
-            register_provider=self.register, list_providers=self.list_providers,
+            register_provider=self.register, register_deferred=self.register_deferred,
+            list_providers=self.list_providers,
             get_provider=self.get_provider, snapshot_registration=self.snapshot_registration,
             restore_registration=self.restore_registration,
             registry_generation=self.registry_generation, _reset_for_tests=self.reset_for_tests,

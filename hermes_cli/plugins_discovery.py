@@ -174,7 +174,7 @@ def gate_manifest(
     manifest: PluginManifest, disabled: Set[str], enabled: Optional[Set[str]]
 ) -> ManifestGate:
     """Decide how one winning manifest is handled. Gate order matters: legacy relay refusal, explicit disable,
-    category-owned kinds (exclusive / model-provider), bundled auto-loads (backend now, platform deferred),
+    category-owned kinds (exclusive / model-provider), bundled lazy-loads (backend and platform deferred),
     then ``plugins.enabled`` opt-in (path-derived key or legacy bare name)."""
     lookup_key = manifest_key(manifest)
     names = {lookup_key, manifest.name}
@@ -203,12 +203,10 @@ def gate_manifest(
         return _placeholder(
             None, logging.DEBUG, "Skipping '%s' (model-provider, handled by providers/ discovery)", enabled=True)
     if manifest.source == "bundled":
-        # Bundled backends auto-load; selection among them is ``<category>.provider`` config.
-        if manifest.kind == "backend":
-            return ManifestGate("load_now")
-        # Bundled platforms register LAZILY: eagerly importing ~20 heavy SDKs added seconds to every `hermes`
-        # invocation. A deferred loader keeps every platform available on first use.
-        if manifest.kind == "platform":
+        # Bundled backends and platforms register LAZILY: eagerly importing their SDKs added seconds to
+        # every `hermes` invocation on Windows. Selection among backends is ``<category>.provider``
+        # config; a deferred loader keeps each one available the moment its registry is first read.
+        if manifest.kind in ("backend", "platform"):
             return ManifestGate("defer")
     if enabled is None or not names & enabled:
         return _placeholder(

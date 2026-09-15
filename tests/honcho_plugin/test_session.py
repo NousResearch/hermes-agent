@@ -290,7 +290,12 @@ class TestPerSessionMigrateGuard:
     containing only <prior_memory_file> wrappers.
     """
 
-    def _make_provider_with_strategy(self, strategy, init_on_session_start=True):
+    def _make_provider_with_strategy(
+        self,
+        strategy,
+        init_on_session_start=True,
+        existing_messages=None,
+    ):
         """Create a HonchoMemoryProvider and track migrate_memory_files calls."""
         from plugins.memory.honcho.client import HonchoClientConfig
         from unittest.mock import patch, MagicMock
@@ -307,7 +312,7 @@ class TestPerSessionMigrateGuard:
 
         mock_manager = MagicMock()
         mock_session = MagicMock()
-        mock_session.messages = []  # empty = new session → triggers migration path
+        mock_session.messages = existing_messages or []
         mock_manager.get_or_create.return_value = mock_session
 
         with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
@@ -323,6 +328,13 @@ class TestPerSessionMigrateGuard:
         _, mock_manager = self._make_provider_with_strategy("per-session")
         mock_manager.migrate_memory_files.assert_not_called()
 
+    def test_migrate_runs_for_per_directory(self):
+        """The ledger is checked even when the resolved session has messages."""
+        _, mock_manager = self._make_provider_with_strategy(
+            "per-directory",
+            existing_messages=[{"role": "user", "content": "existing"}],
+        )
+        mock_manager.migrate_memory_files.assert_called_once()
 
 class TestChunkMessage:
     def test_short_message_single_chunk(self):
@@ -1388,7 +1400,12 @@ class TestInjectionAuditLog:
         provider._session_key = "cli:test"
         assert provider._log_injection("injected", "## User Peer Card\nName: Eri") == "## User Peer Card\nName: Eri"
         assert provider._log_injection("trivial-prompt") == ""
-        records = [json.loads(line) for line in (tmp_path / "nested" / "injection.log").read_text().splitlines()]
+        records = [
+            json.loads(line)
+            for line in (tmp_path / "nested" / "injection.log")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
         assert [r["reason"] for r in records] == ["injected", "trivial-prompt"]
         assert records[0]["turn"] == 3 and records[0]["session_key"] == "cli:test"
         assert records[0]["bytes"] == len("## User Peer Card\nName: Eri".encode()) and records[1]["bytes"] == 0
@@ -1396,7 +1413,7 @@ class TestInjectionAuditLog:
     def test_unwritable_path_never_raises(self, tmp_path):
         provider = _provider_with_raw({})
         blocker = tmp_path / "file"
-        blocker.write_text("x")
+        blocker.write_text("x", encoding="utf-8")
         provider._injection_log_path = str(blocker / "injection.log")
         assert provider._log_injection("injected", "payload") == "payload"
 
@@ -1405,7 +1422,9 @@ class TestInjectionAuditLog:
         provider._injection_log_path = str(tmp_path / "injection.log")
         provider._recall_mode = "tools"
         assert provider.prefetch("hello") == ""
-        record = json.loads((tmp_path / "injection.log").read_text().splitlines()[0])
+        record = json.loads(
+            (tmp_path / "injection.log").read_text(encoding="utf-8").splitlines()[0]
+        )
         assert record["reason"] == "cron-or-tools-mode" and record["payload"] == ""
 # Observation flags are scoped per session, not manager-wide (#98936)
 # ---------------------------------------------------------------------------

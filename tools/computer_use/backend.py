@@ -169,3 +169,14 @@ class ComputerUseBackend(ABC):
     def wait(self, seconds: float) -> ActionResult:  # default implementation
         time.sleep(max(0.0, min(seconds, 30.0)))
         return ActionResult(ok=True, action="wait", message=f"waited {seconds:.2f}s")
+
+    def bound_display_fingerprint(self) -> Optional[str]:
+        """Display this backend is bound to, or None if unbound.
+
+        Headed cloud sessions (#108592) require CUA to target the same
+        ``DisplayTarget.fingerprint`` as PTY and WebVNC. Default ``None``
+        keeps existing backends unchanged; ``assert_computer_use_targets_session``
+        fails closed when this is unset or mismatched (#90374).
+        """
+        return None
+

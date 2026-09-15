@@ -72,6 +72,27 @@ _PLACEHOLDER_ENV = (
 )
 
 
+def _non_exportable_entries(directory: str, contents: list) -> set:
+    """Entries under *directory* that must never be copied out of a profile: bytecode caches,
+    ``*.sock``/``*.tmp`` names, and anything that is not a regular file, directory, or symlink.
+    :func:`shutil.copytree` cannot copy special files, so a single live Unix socket without a
+    ``.sock`` name (or a FIFO, or a device node) would abort the whole export or clone with
+    ``[Errno 6] No such device or address``. Symlinks survive — copytree recreates them."""
+    ignored: set = set()
+    for entry in contents:
+        if entry == "__pycache__" or entry.endswith((".sock", ".tmp", ".pyc", ".pyo")):
+            ignored.add(entry)
+            continue
+        try:
+            mode = os.lstat(os.path.join(directory, entry)).st_mode
+        except OSError:
+            ignored.add(entry)  # vanished mid-walk — copytree would fail on it anyway
+            continue
+        if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode)):
+            ignored.add(entry)
+    return ignored
+
+
 def _clone_all_copytree_ignore(source_dir: Path):
     """copytree ignore for --clone-all: history artifacts for any source, infrastructure
     only when the source is the default profile (see the two exclude sets above)."""
@@ -87,13 +108,9 @@ def _clone_all_copytree_ignore(source_dir: Path):
             # resolve() can fail on odd FS layouts (broken symlinks, missing parents).
             # Fail open — better to over-copy than silently drop user data.
             at_root = False
-        # A live source profile carries gateway/agent-browser sockets that copytree
-        # cannot copy; _non_exportable_entries drops them (and __pycache__/*.sock/*.tmp).
         ignored = _non_exportable_entries(directory, names)
-        ignored.update(
-            entry for entry in names
-            if entry.endswith((".pyc", ".pyo")) or (at_root and entry in root_exclude)
-        )
+        if at_root:
+            ignored.update(root_exclude & set(names))
         return ignored
 
     return _ignore
@@ -824,7 +841,10 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path]) -> Non
         _clone_file(source_dir, profile_dir, relpath)
     source_skills = source_dir / "skills"
     if source_skills.is_dir():
-        shutil.copytree(source_skills, profile_dir / "skills", symlinks=True, dirs_exist_ok=True)
+        shutil.copytree(
+            source_skills, profile_dir / "skills", symlinks=True, dirs_exist_ok=True,
+            ignore=_non_exportable_entries,
+        )
     for relpath in _CLONE_SUBDIR_FILES:
         _clone_file(source_dir, profile_dir, relpath)
 
@@ -1520,27 +1540,6 @@ def get_profile_export_path(name: str, *, timestamp: Optional[str] = None) -> Pa
     return export_dir / f"{canon}-{stamp}.tar.gz"
 
 
-def _non_exportable_entries(directory: str, contents: list) -> set:
-    """Entries under *directory* that must never reach an export archive: ``__pycache__``,
-    ``*.sock``/``*.tmp`` names, and anything that is not a regular file, directory, or symlink.
-    :func:`shutil.copytree` cannot copy special files, so a single live Unix socket without a
-    ``.sock`` name (or a FIFO, or a device node) would abort the whole export with
-    ``[Errno 6] No such device or address``. Symlinks survive — copytree recreates them."""
-    ignored: set = set()
-    for entry in contents:
-        if entry == "__pycache__" or entry.endswith((".sock", ".tmp")):
-            ignored.add(entry)
-            continue
-        try:
-            mode = os.lstat(os.path.join(directory, entry)).st_mode
-        except OSError:
-            ignored.add(entry)  # vanished mid-walk — copytree would fail on it anyway
-            continue
-        if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode)):
-            ignored.add(entry)
-    return ignored
-
-
 def _default_export_ignore(root_dir: Path):
     """copytree ignore for the default-profile export: root-level allow-list
     (``_DEFAULT_EXPORT_INCLUDE_ROOT``) plus universal exclusions. Surviving text files are
@@ -1622,10 +1621,7 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
 
     # The default profile IS ~/.hermes (dir name ".hermes"), so both paths stage a filtered
     # copy under a temp dir named after the canonical id: root allow-list for default,
-    # credential exclusion for named profiles. The universal exclusions apply to both:
-    # profiles accumulate Unix sockets in normal operation (e.g. an agent-browser control
-    # socket under ``home/.agent-browser/``), and a single one aborts copytree — and with
-    # it the whole export.
+    # credential exclusion for named profiles.
     def _ignore_credentials(directory: str, contents: list) -> set:
         ignored = _non_exportable_entries(directory, contents)
         ignored.update(_EXPORT_CREDENTIAL_FILES & set(contents))

@@ -29,21 +29,16 @@ def _patch_named_profile(monkeypatch, profiles_root, profile_dir):
     monkeypatch.setattr("hermes_cli.profiles.validate_profile_name", lambda n: None)
 
 
-def _bind_unix_socket(path):
+def _bind_unix_socket(monkeypatch, path):
     """Bind an AF_UNIX socket at *path*.
 
     Binds via a cwd-relative name so pytest's long tmp paths stay under the
     ~104-byte ``sun_path`` limit on macOS. The filesystem entry outlives the
     close — exactly the stale-socket state a real profile ends up with.
     """
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    cwd = os.getcwd()
-    os.chdir(path.parent)
-    try:
+    monkeypatch.chdir(path.parent)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sock.bind(path.name)
-    finally:
-        os.chdir(cwd)
-        sock.close()
 
 
 def test_named_profile_export_survives_unix_socket(tmp_path, monkeypatch):
@@ -58,8 +53,8 @@ def test_named_profile_export_survives_unix_socket(tmp_path, monkeypatch):
 
     # One socket the *.sock suffix rule catches, one only lstat can catch,
     # and a FIFO — none of them may fail or enter the export.
-    _bind_unix_socket(browser_dir / "dev-12345.sock")
-    _bind_unix_socket(browser_dir / "control")
+    _bind_unix_socket(monkeypatch, browser_dir / "dev-12345.sock")
+    _bind_unix_socket(monkeypatch, browser_dir / "control")
     os.mkfifo(browser_dir / "events")
 
     _patch_named_profile(monkeypatch, profiles_root, profile_dir)
@@ -83,7 +78,7 @@ def test_default_profile_export_survives_unix_socket(tmp_path, monkeypatch):
 
     (profile_dir / "config.yaml").write_text("model: gpt-4\n")
     (sessions_dir / "log.jsonl").write_text("{}\n")
-    _bind_unix_socket(sessions_dir / "ipc")
+    _bind_unix_socket(monkeypatch, sessions_dir / "ipc")
 
     _patch_named_profile(monkeypatch, tmp_path / "profiles", profile_dir)
 

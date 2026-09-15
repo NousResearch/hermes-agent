@@ -1159,8 +1159,7 @@ class GatewayStartupMixin:
             # Startup authority is one phase: from here on every adapter retry is non-evicting.
             self._platform_lock_takeover_on_start = False
         # A platform skipped on the primary should have been picked up by a secondary owning the token;
-        # if none did it is enabled yet silently unserved — say so loudly.
-        # If none did, the platform is enabled in config.yaml yet silently unserved — surface it loudly so
+        # if none did, the platform is enabled in config.yaml yet silently unserved — surface it loudly so
         # the operator sees a config problem instead of a quiet dead channel (#64674 follow-up).
         for _skipped in _multiplex_skipped_platforms:
             if not any(_skipped in _profile_map for _profile_map in self._profile_adapters.values()):
@@ -1169,6 +1168,9 @@ class GatewayStartupMixin:
                     "the platform is not being served. Add its token to the profile that should "
                     "own it, or disable the platform.", _skipped.value,
                 )
+        # The mirror image: a SECONDARY enabled shared ingress (WhatsApp/Relay) that only the default can run.
+        for _line in self._unserved_shared_ingress_warnings():
+            logger.warning(_line)
         return False, connected_count
 
     def _start_handle_no_connections(

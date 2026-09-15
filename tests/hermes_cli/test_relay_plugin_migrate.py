@@ -1,0 +1,90 @@
+"""``hermes update`` / ``hermes migrate relay``: legacy ``HERMES_NEMO_RELAY_ATIF_*``/``ATOF_*`` vars
+become a validated ``relay-plugins.toml`` per profile home, selected from ``.env``."""
+
+from __future__ import annotations
+
+import asyncio
+import tomllib
+from pathlib import Path
+
+import pytest
+
+from hermes_cli.relay_plugin_migrate import (
+    RELAY_PLUGINS_TOML_NAME, migrate_all_profile_relay_envs, migrate_profile_relay_env)
+from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV, configured_legacy_relay_env_vars
+
+nemo_relay = pytest.importorskip("nemo_relay")
+
+LEGACY_ENV = """OPENAI_API_KEY=sk-test
+HERMES_NEMO_RELAY_ATOF_ENABLED=1
+HERMES_NEMO_RELAY_ATOF_OUTPUT_DIRECTORY={home}/telemetry/atof
+HERMES_NEMO_RELAY_ATOF_FILENAME=hermes-atof.jsonl
+HERMES_NEMO_RELAY_ATOF_MODE=append
+HERMES_NEMO_RELAY_ATIF_ENABLED=1
+HERMES_NEMO_RELAY_ATIF_OUTPUT_DIRECTORY={home}/telemetry/atif
+HERMES_NEMO_RELAY_ATIF_FILENAME_TEMPLATE=trajectory-{{session_id}}.json
+HERMES_NEMO_RELAY_ATIF_SUBAGENT_EXPORT_MODE=all
+"""
+
+
+def _parse_env(path: Path) -> dict[str, str]:
+    out = {}
+    for line in path.read_text().splitlines():
+        if line.strip() and not line.startswith("#") and "=" in line:
+            k, _, v = line.partition("=")
+            out[k.strip()] = v.strip().strip('"')
+    return out
+
+
+@pytest.fixture
+def profile_env(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    return home
+
+
+def test_legacy_env_becomes_validated_toml_selected_from_env(profile_env):
+    (profile_env / ".env").write_text(LEGACY_ENV.format(home=profile_env))
+
+    result = migrate_profile_relay_env(profile_env)
+
+    assert result.migrated, (result.skipped_reason, result.validation_error)
+    assert result.diagnostics == []
+    toml_path = profile_env / RELAY_PLUGINS_TOML_NAME
+    document = tomllib.loads(toml_path.read_text())
+    sink = document["components"][0]["config"]["atof"]["sinks"][0]
+    assert sink["type"] == "file" and sink["filename"] == "hermes-atof.jsonl"
+    assert document["components"][0]["config"]["atif"]["filename_template"] == "trajectory-{session_id}.json"
+    # Relay itself accepts the file Hermes will load at runtime.
+    report = asyncio.run(nemo_relay.plugin.initialize(document))
+    asyncio.run(nemo_relay.plugin.clear_async())
+    assert report.get("diagnostics") == []
+    # .env now selects the file; the legacy lines survive as comments (not deleted), so the
+    # runtime warning + doctor finding go quiet and a second run is a no-op.
+    env = _parse_env(profile_env / ".env")
+    assert env[RELAY_PLUGINS_CONFIG_ENV] == str(toml_path)
+    assert env["OPENAI_API_KEY"] == "sk-test"
+    assert configured_legacy_relay_env_vars(env) == ()
+    assert "# migrated to relay-plugins.toml: HERMES_NEMO_RELAY_ATOF_ENABLED=1" in (profile_env / ".env").read_text()
+    assert migrate_profile_relay_env(profile_env).skipped_reason == "no legacy exporter variables"
+
+
+def test_update_migrates_every_profile_home_separately(profile_env):
+    """Multiplex: each profile keeps its own TOML; a profile without legacy vars is untouched."""
+    (profile_env / ".env").write_text("OPENAI_API_KEY=x\n")
+    work = profile_env / "profiles" / "work"
+    idle = profile_env / "profiles" / "idle"
+    for p in (work, idle):
+        p.mkdir(parents=True)
+    (work / ".env").write_text(LEGACY_ENV.format(home=work))
+    (idle / ".env").write_text("SLACK_BOT_TOKEN=y\n")
+
+    results = {r.home: r for r in migrate_all_profile_relay_envs(validate=False)}
+
+    assert results[work].migrated and results[work].toml_path == work / RELAY_PLUGINS_TOML_NAME
+    assert not results[idle].migrated and not (idle / RELAY_PLUGINS_TOML_NAME).exists()
+    assert not results[profile_env].migrated and not (profile_env / RELAY_PLUGINS_TOML_NAME).exists()
+    assert _parse_env(work / ".env")[RELAY_PLUGINS_CONFIG_ENV] == str(work / RELAY_PLUGINS_TOML_NAME)
+    assert (idle / ".env").read_text() == "SLACK_BOT_TOKEN=y\n"

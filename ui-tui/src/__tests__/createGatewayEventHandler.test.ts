@@ -64,7 +64,10 @@ const buildCtx = (appended: Msg[]) =>
 const serverRequest = (method: string, params: Record<string, unknown>, id = `srq-${method}`) => {
   const respond = vi.fn()
 
-  const handled = createServerRequestHandler({ ringPromptBell: vi.fn(), setStatus: status => patchUiState({ status }) })({
+  const handled = createServerRequestHandler({
+    ringPromptBell: vi.fn(),
+    setStatus: status => patchUiState({ status })
+  })({
     fail: vi.fn(),
     id,
     method,

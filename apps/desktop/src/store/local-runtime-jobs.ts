@@ -74,7 +74,7 @@ export async function startLocalRuntimeInstall(): Promise<void> {
 }
 
 const POLL_ACTIVE_MS = 700
-let timer: null | number = null
+let timer: null | ReturnType<typeof setTimeout> = null
 let polling: Promise<void> | null = null
 let generation = 0
 interface JobContext {
@@ -124,7 +124,7 @@ function resetContext() {
   const context = ++generation
 
   if (timer !== null) {
-    window.clearTimeout(timer)
+    clearTimeout(timer)
   }
 
   timer = null
@@ -229,7 +229,7 @@ function poll(): Promise<void> {
   const accepted = owner.acceptedInstall
 
   if (timer !== null) {
-    window.clearTimeout(timer)
+    clearTimeout(timer)
   }
 
   timer = null
@@ -263,7 +263,7 @@ function poll(): Promise<void> {
         polling = null
 
         if (owner.readPending || $localRuntimeJobs.get().some(j => j.status === 'running')) {
-          timer = window.setTimeout(() => void poll(), POLL_ACTIVE_MS)
+          timer = setTimeout(() => void poll(), POLL_ACTIVE_MS)
         }
       }
     }

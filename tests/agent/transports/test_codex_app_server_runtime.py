@@ -362,6 +362,14 @@ class TestSpawnEnvIsolation:
 
         cmd = captured["cmd"]
         assert cmd[:2] == ["codex", "app-server"]
+        assert 'mcp_servers.hermes-tools.env.HERMES_KANBAN_TASK="t_smoke"' in cmd
+        assert (
+            'mcp_servers.hermes-tools.env.HERMES_KANBAN_DB='
+            '"/users/alice/.hermes/kanban/boards/smoke/kanban.db"'
+            in cmd
+        )
+        assert 'mcp_servers.hermes-tools.env.HERMES_DELEGATED_CHILD_CONTEXT=""' in cmd
+        assert all("mcp_servers.hermes-mcp" not in part for part in cmd)
         assert 'sandbox_mode="workspace-write"' in cmd
         assert (
             'sandbox_workspace_write.writable_roots=["/users/alice/.hermes/kanban/boards/smoke"]'
@@ -445,4 +453,3 @@ class TestSpawnEnvSecretStripping:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-codex-needs-this")
         env = self._capture_spawn_env(monkeypatch)
         assert env.get("OPENAI_API_KEY") == "sk-codex-needs-this"
-

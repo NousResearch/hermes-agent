@@ -476,7 +476,7 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
 from cron.jobs import (
     _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire, fire_claim_fence,
     clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
-    save_job_output, use_cron_store)
+    save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope, use_cron_store)
 from cron.executions import (
     _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
     get_execution, mark_execution_handoff_pending, mark_execution_running,
@@ -2434,6 +2434,9 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
         while not stop.wait(_RUN_CLAIM_HEARTBEAT_SECONDS):
             try:
                 if not heartbeat_fire_claim(job_id, expected_owner=owner):
+                    if self_removal_delivery_allowed(job_id):
+                        # Record dropped by this run; nothing left to keep fresh.
+                        continue
                     lost_ownership.set()
                     logger.warning(
                         "Job '%s': fire claim ownership lost; interrupting stale run",
@@ -2521,20 +2524,21 @@ def run_one_job(
         _running_fire_owners.setdefault(job["id"], {})[execution_token] = (
             fire_owner or None, profile_home)
     try:
-        return _run_with_fire_claim_heartbeat(
-            job,
-            lambda lost_ownership: _run_one_job_body(
+        with self_removal_delivery_scope(job["id"]):
+            return _run_with_fire_claim_heartbeat(
                 job,
-                adapters=adapters,
-                loop=loop,
-                verbose=verbose,
-                extra_prompt=extra_prompt,
-                fire_claim_lost=(
-                    _CombinedCancelEvent(lost_ownership, cancel_event)
-                    if cancel_event is not None
-                    else lost_ownership
-                ),
-                execution_token=execution_token))
+                lambda lost_ownership: _run_one_job_body(
+                    job,
+                    adapters=adapters,
+                    loop=loop,
+                    verbose=verbose,
+                    extra_prompt=extra_prompt,
+                    fire_claim_lost=(
+                        _CombinedCancelEvent(lost_ownership, cancel_event)
+                        if cancel_event is not None
+                        else lost_ownership
+                    ),
+                    execution_token=execution_token))
     finally:
         with _running_lock:
             executions = _running_fire_owners.get(job["id"])
@@ -2634,9 +2638,14 @@ class _FireOwnership:
     def side_effect_fence(self):
         if self.owner is None:
             return contextlib.nullcontext(True)
-        return fire_claim_fence(self.job["id"], expected_owner=self.owner)
+        return fire_claim_fence(
+            self.job["id"], expected_owner=self.owner,
+            allow_self_removed=self_removal_delivery_allowed(self.job["id"]),
+        )
 
     def lost(self) -> bool:
+        if self_removal_delivery_allowed(self.job["id"]):
+            return False
         if self.fire_claim_lost is not None and self.fire_claim_lost.is_set():
             return True
         if self.owner is None:
@@ -2788,7 +2797,7 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
     if d.blocked_config:
         mark_kwargs["status"] = "blocked_config"
     marked = mark_job_run(job["id"], d.success, d.error, **mark_kwargs)
-    if fire_owner is not None and not marked:
+    if fire_owner is not None and not marked and not self_removal_delivery_allowed(job["id"]):
         finish_execution(
             execution_id, success=False,
             error="Fire claim ownership lost before terminal completion.")

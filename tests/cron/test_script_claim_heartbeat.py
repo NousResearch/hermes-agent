@@ -418,6 +418,81 @@ def test_lost_fire_claim_stops_stale_delivery(monkeypatch):
     mark_run.assert_not_called()
 
 
+def test_self_removed_job_still_delivers_its_completed_response(tmp_path, monkeypatch):
+    """Removing itself during a run releases its record, not this run's final response."""
+    import cron.jobs as jobs
+    import cron.scheduler as scheduler
+
+    def _run_job(job, **_kwargs):
+        assert jobs.remove_job(job["id"])
+        return True, "saved output", "final response", None
+
+    delivered = MagicMock(return_value=None)
+    finished = MagicMock()
+    monkeypatch.setattr(scheduler, "run_job", _run_job)
+    monkeypatch.setattr(scheduler, "claim_dispatch", lambda *_args: True)
+    monkeypatch.setattr(scheduler, "mark_execution_running", lambda *_args: {})
+    monkeypatch.setattr(scheduler, "finish_execution", finished)
+    monkeypatch.setattr(scheduler, "save_job_output", lambda *_args: "output.md")
+    monkeypatch.setattr(scheduler, "_deliver_result", delivered)
+
+    with jobs.use_cron_store(tmp_path):
+        job = jobs.create_job(
+            prompt="work", schedule="every 5m", name="remove self", deliver="telegram")
+        assert jobs.claim_job_for_fire(job["id"])
+        claimed = jobs.get_job(job["id"])
+        claimed["execution_id"] = "self-removal-execution"
+
+        with patch("agent.secret_scope.set_secret_scope", return_value=None), \
+             patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
+             patch("agent.secret_scope.reset_secret_scope"):
+            assert scheduler.run_one_job(claimed) is True
+
+        delivered.assert_called_once()
+        finished.assert_called_once_with(
+            "self-removal-execution", success=True, error=None, delivery_outcome="delivered")
+        assert jobs.get_job(job["id"]) is None
+
+
+def test_self_removed_job_still_delivers_after_post_removal_heartbeat(tmp_path, monkeypatch):
+    """A run that keeps working past one heartbeat after self-removal must still deliver."""
+    import cron.jobs as jobs
+    import cron.scheduler as scheduler
+
+    def _run_job(job, **_kwargs):
+        assert jobs.remove_job(job["id"]) is True
+        time.sleep(0.3)
+        return True, "saved output", "D1 is promoting", None
+
+    delivered = MagicMock(return_value=None)
+    finished = MagicMock()
+    monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.05)
+    monkeypatch.setattr(scheduler, "run_job", _run_job)
+    monkeypatch.setattr(scheduler, "claim_dispatch", lambda *_args: True)
+    monkeypatch.setattr(scheduler, "mark_execution_running", lambda *_args: {})
+    monkeypatch.setattr(scheduler, "finish_execution", finished)
+    monkeypatch.setattr(scheduler, "save_job_output", lambda *_args: "output.md")
+    monkeypatch.setattr(scheduler, "_deliver_result", delivered)
+
+    with jobs.use_cron_store(tmp_path):
+        job = jobs.create_job(
+            prompt="work", schedule="every 5m", name="remove self", deliver="telegram")
+        assert jobs.claim_job_for_fire(job["id"])
+        claimed = jobs.get_job(job["id"])
+        claimed["execution_id"] = "self-removal-heartbeat-execution"
+
+        with patch("agent.secret_scope.set_secret_scope", return_value=None), \
+             patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
+             patch("agent.secret_scope.reset_secret_scope"):
+            assert scheduler.run_one_job(claimed) is True
+
+        delivered.assert_called_once()
+        finished.assert_called_once_with(
+            "self-removal-heartbeat-execution",
+            success=True, error=None, delivery_outcome="delivered")
+        assert jobs.get_job(job["id"]) is None
+
+
 def test_initially_lost_fire_claim_finishes_execution_without_running(monkeypatch):
     """A stale claimed snapshot rejected before body entry must close its ledger row."""
     import cron.scheduler as scheduler

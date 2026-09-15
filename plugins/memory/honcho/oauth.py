@@ -86,15 +86,24 @@ def _config_refresh_lock(path: Path):
 
 
 # Per-grant state keyed by (config path, host); single-key dict ops are atomic under the GIL.
-# (expires_at, access): lets the hot path skip the honcho.json read while the token is well clear of
-# expiry. A stale entry can't break auth; it only defers noticing out-of-band rotation.
-_expiry_cache: dict[tuple[str, str], tuple[float, str]] = {}
+# (expires_at, access, config_mtime_ns): lets the hot path skip parsing honcho.json while the token
+# is well clear of expiry. The cheap file-version check makes out-of-process rotations visible before
+# a new client adopts a stale bearer. ``None`` marks an explicit raw-config read, which must not be
+# trusted for a later file-backed call.
+_expiry_cache: dict[tuple[str, str], tuple[float, str, int | None]] = {}
 # sha256 of the permanently rejected refresh token; a re-login rotates the token, so it self-clears.
 _dead_grants: dict[tuple[str, str], str] = {}
 # monotonic time of the last transient exchange failure (drives the fail-open cooldown).
 _refresh_failure_at: dict[tuple[str, str], float] = {}
 # (config mtime_ns, verdict): reauth_required only changes when the file is rewritten.
 _reauth_check_cache: dict[tuple[str, str], tuple[int, bool]] = {}
+
+def _config_mtime_ns(path: Path) -> int | None:
+    """Return the config version, or ``None`` when it cannot be checked."""
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return None
 
 def _in_failure_cooldown(key: tuple[str, str]) -> bool:
     failed_at = _refresh_failure_at.get(key)
@@ -277,7 +286,7 @@ def _rotate_and_persist(
             disk = _load_cred(path, host)
             if disk is not None and disk.refresh_token != cred.refresh_token:
                 _dead_grants.pop(key, None)
-                _expiry_cache[key] = (disk.expires_at, disk.access_token)
+                _expiry_cache[key] = (disk.expires_at, disk.access_token, _config_mtime_ns(path))
                 logger.info("Honcho OAuth %s for host %s lost a rotation race; "
                             "adopted the newer on-disk grant", op_label, host)
                 return disk
@@ -309,7 +318,7 @@ def _persist_credential(path: Path, host: str, cred: OAuthCredential, raw: dict[
     block["apiKey"], block["oauth"] = cred.access_token, cred.oauth_block()
     atomic_json_write(path, raw, mode=0o600)
     key = (str(path), host)
-    _expiry_cache[key] = (cred.expires_at, cred.access_token)
+    _expiry_cache[key] = (cred.expires_at, cred.access_token, _config_mtime_ns(path))
     _dead_grants.pop(key, None)
     _refresh_failure_at.pop(key, None)
 
@@ -321,17 +330,22 @@ def ensure_fresh_token(
     back with ``refreshed=False``; a permanently rejected grant is marked dead and 401 recovery escalates it."""
     now = time.time() if now is None else now
     key = (str(path), host)
-    # Hot path: trust the cached expiry while well clear of the skew window (no disk read); bypassed
+    # Hot path: trust the cached expiry while well clear of the skew window (no JSON parse); bypassed
     # when an explicit ``raw`` is supplied.
     if raw is None:
         cached = _expiry_cache.get(key)
-        if cached is not None and now < cached[0] - _REFRESH_SKEW_SECONDS:
+        if (
+            cached is not None
+            and cached[2] is not None
+            and cached[2] == _config_mtime_ns(path)
+            and now < cached[0] - _REFRESH_SKEW_SECONDS
+        ):
             return cached[1], False
     cred = _load_cred(path, host, raw)
     if cred is None:
         _expiry_cache.pop(key, None)
         return None, False
-    _expiry_cache[key] = (cred.expires_at, cred.access_token)
+    _expiry_cache[key] = (cred.expires_at, cred.access_token, None if raw is not None else _config_mtime_ns(path))
     if not cred.is_expired(now=now) or _in_failure_cooldown(key):
         return cred.access_token, False
 
@@ -365,7 +379,7 @@ def force_refresh_token(path: Path, host: str, *, failed_access_token: str | Non
         moved_off_failed = failed_access_token and cred.access_token != failed_access_token
         moved_off_cached = cached is not None and cred.access_token != cached[1]
         if (moved_off_failed or moved_off_cached) and not cred.is_expired(now=now):
-            _expiry_cache[key] = (cred.expires_at, cred.access_token)
+            _expiry_cache[key] = (cred.expires_at, cred.access_token, _config_mtime_ns(path))
             return cred.access_token
         # Dead grant, or an exchange just failed transiently: callers fail open.
         if _grant_is_dead(key, cred) or _in_failure_cooldown(key):

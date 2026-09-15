@@ -75,6 +75,36 @@ class TestEnsureFreshToken:
         token, refreshed = oauth.ensure_fresh_token(path, "hermes", now=0)
         assert token == "hch-at-old" and refreshed is False
 
+    def test_fresh_cache_reloads_token_after_external_config_rotation(self, tmp_path):
+        """A second holder's atomic rotation must not leave a fresh client on its old bearer."""
+        path = tmp_path / "honcho.json"
+        _write(path, {"hosts": {"hermes": _host_block(expires_at=10_000)}})
+
+        assert oauth.ensure_fresh_token(path, "hermes", now=0) == ("hch-at-old", False)
+
+        rotated = _host_block(refresh="hch-rt-new", expires_at=20_000)
+        rotated["apiKey"] = "hch-at-new"
+        _write(path, {"hosts": {"hermes": rotated}})
+
+        assert oauth.ensure_fresh_token(path, "hermes", now=1) == ("hch-at-new", False)
+
+    def test_fresh_cache_reuses_token_when_config_version_is_unchanged(self, tmp_path, monkeypatch):
+        path = tmp_path / "honcho.json"
+        _write(path, {"hosts": {"hermes": _host_block(expires_at=10_000)}})
+
+        assert oauth.ensure_fresh_token(path, "hermes", now=0) == ("hch-at-old", False)
+        monkeypatch.setattr(oauth, "_load_cred", lambda *args: pytest.fail("unchanged cache must not parse JSON"))
+
+        assert oauth.ensure_fresh_token(path, "hermes", now=1) == ("hch-at-old", False)
+
+    def test_explicit_raw_config_bypasses_file_version_cache(self, tmp_path, monkeypatch):
+        path = tmp_path / "honcho.json"
+        raw = {"hosts": {"hermes": _host_block(expires_at=10_000)}}
+        raw["hosts"]["hermes"]["apiKey"] = "hch-at-raw"
+        monkeypatch.setattr(oauth, "_config_mtime_ns", lambda _: pytest.fail("raw config must not stat disk"))
+
+        assert oauth.ensure_fresh_token(path, "hermes", raw, now=0) == ("hch-at-raw", False)
+
 
     def test_expired_token_refreshes_and_persists_rotation(self, tmp_path, monkeypatch):
         path = tmp_path / "honcho.json"

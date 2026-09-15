@@ -828,6 +828,7 @@ def _normalize_command_for_detection(command: str) -> str:
     # first: on Windows it nests under the user home, and folding the user home first would eat the prefix it needs.
     command = _rewrite_resolved_hermes_home(command)
     command = _rewrite_resolved_user_home(command)
+    command = _rewrite_resolved_shell_rc_env_dirs(command)
     command = _rewrite_resolved_shell_rc_paths(command)
     # Strip backslash-escapes (r\m -> rm) and empty-string literals (r''m -> rm).
     command = re.sub(r'\\([^\n])', r'\1', command)
@@ -896,6 +897,32 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
     except Exception:
         return command
     return _fold_home_prefixes(command, paths, "~/.hermes")
+
+
+def _rewrite_resolved_shell_rc_env_dirs(command: str) -> str:
+    """Fold ZDOTDIR / XDG_CONFIG_HOME prefixes to the shared ``$zdotdir`` /
+    ``$xdg_config_home`` spellings so absolute relocated rc paths match."""
+    zdotdir = os.getenv("ZDOTDIR")
+    if zdotdir:
+        expanded = os.path.expanduser(os.path.expandvars(zdotdir)).strip()
+        if expanded:
+            paths = [expanded]
+            try:
+                paths.append(os.path.realpath(expanded))
+            except OSError:
+                pass
+            command = _fold_home_prefixes(command, paths, "$ZDOTDIR")
+    xdg = os.getenv("XDG_CONFIG_HOME")
+    if xdg:
+        expanded = os.path.expanduser(os.path.expandvars(xdg)).strip()
+        if expanded:
+            paths = [expanded]
+            try:
+                paths.append(os.path.realpath(expanded))
+            except OSError:
+                pass
+            command = _fold_home_prefixes(command, paths, "$XDG_CONFIG_HOME")
+    return command
 
 
 _PARAM_REPLACEMENT_RE = re.compile(r"\$\{[^}/\s]+/[^}/]*/(?P<replacement>[^}]*)\}")

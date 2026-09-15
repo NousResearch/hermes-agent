@@ -678,6 +678,10 @@ hermes skills reset google-workspace --restore    # Also restore the bundled ver
 hermes skills publish skills/my-skill --to github --repo owner/repo
 hermes skills snapshot export setup.json          # Export skill config
 hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
+hermes skills local add ~/.agents/skills          # Register a local skills folder (e.g. another tool's)
+hermes skills local list                          # Show configured local folders
+hermes skills import-all local-dir --yes          # Bulk-install every skill found in those folders
+hermes skills import-all official --yes           # Bulk-install every optional-skills/ entry
 ```
 
 ### Supported hub sources
@@ -690,6 +694,43 @@ hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
 | `url` | `https://sharethis.chat/SKILL.md` | Direct HTTP(S) URL to `SKILL.md` plus explicitly referenced support files. Name resolution: frontmatter → URL slug → interactive prompt → `--name` flag. |
 | `github` | `openai/skills/k8s` | Direct GitHub repo/path installs and custom taps. |
 | `clawhub`, `lobehub`, `browse-sh` | Source-specific identifiers | Community or marketplace integrations. |
+| `local-dir` | `local-dir:/abs/path/to/skills/some-skill` | Any local folder of `<name>/SKILL.md` skills you've registered with `hermes skills local add <path>` — for example another AI tool's personal skills directory. Installed with the same scan + quarantine gate as every other community source. |
+
+### Bulk-importing skills from another tool (`local-dir` + `import-all`)
+
+If you already have a folder of `<name>/SKILL.md` skills from another agent
+CLI — for example a shared `~/.agents/skills/` directory — you have two
+options, and they answer different questions:
+
+- **Just use them as-is, live:** add the folder to `skills.external_dirs` in
+  `config.yaml` (see [External Skill Directories](#external-skill-directories)
+  below). Zero copying, zero scanning — every skill in that folder is
+  available immediately, and stays in sync if you edit it in place. Use this
+  when you trust the source and want a shared, editable folder.
+- **Vet and copy them into your own `~/.hermes/skills/`:** register the
+  folder as a Skills Hub source instead, then bulk-install through the normal
+  scan pipeline:
+
+  ```bash
+  hermes skills local add ~/.agents/skills
+  hermes skills browse --source local-dir             # see what's there first
+  hermes skills import-all local-dir --yes             # install every skill, one at a time
+  hermes skills local remove ~/.agents/skills          # stop offering this folder for future browse/import
+  ```
+
+  Each skill is quarantined, security-scanned, and copied into
+  `~/.hermes/skills/` exactly like a `github`/`skills-sh`/`url` install — so
+  `hermes skills check`/`update`/`audit`/`uninstall` all work on it
+  afterwards. Configured folders are remembered in
+  `skills/.hub/local_dirs.json` under `HERMES_HOME` (never in `config.yaml`
+  or `.env`), so `hermes skills local add` is a one-time setup step per
+  machine, not a hardcoded path in this repo.
+
+  Hermes does **not** vendor any third-party skills catalog into its own
+  source tree: third-party skill collections carry per-skill authorship and
+  licensing that this project can't redistribute wholesale, and any such
+  directory is inherently machine-specific. `local-dir` is the supported way
+  to pull them in without either problem.
 
 ### Integrated hubs and registries
 

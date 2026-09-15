@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from tools.skills_hub_clawhub import ClawHubSource
 from tools.skills_hub_github import GitHubAuth, GitHubSource, _PROVIDER_FILTER_VALUES, _filter_results_by_provider
+from tools.skills_hub_local import LocalFolderSource
 from tools.skills_hub_models import SkillMeta, SkillSource, TRUST_RANK, _dedupe_by_trust
 from tools.skills_hub_official import HermesIndexSource, OptionalSkillSource
 from tools.skills_hub_skillssh import SkillsShSource
@@ -99,6 +100,7 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
         ClawHubSource(),
         LobeHubSource(),
         BrowseShSource(),                 # browse.sh site-specific browser skills
+        LocalFolderSource(),              # user-configured local skill folders (opt-in, no network)
     ]
 
 

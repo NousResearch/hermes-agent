@@ -18,8 +18,14 @@ import time
 
 import pytest
 
+from tools import bot_delivery_queue as delivery_queue
 from tools import bot_mode_dm, bot_relay
-from tools.bot_relay import TurnBusyError, acquire_turn_lock, turn_lock_path
+from tools.bot_relay import (
+    TurnBusyError,
+    acquire_delivery_turn_lock,
+    acquire_turn_lock,
+    turn_lock_path,
+)
 
 
 @pytest.fixture
@@ -179,8 +185,43 @@ def test_run_delivery_holds_profile_lock_during_turn(root, tmp_path, monkeypatch
         pass
 
 
+def test_turn_busy_message_says_queued_not_failed():
+    """§3.1/P10(a): a held turn slot queues the delivery — the old 'NOT delivered' text is gone."""
+    error = TurnBusyError("ops", 0.05)
+    assert error.reason == "target_busy"
+    assert error.status_detail == "target_busy: turn slot held by another turn; delivery queued"
+    assert "durably" in str(error) and "Do not resend." in str(error)
+    assert "NOT delivered" not in str(error) and "retry shortly" not in str(error)
+
+
+def test_delivery_turn_lock_probe_is_non_blocking(root, tmp_path, monkeypatch):
+    """P10(b)/§2.5 step 1: the delivery path probes with timeout 0 — a held lock raises now."""
+    home = root / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(bot_relay, "turn_wait_seconds", lambda: 30)  # must be irrelevant
+    held = threading.Event()
+    release = threading.Event()
+    t = threading.Thread(target=_hold_flock, args=(turn_lock_path(home, "ops"), held, release))
+    t.start()
+    assert held.wait(timeout=5)
+    try:
+        started = time.monotonic()
+        with pytest.raises(TurnBusyError):
+            with acquire_delivery_turn_lock(home, "ops"):
+                pass
+        assert time.monotonic() - started < 1.0, "the delivery probe must never wait"
+    finally:
+        release.set()
+        t.join(timeout=5)
+
+
 def test_delivery_main_reports_target_busy_json(root, tmp_path, monkeypatch, capsys):
-    """A queued delivery that exceeds its budget surfaces the structured error."""
+    """A delivery that cannot take the turn slot is RETAINED: the sender gets a receipt.
+
+    P9(b)/§3.1 — stdout carries the 23-field envelope, the exit code stays 0, and
+    ``target_busy`` appears only as the receipt's ``status_detail`` (never as a reason).
+    """
     home = root / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -199,14 +240,20 @@ def test_delivery_main_reports_target_busy_json(root, tmp_path, monkeypatch, cap
         rc = bot_mode_dm._delivery_main(
             ["--run-delivery", "query-file", str(dm), "hermes", "-p", "ops", "chat"]
         )
-        assert rc == 1
+        assert rc == 0
         payload = json.loads(capsys.readouterr().out.strip())
-        assert payload["reason"] == "target_busy"  # #93091 item-1 enum extension
-        assert "ops" in payload["error"]
+        assert payload["result"] == "receipt"
+        assert payload["status"] == "queued"
+        assert payload["status_detail"] == "target_busy: turn slot held by another turn; delivery queued"
+        assert payload["busy"] is True and payload["attempts"] == 0
+        assert payload["reason"] is None
+        assert payload["profile"] == "ops"
+        assert list(payload) == list(delivery_queue.ENVELOPE_FIELDS)  # §1.3 order, no extras
+        assert "reoffer_count" not in payload  # internal bookkeeping only
     finally:
         release.set()
         t.join(timeout=5)
-    assert not dm.exists(), "DM plaintext must be reclaimed even on refusal"
+    assert not dm.exists(), "DM plaintext must be reclaimed even when the delivery is retained"
 
 
 def test_peer_stdin_delivery_skips_local_lock(root, tmp_path, monkeypatch):

@@ -15,9 +15,22 @@ def test_delivery_uses_refusal_code_before_human_wording(tmp_path, capsys):
         dm.write_text("isolated probe", encoding="utf-8")
         child = tmp_path / "child.py"
         child.write_text(f"import sys\nprint({f'hermes-refusal-reason: {code}'!r}, file=sys.stderr)\nprint({message!r}, file=sys.stderr)\nraise SystemExit(1)\n", encoding="utf-8")
-        assert bot_mode_dm._run_delivery([sys.executable, str(child)], str(dm), stdin_file=False) == 1
+        returncode = bot_mode_dm._run_delivery(
+            [sys.executable, str(child)], str(dm), stdin_file=False
+        )
         output = capsys.readouterr()
-        assert (json.loads(output.out)["reason"] == "target_busy") if busy else not output.out
+        if busy:
+            # §5.2/P12: a delivery turn's SESSION_NOT_OWNED is a live-owner HOLD, reported as a
+            # receipt (exit 0) — non-delivery callers keep the refusal above.
+            assert returncode == 0
+            payload = json.loads(output.out)
+            assert payload["result"] == "receipt"
+            assert payload["status_detail"] == "live_owner_present"
+            assert payload["attempts"] == 0 and payload["busy"] is True
+            assert "not delivered" not in output.out.lower()
+        else:
+            assert returncode == 1
+            assert not output.out
         assert not dm.exists()
 
 

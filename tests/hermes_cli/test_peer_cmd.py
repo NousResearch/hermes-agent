@@ -2,7 +2,8 @@
 
 import json
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from types import SimpleNamespace
 
 import pytest
@@ -547,3 +548,194 @@ def test_request_strips_bearer_key_across_redirect_origin():
     assert all(header is None for header in _AttackerOrigin.auth_seen), (
         f"peer's Bearer key leaked to the redirect target: {_AttackerOrigin.auth_seen}"
     )
+
+
+# ── T6: a post-retention 404 on the read path is not a failure ───────────────
+# (live loopback server: the real urllib HTTPError the evidence showed)
+
+
+def _peer_for(monkeypatch, url):
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": url}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+
+
+def test_status_404_after_retention_is_not_a_failure(monkeypatch, capsys, fake_peer_server):
+    """Spec T6: terminal run rows are GC'd after RETENTION_SECONDS, so a 404
+    means the record is gone — never that the delivery failed. Exit 0."""
+    _peer_for(monkeypatch, fake_peer_server)
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="status", target="spark",
+                                           run_id="run_gone", json=False))
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "run_gone" in out
+    assert "not a delivery failure" in out
+
+
+def test_status_404_json_emits_an_unknown_envelope(monkeypatch, capsys, fake_peer_server):
+    _peer_for(monkeypatch, fake_peer_server)
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="status", target="spark",
+                                           run_id="run_gone", json=True))
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["object"] == "hermes.peer.run"
+    assert payload["result"] == "unknown"
+    assert payload["status"] == "unknown"
+    assert payload["run_id"] == "run_gone"
+    assert payload["reason"] == "run_not_found"
+    assert payload["retryable"] is False
+
+
+def test_stop_404_is_unchanged(monkeypatch, capsys, fake_peer_server):
+    """The carve-out is the READ path only: ``peer stop`` keeps exit 1 + message."""
+    _peer_for(monkeypatch, fake_peer_server)
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="stop", target="spark",
+                                           run_id="run_gone", json=False))
+
+    assert rc == 1
+    assert "HTTP 404" in capsys.readouterr().err
+
+
+class _ServerErrorPeer(_FakePeer):
+    """A peer whose run-read fails with HTTP 500 — guards the 404 carve-out."""
+
+    def do_GET(self):
+        type(self).auth_seen.append(self.headers.get("Authorization", ""))
+        if self.path.startswith("/v1/runs/"):
+            return self._json({"error": {"message": "internal error"}}, 500)
+        return super().do_GET()
+
+
+@pytest.fixture()
+def server_error_peer_server():
+    _ServerErrorPeer.sessions = []
+    _ServerErrorPeer.chats = []
+    _ServerErrorPeer.auth_seen = []
+    server = HTTPServer(("127.0.0.1", 0), _ServerErrorPeer)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_status_500_still_exits_nonzero(monkeypatch, capsys, server_error_peer_server):
+    """Every other HTTP status keeps today's behaviour exactly."""
+    _peer_for(monkeypatch, server_error_peer_server)
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="status", target="spark",
+                                           run_id="run_1", json=False))
+
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "HTTP 500" in captured.err
+    assert captured.out == ""
+
+
+# ── D3 over a REAL socket (no transport stubbing) ────────────────────────────
+
+
+class _SlowDeliveryPeer(BaseHTTPRequestHandler):
+    """A peer whose first delivery POST goes mid-turn and never answers.
+
+    Reproduces the D3 evidence exactly: the response *headers* arrive, the body
+    never does, so the client's read timeout fires inside ``resp.read()`` as a
+    bare ``socket.timeout`` — not a wrapped ``URLError``.
+    """
+
+    posts: list = []          # (lowercased headers, body) per delivery POST
+    hang_seconds = 2.5
+
+    def _json(self, payload, status=200):
+        body = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path.startswith("/api/sessions"):
+            return self._json({"object": "list", "data": [{"id": "bc_1", "title": "Bot Chat"}]})
+        return self._json({"error": {"message": "not found"}}, 404)
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(length) or b"{}")
+        if not (self.path.startswith("/api/sessions/") and self.path.endswith("/chat")):
+            return self._json({"error": {"message": "not found"}}, 404)
+        headers = {k.lower(): v for k, v in self.headers.items()}
+        type(self).posts.append((headers, body))
+        if len(type(self).posts) == 1:
+            # Accepted and reserved, still executing: headers now, body never.
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "4000")
+            self.end_headers()
+            time.sleep(type(self).hang_seconds)
+            self.close_connection = True
+            return
+        # The replay hit the idempotent reservation: same key, no second turn.
+        return self._json({
+            "object": "hermes.peer.send_result",
+            "result": "receipt",
+            "status": "accepted",
+            "replayed": True,
+            "session_id": "bc_1",
+            "run_id": "run_77",
+            "idempotency_key": headers.get("idempotency-key", ""),
+            "retryable": False,
+        })
+
+    def log_message(self, *args):  # noqa: D102 — silence test server logging
+        pass
+
+
+@pytest.fixture()
+def slow_delivery_peer_server():
+    _SlowDeliveryPeer.posts = []
+    _SlowDeliveryPeer.hang_seconds = 2.5
+    # Single-threaded ``HTTPServer`` would serialise the replay behind the
+    # hanging first request; the gateway is concurrent, so the fake must be too.
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _SlowDeliveryPeer)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def test_dm_read_timeout_replays_over_a_real_socket(monkeypatch, capsys, slow_delivery_peer_server):
+    """A real socket timeout must yield the replayed receipt, never 'unreachable'."""
+    _peer_for(monkeypatch, slow_delivery_peer_server)
+    # Shrink only the HTTP headroom so the real read timeout fires in ~1.3s.
+    monkeypatch.setattr(peer_cmd, "_DM_TIMEOUT_SLACK_S", 0.3)
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="dm", target="spark",
+                                           message="status?", wait_seconds=1, json=True))
+
+    captured = capsys.readouterr()
+    assert rc == 0, captured.err
+    assert len(_SlowDeliveryPeer.posts) == 2, "the delivery was not replayed"
+    first_headers, first_body = _SlowDeliveryPeer.posts[0]
+    second_headers, second_body = _SlowDeliveryPeer.posts[1]
+    # Same request, same idempotency key — so it can only replay, not re-deliver.
+    assert first_headers["idempotency-key"] == second_headers["idempotency-key"]
+    assert first_body == second_body == {"message": "status?"}
+    # The replay pins the server's wait budget to 1s.
+    assert second_headers["x-hermes-wait-seconds"] == "1"
+    # The true envelope comes back from the replayed reservation, not a guess.
+    payload = json.loads(captured.out)
+    assert payload["result"] == "receipt"
+    assert payload["retryable"] is False
+    assert payload["session_id"] == "bc_1"
+    assert "unreachable" not in (captured.out + captured.err).lower()
+    assert "Could not reach peer" not in captured.err

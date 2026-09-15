@@ -35,7 +35,7 @@ import {
 import { $groupChats, $groupChatWorkspace, $groupClarify, $groupNeedsYou } from './group-chat'
 import { GroupChatWorkspace, openGroupChat } from './group-chat-view'
 import { groupChatMemberBots } from './group-membership'
-import { $groupMainTabsRev, shouldRenderGroupChatInPane } from './group-panes'
+import { $groupMainTabsRev, activeGroupChat, shouldRenderGroupChatInPane } from './group-panes'
 import { $activeGroupMemberKeys } from './group-presence'
 import { $showHiddenBots, isBotHidden } from './hidden-bots'
 import { useBots } from './i18n'
@@ -160,7 +160,7 @@ export function sessionOwnsWorkspace(): boolean {
  *  group chat it would describe whichever profile the socket happens to be
  *  homed on. */
 export function botChatOwnsWorkspace(): boolean {
-  return $botsPaneVisible.get() && !$groupChatWorkspace.get() && Boolean($openBotChat.get() || sessionOwnsWorkspace())
+  return $botsPaneVisible.get() && !activeGroupChat() && Boolean($openBotChat.get() || sessionOwnsWorkspace())
 }
 
 /** An opened bot chat stops owning the center once focus leaves it (closed,
@@ -215,7 +215,7 @@ function useReconcileRosterOwner(
       reconcileRosterSelection(roster, sourceSnapshot, allMeta)
       const selected = selectedRosterBot(roster, $selectedRosterKey.get())
 
-      if ($botsPaneVisible.get() && !$groupChatWorkspace.get() && selected) {
+      if ($botsPaneVisible.get() && !activeGroupChat() && selected) {
         setBotsWorkspaceOwner(botWorkspaceOwnerKey(selected), selected)
       }
     }

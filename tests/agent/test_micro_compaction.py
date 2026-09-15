@@ -41,7 +41,7 @@ def _compressor(summary="ROLLING SUMMARY") -> ContextCompressor:
     )
     cc._micro_compact_enabled = True
     # Stand in for the auxiliary summarizer LLM.
-    cc._micro_summarize_one = lambda _text: summary
+    cc._micro_summarize_one = lambda _text, **_kwargs: summary
     return cc
 
 
@@ -97,7 +97,7 @@ class TestMicroCompaction:
             config_context_length=40960,
             provider="test",
         )
-        cc._micro_summarize_one = lambda _text: "ROLLING SUMMARY"
+        cc._micro_summarize_one = lambda _text, **_kwargs: "ROLLING SUMMARY"
         messages = _conversation()
 
         assert cc._micro_compact_enabled is False
@@ -550,8 +550,9 @@ class TestMicroCompaction:
         cc = _compressor()
         captured = {}
 
-        def capture(text):
+        def capture(text, *, defrag=False):
             captured["text"] = text
+            captured["defrag"] = defrag
             return "DEFRAGGED"
 
         cc._micro_summarize_one = capture
@@ -563,6 +564,21 @@ class TestMicroCompaction:
         assert "[USER]" not in captured["text"], (
             "defrag must never serialize transcript user turns"
         )
+        assert captured["defrag"] is True
+
+    def test_defrag_prompt_requires_material_shrink(self):
+        cc = _compressor()
+        old_summary = "decision and context " * 100
+
+        merge_prompt = cc._build_micro_summary_prompt("", old_summary)[1]["content"]
+        defrag_prompt = cc._build_micro_summary_prompt(
+            "", old_summary, defrag=True,
+        )[1]["content"]
+
+        assert str(len(old_summary) // 2) not in merge_prompt
+        assert str(len(old_summary) // 2) in defrag_prompt
+        assert "file paths" in defrag_prompt
+        assert "open questions" in defrag_prompt
 
     def test_spliced_transcript_survives_repair_message_sequence(self):
         """The compacted transcript must survive the production repair pass.

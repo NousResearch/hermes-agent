@@ -33,8 +33,14 @@ _FIRE_COOLDOWN_SECONDS = 2.0
 _START_TIMEOUT_SECONDS = 5.0
 
 # Ambient-speech rejection: N consecutive over-threshold frames before firing
-# (a stray phoneme spikes one frame; a real phrase holds several).
-_DEFAULT_CONFIRMATION_FRAMES = 3
+# (a stray phoneme spikes one frame; a real phrase holds several). Measured
+# 2026-09-15 on a 64-positive/88-negative TTS bench (hey_gigi.onnx, threshold=0.6):
+# confirm=3 -> 65.6% detection / 0 false-fires; confirm=2 -> 81.25% detection /
+# 0 false-fires; confirm=1 -> 87.5% detection but 1/88 false-fires (a phrase
+# containing "Gigi" as a substring). confirm=2 is the best detection rate that
+# still keeps false-fires at zero on this corpus — see the 'voice' skill's wake
+# word section for the full numbers.
+_DEFAULT_CONFIRMATION_FRAMES = 2
 
 # Dead-mic detection: an int16 stream whose peak stays at/below _SILENCE_PEAK for
 # this many consecutive seconds is flagged silent (desktop push-to-talk and the

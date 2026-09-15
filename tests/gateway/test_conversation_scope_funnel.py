@@ -19,6 +19,7 @@ def _bare_runner() -> GatewayRunner:
     runner = object.__new__(GatewayRunner)
     for attr in _CONVERSATION_SCOPED_STATE:
         setattr(runner, attr, {KEY: object(), OTHER: object()})
+    runner._queued_events = {KEY: [object()], OTHER: [object()]}
     # Turn-scoped state that the funnel must NOT touch.
     runner._running_agents = {KEY: object()}
     runner._running_agents_ts = {KEY: 1.0}

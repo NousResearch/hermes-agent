@@ -55,6 +55,15 @@ function fsPath(endpoint: string, filePath: string) {
   return `/api/fs/${endpoint}?path=${encodeURIComponent(filePath)}`
 }
 
+// The native picker returns a host drive path verbatim. Keep that path on the
+// Electron filesystem; POSIX paths such as Docker's /workspace stay remote.
+// Never infer a host path from a mount when no bridge metadata says one exists.
+const WINDOWS_DRIVE_ABSOLUTE_PATH_RE = /^[A-Za-z]:[\\/]/
+
+function isExplicitWindowsLocalPath(path: string) {
+  return WINDOWS_DRIVE_ABSOLUTE_PATH_RE.test(path.trim())
+}
+
 function bridge() {
   const desktop = window.hermesDesktop
 
@@ -72,7 +81,7 @@ function remoteFsApi<T>(path: string, body?: Record<string, unknown>): Promise<T
 }
 
 export async function readDesktopDir(path: string): Promise<HermesReadDirResult> {
-  if (!isDesktopFsRemoteMode()) {
+  if (!isDesktopFsRemoteMode() || isExplicitWindowsLocalPath(path)) {
     return bridge().readDir(path)
   }
 

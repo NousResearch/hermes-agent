@@ -117,6 +117,23 @@ describe('desktop filesystem facade', () => {
     expect(gitRoot).not.toHaveBeenCalled()
   })
 
+  it('uses Electron for a Windows folder selected locally while retaining Docker-mounted directory routing', async () => {
+    $connection.set({ mode: 'remote', profile: 'remote-docker' } as never)
+
+    await expect(readDesktopDir('C:\\Users\\Ada\\project')).resolves.toMatchObject({
+      entries: [{ name: 'local' }]
+    })
+    await expect(readDesktopDir('/workspace/project')).resolves.toMatchObject({
+      entries: [{ name: 'remote' }]
+    })
+
+    expect(readDir).toHaveBeenCalledWith('C:\\Users\\Ada\\project')
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/fs/list?path=%2Fworkspace%2Fproject',
+      profile: 'remote-docker'
+    })
+  })
+
   it('does not retry the same unreadable path through the local facade', async () => {
     const error = new Error('not readable')
 

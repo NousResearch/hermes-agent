@@ -3394,6 +3394,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
         error_types = self._telegram_error_types()
+        message_ids = []
         try:
             # Bot API 10.1 rich fast-path; falls through to legacy MarkdownV2 on permanent/capability
             # errors or DM-topic skips; returns directly on success or transient failure (no legacy resend).
@@ -3410,7 +3411,6 @@ class TelegramAdapter(BasePlatformAdapter):
                     _separate_chunk_indicator_from_fence(re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk))
                     for chunk in chunks
                ]
-            message_ids = []
             thread_id = self._metadata_thread_id(metadata)
             requested_thread_id = self._message_thread_id_for_send(thread_id)
             used_thread_fallback = False
@@ -3418,6 +3418,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 outcome = await self._send_chunk_with_retries(
                     chat_id, chunk, i, reply_to, metadata, thread_id, used_thread_fallback, error_types)
                 if isinstance(outcome, SendResult):
+                    if message_ids:
+                        outcome.raw_response = {**(outcome.raw_response or {}), "message_ids": message_ids}
                     return outcome
                 msg, used_thread_fallback = outcome
                 message_ids.append(str(msg.message_id))
@@ -3431,16 +3433,19 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to send Telegram message: %s", self.name, safe_error)
             err_str = str(e).lower()
             error_kind = classify_send_error(e)
+            # A later chunk failure does not revoke earlier acknowledgements.
+            # Keep the native ordered receipt shape without changing retry policy.
+            partial_receipt = {"message_ids": message_ids} if message_ids else None
             # Content exceeded 4096 chars: fail so the stream consumer enters fallback mode.
             if "message_too_long" in err_str or "too long" in err_str:
                 logger.debug("[%s] send() content too long, falling back to new-message continuation", self.name)
-                return SendResult(success=False, error="message_too_long", error_kind="too_long")
+                return SendResult(success=False, error="message_too_long", error_kind="too_long", raw_response=partial_receipt)
             # TimedOut may have reached Telegram — non-retryable so _send_with_retry() doesn't re-send,
             # except a wrapped ConnectTimeout or an httpx pool timeout (safe to re-send).
             _to = error_types[2]
             is_timeout = (_to and isinstance(e, _to)) or "timed out" in err_str
             return SendResult(
-                success=False, error=safe_error,
+                success=False, error=safe_error, raw_response=partial_receipt,
                 retryable=(self._looks_like_connect_timeout(e) or self._looks_like_pool_timeout(e) or not is_timeout),
                 error_kind=error_kind)
 

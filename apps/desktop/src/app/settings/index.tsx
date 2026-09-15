@@ -5,7 +5,7 @@ import { Navigate, useLocation, useNavigate } from 'react-router'
 import { codiconIcon } from '@/components/ui/codicon'
 import { KbdCombo } from '@/components/ui/kbd'
 import { Tip } from '@/components/ui/tooltip'
-import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
+import { getHermesConfigDefaults, getHermesConfigRecord, profileScopeKey, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import {
@@ -83,10 +83,9 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   const activeConnectionId = useStore($activeConnectionId)
   const settingsOwner = useStore($settingsOwner)
 
-  const settingsOwnerKey = vaultOwnerKey(
-    settingsOwner?.connectionId ?? settingsOwner?.legacyConnection?.baseUrl ?? activeConnectionId,
-    scopeProfile
-  )
+  const settingsOwnerKey = settingsOwner
+    ? profileScopeKey(settingsOwner)
+    : vaultOwnerKey(activeConnectionId, scopeProfile)
 
   const { t } = useI18n()
   const navigate = useNavigate()

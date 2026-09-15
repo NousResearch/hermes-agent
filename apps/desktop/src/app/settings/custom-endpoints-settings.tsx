@@ -120,15 +120,19 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
   // canonical model + reasoning effort on Save (#93622).
   const [discoveredDetails, setDiscoveredDetails] = useState<CustomEndpointModelDetail[]>([])
 
-  const isForegroundOwner = () =>
-    mounted.current && $settingsOwner.get() === scope && $settingsScopeOverride.get() == null
+  const isCurrentOwner = () => mounted.current && $settingsOwner.get() === scope
+  const isForegroundOwner = () => isCurrentOwner() && $settingsScopeOverride.get() == null
 
   async function refresh() {
     const data = await getCustomEndpoints(scope)
 
-    if (mounted.current) {
-      setEndpoints(data.endpoints)
+    if (!isCurrentOwner()) {
+      return false
     }
+
+    setEndpoints(data.endpoints)
+
+    return true
   }
 
   // eslint-disable-next-line no-restricted-syntax -- lifecycle guard drops stale async completions; it does not mirror an atom
@@ -178,7 +182,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
       setSaving(true)
       const response = await saveCustomEndpoint(toPayload(form, discoveredModels, discoveredDetails), scope)
 
-      if (!mounted.current) {
+      if (!isCurrentOwner()) {
         return
       }
 
@@ -202,11 +206,11 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
 
       notify({ kind: 'success', message: 'Custom endpoint saved.' })
     } catch (err) {
-      if (mounted.current) {
+      if (isCurrentOwner()) {
         notifyError(err, 'Save failed')
       }
     } finally {
-      if (mounted.current) {
+      if (isCurrentOwner()) {
         setSaving(false)
       }
     }
@@ -217,7 +221,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
       setTesting(true)
       const response = await validateCustomEndpoint(toPayload(form), scope)
 
-      if (!mounted.current) {
+      if (!isCurrentOwner()) {
         return
       }
 
@@ -253,11 +257,11 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
         })
       }
     } catch (err) {
-      if (mounted.current) {
+      if (isCurrentOwner()) {
         notifyError(err, 'Validation failed')
       }
     } finally {
-      if (mounted.current) {
+      if (isCurrentOwner()) {
         setTesting(false)
       }
     }
@@ -268,13 +272,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
       setActivating(endpoint.id)
       const response = await activateCustomEndpoint(endpoint.id, scope)
 
-      if (!mounted.current) {
-        return
-      }
-
-      await refresh()
-
-      if (!mounted.current) {
+      if (!isCurrentOwner() || !(await refresh())) {
         return
       }
 
@@ -285,11 +283,11 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
 
       triggerHaptic('success')
     } catch (err) {
-      if (mounted.current) {
+      if (isCurrentOwner()) {
         notifyError(err, 'Activation failed')
       }
     } finally {
-      if (mounted.current) {
+      if (isCurrentOwner()) {
         setActivating(null)
       }
     }
@@ -305,7 +303,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
       setDeleting(endpoint.id)
       const response = await deleteCustomEndpoint(endpoint.id, scope)
 
-      if (!mounted.current) {
+      if (!isCurrentOwner()) {
         return
       }
 
@@ -323,11 +321,11 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
 
       triggerHaptic('success')
     } catch (err) {
-      if (mounted.current) {
+      if (isCurrentOwner()) {
         notifyError(err, 'Delete failed')
       }
     } finally {
-      if (mounted.current) {
+      if (isCurrentOwner()) {
         setDeleting(null)
       }
     }

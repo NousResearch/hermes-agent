@@ -33,13 +33,14 @@ export const hermesConfigKey = (profile?: ProfileScope) =>
 // staleTime 0 → serve cache instantly, background-revalidate on every mount.
 // `profile` scopes both the query key and the fetch; omitting it preserves the
 // exact app-wide behavior (base key, `profileScoped(undefined)` fallback).
-export const useHermesConfigRecord = (profile?: ProfileScope) => {
+export const useHermesConfigRecord = (profile?: ProfileScope, enabled = true) => {
   const query = useQuery({
     queryKey: hermesConfigKey(profile),
     // null/undefined both mean "no override" → fetch with undefined so
     // capabilityScoped falls back to the app-wide active profile (passing null
     // would wrongly target the primary backend).
     queryFn: () => getHermesConfigRecord(profile ?? undefined),
+    enabled,
     staleTime: 0,
     // Keep structural sharing so an unchanged refetch (every consumer mount at
     // staleTime 0, every invalidate) yields the SAME object and consumers'

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConfirmHost } from '@/components/confirm-host'
 import { $confirmRequest } from '@/store/confirm'
 import { $connection } from '@/store/session'
+import { $settingsOwner } from '@/store/settings-scope'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
 const listOAuthProviders = vi.fn()
@@ -114,7 +115,7 @@ describe('ProvidersSettings', () => {
     const { container } = render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
 
     await screen.findByText('Widget')
-    expect(getEnvVars).toHaveBeenLastCalledWith({ connectionId: 'gateway-a', profile: 'alpha' })
+    expect(getEnvVars).toHaveBeenLastCalledWith($settingsOwner.get())
     const input = container.querySelector('input[type="password"]')!
     fireEvent.focus(input)
     fireEvent.change(input, { target: { value: 'gateway-a-draft' } })
@@ -124,9 +125,7 @@ describe('ProvidersSettings', () => {
       $connection.set({ mode: 'remote', connectionId: 'gateway-b', baseUrl: 'https://b.example' } as never)
     })
 
-    await waitFor(() =>
-      expect(getEnvVars).toHaveBeenLastCalledWith({ connectionId: 'gateway-b', profile: 'alpha' })
-    )
+    await waitFor(() => expect(getEnvVars).toHaveBeenLastCalledWith($settingsOwner.get()))
     expect(container.querySelector('input[type="password"]')?.getAttribute('value')).toBe('')
   })
 
@@ -152,20 +151,15 @@ describe('ProvidersSettings', () => {
     try {
       const { container } = render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
       await screen.findByText('Widget')
-      expect(getEnvVars).toHaveBeenLastCalledWith({ connectionId: 'local', profile: 'profile-b' })
+      expect(getEnvVars).toHaveBeenLastCalledWith($settingsOwner.get())
       expect(screen.getByText('Applies to')).toBeTruthy()
       const input = container.querySelector('input[type="password"]')!
       fireEvent.focus(input)
       fireEvent.change(input, { target: { value: 'fixture-key' } })
       fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-      await waitFor(() =>
-        expect(setEnvVar).toHaveBeenCalledWith('WIDGET_API_KEY', 'fixture-key', {
-          connectionId: 'local',
-          profile: 'profile-b'
-        })
-      )
+      await waitFor(() => expect(setEnvVar).toHaveBeenCalledWith('WIDGET_API_KEY', 'fixture-key', $settingsOwner.get()))
       fireEvent.click(screen.getByRole('button', { name: 'profile-a' }))
-      await waitFor(() => expect(getEnvVars).toHaveBeenLastCalledWith({ connectionId: 'local', profile: 'profile-a' }))
+      await waitFor(() => expect(getEnvVars).toHaveBeenLastCalledWith($settingsOwner.get()))
     } finally {
       cleanup()
       $settingsScopeOverride.set(null)
@@ -180,7 +174,7 @@ describe('ProvidersSettings', () => {
 
     try {
       await renderProvidersSettings()
-      const owner = { connectionId: 'local', profile: 'beta' }
+      const owner = $settingsOwner.get()
       expect(getEnvVars).toHaveBeenCalledWith(owner)
       expect(listOAuthProviders).toHaveBeenCalledWith(owner)
       fireEvent.click(await screen.findByText('Nous Portal'))
@@ -209,9 +203,7 @@ describe('ProvidersSettings', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }))
     })
 
-    await waitFor(() =>
-      expect(disconnectOAuthProvider).toHaveBeenCalledWith('nous', { connectionId: 'local', profile: 'default' })
-    )
+    await waitFor(() => expect(disconnectOAuthProvider).toHaveBeenCalledWith('nous', $settingsOwner.get()))
     expect(listOAuthProviders).toHaveBeenCalledTimes(2)
   })
 
@@ -236,7 +228,7 @@ describe('ProvidersSettings', () => {
       fireEvent.click(await screen.findByText('Nous Portal'))
     })
 
-    expect(startManualProviderOAuth).toHaveBeenCalledWith('nous', { connectionId: 'local', profile: 'default' })
+    expect(startManualProviderOAuth).toHaveBeenCalledWith('nous', $settingsOwner.get())
     expect(disconnectOAuthProvider).not.toHaveBeenCalled()
   })
 
@@ -334,8 +326,6 @@ describe('ProvidersSettings', () => {
 
     fireEvent.click(row)
 
-    await waitFor(() =>
-      expect(startManualLocalEndpoint).toHaveBeenCalledWith(null, { connectionId: 'local', profile: 'default' })
-    )
+    await waitFor(() => expect(startManualLocalEndpoint).toHaveBeenCalledWith(null, $settingsOwner.get()))
   })
 })

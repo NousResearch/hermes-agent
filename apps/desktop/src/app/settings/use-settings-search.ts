@@ -47,7 +47,7 @@ export function useSettingsSearchCatalog(enabled: boolean) {
   const { t } = useI18n()
   const owner = useStore($settingsOwner)
   const scopeKey = owner ? profileScopeKey(owner) : 'unavailable'
-  const configQuery = useHermesConfigRecord(owner ?? undefined)
+  const configQuery = useHermesConfigRecord(owner ?? undefined, enabled && Boolean(owner))
 
   const schemaQuery = useQuery({
     queryKey: ['hermes-config-schema', scopeKey],

@@ -32,6 +32,10 @@ _SCOPED_SKIP_LOGGED: set[str] = set()   # routed profile homes whose multiplex d
 _SECRET_SOURCES: dict[str, str] = {}
 # Immutable per-home snapshots: os.environ is shared across profiles and a later home's apply may overwrite it.
 _SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
+# Per-home snapshot of values that an external source actually wrote (as opposed to skipped_existing
+# values). Reapply these on subsequent dotenv reloads so an override_existing source keeps its precedence
+# even though the expensive external fetch is intentionally once-per-home.
+_SECRET_SOURCE_APPLIED_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
 # HERMES_HOME paths already pulled external secrets for: load_hermes_dotenv() runs at import time from
 # several hot modules, so without this the Bitwarden status line prints 3-5x per startup and the config
 # re-parse + ASCII sweep re-run each time (Bitwarden's own cache only saves the network call).
@@ -168,10 +172,12 @@ def reset_secret_source_cache(hermes_home: str | os.PathLike | None = None) -> N
         _APPLIED_HOMES.clear()
         _SECRET_SOURCES.clear()
         _SECRET_SOURCE_VALUES_BY_HOME.clear()
+        _SECRET_SOURCE_APPLIED_VALUES_BY_HOME.clear()
         return
     home_key = str(Path(hermes_home).resolve())
     _APPLIED_HOMES.discard(home_key)
     _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
+    _SECRET_SOURCE_APPLIED_VALUES_BY_HOME.pop(home_key, None)
 
 
 def format_secret_source_suffix(env_var: str) -> str:
@@ -580,7 +586,11 @@ def load_hermes_dotenv(
     project_env_path = Path(project_env) if project_env else None
     op_env = home_path / ".op.env"
     case_insensitive = os.name == "nt"
-    project_key = str(project_env_path.resolve()) if project_env_path else ""
+    project_key = (
+        str(project_env_path.resolve())
+        if project_env_path and project_env_path.exists()
+        else ""
+    )
     reload_scope = f"hermes:{home_path.resolve()}:{project_key}"
 
     # One reload scope spans every dotenv layer. Resolving each file independently would let a managed
@@ -720,6 +730,14 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     the ``_SECRET_SOURCES`` map and status lines."""
     home_key = str(Path(home_path).resolve())
     if home_key in _APPLIED_HOMES:
+        # External fetches are intentionally once-per-home, but values that actually overrode dotenv/shell
+        # must keep doing so on every hot reload. Reapply only prior ``provenance`` writes; values that were
+        # merely ``skipped_existing`` stay owned by dotenv/shell and are never frozen here.
+        applied_values = _SECRET_SOURCE_APPLIED_VALUES_BY_HOME.get(home_key, {})
+        for name, value in applied_values.items():
+            os.environ[name] = value
+        if applied_values:
+            _sanitize_loaded_credentials()
         return
 
     # Neither early return marks the home applied: a malformed config.yaml would otherwise permanently
@@ -760,6 +778,13 @@ def _apply_external_secret_sources(home_path: Path) -> None:
 
     if report.applied_any:
         _sanitize_loaded_credentials()  # vault values carry the same copy-paste corruption risk as .env
+        applied_values = {
+            name: os.environ[name]
+            for name in report.provenance
+            if name in os.environ
+        }
+        if applied_values:
+            _SECRET_SOURCE_APPLIED_VALUES_BY_HOME[home_key] = applied_values
         for name, applied in report.provenance.items():
             _SECRET_SOURCES[name] = applied.source
 

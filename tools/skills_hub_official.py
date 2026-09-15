@@ -26,6 +26,11 @@ def _clean_rel_parts(path: str) -> Optional[List[str]]:
     return None if not parts or ".." in parts else parts
 
 
+def _entry_provider(entry: dict) -> str:
+    """Normalized ``extra.provider`` label of a raw index entry."""
+    return str((entry.get("extra") or {}).get("provider", "")).lower()
+
+
 class OptionalSkillSource(SkillSource):
     """Skills from the repo's ``optional-skills/`` directory: official (Nous-maintained) but not
     activated by default — absent from the system prompt and not copied to ~/.hermes/skills/ at
@@ -320,10 +325,7 @@ class HermesIndexSource(SkillSource):
         skills = self._skills()
         if provider_filter:
             want = provider_filter.strip().lower()
-            skills = [
-                s for s in skills
-                if str((s.get("extra") or {}).get("provider", "")).lower() == want
-            ]
+            skills = [s for s in skills if _entry_provider(s) == want]
         if not skills:
             return []
         if not query.strip():
@@ -332,7 +334,7 @@ class HermesIndexSource(SkillSource):
         scored: List[Tuple[int, int, dict]] = []
         for i, s in enumerate(skills):
             name = str(s.get("name", "")).lower()
-            provider = str((s.get("extra") or {}).get("provider", "")).lower()
+            provider = _entry_provider(s)
             haystack = " ".join([
                 name, str(s.get("description", "")).lower(), " ".join(str(t).lower() for t in s.get("tags", [])),
                 str(s.get("identifier", "")).lower(), provider,

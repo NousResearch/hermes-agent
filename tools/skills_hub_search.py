@@ -14,7 +14,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from tools.skills_hub_clawhub import ClawHubSource
-from tools.skills_hub_github import GitHubAuth, GitHubSource, _PROVIDER_FILTER_VALUES, _filter_results_by_provider
+from tools.skills_hub_github import GitHubAuth, GitHubSource, _filter_results_by_provider, _provider_filter_of
 from tools.skills_hub_models import SkillMeta, SkillSource, TRUST_RANK, _dedupe_by_trust
 from tools.skills_hub_official import HermesIndexSource, OptionalSkillSource
 from tools.skills_hub_skillssh import SkillsShSource
@@ -126,7 +126,7 @@ def _select_active_sources(sources: List[SkillSource], source_filter: str) -> Li
     are filtered again. "official" is always queried alongside an explicit
     source filter.
     """
-    effective = "all" if source_filter.strip().lower() in _PROVIDER_FILTER_VALUES else source_filter
+    effective = "all" if _provider_filter_of(source_filter) else source_filter
     index_available = effective == "all" and any(
         src.source_id() == "hermes-index" and getattr(src, "is_available", False) for src in sources
     )
@@ -154,9 +154,7 @@ def parallel_search_sources(
 
     per_source_limits = per_source_limits or {}
     active = _select_active_sources(sources, source_filter)
-    provider_filter = source_filter.strip().lower()
-    if provider_filter not in _PROVIDER_FILTER_VALUES:
-        provider_filter = ""
+    provider_filter = _provider_filter_of(source_filter)
     all_results: List[SkillMeta] = []
     source_counts: Dict[str, int] = {}
     timed_out_ids: List[str] = []
@@ -198,7 +196,7 @@ def unified_search(query: str, sources: List[SkillSource],
     """Search all sources (in parallel) and merge results."""
     all_results, _, _ = parallel_search_sources(sources, query=query, source_filter=source_filter, overall_timeout=30)
     # Provider filters target ``extra.provider`` on the merged set, not a source id.
-    if source_filter.strip().lower() in _PROVIDER_FILTER_VALUES:
+    if _provider_filter_of(source_filter):
         all_results = _filter_results_by_provider(all_results, source_filter)
     deduped = _dedupe_by_trust(all_results)
     # Stable-sort by trust before truncating so the limit cut never drops a

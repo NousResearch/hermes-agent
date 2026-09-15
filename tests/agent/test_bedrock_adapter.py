@@ -556,6 +556,24 @@ class TestBuildConverseKwargs:
         )
         assert "inferenceConfig" not in kwargs
 
+    def test_bedrock_xai_grok_models_never_receive_sampling_params(self):
+        """Bedrock-hosted xAI Grok rejects temperature/topP in Converse with a hard 400
+        (ValidationException: "This model doesn't support the temperature field"); the
+        _forbids_sampling_params guard is Claude-only, so Grok needs its own denylist.
+        Sibling Bedrock models keep receiving sampling params."""
+        from agent.bedrock_adapter import build_converse_kwargs
+        msgs = [{"role": "user", "content": "Hi"}]
+        for model in ("us.xai.grok-4.6", "global.xai.grok-4.6"):
+            cfg = build_converse_kwargs(
+                model=model, messages=msgs, temperature=0.3, top_p=0.9
+            )["inferenceConfig"]
+            assert "temperature" not in cfg and "topP" not in cfg, model
+        for model in ("test-model", "qwen.qwen3-vl-235b-a22b"):
+            cfg = build_converse_kwargs(
+                model=model, messages=msgs, temperature=0.3, top_p=0.9
+            )["inferenceConfig"]
+            assert cfg["temperature"] == 0.3 and cfg["topP"] == 0.9, model
+
     def test_cache_point_added_for_supported_model(self):
         """Claude and Nova on the Converse path get cachePoint markers on
         system, tools, and the message before the newest turn."""

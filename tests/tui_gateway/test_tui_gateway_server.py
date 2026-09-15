@@ -105,7 +105,7 @@ def test_session_slot_is_claimed_on_first_turn_not_on_create(monkeypatch, tmp_pa
 
     try:
         server._cfg_cache = None
-        server._cfg_mtime = None
+        server._cfg_sig = None
         server._cfg_path = None
         _clear_server_sessions()
         monkeypatch.setattr(server, "_start_agent_build", lambda *args, **kwargs: None)
@@ -139,7 +139,7 @@ def test_session_slot_is_claimed_on_first_turn_not_on_create(monkeypatch, tmp_pa
     finally:
         _clear_server_sessions()
         server._cfg_cache = None
-        server._cfg_mtime = None
+        server._cfg_sig = None
         server._cfg_path = None
         reset_hermes_home_override(token)
 
@@ -9128,6 +9128,20 @@ def test_setup_status_answers_from_the_bootstrap_record_once_it_exists(monkeypat
         fb.reset_for_tests()
 
 
+def test_invalid_params_and_unknown_method_name_the_version_skew_fix():
+    """The only signal of a TUI/backend version mismatch; the lead phrases stay for clients."""
+    resp = server.handle_request({"id": "1", "method": "no.such.method", "params": {}})
+    assert resp["error"]["code"] == -32601
+    assert resp["error"]["message"].startswith("unknown method: no.such.method")
+    assert "hermes update" in resp["error"]["message"]
+
+    resp = server.handle_request(
+        {"id": "2", "method": "session.status", "params": {"session_id": "x", "turn_author": "y"}})
+    assert resp["error"]["code"] == 4000
+    assert resp["error"]["message"].startswith("invalid params for session.status: turn_author")
+    assert "hermes update" in resp["error"]["message"]
+
+
 def test_probe_credentials_emits_exact_empty_key_warning():
     agent = types.SimpleNamespace(api_key="", provider="openrouter")
 
@@ -14951,7 +14965,11 @@ def test_prompt_submit_fails_loudly_when_store_unavailable(monkeypatch):
         server._sessions.pop("lost-sid", None)
 
     assert resp["error"]["code"] == 5072
-    assert "session storage unavailable" in resp["error"]["message"]
+    msg = resp["error"]["message"]
+    assert "not saved" in msg and "hermes doctor --fix" in msg
+    assert "utf-8 decode failure" not in msg  # raw cause rides `data.details`, never the lead
+    assert resp["error"]["data"]["code"] == "storage_unavailable"
+    assert "utf-8 decode failure" in resp["error"]["data"]["details"]
 
 
 @pytest.mark.real_agent_prewarm
@@ -15068,7 +15086,11 @@ def test_session_list_returns_clean_error_when_state_db_is_unavailable(monkeypat
     resp = server.handle_request({"id": "1", "method": "session.list", "params": {}})
 
     assert "error" in resp
-    assert "state.db unavailable: locking protocol" in resp["error"]["message"]
+    # Plain cause + repair command; the machine-readable code lets a GUI attach "Run doctor".
+    assert "Session storage is unavailable" in resp["error"]["message"]
+    assert "hermes doctor --fix" in resp["error"]["message"]
+    assert resp["error"]["data"]["code"] == "storage_unavailable"
+    assert resp["error"]["data"]["details"] == "locking protocol"
 
 
 # --------------------------------------------------------------------------
@@ -15103,7 +15125,8 @@ def test_session_delete_returns_db_unavailable_when_no_db(monkeypatch):
 
     assert "error" in resp
     assert resp["error"]["code"] == 5036
-    assert "state.db unavailable" in resp["error"]["message"]
+    assert "Session storage is unavailable" in resp["error"]["message"]
+    assert resp["error"]["data"]["code"] == "storage_locked"
 
 
 def test_session_delete_refuses_active_session(monkeypatch):
@@ -16784,8 +16807,13 @@ def test_prompt_submit_surfaces_backend_error_as_visible_text(monkeypatch):
     assert complete_events, "expected message.complete to be emitted"
     payload = complete_events[-1][2]
     assert payload.get("status") == "error"
-    assert payload.get("text", "").startswith("Error:")
-    assert "kimi-k2.6" in payload.get("text", "")
+    text = payload.get("text", "")
+    # Plain title first, the raw provider body demoted to a Details line, and a next step —
+    # never the bare "Error: <body>" as if it were the assistant's reply.
+    assert not text.startswith("Error:")
+    assert "Details: HTTP 400: invalid model id 'kimi-k2.6'" in text
+    assert "/retry" in text or "/model" in text
+    assert payload.get("error") == "HTTP 400: invalid model id 'kimi-k2.6'"
 
 
 def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):
@@ -17283,7 +17311,7 @@ def test_verification_status_outside_workspace_is_not_applicable(monkeypatch, tm
 
 
 def _stub_urlopen(monkeypatch, *, ok: bool):
-    """Patch urllib.request.urlopen used by browser.manage to short-circuit probes."""
+    """Patch the loopback-aware opener browser.manage probes through (#110565) to short-circuit probes."""
 
     class _Resp:
         status = 200 if ok else 503
@@ -17301,7 +17329,7 @@ def _stub_urlopen(monkeypatch, *, ok: bool):
 
     import urllib.request
 
-    monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", lambda _self, url, *a, timeout=2.0, **k: _opener(url, timeout=timeout))
 
 
 def _stub_urlopen_capture(monkeypatch, *, ok: bool):
@@ -17324,7 +17352,7 @@ def _stub_urlopen_capture(monkeypatch, *, ok: bool):
 
     import urllib.request
 
-    monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", lambda _self, url, *a, timeout=2.0, **k: _opener(url, timeout=timeout))
     return urls
 
 
@@ -17600,7 +17628,7 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
 
     import urllib.request
 
-    monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", lambda _self, url, *a, timeout=2.0, **k: _opener(url, timeout=timeout))
     launched = ChromeDebugLaunch(launched=True)
     with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
         with (
@@ -17649,7 +17677,7 @@ def test_browser_manage_connect_finds_ipv6_only_browser(monkeypatch):
 
     import urllib.request
 
-    monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", lambda _self, url, *a, timeout=2.0, **k: _opener(url, timeout=timeout))
     with patch.dict(sys.modules, {"tools.browser_tool_lifecycle": fake}):
         resp = server.handle_request(
             {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
@@ -17687,7 +17715,7 @@ def test_browser_manage_connect_squatted_port_launches_on_alternate(monkeypatch)
 
     import urllib.request
 
-    monkeypatch.setattr(urllib.request, "urlopen", _opener)
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", lambda _self, url, *a, timeout=2.0, **k: _opener(url, timeout=timeout))
     launch_ports: list[int] = []
 
     def _launch(port, _system):
@@ -22468,3 +22496,23 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
     assert captured["row_update"] == (target, str(new_cwd))
     assert live["cwd"] == str(new_cwd)
     assert live.get("explicit_cwd") is True
+
+
+def test_load_cfg_raw_sees_replacement_with_pinned_mtime_and_size(monkeypatch, tmp_path):
+    """#111105: the raw-config cache must not serve (and later write back) a stale document after a
+    same-size replacement that keeps the old mtime."""
+    import shutil
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("model:\n  default: bbbb-route\n", encoding="utf-8")
+    monkeypatch.setattr(server, "_active_config_path", lambda: cfg)
+    monkeypatch.setattr(server, "_cfg_cache", None)
+    monkeypatch.setattr(server, "_cfg_sig", None)
+    monkeypatch.setattr(server, "_cfg_path", None)
+    assert server._load_cfg_raw()["model"]["default"] == "bbbb-route"
+    st = cfg.stat()
+    other = tmp_path / "other.yaml"
+    other.write_text("model:\n  default: aaaa-route\n", encoding="utf-8")
+    shutil.copy2(other, cfg)
+    os.utime(cfg, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert server._load_cfg_raw()["model"]["default"] == "aaaa-route"

@@ -49,6 +49,7 @@ from tools.terminal_tool_config import (
 )
 from tools.terminal_tool_backends import (
     _REQUIREMENT_CHECKERS, _VERCEL_SANDBOX_DEFAULT_CWD, _check_plugin_requirements,
+    _record_unavailable_reason, terminal_backend_unavailable_reason,  # noqa: F401 — re-exported
 )
 # display_hermes_home imported lazily at call site (stale-module safety during hermes update)
 from tools.tool_backend_helpers import coerce_modal_mode, managed_nous_tools_enabled
@@ -160,8 +161,8 @@ TERMINAL_TOOL_DESCRIPTION = """Execute shell commands. The host OS, shell, and t
 Do NOT use cat/head/tail (use read_file), grep/rg/find/ls (use search_files), sed/awk (use patch), or echo/heredoc file creation (use write_file). Reserve terminal for: builds, installs, git, processes, scripts, network, package managers — anything that needs a shell. Output is auto-truncated with the full text saved to a file — never pipe through tail/head to shorten it.
 Environment state persists: activate a virtualenv or export variables once per session, not before every command.
 
-Foreground (default): returns INSTANTLY when the command finishes, even with a high timeout — set timeout generously for long builds.
-Background: set background=true (returns a session_id); add notify=true for bounded tasks, leave silent only for servers/daemons that never exit. After starting a server, verify readiness with a health check in a separate call (no blind sleep loops); manage with process(action="poll"/"wait").
+Foreground (default): returns INSTANTLY when the command finishes, even with a high timeout — set timeout generously for long builds and fixed waits.
+Background: set background=true (returns a session_id) only for commands that must keep running independently after this tool call returns; add notify=true for bounded tasks, leave silent only for servers/daemons that never exit. Do not start sleep, timers, cooldowns, delays, or polling loops with background=true — to wait a fixed time, run the wait as a normal foreground command with a high enough timeout. After starting a server, verify readiness with a health check in a separate call (no blind sleep loops); manage with process(action="poll"/"wait").
 Working directory: use 'workdir' for per-command cwd; when a command changes the session cwd (cd, pushd), trust the result's "cwd" field instead of prefixing every command with 'cd'.
 PTY: pty=true + background=true for interactive CLIs (they hang without a terminal); drive them with process(action="write"/"submit"). Local backend only.
 """
@@ -870,7 +871,8 @@ def _run_approval_guards(command: str, env_type: str, config: Dict[str, Any], *,
             f"Command denied: {desc}. "
             "Use the approval prompt to allow it, or rephrase the command."
         )
-        raise _Rejected(_error_json(approval.get("message", fallback_msg), status="blocked"))
+        raise _Rejected(_error_json(approval.get("message", fallback_msg), status="blocked",
+                                    **({"user_summary": approval["user_summary"]} if approval.get("user_summary") else {})))
     desc = approval.get("description", "flagged as dangerous")
     if approval.get("user_approved"):
         return _ApprovalVerdict(
@@ -1255,13 +1257,15 @@ def terminal_tool(
 
 
 def check_terminal_requirements() -> bool:
-    """Check if all requirements for the terminal tool are met."""
+    """Check if all requirements for the terminal tool are met. The reason for a failure is kept for
+    :func:`terminal_backend_unavailable_reason` (CLI startup notice / doctor)."""
     try:
         config = _get_env_config()
         checker = _REQUIREMENT_CHECKERS.get(config["env_type"], _check_plugin_requirements)
         return checker(config)
     except Exception as e:
         logger.error("Terminal requirements check failed: %s", e, exc_info=True)
+        _record_unavailable_reason(f"the requirements check failed: {e}")
         return False
 
 

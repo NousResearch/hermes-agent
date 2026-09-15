@@ -82,6 +82,7 @@ FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base_exec_approval import EA_HEADER_TEXT, EA_REASON_LABEL_TEXT
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, cache_image_from_url,
@@ -1382,9 +1383,14 @@ class FeishuAdapter(BasePlatformAdapter):
             return executor
 
     async def _run_blocking(self, func, *args):
-        """Run a blocking Feishu SDK call on the adapter-owned thread pool."""
+        """Run a blocking Feishu SDK call on the adapter-owned thread pool.
+
+        ``copy_context().run`` mirrors ``asyncio.to_thread``: the worker sees the caller's
+        profile HERMES_HOME override / secret scope (multiplexed dedup flush, thread lookup).
+        """
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._get_sdk_executor(), func, *args)
+        return await loop.run_in_executor(
+            self._get_sdk_executor(), contextvars.copy_context().run, func, *args)
 
     def _shutdown_sdk_executor(self) -> None:
         """Stop the adapter-owned SDK executor without touching the loop default."""
@@ -1644,7 +1650,7 @@ class FeishuAdapter(BasePlatformAdapter):
     # Template attrs for the shared _format_exec_approval core. The card
     # header carries the title, so the text core starts at the code fence.
     _EA_HEADER = ""
-    _EA_REASON_LABEL = "**Reason:** "
+    _EA_REASON_LABEL = f"**{EA_REASON_LABEL_TEXT}:** "
     _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
     _EA_CMD_BUDGET = 3000
 
@@ -1662,7 +1668,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 _card_button(label, style or "default",
                              {"hermes_action": self._EA_CARD_ACTIONS[choice], "approval_id": approval_id})
                 for label, choice, style in prompt.actions]
-            card = _card("⚠️ Command Approval Required", "orange", prompt.text, actions=actions)
+            card = _card(f"⚠️ {EA_HEADER_TEXT}", "orange", prompt.text, actions=actions)
             return await self._send_interactive_card(
                 prompt.chat_id, card, prompt.metadata, "send_exec_approval failed",
                 state_map=self._approval_state, state_id=approval_id, session_key=prompt.session_key,
@@ -3441,10 +3447,12 @@ class FeishuAdapter(BasePlatformAdapter):
             while len(self._seen_message_order) > self._dedup_cache_size:
                 self._seen_message_ids.pop(self._seen_message_order.pop(0), None)
         # atomic_json_write() fsyncs; this runs on the event loop for every inbound message, so
-        # offload the flush. The lock keeps flushes in mutation order (the snapshot inside the
-        # worker is taken under _dedup_lock, but the write itself is not).
+        # offload the flush onto the adapter-owned pool: the loop's default executor may already
+        # be torn down by a dead background loop, which used to wedge every inbound message in
+        # the dedup gate (#111020). The lock keeps flushes in mutation order (the snapshot
+        # inside the worker is taken under _dedup_lock, but the write itself is not).
         async with self._dedup_persist_lock_or_create():
-            await asyncio.to_thread(self._persist_seen_message_ids)
+            await self._run_blocking(self._persist_seen_message_ids)
         return False
 
     def _dedup_persist_lock_or_create(self) -> asyncio.Lock:
@@ -3573,7 +3581,7 @@ class FeishuAdapter(BasePlatformAdapter):
         try:
             from lark_oapi.api.im.v1 import ListMessageRequest
             request = ListMessageRequest.builder().container_id_type("thread").container_id(thread_id).page_size(1).build()
-            response = await asyncio.to_thread(self._client.im.v1.message.list, request)
+            response = await self._run_blocking(self._client.im.v1.message.list, request)
             if self._response_succeeded(response):
                 items = getattr(getattr(response, "data", None), "items", None)
                 if items and len(items) > 0:
@@ -3715,7 +3723,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # thread has an empty context = launch profile. connect() runs inside the profile scope
         # under multiplex (and the supervisor task inherits it), so snapshot it here.
         self._ws_future = loop.run_in_executor(
-            None, contextvars.copy_context().run, _run_official_feishu_ws_client, self._ws_client, self)
+            self._get_sdk_executor(), contextvars.copy_context().run, _run_official_feishu_ws_client, self._ws_client, self)
 
     async def _connect_webhook(self) -> None:
         if not FEISHU_WEBHOOK_AVAILABLE:

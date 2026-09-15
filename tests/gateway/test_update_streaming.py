@@ -321,6 +321,129 @@ class TestWatchUpdateProgress:
         assert len(prompt_sends) == 1
 
 
+    @pytest.mark.asyncio
+    async def test_fails_fast_when_updater_died(self, tmp_path):
+        """A dead update-lock pid (killed updater) fails fast instead of timing out.
+
+        Regression test for the recurring update-driver death: an external
+        gateway restart SIGKILLs the updater's whole systemd cgroup mid-build
+        (KillMode=mixed), so no .update_exit_code is ever written and the
+        watcher used to poll for the full 30-minute timeout before sending a
+        misleading "timed out" message. The stale lock (dead pid) is the only
+        signal — the watcher must fail fast with an honest error.
+        """
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {"platform": "telegram", "chat_id": "111", "user_id": "222",
+                   "session_key": "agent:main:telegram:dm:111"}
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_output.txt").write_text(
+            "→ Checking if desktop app needs rebuilding...\n", encoding="utf-8"
+        )
+        # Dead pid lock: the updater was killed and never removed the marker.
+        (hermes_home / ".hermes-update-in-progress").write_text(
+            f"{99999999}\n{int(time.time())}\n", encoding="utf-8"
+        )
+
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        import time as _time
+        _t0 = _time.monotonic()
+        with patch("gateway.run._hermes_home", hermes_home):
+            # Short timeout so a regression (polling until deadline) fails the
+            # test fast instead of hanging it.
+            await runner._watch_update_progress(
+                poll_interval=0.05,
+                stream_interval=0.1,
+                timeout=5.0,
+            )
+        _elapsed = _time.monotonic() - _t0
+
+        # Failed fast instead of polling to the 5s deadline.
+        assert _elapsed < 2.0
+        # A failure message was sent (not a success, not a timeout).
+        all_sent = " ".join(str(c) for c in mock_adapter.send.call_args_list)
+        assert "failed" in all_sent.lower()
+        assert "timed out" not in all_sent.lower()
+        # The stale lock was cleaned up (exit code file is removed by the
+        # completion path's own cleanup once the failure is reported).
+        assert not (hermes_home / ".hermes-update-in-progress").exists()
+        assert not (hermes_home / ".update_pending.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_does_not_fail_fast_when_updater_alive(self, tmp_path):
+        """A live update-lock pid keeps the watcher polling (no false death)."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {"platform": "telegram", "chat_id": "111", "user_id": "222",
+                   "session_key": "agent:main:telegram:dm:111"}
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_output.txt").write_text("→ Working...\n", encoding="utf-8")
+        # Our own pid is alive: the updater is still running.
+        (hermes_home / ".hermes-update-in-progress").write_text(
+            f"{os.getpid()}\n{int(time.time())}\n", encoding="utf-8"
+        )
+
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        async def write_exit_code():
+            await asyncio.sleep(0.2)
+            (hermes_home / ".update_exit_code").write_text("0")
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            task = asyncio.create_task(write_exit_code())
+            await runner._watch_update_progress(
+                poll_interval=0.05,
+                stream_interval=0.1,
+                timeout=5.0,
+            )
+            await task
+
+        all_sent = " ".join(str(c) for c in mock_adapter.send.call_args_list)
+        assert "update finished" in all_sent.lower()
+
+    @pytest.mark.asyncio
+    async def test_send_update_notification_fails_fast_when_updater_died(self, tmp_path):
+        """The post-restart notification path also fails fast on a dead updater.
+
+        After a gateway restart the streaming watcher is gone; the new gateway
+        calls _send_update_notification. It must not defer forever on a killed
+        updater — it should mark the update failed and report it.
+        """
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {"platform": "telegram", "chat_id": "111", "user_id": "222",
+                   "session_key": "agent:main:telegram:dm:111"}
+        (hermes_home / ".update_pending.json").write_text(json.dumps(pending))
+        (hermes_home / ".update_output.txt").write_text("→ Build...\n", encoding="utf-8")
+        (hermes_home / ".hermes-update-in-progress").write_text(
+            f"{99999999}\n{int(time.time())}\n", encoding="utf-8"
+        )
+
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        import time as _time
+        _t0 = _time.monotonic()
+        with patch("gateway.run._hermes_home", hermes_home):
+            done = await runner._send_update_notification()
+        _elapsed = _time.monotonic() - _t0
+
+        assert done is True
+        assert _elapsed < 2.0
+        all_sent = " ".join(str(c) for c in mock_adapter.send.call_args_list)
+        assert "failed" in all_sent.lower()
+        assert "timed out" not in all_sent.lower()
+
+
 # ---------------------------------------------------------------------------
 # Message interception for update prompts
 # ---------------------------------------------------------------------------

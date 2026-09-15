@@ -78,6 +78,11 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
+// Intl separates the amount from the symbol with U+00A0 for locales that place
+// the symbol last ("10\u00A0US$"). getByText normalizes the element's text but
+// not a string matcher, so the expected string has to be normalized to match.
+const text = (value: string) => value.replace(/\s+/g, ' ').trim()
+
 describe('BillingSettings', () => {
   it('renders the deployed-today payload with buy controls hidden and usage rows visible', async () => {
     renderBilling()
@@ -169,7 +174,7 @@ describe('BillingSettings', () => {
       target: { value: '7.50' }
     })
 
-    expect(screen.getByText(`Threshold: minimum is ${formatMoney(10)}.`)).toBeTruthy()
+    expect(screen.getByText(text(`Threshold: minimum is ${formatMoney(10)}.`))).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Save' }).hasAttribute('disabled')).toBe(true)
 
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
@@ -220,7 +225,7 @@ describe('BillingSettings', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Manage' }))
 
     expect(screen.getByRole('spinbutton', { name: 'Auto-refill threshold' })).toBeTruthy()
-    expect(screen.queryByText(`Threshold: minimum is ${formatMoney(10)}.`)).toBeNull()
+    expect(screen.queryByText(text(`Threshold: minimum is ${formatMoney(10)}.`))).toBeNull()
     // Save is disabled because the prefilled config is invalid — but no error yet.
     expect(screen.getByRole('button', { name: 'Save' }).hasAttribute('disabled')).toBe(true)
   })
@@ -593,7 +598,7 @@ describe('BillingSettings', () => {
       ok: true
     })
 
-    await waitFor(() => expect(screen.getByText(`${formatMoney(25)} added. Balance is refreshing.`)).toBeTruthy())
+    await waitFor(() => expect(screen.getByText(text(`${formatMoney(25)} added. Balance is refreshing.`))).toBeTruthy())
   })
 
   it('renders logged-out as a connect card without normal account rows', async () => {

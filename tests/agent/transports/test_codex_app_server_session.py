@@ -522,6 +522,97 @@ class TestCompactThread:
 class TestServerRequestRouting:
 
 
+    @pytest.mark.parametrize(
+        ("choice", "decision"),
+        [("once", "accept"), ("session", "acceptForSession"), ("deny", "decline")],
+    )
+    def test_human_callback_emits_force_redacted_approval_hooks(
+        self, monkeypatch, choice, decision
+    ):
+        from tools import approval_context
+
+        secret = "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
+        command = f"echo {secret}"
+        description = f"Codex requests exec with {secret}"
+        callback_args = []
+        hook_calls = []
+        redaction_forces = []
+
+        def redact(value, *, force=False):
+            redaction_forces.append(force)
+            return value.replace(secret, "[REDACTED]")
+
+        def callback(value, detail, *, allow_permanent=True):
+            callback_args.append((value, detail, allow_permanent))
+            return choice
+
+        monkeypatch.setattr(session_mod, "redact_sensitive_text", redact)
+        monkeypatch.setattr(
+            approval_context,
+            "_fire_approval_hook",
+            lambda name, **payload: hook_calls.append((name, payload)),
+        )
+
+        result = make_session(FakeClient(), approval_callback=callback)._run_approval_callback(
+            False, lambda: (command, description), "exec request"
+        )
+
+        assert result == decision
+        assert callback_args == [(command, description, False)]
+        assert redaction_forces == [True, True]
+        assert [name for name, _ in hook_calls] == [
+            "pre_approval_request",
+            "post_approval_response",
+        ]
+        pre, post = (payload for _, payload in hook_calls)
+        assert secret not in pre["command"] + pre["description"]
+        assert pre == {
+            "command": f"echo [REDACTED]",
+            "description": "Codex requests exec with [REDACTED]",
+            "pattern_key": "codex_runtime",
+            "pattern_keys": ["codex_runtime"],
+            "surface": "cli",
+        }
+        assert post == {**pre, "choice": choice}
+
+    def test_callback_failure_posts_notify_failed_and_silent_paths_bypass_hooks(
+        self, monkeypatch
+    ):
+        from tools import approval_context
+
+        hook_calls = []
+        monkeypatch.setattr(
+            approval_context,
+            "_fire_approval_hook",
+            lambda name, **payload: hook_calls.append((name, payload)),
+        )
+
+        def fail_callback(*args, **kwargs):
+            raise RuntimeError("approval UI failed")
+
+        session = make_session(FakeClient(), approval_callback=fail_callback)
+        assert session._run_approval_callback(
+            False, lambda: ("dangerous", "needs approval"), "exec request"
+        ) == "decline"
+
+        assert [name for name, _ in hook_calls] == [
+            "pre_approval_request",
+            "post_approval_response",
+        ]
+        assert hook_calls[-1][1]["choice"] == "notify_failed"
+
+        hook_calls.clear()
+
+        def unexpected_prompt():
+            raise AssertionError("silent paths must not construct a prompt")
+
+        assert session._run_approval_callback(True, unexpected_prompt, "exec request") == "accept"
+        assert make_session(FakeClient())._run_approval_callback(
+            False, unexpected_prompt, "exec request"
+        ) == "decline"
+        assert hook_calls == []
+
+
 
     def test_unknown_server_request_replied_with_error(self):
         client = FakeClient()
@@ -910,4 +1001,3 @@ class TestClassifyOAuthFailure:
         assert _classify_oauth_failure() is None
         assert _classify_oauth_failure("") is None
         assert _classify_oauth_failure("", None) is None  # type: ignore[arg-type]
-

@@ -40,7 +40,7 @@
     "uuid": "14.0.1",
     "minimatch": "10.2.6",
     "nanoid": "3.3.17",
-    "js-yaml": "4.3.1",
+    "js-yaml": "4.3.2",
     "dompurify": "3.4.13",
     "mermaid": "11.16.1",
     "image-size": "npm:@nous-research/image-size@2.0.3",

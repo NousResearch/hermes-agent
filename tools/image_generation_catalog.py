@@ -217,24 +217,6 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         },
         max_reference_images=3,
     ),
-    # Krea 2 on FAL — same family as ``plugins/image_gen/krea`` but billed through
-    # FAL / the FAL managed gateway. Native ``krea-2-*`` ids route to the plugin.
-    "fal-ai/krea/v2/medium/text-to-image": _model(
-        "Krea 2 Medium", "~15-25s", "Illustration, anime, painting, expressive/artistic styles", "$0.030 (text) / $0.035 (style refs)",
-        style="aspect_ratio",
-        defaults={"creativity": "medium"},
-        supports={
-            "prompt", "aspect_ratio", "creativity", "seed", "image_style_references",
-        },
-    ),
-    "fal-ai/krea/v2/large/text-to-image": _model(
-        "Krea 2 Large", "~25-60s", "Photorealism, raw textured looks (motion blur, grain, film)", "$0.060 (text) / $0.065 (style refs)",
-        style="aspect_ratio",
-        defaults={"creativity": "medium"},
-        supports={
-            "prompt", "aspect_ratio", "creativity", "seed", "image_style_references",
-        },
-    ),
     # Entries below take endpoint ids, `supports` whitelists and enum defaults from
     # each model's FAL OpenAPI schema; paired `/edit` apps hang off their
     # text-to-image entry rather than appearing as separate picker rows.

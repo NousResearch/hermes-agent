@@ -231,12 +231,18 @@ class SessionActiveItem(Result):
     """``server._session_live_item``."""
 
     current: bool
+    # ``hidden``, ``profile`` and ``source`` are additive: a backend older than them omits the key
+    # entirely (the desktop must treat "absent" as unknown, not as false/missing data), so the
+    # schema declares them optional rather than required. See ``base`` modelling rules.
+    hidden: bool = False
     id: str
     last_active: float
     message_count: int
     model: str
     preview: str
+    profile: str | None = None
     session_key: str
+    source: str | None = None
     started_at: float
     status: LiveSessionStatus
     title: str

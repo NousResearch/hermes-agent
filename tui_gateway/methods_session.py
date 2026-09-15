@@ -1037,8 +1037,13 @@ def _(rid, params: dict) -> dict:
         try:
             if session is not None:
                 key = session["session_key"]
-                if not db.set_session_hidden(key, hidden):
-                    session["pending_hidden"] = hidden  # no row yet: _ensure_session_db_row is born hidden
+                # Keep the runtime flag true to the store: ``session.active_list`` reports it (clients
+                # exclude hidden sessions from live views), so a row-exists hide would otherwise leave
+                # a live session advertising itself as visible. Safe for the born-hidden intent too —
+                # _ensure_session_db_row only applies it as "hidden when the row is written", and every
+                # later flip lands here.
+                session["pending_hidden"] = hidden
+                db.set_session_hidden(key, hidden)
             else:
                 # ``resolve_session_id`` follows key/title aliases like the REST pin/archive path.
                 target = _str_param(params, "session_id")

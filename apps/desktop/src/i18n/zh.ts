@@ -2838,6 +2838,7 @@ export const zh = defineLocale({
     pinned: '已置顶',
     sessions: '会话',
     cronJobs: '定时任务',
+    liveSessions: '实时会话',
     groupAriaGrouped: '以单一列表显示会话',
     groupAriaUngrouped: '按工作区分组会话',
     showProjects: '显示项目',

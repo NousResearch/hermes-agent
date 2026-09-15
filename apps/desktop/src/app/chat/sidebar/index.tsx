@@ -148,6 +148,7 @@ import { SidebarSectionAddButton } from './chrome'
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarFilterMenu } from './filter-menu'
 import { useGatewaySessionGroups } from './gateway-group-model'
+import { SidebarLiveSessionsSection } from './live-sessions-section'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
 import { filterSessionsByProfileScope } from './profile-scope'
@@ -1913,6 +1914,13 @@ export function ChatSidebar({
                   />
                 )
               })}
+
+            {/* Live group (#50799): sessions live in the gateway with no DB row
+                yet — invisible to every stored slice until the first prompt
+                persists one. Self-hiding when empty; the rows above stay the
+                source of truth the moment a stored row lands (the store's
+                reconciler drops the live duplicate). */}
+            {!trimmedQuery && !worktreeGroupingActive && <SidebarLiveSessionsSection label={s.liveSessions} onResumeSession={onResumeSession} />}
 
             {!trimmedQuery && !worktreeGroupingActive && cronJobs.length > 0 && (
               <SidebarCronJobsSection

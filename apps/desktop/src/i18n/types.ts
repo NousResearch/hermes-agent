@@ -2322,6 +2322,7 @@ export interface Translations {
     pinned: string
     sessions: string
     cronJobs: string
+    liveSessions: string
     groupAriaGrouped: string
     groupAriaUngrouped: string
     showProjects: string

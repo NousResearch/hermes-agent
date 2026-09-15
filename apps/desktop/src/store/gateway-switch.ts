@@ -6,6 +6,7 @@ import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { clearArtifactRegistry } from '@/store/artifacts'
 import { invalidateCronJobsRequests, setCronJobs } from '@/store/cron'
 import { resetSessionsLimit } from '@/store/layout'
+import { clearLiveSessions } from '@/store/live-sessions'
 import { resetLiveSync } from '@/store/live-sync'
 import { invalidateProfileListFetches } from '@/store/profile'
 import {
@@ -208,6 +209,11 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // that are still unread once the next gateway's lists load — so a profile
   // round-trip doesn't swallow green dots.
   clearAllSessionStates()
+  // The live group (#50799) is a snapshot of THIS gateway's in-memory session
+  // registry; the next backend re-mints its own live set, so a survivor would
+  // name a session the new backend has never heard of until the first poll
+  // re-asserts or clears it.
+  clearLiveSessions()
   // Structured goal/loop/heartbeat entries are keyed by runtime id, which the
   // next backend re-mints, so a full wipe is exact (and stale-response-safe).
   clearAllSessionControl()

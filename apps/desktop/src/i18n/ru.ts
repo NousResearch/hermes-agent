@@ -2471,6 +2471,7 @@ export const ru = defineLocale({
     pinned: 'Закреплённые',
     sessions: 'Сеансы',
     cronJobs: 'Cron-задачи',
+    liveSessions: 'Активные',
     groupAriaGrouped: 'Показать сеансы одним списком',
     groupAriaUngrouped: 'Сгруппировать сеансы по рабочим пространствам',
     showProjects: 'Показать проекты',

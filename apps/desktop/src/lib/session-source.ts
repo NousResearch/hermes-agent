@@ -81,6 +81,13 @@ export function isMessagingSource(source: null | string | undefined): boolean {
   return id != null && MESSAGING_SOURCE_IDS.has(id)
 }
 
+/** Sources the recents sidebar never renders (it fetches them per-source or
+ *  not at all): cron/kanban/subagent/tool plus every messaging platform, which
+ *  each own a self-managed section. Shared between the stored-list fetch
+ *  (`recentsExclude`) and the live-session group so the two slices can never
+ *  drift on what counts as "belongs elsewhere". */
+export const SIDEBAR_EXCLUDED_SOURCES = ['cron', 'kanban', 'subagent', 'tool', ...MESSAGING_SESSION_SOURCE_IDS]
+
 export function normalizeSessionSource(source: null | string | undefined): string | null {
   return normalize(source) || null
 }

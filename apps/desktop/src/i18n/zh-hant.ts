@@ -2196,6 +2196,7 @@ export const zhHant = defineLocale({
     pinned: '已釘選',
     sessions: '工作階段',
     cronJobs: '排程任務',
+    liveSessions: '即時工作階段',
     groupAriaGrouped: '以單一清單顯示工作階段',
     groupAriaUngrouped: '依工作區分組工作階段',
     showProjects: '顯示專案',

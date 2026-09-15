@@ -618,6 +618,25 @@ _RENAME_FLAG_SETTERS = (
 )
 
 
+def _note_live_hidden(session_key: str, hidden: bool) -> None:
+    """Mirror a store-only ``hidden`` flip onto a LIVE session in this process.
+
+    ``session.active_list`` answers from the runtime dict, so a session hidden here — while it is
+    still live on the backend serving this request — would keep advertising itself as visible to
+    clients that exclude hidden sessions (the Desktop sidebar's live group). Best-effort: this
+    router also serves deployments with no gateway registry in-process, and the import is lazy so
+    importing the web layer never drags the gateway in.
+    """
+    try:
+        from tui_gateway.server import note_live_session_hidden
+    except Exception:
+        return
+    try:
+        note_live_session_hidden(session_key, hidden)
+    except Exception:
+        _log.debug("live-hidden mirror failed for %s", session_key, exc_info=True)
+
+
 @manage_router.patch("/api/sessions/{session_id}")
 async def rename_session_endpoint(session_id: str, body: SessionRename):
     """Update ``title`` (empty clears) and/or the flags; ``pinned`` exempts from
@@ -645,6 +664,8 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
             if value is not None:
                 setter(db, sid, value)
                 result[flag] = bool(value)
+        if body.hidden is not None:
+            _note_live_hidden(sid, bool(body.hidden))
         result["title"] = db.get_session_title(sid) or ""
         return result
 

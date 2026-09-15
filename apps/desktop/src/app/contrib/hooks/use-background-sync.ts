@@ -6,6 +6,8 @@ import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
 import { preserveLocalAssistantErrors, sealOpenToolParts, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionMessagesSignature } from '@/lib/session-signatures'
+import { reconcileLiveSessions } from '@/store/live-sessions'
+import type { LiveSessionItem } from '@/store/live-sessions'
 import { $changeEventsAvailable, $cronChangeTick, $sessionsChangeTick } from '@/store/live-sync'
 import { $onBattery, batteryPollInterval } from '@/store/power'
 import { refreshActiveProfile } from '@/store/profile'
@@ -321,10 +323,13 @@ const SESSIONS_LIST_TICK_GAP_MS = 10_000
 // list reconciliation.
 const TYPING_BURST_QUIET_MS = 1_500
 
-interface LiveSessionStatusItem {
-  id?: string
-  last_active?: number
-  session_key?: string
+// One `session.active_list` item as the backend now sends it (SessionActiveItem):
+// everything `store/live-sessions` consumes — the fields the sidebar's live
+// group consumes (#50799) — plus the two fields only the status reaper reads:
+// `status` (working/waiting drive the reaper below) and `current`. Older
+// backends omit every additive field, so every field stays optional.
+type LiveSessionStatusItem = LiveSessionItem & {
+  current?: boolean
   status?: 'idle' | 'starting' | 'waiting' | 'working'
 }
 
@@ -703,6 +708,17 @@ export function useBackgroundSync({
 
         if (!cancelled) {
           rehydrateLiveSessionStatuses(response, Date.now(), activeGatewayProfile)
+          // Same snapshot, second consumer (#50799): sessions the stored-list
+          // slices can't see yet — created over the gateway by another client,
+          // no DB row until the first prompt persists one — land in the
+          // sidebar's live group. The reconciler dedupes against every stored
+          // slice/tile/tombstone, so promotion to the DB-backed list is
+          // automatic, and a payload without `sessions` leaves the atom
+          // untouched — an older gateway's degraded answer is no information.
+          reconcileLiveSessions(response, {
+            connectionId: activeConnectionId ?? '',
+            profileKey: activeGatewayProfile
+          })
         }
       } catch {
         // Older gateways may not expose session.active_list. Live stream events

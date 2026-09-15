@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $sessionsLimit, resetSessionsLimit, SIDEBAR_SESSIONS_PAGE_SIZE } from '@/store/layout'
+import { $liveSessions, reconcileLiveSessions } from '@/store/live-sessions'
 import {
   $activeSessionId,
   $cronSessions,
@@ -84,6 +85,21 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     expect($sessionsLoading.get()).toBe(true)
     expect($sessionsLimit.get()).toBe(SIDEBAR_SESSIONS_PAGE_SIZE)
     expect($freshDraftReady.get()).toBe(true)
+  })
+
+  it("drops the previous backend's live-session group (#50799)", () => {
+    // The live group mirrors THIS gateway's in-memory registry; the next
+    // backend re-mints its own live set, so a stale row would name a session
+    // the new gateway has never heard of.
+    reconcileLiveSessions(
+      { sessions: [{ id: 'rt-old', session_key: 'sess-old', source: 'cli' }] },
+      { connectionId: 'old-conn', profileKey: 'default' }
+    )
+    expect($liveSessions.get()).toHaveLength(1)
+
+    wipeSessionListsForGatewaySwitch()
+
+    expect($liveSessions.get()).toEqual([])
   })
 
   it("forgets the previous backend's in-memory paging state", () => {

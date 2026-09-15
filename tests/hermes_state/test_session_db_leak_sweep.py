@@ -20,6 +20,9 @@ test is actually closed by the suite-level sweep.
 
 from __future__ import annotations
 
+import threading
+from typing import Any
+
 import hermes_state_guard
 from hermes_state import SessionDB
 
@@ -58,3 +61,41 @@ def test_previously_leaked_instance_was_closed_by_the_sweep():
     # must have closed the leaked instance (writer conn released), which is
     # what bounds fd/RSS growth in single-process runs.
     assert db._conn is None
+
+
+# Cross-test handoff for the in-use-on-another-thread contract: closing a
+# connection from the sweep while its owner thread is inside sqlite3_step()
+# is a use-after-free that segfaulted CI (dashboard statedb-eager-reconcile).
+_threaded: dict[str, Any] = {}
+
+
+def test_instance_owned_by_a_running_thread_survives_the_sweep(tmp_path):
+    opened = threading.Event()
+    release = threading.Event()
+
+    def _owner():
+        db = SessionDB(db_path=tmp_path / "state.db", read_only=False)
+        _threaded["db"] = db
+        opened.set()
+        release.wait(30)
+        db.close()
+
+    thread = threading.Thread(target=_owner, name="leak-sweep-owner", daemon=True)
+    thread.start()
+    assert opened.wait(30)
+    _threaded["thread"], _threaded["release"] = thread, release
+    assert hermes_state_guard._owner_thread_is_running(_threaded["db"])
+
+
+def test_sweep_left_the_running_threads_instance_open_then_owner_closed_it():
+    db, thread, release = _threaded["db"], _threaded["thread"], _threaded["release"]
+    # The teardown sweep between the two tests ran while the owner thread was
+    # still alive: it must NOT have closed the connection out from under it.
+    assert thread.is_alive()
+    assert db._conn is not None
+    release.set()
+    thread.join(30)
+    assert not thread.is_alive()
+    assert db._conn is None
+    # Owner gone → the next sweep may close it: the skip no longer applies.
+    assert not hermes_state_guard._owner_thread_is_running(db)

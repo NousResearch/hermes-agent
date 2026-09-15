@@ -150,6 +150,36 @@ async def test_conflict_retry_drops_pending_updates(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_conflict_retry_preserves_pending_updates_when_configured(monkeypatch):
+    adapter = TelegramAdapter(PlatformConfig(
+        enabled=True,
+        token="***",
+        extra={"preserve_pending_updates": True},
+    ))
+    adapter.set_fatal_error_handler(AsyncMock())
+    adapter._drain_polling_connections = AsyncMock()
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    captured = {}
+
+    async def fake_start_polling(**kwargs):
+        captured["drop_pending_updates"] = kwargs.get("drop_pending_updates")
+
+    adapter._app = SimpleNamespace(updater=SimpleNamespace(
+        start_polling=AsyncMock(side_effect=fake_start_polling),
+        stop=AsyncMock(),
+        running=True,
+    ))
+
+    conflict = type("Conflict", (Exception,), {})
+    await adapter._handle_polling_conflict(
+        conflict("Conflict: terminated by other getUpdates request")
+    )
+
+    assert captured["drop_pending_updates"] is False
+
+
+@pytest.mark.asyncio
 async def test_conflict_retry_progress_does_not_reset_retry_ladder(monkeypatch):
     """First getUpdates progress after a conflict retry is not durable recovery.
 
@@ -547,6 +577,22 @@ async def test_reconnect_preserves_pending_updates(monkeypatch):
     captured = _build_polling_app(monkeypatch, adapter)
 
     ok = await adapter.connect(is_reconnect=True)
+
+    assert ok is True
+    assert captured["drop_pending_updates"] is False
+    await _cancel_heartbeat(adapter)
+
+
+@pytest.mark.asyncio
+async def test_cold_start_preserves_pending_updates_when_configured(monkeypatch):
+    adapter = TelegramAdapter(PlatformConfig(
+        enabled=True,
+        token="***",
+        extra={"preserve_pending_updates": True},
+    ))
+    captured = _build_polling_app(monkeypatch, adapter)
+
+    ok = await adapter.connect()
 
     assert ok is True
     assert captured["drop_pending_updates"] is False

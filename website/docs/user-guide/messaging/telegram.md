@@ -217,6 +217,19 @@ hermes gateway
 
 The bot should come online within seconds. Send it a message on Telegram to verify.
 
+### Preserve messages sent while the gateway starts
+
+By default, a cold gateway start clears Telegram updates that were already pending. Deployments
+that provision a bot and its gateway asynchronously can retain those messages instead:
+
+```yaml
+telegram:
+  preserve_pending_updates: true
+```
+
+The option defaults to `false`, so existing installations keep their current startup behavior.
+Telegram retains pending updates for no longer than 24 hours.
+
 ## Sending Generated Files from Docker-backed Terminals
 
 If your terminal backend is `docker`, keep in mind that Telegram attachments are

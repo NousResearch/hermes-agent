@@ -437,6 +437,9 @@ class TelegramAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.TELEGRAM)
         extra = self.config.extra
+        # Opt-in for deployments where messages sent while a freshly provisioned
+        # gateway starts must remain in Telegram's pending-update queue.
+        self._preserve_pending_updates = self._coerce_bool_extra("preserve_pending_updates", False)
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
         self._webhook_mode: bool = False
@@ -2338,7 +2341,11 @@ class TelegramAdapter(BasePlatformAdapter):
             # one, creating the very conflict we are trying to recover from (#75017).
             self._polling_conflict_recovery_generation = expected_generation
             try:
-                await self._start_polling_once(app, drop_pending_updates=True, error_callback=self._polling_error_callback_ref)
+                await self._start_polling_once(
+                    app,
+                    drop_pending_updates=not self._preserve_pending_updates,
+                    error_callback=self._polling_error_callback_ref,
+                )
                 logger.info(
                     "[%s] Telegram polling restarted after conflict retry %d/%d; health pending getUpdates progress",
                     self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES)
@@ -2936,7 +2943,7 @@ class TelegramAdapter(BasePlatformAdapter):
         await self._app.updater.start_webhook(
             listen=webhook_host, port=webhook_port, url_path=webhook_path, webhook_url=webhook_url,
             secret_token=webhook_secret, allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=not is_reconnect,  # push-based ⇒ practically a no-op; mirrors polling
+            drop_pending_updates=not (is_reconnect or self._preserve_pending_updates),
        )
         self._webhook_mode = True
         self._polling_progress_accepting = False
@@ -2968,8 +2975,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
         self._polling_error_callback_ref = _polling_error_callback  # reused by _handle_polling_conflict
         polling_started = await self._start_polling_resilient(
-            # Cold first boot drops the stale Bot API queue; a watcher reconnect preserves it.
-            drop_pending_updates=not is_reconnect, error_callback=_polling_error_callback, require_progress=not is_reconnect)
+            # Preserve the queue on reconnect, and optionally on a cold first boot.
+            drop_pending_updates=not (is_reconnect or self._preserve_pending_updates),
+            error_callback=_polling_error_callback,
+            require_progress=not is_reconnect,
+        )
         if not polling_started:
             logger.warning(
                 "[%s] Connected in degraded Telegram mode: gateway is alive, polling will be retried in the background", self.name)

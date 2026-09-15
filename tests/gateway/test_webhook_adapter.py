@@ -692,6 +692,35 @@ class TestSessionIsolation:
         assert len(ids) == 2, "Each delivery must have a unique session chat_id"
 
 
+class TestWebhookInternalEvent:
+    """Webhook payloads that start an agent run are machine-generated events."""
+
+    @pytest.mark.asyncio
+    async def test_spawned_agent_run_event_is_internal(self):
+        routes = {"pump-pr-events": {"secret": _INSECURE_NO_AUTH, "prompt": "review"}}
+        adapter = _make_adapter(routes=routes)
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/pump-pr-events",
+                json={"action": "opened"},
+                headers={"X-GitHub-Delivery": "deliv-1"},
+            )
+            assert resp.status == 202
+
+        await asyncio.sleep(0.05)
+
+        assert len(captured) == 1
+        assert captured[0].internal is True
+
+
 # ===================================================================
 # Silence-marker suppression
 # ===================================================================

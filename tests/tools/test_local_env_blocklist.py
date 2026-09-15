@@ -1594,6 +1594,28 @@ class TestSanePathIncludesHomebrew:
             for entry in _SANE_PATH.split(os.pathsep):
                 assert entry in path_entries
 
+    def test_make_run_env_appends_existing_user_local_bin_on_posix(self, monkeypatch, tmp_path):
+        """A thin remote SSH PATH can still resolve user-installed CLIs (#111778)."""
+        from tools.environments import local as local_mod
+        from tools.environments.local import _make_run_env
+
+        local_bin = tmp_path / ".local" / "bin"
+        local_bin.mkdir(parents=True)
+        executable = local_bin / "himalaya"
+        executable.touch()
+        executable.chmod(0o755)
+        monkeypatch.setattr(local_mod, "_git_bash_bin_dirs", lambda: [])
+        monkeypatch.setattr(local_mod.Path, "home", classmethod(lambda cls: tmp_path))
+        with patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=True):
+            result = _make_run_env({})
+
+        if sys.platform == "win32":
+            assert str(local_bin) not in result["PATH"].split(os.pathsep)
+        else:
+            entries = result["PATH"].split(os.pathsep)
+            assert entries[:2] == ["/usr/bin", "/bin"]
+            assert str(local_bin) in entries
+
 
     @pytest.mark.macos_only
     def test_make_run_env_real_launchd_path_gains_homebrew(self):

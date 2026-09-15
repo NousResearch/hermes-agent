@@ -549,16 +549,30 @@ def _managed_runtime_path_entries() -> list[str]:
         return []
 
 
+def _existing_user_local_bin_dir() -> str | None:
+    """Return the POSIX user's ``~/.local/bin`` only when it exists."""
+    if _IS_WINDOWS:
+        return None
+    candidate = Path.home() / ".local" / "bin"
+    return str(candidate) if candidate.is_dir() else None
+
+
 def _append_missing_sane_path_entries(existing_path: str) -> str:
     """Normalised POSIX PATH with missing sane entries appended: empty entries
     dropped (shells read them as cwd), duplicates collapsed (first wins), then
-    missing ``_SANE_PATH`` / managed-runtime dirs appended so user entries keep
-    precedence. Windows is a no-op passthrough (native ``;`` PATH untouched)."""
+    missing ``_SANE_PATH``, managed-runtime dirs, and an existing user-local bin
+    dir appended so inherited/login-shell entries keep precedence. Windows is a
+    no-op passthrough (native ``;`` PATH untouched)."""
     if _IS_WINDOWS:
         return existing_path
     # dict preserves first-occurrence order; empty entries dropped.
     ordered = dict.fromkeys(entry for entry in existing_path.split(":") if entry)
-    ordered.update(dict.fromkeys([*_SANE_PATH.split(":"), *_managed_runtime_path_entries()]))
+    user_local_bin = _existing_user_local_bin_dir()
+    ordered.update(dict.fromkeys([
+        *_SANE_PATH.split(":"),
+        *_managed_runtime_path_entries(),
+        *([user_local_bin] if user_local_bin else []),
+    ]))
     return ":".join(ordered)
 
 

@@ -7,6 +7,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Ear, EarOff, iconSize, Layers3, Loader2, Square, Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $pickerStyle, pickerBehavior } from '@/store/picker-style'
 import { $hudMode, closeHud, resetHudLayout } from '@/store/hud'
 import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 
@@ -70,6 +71,7 @@ export function ComposerControls({
 }) {
   const { t } = useI18n()
   const c = t.composer
+  const behavior = pickerBehavior(useStore($pickerStyle))
   const hudMode = useStore($hudMode)
 
   if (conversation.active) {
@@ -114,7 +116,9 @@ export function ComposerControls({
           {hideModelPill ? null : (
             <>
               <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
-              {compactModelPill ? null : <ReasoningPill disabled={disabled} model={state.model} />}
+              {compactModelPill || !behavior.separateReasoningPill ? null : (
+                <ReasoningPill disabled={disabled} model={state.model} />
+              )}
             </>
           )}
           {voiceControls}

@@ -355,6 +355,80 @@ def _adopt_provider_context_limit(st: _Recovery, error_msg: str, old_ctx: int) -
     return None
 
 
+def _usable_input_tokens(agent: Any) -> int:
+    """Active route's input budget in tokens: the window minus the reserved output space.
+
+    Same effective-input rule the compressor derives its trigger from
+    (``context_compressor._compute_threshold_tokens``); 0 when the window is unknown.
+    """
+    compressor = getattr(agent, "context_compressor", None)
+    context_length = int(getattr(compressor, "context_length", 0) or 0)
+    if context_length <= 0:
+        return 0
+    reserved = (
+        getattr(agent, "_ephemeral_max_output_tokens", None)
+        or getattr(agent, "max_tokens", 0)
+        or 0
+    )
+    return max(0, context_length - int(reserved))
+
+
+def _defer_tool_schemas_for_overflow(st: _Recovery) -> Optional[OverflowVerdict]:
+    """Re-render the inline tool surface through the tool_search bridge and retry when the schemas
+    alone push the request past the active route's input budget. ``None`` when the surface is
+    already deferred, holds nothing deferrable, or the request stays over budget without those
+    schemas (messages, not schemas, are the problem) — the compression ladder owns those cases.
+
+    Nothing is dropped from the session: the bridge keeps every tool reachable through
+    ``tool_describe``/``tool_call``, which is what makes this a degraded surface rather than a
+    dead agent. ``tools.tool_search.enabled: off`` is overridden for the turn — the alternative
+    is a rejected turn, and the user's other knobs (listing, defer set) still apply.
+    """
+    from dataclasses import replace
+
+    from agent.tool_surface_overflow import record_deferred_tool_surface
+    from agent.model_metadata import (
+        _estimate_tools_tokens_rough, _tool_name_for_cache, estimate_request_tokens_rough,
+    )
+    from tools.tool_search import BRIDGE_TOOL_NAMES, assemble_tool_defs, load_config
+
+    agent = st.agent
+    tools = getattr(agent, "tools", None) or []
+    budget = _usable_input_tokens(agent)
+    if not tools or budget <= 0:
+        return None
+    if any(_tool_name_for_cache(t) in BRIDGE_TOOL_NAMES for t in tools):
+        return None
+    config = load_config()
+    if config.enabled == "off":
+        config = replace(config, enabled="on")
+    assembly = assemble_tool_defs(tools, context_length=budget, config=config)
+    if not assembly.activated:
+        return None
+    # The system prompt is carried outside ``api_messages``, and it is part of the same floor.
+    request_tokens = estimate_request_tokens_rough(
+        st.api_messages, system_prompt=getattr(agent, "_cached_system_prompt", "") or "",
+        tools=tools,
+    )
+    saved = _estimate_tools_tokens_rough(tools) - _estimate_tools_tokens_rough(assembly.tool_defs)
+    if saved <= 0 or request_tokens - saved >= budget:
+        return None
+    record_deferred_tool_surface(agent, assembly.tool_defs)
+    agent._buffer_status(
+        f"⚠️  Request exceeds {agent.model}'s {budget:,}-token input budget even with the transcript "
+        f"compacted — moved {assembly.deferred_count} tool definition(s) (~{assembly.deferred_tokens:,} "
+        f"tokens) behind tool_search for this turn; every tool stays reachable via tool_describe/"
+        f"tool_call."
+    )
+    logger.warning(
+        "%sRequest over the active route's input budget with inline tool schemas: deferred %d tool "
+        "definition(s) (~%d tokens) behind the tool_search bridge and retrying (tier %d, listing %s).",
+        agent.log_prefix, assembly.deferred_count, assembly.deferred_tokens,
+        assembly.tier, assembly.listing_form,
+    )
+    return st.done("continue")
+
+
 def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: str) -> OverflowVerdict:
     """Context-length error. Two shapes: "prompt too long" = INPUT overflows the window
     (shrink context_length + compress); "max_tokens too large" = input fits but
@@ -385,6 +459,13 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
         )
 
     new_ctx = _adopt_provider_context_limit(st, error_msg, old_ctx)
+
+    # Compaction rewrites messages only; the tool schemas are a floor it cannot touch. When those
+    # schemas alone are what overflows, re-render them deferred (progressive disclosure) instead of
+    # spending compression attempts that cannot help.
+    deferred = _defer_tool_schemas_for_overflow(st)
+    if deferred is not None:
+        return deferred
 
     exhausted = st.count_attempt()
     if exhausted is not None:

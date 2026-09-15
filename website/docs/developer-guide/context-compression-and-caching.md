@@ -155,6 +155,22 @@ does not re-fire every turn. Two paths run a real attempt anyway:
   the next failure would extend the ladder (#100661). If that attempt fails,
   the cooldown is recorded normally.
 
+#### The tool-schema floor
+
+Compaction rewrites messages; it cannot touch the request's tool definitions. With 50+ MCP tools
+the schemas are 20-30K tokens on their own, and a route whose window is smaller than the system
+prompt plus that floor rejects every request no matter how much of the transcript is summarized.
+
+When a provider-proven overflow arrives and the MCP definitions alone are what push the request
+past the route's input budget (`context_length - max_tokens`), overflow recovery
+(`agent/turn_overflow.py` + `agent/mcp_tool_shed.py`) sheds those definitions and retries the
+same turn. Built-in tools — terminal, files, search, delegation — are never dropped, so the
+agent keeps working with a reduced tool surface instead of failing. Nothing is shed when the
+transcript is what does not fit (that stays the compression path's job), and the shed is
+turn-scoped: the next turn starts with the full surface again. The user sees a
+`dropped N MCP tool definition(s)` notice; trimming MCP servers (`hermes tools`) keeps it from
+recurring.
+
 
 ## Configuration
 

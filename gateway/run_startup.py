@@ -893,7 +893,26 @@ class GatewayStartupMixin:
                 send_relay_policy()
         except Exception:
             logger.warning("relay adapter registration failed at gateway startup", exc_info=True)
-        GatewayStartupMixin._register_config_hooks("shell-hook registration failed at gateway startup")
+        GatewayStartupMixin._register_launch_profile_config_hooks()
+
+    @staticmethod
+    def _register_launch_profile_config_hooks() -> None:
+        """The launch profile's ``hooks:`` block, registered under ITS runtime scope when multiplexing.
+
+        Startup runs before any turn scope exists and ``get_secret`` fails closed outside a scope
+        while multiplexing is on, so the launch profile needs the scope secondaries already get
+        (``_start_secondary_profile_adapters``) or its ``secret_env`` targets cannot resolve.
+        """
+        from agent.secret_scope import is_multiplex_active
+        if not is_multiplex_active():
+            GatewayStartupMixin._register_config_hooks(
+                "shell-hook/webhook registration failed at gateway startup", level=logging.WARNING)
+            return
+        from gateway.run import _profile_runtime_scope
+        from hermes_constants import get_process_hermes_home
+        with _profile_runtime_scope(get_process_hermes_home()):
+            GatewayStartupMixin._register_config_hooks(
+                "shell-hook/webhook registration failed at gateway startup", level=logging.WARNING)
 
     @staticmethod
     def _register_config_hooks(fail_fmt: str, *fail_args, level: int = logging.DEBUG) -> None:

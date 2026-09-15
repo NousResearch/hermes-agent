@@ -350,6 +350,7 @@ class TestBridgeWiredInRuntime:
         # Minimal stub agent — the runtime only touches a handful of
         # attributes and we mock the heavy ones to keep the test fast.
         agent = SimpleNamespace(
+            session_id="event-bridge-fixture",
             session_cwd=None,
             _codex_session=None,
             tool_progress_callback=MagicMock(),

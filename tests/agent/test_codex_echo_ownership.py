@@ -48,3 +48,58 @@ def test_only_submitted_leading_echo_is_excluded(tmp_path, platform_id, projecti
         assert users == (["accepted"] + extra) * 2
     finally:
         db.close()
+
+
+@pytest.mark.parametrize("user_input", [
+    [{"type": "text", "text": "alpha"}, {"type": "text", "text": "beta"}],
+    [{"type": "text", "text": "note"}, {"type": "image", "url": "data:image/png;base64,abc"},
+     {"type": "text", "text": "caption"}],
+    ["alpha", "beta"],
+    [{"type": "image", "url": "data:image/png;base64,abc"}],
+    [{"type": "text", "text": "  alpha  "}, {"type": "text", "text": ""},
+     {"type": "text", "text": "beta\n"}],
+])
+def test_rich_wire_echo_does_not_create_another_sqlite_user_row(tmp_path, user_input):
+    from tests.agent.transports.test_codex_app_server_session import FakeClient, make_session
+
+    client = FakeClient()
+
+    def respond(method, params):
+        if method == "thread/start":
+            return {"thread": {"id": "thread-fake-001"}}
+        if method == "turn/start":
+            client._notifications.extend([
+                {"method": "item/completed", "params": {"item": {
+                    "type": "userMessage", "content": params["input"]}}},
+                {"method": "item/completed", "params": {"item": {
+                    "type": "agentMessage", "text": "reply"}}},
+                {"method": "turn/completed", "params": {"threadId": "thread-fake-001",
+                    "turn": {"id": "turn-fake-001", "status": "completed"}}},
+            ])
+            return {"turn": {"id": "turn-fake-001"}}
+        return {}
+
+    client._request_handler = respond
+    session = make_session(client)
+    db = SessionDB(tmp_path / "rich-echo.db")
+    try:
+        db.create_session(session_id="rich", source="cli", model="codex")
+        agent = SessionPersistenceMixin()
+        agent.session_id = "rich"
+        agent._session_db = db
+        agent._session_db_created = True
+        agent._last_flushed_db_idx = 0
+        agent._session_persist_lock = threading.RLock()
+        messages = []
+        append_message(messages, {"role": "user", "content": "accepted original"})
+        assert agent._flush_messages_to_session_db(messages)
+        turn = session.run_turn(user_input, turn_timeout=1)
+        assert turn.error is None and turn.terminal_acknowledged
+        _persist_projected_messages(agent, turn, messages)
+        assert agent._flush_messages_to_session_db(messages)
+        rows = db.get_messages_as_conversation("rich")
+        assert [row["role"] for row in rows] == ["user", "assistant"]
+        assert rows[0]["content"] == "accepted original"
+    finally:
+        session.close()
+        db.close()

@@ -381,9 +381,8 @@ def _consume_user_interrupt(agent, active: bool = True) -> tuple[bool, Any]:
 
 def _ensure_codex_session(agent) -> None:
     """Lazily spawn one CodexAppServerSession per AIAgent (reused across turns, closed by the _cleanup hook)."""
-    if getattr(agent, "_codex_session", None) is not None:
-        return
     from agent.runtime_cwd import resolve_agent_cwd
+    from agent.codex_session_binding import session_binding_options
     from agent.transports.codex_app_server_session import CodexAppServerSession, _ServerRequestRouting
     # Approval callback: Hermes' standard prompt flow when a CLI thread installed one.
     approval_callback = None
@@ -398,15 +397,25 @@ def _ensure_codex_session(agent) -> None:
         auto_approve_requests = is_approval_bypass_active()
     except Exception:
         logger.debug("codex app-server: approval-bypass lookup failed; keeping fail-closed default", exc_info=True)
+    routing = _ServerRequestRouting(auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests)
+    session = getattr(agent, "_codex_session", None)
+    if session is not None:
+        # Routing and the next turn/start policy must reflect this turn's context,
+        # not the approvals state that happened to create the native thread.
+        session._routing = routing
+        session._approval_callback = approval_callback
+        return
     # Bridge codex JSON-RPC notifications (item/started, item/completed, item/agentMessage/delta, ...) into
     # Hermes' gateway UI callbacks (tool_progress_callback, _fire_stream_delta,
     # _emit_interim_assistant_message). Without this, Discord/Telegram users see no live tool-progress or
     # interim commentary while codex_app_server is running — only the final answer (#33200). Supersedes the
     # narrower item/started-only bridge from #38835.
+    cwd = getattr(agent, "session_cwd", None) or str(resolve_agent_cwd())
     agent._codex_session = CodexAppServerSession(
-        cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()), approval_callback=approval_callback,
-        request_routing=_ServerRequestRouting(auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests),
+        cwd=cwd, approval_callback=approval_callback,
+        request_routing=routing,
         on_event=make_codex_app_server_event_bridge(agent),
+        **session_binding_options(agent, cwd),
     )
 
 
@@ -477,8 +486,8 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         from agent.conversation_compression import _checkpoint_blocked
         raise _checkpoint_blocked("codex_app_server owns the authoritative thread and compacts it "
                                   "without a truthful pre-compaction transcript boundary")
-    _ensure_codex_session(agent)
     try:
+        _ensure_codex_session(agent)
         turn = agent._codex_session.run_turn(user_input=user_message)
     except Exception as exc:
         logger.exception("codex app-server turn failed")
@@ -500,6 +509,7 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         interrupt, messages, api_calls=1, completed=not turn.interrupted and turn.error is None, error=turn.error,
         # We flushed the projected rows ourselves (agent_persisted); the gateway must skip its own DB write.
         final_response=turn.final_text, agent_persisted=True, codex_thread_id=turn.thread_id, codex_turn_id=turn.turn_id,
+        native_terminal_acknowledged=getattr(turn, "terminal_acknowledged", False),
         **usage_result,
     )
 

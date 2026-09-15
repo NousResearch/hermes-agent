@@ -10,6 +10,8 @@ reader threads feed queues that this adapter polls, like the chat_completions lo
 from __future__ import annotations
 
 import contextlib
+import contextvars
+import inspect
 import logging
 import os
 import threading
@@ -53,6 +55,7 @@ class TurnResult:
     compacted: bool = False
     # Codex likely wedged (turn timeout, watchdog, token refresh failure): caller respawns next turn.
     should_retire: bool = False
+    terminal_acknowledged: bool = False
 
 
 # Some codex versions stream ``<turn_aborted>`` as raw agentMessage text when an
@@ -82,24 +85,79 @@ def _notification_scope_ids(note: dict) -> tuple[Optional[str], Optional[str]]:
     )
 
 
+def _has_exact_turn_scope(note: dict, *, thread_id: Optional[str], turn_id: Optional[str]) -> bool:
+    """Authority cannot inherit absent coordinates or hide a conflicting alias."""
+    if not all(isinstance(value, str) and value for value in (thread_id, turn_id)):
+        return False
+    if _notification_scope_ids(note) != (thread_id, turn_id):
+        return False
+    params = note["params"]
+    for source, thread_keys, turn_keys in (
+        (params, ("threadId", "thread_id"), ("turnId", "turn_id")),
+        (params.get("turn", {}), ("threadId", "thread_id"), ("id", "turnId", "turn_id")),
+        (params.get("item", {}), ("threadId", "thread_id"), ("turnId", "turn_id")),
+    ):
+        if not isinstance(source, dict):
+            return False
+        if any(key in source and source[key] != thread_id for key in thread_keys):
+            return False
+        if any(key in source and source[key] != turn_id for key in turn_keys):
+            return False
+    return True
+
+
 def _notification_belongs_to_turn(note: dict, *, thread_id: Optional[str], turn_id: Optional[str]) -> bool:
     """Whether a multiplexed notification belongs to this turn.
 
     One connection can carry parent and hosted subagent threads; an explicitly
     foreign thread/turn event must not mutate this transcript. Unscoped
-    notifications remain accepted for protocol compatibility.
+    nonterminal notifications remain accepted for protocol compatibility;
+    terminal authority requires both exact coordinates and a terminal status.
     """
     if not isinstance(note, dict):
         return False
     observed = _notification_scope_ids(note)
+    if note.get("method") == "turn/completed":
+        params = note.get("params")
+        turn = params.get("turn") if isinstance(params, dict) else None
+        if not isinstance(turn, dict) or turn.get("status") not in ("completed", "interrupted", "failed"):
+            return False
+        return _has_exact_turn_scope(note, thread_id=thread_id, turn_id=turn_id)
     return not any(
         expected is not None and seen is not None and str(seen) != str(expected)
         for expected, seen in zip((thread_id, turn_id), observed)
     )
 
 
+def _coerce_turn_input(user_input: Any) -> list[dict]:
+    """Preserve supported media on the native wire; never imply omitted bytes arrived."""
+    if not isinstance(user_input, list):
+        return [{"type": "text", "text": "" if user_input is None else str(user_input)}]
+    parts = []
+    for item in user_input:
+        if isinstance(item, str):
+            item = {"type": "text", "text": item}
+        if not isinstance(item, dict):
+            raise ValueError("Unsupported Codex input part")
+        kind = item.get("type")
+        if kind in {"text", "input_text"}:
+            parts.append({"type": "text", "text": str(item.get("text") or item.get("content") or "")})
+        elif kind in {"image", "image_url", "input_image"}:
+            url = item.get("image_url") or item.get("url")
+            if isinstance(url, dict):
+                url = url.get("url")
+            if not isinstance(url, str) or not url.startswith(("data:image/", "https://", "http://")):
+                raise ValueError("Unsupported Codex image input: expected an image URL or data URL")
+            parts.append({"type": "image", "url": url})
+        elif kind == "localImage" and isinstance(item.get("path"), str) and os.path.isabs(item["path"]):
+            parts.append({"type": "localImage", "path": item["path"]})
+        else:
+            raise ValueError(f"Unsupported Codex input type: {kind}")
+    return parts
+
+
 def _coerce_turn_input_text(user_input: Any) -> str:
-    """Collapse rich content parts into app-server text (``turn/start`` is text-only; images become a marker)."""
+    """Return the submitted text used to distinguish a Codex input echo."""
     if isinstance(user_input, str):
         return user_input
     if not isinstance(user_input, list):
@@ -111,9 +169,7 @@ def _coerce_turn_input_text(user_input: Any) -> str:
                 parts.append(str(item))
         elif item.get("type") in {"text", "input_text"}:
             parts.append(str(item.get("text") or item.get("content") or ""))
-        elif item.get("type") in {"image", "image_url", "input_image"}:
-            parts.append("[image attached]")
-    return "\n\n".join(p for p in parts if p).strip() or "What do you see in this image?"
+    return "\n\n".join(p for p in parts if p).strip()
 
 
 # Substrings in codex stderr / JSON-RPC errors signalling expired OAuth creds.
@@ -145,6 +201,10 @@ class _ServerRequestRouting:
     auto_approve_apply_patch: bool = False
 
 
+class _SubmissionCancelled(Exception):
+    """Stop retired a child before its startup/submission RPC resolved."""
+
+
 class CodexAppServerSession:
     """One Codex thread per Hermes session, lifetime owned by AIAgent. Not thread-safe: one caller at a time."""
 
@@ -155,6 +215,8 @@ class CodexAppServerSession:
         on_event: Optional[Callable[[dict], None]] = None,
         request_routing: Optional[_ServerRequestRouting] = None,
         client_factory: Optional[Callable[..., CodexAppServerClient]] = None,
+        thread_id: Optional[str] = None,
+        on_thread_ready: Optional[Callable[[str], None]] = None,
     ) -> None:
         self._cwd = cwd or os.getcwd()
         self._codex_bin = codex_bin
@@ -169,7 +231,11 @@ class CodexAppServerSession:
 
         self._client: Optional[CodexAppServerClient] = None
         self._thread_id: Optional[str] = None
+        self._resume_thread_id = thread_id
+        self._on_thread_ready = on_thread_ready
         self._interrupt_event = threading.Event()
+        self._interrupt_deadline: Optional[float] = None
+        self._turn_deadline: Optional[float] = None
         self._active_turn_id: Optional[str] = None
         self._active_turn_lock = threading.Lock()
         # In-progress fileChange items by id (item/started -> item/completed):
@@ -178,22 +244,51 @@ class CodexAppServerSession:
         self._closed = False
 
     def ensure_started(self) -> str:
-        """Spawn, handshake, and ``thread/start``; idempotent, returns the codex thread id."""
+        """Start or explicitly resume; persist the binding before accepting a turn."""
+        if self._closed:
+            raise CodexAppServerError(-32600, "Codex session is closed")
         if self._thread_id is not None:
             return self._thread_id
         if self._client is None:
             self._client = self._client_factory(codex_bin=self._codex_bin, codex_home=self._codex_home)
-        self._client.initialize(client_name="hermes", client_title="Hermes Agent", client_version=_get_hermes_version())
+        try:
+            self._call_before_turn(
+                self._client.initialize, client_name="hermes", client_title="Hermes Agent",
+                client_version=_get_hermes_version(),
+            )
+        except Exception:
+            self.close()
+            raise
         # Permissions are NOT sent on thread/start: codex gates ``thread/start.permissions``
         # behind experimentalApi + a matching ``[permissions]`` table in ~/.codex/config.toml.
-        result = self._client.request("thread/start", {"cwd": self._cwd}, timeout=15)
+        method = "thread/resume" if self._resume_thread_id else "thread/start"
+        params = {"cwd": self._cwd}
+        if self._resume_thread_id:
+            params["threadId"] = self._resume_thread_id
+        if self._routing.auto_approve_exec and self._routing.auto_approve_apply_patch:
+            params["approvalPolicy"] = "never"
+        try:
+            result = self._call_before_turn(self._client.request, method, params, timeout=15)
+        except Exception:
+            self.close()
+            raise
         # Different codex versions serialize the id under thread.id / sessionId / threadId.
         thread_obj = result.get("thread") or {}
         thread_id = thread_obj.get("id") or thread_obj.get("sessionId") or result.get("sessionId") or result.get("threadId")
         if not thread_id:
+            self.close()
             raise CodexAppServerError(
-                code=-32603, message=f"codex thread/start returned no thread id (payload keys: {sorted(result.keys())})",
+                code=-32603, message=f"codex {method} returned no thread id (payload keys: {sorted(result.keys())})",
             )
+        if self._resume_thread_id and thread_id != self._resume_thread_id:
+            self.close()
+            raise CodexAppServerError(-32603, "Codex resume returned a different thread; refusing fresh history")
+        try:
+            if self._on_thread_ready is not None:
+                self._on_thread_ready(thread_id)
+        except Exception:
+            self.close()
+            raise
         self._thread_id = thread_id
         logger.info("codex app-server thread started: id=%s profile=%s cwd=%s", thread_id[:8], self._permission_profile, self._cwd)
         return thread_id
@@ -212,7 +307,10 @@ class CodexAppServerSession:
 
     def request_interrupt(self) -> None:
         """Idempotent: signal the active turn loop to issue turn/interrupt and unwind."""
-        self._interrupt_event.set()
+        with self._active_turn_lock:
+            if not self._interrupt_event.is_set():
+                self._interrupt_deadline = time.monotonic() + 5.0
+                self._interrupt_event.set()
 
     def request_steer(self, text: str) -> bool:
         """Append user guidance to the active Codex turn via ``turn/steer``."""
@@ -264,10 +362,49 @@ class CodexAppServerSession:
         else:
             result.error = self._format_error_with_stderr(prefix, detail)
 
+    def _call_before_turn(self, call: Callable, *args, **kwargs) -> dict:
+        """Bound startup/submission waits even before a turn ID exists to interrupt.
+
+        The worker owns only one RPC, never thread binding or the next request.
+        Closing the captured client fences late replies from admitting more work.
+        """
+        if self._interrupt_event.is_set():
+            self.close()
+            raise _SubmissionCancelled()
+        done = threading.Event()
+        replies, errors = [], []
+
+        def invoke() -> None:
+            try:
+                replies.append(call(*args, **kwargs))
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                done.set()
+
+        context = contextvars.copy_context()
+        threading.Thread(target=context.run, args=(invoke,), daemon=True, name="codex-submission").start()
+        while not done.wait(0.05):
+            if self._interrupt_event.is_set():
+                # No exact turn identity is available yet. Retire immediately,
+                # leaving the five-second Stop budget for process teardown.
+                self.close()
+                raise _SubmissionCancelled()
+        if errors:
+            raise errors[0]
+        return replies[0]
+
+    def _cancel_submission(self, result: TurnResult) -> None:
+        result.interrupted = True
+        self._retire(result, "Codex submission cancelled without terminal acknowledgement; native outcome is uncertain")
+
     def _start_for(self, result: TurnResult) -> bool:
         """ensure_started(); startup failures become a retiring TurnResult.error instead of raw exceptions."""
         try:
             self.ensure_started()
+        except _SubmissionCancelled:
+            self._cancel_submission(result)
+            return False
         except (CodexAppServerError, TimeoutError) as exc:
             self._retire(result, self._format_error_with_stderr("codex app-server startup failed", exc))
             return False
@@ -275,10 +412,12 @@ class CodexAppServerSession:
         result.thread_id = self._thread_id
         return True
 
-    def _request_for(self, result: TurnResult, method: str, params: dict, label: str) -> Optional[dict]:
+    def _request_for(self, result: TurnResult, method: str, params: dict, label: str, *, timeout: float = 10.0) -> Optional[dict]:
         """Issue ``method``; on failure fill ``result.error`` and return None. A timeout always retires."""
         try:
-            return self._client.request(method, params, timeout=10)
+            return self._call_before_turn(self._client.request, method, params, timeout=timeout)
+        except _SubmissionCancelled:
+            self._cancel_submission(result)
         except CodexAppServerError as exc:
             self._set_classified_error(result, f"{label} failed", exc.message, exc)
         except TimeoutError as exc:
@@ -337,21 +476,33 @@ class CodexAppServerSession:
         full turn deadline.
         """
         result = TurnResult()
+        try:
+            turn_input = _coerce_turn_input(user_input)
+        except ValueError as exc:
+            result.error = str(exc)
+            return result
         if self._start_for(result):
             # Do not clear first: a hard stop arriving during ensure_started() must
             # be honored before launching a Codex turn.
             if self._interrupt_event.is_set():
                 result.interrupted = True
             else:
-                result.submitted_user_text = _coerce_turn_input_text(user_input)
+                result.submitted_user_text = CodexEventProjector().project({
+                    "method": "item/completed",
+                    "params": {"item": {"type": "userMessage", "content": turn_input}},
+                }).messages[0]["content"]
                 ts = self._request_for(
                     result, "turn/start",
-                    {"threadId": self._thread_id, "input": [{"type": "text", "text": result.submitted_user_text}]},
-                    "turn/start",
+                    {"threadId": self._thread_id, "input": turn_input,
+                     # Codex persists this override. Omitting it on revocation
+                     # would retain a previous turn's native bypass authority.
+                     "approvalPolicy": "never" if self._routing.auto_approve_exec and self._routing.auto_approve_apply_patch else "on-request"},
+                    "turn/start", timeout=min(turn_timeout, 60.0),
                 )
                 if ts is not None:
                     self._run_started_turn(result, ts, turn_timeout, notification_poll_timeout, post_tool_quiet_timeout)
         self._interrupt_event.clear()
+        self._interrupt_deadline = None
         return result
 
     def _run_started_turn(
@@ -376,21 +527,7 @@ class CodexAppServerSession:
 
         def on_server_request(sreq: dict) -> bool:
             nonlocal last_tool_completion_at
-            # Drain pending notifications first (bounded) so _pending_file_changes is
-            # current for the approval decision and display events still reach on_event.
-            turn_complete = False
-            for _ in range(8):
-                pending = self._client.take_notification(timeout=0)
-                if pending is None:
-                    break
-                if not _notification_belongs_to_turn(pending, thread_id=self._thread_id, turn_id=result.turn_id):
-                    logger.debug("ignoring foreign codex notification while draining server request: method=%s", pending.get("method"))
-                    continue
-                proj, aborted = self._absorb_notification(result, projector, pending)
-                if proj.is_tool_iteration:
-                    last_tool_completion_at = time.monotonic()
-                turn_complete = turn_complete or aborted
-            self._handle_server_request(sreq)
+            turn_complete = self._drain_before_request(result, sreq, on_note)
             # An approval round-trip is live signal — don't let it trip the watchdog.
             last_tool_completion_at = None
             return turn_complete
@@ -404,27 +541,57 @@ class CodexAppServerSession:
                 last_tool_completion_at = None
             if method != "turn/completed":
                 return aborted
+            result.terminal_acknowledged = True
             turn_obj = (note.get("params") or {}).get("turn") or {}
             turn_status = turn_obj.get("status")
-            if turn_status and turn_status not in {"completed", "interrupted"} and turn_obj.get("error"):
-                err_msg = _format_responses_error(turn_obj["error"], str(turn_status))
+            result.interrupted = result.interrupted or turn_status == "interrupted"
+            if turn_status == "failed":
+                err_msg = _format_responses_error(turn_obj.get("error"), str(turn_status))
                 self._set_classified_error(result, f"turn ended status={turn_status}", err_msg, err_msg)
             return True
 
-        self._drive_turn(
-            result, turn_timeout=turn_timeout, notification_poll_timeout=notification_poll_timeout,
-            timeout_label="turn", before_poll=watchdog_tripped, on_server_request=on_server_request,
-            on_note=on_note, accept_final_text_at_deadline=True,
-        )
-        with self._active_turn_lock:
-            self._active_turn_id = None
+        try:
+            self._drive_turn(
+                result, turn_timeout=turn_timeout, notification_poll_timeout=notification_poll_timeout,
+                timeout_label="turn", before_poll=watchdog_tripped, on_server_request=on_server_request,
+                on_note=on_note,
+            )
+        finally:
+            with self._active_turn_lock:
+                self._active_turn_id = None
+            self._turn_deadline = None
+
+    def _drain_before_request(self, result, req, on_note, pre_scope_filter=None) -> bool:
+        """Refresh approval context, stopping at the terminal boundary in either caller."""
+        complete = False
+        expired = False
+        while True:
+            deadlines = [d for d in (self._turn_deadline, self._interrupt_deadline) if d is not None]
+            if deadlines and time.monotonic() >= min(deadlines):
+                expired = True
+                break
+            note = self._client.take_notification(timeout=0)
+            if note is None:
+                break
+            method = note.get("method", "")
+            if pre_scope_filter is not None and not pre_scope_filter(note, method):
+                continue
+            if not _notification_belongs_to_turn(note, thread_id=self._thread_id, turn_id=result.turn_id):
+                continue
+            complete = on_note(note, method)
+            if complete:
+                result.terminal_acknowledged = method == "turn/completed"
+                with self._active_turn_lock:
+                    self._active_turn_id = None
+                break
+        self._handle_server_request(req, active=not complete and not expired and result.turn_id is not None)
+        return complete
 
     def _drive_turn(
         self, result: TurnResult, *, turn_timeout: float, notification_poll_timeout: float,
         timeout_label: str, on_server_request: Callable[[dict], bool],
         on_note: Callable[[dict, str], bool], before_poll: Optional[Callable[[], bool]] = None,
         pre_scope_filter: Optional[Callable[[dict, str], bool]] = None,
-        accept_final_text_at_deadline: bool = False,
     ) -> None:
         """Shared poll loop for run_turn / compact_thread until turn/completed or deadline.
 
@@ -435,21 +602,26 @@ class CodexAppServerSession:
         retires the session.
         """
         deadline = time.monotonic() + turn_timeout
+        self._turn_deadline = deadline
         turn_complete = False
+        interrupt_sent = False
         while time.monotonic() < deadline and not turn_complete:
-            if self._interrupt_event.is_set():
-                self._issue_interrupt(result.turn_id)
+            if self._interrupt_event.is_set() and not interrupt_sent:
                 result.interrupted = True
-                break
+                interrupt_sent = True
+                deadline = min(deadline, self._interrupt_deadline or deadline)
+                self._issue_interrupt(result.turn_id, timeout=max(0.0, deadline - time.monotonic()))
+                if time.monotonic() >= deadline:
+                    break
             if self._subprocess_died(result):
                 break
-            if before_poll is not None and before_poll():
+            if not interrupt_sent and before_poll is not None and before_poll():
                 break
             sreq = self._client.take_server_request(timeout=0)
             if sreq is not None:
                 turn_complete = on_server_request(sreq)
                 continue
-            note = self._client.take_notification(timeout=notification_poll_timeout)
+            note = self._client.take_notification(timeout=min(notification_poll_timeout, max(0.0, deadline - time.monotonic())))
             if note is None:
                 continue
             method = note.get("method", "")
@@ -459,20 +631,20 @@ class CodexAppServerSession:
                 logger.debug("ignoring foreign codex notification: method=%s", method)
                 continue
             turn_complete = on_note(note, method)
+            if turn_complete and method == "turn/completed":
+                result.terminal_acknowledged = True
 
-        if accept_final_text_at_deadline and not turn_complete and not result.interrupted and result.final_text and result.error is None:
-            logger.warning(
-                "codex app-server turn reached deadline after a completed assistant message but before "
-                "turn/completed; accepting the assistant text as the terminal response"
-            )
-            turn_complete = True
+        if interrupt_sent and not result.terminal_acknowledged:
+            result.interrupted = True
+            self._retire(result, "Codex cancellation unacknowledged; native outcome is uncertain")
 
         if not turn_complete and not result.interrupted:
-            self._issue_interrupt(result.turn_id)
+            self._issue_interrupt(result.turn_id, timeout=0)
             result.interrupted = True
             if not result.error:
                 result.error = self._format_error_with_stderr(f"{timeout_label} timed out after {turn_timeout}s")
             result.should_retire = True
+        self._turn_deadline = None
 
     def compact_thread(
         self, *, turn_timeout: float = 600.0, notification_poll_timeout: float = 0.25
@@ -485,7 +657,6 @@ class CodexAppServerSession:
         result = TurnResult()
         if not self._start_for(result):
             return result
-        self._interrupt_event.clear()
         projector = CodexEventProjector()
 
         if self._request_for(result, "thread/compact/start", {"threadId": self._thread_id}, "thread/compact/start") is None:
@@ -503,6 +674,8 @@ class CodexAppServerSession:
                     logger.debug("ignoring compact turn/started without a turn id")
                     return False
                 result.turn_id = str(observed_turn_id)
+                with self._active_turn_lock:
+                    self._active_turn_id = result.turn_id
             elif observed_turn_id is not None or method in {"item/completed", "turn/completed"}:
                 # Before the new turn/started, terminal/projectable events are stale or unattributable.
                 logger.debug("ignoring codex notification before compact turn start: method=%s", method)
@@ -527,28 +700,34 @@ class CodexAppServerSession:
             return True
 
         def on_server_request(sreq: dict) -> bool:
-            self._handle_server_request(sreq)
-            return False
+            return self._drain_before_request(result, sreq, on_note, pre_scope_filter)
 
-        self._drive_turn(
-            result, turn_timeout=turn_timeout, notification_poll_timeout=notification_poll_timeout,
-            timeout_label="compact turn", on_server_request=on_server_request, on_note=on_note,
-            pre_scope_filter=pre_scope_filter,
-        )
+        try:
+            self._drive_turn(
+                result, turn_timeout=turn_timeout, notification_poll_timeout=notification_poll_timeout,
+                timeout_label="compact turn", on_server_request=on_server_request, on_note=on_note,
+                pre_scope_filter=pre_scope_filter,
+            )
+        finally:
+            with self._active_turn_lock:
+                self._active_turn_id = None
+            self._turn_deadline = None
+            self._interrupt_event.clear()
+            self._interrupt_deadline = None
         return result
 
-    def _issue_interrupt(self, turn_id: Optional[str]) -> None:
+    def _issue_interrupt(self, turn_id: Optional[str], *, timeout: float = 5.0) -> None:
         if self._client is None or self._thread_id is None or turn_id is None:
             return
         try:
-            self._client.request("turn/interrupt", {"threadId": self._thread_id, "turnId": turn_id}, timeout=5)
+            self._client.request("turn/interrupt", {"threadId": self._thread_id, "turnId": turn_id}, timeout=timeout)
         except CodexAppServerError as exc:
             # "no active turn to interrupt" is fine — already done.
             logger.debug("turn/interrupt non-fatal: %s", exc)
         except TimeoutError:
             logger.warning("turn/interrupt timed out")
 
-    def _handle_server_request(self, req: dict) -> None:
+    def _handle_server_request(self, req: dict, *, active: bool = True) -> None:
         """Answer a codex server request (approval / elicitation) via Hermes' approval flow.
 
         Permission escalations are always declined (the user chose their profile in
@@ -563,6 +742,12 @@ class CodexAppServerSession:
         if handler is None:
             logger.warning("Unknown codex server request: %s", method)
             self._client.respond_error(rid, code=-32601, message=f"Unsupported method: {method}")
+            return
+        if not _has_exact_turn_scope(req, thread_id=self._thread_id, turn_id=self._active_turn_id):
+            self._client.respond_error(rid, code=-32600, message="Native request does not belong to the active thread/turn")
+            return
+        if not active:
+            self._client.respond_error(rid, code=-32600, message="Native request has no active turn")
             return
         self._client.respond(rid, handler(self, params))
 
@@ -585,17 +770,48 @@ class CodexAppServerSession:
         Approval mode/timeout resolution lives upstream (codex_runtime.py derives the
         auto flags; the callback runs the shared gate). Do not re-read config here.
         """
+        if self._interrupt_event.is_set():
+            return "decline"
         if auto_approve:
             return "accept"
         if self._approval_callback is None:
             return "decline"
         command, description = prompt()
+        callback = self._approval_callback
+        done = threading.Event()
+        cancelled = threading.Event()
+        decision = ["decline"]
+        kwargs = {"allow_permanent": False}
         try:
-            choice = self._approval_callback(command, description, allow_permanent=False)
-            return _approval_choice_to_codex_decision(choice)
-        except Exception:
-            logger.exception("approval_callback raised on %s", log_label)
-            return "decline"
+            inspect.signature(callback).bind(command, description, **kwargs, cancel_check=cancelled.is_set)
+        except (TypeError, ValueError):
+            pass  # Legacy callbacks still get bounded waits, but cannot tear down their UI cooperatively.
+        else:
+            kwargs["cancel_check"] = cancelled.is_set
+
+        def ask() -> None:
+            try:
+                choice = callback(command, description, **kwargs)
+                decision[0] = _approval_choice_to_codex_decision(choice)
+            except Exception:
+                logger.exception("approval_callback raised on %s", log_label)
+            finally:
+                done.set()
+
+        # A legacy callback may block indefinitely. It never owns the wire: only
+        # this turn's polling thread may publish its decision, and late answers
+        # are discarded after cancellation or the turn deadline.
+        context = contextvars.copy_context()
+        threading.Thread(target=context.run, args=(ask,), daemon=True, name="codex-approval").start()
+        while True:
+            if self._interrupt_event.is_set() or (
+                self._turn_deadline is not None and time.monotonic() >= self._turn_deadline
+            ):
+                cancelled.set()
+                return "decline"
+            if done.is_set():
+                return decision[0]
+            done.wait(0.05)
 
     def _decide_exec_approval(self, params: dict) -> str:
         def prompt() -> tuple[str, str]:

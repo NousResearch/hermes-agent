@@ -12,3 +12,16 @@ $reasoningCollapsedByDefault.subscribe(value => persistBoolean(REASONING_COLLAPS
 export function setReasoningCollapsedByDefault(value: boolean) {
   $reasoningCollapsedByDefault.set(value)
 }
+
+/**
+ * `display.show_reasoning` — Settings → Chat → Reasoning Blocks.
+ *
+ * Off by default, matching gateway/CLI (`display.show_reasoning: false`).
+ * When false the transcript is answer-only: no Thinking disclosure and no
+ * tool-run chrome (#93817, #85110, #49664). Quoted YAML `'false'` is off.
+ */
+export const $showReasoning = atom(false)
+
+export function setShowReasoningFromConfig(value: unknown): void {
+  $showReasoning.set(value === true || value === 'true' || value === 1 || value === '1')
+}

@@ -1323,12 +1323,26 @@ class GatewayInboundMixin:
             logger.debug("Failed to restore one-turn model override", exc_info=True)
 
     def _prefix_inbound_sender_context(self, event: MessageEvent, source: SessionSource, message_text: str) -> str:
-        """Attribute the sender in shared multi-user sessions and prepend history-backfill channel context."""
+        """Attribute the sender in shared multi-user and per-user sessions, and prepend
+        history-backfill channel context.
+
+        In shared multi-user sessions the prefix is the only per-turn identity anchor.
+        In per-user (non-DM, per-user-isolated) sessions the prefix is also needed: without
+        it the model cannot distinguish who is speaking, which causes operator identity
+        leakage when non-operators ask identity questions (#110686).
+        """
         _is_shared_multi_user = is_shared_multi_user_session(
             source, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
         )
-        if _is_shared_multi_user and source.user_name:
+        # Attribute the sender in BOTH shared multi-user sessions AND per-user isolated
+        # sessions (non-DM).  DMs are already single-user and never need a prefix.
+        _is_per_user_non_dm = (
+            not _is_shared_multi_user
+            and source.chat_type != "dm"
+            and source.user_name
+        )
+        if (_is_shared_multi_user or _is_per_user_non_dm) and source.user_name:
             # Display names are attacker-influenceable: neutralize newlines/control chars or a
             # hostile name masquerades as a fake markdown section (mirrors build_session_context_prompt).
             _safe_user_name = neutralize_untrusted_inline_text(source.user_name)

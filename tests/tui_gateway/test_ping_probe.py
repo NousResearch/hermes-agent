@@ -27,4 +27,5 @@ def test_ping_rejects_unknown_params_at_the_contract_boundary():
     assert envelope["jsonrpc"] == "2.0"
     assert envelope["id"] == 7
     assert envelope["error"]["code"] == 4000
-    assert envelope["error"]["message"] == "invalid params for ping"
+    assert envelope["error"]["message"].startswith("invalid params for ping: anything: ")
+    assert "hermes update" in envelope["error"]["message"]

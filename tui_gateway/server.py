@@ -813,7 +813,15 @@ def register_method(name: str, fn) -> None:
                 {"loc": list(error["loc"]), "msg": error["msg"], "type": error["type"]}
                 for error in exc.errors(include_input=False, include_url=False)
             ]
-            return _err(rid, 4000, f"invalid params for {name}", data=data)
+            # Same plain-language shape as the unknown-method reply: the first field path names what
+            # is wrong, and a client/backend version skew is the usual cause.
+            first = data[0] if data else {}
+            loc = ".".join(str(part) for part in first.get("loc", ())) or "params"
+            return _err(
+                rid, 4000,
+                f"invalid params for {name}: {loc}: {first.get('msg', 'invalid')} — the client and the Hermes "
+                "backend are out of sync (different versions); run `hermes update` and restart both",
+                data=data)
         response = fn(rid, model, *extras)
         if isinstance(response, dict):
             if "error" not in response:

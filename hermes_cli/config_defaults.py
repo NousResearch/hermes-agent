@@ -256,6 +256,12 @@ DEFAULT_CONFIG = {
         "turn_liveness": {"timeout_s": 600.0, "poll_s": 15.0},
     },
 
+    "acp": {
+        # Optional task-scoped workspace route for ACP editor sessions. Empty
+        # keeps the profile-wide terminal backend unchanged.
+        "workspace": {},
+    },
+
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",

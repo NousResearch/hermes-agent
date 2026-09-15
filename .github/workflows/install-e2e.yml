@@ -13,15 +13,13 @@ name: Install & Update E2E
 # ships, and would pin an "oldest" that nobody still runs.
 #
 # Triggers:
-#   * every 12 hours, so upstream drift (a new uv, a Node bump, a PyPI change)
-#     surfaces on a schedule rather than in someone's review cycle;
 #   * when a release tag is created -- the moment the set of versions users can
 #     update FROM changes, and the moment a broken updater would strand them;
 #   * manually, where you can pick the route and how many releases to sample.
 #
-# Deliberately NOT on pull_request: a leg takes ~11 minutes of real toolchain
-# installation, and the matrix multiplies that. Updating is release-shaped work,
-# so it is gated on releases and the clock instead.
+# Deliberately NOT on pull_request or a periodic schedule: each leg takes ~11
+# minutes of real toolchain installation, and the matrix multiplies that. Run
+# it on releases or manually when the result is needed.
 
 on:
   workflow_dispatch:
@@ -37,9 +35,6 @@ on:
         required: false
         type: string
         default: '5'
-  schedule:
-    # Every 12 hours, off the hour to avoid the top-of-hour runner crunch.
-    - cron: '20 7,19 * * *'
   push:
     tags:
       # Release tags only: the repo also carries backup/* and one-off tags.

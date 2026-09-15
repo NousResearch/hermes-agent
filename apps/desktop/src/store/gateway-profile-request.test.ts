@@ -113,9 +113,11 @@ describe('requestGatewayForProfile', () => {
 
   it('dials the profile with foreground priority when a Settings-scoped caller asks for it (#111651)', async () => {
     setPrimaryGateway(makePrimary() as never, 'default')
+
     const getConnection = vi.fn(async (profile: null | string) =>
       profile ? { port: 5151, profile, token: 'secondary-token' } : { port: 4242, token: 'primary-token' }
     )
+
     installDesktop(getConnection)
     await ensureGatewayForProfile('default')
 

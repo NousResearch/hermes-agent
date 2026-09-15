@@ -1573,6 +1573,18 @@ stt:
 #     # live result.
 #     model: ""
 #     voice: "default"
+#   streaming:
+#     # Whole-response minimum, in characters. Shorter clauses wait for
+#     # the next sentence. Applies to gateway, CLI speaker and speak-stream.
+#     min_len: 20
+#     # Optional positive integer; null inherits min_len. Set to 1 to release
+#     # a complete short opener such as "Yes." at its sentence boundary.
+#     # Only the first nonempty emission uses this override; later sentences
+#     # return to min_len. An idle/end-of-text flush counts as an emission.
+#     first_sentence_min_chars: null
+#     # Neither setting changes punctuation detection. Pure-CJK replies still
+#     # need full-width boundary splitting (#78477); without it, a reply such
+#     # as "嗯，好的。记得这件事。" waits for a flush regardless of these values.
 
 # "Hey Hermes" hands-free wake word (off by default; toggle with /wake).
 # Full engine/provider options inherit from DEFAULT_CONFIG in

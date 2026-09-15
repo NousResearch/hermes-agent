@@ -8,6 +8,7 @@ import { test } from 'vitest'
 import {
   COMPOSER_SEND_DEFAULT_MODE,
   DOUBLE_ENTER_DEFAULT_MS,
+  HOLD_DEFAULT_MS,
   DOUBLE_ENTER_MAX_MS,
   DOUBLE_ENTER_MIN_MS,
   SEND_GRACE_DEFAULT_MS,
@@ -36,6 +37,7 @@ const configFile = (directory: string) => path.join(directory, 'composer-send.js
 const DEFAULTS = {
   mode: COMPOSER_SEND_DEFAULT_MODE,
   doubleEnterMs: DOUBLE_ENTER_DEFAULT_MS,
+  holdMs: HOLD_DEFAULT_MS,
   typingIdleMs: TYPING_IDLE_DEFAULT_MS,
   sendGrace: SEND_GRACE_DEFAULT_SCOPE,
   sendGraceMs: SEND_GRACE_DEFAULT_MS

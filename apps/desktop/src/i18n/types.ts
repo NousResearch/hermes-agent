@@ -587,10 +587,14 @@ export interface Translations extends NoticeTranslations {
       modeEnter: string
       modeDoubleEnter: string
       modePause: string
+      modeHold: string
       modeModEnter: string
       doubleTapTitle: string
       doubleTapDescription: string
       doubleTapUnit: string
+      holdMsTitle: string
+      holdMsDescription: string
+      holdMsUnit: string
       typingIdleTitle: string
       typingIdleDescription: string
       typingIdleUnit: string
@@ -2949,6 +2953,7 @@ export interface Translations extends NoticeTranslations {
     placeholderSendChord: (chord: string) => string
     placeholderSendEnterSends: string
     placeholderSendPause: string
+    placeholderSendHold: string
     sendHold: string
     newSessionPlaceholders: readonly string[]
     followUpPlaceholders: readonly string[]

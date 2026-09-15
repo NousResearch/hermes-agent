@@ -2,6 +2,7 @@
 import {
   COMPOSER_SEND_DEFAULT_MODE,
   DOUBLE_ENTER_DEFAULT_MS,
+  HOLD_DEFAULT_MS,
   SEND_GRACE_DEFAULT_MS,
   SEND_GRACE_DEFAULT_SCOPE,
   TYPING_IDLE_DEFAULT_MS
@@ -34,10 +35,14 @@ const WORDS = {
   modeEnter: 'Enter',
   modeDoubleEnter: 'Double tap',
   modePause: 'Pause',
+  modeHold: 'Hold',
   modeModEnter: 'Enter + modifier',
   doubleTapTitle: 'Double-tap window',
   doubleTapDescription: 'How fast the two Enter presses have to land.',
   doubleTapUnit: 'ms',
+  holdMsTitle: 'Hold time',
+  holdMsDescription: 'How long Enter has to stay down.',
+  holdMsUnit: 'ms',
   typingIdleTitle: 'Typing pause',
   typingIdleDescription: 'How long you have to stop typing.',
   typingIdleUnit: 'ms',
@@ -92,6 +97,7 @@ vi.mock('./primitives', () => ({
 const DEFAULTS = {
   mode: COMPOSER_SEND_DEFAULT_MODE,
   doubleEnterMs: DOUBLE_ENTER_DEFAULT_MS,
+  holdMs: HOLD_DEFAULT_MS,
   typingIdleMs: TYPING_IDLE_DEFAULT_MS,
   sendGrace: SEND_GRACE_DEFAULT_SCOPE,
   sendGraceMs: SEND_GRACE_DEFAULT_MS
@@ -129,7 +135,7 @@ describe('ComposerSendSettings', () => {
   it('offers every mode, including the pause that the schema already carried', () => {
     const { getByText } = render(<ComposerSendSettings />)
 
-    for (const label of ['Enter', 'Double tap', 'Pause', 'Enter + modifier']) {
+    for (const label of ['Enter', 'Double tap', 'Pause', 'Hold', 'Enter + modifier']) {
       expect(getByText(label)).toBeTruthy()
     }
   })
@@ -151,6 +157,14 @@ describe('ComposerSendSettings', () => {
 
     expect(getByText('Typing pause')).toBeTruthy()
     expect(getByText('Double-tap window')).toBeTruthy()
+  })
+
+  it('offers the hold time only where a long press is the send', () => {
+    setPrefs({ mode: 'hold' })
+
+    const { getByText } = render(<ComposerSendSettings />)
+
+    expect(getByText('Hold time')).toBeTruthy()
   })
 
   it('hides both timing rows for a mode that measures neither', () => {

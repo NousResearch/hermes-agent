@@ -28,14 +28,16 @@ afterEach(cleanup)
 // does: mutate the editor's textContent WITHOUT firing an input event, so the
 // React `draft` state stays stale while the DOM already holds the text.
 const DOUBLE_ENTER_MS = 400
+const HOLD_MS = 350
 
-type SendMode = 'double-enter' | 'enter' | 'mod-enter'
+type SendMode = 'double-enter' | 'enter' | 'hold' | 'mod-enter' | 'pause'
 
 function Harness({
   busy = false,
   compositionEndedMsAgo,
   disabled = false,
   doubleEnterMs = DOUBLE_ENTER_MS,
+  holdMs = HOLD_MS,
   mode = 'enter',
   queued = [],
   onSubmit,
@@ -50,6 +52,7 @@ function Harness({
   compositionEndedMsAgo?: number
   disabled?: boolean
   doubleEnterMs?: number
+  holdMs?: number
   mode?: SendMode
   queued?: readonly string[]
   onSubmit: (text: string) => void
@@ -64,6 +67,7 @@ function Harness({
   // it lags the DOM until React re-renders (the source of the bug).
   const [draft, setDraft] = useState('')
   const lastEnterAtRef = useRef(0)
+  const enterHoldTimerRef = useRef<number | undefined>(undefined)
   const compositionEndedAtRef = useRef(compositionEndedMsAgo === undefined ? 0 : Date.now() - compositionEndedMsAgo)
   const attachments: unknown[] = []
 
@@ -126,6 +130,16 @@ function Harness({
       !event.ctrlKey &&
       isPostCompositionCommitEnter(compositionEndedAtRef.current, Date.now())
     ) {
+      return
+    }
+
+    // A held key repeats, and a repeat is not a press — except in `hold`, where
+    // the repeat IS the gesture (index.tsx reads the mode once at press time).
+    if (event.key === 'Enter' && event.repeat) {
+      if (mode === 'enter' || mode === 'hold') {
+        event.preventDefault()
+      }
+
       return
     }
 
@@ -196,6 +210,24 @@ function Harness({
         return
       }
 
+      if (mode === 'hold') {
+        window.clearTimeout(enterHoldTimerRef.current)
+        enterHoldTimerRef.current = window.setTimeout(() => {
+          enterHoldTimerRef.current = undefined
+
+          const held = editorRef.current
+          const live = held ? composerPlainText(held) : ''
+
+          if (held && live.endsWith('\n')) {
+            held.textContent = live.replace(/\n+$/, '')
+          }
+
+          submitDraft()
+        }, holdMs)
+
+        return
+      }
+
       const now = Date.now()
       const doubleTap = now - lastEnterAtRef.current <= doubleEnterMs
 
@@ -230,6 +262,12 @@ function Harness({
       data-testid="editor"
       onInput={event => setText(composerPlainText(event.currentTarget))}
       onKeyDown={handleKeyDown}
+      onKeyUp={event => {
+        if (event.key === 'Enter') {
+          window.clearTimeout(enterHoldTimerRef.current)
+          enterHoldTimerRef.current = undefined
+        }
+      }}
       ref={editorRef}
       suppressContentEditableWarning
     />
@@ -738,5 +776,206 @@ describe('composer Enter — send modes', () => {
 
       expect(event?.defaultPrevented, `keydown ${key} must be default-prevented`).toBe(true)
     }
+  })
+})
+
+describe('composer Enter — key repeat is not a press', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-14T12:00:00Z'))
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /** A held key: the OS delivers one real press, then repeats. */
+  function holdThenRepeat(editor: HTMLElement, text: string, repeats = 3) {
+    editor.textContent = text
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    for (let i = 0; i < repeats; i += 1) {
+      editor.textContent = `${editor.textContent}\n`
+      fireEvent.keyDown(editor, { key: 'Enter', repeat: true })
+    }
+  }
+
+  it('does not let a held Enter fake a double tap', async () => {
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness mode="double-enter" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />
+    )
+
+    const editor = getByTestId('editor')
+
+    await act(async () => {
+      holdThenRepeat(editor, 'holding the key')
+    })
+
+    // Before this guard, repeat #2 landed inside the double-tap window and sent.
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('swallows the repeat in `enter` mode instead of leaving a stray break', async () => {
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(<Harness mode="enter" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />)
+
+    const editor = getByTestId('editor')
+
+    await act(async () => {
+      editor.textContent = 'sent on the press'
+      fireEvent.keyDown(editor, { key: 'Enter' })
+      fireEvent.keyDown(editor, { key: 'Enter', repeat: true })
+    })
+
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    // The one press sends; the repeats must not append a break to the emptied box.
+    expect(editor.textContent).toBe('sent on the press')
+  })
+
+  it('re-sends nothing on repeated ⌘Enter', async () => {
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(<Harness mode="mod-enter" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />)
+
+    const editor = getByTestId('editor')
+
+    await act(async () => {
+      editor.textContent = 'once'
+      fireEvent.keyDown(editor, { key: 'Enter', metaKey: true })
+      fireEvent.keyDown(editor, { key: 'Enter', metaKey: true, repeat: true })
+    })
+
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('composer Enter — mode: hold', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-14T12:00:00Z'))
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('breaks the line on a tap, however many taps land', async () => {
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(<Harness mode="hold" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />)
+
+    const editor = getByTestId('editor')
+
+    await act(async () => {
+      editor.textContent = 'first'
+      fireEvent.keyDown(editor, { key: 'Enter' })
+      fireEvent.keyDown(editor, { key: 'Enter' })
+    })
+
+    // `hold` deliberately gives up the double tap: that is `double-enter`.
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(editor.textContent).toBe('first')
+  })
+
+  it('sends once the key has been down for holdMs, without the break the tap inserted', async () => {
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(<Harness mode="hold" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />)
+
+    const editor = getByTestId('editor')
+
+    editor.textContent = 'held message'
+    act(() => {
+      fireEvent.keyDown(editor, { key: 'Enter' })
+    })
+
+    // Still down, still nothing sent.
+    expect(onSubmit).not.toHaveBeenCalled()
+
+    act(() => {
+      vi.advanceTimersByTime(HOLD_MS)
+    })
+
+    expect(onSubmit).toHaveBeenCalledWith('held message')
+  })
+
+  it('never sends on a tap however long the pause between taps', async () => {
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(<Harness mode="hold" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />)
+
+    const editor = getByTestId('editor')
+
+    editor.textContent = 'tap tap'
+    act(() => {
+      fireEvent.keyDown(editor, { key: 'Enter' })
+      fireEvent.keyUp(editor, { key: 'Enter' })
+      vi.advanceTimersByTime(200)
+      fireEvent.keyDown(editor, { key: 'Enter' })
+      fireEvent.keyUp(editor, { key: 'Enter' })
+      vi.advanceTimersByTime(HOLD_MS)
+    })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('cancels the hold when the key comes up early, even at the last moment', async () => {
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(<Harness mode="hold" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />)
+
+    const editor = getByTestId('editor')
+
+    editor.textContent = 'nearly held'
+    act(() => {
+      fireEvent.keyDown(editor, { key: 'Enter' })
+      vi.advanceTimersByTime(HOLD_MS - 1)
+      fireEvent.keyUp(editor, { key: 'Enter' })
+      vi.advanceTimersByTime(HOLD_MS * 4)
+    })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('holds off while the OS is repeating, because the timer decides', async () => {
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(<Harness mode="hold" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />)
+
+    const editor = getByTestId('editor')
+
+    editor.textContent = 'held'
+    act(() => {
+      fireEvent.keyDown(editor, { key: 'Enter' })
+      // A repeat arriving BEFORE holdMs must not send early — a user with a fast
+      // repeat rate would otherwise get a shorter gesture than everyone else.
+      fireEvent.keyDown(editor, { key: 'Enter', repeat: true })
+    })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+
+    act(() => {
+      vi.advanceTimersByTime(HOLD_MS)
+    })
+
+    expect(onSubmit).toHaveBeenCalledWith('held')
+  })
+
+  it('still lets the ⌘Enter chord send while the mode holds off on plain Enter', async () => {
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(<Harness mode="hold" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />)
+
+    const editor = getByTestId('editor')
+
+    await act(async () => {
+      editor.textContent = 'chord send'
+      fireEvent.keyDown(editor, { key: 'Enter', metaKey: true })
+    })
+
+    expect(onSubmit).toHaveBeenCalledWith('chord send')
   })
 })

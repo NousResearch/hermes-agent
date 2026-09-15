@@ -452,6 +452,11 @@ const COMPOSER_SEND_MODE_KEYS: Record<
     newline: ['enter', 'shift+enter'],
     send: ['enter']
   },
+  hold: {
+    labelKey: 'composer.send.hold',
+    newline: ['enter', 'shift+enter'],
+    send: ['enter']
+  },
   'mod-enter': {
     labelKey: 'composer.send.mod',
     newline: ['enter', 'shift+enter'],

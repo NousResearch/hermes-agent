@@ -67,6 +67,57 @@ describe('focused chat zone drives the tab verbs', () => {
     expect(tree.closeFocusedSessionTab()).toBe(false)
   })
 
+  it('a side chat zone is the target; main is not', async () => {
+    const { tree } = await setup()
+
+    tree.noteActiveTreeGroup('grp-side')
+    expect(tree.focusedChatZoneIsSidePane()).toBe(true)
+
+    tree.noteActiveTreeGroup('grp-main')
+    expect(tree.focusedChatZoneIsSidePane()).toBe(false)
+  })
+
+  it('non-chat focus (files) falls through to main, so it is not a side pane', async () => {
+    const { model, tree } = await setup()
+
+    tree.declareDefaultTree(
+      model.split('row', [
+        model.group(['workspace'], { active: 'workspace', id: 'grp-main' }),
+        model.group(['files'], { active: 'files', id: 'grp-files' })
+      ])
+    )
+    tree.noteActiveTreeGroup('grp-files')
+
+    expect(tree.focusedChatZoneIsSidePane()).toBe(false)
+  })
+
+  it('a press or hover on a zone without a chat strip keeps the last chat zone', async () => {
+    const { model, tree } = await setup()
+
+    tree.$layoutTree.set(
+      model.split('row', [
+        model.group(['workspace', 'session-tile:a'], { active: 'workspace', id: 'grp-main' }),
+        model.group(['session-tile:b'], { active: 'session-tile:b', id: 'grp-side' }),
+        model.group(['sessions'], { active: 'sessions', id: 'grp-sessions' })
+      ])
+    )
+
+    // The user works in the side chat zone…
+    tree.noteActiveTreeGroup('grp-side')
+    expect(tree.focusedChatZoneIsSidePane()).toBe(true)
+
+    // …then reaches for a session row: the pointer crossed the sidebar, whose
+    // zone hosts no chat strip. That press IS the click this path serves, so it
+    // must not move the answer back to main.
+    tree.noteHoveredTreeGroup('grp-sessions')
+    tree.noteActiveTreeGroup('grp-sessions')
+    expect(tree.focusedChatZoneIsSidePane()).toBe(true)
+
+    // Fronting main explicitly is the one thing that moves it back.
+    tree.noteActiveTreeGroup(null)
+    expect(tree.focusedChatZoneIsSidePane()).toBe(false)
+  })
+
   it('⌘W closes the focused zone active tab and leaves the workspace alone', async () => {
     const { model, tree } = await setup()
 

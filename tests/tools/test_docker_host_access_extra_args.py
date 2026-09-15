@@ -12,6 +12,8 @@ really another option's value therefore enables guards too. These tests pin both
 directions — the detections and the accepted false positive.
 """
 
+import json
+
 import pytest
 
 import tools.terminal_tool as terminal_tool
@@ -190,11 +192,69 @@ def test_dangerous_command_guard_receives_host_access(extra_args, expect_guarded
     pytest.param(["--mount", "type=bind,src=/Users/me,dst=/mnt"], True, id="bind-guarded"),
     pytest.param(["--network", "none"], False, id="isolated-fast-path"),
 ])
-def test_execute_code_guard_receives_host_access(extra_args, expect_guarded):
+def test_execute_code_guard_receives_host_access(extra_args, expect_guarded, monkeypatch, tmp_path):
     """code_execution_tool passes the same predicate into check_execute_code_guard (line 710)."""
     from tools.approval import check_execute_code_guard
+    (tmp_path / "config.yaml").write_text("approvals:\n  cron_mode: deny\n")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
     has_access = terminal_tool._docker_has_host_access(_docker_config(docker_extra_args=extra_args))
     assert has_access is expect_guarded
     verdict = check_execute_code_guard("import os; os.system('rm -rf /')", "docker",
                                        has_host_access=has_access)
-    assert isinstance(verdict, dict) and "approved" in verdict
+    assert verdict["approved"] is (not expect_guarded)
+
+@pytest.mark.parametrize('args', [
+    ['--volumes-from', 'source:ro'],
+    ['--volumes-from=source'],
+    ['--mount', 'type=volume,source=data,target=/mnt,volume-driver=local,volume-opt=type=none,volume-opt=o=bind,volume-opt=device=/etc'],
+    ['--mount=source=data,target=/mnt,volume-opt=device=/etc,volume-opt=o=bind'],
+    ['--mount', 'type=volume,target=/mnt,"volume-opt=o=bind,ro",volume-opt=device=/etc'],
+])
+def test_indirect_host_mounts_enforce_guards(args):
+    from tools.approval import _should_skip_container_guards
+    access = terminal_tool._docker_has_host_access(_docker_config(docker_extra_args=args))
+    assert access is True
+    assert _should_skip_container_guards('docker', has_host_access=access) is False
+
+@pytest.mark.parametrize('extra_args,volumes,guarded', [
+    ([], [], False),
+    (['--network', 'none'], [], False),
+    (['--volumes-from', 'source:ro'], [], True),
+    (['--mount', 'type=volume,target=/mnt,volume-opt=o=bind,volume-opt=device=/etc'], [], True),
+    (['-v/tmp:/mnt'], [], True),
+])
+def test_unattended_code_reaches_backend_only_when_isolated(monkeypatch, tmp_path, extra_args, volumes, guarded):
+    import tools.code_execution_tool as code_tool
+    import tools.terminal_tool as terminal
+    from tools.approval import check_all_command_guards
+
+    (tmp_path / 'config.yaml').write_text('approvals:\n  cron_mode: deny\n  deny:\n    - "echo forbidden"\n')
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setenv('HERMES_CRON_SESSION', '1')
+    monkeypatch.setenv('TERMINAL_ENV', 'docker')
+    monkeypatch.setenv('TERMINAL_DOCKER_EXTRA_ARGS', json.dumps(extra_args))
+    monkeypatch.setenv('TERMINAL_DOCKER_VOLUMES', json.dumps(volumes))
+    called = []
+    def remote(*args, **kwargs):
+        called.append(args)
+        return json.dumps({'status': 'success', 'output': 'executed'})
+    monkeypatch.setattr(code_tool, '_execute_remote', remote)
+    config = terminal._get_env_config()
+    assert terminal._docker_has_host_access(config) is guarded
+    result = json.loads(code_tool.execute_code('print(42)', task_id='approval-test'))
+    assert bool(called) is not guarded
+    assert (result.get('status') == 'success') is not guarded
+    # Operator intent is enforced even when the container fast path applies.
+    verdict = check_all_command_guards('echo forbidden', 'docker', has_host_access=guarded)
+    assert verdict['approved'] is False
+    assert 'approvals.deny' in verdict['message']
+
+
+def test_volume_driver_options_are_deliberately_conservative():
+    assert extra_args_may_bind_host_path([
+        '--mount', 'type=volume,target=/data,volume-driver=local'
+    ]) is False
+    assert extra_args_may_bind_host_path([
+        '--mount', 'type=volume,target=/data,volume-opt=type=tmpfs'
+    ]) is True

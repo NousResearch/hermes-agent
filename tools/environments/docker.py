@@ -309,7 +309,7 @@ def _bind_value_may_be_host_path(value: str) -> bool:
 
 
 def _mount_value_may_be_host_path(value: str) -> bool:
-    """True when a ``--mount`` value declares an explicit ``type=bind``.
+    """True for explicit bind mounts or opaque volume driver options.
 
     Parsed as CSV because docker accepts quoted fields containing commas
     (``type=bind,"source=/tmp/a,b",target=/mnt``). Docker trims the whole value before
@@ -317,10 +317,12 @@ def _mount_value_may_be_host_path(value: str) -> bool:
     a quoted field from starting at position 0 and ``"type=bind"`` parses as the literal
     key ``"type``, which would miss the bind entirely.
 
-    Only ``type`` is inspected. The source is not: every explicit bind reaches the host,
+    Volume driver options conservatively enable guards, including local-driver
+    bind mounts. For ordinary mounts only ``type`` is inspected. The source is not:
+    every explicit bind reaches the host,
     whatever it names. ``src``/``source`` are therefore never read, and their ordering
     does not matter here. An omitted type defaults to ``volume`` in docker, so only an
-    explicit bind counts.
+    explicit bind counts unless driver options are present.
     """
     if not isinstance(value, str):
         return False
@@ -329,11 +331,16 @@ def _mount_value_may_be_host_path(value: str) -> bool:
     except (csv.Error, StopIteration):
         fields = value.split(",")
     mount_type = ""
+    has_volume_options = False
     for field in fields:
         key, sep, val = field.partition("=")
+        if key.strip().lower() == "volume-opt":
+            has_volume_options = True
         if sep and key.strip().strip('"\'').lower() == "type":
             mount_type = val.strip().strip('"\'').lower()
-    return mount_type == "bind"
+    # Volume driver options can bind host paths (including local driver
+    # device/o=bind). Do not infer isolation from opaque driver options.
+    return mount_type == "bind" or has_volume_options
 
 
 def extra_args_may_bind_host_path(extra_args: list) -> bool:
@@ -355,6 +362,10 @@ def extra_args_may_bind_host_path(extra_args: list) -> bool:
     args = [a for a in (extra_args or []) if isinstance(a, str)]
     for i, arg in enumerate(args):
         nxt = args[i + 1] if i + 1 < len(args) else None
+        if arg == "--volumes-from" or arg.startswith("--volumes-from="):
+            # The referenced container may have host binds; no daemon lookup
+            # is needed to conservatively keep normal approval guards.
+            return True
         if arg == "--mount":
             if nxt is not None and _mount_value_may_be_host_path(nxt):
                 return True

@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest'
 
 import { en } from '@/i18n/en'
 
-import { ERROR_CODE_KEYS, errorRecoveryPlan, type ErrorSurface, formatErrorDiagnostics, parseErrorSurface } from './error-surface'
+import {
+  ERROR_CODE_KEYS,
+  errorRecoveryPlan,
+  type ErrorSurface,
+  formatErrorDiagnostics,
+  parseErrorSurface
+} from './error-surface'
 import { errorCardText } from './error-surface-copy'
 
 describe('parseErrorSurface', () => {
@@ -134,7 +140,13 @@ describe('error copy never names a hidden Retry', () => {
   )
 
   it('a credential rejection keeps Retry, so its body may still say retry', () => {
-    const surface: ErrorSurface = { authKind: 'api_key', code: 'auth', layer: 'auth', provider: 'openai', retryable: false }
+    const surface: ErrorSurface = {
+      authKind: 'api_key',
+      code: 'auth',
+      layer: 'auth',
+      provider: 'openai',
+      retryable: false
+    }
     expect(errorRecoveryPlan(surface).retry).toBe(true)
   })
 })

@@ -1709,27 +1709,29 @@ class TestDedupTTL(unittest.TestCase):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
-        adapter = FeishuAdapter(PlatformConfig())
-        writes = []
-        calls = [0]
+        with tempfile.TemporaryDirectory() as temp_home:
+            with patch.dict(os.environ, {"HERMES_HOME": temp_home}, clear=True):
+                adapter = FeishuAdapter(PlatformConfig())
+                writes = []
+                calls = [0]
 
-        def slow_first_write(path, data, *args, **kwargs):
-            idx = calls[0]
-            calls[0] += 1
-            if idx == 0:
-                time.sleep(0.05)
-            writes.append(sorted(data["message_ids"]))
+                def slow_first_write(path, data, *args, **kwargs):
+                    idx = calls[0]
+                    calls[0] += 1
+                    if idx == 0:
+                        time.sleep(0.05)
+                    writes.append(sorted(data["message_ids"]))
 
-        async def run():
-            first = asyncio.create_task(adapter._is_duplicate("om_a"))
-            await asyncio.sleep(0.005)
-            second = asyncio.create_task(adapter._is_duplicate("om_b"))
-            await asyncio.gather(first, second)
+                async def run():
+                    first = asyncio.create_task(adapter._is_duplicate("om_a"))
+                    await asyncio.sleep(0.005)
+                    second = asyncio.create_task(adapter._is_duplicate("om_b"))
+                    await asyncio.gather(first, second)
 
-        with patch("plugins.platforms.feishu.adapter.atomic_json_write", side_effect=slow_first_write):
-            asyncio.run(run())
+                with patch("plugins.platforms.feishu.adapter.atomic_json_write", side_effect=slow_first_write):
+                    asyncio.run(run())
 
-        self.assertEqual(writes[-1], ["om_a", "om_b"])
+                self.assertEqual(writes[-1], ["om_a", "om_b"])
 
 
 class TestGroupMentionAtAll(unittest.TestCase):

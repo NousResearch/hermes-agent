@@ -736,6 +736,77 @@ def test_bare_custom_resolves_providers_dict_entry_named_custom(monkeypatch):
 
 
 
+def test_bare_custom_without_credentials_fails_fast_naming_request(monkeypatch):
+    """Regression for #111741: a bare ``custom`` request that falls through the whole ladder to
+    the OpenRouter endpoint with no credentials anywhere must fail at resolve time, naming the
+    request — not return a credential-less runtime that only dies later at AIAgent construction
+    with a generic "No LLM provider configured"."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "volcano", "default": "glm-5.3-flash"},
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "volcano": {
+                    "name": "Volcano",
+                    "api": "https://ark.example.com/api/v3",
+                    "key_env": "ARK_API_KEY",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+
+    with pytest.raises(RuntimeError, match=r"provider 'custom' resolved without credentials.*providers:"):
+        rp.resolve_runtime_provider(requested="custom", target_model="glm-5.3-flash")
+
+
+def test_bare_custom_openrouter_credentials_still_resolve(monkeypatch):
+    """The #111741 fail-fast must not fire when the OpenRouter fallback actually has a usable
+    key — the bare-custom runtime keeps resolving exactly as before."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "volcano", "default": "glm-5.3-flash"},
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-usable")
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_key"] == "sk-or-usable"
+
+
+def test_bare_custom_explicit_base_url_not_intercepted_by_fail_fast(monkeypatch):
+    """An explicit base_url keeps the #27132 direct-alias rung; the #111741 raise only guards the
+    OpenRouter-default fallback shape."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "auto"})
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom", explicit_base_url="http://10.0.0.5:8080/v1")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "http://10.0.0.5:8080/v1"
+
+
 def test_named_custom_provider_same_url_uses_matching_key_env_and_api_mode(monkeypatch):
     """Named custom providers on one gateway must keep their own credentials and protocol."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

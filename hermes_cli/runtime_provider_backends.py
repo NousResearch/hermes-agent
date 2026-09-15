@@ -171,6 +171,17 @@ def _resolve_openrouter_runtime(
     # Local no-auth servers get a placeholder key — the OpenAI SDK requires a non-empty string.
     if not api_key and not is_openrouter_url:
         api_key = "no-key-required"
+    if not api_key:
+        # A bare/aliased ``custom`` request that fell through the whole ladder to the OpenRouter
+        # endpoint with no credentials anywhere used to return a dead runtime that only failed at
+        # AIAgent construction with a generic "No LLM provider configured" (#111741). Fail fast,
+        # naming the request so a degraded ``custom`` placeholder is distinguishable from the
+        # named entry the user meant. Rungs that legitimately resolve without a cloud API key
+        # (local-endpoint bypass, explicit base_url, pools, OAuth, external-process, bedrock) all
+        # return before this point, so the raise only fires on the truly unroutable shape.
+        raise RuntimeError(
+            f"provider '{(requested_provider or '').strip() or 'custom'}' resolved without credentials - "
+            "if this is a named custom provider, use its real name (see providers: in config.yaml)")
     return rp._runtime("custom", rp._resolve_plain_custom_api_mode(model_cfg, base_url), base_url, api_key, source=source)
 
 

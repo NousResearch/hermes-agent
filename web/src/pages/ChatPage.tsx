@@ -65,6 +65,7 @@ import {
   shouldTreatInputAsMobileReplacement,
 } from "@/lib/pty-mobile-input";
 import { computeKeyboardInset, shouldPinScroll } from "@/lib/keyboard-inset";
+import { attachXtermTouchScroll } from "@/lib/xterm-touch-scroll";
 import {
   resolvePtyKeyboardShortcut,
   sendPtyShortcutSequence,
@@ -834,6 +835,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       sendComposedText(data);
     });
     term.open(host);
+    const touchScrollDisposable = attachXtermTouchScroll(term, host);
 
     // IME composition guard (fixes #52111).
     //
@@ -1519,6 +1521,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       onDataDisposable?.dispose();
       onResizeDisposable?.dispose();
       onScrollDisposable?.dispose();
+      touchScrollDisposable.dispose();
       mobileInputCleanup?.();
       compositionForwarder.dispose();
       host.removeEventListener("paste", handleBrowserPaste, true);

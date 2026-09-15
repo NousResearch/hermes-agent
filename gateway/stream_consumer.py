@@ -34,6 +34,7 @@ from gateway.stream_consumer_fences import ensure_closed_code_fences
 from gateway.stream_consumer_transport import StreamTransportMixin
 from gateway.stream_consumer_fallback import StreamFallbackMixin
 from gateway.stream_consumer_think import StreamThinkFilterMixin
+from gateway.tool_timer import ToolTimerMixin, _TIMER_TICK, _SPINNER_CHARS, _parse_tool_name  # noqa: F401 (re-exported for callers/tests)
 
 logger = logging.getLogger("gateway.stream_consumer")
 
@@ -96,7 +97,7 @@ class _Tick:
         return not self.got_done and not self.got_segment_break and self.commentary_text is None
 
 
-class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThinkFilterMixin):
+class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThinkFilterMixin, ToolTimerMixin):
     """Async consumer that progressively edits a platform message with streamed tokens.
     Usage: ``agent.stream_delta_callback = consumer.on_delta``; ``create_task(consumer.run())``;
     after the agent finishes ``consumer.finish()`` then ``await task`` for the final edit."""
@@ -181,6 +182,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # to emit a lone "✅"; an EAGER re-seed opened a bubble that got_done MUST close.
         self._awaiting_reopen_after_boundary = False
         self._reopen_seeded_eagerly = False
+        # First-call thinking latch: a turn's FIRST llm.request_started can arrive while run() is still
+        # awaiting the seed round-trip (bubble not open / timer loop not captured). on_llm_thinking sets
+        # this instead of dropping; run() consumes it right after the seed. Cleared by the first delta / got_done.
+        self._pending_thinking = False
+        self._init_tool_timer()  # ToolTimerMixin state (spinner/elapsed animation)
 
     def _reset_message_state(self) -> None:
         """Per-message (segment) state: fresh at construction and after each segment break."""
@@ -198,6 +204,17 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Tool-progress overlay (native only): shown in the bubble until text arrives.
         self._tool_progress_lines: list[str] = []
         self._tool_progress_active: bool = False
+        # Native Layer 2 rotation split accounting (in _accumulated coordinates). When the adapter rotates
+        # to a fresh bubble it reports rotated=True; we set _native_split_offset to the SEAL POINT
+        # (_native_committed_len — the previous frame's length, what the old bubble showed) so every
+        # subsequent frame renders _accumulated[offset:] — the fresh bubble's own text — with no prefix
+        # repeat. _accumulated stays FULL so finalize reconciliation still sees the complete response.
+        self._native_split_offset = 0
+        self._native_committed_len = 0
+        # Set by _compose_frame_content: True when the last composed frame carried a tool-progress overlay
+        # (timer lines), so the adapter can treat it as a transient display layer (is_overlay_frame) that
+        # must NOT become the sealed body of record on a rotation.
+        self._last_composed_had_overlay: bool = False
         self._clear_turn_final_flags()
 
     def _clear_turn_final_flags(self) -> None:
@@ -237,15 +254,32 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         """True only when native streaming is active (gates in-stream tool progress)."""
         return self._use_native_streaming
 
-    def on_tool_progress(self, line: str) -> None:
-        """Thread-safe: overlay a tool-progress line in the native bubble until the next delta."""
-        if line:
-            self._queue.put((_TOOL_PROGRESS, line))
+    @property
+    def supports_tool_timer(self) -> bool:
+        """Animated spinner/elapsed timer (opt-in): native streaming AND the adapter advertising
+        ``SUPPORTS_TOOL_TIMER`` (config ``extra.tool_timer_enabled: true``). Gates only the animated tick
+        machinery, not the base in-bubble progress overlay (see ``accepts_tool_progress``). Public so
+        run.py can gate the timer-only callbacks (on_llm_thinking, tool lifecycle) on it directly."""
+        return self._use_native_streaming and bool(getattr(self.adapter, "SUPPORTS_TOOL_TIMER", False))
+
+    # ``on_tool_progress`` is provided by ToolTimerMixin (richer: adds tool_call_id + timer start).
 
     def _compose_frame_content(self) -> str:
-        """Native frame content: text, with any tool-progress lines below a rule."""
-        progress = "\n".join(self._tool_progress_lines)
-        return "\n\n---\n".join(p for p in (self._accumulated, progress) if p)
+        """Native frame content: body (sliced at the rotation split offset) with any tool-progress lines
+        below a rule. After a Layer 2 rotation the body is ``_accumulated[_native_split_offset:]`` so the
+        fresh bubble carries only text produced since the old bubble was sealed (no prefix repeat); the
+        offset is 0 (whole buffer) until the first rotation. Records ``_last_composed_had_overlay`` so the
+        adapter can treat an overlay frame as a transient display layer (is_overlay_frame)."""
+        tool_lines = self._compose_tool_overlay()  # ToolTimerMixin: active lines + completed history
+        body = self._accumulated[self._native_split_offset:]
+        self._last_composed_had_overlay = bool(tool_lines)
+        if body and tool_lines:
+            return body + "\n\n---\n" + "\n".join(tool_lines)
+        if body:
+            return body
+        if tool_lines:
+            return "\n".join(tool_lines)
+        return ""
 
     def _metadata_for_send(self, *, final: bool = False, expect_edits: bool = False) -> dict | None:
         """Per-send metadata.  ``final`` → notify=True (Mattermost treats notify-worthy sends
@@ -284,6 +318,14 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if self._tool_progress_lines:  # real text overwrites the overlay
             self._tool_progress_lines.clear()
             self._tool_progress_active = False
+        # Real content wins over the thinking animation: drop any pre-seed first-call latch so a signal
+        # that raced content never re-arms thinking after text has started, and stop the tool-timer (text
+        # means the tools are done). _tool_completed_lines persist below the text until finalize.
+        self._pending_thinking = False
+        with self._timer_lock:
+            has_active_tools = bool(self._tool_start_times)
+        if has_active_tools:
+            self._stop_tool_timer()
         self._accumulated += text
         self._stream_ledger += text
 
@@ -314,11 +356,20 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         return ensure_closed_code_fences(self._clean_for_display(text or "")).strip()
 
     def _record_turn_final_payload(self, text: str) -> None:
-        """Record what the user actually saw as this turn's final answer.  On a split ``text``
-        is only the trailing chunk, so the un-truncated ``_stream_ledger`` is recorded — else
-        the gateway sees a mismatch and re-sends an answer the user already received."""
-        if self._turn_split_delivery and self._stream_ledger:
-            text = self._stream_ledger
+        """Record visible turn-final bytes, not the authoritative final's ledger entry.
+
+        Split edit delivery reconstructs its visible payload from ``_stream_ledger``.
+        Native delivery is different: ``_accumulated`` is the cumulative body actually
+        framed across tool boundaries and rotations, while ``_stream_ledger`` may have
+        been replaced by an authoritative final containing unsent augmentation.  Record
+        the framed body; the ledger is only a compatibility fallback for callers that do
+        not retain an accumulator."""
+        ledger = getattr(self, "_stream_ledger", "")
+        if getattr(self, "_use_native_streaming", False):
+            delivered = getattr(self, "_accumulated", "")
+            text = delivered or ledger or text
+        elif getattr(self, "_turn_split_delivery", False) and ledger:
+            text = ledger
         self._delivered_final_text = self._display_payload(text)
 
     def delivered_final_matches(self, final_text: str) -> Optional[bool]:
@@ -331,8 +382,17 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if not target:
             return None
         if self._delivered_final_text is not None:
+            # A native cumulative stream may include a delivered preamble before the
+            # authoritative last-call answer.  The answer is delivered only when its
+            # normalized bytes are the exact visible tail; augmentation absent from that
+            # tail remains a mismatch and is sent by the gateway's corrective path.
+            recorded = self._delivered_final_text.strip()
+            native_tail_match = (
+                getattr(self, "_use_native_streaming", False)
+                and recorded.endswith(target)
+            )
             # A segment break / commentary may have delivered it under another record.
-            return (self._delivered_final_text.strip() == target
+            return (recorded == target or native_tail_match
                     or self.has_delivered_text(final_text))
         if self._turn_split_delivery:
             return False
@@ -441,6 +501,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Also clears the final flags: what we delivered was an interim preamble.  Safe:
         # got_done returns before any reset; run.py reads flags after the task exits.
         self._reset_message_state()
+        # A segment boundary ends the current bubble — stop the tool-timer so a stale tick doesn't leak
+        # into the next segment (the completed-tool history is cleared with it).
+        self._stop_tool_timer()
         # Telegram-shaped drafts: bump draft_id so the next segment animates as a fresh
         # preview below the tool-progress bubbles.  Stream-is-the-message adapters keep
         # ONE stream per turn — a bump there left one frozen message per segment.
@@ -527,15 +590,20 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     async def run(self) -> None:
         """Async task that drains the queue and edits the platform message."""
         self._len_fn, self._safe_limit = self._resolve_length_budget()
-        await self._start_transports()
+        self._tool_timer_accepting_events = True
         try:
+            await self._start_transports()
+            # Capture the event loop for the tool-timer's thread-safe scheduling, then honour any first-call
+            # thinking latch that raced the seed (on_llm_thinking can fire before the bubble was open).
+            self._tool_timer_loop = asyncio.get_event_loop()
+            if self._native_stream_opened:
+                self._consume_pending_thinking()
             while True:
                 # Session reset (/new, /stop): abandon rather than deliver stale deltas.
                 if not self._run_still_current():
                     await self._abandon_native_stream()
                     return
                 tick = self._drain_queue()
-
                 # Boundary produces its own finalize and resets state, so it must
                 # run before got_done/segment_break processing.
                 if tick.approval_boundary is not None:
@@ -547,6 +615,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
                 if tick.got_done:
                     self._flush_think_buffer()
+                    # Turn is ending — stop the tool-timer so the final push/finalize frame composes
+                    # without a stale spinner line and no tick leaks into the next turn.
+                    self._stop_tool_timer()
                     # A bare intentional-silence marker (NO_REPLY / [SILENT]): the
                     # gateway's whole-response filter runs too late for a streamed
                     # preview, so retract it here instead of finalizing.
@@ -587,6 +658,13 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         except Exception as e:
             logger.error("Stream consumer error: %s", e)
         finally:
+            # Close admission first so late worker callbacks cannot repopulate
+            # timer state after this unconditional clear.
+            with self._timer_lock:
+                self._tool_timer_accepting_events = False
+            self._stop_tool_timer()
+            with self._timer_lock:
+                self._tool_timer_loop = None
             self._wake_flush_waiters()
 
     # ── run() collaborators ─────────────────────────────────────────────
@@ -640,6 +718,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             if item is _REOPEN_SEED:
                 tick.got_reopen_seed = True
                 return tick
+            if item is _TIMER_TICK:
+                # Timer tick already rebuilt _tool_progress_lines + set _tool_progress_active (in the tick
+                # callback); this just wakes the drain so _should_edit pushes a frame. Keep draining.
+                continue
             kind = item[0] if isinstance(item, tuple) and item else None
             if kind is _FINAL_TEXT:
                 self._adopt_final_text(item[1])
@@ -669,11 +751,27 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         strictly prefix-extends the ledger."""
         if not (self._accumulated or self._message_id or self._last_sent_text):
             return
-        if not self._turn_split_delivery:
+        if not self._turn_split_delivery and not self._use_native_streaming:
+            # Non-native, non-split: adopt the authoritative final wholesale so the seal
+            # carries post-stream augmentation (verifier footer, completion explainer) the
+            # accumulator never saw.
             final_payload = self._clean_for_display(final_raw)
             if final_payload and final_payload != self._clean_for_display(self._accumulated):
                 self._accumulated = final_raw
                 self._stream_ledger = final_raw
+            return
+        if self._use_native_streaming and not self._turn_split_delivery:
+            # Native streaming, non-split: heal the LEDGER ONLY, never _accumulated. A native
+            # turn with a tool call (or a Layer-2 rotation) leaves _accumulated as the FULL
+            # cumulative body sliced at _native_split_offset per frame; final_raw is only the
+            # LAST API call's text. Adopting it into _accumulated would both shrink the body
+            # below the rotation split offset (fresh bubble loses its tail) and re-render the
+            # full final into the live bubble. But refusing entirely drops the ledger heal too,
+            # leaving _delivered_final_text = tail-only so delivered_final_matches mismatches
+            # and the gateway RESENDS → second bubble. Recording the authoritative final in the
+            # ledger (consumed by _record_turn_final_payload for reconciliation, NOT re-sent as
+            # a frame) fixes the double bubble while _accumulated stays full for the slice.
+            self._stream_ledger = final_raw
             return
         ledger = self._stream_ledger
         if ledger and final_raw.startswith(ledger) and len(final_raw) > len(ledger):
@@ -793,9 +891,14 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     async def _push_update(self, tick: "_Tick") -> None:
         """Send/edit this tick's visible text (cursor-suffixed unless finalizing)."""
         display_text = self._accumulated
+        # Only the pure interim native path pre-composes (offset-sliced body + tool overlay); on got_done /
+        # segment-break / commentary display_text is the FULL _accumulated and must be sliced at the wire.
+        native_interim = tick.is_interim and self._use_native_streaming
+        frame_has_tool_overlay = False
         if tick.is_interim:
             if self._use_native_streaming:
-                display_text = self._compose_frame_content()
+                display_text = self._compose_frame_content()  # already sliced at _native_split_offset
+                frame_has_tool_overlay = self._last_composed_had_overlay
                 if display_text and self.cfg.cursor:
                     display_text += self.cfg.cursor
             else:
@@ -810,7 +913,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # answer.
         tick.update_visible = await self._send_or_edit(
             display_text, finalize=tick.got_done or tick.got_segment_break,
-            is_turn_final=tick.got_done)
+            is_turn_final=tick.got_done,
+            # Pre-composed native interim frames are sent verbatim (_wire_full=False); everything else is
+            # the full buffer and gets sliced at the wire by the split offset.
+            _wire_full=not native_interim, has_tool_overlay=frame_has_tool_overlay)
         self._last_edit_time = time.monotonic()
         # Lines stay in _tool_progress_lines for the next compose.
         self._tool_progress_active = False
@@ -832,12 +938,19 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             logger.debug("Eager reopen seed but no post-answer content — "
                          "closed empty typing bubble (turn=%s)", self._turn_id)
         elif self._use_native_streaming:
-            # Native streams MUST close with finish=true even when empty (tool-only
-            # turns) — placeholder if needed.
+            # Native streams MUST close with finish=true even when empty (tool-only turns) — placeholder
+            # if needed.  _send_or_edit / _native_push OWN the tri-state settlement: they set
+            # _final_response_sent / _final_content_delivered internally (INDETERMINATE keeps
+            # response_sent=True but content_delivered=False).  Do NOT overwrite those flags here — the
+            # bool return is True for INDETERMINATE too (to suppress a duplicate fallback), so re-marking
+            # delivered would leak an indeterminate settlement back to "delivered" and the gateway would
+            # skip its whole-response fallback (the P0 leak).
             if not tick.update_visible:
-                await self._finalize_edit(self._accumulated or "✅", record=False)
+                await self._send_or_edit(self._accumulated or "✅", finalize=True)
             else:
-                self._mark_final_delivered()
+                # The got_done tick already ran the finalize _send_or_edit above and owns the tri-state;
+                # the frame was visible so response_sent is already True. Trust the set flags.
+                self._final_response_sent = True
         elif self._accumulated:
             await self._finalize_edit_path(tick)
 

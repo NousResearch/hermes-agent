@@ -600,3 +600,55 @@ class TestInstallWarmsBytecode:
         cmd = uv_cmds[0]
         assert "--compile-bytecode" in cmd
         assert cmd.index("--compile-bytecode") < cmd.index("zzzfake==1.0")
+
+
+# ---------------------------------------------------------------------------
+# Lock-pinned venv installs (#109826): HERMES_LAZY_LOCK_CONSTRAINTS routes the
+# update flow's uv.lock constraint file into venv-scoped installs.
+# ---------------------------------------------------------------------------
+
+
+class TestLockConstraintsEnv:
+    def _venv_install_cmd(self, monkeypatch, rc=0):
+        """Run a venv-scoped install (no durable target, no uv on PATH → pip tier)
+        and return the single install command the subprocess layer saw."""
+        import subprocess as subprocess_mod
+
+        monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
+        monkeypatch.setattr(ld.shutil, "which", lambda _: None)
+        captured: list[list[str]] = []
+
+        def fake_run(cmd, *a, **k):
+            if "--version" in cmd:
+                return subprocess_mod.CompletedProcess(cmd, 0, "pip 24.0", "")
+            captured.append(list(cmd))
+            return subprocess_mod.CompletedProcess(cmd, rc, "ok", "")
+
+        monkeypatch.setattr(ld.subprocess, "run", fake_run)
+        monkeypatch.setattr(ld, "_activate_target_on_syspath", lambda _t: None)
+        monkeypatch.setattr(ld, "_warm_installed_bytecode", lambda specs, target: None)
+        result = ld._venv_pip_install(("somepkg==1.2.3",))
+        assert result.success is True
+        installs = [c for c in captured if "install" in c and "--version" not in c]
+        assert len(installs) == 1
+        return installs[0]
+
+    def test_env_var_adds_constraint_file_to_venv_install(self, monkeypatch, tmp_path):
+        cfile = tmp_path / "lock-constraints.txt"
+        cfile.write_text("tokenizers==0.22.2\n", encoding="utf-8")
+        monkeypatch.setenv(ld._LOCK_CONSTRAINTS_ENV, str(cfile))
+        cmd = self._venv_install_cmd(monkeypatch)
+        assert "--constraint" in cmd
+        assert cmd[cmd.index("--constraint") + 1] == str(cfile)
+        # The spec stays last: pip requires constraints to precede requirements.
+        assert cmd[-1] == "somepkg==1.2.3"
+
+    def test_env_var_pointing_at_missing_file_installs_unconstrained(self, monkeypatch, tmp_path):
+        monkeypatch.setenv(ld._LOCK_CONSTRAINTS_ENV, str(tmp_path / "nope.txt"))
+        cmd = self._venv_install_cmd(monkeypatch)
+        assert "--constraint" not in cmd
+
+    def test_env_var_blank_installs_unconstrained(self, monkeypatch):
+        monkeypatch.setenv(ld._LOCK_CONSTRAINTS_ENV, "   ")
+        cmd = self._venv_install_cmd(monkeypatch)
+        assert "--constraint" not in cmd

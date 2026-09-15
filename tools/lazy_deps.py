@@ -244,6 +244,10 @@ class _InstallResult:
 # Internal bridge var (set by the Docker image, not user config) redirecting lazy installs from the
 # sealed venv to a writable durable volume.
 _LAZY_TARGET_ENV = "HERMES_LAZY_INSTALL_TARGET"
+# Set by `hermes update` only: path of a pip --constraint file built from the just-pulled uv.lock,
+# so the post-update lazy/tool/memory refreshes keep shared transitive deps on locked versions
+# instead of fresh-resolving them to whatever is newest (#109826).
+_LOCK_CONSTRAINTS_ENV = "HERMES_LAZY_LOCK_CONSTRAINTS"
 # Stamp of the Python X.Y + ABI the target was populated for; a mismatch after an image rebuild
 # wipes the store so stale .so files are never imported.
 _TARGET_STAMP_NAME = ".python-abi"
@@ -506,6 +510,14 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         extra_args += ["--target", str(target)]
         if constraints is not None:
             extra_args += ["--constraint", str(constraints)]
+    else:
+        # Venv-scoped mode is normally last-write-wins (#53272), but the update flow pins the
+        # refreshes to the freshly pulled uv.lock so no undeclared transitive dep (e.g.
+        # tokenizers out from under transformers' cap) drifts to a newer release (#109826).
+        # A missing/unreadable path must not wedge installs: run unconstrained as before.
+        pinned = os.environ.get(_LOCK_CONSTRAINTS_ENV, "").strip()
+        if pinned and Path(pinned).is_file():
+            extra_args += ["--constraint", pinned]
 
     def _finish(r: subprocess.CompletedProcess) -> _InstallResult:
         if r.returncode == 0:

@@ -79,7 +79,8 @@ from hermes_cli.update_cmd_deps import (  # noqa: F401
     _detect_self_loaded_native_modules, _editable_install_is_current, _ensure_uv_for_termux,
     _ensure_venv_pip, _install_psutil_android_compat, _is_android_python, _npm_bin_exists,
     _npm_lockfile_changed, _npm_manifest_paths, _npm_manifests_digest, _path_uid,
-    _rebuild_desktop_after_update, _record_npm_lockfile_hash, _refresh_active_lazy_features,
+    _pinned_lazy_refresh, _rebuild_desktop_after_update, _record_npm_lockfile_hash,
+    _refresh_active_lazy_features,
     _refresh_active_memory_provider_dependencies, _refuse_update_if_venv_foreign_owned,
     _repair_node_deps_on_current_checkout, _restore_active_tool_dependencies,
     _sync_python_dependencies_after_pull, _update_node_dependencies,
@@ -620,8 +621,10 @@ def _repair_venv_on_current_checkout(
         subprocess.run([repair_uv, "venv", "venv"], cwd=_m().PROJECT_ROOT, check=False)
     repair_prefix, repair_env = _pip_install_prefix(repair_uv)
     _m()._install_python_dependencies_with_optional_fallback(repair_prefix, env=repair_env, group="all")
-    _m()._refresh_active_lazy_features(repair_prefix, env=repair_env, features=active_lazy_features)
-    _m()._restore_active_tool_dependencies(active_tool_dependencies, repair_prefix, env=repair_env)
+    with _m()._pinned_lazy_refresh(_m().PROJECT_ROOT) as repair_lock_constraints:
+        _m()._refresh_active_lazy_features(repair_prefix, env=repair_env, features=active_lazy_features)
+        _m()._restore_active_tool_dependencies(
+            active_tool_dependencies, repair_prefix, env=repair_env, constraints=repair_lock_constraints)
     # Core ``.[all]`` install finished. Clear the generic core breadcrumb before the lazy-refresh phase —
     # that phase uses its own marker so a later lazy failure cannot be "healed" by clearing the core marker
     # based on a narrow 7-package import probe (#58004 review).

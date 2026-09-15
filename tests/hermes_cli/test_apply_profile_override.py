@@ -16,6 +16,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 def _run_apply_profile_override(
     tmp_path, monkeypatch, *, hermes_home: str | None, active_profile: str | None,
@@ -139,6 +141,7 @@ class TestSupervisedChildIgnoresStickyProfile:
     """
 
 
+    @pytest.mark.real_platform_home  # unsets HERMES_HOME and asserts REAL native resolution
     def test_non_supervised_run_still_follows_active_profile(
         self, tmp_path, monkeypatch
     ):
@@ -155,6 +158,7 @@ class TestSupervisedChildIgnoresStickyProfile:
         assert result is not None
         assert result.endswith("briefer")
 
+    @pytest.mark.real_platform_home  # unsets HERMES_HOME and asserts REAL native resolution
     def test_supervised_named_profile_flag_still_wins(self, tmp_path, monkeypatch):
         """A supervised named-profile slot passes ``-p <name>`` explicitly;
         that must still resolve (the sentinel guard only skips the sticky

@@ -29,7 +29,7 @@ def _run_git(args, cwd: str, timeout: int = _GIT_TIMEOUT):
     repo the parent sits in and ``worktree add`` runs hooks, so a malicious ``.git/config`` must
     not execute.
     """
-    return subprocess.run(["git", *harden_git_argv(args)], cwd=cwd, capture_output=True,
+    return subprocess.run(["git", *harden_git_argv(args, cwd=cwd)], cwd=cwd, capture_output=True,
                           text=True, encoding="utf-8", errors="replace", timeout=timeout,
                           stdin=subprocess.DEVNULL, env=noninteractive_git_env())
 

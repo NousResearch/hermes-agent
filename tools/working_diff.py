@@ -34,7 +34,7 @@ def _run(args: List[str], cwd: str, timeout: int = _GIT_TIMEOUT):
     fsmonitor/hooks/pager/editor/credential sinks and ``harden_git_argv`` appends ``--no-ext-diff
     --no-textconv`` to diff-rendering subcommands so attribute-scoped drivers can't execute either."""
     proc = subprocess.run(
-        ["git", "-c", "core.quotePath=false", *harden_git_argv(args)],
+        ["git", "-c", "core.quotePath=false", *harden_git_argv(args, cwd=cwd)],
         cwd=cwd, capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
         stdin=subprocess.DEVNULL, env=noninteractive_git_env(),
     )

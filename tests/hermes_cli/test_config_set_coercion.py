@@ -72,6 +72,83 @@ class TestMalformedKey:
         assert exc.value.code == 1
 
 
+class TestConfigSetRoundTripSafety:
+    def test_bracketed_list_index_segment_is_rejected_without_writing(self, tmp_path, monkeypatch):
+        """Bracket syntax is not a config-set path syntax and must not create a literal key."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_path = tmp_path / "config.yaml"
+        original = "custom_providers:\n  - name: existing # keep\n"
+        config_path.write_text(original, encoding="utf-8")
+
+        with pytest.raises(SystemExit) as exc:
+            cfg.set_config_value("custom_providers[0].name", "changed")
+
+        assert exc.value.code == 1
+        assert config_path.read_text(encoding="utf-8") == original
+        import yaml
+        assert "custom_providers[0]" not in yaml.safe_load(original)
+
+    def test_nested_update_preserves_trailing_comment(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "model:\n  default: old-model # selected model\n  provider: openrouter # keep provider\n",
+            encoding="utf-8",
+        )
+
+        cfg.set_config_value("model.default", "new-model")
+
+        saved = config_path.read_text(encoding="utf-8")
+        assert "default: new-model # selected model" in saved
+        assert "provider: openrouter # keep provider" in saved
+
+    def test_normal_nested_and_list_index_updates_still_succeed(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "display:\n  verbose: false\n"
+            "custom_providers:\n"
+            "  - name: first\n    api_key: old\n"
+            "  - name: second\n    api_key: keep\n",
+            encoding="utf-8",
+        )
+
+        cfg.set_config_value("display.verbose", "true")
+        cfg.set_config_value("custom_providers.0.api_key", "new")
+
+        import yaml
+        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert saved["display"]["verbose"] is True
+        assert saved["custom_providers"] == [
+            {"name": "first", "api_key": "new"},
+            {"name": "second", "api_key": "keep"},
+        ]
+
+    def test_list_item_update_preserves_item_and_trailing_comments(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            "fallback_providers:\n"
+            "  - provider: nous  # keep first\n"
+            "  - provider: other  # keep second\n"
+            "# trailing\n",
+            encoding="utf-8",
+        )
+
+        cfg.set_config_value("fallback_providers.1.provider", "changed")
+
+        saved = config_path.read_text(encoding="utf-8")
+        assert "provider: nous  # keep first" in saved
+        assert "provider: changed" in saved
+        assert "# keep second" in saved
+        assert "# trailing" in saved
+        import yaml
+        assert yaml.safe_load(saved)["fallback_providers"] == [
+            {"provider": "nous"},
+            {"provider": "changed"},
+        ]
+
+
 class TestStringTypedGuardPreserved:
     def test_enum_off_stays_string(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

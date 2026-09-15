@@ -459,22 +459,39 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict) -> None:
     require_readable_config_before_write(path)
     yaml_rt, existing = _roundtrip_load(path)
 
-    def _merge(dst: CommentedMap, src: dict) -> None:
-        for key, value in src.items():
-            if isinstance(value, dict):
+    def _merge(dst, src) -> None:
+        from ruamel.yaml.comments import CommentedSeq
+
+        if isinstance(src, dict):
+            for key, value in src.items():
                 current = dst.get(key)
-                if not isinstance(current, CommentedMap):
-                    current = CommentedMap()
-                    dst[key] = current
-                _merge(current, value)
-            elif isinstance(value, str) and value.lower() in _YAML11_AMBIGUOUS_WORDS:
-                dst[key] = DoubleQuotedScalarString(value)
-            else:
-                dst[key] = value
-        # Keys missing from src are deleted: ``cfg.pop("custom_prompt")`` then save must remove
-        # the key from disk ("explicit absence" semantics of the old _save_cfg pattern).
-        for key in [k for k in dst if k not in src]:
-            del dst[key]
+                if isinstance(value, dict):
+                    if not isinstance(current, CommentedMap):
+                        current = CommentedMap()
+                        dst[key] = current
+                    _merge(current, value)
+                elif isinstance(value, list) and isinstance(current, (list, CommentedSeq)) and len(current) == len(value):
+                    _merge(current, value)
+                elif isinstance(value, str) and value.lower() in _YAML11_AMBIGUOUS_WORDS:
+                    dst[key] = DoubleQuotedScalarString(value)
+                else:
+                    dst[key] = value
+            # Keys missing from src are deleted: ``cfg.pop("custom_prompt")`` then save must remove
+            # the key from disk ("explicit absence" semantics of the old _save_cfg pattern).
+            for key in [k for k in dst if k not in src]:
+                del dst[key]
+            return
+        if isinstance(src, list):
+            for index, value in enumerate(src):
+                current = dst[index]
+                if isinstance(value, dict) and isinstance(current, CommentedMap):
+                    _merge(current, value)
+                elif isinstance(value, list) and isinstance(current, (list, CommentedSeq)) and len(current) == len(value):
+                    _merge(current, value)
+                elif isinstance(value, str) and value.lower() in _YAML11_AMBIGUOUS_WORDS:
+                    dst[index] = DoubleQuotedScalarString(value)
+                elif current != value:
+                    dst[index] = value
 
     _merge(existing, new_state)
     _roundtrip_dump(path, yaml_rt, existing)

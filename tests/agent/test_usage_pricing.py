@@ -962,3 +962,166 @@ def test_flat_entries_unaffected_by_tier_machinery():
     )
     # 250k * $0.25/M + 10k * $1.50/M
     assert result.amount_usd == Decimal("0.0775")
+
+
+# ---------------------------------------------------------------------------
+# Provider-reported actual cost (e.g. Nous portal cost_details.upstream_inference_cost)
+# ---------------------------------------------------------------------------
+
+
+class TestProviderReportedCost:
+    """When the provider reports usage.cost_details.upstream_inference_cost,
+    Hermes should prefer it over the rate-table estimate."""
+
+    def test_normalize_extracts_upstream_inference_cost(self):
+        """normalize_usage pulls upstream_inference_cost into actual_cost_usd."""
+        usage = SimpleNamespace(
+            input_tokens=144043,
+            output_tokens=500,
+            cost_details=SimpleNamespace(upstream_inference_cost=Decimal("0.06338552")),
+        )
+        result = normalize_usage(usage, provider="nous", api_mode="chat_completions")
+        assert result.actual_cost_usd == Decimal("0.06338552")
+
+    def test_estimate_prefers_actual_over_rate_table(self):
+        """estimate_usage_cost returns status=actual when upstream cost present."""
+        usage = CanonicalUsage(
+            input_tokens=144043, output_tokens=500,
+            actual_cost_usd=Decimal("0.06338552"),
+        )
+        result = estimate_usage_cost("deepseek/deepseek-v4-flash-0731", usage, provider="nous")
+        assert result.status == "actual"
+        assert result.source == "provider_cost_api"
+        assert result.amount_usd == Decimal("0.06338552")
+        assert "cost_details.upstream_inference_cost" in result.notes
+
+    def test_dict_shaped_cost_details(self):
+        """Dict-shaped usage.cost_details is also handled."""
+        usage = SimpleNamespace(
+            input_tokens=1000,
+            output_tokens=500,
+            cost_details={"upstream_inference_cost": "0.01234"},
+        )
+        result = normalize_usage(usage, provider="nous", api_mode="chat_completions")
+        assert result.actual_cost_usd == Decimal("0.01234")
+
+    def test_missing_cost_details_falls_back_to_rate_table(self):
+        """When no upstream cost, rate-table estimate is used as before."""
+        usage = CanonicalUsage(input_tokens=1000, output_tokens=500)
+        result = estimate_usage_cost("gemini-2.5-pro", usage, provider="google")
+        # Rate-table path: source is official_docs_snapshot or similar
+        assert result.status == "estimated"
+        assert result.amount_usd is not None
+
+    def test_actual_cost_persists_to_actual_not_estimated(self, tmp_path, monkeypatch):
+        """When provider reports actual cost, it should persist to actual_cost_usd, not estimated_cost_usd."""
+        import sqlite3
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_state import SessionDB
+        from run_agent import AIAgent
+        from agent import turn_usage
+        from types import SimpleNamespace
+
+        # Create a real SessionDB and bind it to the agent
+        db = SessionDB(db_path=tmp_path / "state.db")
+
+        a = AIAgent(
+            api_key="jwt",
+            base_url="https://inference-api.nousresearch.com/v1",
+            provider="nous",
+            api_mode="chat_completions",
+            model="deepseek/deepseek-v4-flash-0731",
+            session_id="test-actual-persist",
+            platform="cli",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            save_trajectories=False,
+            enabled_toolsets=["file"],
+        )
+        a._session_db = db
+        try:
+            # Mock response with upstream_inference_cost (Nous portal format)
+            resp = SimpleNamespace(
+                usage=SimpleNamespace(
+                    input_tokens=144043,
+                    output_tokens=500,
+                    completion_tokens=500,
+                    total_tokens=144543,
+                    prompt_tokens=144043,
+                    prompt_tokens_details=None,
+                    completion_tokens_details=None,
+                    cost_details=SimpleNamespace(upstream_inference_cost=0.06338552),
+                ),
+                id="test-call-1",
+                provider="Nous",
+                model="deepseek/deepseek-v4-flash-0731",
+            )
+            turn_usage.record_response_usage(
+                a, resp,
+                messages=[{"role": "user", "content": "hi"}],
+                api_call_count=1,
+                api_duration=0.5,
+                compression_attempts=0,
+                max_compression_attempts=3,
+            )
+            # Force drain the token queue
+            db._drain_token_queue_at_exit()
+
+            # Check the session row via a direct sqlite3 connection
+            conn = sqlite3.connect(str(tmp_path / "state.db"))
+            try:
+                row = conn.execute(
+                    "SELECT actual_cost_usd, estimated_cost_usd, cost_status FROM sessions WHERE id = ?",
+                    ("test-actual-persist",)
+                ).fetchone()
+            finally:
+                conn.close()
+            assert row is not None
+            actual = row[0]
+            estimated = row[1]
+            status = row[2]
+
+            # The actual_cost_usd should have the provider-reported value
+            assert actual is not None and abs(float(actual) - 0.06338552) < 1e-8, (
+                f"Expected actual_cost_usd=0.06338552, got {actual}"
+            )
+            # estimated_cost_usd should NOT have the provider-reported value
+            # (it stays 0 because the delta went to actual, not estimated)
+            assert estimated is None or float(estimated) == 0, (
+                f"Expected estimated_cost_usd=0 or None, got {estimated}"
+            )
+            assert status == "actual", f"Expected cost_status='actual', got '{status}'"
+        finally:
+            a.close()
+
+    def test_invalid_upstream_cost_string_falls_back_to_rate_table(self):
+        """Non-numeric upstream_inference_cost string doesn't crash — falls back."""
+        usage = SimpleNamespace(
+            input_tokens=1000,
+            output_tokens=500,
+            cost_details={"upstream_inference_cost": "not-a-number"},
+        )
+        # Should not raise — should gracefully fall back to rate-table estimate
+        result = normalize_usage(usage, provider="nous", api_mode="chat_completions")
+        assert result.actual_cost_usd is None
+
+    def test_nan_upstream_cost_ignored(self):
+        """NaN/Infinity upstream_inference_cost is ignored (not finite)."""
+        usage = SimpleNamespace(
+            input_tokens=1000,
+            output_tokens=500,
+            cost_details={"upstream_inference_cost": float("nan")},
+        )
+        result = normalize_usage(usage, provider="nous", api_mode="chat_completions")
+        assert result.actual_cost_usd is None
+
+    def test_infinity_upstream_cost_ignored(self):
+        """Infinity upstream_inference_cost is ignored (not finite)."""
+        usage = SimpleNamespace(
+            input_tokens=1000,
+            output_tokens=500,
+            cost_details={"upstream_inference_cost": float("inf")},
+        )
+        result = normalize_usage(usage, provider="nous", api_mode="chat_completions")
+        assert result.actual_cost_usd is None

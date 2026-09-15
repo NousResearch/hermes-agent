@@ -1,8 +1,6 @@
 """display.bell_on_prompt / bell_on_complete also drive OSC 9 + Warp OSC 777 via _ring_bell."""
 
-import io
 import json
-import sys
 
 import pytest
 
@@ -22,7 +20,7 @@ def _ring(monkeypatch, *, flag_on, env, **kwargs):
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     written = []
-    monkeypatch.setattr(terminal_notify, "_write_tty", written.append)
+    monkeypatch.setattr(terminal_notify, "write_tty", written.append)
     cli = HermesCLI.__new__(HermesCLI)
     cli.bell_on_prompt = flag_on
     cli.session_id = "sess-1"
@@ -32,7 +30,7 @@ def _ring(monkeypatch, *, flag_on, env, **kwargs):
 
 def test_osc9_body_emitted_and_sanitized_only_when_flag_on(monkeypatch):
     out = _ring(monkeypatch, flag_on=True, env={}, context="approval\x1b\x07\x00\x7f!")
-    assert out == "\x1b]9;Hermes: approval!\x07"
+    assert out == "\a\x1b]9;Hermes: approval!\x07"
     assert _ring(monkeypatch, flag_on=False, env={}, context="approval") == ""
 
 
@@ -55,14 +53,11 @@ def test_warp_osc777_only_under_supported_warp_build(monkeypatch):
 
 
 def test_running_app_gets_bell_and_osc9_on_its_loop_never_a_second_tty_writer(monkeypatch):
-    """With the prompt_toolkit app live, the notification must reach the tty through the app's
-    output ON THE APP LOOP. A parallel /dev/tty or sys.stdout write from the agent thread splices
-    into an in-flight kitty pet frame and the terminal paints the frame's base64 as text."""
+    """With the prompt_toolkit app live, the bell + notification must reach the tty through the
+    app's output ON THE APP LOOP, never via a second writer from the calling thread."""
     for key in _WARP_OK:
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr(terminal_notify, "_write_tty", lambda seq: pytest.fail(f"stray tty write: {seq!r}"))
-    fake_stdout = io.StringIO()
-    monkeypatch.setattr(sys, "stdout", fake_stdout)
+    monkeypatch.setattr(terminal_notify, "write_tty", lambda seq: pytest.fail(f"stray tty write: {seq!r}"))
 
     class _Output:
         raw = []
@@ -90,7 +85,7 @@ def test_running_app_gets_bell_and_osc9_on_its_loop_never_a_second_tty_writer(mo
     cli._app = _App()
     cli._ring_bell(context="turn complete")
     # Nothing touched the tty from the calling thread; the write is queued for the loop.
-    assert _Output.raw == [] and fake_stdout.getvalue() == ""
+    assert _Output.raw == []
     assert len(_Loop.queued) == 1
     _Loop.queued[0]()
     assert _Output.raw == ["\a\x1b]9;Hermes: turn complete\x07", "<flush>"]

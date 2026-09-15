@@ -547,33 +547,32 @@ class CLIModalMixin:
         or ``display.bell_on_complete`` (end of turn); works over SSH. The same flag also emits the
         OSC 9 / Warp OSC 777 desktop notification; ``context`` is the short notification body."""
         flag = "bell_on_prompt" if prompt else "bell_on_complete"
-        if not getattr(self, flag, False):
+        if not getattr(self, flag, False) or getattr(self, "_terminal_io_broken", False):
             return
-        from hermes_cli.terminal_notify import notification_sequence, notify as _terminal_notify
+        from hermes_cli.cli_terminal_mixin import _run_on_app_loop, _write_terminal_sequence
+        from hermes_cli.terminal_notify import notification_sequence, write_tty
         body = context or ("input needed" if prompt else "turn complete")
-        session_id = getattr(self, "session_id", "") or ""
-        app = getattr(self, "_app", None)
-        if app is not None and getattr(app, "_is_running", False):
-            # Agent thread. The loop thread may be mid-write of a 12 KB kitty pet frame that the tty
-            # drains ~1 KB at a time; a second writer on the same tty (/dev/tty, sys.stdout) splices
-            # in, the foreign ESC aborts the APC, and the terminal paints the rest of the payload as
-            # base64 at the input cursor. Serialize behind the renderer instead.
-            from hermes_cli.cli_terminal_mixin import _run_on_app_loop, _write_terminal_sequence
-            try:
-                seq = "\a" + notification_sequence(body, prompt=prompt, session_id=session_id, detail=detail)
-                _run_on_app_loop(app, lambda: _write_terminal_sequence(app, seq))
-            except Exception:
-                pass
+        try:
+            seq = "\a" + notification_sequence(
+                body, prompt=prompt, session_id=getattr(self, "session_id", "") or "", detail=detail)
+        except Exception:
             return
-        try:
-            sys.stdout.write("\a")
-            sys.stdout.flush()
-        except Exception:
-            pass
-        try:
-            _terminal_notify(body, prompt=prompt, session_id=session_id, detail=detail)
-        except Exception:
-            pass
+        app = getattr(self, "_app", None)
+        if app is None or not getattr(app, "_is_running", False):
+            write_tty(seq)
+            return
+
+        # Agent thread. The loop thread may be mid-write of a 12 KB kitty pet frame that the tty
+        # drains ~1 KB at a time; a second writer on the same tty (/dev/tty, sys.stdout) splices
+        # in, the foreign ESC aborts the APC, and the terminal paints the rest of the payload as
+        # base64 at the input cursor. Serialize behind the renderer instead.
+        def _emit() -> None:
+            try:
+                _write_terminal_sequence(app, seq)
+            except (OSError, ValueError):
+                pass  # dead tty: same fail-quiet as _pet_flush_kitty_frame
+
+        _run_on_app_loop(app, _emit)
 
     def _clarify_teardown(self) -> None:
         self._clarify_state = None

@@ -2438,6 +2438,57 @@ export interface WakeFeedResult {
   reason?: string | null
   fed: boolean
 }
+export interface VoiceGrokStatusParams {
+  profile?: string | null
+}
+/** ``tools/voice_live_grok.py::resolve_grok_live_status`` — the non-secret readiness verdict (never the credential). ``available`` means a credential resolves per SPEC §8, not that the websocket will succeed. */
+export interface VoiceGrokStatusResult {
+  mode: string
+  available: boolean
+  reason?: string | null
+  model: string
+  voice: string
+}
+export interface VoiceGrokStartParams {
+  session_id: string
+  profile?: string | null
+}
+/** Fail-fast answer only: ``started: false`` + ``reason`` when no credential resolves. The connect handshake is async — progress arrives as ``voice.grok.state`` events. */
+export interface VoiceGrokStartResult {
+  started: boolean
+  reason?: string | null
+  state?: string | null
+  reused?: boolean | null
+}
+export interface VoiceGrokStopParams {
+  session_id: string
+  profile?: string | null
+}
+export interface VoiceGrokStopResult {
+  stopped: boolean
+  reason?: string | null
+}
+/** One ~100ms upstream mic chunk (PCM16 mono 24kHz, base64) to relay to xAI. */
+export interface VoiceGrokAudioParams {
+  session_id: string
+  pcm_b64: string
+  seq?: number | null
+  profile?: string | null
+}
+/** ``dropped: true`` = upstream backpressure (the bridge never queues stale live mic audio; SPEC §4.1). */
+export interface VoiceGrokAudioResult {
+  accepted: boolean
+  dropped?: boolean | null
+  reason?: string | null
+}
+export interface VoiceGrokMuteParams {
+  session_id: string
+  muted: boolean
+  profile?: string | null
+}
+export interface VoiceGrokMuteResult {
+  muted: boolean
+}
 export interface SessionCreateParams {
   profile?: string | null
   cols?: number | null
@@ -4173,6 +4224,32 @@ export interface RequestCancelPayload {
   method: string
   reason: string
 }
+/** ``voice_live_grok_bridge._relay_downstream`` — one ~100ms of Grok's spoken reply for renderer playback. Never dropped server-side (a dropped reply chunk is an audible glitch). */
+export interface VoiceGrokAudioPayload {
+  session_id: string
+  pcm_b64: string
+  seq: number
+}
+/** ``voice_live_grok_bridge._emit_transcript`` — mirrors xAI ``conversation.item.input_audio_transcription.*`` / ``response.output_audio_transcript.done`` for the transcript UI (same shape gpt-live's ``LiveTranscriptFragment`` carries). */
+export interface VoiceGrokTranscriptPayload {
+  session_id: string
+  speaker: string
+  text: string
+  item_id?: string | null
+}
+/** ``voice_live_grok_bridge._set_state`` — server-driven conversation status (the ws lives on the backend, so unlike gpt-live the renderer cannot derive this locally). */
+export interface VoiceGrokStatePayload {
+  session_id: string
+  state: VoiceGrokState
+  reason?: string | null
+}
+export type VoiceGrokState = 'connecting' | 'listening' | 'speaking' | 'thinking' | 'reconnecting' | 'degraded' | 'error' | 'idle'
+/** ``voice_live_grok_bridge._flush_delegation`` — a settled spoken utterance that is a real request (SPEC §5). The renderer renders it like gpt-live's delegation; the Hermes turn it becomes rides ``prompt.submit`` (surface ``voice-live``). */
+export interface VoiceGrokDelegationPayload {
+  session_id: string
+  delegation_id: string
+  context: string
+}
 
 // ── Client→server methods ──
 export interface RpcMethods {
@@ -4592,6 +4669,16 @@ export interface RpcMethods {
   'vault.unlock': { params: VaultUnlockParams; result: VaultUnlockResult }
   /** Best known verification evidence for a cwd/session; read-only, never runs checks. */
   'verification.status': { params: VerificationStatusParams; result: VerificationStatusResult }
+  /** Relay one ~100ms base64 PCM16 mic chunk to the backend-held xAI session. */
+  'voice.grok.audio': { params: VoiceGrokAudioParams; result: VoiceGrokAudioResult }
+  /** Explicit mic mute, independent of the server-side AEC half-duplex gate (SPEC §7). */
+  'voice.grok.mute': { params: VoiceGrokMuteParams; result: VoiceGrokMuteResult }
+  /** Open (or reuse) the backend xAI realtime session; pauses the wake-word mic lease. */
+  'voice.grok.start': { params: VoiceGrokStartParams; result: VoiceGrokStartResult }
+  /** Grok-Live availability verdict (mirrors GET /api/audio/voice-live-grok/status). */
+  'voice.grok.status': { params: VoiceGrokStatusParams; result: VoiceGrokStatusResult }
+  /** Close the xAI session cleanly (cancel any pending reconnect) and resume wake-word. */
+  'voice.grok.stop': { params: VoiceGrokStopParams; result: VoiceGrokStopResult }
   /** VAD-bounded push-to-talk; the transcript arrives as a voice.transcript event. */
   'voice.record': { params: VoiceRecordParams; result: VoiceRecordResult }
   /** /voice parity: report, flip voice mode on/off, or toggle speech output. */
@@ -4821,6 +4908,11 @@ export const RPC_METHODS = [
   'vault.sources',
   'vault.unlock',
   'verification.status',
+  'voice.grok.audio',
+  'voice.grok.mute',
+  'voice.grok.start',
+  'voice.grok.status',
+  'voice.grok.stop',
   'voice.record',
   'voice.toggle',
   'voice.tts',
@@ -5007,6 +5099,14 @@ export interface BackendGatewayEventMap {
   'tool.output_risk': ToolOutputRiskPayload
   /** A tool call began (stable id + full args). */
   'tool.start': ToolStartPayload
+  /** One ~100ms of Grok's spoken reply audio for playback (base64 PCM16 24kHz). */
+  'voice.grok.audio': VoiceGrokAudioPayload
+  /** A settled spoken utterance delegated to Hermes as a normal turn. */
+  'voice.grok.delegation': VoiceGrokDelegationPayload
+  /** Grok-Live conversation state transition (server-driven). */
+  'voice.grok.state': VoiceGrokStatePayload
+  /** A user/assistant transcript fragment from the xAI realtime session. */
+  'voice.grok.transcript': VoiceGrokTranscriptPayload
   /** Barge-in: the spoken interjection interrupted the turn; no payload. */
   'voice.interrupted': Record<string, never>
   /** Voice recorder state changed. */
@@ -5083,6 +5183,10 @@ export const GATEWAY_EVENT_TYPES = [
   'tool.generating',
   'tool.output_risk',
   'tool.start',
+  'voice.grok.audio',
+  'voice.grok.delegation',
+  'voice.grok.state',
+  'voice.grok.transcript',
   'voice.interrupted',
   'voice.status',
   'voice.transcript',

@@ -73,14 +73,8 @@ class MyOrganism(Organism):
     #   sql_query: str
     #   code_block: str
     artifact: str
-
-    def run(self, *inputs) -> str:
-        """Exercise the organism on a test input. Return whatever your
-        evaluator wants to score."""
-        # TODO: implement. For prompt evolution this typically calls _prompt_llm
-        # with the artifact rendered against the input. For regex/SQL it would
-        # call `re.findall(self.artifact, input)` / execute SQL / etc.
-        raise NotImplementedError
+    # Populate at the proposer boundary. An evaluator may only read evidence.
+    observed_outputs: dict[str, str] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -107,14 +101,14 @@ class MyEvaluator(Evaluator[MyOrganism, EvaluationResult, MyFailureCase]):
         train_fails: list[MyFailureCase] = []
         hold_fails: list[MyFailureCase] = []
         for i, (inp, expected) in enumerate(self.TRAINABLE):
-            actual = organism.run(inp)
+            actual = organism.observed_outputs.get(inp, "<MISSING_EVIDENCE>")
             if actual != expected:
                 train_fails.append(MyFailureCase(
                     input=inp, expected=expected, actual=actual,
                     data_point_id=f"trainable_{i}",
                 ))
         for i, (inp, expected) in enumerate(self.HOLDOUT):
-            actual = organism.run(inp)
+            actual = organism.observed_outputs.get(inp, "<MISSING_EVIDENCE>")
             if actual != expected:
                 hold_fails.append(MyFailureCase(
                     input=inp, expected=expected, actual=actual,
@@ -182,7 +176,8 @@ Put the new version in the LAST triple-backtick block of your response.
             first_line, rest = new_artifact.split("\n", 1)
             if first_line and not first_line.startswith(" ") and len(first_line) < 20:
                 new_artifact = rest
-        return [MyOrganism(artifact=new_artifact)]
+        # TODO: make model/network calls here, then attach observed_outputs.
+        return [MyOrganism(artifact=new_artifact, observed_outputs={})]
 
 
 # ---------------------------------------------------------------------------

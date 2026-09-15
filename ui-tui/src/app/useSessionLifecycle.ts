@@ -25,6 +25,7 @@ import { scheduleResumeScrollToBottom } from './sessionResumeView.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
+import { describeCredentialWarning } from './userMessages.js'
 
 export { refreshSessionView, scheduleResumeScrollToBottom } from './sessionResumeView.js'
 
@@ -226,7 +227,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       }
 
       if (info?.credential_warning) {
-        sys(`warning: ${info.credential_warning}`)
+        sys(`warning: ${describeCredentialWarning(info.credential_warning)}`)
       }
 
       if (info?.config_warning) {

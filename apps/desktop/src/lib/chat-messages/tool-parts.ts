@@ -88,9 +88,9 @@ function toolPayloadMatchValues(payload: GatewayEventPayload | undefined): strin
   // `clarify.request` (a fresh request id) must correlate with the `tool.start`
   // row (the model's tool_call_id) so the two ids don't produce a duplicate
   // clarify card — same correlation ClarifyToolPending uses for request↔args.
-  // `server` is setup_mcp's identifying arg, for the identical reason.
+  // A connection request carries the model's tool_call_id itself, so it needs no arg match.
   const query =
-    firstStringField(payloadArgs, ['search_term', 'query', 'question', 'server', 'command', 'code', 'path']) ||
+    firstStringField(payloadArgs, ['search_term', 'query', 'question', 'command', 'code', 'path']) ||
     batchClarifyMatchValue(payloadArgs.questions)
 
   const context = typeof payload?.context === 'string' ? payload.context.trim() : ''
@@ -381,7 +381,8 @@ interface PendingClarifyLocation {
 
 function findPendingClarifyLocation(
   messages: ChatMessage[],
-  payload: GatewayEventPayload
+  payload: GatewayEventPayload,
+  toolName = 'clarify'
 ): PendingClarifyLocation | null {
   const stableId = toolId(payload)
   const matchValues = toolPayloadMatchValues(payload)
@@ -394,7 +395,7 @@ function findPendingClarifyLocation(
     for (let partIndex = message.parts.length - 1; partIndex >= 0; partIndex -= 1) {
       const part = message.parts[partIndex]
 
-      if (part.type !== 'tool-call' || part.toolName !== 'clarify' || part.result !== undefined) {
+      if (part.type !== 'tool-call' || part.toolName !== toolName || part.result !== undefined) {
         continue
       }
 
@@ -539,8 +540,17 @@ export function restorePendingClarifyToolCall(
   payload: GatewayEventPayload,
   occurredAt = Date.now() / 1000
 ): PendingClarifyProjection {
-  const clarifyPayload = { ...payload, name: 'clarify' }
-  const location = findPendingClarifyLocation(messages, clarifyPayload)
+  return restorePendingBlockingToolCall(messages, { ...payload, name: 'clarify' }, occurredAt)
+}
+
+/** Restore a blocking tool row (clarify, connection card) from a resume snapshot: mark the
+ *  existing pending part's message live, or append a row when the transcript has none. */
+export function restorePendingBlockingToolCall(
+  messages: ChatMessage[],
+  clarifyPayload: GatewayEventPayload & { name: string },
+  occurredAt = Date.now() / 1000
+): PendingClarifyProjection {
+  const location = findPendingClarifyLocation(messages, clarifyPayload, clarifyPayload.name)
 
   if (location) {
     const message = messages[location.messageIndex]
@@ -582,7 +592,7 @@ export function restorePendingClarifyToolCall(
     return { messages: next, streamId: tail.id }
   }
 
-  const streamId = nextLiveToolId('clarify-message')
+  const streamId = nextLiveToolId(`${clarifyPayload.name}-message`)
 
   return {
     messages: [

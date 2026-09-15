@@ -95,7 +95,7 @@ def resolve_active_host() -> str:
 
 def _read_config(path: Path) -> dict:
     """Parse a honcho.json; {} when absent (parse/OS errors propagate)."""
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    return json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
 
 
 def resolve_global_config_path() -> Path:

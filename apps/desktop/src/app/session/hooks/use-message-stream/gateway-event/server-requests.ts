@@ -7,7 +7,6 @@ import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
 import type { TourAction, TourStep } from '@/lib/tour'
 import { normalizeChoices, normalizeQuestions, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
 import type { ScopedServerRequest } from '@/store/gateway'
-import { setMcpSetupRequest } from '@/store/mcp-setup'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import {
   receiveApprovalRequest,
@@ -209,7 +208,11 @@ const approval: Handler = ctx => {
 
 const sudo: Handler = ctx => {
   rememberServerRequest(ctx.request)
-  setSudoRequest({ requestId: ctx.request.id, sessionId: ctx.sessionId || null })
+  setSudoRequest({
+    command: str(ctx.request.params.command),
+    requestId: ctx.request.id,
+    sessionId: ctx.sessionId || null
+  })
   markNeedsInput(ctx)
   notifyInput(ctx, translateNow('notifications.native.inputBody'))
 }
@@ -255,35 +258,6 @@ const vaultUnlockPrompt: Handler = ctx => {
   setVaultUnlockRequest({ backend, displayName, requestId: ctx.request.id, sessionId: ctx.sessionId || null })
   markNeedsInput(ctx)
   notifyInput(ctx, translateNow('prompts.vaultUnlockTitle', displayName))
-}
-
-const mcpSetup: Handler = ctx => {
-  // setup_mcp tool (desktop GUI): the agent proposed an MCP server. Park the
-  // request per-session (like clarify) and upsert a stable pending tool row so
-  // the inline consent card has somewhere to render even when the tool.start
-  // event was missed (stream reconnect / hydration race).
-  const { deps, request, sessionId } = ctx
-  const p = request.params
-  const server = str(p.server)
-  const rawAction = str(p.action) || 'install'
-  const action = rawAction === 'enable' || rawAction === 'authorize' ? rawAction : 'install'
-  const reason = str(p.reason)
-
-  if (!server) {
-    request.respond({ value: '' })
-
-    return
-  }
-
-  rememberServerRequest(request)
-  setMcpSetupRequest({ action, reason, requestId: request.id, server, sessionId: sessionId || null })
-
-  if (sessionId) {
-    deps.upsertToolCall(sessionId, { args: { action, reason, server }, name: 'setup_mcp', tool_id: request.id }, 'running')
-  }
-
-  markNeedsInput(ctx)
-  notifyInput(ctx, reason || server)
 }
 
 // ── Desktop-surface bridges (answered immediately, no card) ─────────────────
@@ -401,7 +375,6 @@ const tour: Handler = ({ isActiveSession, request, sessionId }) => {
 export const SERVER_REQUEST_HANDLERS: Record<string, Handler> = {
   approval,
   clarify,
-  'mcp.setup': mcpSetup,
   'preview.act': previewAct,
   'preview.read': previewRead,
   secret,

@@ -19,7 +19,7 @@ class _FakeDB:
 
 
 def _export(monkeypatch, *argv):
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda: _FakeDB())
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda *args, **kwargs: _FakeDB())
     monkeypatch.setattr(sys, "argv", ["hermes", "sessions", "export", "--session-id", "sess", *argv])
     main_mod.main()
 

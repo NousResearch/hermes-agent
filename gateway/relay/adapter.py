@@ -24,6 +24,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult,
 )
+from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.relay.descriptor import CapabilityDescriptor
 from gateway.relay.egress import (
@@ -1991,7 +1992,7 @@ class RelayAdapter(BasePlatformAdapter):
 
     _PROMPT_UNAVAILABLE = SendResult(success=False, error="relay prompt op unavailable")
 
-    _EA_HEADER = "⚠️ **Command Approval Required**\n\n"
+    _EA_HEADER = f"⚠️ **{EA_HEADER_TEXT}**\n\n"
     _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
     _EA_CMD_BUDGET = 1500
 

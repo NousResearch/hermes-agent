@@ -1162,9 +1162,12 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     if not _any_phrase_group(error_lower, _PARSEABLE_OUTPUT_CAP_SIGNALS):
         return None
     # Direct cap figures, most specific first: "exceeds model's maximum output tokens (65536)", "Range of
-    # max_tokens should be [1, 65536]" (upper bound is the cap), Anthropic "= available_tokens: 10000", last "= N".
+    # max_tokens should be [1, 65536]" (upper bound is the cap), Anthropic "max_tokens: 100000 > 64000, which
+    # is the maximum allowed number of output tokens" (the ceiling is the right-hand side), Anthropic
+    # "= available_tokens: 10000", last "= N".
     for pattern in (
         r'exceeds model(?:\'s)? maximum output tokens\s*\(?\s*(\d+)\s*\)?',
+        r'max_tokens\s*:\s*\d+\s*>\s*(\d+)\s*,?\s*which is the maximum allowed number of output tokens',
         r'range of max_tokens should be\s*\[\s*\d+\s*,\s*(\d+)\s*\]',
         r'available_tokens[:\s]+(\d+)',
         r'available\s+tokens[:\s]+(\d+)',
@@ -1208,12 +1211,13 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
 
 
 # Each entry is a phrase group; the group matches when ALL phrases are present.
-# DashScope, Anthropic, OpenRouter/Nous, LM Studio/llama.cpp, generic "should be <= N", OpenAI-compat relays.
+# DashScope, Anthropic (available_tokens / "maximum allowed number of output tokens"), OpenRouter/Nous,
+# LM Studio/llama.cpp, generic "should be <= N", OpenAI-compat relays.
 _OUTPUT_CAP_SIGNALS = (
     ("range of max_tokens should be",), ("available_tokens",), ("available tokens",),
     ("in the output", "maximum context length"), ("requested", "output tokens"),
     ("should be",), ("less than or equal",), ("must be",), ("exceeds model", "maximum output tokens"),
-    ("output limit",),
+    ("output limit",), ("maximum allowed number of output tokens",),
 )
 _INPUT_OVERFLOW_SIGNALS = (
     "prompt is too long", "prompt too long", "input is too long", "input token",
@@ -1228,7 +1232,7 @@ _PARSEABLE_OUTPUT_CAP_SIGNALS = (
     ("in the output", "maximum context length"),
     ("maximum context length", "requested", "output tokens"),
     ("range of max_tokens should be",), ("exceeds model", "maximum output tokens"),
-    ("output limit",),
+    ("output limit",), ("max_tokens", "maximum allowed number of output tokens"),
 )
 
 

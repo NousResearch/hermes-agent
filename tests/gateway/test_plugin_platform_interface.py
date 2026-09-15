@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PLATFORMS_DIR = PROJECT_ROOT / "plugins" / "platforms"
 
 
@@ -33,6 +33,11 @@ def _discover_platform_plugins() -> list[str]:
 _PLATFORM_NAMES = _discover_platform_plugins()
 
 
+def test_discovers_bundled_platforms():
+    """Guard against silently skipping the contract suite due to a bad root."""
+    assert _PLATFORM_NAMES, f"No platform plugins found under {PLATFORMS_DIR}"
+
+
 @pytest.fixture
 def clean_registry():
     """Yield with a clean platform registry, restoring state afterwards."""
@@ -48,8 +53,8 @@ def clean_registry():
 class _MockPluginContext:
     """Minimal mock of hermes_cli.plugins.PluginContext.
 
-    Only implements register_platform so we can exercise the plugin's
-    register() entrypoint without importing the real plugin system.
+    Captures platform registration while tolerating unrelated CLI and lifecycle
+    hooks that a platform plugin may register at the same entry point.
     """
 
     def __init__(self):
@@ -75,6 +80,12 @@ class _MockPluginContext:
         )
         platform_registry.register(entry)
         self.registered_names.append(name)
+
+    def register_cli_command(self, **_kwargs: Any) -> None:
+        """Accept unrelated CLI registrations made by a platform plugin."""
+
+    def register_hook(self, *_args: Any, **_kwargs: Any) -> None:
+        """Accept unrelated lifecycle-hook registrations."""
 
 
 def _import_platform_module(name: str) -> ModuleType:

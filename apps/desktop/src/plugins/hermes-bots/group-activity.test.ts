@@ -1,0 +1,250 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type * as data from './data'
+import type { GroupActivityEntry } from './group-activity'
+import type * as groupActivity from './group-activity'
+import type * as groupChat from './group-chat'
+import type * as groupRounds from './group-rounds'
+import { createGroupGateway, drain, runTimersInline, scriptedStorage } from './group-test-utils'
+import type { GatewayOptions, ScriptedGateway } from './group-test-utils'
+import type { GroupMember } from './types'
+
+// Collapsible group Activity view: a runtime-only, bounded feed of truthful
+// turn events (queued / working / replied / passed / timed-out / failed /
+// cancelled / settled / delivered) that the room shows in a quiet disclosure.
+// The transcript stays the only durable record — activity is never persisted.
+
+const { host } = vi.hoisted(() => ({ host: {} as Record<string, unknown> }))
+
+vi.mock('@hermes/plugin-sdk', async () => {
+  const { pluginSdkMock } = await import('./group-test-utils')
+
+  return pluginSdkMock(host)
+})
+
+const MEMBERS: GroupMember[] = [
+  { name: 'research', title: '' },
+  { name: 'builder', title: '' },
+  { name: 'ops', title: 'The Ops' }
+]
+
+/** A failed turn's activity row carries the typed reason the gateway sent.
+ *  `recordGroupActivity` spreads it through, so it isn't on the entry type. */
+type ActivityRow = GroupActivityEntry & { reason?: string }
+
+interface Room {
+  activity: typeof groupActivity
+  chat: typeof groupChat
+  data: typeof data
+  gateway: ScriptedGateway
+  rounds: typeof groupRounds
+}
+
+async function loadRoom(options: GatewayOptions = {}): Promise<Room> {
+  vi.resetModules()
+  const gateway = createGroupGateway(options)
+
+  for (const key of Object.keys(host)) {
+    delete host[key]
+  }
+
+  Object.assign(host, gateway.host)
+
+  const [activity, chat, data, rounds, shared] = await Promise.all([
+    import('./group-activity'),
+    import('./group-chat'),
+    import('./data'),
+    import('./group-rounds'),
+    import('./shared')
+  ])
+
+  shared.setPluginCtx(scriptedStorage(gateway.storage))
+
+  return { activity, chat, data, gateway, rounds }
+}
+
+function feed(room: Room, group: string): ActivityRow[] {
+  return (room.activity.$groupActivity.get()[group]?.events || []) as ActivityRow[]
+}
+
+beforeEach(() => {
+  runTimersInline()
+})
+
+describe('turn arc', () => {
+  it('a settled turn records the full truthful arc: queued, working, replies and passes, settled', async () => {
+    const room = await loadRoom({
+      turn: ({ profile, prompt }) =>
+        profile === 'research' && !prompt.includes('(you)') ? 'I looked into it — ship it.' : '(pass)'
+    })
+
+    room.rounds.sendToGroupChat('Room', MEMBERS, 'please review')
+    await drain(() => Boolean(room.chat.$groupChats.get().Room?.running))
+
+    const events = feed(room, 'Room')
+    const kinds = events.map(event => event.kind)
+
+    expect(kinds[0]).toBe('queued')
+    expect(kinds[kinds.length - 1]).toBe('settled')
+    expect(kinds.filter(kind => kind === 'working').length).toBeGreaterThanOrEqual(3)
+    expect(kinds).toContain('replied')
+    expect(kinds.filter(kind => kind === 'passed').length).toBeGreaterThanOrEqual(2)
+    expect(events.find(event => event.kind === 'replied')?.member).toBe('research')
+  })
+
+  it('a failed member turn records failed instead of a phantom reply', async () => {
+    const room = await loadRoom({
+      turn: ({ profile }) => {
+        if (profile === 'builder') {
+          throw new Error('gateway hiccup')
+        }
+
+        return '(pass)'
+      }
+    })
+
+    room.rounds.sendToGroupChat('Flaky', MEMBERS, 'anyone around?')
+    await drain(() => Boolean(room.chat.$groupChats.get().Flaky?.running))
+
+    expect(feed(room, 'Flaky').some(event => event.kind === 'failed' && event.member === 'builder')).toBe(true)
+  })
+
+  it('a failed member turn preserves and prefers its typed reason', async () => {
+    const room = await loadRoom({
+      turn: ({ profile }) => {
+        if (profile === 'builder') {
+          throw Object.assign(new Error('generic gateway failure'), {
+            data: { reason: 'provider_auth_or_access' }
+          })
+        }
+
+        return '(pass)'
+      }
+    })
+
+    room.rounds.sendToGroupChat('Typed failure', MEMBERS, 'anyone around?')
+    await drain(() => Boolean(room.chat.$groupChats.get()['Typed failure']?.running))
+
+    const failed = feed(room, 'Typed failure').find(event => event.kind === 'failed' && event.member === 'builder')
+
+    expect(failed?.reason).toBe('provider_auth_or_access')
+    expect(Object.values(room.data.$botAttention.get())[0]?.reason).toBe('provider_auth_or_access')
+  })
+
+  it('an untyped failed member turn keeps the message-classification fallback', async () => {
+    const room = await loadRoom({
+      turn: ({ profile }) => {
+        if (profile === 'builder') {
+          throw new Error('No LLM provider configured')
+        }
+
+        return '(pass)'
+      }
+    })
+
+    room.rounds.sendToGroupChat('Untyped failure', MEMBERS, 'anyone around?')
+    await drain(() => Boolean(room.chat.$groupChats.get()['Untyped failure']?.running))
+
+    const failed = feed(room, 'Untyped failure').find(event => event.kind === 'failed' && event.member === 'builder')
+
+    expect(failed?.reason).toBeUndefined()
+    expect(Object.values(room.data.$botAttention.get())[0]?.reason).toBe('missing_config')
+  })
+})
+
+describe('epoch scoping', () => {
+  it('queues follow-ups without cancelling the active turn or losing its reply delta', async () => {
+    let release!: (reply: string) => void
+    const first = new Promise<string>(resolve => { release = resolve })
+    const room = await loadRoom({ turn: ({ n }) => n === 1 ? first : '(pass)' })
+    const member: GroupMember[] = [{ name: 'research', title: '' }]
+    const thread = room.rounds.sendToGroupChat('Busy', member, 'first ask')!
+    await drain(() => room.gateway.calls.length < 1, 50)
+    const epoch = room.chat.$groupChats.get().Busy.epoch
+    room.rounds.sendToGroupChat('Busy', member, 'follow-up', thread)
+    await drain(() => false)
+    expect(room.gateway.calls).toHaveLength(1)
+    expect(room.chat.$groupChats.get().Busy.epoch).toBe(epoch)
+    release('first reply')
+    await drain(() => room.gateway.calls.length < 2)
+    await drain(() => Boolean(room.chat.$groupChats.get().Busy?.running))
+    expect(room.gateway.calls).toHaveLength(2)
+    expect(room.gateway.calls[1].prompt).toMatch(/follow-up[\s\S]*first reply/)
+    expect(room.gateway.calls[1].prompt).not.toContain('first ask')
+    expect(feed(room, 'Busy').some(event => event.kind === 'cancelled')).toBe(false)
+  })
+
+  it('epoch filtering drops events from a superseded run', async () => {
+    const room = await loadRoom()
+    room.chat.updateGroupChat('Epoch', current => {
+      current.log = []
+      current.epoch = 5
+
+      return current
+    })
+    room.activity.recordGroupActivity('Epoch', { kind: 'queued', member: 'You' })
+    room.activity.recordGroupActivity('Epoch', { kind: 'working', member: 'research' })
+
+    room.chat.updateGroupChat('Epoch', current => {
+      current.epoch = 6
+
+      return current
+    })
+
+    expect(room.activity.currentGroupActivity('Epoch')).toHaveLength(0)
+
+    room.activity.recordGroupActivity('Epoch', { kind: 'working', member: 'research' })
+    const current = room.activity.currentGroupActivity('Epoch')
+
+    expect(current).toHaveLength(1)
+    expect(current[0].kind).toBe('working')
+  })
+})
+
+describe('feed shape', () => {
+  it('the feed is bounded: it stops growing and keeps the newest events', async () => {
+    const room = await loadRoom()
+    room.chat.updateGroupChat('Cap', current => {
+      current.log = []
+
+      return current
+    })
+
+    for (let i = 0; i < 500; i++) {
+      room.activity.recordGroupActivity('Cap', { kind: 'working', member: `member-${i}` })
+    }
+
+    const bounded = feed(room, 'Cap')
+
+    expect(bounded.length).toBeLessThan(500)
+    expect(bounded[bounded.length - 1].member).toBe('member-499')
+    expect(bounded.some(event => event.member === 'member-0')).toBe(false)
+
+    room.activity.recordGroupActivity('Cap', { kind: 'working', member: 'one more' })
+
+    expect(feed(room, 'Cap')).toHaveLength(bounded.length)
+  })
+
+  it('activity is runtime-only: never persisted, never hydrated', async () => {
+    const room = await loadRoom()
+
+    room.rounds.sendToGroupChat('Volatile', MEMBERS, 'hello')
+    await drain(() => Boolean(room.chat.$groupChats.get().Volatile?.running))
+
+    expect(feed(room, 'Volatile').length).toBeGreaterThan(0)
+    expect([...room.gateway.storage.keys()]).not.toContain('group-activity')
+  })
+
+  it('labels read like a person wrote them, with settled/cancelled as room-level lines', async () => {
+    const { activity } = await loadRoom()
+
+    const label = (event: Omit<GroupActivityEntry, 'at' | 'epoch'>) =>
+      activity.groupActivityLabel({ at: 0, epoch: 0, ...event })
+
+    expect(label({ kind: 'queued', member: 'You' })).toBe('You sent a message')
+    expect(label({ kind: 'replied', member: 'research' })).toBe('research replied')
+    expect(label({ kind: 'timed-out', member: 'ops' })).toBe('ops took too long')
+    expect(label({ kind: 'cancelled', member: null })).toBe('turn interrupted by a newer message')
+    expect(label({ kind: 'settled', member: null })).toBe('turn settled')
+  })
+})

@@ -17,7 +17,9 @@ vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
 
 const { $activeGatewayProfile } = await import('./profile')
-const { $settingsScopeOverride, $settingsScopeProfile, setSettingsScope } = await import('./settings-scope')
+
+const { $settingsRequestProfile, $settingsScopeOverride, $settingsScopeProfile, setSettingsScope } =
+  await import('./settings-scope')
 
 beforeEach(() => {
   $activeGatewayProfile.set('default')
@@ -56,6 +58,18 @@ describe('settings scope store', () => {
 
     expect($settingsScopeOverride.get()).toBe('default')
     expect($settingsScopeProfile.get()).toBe('default')
+  })
+
+  it('exposes a request-shaped scope: undefined (never null) without an override', () => {
+    // api/client.ts profileScoped() treats null as "target primary/default" —
+    // the #90549 bug class. The request form must therefore never be null.
+    expect($settingsRequestProfile.get()).toBeUndefined()
+
+    setSettingsScope('research')
+    expect($settingsRequestProfile.get()).toBe('research')
+
+    setSettingsScope('default')
+    expect($settingsRequestProfile.get()).toBeUndefined()
   })
 
   it('drops the override on an app-wide profile switch', () => {

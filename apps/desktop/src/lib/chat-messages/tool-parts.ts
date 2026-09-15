@@ -1,5 +1,6 @@
 import { firstStringField, normalize } from '@/lib/text'
-import { parseTodos } from '@/lib/todos'
+import { isTodoToolName, parseTodos } from '@/lib/todos'
+import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
 import type { SessionMessage } from '@/types/hermes'
 
 import type { ChatMessage, ChatMessagePart, GatewayEventPayload } from './types'
@@ -87,9 +88,9 @@ function toolPayloadMatchValues(payload: GatewayEventPayload | undefined): strin
   // `clarify.request` (a fresh request id) must correlate with the `tool.start`
   // row (the model's tool_call_id) so the two ids don't produce a duplicate
   // clarify card — same correlation ClarifyToolPending uses for request↔args.
-  // `server` is setup_mcp's identifying arg, for the identical reason.
+  // A connection request carries the model's tool_call_id itself, so it needs no arg match.
   const query =
-    firstStringField(payloadArgs, ['search_term', 'query', 'question', 'server', 'command', 'code', 'path']) ||
+    firstStringField(payloadArgs, ['search_term', 'query', 'question', 'command', 'code', 'path']) ||
     batchClarifyMatchValue(payloadArgs.questions)
 
   const context = typeof payload?.context === 'string' ? payload.context.trim() : ''
@@ -179,10 +180,33 @@ function findToolPartIndex(
     }
   }
 
-  const pendingIndices = parts
-    .map((part, index) => ({ part, index }))
-    .filter(({ part }) => part.type === 'tool-call' && part.toolName === name && part.result === undefined)
-    .map(({ index }) => index)
+  const pendingIndices: number[] = []
+
+  for (let index = 0; index < parts.length; index += 1) {
+    const part = parts[index]
+
+    if (
+      part.type === 'tool-call' &&
+      part.toolName === name &&
+      part.result === undefined &&
+      part.completedAt === undefined
+    ) {
+      // Interactive request IDs differ from provider call IDs and correlate by identifying arguments.
+      const requestBacked = name === 'clarify' || name === 'setup_mcp'
+
+      if (
+        !requestBacked &&
+        stableId &&
+        phase === 'running' &&
+        part.toolCallId &&
+        !part.toolCallId.startsWith('live-tool:')
+      ) {
+        continue
+      }
+
+      pendingIndices.push(index)
+    }
+  }
 
   if (pendingIndices.length === 0) {
     return -1
@@ -231,7 +255,7 @@ function carryTodos(payload: GatewayEventPayload | undefined, ...prev: unknown[]
     return next === null ? undefined : { todos: next }
   }
 
-  if (payload?.name !== 'todo') {
+  if (!isTodoToolName(payload?.name)) {
     return undefined
   }
 
@@ -259,31 +283,36 @@ function toolArgs(payload: GatewayEventPayload | undefined, prevArgs?: unknown):
   }
 }
 
-function toolResult(
+function toolResultMetadata(
   payload: GatewayEventPayload | undefined,
+  previous: ToolResultMetadata | undefined,
   prevResult?: unknown,
   prevArgs?: unknown
-): Record<string, unknown> {
-  const parsedResult = parseMaybeJsonObject(payload?.result)
-
+): ToolResultMetadata {
   return {
-    ...parsedResult,
-    ...(payload?.inline_diff ? { inline_diff: payload.inline_diff } : {}),
-    ...(payload?.summary ? { summary: payload.summary } : {}),
-    ...(payload?.message ? { message: payload.message } : {}),
-    ...(payload?.preview ? { preview: payload.preview } : {}),
+    ...previous,
+    ...(payload?.inline_diff !== undefined ? { inline_diff: payload.inline_diff } : {}),
+    ...(payload?.summary !== undefined ? { summary: payload.summary } : {}),
+    ...(payload?.message !== undefined ? { message: payload.message } : {}),
+    ...(payload?.preview !== undefined ? { preview: payload.preview } : {}),
     ...(payload?.duration_s !== undefined ? { duration_s: payload.duration_s } : {}),
     ...carryTodos(payload, prevResult, prevArgs),
-    ...(payload?.error ? { error: payload.error } : {})
+    ...(payload?.error !== undefined ? { error: payload.error } : {})
   }
 }
 
 function completeOpenStreamParts(parts: ChatMessagePart[], completedAt: number): ChatMessagePart[] {
-  return parts.map(part =>
-    (part.type === 'text' || part.type === 'reasoning') && part.completedAt === undefined
-      ? ({ ...part, completedAt } as ChatMessagePart)
-      : part
-  )
+  const next = parts.slice()
+
+  for (let index = 0; index < next.length; index += 1) {
+    const part = next[index]
+
+    if ((part.type === 'text' || part.type === 'reasoning') && part.completedAt === undefined) {
+      next[index] = { ...part, completedAt } as ChatMessagePart
+    }
+  }
+
+  return next
 }
 
 export function upsertToolPart(
@@ -319,18 +348,265 @@ export function upsertToolPart(
     timestamp: prev?.timestamp ?? occurredAt,
     ...(phase === 'complete' && {
       completedAt: occurredAt,
-      result: toolResult(payload, prevResult, prevArgs),
-      isError: Boolean(payload?.error)
+      result: payload?.result !== undefined ? payload.result : prevResult,
+      toolResultMetadata: toolResultMetadata(payload, prev?.toolResultMetadata, prevResult, prevArgs),
+      isError:
+        payload?.error !== undefined ? Boolean(payload.error) : Boolean(prev && 'isError' in prev && prev.isError)
     })
   } satisfies ChatMessagePart
 
   if (index === -1) {
-    return [...next, base]
+    next.push(base)
+  } else {
+    next[index] = { ...next[index], ...base }
   }
 
-  next[index] = { ...next[index], ...base }
-
   return next
+}
+
+export interface PendingClarifyProjection {
+  messages: ChatMessage[]
+  streamId: string
+}
+
+export interface SettledClarifyProjection {
+  messages: ChatMessage[]
+  streamId: string | null
+}
+
+interface PendingClarifyLocation {
+  messageIndex: number
+  partIndex: number
+}
+
+function findPendingClarifyLocation(
+  messages: ChatMessage[],
+  payload: GatewayEventPayload,
+  toolName = 'clarify'
+): PendingClarifyLocation | null {
+  const stableId = toolId(payload)
+  const matchValues = toolPayloadMatchValues(payload)
+  let solePending: PendingClarifyLocation | null = null
+  let pendingCount = 0
+
+  for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
+    const message = messages[messageIndex]
+
+    for (let partIndex = message.parts.length - 1; partIndex >= 0; partIndex -= 1) {
+      const part = message.parts[partIndex]
+
+      if (part.type !== 'tool-call' || part.toolName !== toolName || part.result !== undefined) {
+        continue
+      }
+
+      const exactId = Boolean(stableId && part.toolCallId === stableId)
+      const contextual = hasToolMatchOverlap(matchValues, toolPartMatchValues(part))
+
+      if (exactId || contextual) {
+        return { messageIndex, partIndex }
+      }
+
+      // A sealed call (settle-time `completedAt`, no result) is a clarify the
+      // turn stopped on without an answer. It is history, not the session's
+      // open question, so it may only be re-armed by a genuine correlation
+      // above, never adopted as the fallback for an uncorrelated request.
+      if (part.completedAt !== undefined) {
+        continue
+      }
+
+      pendingCount += 1
+      solePending = { messageIndex, partIndex }
+    }
+  }
+
+  // Older/sparse projections can lose the identifying args. One session can
+  // only block on one clarify at a time, so a sole open clarify is still the
+  // authoritative row even without a usable correlation value.
+  return pendingCount === 1 ? solePending : null
+}
+
+function skippedClarifyResult(part: Extract<ChatMessagePart, { type: 'tool-call' }>): Record<string, unknown> {
+  const args = recordFromUnknown(part.args) ?? {}
+  const questions = Array.isArray(args.questions) ? args.questions : []
+
+  if (questions.length > 0) {
+    return {
+      responses: questions.map(entry => ({
+        question: firstStringField(recordFromUnknown(entry) ?? {}, ['question']),
+        user_response: ''
+      })),
+      timed_out: true
+    }
+  }
+
+  return {
+    question: firstStringField(args, ['question']),
+    user_response: ''
+  }
+}
+
+/** Mark one pending clarify as timed out/settled without ending a later phase
+ * of the same assistant turn. `keepMessageRunning` keeps the containing message
+ * open for subsequent deltas while the clarify part itself becomes settled. */
+export function settlePendingClarifyToolCall(
+  messages: ChatMessage[],
+  payload: GatewayEventPayload,
+  keepMessageRunning: boolean,
+  occurredAt = Date.now() / 1000
+): SettledClarifyProjection {
+  const clarifyPayload = { ...payload, name: 'clarify' }
+  const location = findPendingClarifyLocation(messages, clarifyPayload)
+
+  if (!location) {
+    return { messages, streamId: null }
+  }
+
+  const message = messages[location.messageIndex]
+  const part = message.parts[location.partIndex]
+
+  if (part.type !== 'tool-call') {
+    return { messages, streamId: null }
+  }
+
+  const parts = [...message.parts]
+  parts[location.partIndex] = {
+    ...part,
+    completedAt: occurredAt,
+    result: skippedClarifyResult(part)
+  }
+
+  const next = [...messages]
+  next[location.messageIndex] = { ...message, parts, pending: keepMessageRunning }
+
+  return { messages: next, streamId: message.id }
+}
+
+/** Remove ephemeral clarify liveness before writing the durable transcript-tail
+ * cache. A synthetic request-id part is dropped; a provider-authored call stays
+ * visible but loses its local `pending` bit until an authoritative resume
+ * snapshot re-arms it. */
+export function stripPendingClarifyProjectionForCache(messages: ChatMessage[], requestId?: string): ChatMessage[] {
+  let changed = false
+  const next: ChatMessage[] = []
+
+  for (const message of messages) {
+    const hasOpenClarify = message.parts.some(
+      part => part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined
+    )
+
+    if (!hasOpenClarify) {
+      next.push(message)
+
+      continue
+    }
+
+    const parts = message.parts.filter(
+      part =>
+        !(
+          requestId &&
+          part.type === 'tool-call' &&
+          part.toolName === 'clarify' &&
+          part.result === undefined &&
+          part.toolCallId === requestId
+        )
+    )
+
+    changed = true
+
+    if (parts.length > 0) {
+      next.push({ ...message, parts, pending: false })
+    }
+  }
+
+  return changed ? next : messages
+}
+
+/**
+ * Re-arm a clarify request against a transcript that may already have been
+ * hydrated from REST/session.resume.
+ *
+ * Provider transcript shapes differ: Codex commonly persists a tool-only
+ * assistant row, while DeepSeek can persist visible assistant text and the
+ * clarify call on the same row. The clarify request id is distinct from the
+ * provider's tool-call id and can arrive when `state.streamId` is null, so the
+ * generic live-stream mutator would append a second assistant row at the tail.
+ * Match the existing open clarify by its question(s), keep that row's provider
+ * tool id/position, and mark it running. If the backend projection omitted the
+ * tool call, attach it to trailing assistant commentary or seed one tail row as
+ * a last resort.
+ */
+export function restorePendingClarifyToolCall(
+  messages: ChatMessage[],
+  payload: GatewayEventPayload,
+  occurredAt = Date.now() / 1000
+): PendingClarifyProjection {
+  return restorePendingBlockingToolCall(messages, { ...payload, name: 'clarify' }, occurredAt)
+}
+
+/** Restore a blocking tool row (clarify, connection card) from a resume snapshot: mark the
+ *  existing pending part's message live, or append a row when the transcript has none. */
+export function restorePendingBlockingToolCall(
+  messages: ChatMessage[],
+  clarifyPayload: GatewayEventPayload & { name: string },
+  occurredAt = Date.now() / 1000
+): PendingClarifyProjection {
+  const location = findPendingClarifyLocation(messages, clarifyPayload, clarifyPayload.name)
+
+  if (location) {
+    const message = messages[location.messageIndex]
+    const part = message.parts[location.partIndex]
+    // A correlated row that settle sealed (stop, lost completion) is live
+    // again: drop the seal so the card renders as pending, not as history.
+    const sealed = part.type === 'tool-call' && part.completedAt !== undefined && part.result === undefined
+
+    if (message.pending && !sealed) {
+      return { messages, streamId: message.id }
+    }
+
+    const next = [...messages]
+
+    if (sealed) {
+      const { completedAt: _completedAt, ...unsealed } = part
+      const parts = [...message.parts]
+      parts[location.partIndex] = unsealed as ChatMessagePart
+      next[location.messageIndex] = { ...message, parts, pending: true }
+    } else {
+      next[location.messageIndex] = { ...message, pending: true }
+    }
+
+    return { messages: next, streamId: message.id }
+  }
+
+  const parts = upsertToolPart([], clarifyPayload, 'running', occurredAt)
+  const tailIndex = messages.findLastIndex(message => !message.hidden)
+  const tail = messages[tailIndex]
+
+  if (tail?.role === 'assistant') {
+    const next = [...messages]
+    next[tailIndex] = {
+      ...tail,
+      parts: [...completeOpenStreamParts(tail.parts, occurredAt), ...parts],
+      pending: true
+    }
+
+    return { messages: next, streamId: tail.id }
+  }
+
+  const streamId = nextLiveToolId(`${clarifyPayload.name}-message`)
+
+  return {
+    messages: [
+      ...messages,
+      {
+        id: streamId,
+        role: 'assistant',
+        parts,
+        pending: true,
+        timestamp: occurredAt
+      }
+    ],
+    streamId
+  }
 }
 
 /**
@@ -353,13 +629,13 @@ export function sealOpenToolParts(messages: ChatMessage[]): ChatMessage[] {
     let partChanged = false
 
     const parts = message.parts.map(part => {
-      if (part.type !== 'tool-call' || Object.hasOwn(part, 'result')) {
+      if (part.type !== 'tool-call' || part.completedAt !== undefined || Object.hasOwn(part, 'result')) {
         return part
       }
 
       partChanged = true
 
-      return { ...part, result: {} }
+      return { ...part, completedAt: part.timestamp ?? 0 }
     })
 
     if (!partChanged) {
@@ -576,4 +852,54 @@ export function withUniqueToolCallIds(messages: ChatMessage[]): ChatMessage[] {
 
     return changed ? { ...message, parts } : message
   })
+}
+
+/**
+ * Ensure no two `tool-call` parts of a SINGLE message share a `toolCallId`.
+ *
+ * assistant-ui's `useResources` derives one resource key per content part
+ * (`toolCallId-<id>`) and throws `Duplicate key <key> in useResources` on a
+ * collision, which the desktop error boundary turns into a renderer crash loop
+ * that blanks the window (#87857). Two paths can produce a message whose parts
+ * carry the same id: the streaming reducer appends the same tool-call part
+ * twice under a specific optimistic-update ordering, and coalescing tool-only
+ * assistant turns can fold two parts with the same id into one message. Neither
+ * passes through {@link withUniqueToolCallIds} — that runs only on the static
+ * `toChatMessages` output, not the live runtime boundary — so the dedup is
+ * applied again at the point ChatMessages are converted for the runtime.
+ *
+ * The scope is deliberately per-message (a fresh seen-set each call): the
+ * assistant-ui key space is per-message, so a `toolCallId` shared across
+ * different messages is not a collision and must not be renamed. Only the
+ * later duplicate within one message is renamed, mirroring the list-level
+ * helper. Returns the same reference when nothing changes, so the runtime
+ * repository's identity cache is preserved for the common no-duplicate case.
+ */
+export function withUniqueToolCallIdsWithinMessage(message: ChatMessage): ChatMessage {
+  let seen: null | Set<string> = null
+  let changed = false
+
+  const parts = message.parts.map((part, index) => {
+    if (part.type !== 'tool-call' || !part.toolCallId) {
+      return part
+    }
+
+    if (seen === null) {
+      seen = new Set<string>()
+    }
+
+    if (!seen.has(part.toolCallId)) {
+      seen.add(part.toolCallId)
+
+      return part
+    }
+
+    changed = true
+    const uniqueId = `${part.toolCallId}-dup-${index}`
+    seen.add(uniqueId)
+
+    return { ...part, toolCallId: uniqueId } as ChatMessagePart
+  })
+
+  return changed ? { ...message, parts } : message
 }

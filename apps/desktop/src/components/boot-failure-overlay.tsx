@@ -7,7 +7,8 @@ import { Loader } from '@/components/ui/loader'
 import { LogView } from '@/components/ui/log-view'
 import type { DesktopConnectionConfig } from '@/global'
 import { useI18n } from '@/i18n'
-import { ChevronLeft, FileText, Loader2, LogIn, RefreshCw, SlidersHorizontal, Wrench } from '@/lib/icons'
+import { openExternalLink } from '@/lib/external-link'
+import { ChevronLeft, ExternalLink, FileText, Loader2, LogIn, RefreshCw, SlidersHorizontal, Wrench } from '@/lib/icons'
 import { $desktopBoot } from '@/store/boot'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
@@ -162,12 +163,10 @@ export function BootFailureOverlay() {
     setBusy(null)
   }
 
-  // Clear the OAuth partition first, then open the gateway's login window
-  // (username/password form or OAuth redirect — the desktop drives both). A
-  // partition-wide sign-out drops stale gateway AND identity-provider cookies so
-  // an expired session can't silently bounce us back into the same state. On a
-  // successful sign-in the cookie is re-established; reload so boot mints a fresh
-  // ticket against a live session.
+  // Clear this gateway's stale auth first, then re-establish it through the
+  // connection's owning login flow. Hermes Cloud must reuse its portal session
+  // and per-agent cascade; generic remote gateways use native/embedded OAuth.
+  // Reload after success so boot mints a fresh ticket against the new session.
   const signInRemote = async () => {
     if (!remoteReauth) {
       return
@@ -176,10 +175,39 @@ export function BootFailureOverlay() {
     setBusy('signin')
 
     try {
-      await window.hermesDesktop?.oauthLogoutConnectionConfig?.()
-      const result = await window.hermesDesktop?.oauthLoginConnectionConfig(remoteReauth.url)
+      const desktop = window.hermesDesktop
+
+      await desktop?.oauthLogoutConnectionConfig?.(remoteReauth.url)
+
+      let result: { connected?: boolean } | undefined
+
+      if (connectionConfig?.mode === 'cloud' && desktop?.cloud) {
+        const status = await desktop.cloud.status()
+
+        if (!status.signedIn) {
+          const login = await desktop.cloud.login()
+
+          if (!login.signedIn) {
+            notify({
+              kind: 'warning',
+              title: t.boot.failure.signInIncompleteTitle,
+              message: t.boot.failure.signInIncompleteMessage
+            })
+
+            return
+          }
+        }
+
+        result = await desktop.cloud.agentSignIn(remoteReauth.url)
+      } else {
+        result = await desktop?.oauthLoginConnectionConfig(remoteReauth.url)
+      }
 
       if (result?.connected) {
+        if (connectionConfig?.mode === 'cloud') {
+          await desktop?.resetBootstrap().catch(() => undefined)
+        }
+
         notify({ kind: 'success', title: t.boot.failure.signedInTitle, message: t.boot.failure.signedInMessage })
         window.location.reload()
 
@@ -247,6 +275,11 @@ export function BootFailureOverlay() {
 
   let actions: RecoveryAction[]
   let hint: string
+  // The electron boot path flags a Nous Cloud backend-down (502/503/504) with
+  // the structured isCloudBackendDown/statusCode it carries through boot
+  // progress. When set, the recovery screen leads with the cloud-specific
+  // guidance instead of the generic remote-failure copy (#85335).
+  const cloudDown = Boolean(boot.isCloudBackendDown)
 
   if (remoteReauth) {
     actions = [
@@ -261,6 +294,31 @@ export function BootFailureOverlay() {
       localAction
     ]
     hint = copy.remoteSignInHint(label)
+  } else if (cloudDown) {
+    // A Nous Cloud agent is down — the user cannot restart the managed
+    // instance and Repair is local-only. Lead with the paths that actually
+    // resolve it: check the portal (status/instance controls), switch to the
+    // local gateway, retry, or get support on Discord. Portal/Discord are
+    // buttons (not URLs buried in the hint prose) so localized hints can't
+    // drift the links.
+    actions = [
+      {
+        key: 'portal',
+        label: copy.cloudDownCheckPortal,
+        onClick: () => openExternalLink('https://portal.nousresearch.com'),
+        icon: <ExternalLink />
+      },
+      localAction,
+      { ...retryAction, variant: 'secondary' },
+      {
+        key: 'discord',
+        label: copy.cloudDownDiscord,
+        onClick: () => openExternalLink('https://discord.gg/NousResearch'),
+        variant: 'ghost'
+      },
+      { ...settingsAction, variant: 'ghost' }
+    ]
+    hint = copy.cloudDownHint
   } else if (remoteFailure) {
     actions = [settingsAction, { ...retryAction, variant: 'secondary' }, localAction]
     hint = copy.remoteFailureHint
@@ -323,10 +381,10 @@ export function BootFailureOverlay() {
           <ErrorIcon className="mt-0.5" size="1.25rem" />
           <div>
             <h2 className="text-[0.9375rem] font-semibold tracking-tight">
-              {remoteReauth ? copy.remoteTitle : copy.title}
+              {remoteReauth ? copy.remoteTitle : cloudDown ? copy.cloudDownTitle : copy.title}
             </h2>
             <p className="mt-1 text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">
-              {remoteReauth ? copy.remoteDescription : copy.description}
+              {remoteReauth ? copy.remoteDescription : cloudDown ? copy.cloudDownDescription : copy.description}
             </p>
           </div>
         </div>

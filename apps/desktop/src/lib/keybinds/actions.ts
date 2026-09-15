@@ -256,8 +256,18 @@ export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   { id: 'composer.help', category: 'composer', keys: ['?'] },
   { id: 'composer.history', category: 'composer', keys: ['up', 'down'] },
   { id: 'composer.cancel', category: 'composer', keys: ['escape'] },
-  // Fixed, context-local shortcuts surfaced for discoverability.
-  { id: 'view.terminalSelection', category: 'view', keys: ['mod+l'] },
+  // ⌘/Ctrl+L moves focus to the composer from anywhere, like the address-bar
+  // chord in a browser. The row reuses the id of the rebindable soft-focus
+  // action above. As a result, the panel shows one "Focus composer" label
+  // for both. The row is fixed because the selection shortcut below uses the
+  // same chord. Who claims a contested press: see the priority ladder in
+  // app/chat/composer/focus-chord.ts.
+  { id: 'composer.focus', category: 'composer', keys: ['mod+l'] },
+  // Fixed, context-local shortcuts, listed so users can find them. This row
+  // uses the same ⌘/Ctrl+L chord as `composer.focus` above. It is the
+  // selection half of the chord: the selected text (terminal text, preview
+  // lines) goes into the composer as context.
+  { id: 'view.selectionToComposer', category: 'view', keys: ['mod+l'] },
   // Terminal clipboard. ⌘C/⌘V on macOS, Ctrl+Shift+C/V elsewhere — matching VS
   // Code. Plain Ctrl+C also copies when text is selected (Windows Terminal /
   // Tabby behavior); with no selection it stays SIGINT, so it isn't listed.

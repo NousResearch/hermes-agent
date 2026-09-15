@@ -112,3 +112,32 @@ def test_remove_is_idempotent(home):
 def test_remove_requires_id(home):
     err = _error(srv._methods["vault.remove"](1, {}))
     assert err["code"] == 5095
+
+
+def test_list_scrubs_unicode_tag_characters_from_manager_supplied_text(home):
+    # A shared/imported vault can carry invisible TAG characters in its titles
+    # and usernames; they must not reach the model through vault.list.
+    params = dict(_LOGIN_PARAMS)
+    params["label"] = "Example\U000E0000 login\U000E0069\U000E0067\U000E006E\U000E006F\U000E0072\U000E0065"
+    params["secret"] = dict(_LOGIN_PARAMS["secret"],
+                            identifier="user@example.com\U000E0000")
+    out = _result(srv._methods["vault.add"](1, params))
+
+    listed = _result(srv._methods["vault.list"](2, {}))
+    item = listed["items"][0]
+    assert item["id"] == out["id"]  # handle untouched: fills route by it
+    assert item["label"] == "Example login"
+    assert item["identifier"] == "user@example.com"
+    dumped = json.dumps(listed)
+    assert "\U000E0000" not in dumped
+    assert "\U000E0069" not in dumped
+    assert "\U000E0072" not in dumped
+    assert "\U000E007F" not in dumped
+
+    # Valid emoji tag sequences (TR51 flags) are the one legitimate use of
+    # plane-14 characters and must survive the scrub.
+    flag = "\U0001F3F4\U000E0067\U000E0062\U000E0073\U000E0063\U000E0074\U000E007F"  # Scotland
+    params2 = dict(_LOGIN_PARAMS, label=f"{flag} Bank")
+    srv._methods["vault.add"](3, params2)
+    labels = {i["label"] for i in _result(srv._methods["vault.list"](4, {}))["items"]}
+    assert f"{flag} Bank" in labels

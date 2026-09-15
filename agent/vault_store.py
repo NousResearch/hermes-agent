@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
 from hermes_constants import get_hermes_home
+from tools.ansi_strip import strip_unicode_tags
 from utils import atomic_write_bytes
 
 VAULT_KINDS = ("login", "payment", "address")
@@ -169,15 +170,20 @@ class VaultItemMeta:
     has_otp: bool = False  # a TOTP seed is stored: 2FA codes can be minted without asking the user
 
     def to_dict(self) -> Dict[str, Any]:
+        # Vault titles/usernames come from password managers the user does not
+        # fully control (shared or imported vaults); invisible TAG characters in
+        # them are an ASCII-smuggling channel into the model's context, so the
+        # agent-visible copy is scrubbed. The handle stays raw: it is an opaque
+        # backend id, never derived from entry text, and fills route by it.
         out = {
             "id": self.id,
             "kind": self.kind,
-            "label": self.label,
+            "label": strip_unicode_tags(self.label),
             "origin": self.origin,
             "created_at": self.created_at,
         }
         if self.identifier is not None:
-            out["identifier"] = self.identifier
+            out["identifier"] = strip_unicode_tags(self.identifier)
             out["identifier_type"] = self.identifier_type
         if self.has_otp:
             out["has_otp"] = True

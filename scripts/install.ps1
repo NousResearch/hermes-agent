@@ -3566,6 +3566,7 @@ function Install-NodeDeps {
             # via the returned exit code, which is reliable regardless of
             # stderr noise.
             $ErrorActionPreference = "Continue"
+            Sync-Win32ProcessCwd
             $code = _Invoke-NativeWithTimeout $npmPath "install --silent" `
                 $installDir $logPath $nodeDepsTimeoutSec
             $ErrorActionPreference = $prevEAP
@@ -3928,6 +3929,23 @@ function Clear-ElectronBuildCache {
 # Last-resort Electron mirror after GitHub download fails (#47266).
 $script:DesktopElectronFallbackMirror = "https://npmmirror.com/mirrors/electron/"
 
+function Sync-Win32ProcessCwd {
+    # Push-Location updates $PWD. npm.cmd inherits the Win32 process cwd,
+    # which can stay at the directory the installer was launched from
+    # (e.g. D:\Work). npm then reads that folder's package.json:
+    # "No workspaces found" / Missing script "pack".
+    $fsPath = (Get-Location -PSProvider FileSystem).ProviderPath
+    if ($fsPath) {
+        [System.IO.Directory]::SetCurrentDirectory($fsPath)
+    }
+}
+
+function Test-DesktopNpmFailureIsWrongCwd {
+    param([string]$NpmOutput)
+    if ([string]::IsNullOrWhiteSpace($NpmOutput)) { return $false }
+    return ($NpmOutput -match 'Missing script:\s*"pack"') -or ($NpmOutput -match 'No workspaces found')
+}
+
 # Electron package dir -- workspace-local nest first, then root hoist.
 function Get-ElectronDir {
     param([string]$InstallDir)
@@ -4079,6 +4097,7 @@ function Install-Desktop {
     # apps/* workspaces resolve.
     Write-Info "Installing desktop workspace dependencies (this includes Electron ~150MB, takes 1-3min)..."
     Push-Location $InstallDir
+    Sync-Win32ProcessCwd
     $prevEAP = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
@@ -4196,6 +4215,7 @@ function Install-Desktop {
         Write-Warn "Could not resolve a git commit for the desktop stamp -- write-build-stamp will use its non-git fallback"
     }
     Push-Location $desktopDir
+    Sync-Win32ProcessCwd
     $prevEAP = $ErrorActionPreference
     $prevCSCAuto = $env:CSC_IDENTITY_AUTO_DISCOVERY
     $prevWinCscLink = $env:WIN_CSC_LINK
@@ -4208,34 +4228,42 @@ function Install-Desktop {
         & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
         $code = $LASTEXITCODE
         if ($code -ne 0) {
-            $purged = @()
-            $restored = $false
-            if (-not (Test-ElectronDist -InstallDir $InstallDir)) {
-                $purged = @(Clear-ElectronBuildCache -DesktopDir $desktopDir)
-                $restored = Restore-ElectronDist -InstallDir $InstallDir
-            }
-            if ($restored) {
-                Write-Warn "Desktop build failed - refreshed the Electron download, retrying once:"
-                foreach ($p in $purged) { Write-Info "  - $p" }
-                & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
-                $code = $LASTEXITCODE
-            }
-        }
-        if ($code -ne 0 -and -not $env:ELECTRON_MIRROR) {
-            $mirror = $script:DesktopElectronFallbackMirror
-            Write-Warn "Desktop build still failing - the Electron download from GitHub looks blocked."
-            Write-Warn "Re-downloading Electron via a public mirror ($mirror), then rebuilding:"
-            Write-Info "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
-            if (-not (Test-ElectronDist -InstallDir $InstallDir)) {
-                Restore-ElectronDist -InstallDir $InstallDir -Mirror $mirror | Out-Null
-            }
-            $prevMirror = $env:ELECTRON_MIRROR
-            $env:ELECTRON_MIRROR = $mirror
-            try {
-                & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
-                $code = $LASTEXITCODE
-            } finally {
-                $env:ELECTRON_MIRROR = $prevMirror
+            $errSoFar = Get-Content $buildLog -Raw -ErrorAction SilentlyContinue
+            if (Test-DesktopNpmFailureIsWrongCwd $errSoFar) {
+                Write-Warn "Desktop npm used the wrong package.json (cwd is not apps/desktop). Skipping Electron redownload."
+                Write-Info "  expected cwd: $desktopDir"
+            } else {
+                $purged = @()
+                $restored = $false
+                if (-not (Test-ElectronDist -InstallDir $InstallDir)) {
+                    $purged = @(Clear-ElectronBuildCache -DesktopDir $desktopDir)
+                    $restored = Restore-ElectronDist -InstallDir $InstallDir
+                }
+                if ($restored) {
+                    Write-Warn "Desktop build failed - refreshed the Electron download, retrying once:"
+                    foreach ($p in $purged) { Write-Info "  - $p" }
+                    Sync-Win32ProcessCwd
+                    & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
+                    $code = $LASTEXITCODE
+                }
+                if ($code -ne 0 -and -not $env:ELECTRON_MIRROR) {
+                    $mirror = $script:DesktopElectronFallbackMirror
+                    Write-Warn "Desktop build still failing - the Electron download from GitHub looks blocked."
+                    Write-Warn "Re-downloading Electron via a public mirror ($mirror), then rebuilding:"
+                    Write-Info "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
+                    if (-not (Test-ElectronDist -InstallDir $InstallDir)) {
+                        Restore-ElectronDist -InstallDir $InstallDir -Mirror $mirror | Out-Null
+                    }
+                    $prevMirror = $env:ELECTRON_MIRROR
+                    $env:ELECTRON_MIRROR = $mirror
+                    try {
+                        Sync-Win32ProcessCwd
+                        & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
+                        $code = $LASTEXITCODE
+                    } finally {
+                        $env:ELECTRON_MIRROR = $prevMirror
+                    }
+                }
             }
         }
         $ErrorActionPreference = $prevEAP

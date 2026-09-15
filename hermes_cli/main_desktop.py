@@ -1281,13 +1281,30 @@ def _run_desktop_pack_with_recovery(
     repeat the same slow failure.
     """
     from hermes_cli.main import PROJECT_ROOT
+    from hermes_cli._subprocess_compat import npm_failure_is_wrong_cwd
     def _staged_exe() -> Optional[Path]:
         return _desktop_packaged_executable_in(staging_dir) if staging_dir else None
 
     def _pack(run_env: dict) -> subprocess.CompletedProcess:
-        return subprocess.run(build_cmd, cwd=desktop_dir, env=run_env, check=False)
+        from hermes_cli._subprocess_compat import pinned_win32_cwd
+        with pinned_win32_cwd(desktop_dir):
+            result = subprocess.run(
+                build_cmd, cwd=desktop_dir, env=run_env, check=False,
+                stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+            )
+        if result.stderr:
+            sys.stderr.write(result.stderr)
+            sys.stderr.flush()
+        return result
+
+    def _pack_output(result: subprocess.CompletedProcess) -> str:
+        return f"{result.stdout or ''}\n{result.stderr or ''}"
 
     build_result = _pack(npm_build_env)
+    if build_result.returncode != 0 and npm_failure_is_wrong_cwd(_pack_output(build_result)):
+        print("  ⚠ npm ran against the wrong package.json (launch folder), not a "
+              "blocked Electron download. Skipping the npmmirror retry.")
+        return build_result
     if build_result.returncode != 0 and staging_dir is not None and _staged_exe() is None:
         # Corrupt cached Electron zip → partial unpack → ENOENT on rename. stdlib zipfile won't catch the
         # common concat-junk case, so purge and retry once; @electron/get SHASUM is the real gate. Gate on a
@@ -1313,6 +1330,10 @@ def _run_desktop_pack_with_recovery(
         and staging_dir is not None
         and not env.get("ELECTRON_MIRROR")
         and _staged_exe() is None):
+        if npm_failure_is_wrong_cwd(_pack_output(build_result)):
+            print("  ⚠ npm ran against the wrong package.json (launch folder), not a "
+                  "blocked Electron download. Skipping the npmmirror retry.")
+            return build_result
         print("  ⚠ Desktop build still failing; the Electron download from "
               "GitHub looks blocked. Re-downloading via a public mirror "
               "(npmmirror.com)... (set ELECTRON_MIRROR to use another mirror)")

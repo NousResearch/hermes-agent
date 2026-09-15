@@ -225,10 +225,14 @@ def _run_with_idle_timeout(
     last_output_ts = _time.monotonic()
     lock = threading.Lock()
 
+    from hermes_cli._subprocess_compat import pinned_win32_cwd
+
     try:
-        proc = subprocess.Popen(
-            cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", errors="replace", bufsize=1, env=env)
+        # npm.cmd inherits the Win32 process directory, not Popen(cwd=).
+        with pinned_win32_cwd(cwd):
+            proc = subprocess.Popen(
+                cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace", bufsize=1, env=env)
     except OSError as exc:
         # E.g. npm not on PATH between the which() check and now.
         return subprocess.CompletedProcess(cmd, 127, stdout="", stderr=str(exc))
@@ -363,22 +367,26 @@ def _run_npm_watching_for_engine_failure(
     ``capture_output=False`` callers stream npm's progress live; tee stderr so it
     is both forwarded as it arrives and accumulated for the engine-repair check.
     """
-    if capture_output:
-        return subprocess.run(
-            cmd, cwd=cwd, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
-        )
+    from hermes_cli._subprocess_compat import pinned_win32_cwd
 
-    captured: list[str] = []
-    with subprocess.Popen(
-        cmd, cwd=cwd, env=env, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
-    ) as proc:
-        if proc.stderr is not None:
-            for line in proc.stderr:
-                captured.append(line)
-                sys.stderr.write(line)
-            sys.stderr.flush()
-        returncode = proc.wait()
-    return subprocess.CompletedProcess(cmd, returncode, None, "".join(captured))
+    # npm.cmd inherits the Win32 process directory, not Popen(cwd=).
+    with pinned_win32_cwd(cwd):
+        if capture_output:
+            return subprocess.run(
+                cmd, cwd=cwd, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+            )
+
+        captured: list[str] = []
+        with subprocess.Popen(
+            cmd, cwd=cwd, env=env, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+        ) as proc:
+            if proc.stderr is not None:
+                for line in proc.stderr:
+                    captured.append(line)
+                    sys.stderr.write(line)
+                sys.stderr.flush()
+            returncode = proc.wait()
+        return subprocess.CompletedProcess(cmd, returncode, None, "".join(captured))
 
 
 def _missing_web_build_tool(output: str) -> str | None:

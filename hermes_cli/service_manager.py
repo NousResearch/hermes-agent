@@ -549,7 +549,7 @@ class S6ServiceManager:
         if pid is not None:
             try:
                 from gateway.status import write_planned_stop_marker
-                write_planned_stop_marker(pid)
+                write_planned_stop_marker(pid, target_home=_profile_dir_for_gateway_service(name))
             except Exception:
                 pass
         self._run_svc("-d", "stop", name)

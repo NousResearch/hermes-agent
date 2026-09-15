@@ -35,6 +35,14 @@ def kb(monkeypatch):
     for prof in ("a", "default"):
         os.makedirs(os.path.join(test_home, "profiles", prof), exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", test_home)
+    # A dispatched worker inherits HERMES_KANBAN_* pins pointing at the REAL
+    # board. pytest's conftest strips them, but this fixture is also reached
+    # from ad-hoc `python -` reviews; strip here too or `create_task` below
+    # writes "loop"/"ship the thing" cards onto the production board
+    # (happened 2026-09-14, 10 junk cards).
+    for var in ("HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD", "HERMES_KANBAN_HOME",
+                "HERMES_KANBAN_WORKSPACES_ROOT", "HERMES_KANBAN_LOGS_ROOT"):
+        monkeypatch.delenv(var, raising=False)
     for mod in list(sys.modules.keys()):
         if (
             mod.startswith("hermes_cli")

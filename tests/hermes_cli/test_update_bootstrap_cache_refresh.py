@@ -13,8 +13,9 @@ Contract under test:
   checkout's scripts/install.* content (sanitize_ref parity: bb/gui →
   install-bb_gui.ps1); sibling mutable refs keep their own scripts
 - .ps1 gets a UTF-8 BOM (installer cache format, #67193); .sh does not
-- commit-pin entries are immutable: is_valid_commit() parity means 7-40
-  hex chars — abbreviated SHAs included — are never touched
+- release and commit-pin entries are immutable: release targets (branch=None)
+  skip the refresh entirely; is_valid_commit() parity means 7-40 hex chars —
+  abbreviated SHAs included — are never touched
 - missing cache dir / missing sources / IO errors are silent no-ops
 """
 
@@ -39,7 +40,7 @@ def _setup(tmp_path, *, ps1=b"WRITE-HOST current\n", sh=b"echo current\n"):
     return home, root
 
 
-def _run(home, root, branch="main"):
+def _run(home, root, branch: str | None = "main"):
     with patch.object(cli_main, "get_hermes_home", return_value=str(home)), patch.object(
         cli_main, "PROJECT_ROOT", root
     ):
@@ -77,6 +78,21 @@ def test_commit_sha_entries_left_alone(tmp_path):
     pinned.write_bytes(b"pinned bytes")
     _run(home, root)
     assert pinned.read_bytes() == b"pinned bytes"
+
+
+def test_immutable_release_target_leaves_all_cache_entries_alone(tmp_path):
+    # A --version update passes branch=None: nothing may be rewritten — not the release's
+    # own entry AND not install-main.* (the release checkout's scripts may predate main's).
+    home, root = _setup(tmp_path)
+    main_entry = home / "bootstrap-cache" / "install-main.ps1"
+    release_entry = home / "bootstrap-cache" / "install-v2026.8.31.ps1"
+    main_entry.write_bytes(b"main bytes")
+    release_entry.write_bytes(b"release bytes")
+
+    _run(home, root, branch=None)
+
+    assert main_entry.read_bytes() == b"main bytes"
+    assert release_entry.read_bytes() == b"release bytes"
 
 
 def test_abbreviated_commit_pin_left_alone(tmp_path):

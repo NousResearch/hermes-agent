@@ -1172,13 +1172,54 @@ def register(ctx):
 
 After registration, users can type `/mystatus` in any session. The command appears in autocomplete, `/help` output, and the Telegram bot menu.
 
-**Signature:** `ctx.register_command(name: str, handler: Callable, description: str = "", args_hint: str = "")`
+**Signature:** `ctx.register_command(name: str, handler: Callable, description: str = "", args_hint: str = "", argument_mode: str | None = None, *, with_context: bool = False, access: Callable[..., str] | str | None = None, busy_policy: str | None = None)`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `name` | `str` | Command name without the leading slash (e.g. `"lcm"`, `"mystatus"`) |
-| `handler` | `Callable[[str], str \| None]` | Called with the raw argument string. May also be `async`. |
+| `handler` | `Callable` | Called with raw arguments, or with raw arguments plus `PluginCommandInvocation` when `with_context=True`. May also be `async`. |
 | `description` | `str` | Shown in `/help`, autocomplete, and Telegram bot menu |
+| `args_hint` | `str` | Short usage hint shown by gateway command surfaces. |
+| `argument_mode` | `str \| None` | Desktop argument behavior: `options`, `text`, or `mixed`. An omitted value infers `text` when `args_hint` is present. |
+| `with_context` | `bool` | Opt in to the two-argument gateway handler contract. CLI and TUI calls pass `None` as the invocation. |
+| `access` | `"user" \| "admin" \| Callable[..., str] \| None` | Set a fixed or argument-aware gateway access level. A classifier may accept `(raw_args)` or `(raw_args, PluginCommandAccessContext)`. Invalid values and classifier failures fail closed to `admin`; omit to preserve normal slash-command policy. |
+| `busy_policy` | `str \| None` | Active-turn behavior: `reject`, `dispatch`, or `interrupt_then_dispatch`. Omit it to preserve legacy active-session handling; setting it explicitly opts into the active-turn bypass dispatcher. |
+
+Context-aware handlers receive immutable source metadata and a source-bound
+action facade. They do not receive an adapter, SDK client, credential, private
+key, or unrestricted profile path:
+
+```python
+async def _handle_channel(raw_args, invocation):
+    if invocation is None:
+        return "This command requires a gateway conversation."
+
+    status = await invocation.platform_actions.get_channel_policy_status()
+    return str(status)
+
+def register(ctx):
+    ctx.register_command(
+        "channel-status",
+        handler=_handle_channel,
+        with_context=True,
+        access="user",
+        busy_policy="reject",
+    )
+```
+
+`PluginCommandInvocation` provides `platform`, `channel_id`, `thread_id`,
+`message_id`, `chat_type`, `scope_id`, normalized
+`source_identity_candidates`, `routed_profile`, and `platform_actions`. The
+source-bound facade can inspect the current channel policy and request a
+channel-policy change for that same source. Every call rechecks the plugin's
+`gateway.platform_actions` consent; mutation also rechecks the source context,
+routed profile, and explicit administrator authority in the host.
+
+Argument-aware access classifiers can optionally receive an immutable
+`PluginCommandAccessContext` as their second argument. It contains `platform`,
+`channel_id`, `thread_id`, `chat_type`, `scope_id`, normalized
+`source_identity_candidates`, and `routed_profile`, but no action facade or
+credentials. Existing one-argument classifiers continue to work unchanged.
 
 **Key differences from `register_cli_command()`:**
 

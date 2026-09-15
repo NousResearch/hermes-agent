@@ -5,6 +5,7 @@ import json
 import sys
 import threading
 import types
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -15,11 +16,13 @@ from hermes_cli.plugins import (
     ENTRY_POINTS_GROUP,
     VALID_HOOKS,
     PluginContext,
+    PluginCommandAccessContext,
     PluginManager,
     PluginManifest,
     _dispatch_pre_tool_call_hooks,
     get_plugin_command_handler,
     get_plugin_commands,
+    plugin_command_access_level,
     get_pre_tool_call_block_message,
     get_pre_verify_continue_message,
     has_middleware,
@@ -2085,6 +2088,77 @@ class TestPluginCommands:
 
         assert mgr._plugin_commands["lcm"]["argument_mode"] == "text"
         assert mgr._plugin_commands["ping"]["argument_mode"] is None
+
+    def test_context_aware_command_is_opt_in_and_cli_receives_no_gateway_context(self):
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+        calls = []
+
+        def legacy(raw_args):
+            calls.append(("legacy", raw_args))
+            return raw_args
+
+        def contextual(raw_args, invocation):
+            calls.append(("contextual", raw_args, invocation))
+            return "unsupported-surface" if invocation is None else "gateway"
+
+        ctx.register_command("legacy", legacy)
+        ctx.register_command(
+            "contextual",
+            contextual,
+            with_context=True,
+            access=lambda raw_args: "user" if raw_args == "status" else "admin",
+            busy_policy="dispatch",
+        )
+
+        with patch("hermes_cli.plugins._ensure_plugins_discovered", return_value=mgr):
+            assert get_plugin_command_handler("legacy")("same args") == "same args"
+            assert get_plugin_command_handler("contextual")("status") == "unsupported-surface"
+
+        assert calls == [
+            ("legacy", "same args"),
+            ("contextual", "status", None),
+        ]
+        assert mgr._plugin_commands["legacy"]["with_context"] is False
+        assert mgr._plugin_commands["legacy"]["access"] is None
+        assert mgr._plugin_commands["legacy"]["busy_policy"] is None
+        assert mgr._plugin_commands["contextual"]["with_context"] is True
+
+    def test_access_classifier_optionally_receives_immutable_source_context(self):
+        calls = []
+
+        def legacy(raw_args):
+            calls.append(("legacy", raw_args))
+            return "user"
+
+        def source_aware(raw_args, context):
+            calls.append(("source-aware", raw_args, context))
+            return "admin"
+
+        context = PluginCommandAccessContext(
+            platform="buzz",
+            channel_id="channel",
+            thread_id=None,
+            chat_type="dm",
+            scope_id=None,
+            source_identity_candidates=("sender",),
+            routed_profile="team",
+        )
+
+        assert plugin_command_access_level({"access": legacy}, "status", context) == "user"
+        assert (
+            plugin_command_access_level(
+                {"access": source_aware}, "listen always", context
+            )
+            == "admin"
+        )
+        assert calls == [
+            ("legacy", "status"),
+            ("source-aware", "listen always", context),
+        ]
+        with pytest.raises(FrozenInstanceError):
+            context.chat_type = "group"
 
 
 

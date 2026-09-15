@@ -1015,6 +1015,16 @@ class GatewayStartupMixin:
             # Under multiplexing the default profile needs the same whole-handler runtime scope as a
             # secondary (authorization and prompt rendering run before the agent-turn scope).
             self._wire_adapter_handlers(adapter)
+            try:
+                self._hydrate_shared_adapter_routed_profile_configs(adapter, platform)
+            except Exception as exc:
+                logger.error(
+                    "Could not hydrate routed-profile policy for %s before transport connect: %s",
+                    platform.value,
+                    exc,
+                )
+                await self._safe_adapter_disconnect(adapter, platform)
+                continue
             _pending_connects.append((platform, platform_config, adapter))
         return False, enabled_platform_count, _multiplex_skipped_platforms, _pending_connects
 

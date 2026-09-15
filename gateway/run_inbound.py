@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import asyncio
 import concurrent.futures
 import dataclasses
+import inspect
 import json
 import os
 import re
@@ -508,7 +509,7 @@ class GatewayInboundMixin:
     ) -> Tuple[bool, Optional[str]]:
         """Slash-command / photo-burst handling on the busy fast-path → ``(handled, result)``. Each
         command's mid-run behavior is declared on its CommandDef (busy_policy / busy_handler)."""
-        from hermes_cli.commands import resolve_command as _resolve_cmd_inner
+        from hermes_cli.commands import resolve_gateway_command as _resolve_cmd_inner
         _evt_cmd = event.get_command()
         _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
 
@@ -520,7 +521,9 @@ class GatewayInboundMixin:
                 return True, await self._handle_context_command(event)
             # Slash access control mirrors the cold-path gate so non-admins can't bypass gating
             # just because an agent is busy. /help and /whoami are the always-allowed floor.
-            _denied = self._check_slash_access(source, _cmd_def_inner.name)
+            _denied = self._check_slash_access_compat(
+                source, _cmd_def_inner.name, event.get_command_args().strip()
+            )
             if _denied is not None:
                 return True, _denied
             # Any recognized slash command dispatches per its declared busy_policy (dispatch /
@@ -731,7 +734,10 @@ class GatewayInboundMixin:
     ) -> Tuple[bool, Optional[str], Optional[str], Optional[str]]:
         """Resolve the slash command (aliases, access gate, hooks) → ``(handled, result, command,
         canonical)``; when ``handled`` the caller returns ``result`` as-is (may be None)."""
-        from hermes_cli.commands import is_gateway_known_command, resolve_command as _resolve_cmd
+        from hermes_cli.commands import (
+            is_gateway_known_command,
+            resolve_gateway_command as _resolve_cmd,
+        )
 
         def _canon(cmd):
             # Aliases resolve to the canonical name so dispatch and hook names don't depend on them.
@@ -758,7 +764,9 @@ class GatewayInboundMixin:
         # Per-platform slash access control: only active when the operator set ``allow_admin_from``
         # for the source's scope; then non-admins get ``user_allowed_commands`` plus the
         # /help, /whoami floor. Plain chat is never gated.
-        _denied = self._check_slash_access(source, canonical)
+        _denied = self._check_slash_access_compat(
+            source, canonical, event.get_command_args().strip()
+        )
         if _denied is not None:
             return True, _denied, command, canonical
 
@@ -972,7 +980,9 @@ class GatewayInboundMixin:
             # them; apply the same admin/user policy to the raw typed name here.
             # The early gate above only fires for registry-known commands, so quick commands (never in the
             # registry) would otherwise reach this dispatch sink unchecked. (#44727)
-            _denied = self._check_slash_access(source, command)
+            _denied = self._check_slash_access_compat(
+                source, command, event.get_command_args().strip()
+            )
             if _denied is not None:
                 return True, _denied, command
             qtype = qcmd.get("type")
@@ -992,11 +1002,21 @@ class GatewayInboundMixin:
         # underscored autocomplete form matches plugin commands registered with hyphens.
         if command:
             try:
-                from hermes_cli.plugins import get_plugin_command_handler
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
-                if plugin_handler:
-                    result = plugin_handler(event.get_command_args().strip())
-                    if asyncio.iscoroutine(result):
+                from hermes_cli.plugins import (
+                    get_plugin_command,
+                    get_plugin_command_handler,
+                )
+
+                plugin_name = command.replace("_", "-")
+                if get_plugin_command(plugin_name):
+                    result = await self._dispatch_registered_plugin_command(
+                        event, source, plugin_name
+                    )
+                    return True, result, command
+                legacy_handler = get_plugin_command_handler(plugin_name)
+                if legacy_handler is not None:
+                    result = legacy_handler(event.get_command_args().strip())
+                    if inspect.isawaitable(result):
                         result = await result
                     return True, str(result) if result else None, command
             except Exception as e:

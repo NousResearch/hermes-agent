@@ -58,6 +58,21 @@ def _summary_markers(messages: list) -> list:
 
 
 class TestMicroCompaction:
+    def test_summary_budget_grows_with_existing_rolling_summary(self):
+        cc = _compressor()
+        cc._micro_compact_rolling_summary = "existing " * 900
+
+        budget = cc._micro_summary_token_budget("new exchange " * 300)
+
+        assert budget > 1500
+        assert budget <= cc.max_summary_tokens
+
+    def test_summary_budget_keeps_small_merges_bounded(self):
+        cc = _compressor()
+        cc._micro_compact_rolling_summary = "short summary"
+
+        assert cc._micro_summary_token_budget("short exchange") == 1500
+
     def test_absorbs_one_exchange_and_leaves_a_summary_marker(self):
         cc = _compressor()
         messages = _conversation()
@@ -192,7 +207,8 @@ class TestMicroCompaction:
             messages = cc._micro_compact(messages)
 
         surviving_text = "\n\n".join(
-            m["content"] for m in messages
+            m["content"]
+            for m in messages
             if m.get("role") == "user" and not m.get(COMPRESSED_SUMMARY_METADATA_KEY)
         )
         for original in originals:
@@ -221,20 +237,25 @@ class TestMicroCompaction:
                 "role": "assistant",
                 "content": f"a{i}",
                 "tool_calls": [
-                    {"id": f"c{i}-{j}", "type": "function",
-                     "function": {"name": "f", "arguments": "{}"}}
+                    {
+                        "id": f"c{i}-{j}",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
                     for j in range(3)
                 ],
             })
             for j in range(3):
-                msgs.append({"role": "tool", "tool_call_id": f"c{i}-{j}",
-                             "content": "T" * 500})
+                msgs.append({
+                    "role": "tool",
+                    "tool_call_id": f"c{i}-{j}",
+                    "content": "T" * 500,
+                })
 
         for _ in range(4):
             msgs = cc._micro_compact(msgs)
             marker_idx = next(
-                i for i, m in enumerate(msgs)
-                if m.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                i for i, m in enumerate(msgs) if m.get(COMPRESSED_SUMMARY_METADATA_KEY)
             )
             assert cc._micro_compact_cursor == marker_idx + 1, (
                 "cursor must sit just past the marker in the spliced list"
@@ -285,8 +306,10 @@ class TestMicroCompaction:
         result = cc._micro_compact(msgs)
         marker = _summary_markers(result)[0]
 
-        assert (cc._rolling_summary_from_marker(marker["content"])
-                == cc._micro_compact_rolling_summary)
+        assert (
+            cc._rolling_summary_from_marker(marker["content"])
+            == cc._micro_compact_rolling_summary
+        )
 
     def test_short_conversation_is_untouched(self):
         cc = _compressor()
@@ -368,7 +391,8 @@ class TestMicroCompaction:
             result = cc._micro_compact(messages)
 
         lines = [
-            r.getMessage() for r in caplog.records
+            r.getMessage()
+            for r in caplog.records
             if "micro compaction telemetry:" in r.getMessage()
         ]
         assert len(lines) == 1
@@ -402,8 +426,11 @@ class TestMicroCompaction:
         with caplog.at_level(logging.INFO, logger="agent.context_compressor"):
             cc._micro_compact(messages)
 
-        line = next(r.getMessage() for r in caplog.records
-                    if "micro compaction telemetry:" in r.getMessage())
+        line = next(
+            r.getMessage()
+            for r in caplog.records
+            if "micro compaction telemetry:" in r.getMessage()
+        )
         payload = json.loads(line.split("micro compaction telemetry: ", 1)[1])
 
         assert payload["threshold_tokens"] == 10_000
@@ -430,8 +457,9 @@ class TestMicroCompaction:
         def explode(self):  # pragma: no cover - must never be called
             raise AssertionError("telemetry forced context-length resolution")
 
-        with patch.object(type(cc), "threshold_tokens",
-                          property(explode, lambda s, v: None)):
+        with patch.object(
+            type(cc), "threshold_tokens", property(explode, lambda s, v: None)
+        ):
             with caplog.at_level(logging.INFO, logger="agent.context_compressor"):
                 cc._emit_micro_compaction_telemetry(
                     outcome="absorbed",
@@ -441,8 +469,11 @@ class TestMicroCompaction:
                     tokens_after=400,
                 )
 
-        line = next(r.getMessage() for r in caplog.records
-                    if "micro compaction telemetry:" in r.getMessage())
+        line = next(
+            r.getMessage()
+            for r in caplog.records
+            if "micro compaction telemetry:" in r.getMessage()
+        )
         payload = json.loads(line.split("micro compaction telemetry: ", 1)[1])
 
         assert payload["occupancy_pct"] is None
@@ -531,13 +562,17 @@ class TestMicroCompaction:
         messages = [{"role": "system", "content": "sys"}]
         for i in range(10):
             messages.append({"role": "user", "content": f"UNIQUE-USER-PROMPT-{i}"})
-            messages.append({"role": "assistant", "content": f"answer {i} " + "z" * 400})
+            messages.append({
+                "role": "assistant",
+                "content": f"answer {i} " + "z" * 400,
+            })
 
         cc._micro_compact_rolling_summary = "x" * 40_000  # force defrag
         result = cc._micro_compact(list(messages))
 
         surviving = [
-            m["content"] for m in result
+            m["content"]
+            for m in result
             if m.get("role") == "user" and not m.get(COMPRESSED_SUMMARY_METADATA_KEY)
         ]
         for i in range(10):
@@ -593,7 +628,8 @@ class TestMicroCompaction:
             markers = _summary_markers(messages)
             assert len(markers) == 1, "marker destroyed by repair pass"
             polluted = [
-                m for m in messages
+                m
+                for m in messages
                 if m.get("role") == "user"
                 and not m.get(COMPRESSED_SUMMARY_METADATA_KEY)
                 and "ROLLING SUMMARY" in str(m.get("content"))
@@ -610,14 +646,20 @@ class TestMicroCompaction:
                 "role": "assistant",
                 "content": f"a{i}",
                 "tool_calls": [
-                    {"id": f"c{i}-{j}", "type": "function",
-                     "function": {"name": "f", "arguments": "{}"}}
+                    {
+                        "id": f"c{i}-{j}",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": "{}"},
+                    }
                     for j in range(2)
                 ],
             })
             for j in range(2):
-                msgs.append({"role": "tool", "tool_call_id": f"c{i}-{j}",
-                             "content": "T" * 400})
+                msgs.append({
+                    "role": "tool",
+                    "tool_call_id": f"c{i}-{j}",
+                    "content": "T" * 400,
+                })
             # Multi-iteration turn: a second assistant+tools group before the
             # next user message — the splice must absorb the WHOLE turn.
             msgs.append({"role": "assistant", "content": f"followup {i} " + "y" * 200})
@@ -664,16 +706,15 @@ class TestMicroCompaction:
             COMPRESSED_SUMMARY_METADATA_KEY: True,
         }
         micro_idx = next(
-            i for i, m in enumerate(msgs)
-            if m.get(COMPRESSED_SUMMARY_METADATA_KEY)
+            i for i, m in enumerate(msgs) if m.get(COMPRESSED_SUMMARY_METADATA_KEY)
         )
-        msgs = msgs[:micro_idx] + [batch_marker] + msgs[micro_idx + 3:]
+        msgs = msgs[:micro_idx] + [batch_marker] + msgs[micro_idx + 3 :]
 
         out = cc._micro_compact(msgs)
 
-        assert any(
-            "CRITICAL HISTORY" in str(m.get("content")) for m in out
-        ), "batch-compaction summary destroyed by micro supersede"
+        assert any("CRITICAL HISTORY" in str(m.get("content")) for m in out), (
+            "batch-compaction summary destroyed by micro supersede"
+        )
 
     def test_defrag_never_rewrites_a_batch_compaction_marker(self):
         """Defrag rewrites only micro-tagged markers, never batch markers."""
@@ -754,7 +795,8 @@ class TestMicroCompaction:
         result = cc._micro_compact(messages)
 
         unstamped = [
-            m for m in result
+            m
+            for m in result
             if not m.get(_DB_PERSISTED_MARKER)
             and not m.get(COMPRESSED_SUMMARY_METADATA_KEY)
         ]

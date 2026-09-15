@@ -1818,6 +1818,10 @@ class CLITuiMixin:
 
         # Config file watcher — detect mcp_servers changes and auto-reload.
         from hermes_cli.config import get_config_path as _get_config_path
+        try:
+            from utils import file_signature
+        except (ImportError, AttributeError):
+            file_signature = lambda st: (int(st.st_mtime_ns), int(st.st_size), int(st.st_ino), int(getattr(st, 'st_ctime_ns', 0)))
         _cfg_path = _get_config_path()
         self._config_sig: tuple | None = file_signature(_cfg_path.stat()) if _cfg_path.exists() else None
         self._config_mcp_servers: dict = self.config.get("mcp_servers") or {}

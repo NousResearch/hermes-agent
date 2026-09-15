@@ -284,6 +284,11 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
             ))
             if lexical_root_key != lexical_home_key:
                 lexical_exempt_home_keys += (lexical_root_key,)
+            canonical_lexical_root_key = os.path.normcase(
+                os.path.realpath(str(lexical_profile_home.parent.parent))
+            )
+            if canonical_lexical_root_key not in exempt_home_keys:
+                exempt_home_keys += (canonical_lexical_root_key,)
     except (OSError, RuntimeError, ValueError):
         lexical_home_key = real_home_key
         lexical_exempt_home_keys = exempt_home_keys

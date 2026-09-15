@@ -1012,6 +1012,29 @@ class TestProfileHomeExemptsHermesRoot:
         assert (real_root / "AGENTS.md").read_text(encoding="utf-8") == "root notes"
         assert approvals["calls"] == []
 
+    def test_symlinked_named_profile_directory_keeps_parent_root_ungated(
+        self, tmp_path, monkeypatch, approvals
+    ):
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        root = tmp_path / ".hermes"
+        profiles = root / "profiles"
+        profiles.mkdir(parents=True)
+        external_profile = tmp_path / "profile-data"
+        external_profile.mkdir()
+        lexical_profile = profiles / "worker"
+        lexical_profile.symlink_to(external_profile, target_is_directory=True)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        token = set_hermes_home_override(str(lexical_profile))
+        try:
+            res = self._write(root / "AGENTS.md", "root notes")
+        finally:
+            reset_hermes_home_override(token)
+
+        assert not res.get("error"), res
+        assert (root / "AGENTS.md").read_text(encoding="utf-8") == "root notes"
+        assert approvals["calls"] == []
+
     def test_only_a_real_hermes_root_is_exempt(self, tmp_path, monkeypatch, approvals):
         """Negatives hold with a named profile active: a checkout's ``.hermes/config.yaml`` and
         protected basenames stay gated (fail-closed, unwritten), and a coincidental

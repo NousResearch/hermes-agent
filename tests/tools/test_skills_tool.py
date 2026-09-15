@@ -948,6 +948,63 @@ class TestSkillViewCollisionDetection:
         assert "REAL SKETCH SKILL" in result["content"]
 
 
+    def test_package_owned_markdown_does_not_collide_with_real_skill(self, tmp_path):
+        """Markdown inside a directory skill under a non-support dir is not a skill.
+
+        A real-world regression had research/SKILL.md become unloadable
+        because another skill carried prompts/research.md. _is_skill_support_path
+        only excludes the hard-coded references/templates/assets/scripts dirs;
+        Markdown owned by a directory skill (any ancestor between the file and
+        the skills root contains SKILL.md) must never enter the legacy flat
+        <name>.md candidate set, regardless of the internal directory's name.
+        """
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(local_dir, "research", body="REAL RESEARCH SKILL")
+        _make_skill(local_dir, "example", category="character")
+        internal_prompt = (
+            local_dir / "character" / "example" / "prompts" / "research.md"
+        )
+        internal_prompt.parent.mkdir(parents=True, exist_ok=True)
+        internal_prompt.write_text("# Internal research prompt\n")
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("research")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["path"] == "research/SKILL.md"
+        assert "REAL RESEARCH SKILL" in result["content"]
+
+
+    def test_root_level_flat_skill_still_loads(self, tmp_path):
+        """The #110456 exclusion must not kill true root-level legacy flat skills.
+
+        A <name>.md sitting directly under the skills root (no skill-root
+        ancestor between the file and the root) keeps its legacy candidate
+        behavior.
+        """
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        flat = local_dir / "research.md"
+        flat.write_text("# Legacy flat research skill\n")
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("research")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["path"] == "research.md"
+
+
     def test_two_externals_same_name_also_refuse(self, tmp_path):
         """Collision detection is symmetric — two external dirs with
         same-name skills also trigger the refusal."""

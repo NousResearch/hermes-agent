@@ -310,6 +310,22 @@ def _under_any(path: Path, dirs) -> bool:
     return any(resolved.is_relative_to(d) for d in dirs)
 
 
+def _owned_by_directory_skill(candidate: Path, search_dir: Path) -> bool:
+    """True when *candidate* is package-owned Markdown: any ancestor strictly between
+    the file and *search_dir* contains SKILL.md. Internal docs of a directory skill
+    are not standalone legacy flat skills, whatever the inner directory is called."""
+    resolved = candidate
+    root = search_dir
+    with suppress(Exception):
+        resolved, root = candidate.resolve(), search_dir.resolve()
+    ancestor = resolved.parent
+    while ancestor != root and ancestor != ancestor.parent:
+        if (ancestor / "SKILL.md").exists():
+            return True
+        ancestor = ancestor.parent
+    return False
+
+
 def _collect_skill_candidates(name, local_category_name, all_dirs):
     """ALL (skill_dir, skill_md) candidates across every dir and lookup strategy (direct path,
     recursive by dir / frontmatter name, legacy flat <name>.md), deduped by resolved path.
@@ -344,9 +360,13 @@ def _collect_skill_candidates(name, local_category_name, all_dirs):
                     or _safe_frontmatter(found_skill_md).get("name") == name):
                 _record(found_skill_md.parent, found_skill_md)
         # Legacy flat <name>.md anywhere under the dir; support docs are excluded
-        # (they load via file_path and must not shadow real skills sharing the basename).
+        # (they load via file_path and must not shadow real skills sharing the basename),
+        # as is Markdown owned by a directory skill under any other internal dir
+        # (a prompts/research.md inside character/example is not a "research" skill).
         for found_md in search_dir.rglob(f"{name}.md"):
-            if found_md.name != "SKILL.md" and not _is_skill_support_path(found_md):
+            if (found_md.name != "SKILL.md"
+                    and not _is_skill_support_path(found_md)
+                    and not _owned_by_directory_skill(found_md, search_dir)):
                 _record(None, found_md)
     return candidates
 

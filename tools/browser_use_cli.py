@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
+from tools.registry import expected_false_check_fn
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -213,6 +214,7 @@ def is_legacy_browser_use_cloud_config(browser_cfg: dict) -> bool:
     return bool(get_secret("BROWSER_USE_API_KEY", ""))
 
 
+@expected_false_check_fn
 def is_browser_use_cli_mode() -> bool:
     """True when the Browser Use CLI replaces the built-in browser stack. Browser Use mode is the DEFAULT:
     unset ``browser.backend`` ("") enables it whenever the CLI is runnable (installed binary or uvx);

@@ -28,6 +28,7 @@ import {
   confirmRevert,
   refreshReview,
   requestRevert,
+  type ReviewTreeMode,
   stageReviewFile,
   toggleReviewTreeMode,
   unstageReviewFile
@@ -42,6 +43,17 @@ import { ReviewShipBar } from './ship-bar'
 // Compact header/diff action buttons — micro hit targets packed tight, matching
 // the rest of the app's icon-action rows.
 const ACTION_BTN = 'size-5'
+
+// The layout button advertises the NEXT mode in the cycle (tree → list → smart).
+const NEXT_MODE: Record<ReviewTreeMode, ReviewTreeMode> = { tree: 'list', list: 'smart', smart: 'tree' }
+
+const NEXT_MODE_ICON: Record<ReviewTreeMode, string> = { tree: 'list-flat', list: 'sparkle', smart: 'list-tree' }
+
+function nextModeLabel(mode: ReviewTreeMode, c: { viewAsList: string; viewAsSmart: string; viewAsTree: string }): string {
+  const next = NEXT_MODE[mode]
+
+  return next === 'list' ? c.viewAsList : next === 'smart' ? c.viewAsSmart : c.viewAsTree
+}
 
 export function ReviewPane() {
   const { t } = useI18n()
@@ -82,16 +94,16 @@ export function ReviewPane() {
                 says "review", so the zone header hides it (styles.css). */}
             <SidebarPanelLabel data-pane-self-label="">{c.review}</SidebarPanelLabel>
           </div>
-          <Tip label={treeMode === 'tree' ? c.viewAsList : c.viewAsTree}>
+          <Tip label={nextModeLabel(treeMode, c)}>
             <Button
-              aria-label={treeMode === 'tree' ? c.viewAsList : c.viewAsTree}
+              aria-label={nextModeLabel(treeMode, c)}
               className={ACTION_BTN}
               disabled={!hasFiles}
               onClick={toggleReviewTreeMode}
               size="icon-xs"
               variant="ghost"
             >
-              <Codicon name={treeMode === 'tree' ? 'list-flat' : 'list-tree'} size="0.8125rem" />
+              <Codicon name={NEXT_MODE_ICON[treeMode]} size="0.8125rem" />
             </Button>
           </Tip>
           <Tip label={c.stageAll}>

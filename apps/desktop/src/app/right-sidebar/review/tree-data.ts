@@ -13,6 +13,91 @@ export interface ReviewTreeNode {
   dir?: string
   file?: HermesReviewFile
   children?: ReviewTreeNode[]
+  /** Supporting file (test/fixture/lockfile/generated) — rendered dimmed. */
+  muted?: boolean
+}
+
+// ── Importance classification (smart order) ──────────────────────────────────
+//
+// Deterministic proxy for Amp's "intelligently ordered diffs": the files that
+// best explain a change are the source files; tests, fixtures, lockfiles and
+// generated artifacts SUPPORT it. No model call — classification must be free,
+// instant, and identical on every refresh.
+
+const SUPPORTING_DIR_SEGMENTS = new Set([
+  '__fixtures__',
+  '__mocks__',
+  '__snapshots__',
+  '__tests__',
+  'fixtures',
+  'snapshots',
+  'spec',
+  'test',
+  'testdata',
+  'tests'
+])
+
+const SUPPORTING_FILENAMES = new Set([
+  'cargo.lock',
+  'composer.lock',
+  'gemfile.lock',
+  'go.sum',
+  'package-lock.json',
+  'pnpm-lock.yaml',
+  'poetry.lock',
+  'uv.lock',
+  'yarn.lock'
+])
+
+// Filename shapes: foo.test.ts / foo.spec.tsx / test_foo.py / foo_test.go /
+// generated + minified + sourcemap artifacts / snapshot files.
+const SUPPORTING_FILE_RE = /(\.(test|spec)\.[^.]+$)|(^test_.+\.py$)|(_test\.(py|go|rb|ts|js)$)|(\.snap$)|(\.min\.(js|css)$)|(\.map$)|(\.generated\.[^.]+$)|(_pb2(_grpc)?\.py$)/
+
+/** True when a changed file is supporting material (test, fixture, lockfile,
+ *  generated) rather than a change-explaining source file. */
+export function isSupportingReviewPath(path: string): boolean {
+  const segments = path.split('/').filter(Boolean)
+  const name = (segments.pop() ?? path).toLowerCase()
+
+  if (SUPPORTING_FILENAMES.has(name) || SUPPORTING_FILE_RE.test(name)) {
+    return true
+  }
+
+  return segments.some(segment => SUPPORTING_DIR_SEGMENTS.has(segment.toLowerCase()))
+}
+
+// Smart flat list: change-explaining files first ordered by churn (the file
+// with the most movement usually explains the change), supporting files after,
+// dimmed. Ties break by path so the order is stable across refreshes.
+export function buildReviewSmartList(files: HermesReviewFile[]): ReviewTreeNode[] {
+  const churn = (f: HermesReviewFile) => f.added + f.removed
+
+  return [...files]
+    .sort((a, b) => {
+      const aMuted = isSupportingReviewPath(a.path)
+      const bMuted = isSupportingReviewPath(b.path)
+
+      if (aMuted !== bMuted) {
+        return aMuted ? 1 : -1
+      }
+
+      return churn(b) - churn(a) || a.path.localeCompare(b.path)
+    })
+    .map(file => {
+      const segments = file.path.split('/').filter(Boolean)
+      const name = segments.pop() ?? file.path
+
+      return {
+        id: file.path,
+        name,
+        dir: segments.join('/'),
+        isDir: false,
+        added: file.added,
+        removed: file.removed,
+        muted: isSupportingReviewPath(file.path),
+        file
+      }
+    })
 }
 
 // Flat changed-file list (VS Code's default SCM "List" view): one row per file,

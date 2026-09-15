@@ -108,12 +108,43 @@ _ALLOWED_NOUS_INFERENCE_HOSTS: FrozenSet[str] = frozenset({
     # Free-tier (anonymous) host: serves the single ``nous/welcome`` model.
     "welcome-api.nousresearch.com"})
 
+# Non-production Portal → the inference host it legitimately pairs with. A token minted by the
+# staging Portal is meant to be spent at the staging inference gateway, and the staging Portal's
+# refresh response says so; without this pairing that value is refused as "not in allowlist" and
+# healed to PROD, so a staging session sends its staging-issued JWT to the production gateway
+# (401) unless the operator ALSO sets NOUS_INFERENCE_BASE_URL or model.base_url. Keyed on the
+# Portal host so the original protection is intact: a PROD-portal session that finds a staging
+# inference URL in its state is still refused and healed.
+_NOUS_PORTAL_PAIRED_INFERENCE_HOSTS: Dict[str, FrozenSet[str]] = {
+    "portal.staging-nousresearch.com": frozenset({"stg-inference-api.nousresearch.com"}),
+}
 
-def _validate_nous_inference_url_from_network(url: Optional[str]) -> Optional[str]:
+
+def _allowed_nous_inference_hosts_for_portal(portal_base_url: Optional[str]) -> FrozenSet[str]:
+    """Allowlisted inference hosts for a token issued by *portal_base_url*.
+
+    Always includes the production hosts; adds the paired non-production host only when the
+    issuing Portal is that environment's own Portal.
+    """
+    if not isinstance(portal_base_url, str) or not portal_base_url.strip():
+        return _ALLOWED_NOUS_INFERENCE_HOSTS
+    try:
+        portal_host = urlparse(portal_base_url.strip()).hostname
+    except Exception:
+        return _ALLOWED_NOUS_INFERENCE_HOSTS
+    paired = _NOUS_PORTAL_PAIRED_INFERENCE_HOSTS.get(portal_host or "")
+    return (_ALLOWED_NOUS_INFERENCE_HOSTS | paired) if paired else _ALLOWED_NOUS_INFERENCE_HOSTS
+
+
+def _validate_nous_inference_url_from_network(
+        url: Optional[str], portal_base_url: Optional[str] = None) -> Optional[str]:
     """Validate a Portal-returned inference URL against the host allowlist.
 
     Defense-in-depth: a compromised refresh response (MITM, response injection) could otherwise
     redirect every proxy request — bearing the user's inference JWT — to an attacker endpoint.
+
+    *portal_base_url* is the Portal the token was issued/refreshed against; omitting it keeps the
+    strict production-only allowlist.
     """
     cleaned = url.strip() if isinstance(url, str) else ""
     if not cleaned:
@@ -126,11 +157,11 @@ def _validate_nous_inference_url_from_network(url: Optional[str]) -> Optional[st
         logger.warning(
             "nous: refusing non-https inference URL scheme %r from Portal response", parsed.scheme)
         return None
-    if parsed.hostname not in _ALLOWED_NOUS_INFERENCE_HOSTS:
+    if parsed.hostname not in _allowed_nous_inference_hosts_for_portal(portal_base_url):
         logger.warning(
             "nous: refusing inference URL host %r from Portal response "
-            "(not in allowlist); falling back to default",
-            parsed.hostname)
+            "(not in allowlist for portal %r); falling back to default",
+            parsed.hostname, portal_base_url)
         return None
     return cleaned.rstrip("/")
 
@@ -626,14 +657,19 @@ def _apply_nous_refreshed_tokens(
     state["expires_at"] = _iso_after(now, access_ttl)
 
 
-def _healed_nous_inference_url(refreshed: Dict[str, Any]) -> str:
+def _healed_nous_inference_url(
+        refreshed: Dict[str, Any], portal_base_url: Optional[str] = None) -> str:
     """Validated network-provenance inference URL from a refresh payload, healed to the default.
 
     A Portal URL rejected by the allowlist resets to the production default instead of leaving a
     previously-persisted bad host (e.g. a stale staging URL) in place — otherwise a poisoned
     auth.json re-validates to None on every refresh and silently re-uses the dead endpoint.
+
+    *portal_base_url* is the Portal the payload was refreshed against, so a non-production Portal's
+    own paired inference host is accepted instead of being healed to production.
     """
-    url = _validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))
+    url = _validate_nous_inference_url_from_network(
+        refreshed.get("inference_base_url"), portal_base_url)
     return url or DEFAULT_NOUS_INFERENCE_URL
 
 
@@ -749,7 +785,8 @@ def refresh_nous_oauth_from_state(
                 client_id=state["client_id"], refresh_token=refresh_token_value)
             _apply_nous_refreshed_tokens(
                 state, refreshed, refresh_token_value,
-                inference_base_url=_healed_nous_inference_url(refreshed))
+                inference_base_url=_healed_nous_inference_url(
+                    refreshed, state["portal_base_url"]))
             if on_state_update is not None:
                 on_state_update(dict(state), "post_refresh_access_token")
         _assert_nous_inference_jwt_usable(state)
@@ -818,7 +855,7 @@ def _nous_effective_routing(state: Dict[str, Any]) -> tuple[str, str, str, str]:
     from hermes_cli.anon_auth import is_guest_state
     stored_inference_url = (
         _validate_nous_inference_url_from_network(
-            _optional_base_url(state.get("inference_base_url")))
+            _optional_base_url(state.get("inference_base_url")), portal_url)
         or (DEFAULT_NOUS_WELCOME_URL if is_guest_state(state) else DEFAULT_NOUS_INFERENCE_URL))
     return (
         portal_url, stored_inference_url, _nous_inference_env_override() or stored_inference_url,
@@ -923,7 +960,8 @@ class _NousRuntimeResolve:
         # The validated, network-provenance URL is what gets persisted (with the rotated tokens,
         # so a later JWT validation failure cannot leave the stores on stale metadata). The
         # NOUS_INFERENCE_BASE_URL env override is layered on for the client/return value only.
-        self.stored_inference_base_url = _healed_nous_inference_url(refreshed)
+        self.stored_inference_base_url = _healed_nous_inference_url(
+            refreshed, self.portal_base_url)
         self.inference_base_url = _nous_inference_env_override() or self.stored_inference_base_url
         _apply_nous_refreshed_tokens(
             self.state, refreshed, self.refresh_token,

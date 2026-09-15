@@ -425,7 +425,8 @@ def get_cached_nous_inference_base_url() -> str:
         )
 
         state = _load_provider_state(_load_auth_store(), "nous") or {}
-        url = _validate_nous_inference_url_from_network(_optional_base_url(state.get("inference_base_url"))) or ""
+        url = _validate_nous_inference_url_from_network(
+            _optional_base_url(state.get("inference_base_url")), state.get("portal_base_url")) or ""
         return url.rstrip("/").removesuffix("/v1")
     except Exception:
         return ""

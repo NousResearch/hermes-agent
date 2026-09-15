@@ -100,23 +100,36 @@ class TestCallSiteWiring:
                 f"Use _validate_nous_inference_url_from_network() instead."
             )
 
-    def test_validator_wired_at_all_known_call_sites(self):
-        """All 2 known auth.py NETWORK refresh sites route the Portal-returned
-        inference URL through ``_healed_nous_inference_url`` (which applies the
-        validator and heals to the default). If this count drops, someone removed
-        protection; if it grows, audit the new site to be sure validation is
-        appropriate."""
+    def test_validator_wired_at_all_known_call_sites(self, monkeypatch):
+        """The refresh path routes the Portal-returned inference URL through the validator,
+        and hands it the Portal the payload was refreshed against.
+
+        Behavioural, not a source grep: the previous version counted an exact call-string and
+        broke on reformatting while proving nothing about runtime. Monkeypatching the validator
+        and calling the real helper catches an actual downgrade (someone dropping the validator
+        or the portal argument), which is what this guard is for.
+        """
+        from hermes_cli import auth_nous
+
+        seen = []
+
+        def _spy(url, portal_base_url=None):
+            seen.append((url, portal_base_url))
+            return url
+
+        monkeypatch.setattr(auth_nous, "_validate_nous_inference_url_from_network", _spy)
+        payload = {"inference_base_url": "https://inference-api.nousresearch.com/v1"}
+        auth_nous._healed_nous_inference_url(payload, "https://portal.nousresearch.com")
+
+        assert seen == [(
+            "https://inference-api.nousresearch.com/v1", "https://portal.nousresearch.com")], (
+            "the refresh payload must reach the validator together with its issuing Portal")
+
+    def test_mint_payload_has_no_unvalidated_site(self):
+        """The mint path must not reintroduce an unvalidated ``mint_payload`` read."""
         source = self._read_auth_source()
-        assert (
-            source.count('_validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))')
-            == 1
-        ), "the validator must be applied exactly once, inside _healed_nous_inference_url"
-        refresh_count = source.count("_healed_nous_inference_url(refreshed)")
-        mint_count = source.count(
-            '_validate_nous_inference_url_from_network(mint_payload.get("inference_base_url"))'
-        )
-        assert refresh_count == 2, f"expected 2 refresh sites, found {refresh_count}"
-        assert mint_count == 0, f"expected 0 mint sites, found {mint_count}"
+        assert '_validate_nous_inference_url_from_network(mint_payload.get(' not in source
+        assert '_optional_base_url(mint_payload.get("inference_base_url"))' not in source
 
     def test_proxy_adapter_also_validates(self):
         """The Nous proxy adapter applies the validator as defense-in-depth

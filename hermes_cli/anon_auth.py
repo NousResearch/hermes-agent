@@ -226,7 +226,8 @@ def apply_exchange_to_state(state: Dict[str, Any], exchanged: Dict[str, Any]) ->
     # NAS names the welcome host on every exchange; absent (older NAS) or outside the allowlist
     # (a staging host without NOUS_INFERENCE_BASE_URL set), the literal stands in. Never the paid
     # host: the gateway cross-refuses an anonymous JWT there.
-    inference_url = (_validate_nous_inference_url_from_network(exchanged.get("inference_base_url"))
+    inference_url = (_validate_nous_inference_url_from_network(
+                         exchanged.get("inference_base_url"), state.get("portal_base_url"))
                      or DEFAULT_NOUS_WELCOME_URL)
     scope = claims.get("scope") or claims.get("scp") or state.get("scope")
     if isinstance(scope, (list, tuple)):

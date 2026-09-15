@@ -92,7 +92,8 @@ class NousPortalAdapter(UpstreamAdapter):
             # production default (defense-in-depth against a future source-layer bypass).
             base_url = (
                 _nous_inference_env_override()
-                or _validate_nous_inference_url_from_network(refreshed.get("base_url"))
+                or _validate_nous_inference_url_from_network(
+                    refreshed.get("base_url"), state.get("portal_base_url"))
                 or DEFAULT_NOUS_INFERENCE_URL
             ).rstrip("/")
             return UpstreamCredential(bearer=runtime_key, base_url=base_url, expires_at=refreshed.get("expires_at"))

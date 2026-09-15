@@ -97,7 +97,12 @@ def cmd_tools(args):
         from hermes_cli.tools_config import run_post_setup_command
         sys.exit(run_post_setup_command(args))
     else:
-        _require_tty("tools")
+        # ``--summary`` is a read-only report and is intentionally usable in
+        # pipes, cron jobs, and other non-interactive callers.  The regular
+        # configuration UI still requires a terminal so its prompts cannot
+        # block unattended invocations.
+        if not getattr(args, "summary", False):
+            _require_tty("tools")
         from hermes_cli.tools_config import tools_command
         tools_command(args)
 

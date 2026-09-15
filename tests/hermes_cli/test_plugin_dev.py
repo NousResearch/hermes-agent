@@ -217,6 +217,24 @@ def test_resolve_prefers_installed_id_over_unrelated_local_dir(
     assert plugin_dev.resolve_plugin_path("sample") == installed.resolve()
 
 
+def test_resolve_matches_manifest_name_in_path_derived_install(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An installed plugin's public id may differ from its directory name."""
+    from hermes_cli import plugin_dev
+
+    hermes_home = tmp_path / "hermes-home"
+    installed = hermes_home / "plugins" / "mia_topic_router"
+    installed.mkdir(parents=True)
+    (installed / "plugin.yaml").write_text(
+        "name: mia-coordinator\nversion: 0.1.0\n", encoding="utf-8"
+    )
+    (installed / "__init__.py").write_text("def register(ctx):\n    pass\n", encoding="utf-8")
+    monkeypatch.setattr(plugin_dev, "get_hermes_home", lambda: hermes_home)
+
+    assert plugin_dev.resolve_plugin_path("mia-coordinator") == installed.resolve()
+
+
 def test_doctor_removes_temp_home_when_staging_copy_fails(
     tmp_path: Path, monkeypatch
 ) -> None:

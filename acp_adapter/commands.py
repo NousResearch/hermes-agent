@@ -48,6 +48,11 @@ class SlashCommandsMixin:
             "Show current model and provider, or switch models",
             "model name to switch to",
         ),
+        "reasoning": (
+            "Show or change reasoning effort",
+            "Show or change reasoning effort",
+            "none|minimal|low|medium|high|xhigh|max|ultra [--global]",
+        ),
         "tools": ("List available tools", "List available tools with descriptions", None),
         "context": ("Show conversation context info", "Show conversation message counts by role", None),
         "reset": ("Clear conversation history", "Clear conversation history", None),
@@ -129,6 +134,53 @@ class SlashCommandsMixin:
         provider_label = getattr(state.agent, "provider", None) or target_provider or current_provider or "openrouter"
         logger.info("Session %s: model switched to %s", state.session_id, new_model)
         return f"Model switched to: {new_model}\nProvider: {provider_label}"
+
+    def _cmd_reasoning(self, args: str, state: SessionState) -> str:
+        """``/reasoning [none|minimal|low|medium|high|xhigh|max|ultra [--global]]`` — show or set
+        the session's reasoning effort (CLI parity; session-scoped unless ``--global``)."""
+        from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
+
+        parts = args.split()
+        global_scope = "--global" in parts
+        raw = " ".join(p for p in parts if p != "--global").strip().lower()
+
+        if not raw:  # show current state
+            rc = getattr(state.agent, "reasoning_config", None)
+            level = ("medium (default)" if rc is None
+                     else "none (disabled)" if rc.get("enabled") is False
+                     else rc.get("effort", "medium"))
+            return "\n".join([
+                f"Reasoning effort:  {level}",
+                "Usage: /reasoning <none|minimal|low|medium|high|xhigh|max|ultra> [--global]",
+            ])
+
+        parsed = parse_reasoning_effort(raw)
+        if parsed is None:
+            return "\n".join([
+                f"(._.) Unknown argument: {raw}",
+                f"Valid levels: none, {', '.join(VALID_REASONING_EFFORTS)}",
+                "Scope:        session-scoped by default, --global to persist",
+            ])
+
+        state.agent.reasoning_config = parsed
+        # Keep the persisted session row honest for resume (agent_init records the init config).
+        init_cfg = getattr(state.agent, "_session_init_model_config", None)
+        if isinstance(init_cfg, dict):
+            init_cfg["reasoning_config"] = parsed
+        self.session_manager.save_session(state.session_id)
+
+        outcome = "for this session"
+        if global_scope:
+            try:
+                from cli import save_config_value
+
+                saved = bool(save_config_value("agent.reasoning_effort", raw))
+            except Exception:
+                logger.warning("ACP /reasoning --global persist failed", exc_info=True)
+                saved = False
+            outcome = "saved to config" if saved else "applied for this session (persist failed; see logs)"
+        effort_label = "none (disabled)" if parsed.get("enabled") is False else parsed.get("effort", "medium")
+        return f"✓ Reasoning effort set to '{effort_label}' ({outcome})"
 
     def _cmd_tools(self, args: str, state: SessionState) -> str:
         try:

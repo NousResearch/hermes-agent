@@ -86,10 +86,13 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
 
     // Right-clicks resolve through the app context menu; the handle carries
     // the xterm selection the DOM resolver cannot see. paste stays null —
-    // there is nothing to paste into.
+    // there is nothing to paste into. reload swallows the chord for the same
+    // reason: no PTY, and focus being here must still stop the app-level
+    // Ctrl/Cmd+R reload fallback.
     const contextMenuDisposable = registerTerminalContextMenu(host, {
       getSelection: () => term.getSelection(),
       paste: null,
+      reload: () => {},
       selectAll: () => term.selectAll()
     })
 

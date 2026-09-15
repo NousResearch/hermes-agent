@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react'
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { commandFocusedPreview } from '@/app/chat/right-rail/preview-nav'
 import { openSession } from '@/app/open-session'
+import { commandFocusedTerminal } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
@@ -356,6 +357,10 @@ export function useDesktopIntegrations({
   // app-level meaning to fall back to; an unfocused swipe is a no-op.
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onPreviewNav?.(command => {
+      if (commandFocusedTerminal(command)) {
+        return
+      }
+
       if (!commandFocusedPreview(command) && command === 'reload') {
         window.location.reload()
       }

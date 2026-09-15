@@ -796,7 +796,9 @@ export function useTerminalSession({
 
     // The app context menu resolves right-clicks on this host through the
     // registered handle: xterm's selection is not a DOM selection, so the
-    // DOM resolver would see nothing here.
+    // DOM resolver would see nothing here. The same handle answers the
+    // focus-routed Ctrl/Cmd+R: main claimed the keystroke, so re-deliver the
+    // ^R byte to the PTY ourselves (#96482).
     cleanup.push(
       registerTerminalContextMenu(host, {
         getSelection: () => term.getSelection(),
@@ -804,6 +806,14 @@ export function useTerminalSession({
           hasSessionActivityRef.current = true
           term.focus()
           term.paste(text)
+        },
+        reload: () => {
+          hasSessionActivityRef.current = true
+          const sessionId = sessionIdRef.current
+
+          if (sessionId) {
+            void terminalApi.write(sessionId, '\x12')
+          }
         },
         selectAll: () => term.selectAll()
       })

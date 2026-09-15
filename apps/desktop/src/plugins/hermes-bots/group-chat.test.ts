@@ -984,3 +984,380 @@ describe('sync worker', () => {
     expect(configured.has('gw-b')).toBe(true)
   })
 })
+
+describe('durable disband memory (#105275)', () => {
+  it('a remembered disband keeps a stale mirror projection from resurrecting the room', async () => {
+    const { chat } = await loadRoom()
+
+    const merged = chat.mergeRemoteGroupChatSnapshotIntoRooms(
+      {
+        rooms: {
+          'id:gone-1': {
+            log: [{ at: 1, from: { kind: 'user', name: 'You' }, id: 'g1', text: 'stale mirror copy' }],
+            name: 'Gone',
+            revision: 3,
+            roomId: 'gone-1'
+          }
+        },
+        version: 3
+      },
+      {},
+      { disbandedRooms: { 'id:gone-1': { name: 'Gone', rev: 4 } } }
+    )
+
+    expect(merged.Gone).toBeUndefined()
+  })
+
+  it('a legacy name-keyed projection newer than the remembered disband still merges', async () => {
+    const { chat } = await loadRoom()
+
+    const merged = chat.mergeRemoteGroupChatSnapshotIntoRooms(
+      {
+        rooms: {
+          'name:Gone': {
+            log: [{ at: 2, from: { kind: 'user', name: 'You' }, id: 'g2', text: 'recreated later' }],
+            name: 'Gone',
+            revision: 5
+          }
+        },
+        version: 3
+      },
+      {},
+      { disbandedRooms: { 'name:Gone': { name: 'Gone', rev: 4 } } }
+    )
+
+    expect(merged.Gone).toBeTruthy()
+    expect(merged.Gone.log[0].text).toBe('recreated later')
+  })
+
+  it('an id-keyed disband stays final against a stale mirror with a higher CAS revision', async () => {
+    const { chat } = await loadRoom()
+
+    // Gateway CAS revision streams are independent: a secondary mirror that
+    // stayed busy can project the disbanded room at revision 40 while this
+    // Desktop remembers disbanding at revision 4. Room ids are never reused,
+    // so the id-keyed disband is final — the revision race must not
+    // resurrect the room.
+    const merged = chat.mergeRemoteGroupChatSnapshotIntoRooms(
+      {
+        rooms: {
+          'id:gone-1': {
+            log: [{ at: 1, from: { kind: 'user', name: 'You' }, id: 'g1', text: 'busy mirror copy' }],
+            name: 'Gone',
+            revision: 40,
+            roomId: 'gone-1'
+          }
+        },
+        version: 3
+      },
+      {},
+      { disbandedRooms: { 'id:gone-1': { name: 'Gone', rev: 4 } } }
+    )
+
+    expect(merged.Gone).toBeUndefined()
+  })
+
+  it('a same-name recreate with a fresh roomId is not blocked by the old disband', async () => {
+    const { chat } = await loadRoom()
+
+    const merged = chat.mergeRemoteGroupChatSnapshotIntoRooms(
+      {
+        rooms: {
+          'id:new-room': {
+            log: [{ at: 3, from: { kind: 'user', name: 'You' }, id: 'n1', text: 'fresh room' }],
+            name: 'Gone',
+            revision: 1,
+            roomId: 'new-room'
+          }
+        },
+        version: 3
+      },
+      {},
+      { disbandedRooms: { 'id:gone-1': { name: 'Gone', rev: 4 } } }
+    )
+
+    expect(merged.Gone).toBeTruthy()
+    expect(merged.Gone.log[0].text).toBe('fresh room')
+  })
+
+  it('survives the sync giving up: a stale mirror cannot resurrect a disbanded room and the mirror is repaired', async () => {
+    const room = await loadRoom()
+
+    // The mirror a failed tombstone push left behind: the room is still
+    // projected with no tombstone, long after the local disband.
+    room.gateway.uiMeta['hermes-bots-groups'] = {
+      rooms: {
+        'id:gone-1': {
+          log: [{ at: 1, from: { kind: 'user', name: 'You' }, id: 'g1', text: 'stale mirror copy' }],
+          name: 'Gone',
+          revision: 3,
+          roomId: 'gone-1'
+        }
+      },
+      version: 3
+    }
+
+    // Window restart: the disband survives only as hydrated storage state —
+    // the in-memory pending job is long gone.
+    room.chat.hydrateGroupChatDisbands({ 'id:gone-1': { name: 'Gone', rev: 4 } })
+
+    await room.chat.pullGroupChatServerState('')
+
+    expect(room.chat.$groupChats.get().Gone).toBeUndefined()
+    expect('Gone' in durable(room)).toBe(false)
+
+    // The pull re-queues the missed tombstone so the normal flush repairs
+    // the mirror instead of the next pull resurrecting the room forever.
+    await drain(() => room.gateway.rpcFor('profiles.configure').length < 1, 50)
+
+    const envelope = published(room)
+
+    expect((envelope.deleted as Record<string, number>)['id:gone-1']).toBeGreaterThan(0)
+    expect((envelope.rooms as Record<string, unknown>)['id:gone-1']).toBeUndefined()
+  })
+
+  it('does not re-queue a repair once the mirror carries the tombstone', async () => {
+    const room = await loadRoom()
+
+    room.gateway.uiMeta['hermes-bots-groups'] = {
+      deleted: { 'id:gone-1': 9 },
+      rooms: {},
+      version: 3
+    }
+
+    room.chat.hydrateGroupChatDisbands({ 'id:gone-1': { name: 'Gone', rev: 4 } })
+
+    await room.chat.pullGroupChatServerState('')
+
+    expect(room.gateway.rpcFor('profiles.configure')).toHaveLength(0)
+  })
+
+  it('rememberGroupChatDisbands persists room-keyed records for a later hydrate', async () => {
+    const room = await loadRoom()
+
+    await room.chat.rememberGroupChatDisbands([{ name: 'Gone', roomId: 'gone-1', syncRevision: 3 }])
+
+    expect(room.gateway.storage.get('group-chat-disbanded')).toEqual({
+      'id:gone-1': { name: 'Gone', rev: 4 }
+    })
+
+    await room.chat.rememberGroupChatDisbands([{ name: 'Legacy' }])
+
+    expect(room.gateway.storage.get('group-chat-disbanded')).toEqual({
+      'id:gone-1': { name: 'Gone', rev: 4 },
+      'name:Legacy': { name: 'Legacy', rev: 1 }
+    })
+
+    expect(Object.keys(room.chat.groupChatDisbandMemory())).toEqual(['id:gone-1', 'name:Legacy'])
+  })
+
+  it('does not tombstone a higher-revision legacy recreation the merge guard just accepted', async () => {
+    const room = await loadRoom()
+
+    // The merge guard accepts a same-name legacy room whose revision
+    // outranks the remembered disband (a legal recreation). The repair
+    // sweep must apply the same ordering rule — queueing a repair here
+    // would issue profiles.configure to tombstone the very room the pull
+    // just restored.
+    room.gateway.uiMeta['hermes-bots-groups'] = {
+      rooms: {
+        'name:Gone': {
+          log: [{ at: 2, from: { kind: 'user', name: 'You' }, id: 'g2', text: 'recreated later' }],
+          name: 'Gone',
+          revision: 5
+        }
+      },
+      version: 3
+    }
+
+    room.chat.hydrateGroupChatDisbands({ 'name:Gone': { name: 'Gone', rev: 4 } })
+
+    await room.chat.pullGroupChatServerState('')
+
+    expect(room.chat.$groupChats.get().Gone).toBeTruthy()
+
+    // Let the debounced flush (and its fan-out) run before asserting no
+    // repair was queued.
+    await drain(() => false, 60)
+
+    expect(room.gateway.rpcFor('profiles.configure')).toHaveLength(0)
+  })
+
+  it('sweeps secondary mirrors for a missing tombstone when the active mirror is already clean', async () => {
+    const room = await loadRoom()
+
+    // The active mirror already carries the tombstone (the disband push
+    // succeeded there), but the secondary gateway was offline through the
+    // retry ladder and still projects the disbanded room. Inspecting only
+    // the pulled mirror would leave that secondary stale forever.
+    room.gateway.uiMeta['hermes-bots-groups'] = {
+      deleted: { 'id:gone-1': 9 },
+      rooms: {},
+      version: 3
+    }
+
+    const gwMeta: Record<string, unknown> = {
+      'hermes-bots-groups': {
+        rooms: {
+          'id:gone-1': {
+            log: [{ at: 1, from: { kind: 'user', name: 'You' }, id: 'g1', text: 'stale mirror copy' }],
+            name: 'Gone',
+            revision: 3,
+            roomId: 'gone-1'
+          }
+        },
+        version: 3
+      }
+    }
+
+    const gwRevisions: Record<string, number> = { 'hermes-bots-groups': 4 }
+    const configured: Array<{ connectionId: string; deleted: Record<string, number> }> = []
+
+    host.profileRoutes = async () => [
+      { connectionId: 'gw-a', profile: 'default' },
+      { connectionId: 'gw-b', profile: 'other' }
+    ]
+
+    host.requestProfile = async (
+      route: { connectionId: string },
+      method: string,
+      params: Record<string, unknown> = {}
+    ) => {
+      if (method === 'profiles.list') {
+        return { profiles: [{ name: 'default', ui_meta: { ...gwMeta }, ui_meta_revisions: { ...gwRevisions } }] }
+      }
+
+      if (method === 'profiles.configure') {
+        const incoming = (params.ui_meta || {}) as Record<string, unknown>
+
+        Object.assign(gwMeta, incoming)
+
+        for (const key of Object.keys(incoming)) {
+          gwRevisions[key] = (gwRevisions[key] || 0) + 1
+        }
+
+        configured.push({
+          connectionId: route.connectionId,
+          deleted: (((incoming['hermes-bots-groups'] || {}) as Record<string, unknown>).deleted ||
+            {}) as Record<string, number>
+        })
+
+        return { applied: { ui_meta: true, ui_meta_revisions: { ...gwRevisions } } }
+      }
+
+      return {}
+    }
+
+    room.chat.hydrateGroupChatDisbands({ 'id:gone-1': { name: 'Gone', rev: 4 } })
+
+    await room.chat.pullGroupChatServerState('')
+
+    expect(room.chat.$groupChats.get().Gone).toBeUndefined()
+
+    await drain(() => configured.length < 1, 80)
+
+    expect(configured).toHaveLength(1)
+    expect(configured[0].connectionId).toBe('gw-a')
+    expect(configured[0].deleted['id:gone-1']).toBeGreaterThan(0)
+  })
+
+  it('a coalesced ordinary update does not drop a disband deletions from the fan-out', async () => {
+    const room = await loadRoom()
+
+    // A disband queues on the active gateway, then an ordinary room update
+    // lands inside the 350 ms debounce and REPLACES the disband's own timer.
+    // The active pending job keeps the union (its deletions survive), but
+    // secondary targets are discovered by the replacement's widening call —
+    // they must inherit the coalesced disband intent too. This needs REAL
+    // clearTimeout semantics, so the inline-timer stub cannot stand in.
+    vi.useFakeTimers()
+
+    const deletesByGateway = new Map<string, Record<string, number>>()
+
+    try {
+      const roomLog = [{ at: 1, from: { kind: 'user', name: 'You' }, id: 'w1', text: 'hi' }]
+
+      room.chat.$groupChats.set({
+        Shared: {
+          log: roomLog as GroupMessage[],
+          members: [{ name: 'research' }],
+          sessions: {},
+          syncRevision: 0,
+          watermarks: {}
+        } as GroupChat
+      })
+
+      const gwMetaByConnection = new Map<string, { meta: Record<string, unknown>; revisions: Record<string, number> }>()
+
+      host.profileRoutes = async () => [
+        { connectionId: 'gw-a', profile: 'default' },
+        { connectionId: 'gw-b', profile: 'default' }
+      ]
+
+      host.requestProfile = async (
+        route: { connectionId: string },
+        method: string,
+        params: Record<string, unknown> = {}
+      ) => {
+        const state = gwMetaByConnection.get(route.connectionId) || { meta: {}, revisions: {} }
+
+        gwMetaByConnection.set(route.connectionId, state)
+
+        if (method === 'profiles.list') {
+          return {
+            profiles: [{ name: 'default', ui_meta: { ...state.meta }, ui_meta_revisions: { ...state.revisions } }]
+          }
+        }
+
+        if (method === 'profiles.configure') {
+          const incoming = (params.ui_meta || {}) as Record<string, unknown>
+
+          Object.assign(state.meta, incoming)
+
+          for (const key of Object.keys(incoming)) {
+            state.revisions[key] = (state.revisions[key] || 0) + 1
+          }
+
+          const deleted = ((incoming['hermes-bots-groups'] || {}) as Record<string, unknown>).deleted
+
+          if (deleted) {
+            deletesByGateway.set(route.connectionId, deleted as Record<string, number>)
+          }
+
+          return { applied: { ui_meta: true, ui_meta_revisions: { ...state.revisions } } }
+        }
+
+        return {}
+      }
+
+      // The disband: remember it and queue its deletions on the active job.
+      room.chat.rememberGroupChatDisbands([{ name: 'Gone', roomId: 'gone-1', syncRevision: 3 }])
+      room.chat.scheduleGroupChatServerSync(room.chat.$groupChats.get(), {
+        allowEmpty: true,
+        deletedRooms: ['id:gone-1']
+      })
+
+      // An ordinary update replaces the disband's timer before it fires.
+      room.chat.$groupChats.set({
+        Shared: {
+          log: [...roomLog, { at: 2, from: { kind: 'user', name: 'You' }, id: 'w2', text: 'again' }] as GroupMessage[],
+          members: [{ name: 'research' }],
+          sessions: {},
+          syncRevision: 0,
+          watermarks: {}
+        } as GroupChat
+      })
+      room.chat.scheduleGroupChatServerSync(room.chat.$groupChats.get(), { changedRooms: ['Shared'] })
+
+      // Only the replacement timer survives the debounce window.
+      await vi.advanceTimersByTimeAsync(500)
+    } finally {
+      vi.useRealTimers()
+    }
+
+    await drain(() => deletesByGateway.size < 2, 60)
+
+    expect(deletesByGateway.get('gw-a')?.['id:gone-1']).toBeGreaterThan(0)
+    expect(deletesByGateway.get('gw-b')?.['id:gone-1']).toBeGreaterThan(0)
+  })
+})

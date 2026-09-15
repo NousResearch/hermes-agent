@@ -204,7 +204,10 @@ class ComputeHost:
             if isinstance(params.get("lock"), dict):
                 from tui_gateway.contracts.prompt_voice import ClarifyLockParams
                 result = server.invoke("clarify.lock", ClarifyLockParams(**params["lock"]))
-                response = {"jsonrpc": "2.0", "id": request_id, "result": result.model_dump(mode="json")}
+                # invoke() hands back the handler's error frame as a dict (4002 on a stale lock); the parent
+                # relays an ``error`` response to the client, so keep the domain error instead of dumping it.
+                response = ({"jsonrpc": "2.0", "id": request_id, "error": result["error"]} if isinstance(result, dict)
+                            else {"jsonrpc": "2.0", "id": request_id, "result": result.model_dump(mode="json")})
             else:
                 response_frame = params.get("frame") if isinstance(params.get("frame"), dict) else params
                 resolved = server_requests.resolve_response(response_frame)

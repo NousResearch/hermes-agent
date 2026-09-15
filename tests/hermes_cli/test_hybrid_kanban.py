@@ -93,3 +93,45 @@ def test_agent_tool_uses_the_same_hybrid_domain(tmp_path, monkeypatch):
     column = json.loads(_handle_hybrid({"action": "create_column", "board_id": board_id, "name": "Ideas"}))
     card = json.loads(_handle_hybrid({"action": "create_card", "board_id": board_id, "column_id": column["column"]["id"], "title": "Agent card"}))
     assert card["card"]["title"] == "Agent card"
+
+
+def test_hybrid_deletion_lifecycle_and_activity_audit(conn):
+    board = hybrid.create_board(conn, name="Lifecycle Board", actor_type="human", actor_id="user1")
+    col1 = hybrid.create_column(conn, board_id=board["id"], name="Col 1")
+    col2 = hybrid.create_column(conn, board_id=board["id"], name="Col 2")
+    col3 = hybrid.create_column(conn, board_id=board["id"], name="Col 3")
+
+    c1 = hybrid.create_card(conn, board_id=board["id"], column_id=col1["id"], title="Card 1")
+    c2 = hybrid.create_card(conn, board_id=board["id"], column_id=col1["id"], title="Card 2")
+    c3 = hybrid.create_card(conn, board_id=board["id"], column_id=col1["id"], title="Card 3")
+
+    # Delete middle card; remaining positions in col1 should be repaired to 0, 1
+    assert hybrid.delete_card(conn, card_id=c2["id"], actor_type="human", actor_id="user1") is True
+    with pytest.raises(hybrid.HybridKanbanError):
+        hybrid.get_card(conn, c2["id"])
+
+    updated_col1_cards = hybrid.get_board(conn, board["id"])["columns"][0]["cards"]
+    assert [c["id"] for c in updated_col1_cards] == [c1["id"], c3["id"]]
+    assert [c["position"] for c in updated_col1_cards] == [0, 1]
+
+    # Delete column 2; remaining columns should be col1, col3 with positions 0, 1
+    assert hybrid.delete_column(conn, column_id=col2["id"], actor_type="human") is True
+    with pytest.raises(hybrid.HybridKanbanError):
+        hybrid._require_column(conn, col2["id"])
+    board_after_col_del = hybrid.get_board(conn, board["id"])
+    assert [col["id"] for col in board_after_col_del["columns"]] == [col1["id"], col3["id"]]
+    assert [col["position"] for col in board_after_col_del["columns"]] == [0, 1]
+
+    # Activity audit log retrieval
+    activities = hybrid.get_board_activity(conn, board["id"], limit=50)
+    assert len(activities) > 0
+    kinds = [a["kind"] for a in activities]
+    assert "board_created" in kinds
+    assert "card_deleted" in kinds
+    assert "column_deleted" in kinds
+
+    # Delete board completely
+    assert hybrid.delete_board(conn, board_id=board["id"]) is True
+    with pytest.raises(hybrid.HybridKanbanError):
+        hybrid.get_board(conn, board["id"])
+

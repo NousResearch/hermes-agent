@@ -73,7 +73,11 @@ On `main` plus the current Workstation V3 hardening working tree:
   - Session-scoped preview/browser pinning via `$sessionPreviewTabs` in `apps/desktop/src/store/preview.ts`: creating a new chat session presents a clean workspace with no lingering lateral panels from prior sessions, and switching back seamlessly restores that session's browser panels.
   - Browser Hub lateral rail suppression: `isBrowserHubRoute()` in `preview.ts`, layout effect in `apps/desktop/src/app/browser/index.tsx`, and event filtering in `use-preview-routing.ts` eliminate dual-rail collision when visiting `/browser`.
   - Friendly automatic task names in Browser Hub: `TaskRail` resolves chat conversation titles (`s.id === task.sessionHost || s.parent_session_id === task.sessionHost`) and page tab titles/domains, replacing raw task IDs with meaningful human context.
-- Automated contract coverage: **175/175 Workstation Pytests passing** on the
+- **Hybrid Kanban Real-time Invalidation & Full Lifecycle (H-053)**:
+  - Canonical domain functions `delete_card`, `delete_column`, `delete_board`, and `get_board_activity` in `hermes_cli/hybrid_kanban.py` with dense reindexing.
+  - Realtime WebSocket invalidation over `/events`: emits `hybrid_events` and `hybrid_cursor` on mutation, prompting instant query invalidation in Desktop UI and eliminating the 8-second polling latency.
+  - Desktop UI: horizontal column drag-and-drop reordering (`moveHybridColumn`), rich card activity drawer with human vs. agent provenance badges, and complete deletion lifecycle.
+- Automated contract coverage: **191/191 Workstation Pytests passing** on the
   current working tree; Desktop typecheck is clean. The broad Desktop UI and
   platform/Electron suites are also green after the HW-018 Windows portability
   closure.

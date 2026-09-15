@@ -1699,6 +1699,14 @@ def _handle_hybrid(args: dict, **kw) -> str:
                 return _ok(card=hybrid.update_card(conn, card_id=str(args["card_id"]), title=args.get("title"), description=args.get("description"), expected_revision=args.get("expected_revision"), **common))
             if action == "move_card":
                 return _ok(card=hybrid.move_card(conn, card_id=str(args["card_id"]), target_column_id=str(args["target_column_id"]), before_id=args.get("before_id"), after_id=args.get("after_id"), expected_revision=args.get("expected_revision"), **common))
+            if action == "delete_card":
+                return _ok(ok=hybrid.delete_card(conn, card_id=str(args["card_id"]), **common))
+            if action == "delete_column":
+                return _ok(ok=hybrid.delete_column(conn, column_id=str(args["column_id"]), **common))
+            if action == "delete_board":
+                return _ok(ok=hybrid.delete_board(conn, board_id=str(args["board_id"]), **common))
+            if action == "get_activity":
+                return _ok(activity=hybrid.get_board_activity(conn, board_id=str(args["board_id"]), limit=int(args.get("limit") or 100)))
             return tool_error("unknown Hybrid Kanban action")
         finally:
             conn.close()
@@ -2401,7 +2409,7 @@ KANBAN_HYBRID_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["list_boards", "get_board", "create_board", "create_column", "move_column", "create_card", "get_card", "update_card", "move_card"]},
+            "action": {"type": "string", "enum": ["list_boards", "get_board", "create_board", "create_column", "move_column", "create_card", "get_card", "update_card", "move_card", "delete_card", "delete_column", "delete_board", "get_activity"]},
             "board": _board_schema_prop(), "board_id": {"type": "string"}, "column_id": {"type": "string"}, "target_column_id": {"type": "string"}, "card_id": {"type": "string"},
             "name": {"type": "string"}, "title": {"type": "string"}, "description": {"type": "string"}, "before_id": {"type": "string"}, "after_id": {"type": "string"}, "expected_revision": {"type": "integer"}, "metadata": {"type": "object"}, "session_id": {"type": "string"}
         },

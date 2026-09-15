@@ -64,7 +64,13 @@ const COLLAPSED_KEY = 'collapsedLanes'
  *  each touched task's detail. The polls (8s board / 4s drawer) stay as the
  *  fallback — the socket just makes the board feel instant. */
 function onEventsFrame(slug: string, data: unknown): void {
-  const events = (data as { events?: CompletionEvent[] })?.events
+  const frame = data as { events?: CompletionEvent[]; hybrid_events?: unknown[] }
+  const events = frame?.events
+  const hybridEvents = frame?.hybrid_events
+
+  if (hybridEvents?.length) {
+    void queryClient.invalidateQueries({ queryKey: ['kanban', 'hybrid'] })
+  }
 
   if (!events?.length) {
     return
@@ -289,3 +295,19 @@ export const moveHybridCard = (cardId: string, targetColumnId: string, expectedR
   call<{ card: HybridCard }>(withBoard(`/hybrid/cards/${cardId}/move`), { method: 'POST', body: { target_column_id: targetColumnId, expected_revision: expectedRevision } })
 export const updateHybridCard = (cardId: string, patch: Pick<HybridCard, 'title' | 'description' | 'revision'>) =>
   call<{ card: HybridCard }>(withBoard(`/hybrid/cards/${cardId}`), { method: 'PATCH', body: { title: patch.title, description: patch.description, expected_revision: patch.revision } })
+export const moveHybridColumn = (columnId: string, beforeId?: string, afterId?: string, expectedRevision?: number) =>
+  call<{ column: HybridColumn }>(withBoard(`/hybrid/columns/${columnId}/move`), {
+    method: 'POST',
+    body: { before_id: beforeId, after_id: afterId, expected_revision: expectedRevision }
+  })
+export const deleteHybridCard = (cardId: string) =>
+  call<{ ok: boolean }>(withBoard(`/hybrid/cards/${cardId}`), { method: 'DELETE' })
+export const deleteHybridColumn = (columnId: string) =>
+  call<{ ok: boolean }>(withBoard(`/hybrid/columns/${columnId}`), { method: 'DELETE' })
+export const deleteHybridBoard = (boardId: string) =>
+  call<{ ok: boolean }>(withBoard(`/hybrid/boards/${boardId}`), { method: 'DELETE' })
+export const fetchHybridCard = (cardId: string) =>
+  call<{ card: HybridCard }>(withBoard(`/hybrid/cards/${cardId}`))
+export const fetchHybridBoardActivity = (boardId: string) =>
+  call<{ activity: Array<Record<string, unknown>> }>(withBoard(`/hybrid/boards/${boardId}/activity`))
+

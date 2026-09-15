@@ -386,6 +386,7 @@ O mesmo banco canônico `hermes_cli.kanban_db` também abriga o **Hybrid Kanban*
 - O Kanban **Híbrido** é uma área compartilhada por humanos e agentes. Uma coluna é somente organização visual; o nome ou posição de uma coluna nunca altera `tasks.status` nem chama `kanban_complete` implicitamente.
 - UI e agente convergem em `hermes_cli.hybrid_kanban`. A API autenticada do plugin e a tool `kanban_hybrid` enviam comandos semânticos (`before_id` / `after_id`), e o domínio — não o React — calcula posição, registra `actor_type`, `actor_id`, `session_id` e `source` em `hybrid_activity`.
 - Cada mutação ocorre sob a transação/locking do Kanban. Ranks densos são reindexados em uma namespace temporária negativa antes de publicar a ordem, eliminando colisões transitórias de `UNIQUE`; `expected_revision` rejeita edições/movimentos baseados em card ou coluna obsoletos.
+- **WebSocket Invalidation em Tempo Real & Ciclo de Vida Completo (H-053)**: O endpoint WebSocket `/events` no plugin FastAPI transmite eventos de `hybrid_activity` conjuntamente com `task_events`. Quando `hybrid_events` são emitidos no frame, o cliente Desktop invalida imediatamente as queries `['kanban', 'hybrid']`, eliminando atrasos de polling. O Desktop UI suporta reordenação horizontal de colunas via drag-and-drop (`moveHybridColumn`), drawer lateral de atividades com badges de proveniência (`human` vs `agent` com ID do ator), e exclusão em cascata densamente indexada para cartões, colunas e quadros.
 
 ---
 

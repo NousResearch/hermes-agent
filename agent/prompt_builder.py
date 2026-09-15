@@ -1207,6 +1207,7 @@ def _current_session_platform_hint() -> str:
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None, available_toolsets: "set[str] | None" = None,
     compact_categories: "frozenset[str] | None" = None, skills_dir_override: "Path | None" = None,
+    platform: str | None = None,
 ) -> str:
     """Compact skill index for the system prompt.
 
@@ -1214,6 +1215,8 @@ def build_skills_system_prompt(
     ``compact_categories`` (coding posture) demotes categories to a names-only line — nothing is ever hidden.
     ``skills_dir_override`` makes home resolution EXPLICIT: a build thread that never bound the HERMES_HOME
     ContextVar would otherwise leak the default profile's skills into a bot's prompt.
+    ``platform`` explicitly scopes per-platform disabled-skill filtering. When omitted, the active
+    session/environment platform is used for backward compatibility with direct callers.
     """
     _home_token = None
     if skills_dir_override is not None:
@@ -1229,7 +1232,8 @@ def build_skills_system_prompt(
         if not skills_dir.exists() and not external_dirs and not project_dirs:
             return ""
         return _build_skills_system_prompt_inner(
-            skills_dir, external_dirs, available_tools, available_toolsets, compact_categories, project_dirs)
+            skills_dir, external_dirs, available_tools, available_toolsets, compact_categories,
+            project_dirs, platform)
     finally:
         if _home_token is not None:
             reset_hermes_home_override(_home_token)
@@ -1344,10 +1348,11 @@ def _render_skills_index(
 def _build_skills_system_prompt_inner(
     skills_dir: "Path", external_dirs: "list[Path]", available_tools: "set[str] | None",
     available_toolsets: "set[str] | None", compact_categories: "frozenset[str] | None",
-    project_dirs: "list[Path] | None" = None,
+    project_dirs: "list[Path] | None" = None, platform: str | None = None,
 ) -> str:
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
-    _platform_hint = _current_session_platform_hint()
+    _platform_hint = platform or _current_session_platform_hint()
+    _platform_hint = _platform_hint.strip().lower() if _platform_hint else ""
     disabled = get_disabled_skill_names(_platform_hint or None)
     project_dirs = project_dirs or []
     cache_key = (

@@ -146,20 +146,23 @@ def prepare_verified_documents(authority, *, principal_id, session_id, request_i
 
     documents: ordered {name, data: bytes, sha256, size} dictionaries. The real
     receiving authority owns the current Home/session. Its caller has already
-    authorized source/event/recipient and must check accepted replay first.
+    authorized source/event/recipient and validated the complete TASK manifest
+    (including images and aggregate bytes), and must check accepted replay first.
     build_payload(tuple_of_references) runs once, after durable publication, and
     returns the COMPLETE final admission payload (including api_turn_v1 for API).
     Never serialize the returned handle. Admission still owns grant authorization.
     Images continue through the existing canonical native-media owner, not v3.
     """
-    from gateway.hosted_room_attachments import _name, MAX_ATTACHMENTS_PER_MESSAGE, MAX_ATTACHMENT_BYTES
+    from gateway.hosted_room_attachments import (
+        _name, MAX_TASK_ATTACHMENTS, MAX_ATTACHMENT_BYTES, MAX_TASK_ATTACHMENT_BYTES,
+    )
     from hermes_state_runtime import _json, _session, _text
     db, epoch = authority.db, authority.epoch
     authority._require_admission_open()
     owned_home(db)
     for value in (principal_id, session_id, request_id):
         _text(value)
-    if not isinstance(documents, (list, tuple)) or not 0 < len(documents) <= MAX_ATTACHMENTS_PER_MESSAGE:
+    if not isinstance(documents, (list, tuple)) or not 0 < len(documents) <= MAX_TASK_ATTACHMENTS:
         raise RuntimeStoreError('invalid_params')
     if not callable(build_payload):
         raise RuntimeStoreError('invalid_params')
@@ -172,6 +175,8 @@ def prepare_verified_documents(authority, *, principal_id, session_id, request_i
                 or len(item['data']) != item['size']
                 or hashlib.sha256(item['data']).hexdigest() != item['sha256']):
             raise RuntimeStoreError('permission_denied')
+    if sum(item['size'] for item in documents) > MAX_TASK_ATTACHMENT_BYTES:
+        raise RuntimeStoreError('invalid_params')
     validate_media_batch_size(item['size'] for item in documents)
 
     def plan(conn):

@@ -10,7 +10,7 @@ from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
-from agent.usage_pricing import normalize_usage
+from agent.usage_pricing import normalize_usage, usage_field_availability
 
 _SENSITIVE_HOOK_KEYS = {"api_key", "authorization", "proxy_authorization", "cookie", "set_cookie"}
 
@@ -46,6 +46,9 @@ class ApiRequestHooksMixin:
         summary.pop("raw_usage", None)
         summary["prompt_tokens"] = cu.prompt_tokens
         summary["total_tokens"] = cu.total_tokens
+        summary["available_fields"] = usage_field_availability(
+            raw_usage, provider=getattr(self, "provider", None), api_mode=getattr(self, "api_mode", None)
+        )
         return summary
 
     @staticmethod

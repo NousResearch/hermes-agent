@@ -558,6 +558,50 @@ def _iter_sse_events(response: httpx.Response) -> Iterator[Dict[str, Any]]:
             yield payload
 
 
+def _tool_call_slot_accepts(slot: Dict[str, Any], args_str: str) -> bool:
+    """Whether ``args_str`` continues (or resends) the call already in ``slot``.
+
+    Only consulted when the event carries no provider call id. A continuation extends the
+    accumulated arguments and a resend repeats them, so both are prefix matches; a slot still
+    holding half-sent JSON is mid-stream and keeps whatever follows. Anything else arriving after
+    a complete JSON object is a different call.
+    """
+    previous = str(slot.get("last_arguments") or "")
+    if not previous or args_str.startswith(previous):
+        return True
+    try:
+        json.loads(previous)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return True
+    return False
+
+
+def _tool_call_slot(fc: Dict[str, Any], part: Dict[str, Any], part_index: int, name: str, args_str: str,
+                    tool_call_indices: Dict[str, Dict[str, Any]]) -> tuple[str, Optional[Dict[str, Any]]]:
+    """``(key, existing slot or None)`` for a streamed functionCall.
+
+    Gemini 3 assigns one ``id`` per tool call, so it is the slot identity (``part_index`` and the
+    thought signature both drift across events of one call). Gemini 2.5 sends no id and
+    ``part_index`` restarts at 0 on every event, so two *different* calls to the same tool in
+    separate events would share a slot and have their arguments concatenated into unparseable
+    JSON; tell them apart by value, and keep the extra slots reachable (``key#N``) so a later
+    continuation or resend lands on the slot it opened.
+    """
+    fc_id = fc.get("id")
+    if isinstance(fc_id, str) and fc_id:
+        key = json.dumps({"name": name, "provider_call_id": fc_id}, sort_keys=True)
+        return key, tool_call_indices.get(key)
+    thought_signature = part.get("thoughtSignature") if isinstance(part.get("thoughtSignature"), str) else ""
+    key = json.dumps({"part_index": part_index, "name": name, "thought_signature": thought_signature}, sort_keys=True)
+    slot = tool_call_indices.get(key)
+    if slot is None or _tool_call_slot_accepts(slot, args_str):
+        return key, slot
+    for other_key, other in tool_call_indices.items():
+        if other_key.startswith(f"{key}#") and _tool_call_slot_accepts(other, args_str):
+            return other_key, other
+    return f"{key}#{len(tool_call_indices)}", None
+
+
 def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices: Dict[str, Dict[str, Any]]) -> List[_GeminiStreamChunk]:
     candidates = event.get("candidates") or []
     if not candidates:
@@ -577,9 +621,8 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
         if fc := _part_function_call(part):
             name = str(fc["name"])
             args_str = _dump_call_args(fc, sort_keys=True)
-            thought_signature = part.get("thoughtSignature") if isinstance(part.get("thoughtSignature"), str) else ""
-            call_key = json.dumps({"part_index": part_index, "name": name, "thought_signature": thought_signature}, sort_keys=True)
-            if (slot := tool_call_indices.get(call_key)) is None:
+            call_key, slot = _tool_call_slot(fc, part, part_index, name, args_str, tool_call_indices)
+            if slot is None:
                 slot = tool_call_indices[call_key] = {"index": len(tool_call_indices), "id": _new_call_id(fc), "last_arguments": ""}
             # Gemini re-sends the full args each event; emit only the new suffix.
             last_arguments = str(slot.get("last_arguments") or "")

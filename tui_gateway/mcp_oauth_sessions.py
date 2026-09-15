@@ -14,7 +14,7 @@ import time
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 # session_id -> record wrapping the shared DashboardOAuthFlow bridge plus bookkeeping.
 _sessions: Dict[str, Dict[str, Any]] = {}
@@ -56,12 +56,12 @@ def _start_loopback_listener(flow) -> "http.server.HTTPServer":
                 self.send_response(404)
                 self.end_headers()
                 return
-            qs = parse_qs(parsed.query)
+            from tools.mcp_oauth import _parse_redirect_query
+
             body = b"<h1>Authorization received</h1><p>You can close this tab and return to Hermes.</p>"
             status = 200
             try:
-                flow.deliver_callback(
-                    **{k: (qs.get(k) or [None])[0] for k in ("code", "state", "error", "iss")})
+                flow.deliver_callback(**_parse_redirect_query(parsed.query))
             except Exception:
                 body = b"<h1>OAuth callback rejected</h1><p>The callback was invalid or already used.</p>"
                 status = 400

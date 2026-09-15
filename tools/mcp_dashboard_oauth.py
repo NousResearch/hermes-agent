@@ -75,9 +75,7 @@ class DashboardOAuthFlow:
     ) -> None:
         """Hand the browser redirect to the waiting flow; ``state`` must match exactly.
 
-        ``iss`` (RFC 9207) is carried through: mcp 2.x rejects an authorization response that omits
-        it when the server advertised ``authorization_response_iss_parameter_supported``, which
-        Cloudflare and Resend both do. Dropping it breaks login against those providers.
+        ``iss`` (RFC 9207) is carried through — see ``tools.mcp_oauth._parse_redirect_query``.
         """
         with self._lock:
             if self._callback_ready.is_set():

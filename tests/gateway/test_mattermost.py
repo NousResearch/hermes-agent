@@ -394,6 +394,121 @@ class TestMattermostMentionBehavior:
             assert self.adapter.handle_message.called
 
 
+class TestMattermostPerChannelAllowlists:
+    """Per-channel sender allowlists in upstream config vocabulary."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._bot_user_id = "bot_user_id"
+        self.adapter._bot_username = "hermes-bot"
+        self.adapter.handle_message = AsyncMock()
+
+    def _event(self, *, user_id="user_allowed", channel_type="P", channel_id="agent_private"):
+        # Non-DM posts must mention the bot to clear the default mention gate.
+        message = "synthetic" if channel_type == "D" else "@hermes-bot synthetic"
+        return {
+            "event": "posted",
+            "data": {
+                "post": json.dumps({
+                    "id": f"post_{user_id}_{channel_id}",
+                    "user_id": user_id,
+                    "channel_id": channel_id,
+                    "message": message,
+                }),
+                "channel_type": channel_type,
+                "sender_name": "@synthetic",
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_per_channel_allow_passes_listed_sender(self):
+        self.adapter.config.extra.update({
+            "groups": {"agent_private": {"allow_from": ["user_allowed"]}},
+        })
+        await self.adapter._handle_ws_event(
+            self._event(channel_type="P", channel_id="agent_private")
+        )
+        assert self.adapter.handle_message.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_per_channel_allow_denies_unlisted_sender(self):
+        self.adapter.config.extra.update({
+            "groups": {"agent_private": {"allow_from": ["user_allowed"]}},
+        })
+        await self.adapter._handle_ws_event(
+            self._event(user_id="user_denied", channel_type="P", channel_id="agent_private")
+        )
+        assert not self.adapter.handle_message.called
+
+    @pytest.mark.asyncio
+    async def test_unlisted_group_message_keeps_existing_behavior(self):
+        self.adapter.config.extra.update({
+            "groups": {"agent_private": {"allow_from": ["user_allowed"]}},
+        })
+        await self.adapter._handle_ws_event(
+            self._event(user_id="user_denied", channel_type="G", channel_id="group_message")
+        )
+        assert self.adapter.handle_message.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_empty_per_channel_allowlist_keeps_existing_behavior(self):
+        self.adapter.config.extra.update({"groups": {"agent_private": {"allow_from": []}}})
+        await self.adapter._handle_ws_event(
+            self._event(user_id="anyone")
+        )
+        assert self.adapter.handle_message.call_count == 1
+
+    @pytest.mark.parametrize(("configured_id", "sender_id"), [("user_allowed", "user_allowed"), (12345, "12345")])
+    @pytest.mark.asyncio
+    async def test_scalar_is_one_sender_id(self, configured_id, sender_id):
+        self.adapter.config.extra.update({"groups": {"agent_private": {"allow_from": configured_id}}})
+        await self.adapter._handle_ws_event(self._event(user_id=sender_id))
+        await self.adapter._handle_ws_event(
+            self._event(user_id="user_denied")
+        )
+        assert self.adapter.handle_message.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_per_channel_star_member_allows_any_sender(self):
+        self.adapter.config.extra.update({"groups": {"agent_private": {"allow_from": ["*"]}}})
+        await self.adapter._handle_ws_event(
+            self._event(user_id="anyone", channel_type="P", channel_id="agent_private")
+        )
+        assert self.adapter.handle_message.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_groups_wildcard_key_applies_to_unlisted_channel(self):
+        self.adapter.config.extra.update({"groups": {"*": {"allow_from": ["user_allowed"]}}})
+        await self.adapter._handle_ws_event(
+            self._event(user_id="user_denied", channel_id="unlisted_channel")
+        )
+        assert not self.adapter.handle_message.called
+
+    @pytest.mark.parametrize(("groups", "warning"), [
+        ({"agent_private": {"allow_from": {"user": True}}}, "invalid sender allowlist"),
+        ({"agent_private": {"allow_from": True}}, "invalid sender allowlist"),
+        ({"agent_private": {"allow_from": [["user_allowed"]]}}, "invalid sender allowlist"),
+        ({"agent_private": ["user_allowed"]}, "invalid channel config"),
+    ])
+    @pytest.mark.asyncio
+    async def test_malformed_channel_acl_fails_closed_and_warns_once(self, groups, warning, caplog):
+        self.adapter.config.extra.update({"groups": groups})
+        await self.adapter._handle_ws_event(self._event(user_id="first_sender"))
+        await self.adapter._handle_ws_event(self._event(user_id="second_sender"))
+
+        assert not self.adapter.handle_message.called
+        assert sum(message.startswith(f"Mattermost: {warning} at groups.agent_private")
+                   for message in caplog.messages) == 1
+
+    @pytest.mark.asyncio
+    async def test_groups_channel_id_match_is_case_insensitive(self):
+        self.adapter.config.extra.update({"groups": {"AGENT_PRIVATE": {"allow_from": ["user_allowed"]}}})
+        await self.adapter._handle_ws_event(
+            self._event(channel_type="P", channel_id="agent_private")
+        )
+        assert self.adapter.handle_message.call_count == 1
+
+
 # ---------------------------------------------------------------------------
 # File upload (send_image)
 # ---------------------------------------------------------------------------
@@ -708,4 +823,3 @@ class TestMultiplexProfileScope:
             # skipped -- writing here would leak into every other profile's
             # os.environ.
             assert "MATTERMOST_REQUIRE_MENTION" not in os.environ
-

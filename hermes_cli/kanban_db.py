@@ -2599,6 +2599,10 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+class _CompletionWriteAborted(RuntimeError):
+    """Roll back terminal writes when their compare-and-set no longer matches."""
+
+
 def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
@@ -2628,15 +2632,20 @@ def complete_task(
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
     if acceptance is False:
         return False
-    with write_txn(conn):
-        # Hard invariant even for human review approval: a parent may have
-        # reopened while this task waited.
-        if not _parents_satisfied(conn, task_id):
-            return False
-        if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
-            return False
-        prior_status = _task_status(conn, task_id)
-        sql = """
+    try:
+        with write_txn(conn):
+            # Hard invariant even for human review approval: a parent may have
+            # reopened while this task waited.
+            if not _parents_satisfied(conn, task_id):
+                raise _CompletionWriteAborted
+            if acceptance is not None:
+                recorded = record_acceptance(conn, task_id, acceptance)
+                if not recorded:
+                    if acceptance[1].get("ok"):
+                        raise _CompletionWriteAborted
+                    return False
+            prior_status = _task_status(conn, task_id)
+            sql = """
                 UPDATE tasks
                    SET status       = 'done',
                        result       = ?,
@@ -2649,35 +2658,37 @@ def complete_task(
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked', 'review')
                 """
-        params: tuple = (result, now, task_id)
-        if expected_run_id is not None:
-            sql += " AND current_run_id = ?"
-            params = (*params, int(expected_run_id))
-        if conn.execute(sql, params).rowcount != 1:
-            return False
-        if isinstance(metadata, dict):
-            _stage_completion_artifacts(conn, task_id, metadata, now)
-        run_id = _end_run(
-            conn, task_id, outcome="completed", status="done", summary=handoff_summary,
-            metadata=metadata,
-        )
-        # Never-claimed task: synthesize a run so the handoff fields survive.
-        if run_id is None and (summary or metadata or result or prior_status == "review"):
-            synth_summary, synth_metadata = handoff_summary, metadata
-            if prior_status == "review" and not synth_summary and not synth_metadata:
-                synth_summary = _REVIEW_APPROVED_NOTE
-                synth_metadata = {"source_status": "review", "approval": "manual"}
-            run_id = _synthesize_ended_run(
-                conn, task_id, outcome="completed", summary=synth_summary, metadata=synth_metadata,
+            params: tuple = (result, now, task_id)
+            if expected_run_id is not None:
+                sql += " AND current_run_id = ?"
+                params = (*params, int(expected_run_id))
+            if conn.execute(sql, params).rowcount != 1:
+                raise _CompletionWriteAborted
+            if isinstance(metadata, dict):
+                _stage_completion_artifacts(conn, task_id, metadata, now)
+            run_id = _end_run(
+                conn, task_id, outcome="completed", status="done", summary=handoff_summary,
+                metadata=metadata,
             )
-        event_summary = handoff_summary
-        if prior_status == "review" and not event_summary:
-            event_summary = _REVIEW_APPROVED_NOTE
-        _append_event(
-            conn, task_id, "completed",
-            _completed_event_payload(result, event_summary, verified_cards, metadata),
-            run_id=run_id,
-        )
+            # Never-claimed task: synthesize a run so the handoff fields survive.
+            if run_id is None and (summary or metadata or result or prior_status == "review"):
+                synth_summary, synth_metadata = handoff_summary, metadata
+                if prior_status == "review" and not synth_summary and not synth_metadata:
+                    synth_summary = _REVIEW_APPROVED_NOTE
+                    synth_metadata = {"source_status": "review", "approval": "manual"}
+                run_id = _synthesize_ended_run(
+                    conn, task_id, outcome="completed", summary=synth_summary, metadata=synth_metadata,
+                )
+            event_summary = handoff_summary
+            if prior_status == "review" and not event_summary:
+                event_summary = _REVIEW_APPROVED_NOTE
+            _append_event(
+                conn, task_id, "completed",
+                _completed_event_payload(result, event_summary, verified_cards, metadata),
+                run_id=run_id,
+            )
+    except _CompletionWriteAborted:
+        return False
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
     # Success wipes the breaker counter (history stays on the event log).
     _clear_failure_counter(conn, task_id)

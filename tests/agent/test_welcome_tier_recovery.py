@@ -62,6 +62,12 @@ class TestDarkTier403:
         assert "welcome_route" not in result.error_context
         assert result.reason == FailoverReason.content_policy_blocked
 
+    def test_a_403_naming_the_free_tier_itself_is_still_the_tier_refusing(self):
+        """The billing table's free-tier phrases are the gateway's own words for this refusal; on the
+        welcome route they must not send an anonymous session to a credits check."""
+        body = {"status": 403, "message": "This model is not available on the free tier."}
+        assert _classify(_gateway_error(403, body)).error_context.get("welcome_route") == "tier_disabled"
+
     def test_a_403_from_another_provider_on_any_host_is_untouched(self):
         result = classify_api_error(_generic_403(), provider="openrouter", base_url=WELCOME)
         assert "welcome_route" not in result.error_context

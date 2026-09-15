@@ -85,13 +85,16 @@ class ClassifiedError:
 
 # Billing exhaustion (not transient rate limit). "out of extra usage" is the
 # Anthropic OAuth Pro/Max overage bucket depleted (HTTP 400).
+# The Nous gateway's own words for "the free tier will not serve this" — a billing wall for a
+# named account, the tier refusing for an anonymous one (see ``_WELCOME_403_NAMED_PATTERNS``).
+_FREE_TIER_REFUSAL_PATTERNS = ("model_not_supported_on_free_tier", "not available on the free tier")
 _BILLING_PATTERNS = (
     "insufficient credits", "insufficient_quota", "insufficient balance", "credit balance",
     "credits exhausted", "credits have been exhausted", "requires available credits",
     "account balance is too low", "no usable credits", "top up your credits", "payment required",
     "billing hard limit", "exceeded your current quota", "account is deactivated", "plan does not include",
     "out of extra usage", "out of funds", "run out of funds", "balance_depleted",
-    "model_not_supported_on_free_tier", "not available on the free tier",
+    *_FREE_TIER_REFUSAL_PATTERNS,
     # LiteLLM proxies word a hard cap as "hard billing limit" (structured twin:
     # ``terminal_quota_exhausted`` in _BILLING_ERROR_CODES). "terminal billing
     # limit" free text is NOT matched: substring rules can't negate the
@@ -546,6 +549,13 @@ def _plugin_verdict(c: _Ctx) -> Optional[Verdict]:
     return verdict
 
 
+# A welcome-host 403 that spells one of these out is a safety block or a billing wall, not the
+# tier refusing. The free-tier refusal phrases are left OUT: on the free route they mean exactly
+# "the tier refused", and an anonymous session has no credits to check.
+_WELCOME_403_NAMED_PATTERNS = _CONTENT_POLICY_BLOCKED_PATTERNS + tuple(
+    p for p in _BILLING_PATTERNS if p not in _FREE_TIER_REFUSAL_PATTERNS)
+
+
 def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
     """The Nous inference gateway's welcome-tier (free tier) refusals, read from the structured body.
 
@@ -571,8 +581,7 @@ def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
         return _v(_R.rate_limit, should_fallback=True, error_context=ctx)
     # The route-keyed dark-tier 403 applies only to a 403 that says nothing else: a safety refusal
     # or a billing wall on the welcome host keeps its own classification (and its own recovery).
-    plain_403 = c.provider == "nous" and not any(
-        p in c.msg for p in _CONTENT_POLICY_BLOCKED_PATTERNS + _BILLING_PATTERNS)
+    plain_403 = c.provider == "nous" and not any(p in c.msg for p in _WELCOME_403_NAMED_PATTERNS)
     kind = welcome_route_refusal(status, c.msg, c.base_url if plain_403 else None)
     if kind is None:
         return None

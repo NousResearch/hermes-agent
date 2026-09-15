@@ -26,10 +26,14 @@ vi.mock('../hooks/use-on-profile-switch', () => ({
 
 // The real stores pull in the gateway/profile stack, which needs a live
 // backend connection. This page only reads the "applies to" scope override
-// and the repo-discovery signature, neither of which this test touches.
+// and the repo-discovery signature, neither of which this test touches. The
+// scope chip it renders also reads the selected profile and the loud-note
+// selector, so those are stubbed to the single-profile default shape.
 vi.mock('@/store/settings-scope', () => ({
   $settingsRequestProfile: atom<string | undefined>(undefined),
-  $settingsScopeOverride: atom<null | string>(null)
+  $settingsScopeEditsNonDefault: atom(false),
+  $settingsScopeOverride: atom<null | string>(null),
+  $settingsScopeProfile: atom<string>('default')
 }))
 
 vi.mock('@/store/projects', () => ({

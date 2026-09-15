@@ -1996,9 +1996,12 @@ def _get_usage(agent) -> dict:
 def _probe_credentials(agent) -> str:
     """Warning or '' (``no-key-required`` is a valid sentinel for keyless custom providers)."""
     with contextlib.suppress(Exception):
-        if not (getattr(agent, "api_key", "") or ""):
+        api_key = getattr(agent, "api_key", "") or ""
+        if not api_key:
             provider = getattr(agent, "provider", "") or ""
             return f"No API key configured for provider '{provider}'. First message will fail."
+        if api_key == "no-key-required":
+            return ""
     return ""
 
 

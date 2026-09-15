@@ -1574,10 +1574,10 @@ policy que deixa atravessar um path sensível ou retorno ao polling mecânico.
 
 Esta rodada posterior auditou o `main` já consolidado em
 `220a684f465b063411626028b3bdd7444083e3f2`, depois de verificar o código, os
-testes e o histórico recente. O checkout final ficou em `main`, sem alterações
-não commitadas, e `origin/main` apontou para o mesmo commit. As correções abaixo
-são pequenas extensões dos owners existentes; não houve criação de um segundo
-controller, store, DB, lifecycle ou stack realtime.
+testes e o histórico recente. O snapshot do `main` auditado e
+`origin/main` apontavam para o mesmo commit. As correções abaixo são pequenas
+extensões dos owners existentes; não houve criação de um segundo controller,
+store, DB, lifecycle ou stack realtime.
 
 ### 27.1. Resolução implícita de controle humano deve seguir a aba visível
 
@@ -1676,3 +1676,40 @@ aprovada fora dessa limitação confirmou os resultados acima.
 | KI-007 / `session: null` | `NOT_REPRODUCED` | teste determinístico de restart/reconnect/export e concorrência | não reescrever SessionDB; manter observabilidade/regression coverage |
 | Marketplace semântico e UI dedicada de extensões | `DELIBERATELY_DEFERRED` | roadmap e seção de extensões | não ampliar escopo |
 | Proteção obrigatória de branch e checks críticos | `REPO_CONFIGURATION` | estado do repositório não é configurado por código | recomendação permanece para administradores do GitHub |
+
+### 27.5. Adjudicação do WIP encontrado durante a consolidação
+
+Depois do checkout do `main`, havia alterações não commitadas de uma frente de
+WIP de Workstation no mesmo diretório. O histórico da branch
+`feat/workstation-hybrid-kanban` já era ancestral do `main`; portanto o que
+restava não era um merge Git pendente, mas uma camada adicional ainda não
+validada. Ela inclui, entre outros, `workstation/artifacts.py`,
+`workstation/durable_tasks.py`, `workstation/browser_session.py`,
+`workstation/browser_supervisor.py`, `workstation/daemon/` e alterações em
+`tools/browser_tool.py`, `tools/close_preview_tool.py`,
+`apps/desktop/src/plugins/kanban/api.ts` e `hermes_cli/kanban_db.py`.
+
+Esse WIP não foi promovido para `main` por razões verificáveis:
+
+- `ArtifactStore` duplica o owner de resultados content-addressed já existente
+  em `tools/tool_result_storage.py` e não implementa a mesma deduplicação/
+  referência escopada;
+- `BrowserControlLeaseManager` duplica a lease canônica já pertencente ao
+  `BrowserTask` Electron, não compartilha sua persistência nem sua recuperação;
+- `workstation/daemon/browser_daemon.py` cria um segundo Browser Controller,
+  contrariando o owner Electron/loopback existente;
+- a mudança de assinatura de `delegateHybridCard` não é compatível com a UI
+  atual, que ainda passa `newAttempt` booleano, e adiciona uma rota de leitura
+  sem correspondente backend comprovado;
+- o teste de pós-processamento de `browser_extract_items` não concluiu em
+  execução focalizada, impedindo chamar essa integração de provider-free e
+  operacionalmente comprovada.
+
+Esses itens ficam classificados como `DELIBERATELY_DEFERRED`/WIP preservado,
+não como código integrado. A decisão evita “resolver” o conflito apagando
+trabalho de outra frente e evita comprometer os invariantes do produto. Para
+uma futura promoção, a frente precisa primeiro reutilizar os owners canônicos,
+remover as duplicações, corrigir o contrato da API/UI, adicionar testes com
+terminação bounded e passar por uma revisão independente de arquitetura. O
+Os commits de documentação desta rodada contêm somente a inteligência
+revisada; o WIP não foi incluído neles.

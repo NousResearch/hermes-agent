@@ -165,10 +165,21 @@ def _run_batch(normalized: List[dict], callback, question: str) -> str:
         raw = callback(question, None, questions=normalized)
         timed_out = _is_timeout(raw)
         if isinstance(raw, str):
-            raw = _json_as(raw, dict)  # the sentinel is not JSON -> None, timed_out stays True
-        if isinstance(raw, dict):
-            answers = dict(raw.get("answers") or {})
-            timed_out = bool(raw.get("timed_out"))
+            try:
+                decoded = json.loads(raw)
+            except json.JSONDecodeError:
+                decoded = raw
+        else:
+            decoded = raw
+        if isinstance(decoded, dict):
+            answers = dict(decoded.get("answers") or {})
+            timed_out = bool(decoded.get("timed_out"))
+        elif len(normalized) == 1 and not timed_out and not isinstance(decoded, dict):
+            # A one-entry batch uses the legacy single-question wire payload
+            # for older clients, which return a scalar or a multi-select list
+            # (JSON array / native list / comma-separated string). The batch
+            # envelope is always a dict, so a bare list is an answer.
+            answers = {normalized[0]["qid"]: decoded}
         return _batch_result(normalized, answers, timed_out)
     for entry in normalized:
         raw = _invoke_callback(callback, entry["question"], entry["choices"], entry["multi_select"])

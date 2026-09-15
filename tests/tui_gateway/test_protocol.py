@@ -415,6 +415,31 @@ def test_clear_pending_cancels_only_that_session(capture):
     assert reasons == ["interrupted", "shutdown"]
 
 
+def test_clarify_block_one_entry_batch_uses_legacy_wire_payload(capture):
+    """An older Desktop client only understands the historic scalar wire form."""
+    from tui_gateway import server_requests
+    server, buf = capture
+    normalized = [{
+        "qid": "q0", "id": None, "question": "Which?",
+        "choices": ["a (Recommended)", "b"], "choices_offered": ["a", "b"],
+        "multi_select": False,
+    }]
+    box = {}
+    thread = threading.Thread(
+        target=lambda: box.__setitem__("answer", server._clarify_block("s1", "", None, questions=normalized)),
+        daemon=True)
+    thread.start()
+    req = _wait_open(server_requests, buf)
+    params = _frames(buf)[-1]["params"]
+    assert {key: value for key, value in params.items() if key not in {"session_id"}} == {
+        "question": "Which?", "choices": ["a (Recommended)", "b"],
+    }
+    assert "questions" not in params
+    server.dispatch({"jsonrpc": "2.0", "id": req.id, "result": {"answer": "a"}})
+    thread.join(timeout=5)
+    assert box["answer"] == "a"
+
+
 def test_approval_pending_replays_unresolved_requests(server, monkeypatch):
     from tools import approval
 

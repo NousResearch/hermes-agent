@@ -77,10 +77,9 @@ def _home_and_resolved(path: str) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 # Windows NT-namespace path guard
 #
-# Inspired by Claude Code v2.1.234 (Aug 2026), which made its pre-approval
-# file accesses "reject Windows NT-namespace (`\\??\\`) paths, hardening the
-# remaining pre-approval file accesses against the NTLM credential-leak
-# vector."
+# Pre-approval file accesses reject Windows NT-namespace (``\??\``) paths so
+# the remaining unguarded path touches cannot be turned into an NTLM
+# credential leak.
 #
 # The vector: on Windows, merely *resolving or touching* a path such as
 # ``\\??\\UNC\\attacker.example\\share\\x`` (or the ``\\\\?\\UNC\\`` /
@@ -131,7 +130,7 @@ def is_nt_namespace_path(path: str) -> bool:
     if s.startswith("\\\\?\\"):
         rest = s[4:]
         upper = rest.upper()
-        if upper.startswith("UNC\\") or upper.startswith("GLOBALROOT"):
+        if upper.startswith("UNC\\") or upper.startswith("GLOBALROOT\\"):
             return True
     return False
 

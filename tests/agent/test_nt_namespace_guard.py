@@ -9,7 +9,8 @@ rely on. So the guard must fire on the model-supplied string before
 
 import os
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from agent.file_safety import (
     get_read_block_error,
@@ -54,14 +55,21 @@ class TestNtNamespaceGuard(unittest.TestCase):
             self.assertNotIn("NT/device namespace", get_write_denied_error(p) or "", p)
 
     def test_file_tools_reject_raw_string_without_resolving(self):
-        """Every file-tool entry refuses BEFORE the task-base join / resolve — the
-        resolve is the leak, and on POSIX the join would hide the prefix."""
+        """Every file-tool entry — and the sibling paths that touch a file path before
+        the tool runs (checkpoint helper, ACP file bridge, @file: references) — refuses
+        BEFORE the task-base join / resolve: the resolve is the leak, and on POSIX the
+        join would hide the prefix."""
+        from pathlib import Path
+
+        from agent import context_references, copilot_acp_client, tool_executor
         from tools.file_tools import patch_tool, read_file_tool, search_tool, write_file_tool
 
         bad = "\\??\\UNC\\attacker.example\\share\\x"
         with patch("agent.file_safety.Path") as fs_path, \
                 patch("tools.file_tools._resolve_path_for_task") as ft_resolve, \
                 patch("tools.file_tools_write_guards._resolve_path_for_task") as wg_resolve, \
+                patch("tools.file_tools_paths._resolve_path_for_task") as ckpt_resolve, \
+                patch.object(Path, "resolve", side_effect=AssertionError("must not resolve")), \
                 patch.object(os.path, "realpath", side_effect=AssertionError("must not realpath")):
             results = [
                 read_file_tool(bad),
@@ -69,9 +77,18 @@ class TestNtNamespaceGuard(unittest.TestCase):
                 patch_tool(mode="replace", path=bad, old_string="a", new_string="b"),
                 search_tool("x", path=bad),
             ]
+            checkpoint_agent = SimpleNamespace(_checkpoint_mgr=MagicMock(enabled=True))
+            tool_executor._ensure_file_checkpoint(checkpoint_agent, "write_file", {"path": bad}, "default")
+            checkpoint_agent._checkpoint_mgr.ensure_checkpoint.assert_not_called()
+            for fs_handler in (copilot_acp_client._fs_read_text_file, copilot_acp_client._fs_write_text_file):
+                with self.assertRaisesRegex(PermissionError, "NT/device namespace"):
+                    fs_handler({"path": bad, "content": "x"}, "/tmp")
+            with self.assertRaisesRegex(ValueError, "NT/device namespace"):
+                context_references._resolve_path(Path("/tmp"), bad)
             fs_path.assert_not_called()
             ft_resolve.assert_not_called()
             wg_resolve.assert_not_called()
+            ckpt_resolve.assert_not_called()
         for r in results:
             self.assertIn("NT/device namespace", r)
 

@@ -6,7 +6,7 @@ import { Loader } from '@/components/ui/loader'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
-import { reportTerminalShell } from './terminals'
+import { createTerminal, reportTerminalShell } from './terminals'
 import { useAgentTerminal } from './use-agent-terminal'
 import { useTerminalSession } from './use-terminal-session'
 
@@ -101,6 +101,7 @@ interface AgentTerminalInstanceProps {
 /** Read-only mirror of an agent background process — a write-only xterm streamed
  *  live from the backend output (no PTY, no input). */
 export function AgentTerminalInstance({ active, id, procId }: AgentTerminalInstanceProps) {
+  const { t } = useI18n()
   const { hostRef } = useAgentTerminal({ active, id, procId })
 
   return (
@@ -110,6 +111,15 @@ export function AgentTerminalInstance({ active, id, procId }: AgentTerminalInsta
       // routes ⌘W here and closes the focused agent tab (not a preview).
       data-terminal=""
     >
+      <div className="flex shrink-0 flex-wrap items-center gap-2 py-2 text-xs text-(--ui-text-secondary)">
+        <div className="min-w-0 flex-1">
+          <p className="font-medium">{t.rightSidebar.terminalReadOnly}</p>
+          <p>{t.rightSidebar.terminalReadOnlyHelp}</p>
+        </div>
+        <Button onClick={() => createTerminal()} size="sm" type="button" variant="secondary">
+          {t.rightSidebar.terminalOpenInteractive}
+        </Button>
+      </div>
       <div className={HOST_CLASS} ref={hostRef} />
     </div>
   )

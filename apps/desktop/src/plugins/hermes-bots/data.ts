@@ -631,6 +631,77 @@ interface UnionRoster {
   sources?: GatewaySource[]
 }
 
+/** The session-bearing subset of a remote `profiles.list` reply. */
+interface RemoteRosterSnapshot {
+  profiles?: RosterRow[]
+}
+
+/**
+ * Overlay rich session fields from each remote gateway onto the thin rows from
+ * `host.agents()`. The union roster intentionally carries identity/routing
+ * only, so without this the remote Bot Chat is rendered as a perpetual draft.
+ */
+export function mergeRemoteRosterSessionFields(
+  rows: RosterRow[],
+  remoteSnapshots: ReadonlyMap<string, RemoteRosterSnapshot | null | undefined>
+): RosterRow[] {
+  return rows.map(row => {
+    const connectionId = String(row.connectionId || '').trim()
+
+    if (!row.remoteSource || !connectionId) {
+      return row
+    }
+
+    const snapshot = remoteSnapshots.get(connectionId)
+    const targetProfile = row.route?.targetProfile || row.targetProfile || row.name
+    const remote = snapshot?.profiles?.find(profile => profile.name === targetProfile)
+
+    if (!remote) {
+      return row
+    }
+
+    const sessionFields: Pick<RosterRow, 'canonical_session' | 'last_session' | 'worker_session'> = {}
+
+    for (const field of ['canonical_session', 'last_session', 'worker_session'] as const) {
+      const value = remote[field]
+
+      if (Object.prototype.hasOwnProperty.call(remote, field) && value !== undefined) {
+        sessionFields[field] = value
+      }
+    }
+
+    return { ...row, ...sessionFields }
+  })
+}
+
+async function hydrateRemoteRosterSessionFields(rows: RosterRow[]): Promise<RosterRow[]> {
+  const sourceRows = new Map<string, RosterRow>()
+
+  for (const row of rows) {
+    const connectionId = String(row.connectionId || '').trim()
+
+    // Do not wake on-demand/offline sources on every five-second roster poll.
+    if (row.remoteSource && row.sourceScoped && row.sourceReachable === true && connectionId) {
+      sourceRows.set(connectionId, row)
+    }
+  }
+
+  const snapshots = new Map<string, RemoteRosterSnapshot | null>()
+
+  await Promise.all(
+    [...sourceRows.entries()].map(async ([connectionId, row]) => {
+      try {
+        snapshots.set(connectionId, await requestForBot<RemoteRosterSnapshot>(row, 'profiles.list', {}))
+      } catch {
+        // The thin union row remains usable if this optional enrichment fails.
+        snapshots.set(connectionId, null)
+      }
+    })
+  )
+
+  return mergeRemoteRosterSessionFields(rows, snapshots)
+}
+
 export function useRoster() {
   const activeConnectionId = useValue(host.state.connectionId)
 
@@ -686,9 +757,11 @@ export function useRoster() {
           const merged = mergeMultiSourceRoster(local, union, activeConnectionId, previous)
           const sources = Array.isArray(union?.sources) ? union.sources : []
 
+          const sourceAnnotated = (merged?.profiles || []).map(row => annotateBotSource(row, sources))
+
           return {
             ...merged,
-            profiles: (merged?.profiles || []).map(row => annotateBotSource(row, sources)),
+            profiles: await hydrateRemoteRosterSessionFields(sourceAnnotated),
             sources,
             fetchedAt: issuedAt
           }

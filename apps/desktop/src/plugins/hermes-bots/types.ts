@@ -173,6 +173,11 @@ export interface GroupChat {
   sessionOwners?: Record<string, Partial<RosterRow>>
   sessions?: Record<string, string | true>
   stranded?: Record<string, number | { before: number; thread?: string }>
+  /** #93813: how far each member's external-write reconcile sweep has read
+   *  into that member's per-group session transcript (absolute row index of
+   *  the last mirrored row + 1). Persisted so external posts aren't rescanned
+   *  (or re-mirrored) after a window restart. */
+  externalCursors?: Record<string, number>
   syncRevision?: number
   /** Left behind when a room is disbanded, so sync can't resurrect it. */
   tombstone?: boolean

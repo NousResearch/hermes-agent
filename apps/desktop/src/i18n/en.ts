@@ -779,6 +779,10 @@ export const en: Translations = {
       embedsAlways: 'Always',
       embedsOff: 'Off',
       embedsReset: (count: number) => `Reset ${count} allowed ${count === 1 ? 'service' : 'services'}`,
+      closeBehaviorTitle: 'When closing the window',
+      closeBehaviorDesc: 'Choose what the close button does: keep Hermes running in the system tray, or quit the app.',
+      closeBehaviorTray: 'Minimize to system tray',
+      closeBehaviorQuit: 'Quit the app',
       resumeLastSessionTitle: 'Reopen Last Chat on Launch',
       resumeLastSessionDesc:
         'When enabled, the app reopens your most recent chat on cold start. Turn off to always start with a fresh new chat.',

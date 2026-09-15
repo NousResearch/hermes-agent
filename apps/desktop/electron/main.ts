@@ -26,8 +26,16 @@ import {
   screen,
   session,
   shell,
-  systemPreferences
+  systemPreferences,
+  Tray
 } from 'electron'
+
+import {
+  readCloseBehaviorState,
+  shouldHideToTray,
+  writeCloseBehaviorState,
+  type CloseBehavior
+} from './close-behavior'
 
 import { classifyActiveRuntime } from './active-runtime-state'
 import {
@@ -863,6 +871,7 @@ const DESKTOP_INSTALLATION_PATH = path.join(app.getPath('userData'), 'desktop-in
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
 const DESKTOP_UPDATE_CHECK_CACHE_PATH = path.join(app.getPath('userData'), 'update-check-cache.json')
 const DESKTOP_WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-state.json')
+const DESKTOP_CLOSE_BEHAVIOR_PATH = path.join(app.getPath('userData'), 'close-behavior.json')
 const DESKTOP_BACKEND_OWNERSHIP_PATH = path.join(app.getPath('userData'), 'backend-ownership.json')
 const DESKTOP_MANAGED_SSH_RECOVERY_PATH = path.join(app.getPath('userData'), 'managed-ssh-update-recovery.json')
 // active-profile.json records which Hermes profile the desktop launches its
@@ -1413,6 +1422,13 @@ function registerMediaProtocol() {
 }
 
 let mainWindow = null
+// Close-to-tray state: trayIcon is created lazily on the first close-to-tray;
+// isQuitting is set by before-quit so a real quit still closes the window
+// instead of hiding it. The one-time balloon flag lives in the persisted
+// close-behavior state (electron/close-behavior.ts), not in memory, so a
+// restart doesn't re-notify.
+let trayIcon: Electron.Tray | null = null
+let isQuitting = false
 const backendConnectionState = createBackendConnectionState<ReturnType<typeof spawn>, any>()
 
 const localBackendLifecycle = createLocalBackendLifecycle<ReturnType<typeof spawn>>({
@@ -6923,6 +6939,68 @@ async function showPluginCompatNoticeOnce() {
       rememberLog(`[plugins] could not persist compat notice dismissal: ${err.message}`)
     }
   }
+}
+
+// ─── Close-to-tray (Windows) ──────────────────────────────────────────────
+// When the close button hides the window instead of quitting, the app keeps
+// running in the system tray. Behavior is user-configurable (Settings →
+// Appearance → "When closing the window") and persisted in
+// userData/close-behavior.json alongside the one-time balloon flag; the tray
+// is created lazily on first use. Windows only — Linux/macOS are untested and
+// keep the stock close behavior. See electron/close-behavior.ts.
+
+ipcMain.handle('hermes:close-behavior:get', () => readCloseBehaviorState(DESKTOP_CLOSE_BEHAVIOR_PATH).mode)
+ipcMain.handle('hermes:close-behavior:set', (_event, mode: unknown) => {
+  const next: CloseBehavior = mode === 'quit' ? 'quit' : 'tray'
+  writeCloseBehaviorState(DESKTOP_CLOSE_BEHAVIOR_PATH, {
+    ...readCloseBehaviorState(DESKTOP_CLOSE_BEHAVIOR_PATH),
+    mode: next
+  })
+
+  return next
+})
+
+// The tray is created lazily on the first close-to-tray and offers show/quit
+// actions.
+function ensureHermesTray(): Electron.Tray | null {
+  if (trayIcon && !trayIcon.isDestroyed()) {
+    return trayIcon
+  }
+
+  const iconPath = getAppIconPath()
+
+  if (!iconPath) {
+    return null
+  }
+
+  trayIcon = new Tray(iconPath)
+  trayIcon.setToolTip('Hermes Agent')
+  trayIcon.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: 'Show Hermes', click: () => showMainWindowFromTray() },
+      { type: 'separator' },
+      {
+        label: 'Exit Hermes',
+        click: () => {
+          isQuitting = true
+          app.quit()
+        }
+      }
+    ])
+  )
+  trayIcon.on('click', () => showMainWindowFromTray())
+  trayIcon.on('double-click', () => showMainWindowFromTray())
+
+  return trayIcon
+}
+
+function showMainWindowFromTray() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return
+  }
+
+  mainWindow.show()
+  mainWindow.focus()
 }
 
 function sendOpenUpdatesRequested() {
@@ -14727,7 +14805,43 @@ function createWindow() {
   bindGeometryPersistence(mainWindow, schedulePersistWindowState)
   mainWindow.on('maximize', schedulePersistWindowState)
   mainWindow.on('unmaximize', schedulePersistWindowState)
-  mainWindow.on('close', () => schedulePersistWindowState.flush())
+  mainWindow.on('close', event => {
+    schedulePersistWindowState.flush()
+
+    // On Windows the close button can hide the window to the system tray
+    // instead of quitting — user-configurable via Settings → Appearance →
+    // "When closing the window". A real quit (tray menu "Exit Hermes",
+    // app.quit) always closes the window. The balloon hint shows once per
+    // install (persisted flag), not on every launch.
+    const closeState = readCloseBehaviorState(DESKTOP_CLOSE_BEHAVIOR_PATH)
+
+    if (shouldHideToTray({ isWindows: IS_WINDOWS, isQuitting, mode: closeState.mode })) {
+      // Create the tray first — if ensureHermesTray returns null (no icon
+      // found on disk), skip the hide so the window remains visible and
+      // recoverable instead of vanishing with no tray icon to restore it.
+      const tray = ensureHermesTray()
+
+      if (!tray) {
+        return
+      }
+
+      event.preventDefault()
+      mainWindow.hide()
+
+      if (!closeState.trayNotified) {
+        writeCloseBehaviorState(DESKTOP_CLOSE_BEHAVIOR_PATH, { ...closeState, trayNotified: true })
+
+        try {
+          trayIcon?.displayBalloon?.({
+            title: 'Hermes',
+            content: 'Hermes minimized to the system tray. Right-click the tray icon to exit.'
+          })
+        } catch {
+          // Balloon is best-effort.
+        }
+      }
+    }
+  })
 
   // the closed wrapper remains truthy, so clear only the window this callback owns.
   mainWindow.on('closed', () => {
@@ -18248,6 +18362,10 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
       if (response === 1) {
         quitConfirmedWithActiveWork = true
         app.quit()
+      } else {
+        // The quit was cancelled ("Keep Running") — allow the next close-button
+        // click to hide to the tray again.
+        isQuitting = false
       }
     })
     .catch(() => {
@@ -18261,6 +18379,10 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
 }
 
 app.on('before-quit', event => {
+  // Mark a real quit so the window close handler closes the window instead of
+  // hiding it to the tray.
+  isQuitting = true
+
   // Runs ahead of every teardown below, so "Keep Running" leaves the app
   // exactly as it was.
   if (heldQuitForActiveWork(event)) {
@@ -18334,6 +18456,9 @@ app.on('before-quit', event => {
   // The always-on-top overlay isn't a "real" app window; close it so a stray
   // pet can't keep the process alive or float over a quit app.
   closePetOverlay()
+  // Drop the tray icon on a real quit so it can't linger.
+  trayIcon?.destroy()
+  trayIcon = null
   wakeIndicatorController.close()
   introRevealController.destroy()
 

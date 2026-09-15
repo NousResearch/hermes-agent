@@ -62,6 +62,12 @@ declare global {
         limits: PoolLimits
       }>
       getGatewayWsUrl: (profile?: null | string) => Promise<GatewayWsUrlResult>
+      // Close-button behavior: 'tray' hides to the system tray (Windows),
+      // 'quit' closes the app. Persisted by the main process.
+      closeBehavior?: {
+        get: () => Promise<'tray' | 'quit'>
+        set: (mode: 'tray' | 'quit') => Promise<'tray' | 'quit'>
+      }
       // Open (or focus) a standalone OS window for a single chat session so
       // the user can work with multiple chats side by side. Returns ok:false
       // with an error code when the sessionId is empty/invalid. `watch` opens

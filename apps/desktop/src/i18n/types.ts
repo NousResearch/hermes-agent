@@ -655,6 +655,10 @@ export interface Translations {
       embedsAlways: string
       embedsOff: string
       embedsReset: (count: number) => string
+      closeBehaviorTitle: string
+      closeBehaviorDesc: string
+      closeBehaviorTray: string
+      closeBehaviorQuit: string
       resumeLastSessionTitle: string
       resumeLastSessionDesc: string
       product: string

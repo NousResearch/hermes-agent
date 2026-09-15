@@ -160,11 +160,7 @@ class GrokLiveBridge:
         The Hermes session this conversation belongs to (event routing + reconnect identity).
     emit:
         Thread-safe ``(event_type, payload) -> None`` sink for ``voice.grok.*`` events; the
-        methods layer binds it to ``server._emit`` addressed at ``session_id``.
-    delegation_sink:
-        Optional ``(session_id, delegation_id, prompt, context) -> None`` called after the
-        ``voice.grok.delegation`` event fires. None in v1 — t_f7cae076 wires the actual
-        ``prompt.submit`` here (SPEC §5 / seam inventory).
+        methods layer binds it to the caller transport captured at start (fresh-draft safe).
     live_config:
         Snapshot of the ``voice.grok_live`` config section taken at start; reconnects re-send
         it verbatim (xAI requires a fresh ``session.updated`` handshake every time).
@@ -178,7 +174,6 @@ class GrokLiveBridge:
         *,
         session_id: str,
         emit: Callable[[str, Dict[str, Any]], None],
-        delegation_sink: Optional[Callable[[str, str, str, str], None]] = None,
         live_config: Optional[Dict[str, Any]] = None,
         connect_factory: Optional[Callable[..., Any]] = None,
         reconnect_delay_s: float = RECONNECT_DELAY_S,
@@ -189,7 +184,6 @@ class GrokLiveBridge:
     ) -> None:
         self.session_id = session_id
         self._emit = emit
-        self._delegation_sink = delegation_sink
         self._live = dict(live_config or {})
         self._connect_factory = connect_factory or self._default_connect
         self._reconnect_delay_s = reconnect_delay_s
@@ -630,7 +624,8 @@ class GrokLiveBridge:
             "item_id": item_id or None,
         })
 
-    # ── delegation (SPEC §5 — event + seam; prompt.submit lands in t_f7cae076) ──
+    # ── delegation (SPEC §5 revised: renderer-submits — event carries prompt+context, the
+    #    renderer's onDelegation is the single prompt.submit caller) ──────────────────────
 
     def _schedule_settle_flush(self) -> None:
         """Mirror gpt-live's utterance settle: flush the accumulated user turn ~1.5s after
@@ -657,18 +652,15 @@ class GrokLiveBridge:
         if not delegation["prompt"]:
             return
         delegation_id = f"grok-{uuid.uuid4().hex[:12]}"
+        # `prompt` is the user's last words — the turn text the renderer submits (the persisted
+        # user row); `context` is the recent spoken exchange, model input only (voice_context).
         self._emit_event(EVENT_DELEGATION, {
             "session_id": self.session_id,
             "delegation_id": delegation_id,
+            "prompt": delegation["prompt"],
             "context": delegation["context"],
         })
         self._set_state("thinking")
-        if self._delegation_sink is not None:
-            try:
-                self._delegation_sink(self.session_id, delegation_id,
-                                      delegation["prompt"], delegation["context"])
-            except Exception:
-                logger.exception("grok-live: delegation sink failed")
 
 
 # ── --check smoke (mirrors the reference script's proven probe) ─────────────────

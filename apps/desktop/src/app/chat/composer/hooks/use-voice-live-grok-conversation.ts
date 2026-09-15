@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/i18n'
 import { GrokVoiceSession } from '@/lib/voice-live-grok'
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
+import { sanitizeTextForSpeech } from '@/lib/speech-text'
 import { notify, notifyError } from '@/store/notifications'
 
 import type { ConversationStatus } from './use-voice-conversation'
@@ -17,8 +18,10 @@ interface PendingVoiceResponse {
 }
 
 interface VoiceLiveGrokConversationOptions {
-  /** The open chat's real Hermes session id — the voice session must ride it
-   * (backend routes events + delegation by this id; see GrokVoiceSession.useSessionId). */
+  /** The open chat's real Hermes session id — adopted when it exists. A FRESH
+   *  DRAFT has none yet: the voice session starts under its synthetic id
+   *  (events route via the caller transport the backend captured at start) and
+   *  re-keys onto the real id once the delegation's submit mints the session. */
   chatSessionId: () => null | string
   busy: boolean
   enabled: boolean
@@ -28,7 +31,9 @@ interface VoiceLiveGrokConversationOptions {
   onInterrupt?: () => Promise<void> | void
   onStopWord?: () => void
   /** Submit a Hermes turn: `text` is the user's last words (the bubble and the
-   *  persisted row), `voiceContext` the recent spoken exchange for the model. */
+   *  persisted row), `voiceContext` the recent spoken exchange for the model.
+   *  This is the SINGLE prompt.submit caller for grok-live delegations — the
+   *  backend never submits (single-submitter invariant, gpt-live parity). */
   onSubmit: (text: string, voiceContext: string) => Promise<void> | void
   pendingResponse: () => PendingVoiceResponse | null
   consumePendingResponse: () => void
@@ -43,11 +48,16 @@ interface VoiceLiveGrokConversationOptions {
  *
  * Unlike GPT-Live, the backend owns the xAI websocket and does its own
  * transcript accumulation + utterance-settle judgement (SPEC §5) — a
- * `voice.grok.delegation` event already carries the assembled `context`, so
- * there is no client-side transcript buffer or stop-word settle timer here;
- * the backend's per-utterance flush already ran before the event arrived.
- * The one client-side stop-word check left is on the DELEGATION prompt
+ * `voice.grok.delegation` event already carries the assembled `prompt` +
+ * `context`, so there is no client-side transcript buffer or stop-word settle
+ * timer here; the backend's per-utterance flush already ran before the event
+ * arrived. The one client-side stop-word check left is on the DELEGATION prompt
  * itself (mirrors GPT-Live's belt-and-suspenders check in `onDelegation`).
+ *
+ * Renderer-submits design: THIS hook's onSubmit is the only prompt.submit
+ * caller (the backend's old delegation sink was removed — it double-submitted
+ * on an existing chat and no-oped on a fresh draft's synthetic id). When the
+ * turn settles, the finished reply is spoken through `voice.grok.speak`.
  */
 export function useVoiceLiveGrokConversation({
   busy,
@@ -75,8 +85,6 @@ export function useVoiceLiveGrokConversation({
   const submittedAtRef = useRef(0)
   const busyRef = useRef(busy)
   const delegationRef = useRef<null | string>(null)
-  const spokenLengthRef = useRef(0)
-  const spokenResponseIdRef = useRef<null | string>(null)
   const lastToolLabelRef = useRef<null | string>(null)
   const wasEnabledRef = useRef(enabled)
 
@@ -137,8 +145,6 @@ export function useVoiceLiveGrokConversation({
     const session = sessionRef.current
     sessionRef.current = null
     setDelegation(null)
-    spokenResponseIdRef.current = null
-    spokenLengthRef.current = 0
     session?.close()
     setMuted(false)
     setLevel(0)
@@ -180,35 +186,47 @@ export function useVoiceLiveGrokConversation({
           latest.current.onFatalError?.()
         }
       },
-      onDelegation: (delegationId, context) => {
+      onDelegation: (delegationId, prompt, context) => {
         if (sessionRef.current !== session) {
           return
         }
 
-        if (context && isVoiceStopCommand(context)) {
+        // A spoken stop command ends the conversation instead of becoming a turn.
+        if (prompt && isVoiceStopCommand(prompt)) {
           void end()
           latest.current.onStopWord?.()
 
           return
         }
 
+        // A newer request supersedes an in-flight turn: stop it so the answer
+        // the voice speaks is for what the user asked last.
         if (busyRef.current) {
           void latest.current.onInterrupt?.()
         }
 
         setDelegation(delegationId)
-        spokenResponseIdRef.current = null
-        spokenLengthRef.current = 0
         lastToolLabelRef.current = null
         turnObservedRef.current = false
         submittedAtRef.current = Date.now()
         latest.current.consumePendingResponse()
         refreshStatus('thinking')
-        void Promise.resolve(latest.current.onSubmit(context, context)).catch(error => {
-          notifyError(error, voiceCopy.liveDelegationFailed)
-          setDelegation(null)
-          refreshStatus()
-        })
+        // THE single submit (renderer-submits design): exactly one Hermes turn
+        // per delegation, submitted like a typed message — which also lazily
+        // creates the chat session when this conversation started on a fresh
+        // draft. After it resolves, adopt the (possibly newly minted) chat id
+        // so the backend re-keys the voice bridge onto the real session.
+        void Promise.resolve(latest.current.onSubmit(prompt, context))
+          .then(() => {
+            if (sessionRef.current === session) {
+              session.useSessionId(latest.current.chatSessionId?.())
+            }
+          })
+          .catch(error => {
+            notifyError(error, voiceCopy.liveDelegationFailed)
+            setDelegation(null)
+            refreshStatus()
+          })
       },
       onState: (state, reason) => {
         if (sessionRef.current !== session) {
@@ -230,20 +248,11 @@ export function useVoiceLiveGrokConversation({
     setStatus('thinking')
 
     try {
-      // The voice session must ride the open chat's real Hermes session id —
-      // the backend routes voice.grok.* events and the delegation seam by it.
-      // A wake-triggered fresh draft has NO id yet at this moment, so poll
-      // briefly for it (the composer's sessionId prop arrives a beat after
-      // startFreshSessionDraft); falling back to the synthetic id would route
-      // every event to stdio and no-op the delegation — the wake path's
-      // original silent-failure mode.
-      const deadline = Date.now() + 10_000
-      let sid = latest.current.chatSessionId?.()
-      while (!sid && Date.now() < deadline && startEpochRef.current === epoch) {
-        await new Promise(resolve => setTimeout(resolve, 150))
-        sid = latest.current.chatSessionId?.()
-      }
-      session.useSessionId(sid)
+      // Adopt the open chat's real session id when one exists (no polling: a
+      // FRESH DRAFT has no id until its first submit, so waiting can never
+      // produce one — the synthetic id routes via the caller transport the
+      // backend captured at start, and the delegation submit re-keys later).
+      session.useSessionId(latest.current.chatSessionId?.())
       await session.start()
 
       if (sessionRef.current !== session || startEpochRef.current !== epoch) {
@@ -278,11 +287,11 @@ export function useVoiceLiveGrokConversation({
     voiceCopy.liveError
   ])
 
-  // Drive the reply back into Hermes' progress note; the backend speaks the
-  // final reply itself once submitted (SPEC §5's "speak arbitrary text" leg
-  // lives server-side) — this effect only tracks turn settlement so the UI's
+  // Drive the reply back into the voice: when the submitted turn settles, speak
+  // the final reply through `voice.grok.speak` (xAI force_message — verbatim,
+  // no model involvement). This effect only tracks turn settlement so the UI's
   // `thinking` state clears at the right time, same polling shape as GPT-Live.
-  // eslint-disable-next-line no-restricted-syntax -- turn-coordination refs (delegation id / spoken cursor), not atom mirrors
+  // eslint-disable-next-line no-restricted-syntax -- turn-coordination refs (delegation id), not atom mirrors
   useEffect(() => {
     const session = sessionRef.current
     const delegationId = delegationRef.current
@@ -310,8 +319,12 @@ export function useVoiceLiveGrokConversation({
         turnObservedRef.current = true
 
         if (!response.pending) {
-          spokenResponseIdRef.current = response.id
-          spokenLengthRef.current = response.text.length
+          const spoken = sanitizeTextForSpeech(response.text).trim()
+
+          if (spoken) {
+            session.speak(spoken)
+          }
+
           latest.current.consumePendingResponse()
           setDelegation(null)
           refreshStatus()
@@ -345,7 +358,7 @@ export function useVoiceLiveGrokConversation({
   }, [])
 
   /** No explicit turn boundary in full duplex; grok-live has no client-side
-   *  nudge primitive (the backend owns the ws) so this is a no-op today. */
+   * nudge primitive (the backend owns the ws) so this is a no-op today. */
   const stopTurn = useCallback(() => {
     // Intentionally empty: mirrors GPT-Live's public shape; grok-live's
     // backend judges utterance completion itself (SPEC §5).

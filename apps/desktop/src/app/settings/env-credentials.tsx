@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
+import type { ProfileScope } from '@/api/client'
+import { useSettingsOwner } from '@/app/hooks/use-settings-owner'
 import { deleteEnvVar, getEnvVars, revealEnvVar, setEnvVar } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { type IconComponent } from '@/lib/icons'
@@ -46,14 +48,26 @@ export function SettingsCategoryHeading({ count, icon: Icon, title }: CategoryHe
 // scope); undefined keeps the app-wide active profile. Request-shaped on
 // purpose: the API helpers treat an explicit `null` as "target the
 // primary/default backend", which is never what a settings page means.
-export function useEnvCredentials(profile?: string): UseEnvCredentials {
+export function useEnvCredentials(profile?: ProfileScope): UseEnvCredentials {
   const { t } = useI18n()
+  const { isCurrent } = useSettingsOwner(profile)
   const credentials = t.settings.credentials
   const toolsets = t.settings.toolsets
   const [vars, setVars] = useState<Record<string, EnvVarInfo> | null>(null)
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [revealed, setRevealed] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState<string | null>(null)
+
+  // A queued write must target the connection/profile whose vars are on
+  // screen. Pinned when that list's fetch resolves — not read back from the
+  // live selection at click time — so a later scope change or a caller
+  // mutating the raw override object cannot retarget it. Until the first
+  // list lands, writes fall back to the mounted selection (matches the
+  // direct-save onboarding form, which owns its own input).
+  const writeOwnerRef = useRef<ProfileScope>(profile)
+
+  const freezeScope = (scope: ProfileScope): ProfileScope =>
+    scope && typeof scope === 'object' ? Object.freeze({ ...scope }) : scope
 
   // Best-effort cleanup of a retired localStorage flag (global "Show
   // advanced" toggle) — everything in these views is configuration-level.
@@ -65,6 +79,7 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
     }
   }, [])
 
+  // eslint-disable-next-line no-restricted-syntax -- one-time fetch-resolution snapshot pins the write owner to the resolved list, not a per-render atom mirror
   useEffect(() => {
     let cancelled = false
 
@@ -82,6 +97,11 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
         const next = await getEnvVars(profile)
 
         if (!cancelled) {
+          // The vars now on screen belong to THIS target; pin every queued
+          // write (save/clear/reveal) to a frozen copy of it. Not a reactive
+          // mirror: a one-time snapshot at fetch resolution, so a later live
+          // selection change cannot retarget queued writes.
+          writeOwnerRef.current = freezeScope(profile)
           setVars(next)
         }
       } catch (err) {
@@ -105,14 +125,14 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
   async function handleSave(key: string) {
     const value = edits[key]
 
-    if (!value) {
+    if (!value || !isCurrent()) {
       return
     }
 
     setSaving(key)
 
     try {
-      await setEnvVar(key, value, profile)
+      await setEnvVar(key, value, writeOwnerRef.current)
       patchVar(key, { is_set: true, redacted_value: redactedValue(value) })
       clearLocalState(key)
       notify({ kind: 'success', title: toolsets.savedTitle, message: toolsets.savedMessage(key) })
@@ -129,7 +149,7 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
   async function saveValue(key: string, value: string): Promise<{ message?: string; ok: boolean }> {
     const trimmed = value.trim()
 
-    if (!trimmed) {
+    if (!trimmed || !isCurrent()) {
       return { message: credentials.enterValueFirst, ok: false }
     }
 
@@ -152,14 +172,14 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
   }
 
   async function handleClear(key: string) {
-    if (!(await confirm({ destructive: true, title: toolsets.removeConfirm(key) }))) {
+    if (!(await confirm({ destructive: true, title: toolsets.removeConfirm(key) })) || !isCurrent()) {
       return
     }
 
     setSaving(key)
 
     try {
-      await deleteEnvVar(key, profile)
+      await deleteEnvVar(key, writeOwnerRef.current)
       patchVar(key, { is_set: false, redacted_value: null })
       clearLocalState(key)
       notify({ kind: 'success', title: toolsets.removedTitle, message: toolsets.removedMessage(key) })
@@ -178,7 +198,12 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
     }
 
     try {
-      const result = await revealEnvVar(key, profile)
+      const result = await revealEnvVar(key, writeOwnerRef.current)
+
+      if (!isCurrent()) {
+        return
+      }
+
       setRevealed(c => ({ ...c, [key]: result.value }))
     } catch (err) {
       notifyError(err, toolsets.failedReveal(key))

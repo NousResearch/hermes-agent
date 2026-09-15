@@ -6,16 +6,11 @@ import type { MemoryProviderConfig } from '@/types/hermes'
 const getMemoryProviderConfig = vi.fn()
 const saveMemoryProviderConfig = vi.fn()
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/hermes', async importActual => ({
+  ...(await importActual<Record<string, unknown>>()),
   getMemoryProviderConfig: (provider: string) => getMemoryProviderConfig(provider),
   saveMemoryProviderConfig: (provider: string, values: unknown) => saveMemoryProviderConfig(provider, values)
 }))
-
-vi.mock('@/store/profile', async () => {
-  const { atom } = await import('nanostores')
-
-  return { $activeGatewayProfile: atom('default') }
-})
 
 vi.mock('@/store/notifications', () => ({
   notify: vi.fn(),

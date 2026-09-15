@@ -7,7 +7,8 @@ import { stubResizeObserver } from '@/test/jsdom'
 
 // Every vault RPC is routed to the OWNER profile's socket; the mock records which profile each
 // call targeted so the tests can prove a draft never crosses owners.
-const { calls } = vi.hoisted(() => ({
+const { calls, agentCalls } = vi.hoisted(() => ({
+  agentCalls: [] as Array<{ connectionId: string; profile: string; method: string }>,
   calls: [] as { method: string; params: Record<string, unknown>; profile: string }[]
 }))
 
@@ -15,6 +16,11 @@ let respond: (profile: string, method: string) => Promise<unknown> = async () =>
 
 vi.mock('@/store/gateway', async importActual => ({
   ...(await importActual<Record<string, unknown>>()),
+  requestGatewayForAgent: (connectionId: string, profile: string, method: string) => {
+    agentCalls.push({ connectionId, profile, method })
+
+    return respond(profile, method)
+  },
   requestGatewayForProfile: (profile: string, method: string, params?: Record<string, unknown>) => {
     calls.push({ method, params: params ?? {}, profile })
 
@@ -29,9 +35,9 @@ import { useStore } from '@nanostores/react'
 import { queryClient } from '@/lib/query-client'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $gatewayState } from '@/store/session'
-import { $settingsScopeProfile } from '@/store/settings-scope'
+import { $settingsScopeKey, $settingsScopeOverride, setSettingsScope } from '@/store/settings-scope'
 
-import { vaultOwnerKey, VaultSettings } from './vault-settings'
+import { VaultSettings } from './vault-settings'
 
 stubResizeObserver()
 
@@ -42,9 +48,9 @@ const sources = [
 // Mirrors the production mount site (settings/index.tsx): the panel is keyed by its owner, so an
 // owner change remounts it and every dialog/draft is gone by construction.
 function KeyedVault() {
-  const profile = useStore($settingsScopeProfile)
+  const key = useStore($settingsScopeKey)
 
-  return <VaultSettings key={vaultOwnerKey(null, profile)} />
+  return <VaultSettings key={key} />
 }
 
 function mount() {
@@ -59,6 +65,8 @@ function mount() {
 
 beforeEach(() => {
   calls.length = 0
+  agentCalls.length = 0
+  $settingsScopeOverride.set(null)
   queryClient.clear()
   $activeGatewayProfile.set('default')
   $gatewayState.set('open')
@@ -122,6 +130,17 @@ it('a late list response from profile A never paints under profile B', async () 
     await held
   })
   expect(screen.queryByText('A-only private account')).toBeNull()
+})
+
+it('same-named vault reads and mutations use the selected registry owner', async () => {
+  setSettingsScope({ connectionId: 'fixture-lab', profile: 'research' })
+  mount()
+  fireEvent.click(await screen.findByRole('button', { name: 'Unlock' }))
+  fireEvent.change(screen.getByPlaceholderText('Master password'), { target: { value: 'fixture-password' } })
+  fireEvent.click(screen.getAllByRole('button', { name: 'Unlock' }).at(-1)!)
+  await waitFor(() => expect(agentCalls.some(call => call.method === 'vault.unlock')).toBe(true))
+  expect(agentCalls.every(call => call.connectionId === 'fixture-lab' && call.profile === 'research')).toBe(true)
+  expect(calls).toHaveLength(0)
 })
 
 it('vault.add secrets never enter the mutation cache', async () => {

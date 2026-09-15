@@ -1225,6 +1225,7 @@ export const en: Translations = {
       pill: 'Search'
     },
     profileScope: {
+      activeGatewayOnly: 'Available only for the active gateway and profile.',
       appliesTo: 'Applies to',
       editsProfile: profile => `Changes on this page apply to the “${profile}” profile.`
     },

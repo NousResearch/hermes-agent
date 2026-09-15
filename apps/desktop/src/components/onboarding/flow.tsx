@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { ErrorIcon } from '@/components/ui/error-state'
 import { Input } from '@/components/ui/input'
 import { Loader } from '@/components/ui/loader'
-import { getGlobalModelOptions } from '@/hermes'
+import { getGlobalModelOptions, type ProfileScope, profileScopeKey } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { ExternalLink, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -54,7 +54,15 @@ export function FlowPanel({
   }
 
   if (flow.status === 'confirming_model') {
-    return <ConfirmingModelPanel flow={flow} leaving={leaving} onBegin={onBegin} profile={ctx.profile} />
+    return (
+      <ConfirmingModelPanel
+        flow={flow}
+        leaving={leaving}
+        onBegin={onBegin}
+        profile={ctx.profile}
+        request={ctx.requestGateway}
+      />
+    )
   }
 
   if (flow.status === 'error') {
@@ -237,12 +245,14 @@ function ConfirmingModelPanel({
   flow,
   leaving,
   onBegin,
-  profile
+  profile,
+  request
 }: {
   flow: Extract<OnboardingFlow, { status: 'confirming_model' }>
   leaving: boolean
   onBegin: () => void
-  profile?: string
+  profile?: ProfileScope
+  request: OnboardingContext['requestGateway']
 }) {
   const { t } = useI18n()
   const scrambledModel = useScramble(flow.currentModel, leaving)
@@ -257,8 +267,8 @@ function ConfirmingModelPanel({
   // Pull pricing + tier for the just-picked default so the confirm card
   // shows the same $/Mtok + Free/Pro info the picker and CLI do.
   const options = useQuery({
-    queryKey: ['onboarding-model-options', flow.providerSlug],
-    queryFn: () => getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false })
+    queryKey: ['onboarding-model-options', profileScopeKey(profile), flow.providerSlug],
+    queryFn: () => getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false }, profile)
   })
 
   const providerRow = options.data?.providers?.find(
@@ -343,7 +353,9 @@ function ConfirmingModelPanel({
           setPickerOpen(false)
         }}
         open={pickerOpen}
-        profile={profile}
+        ownerConnectionId={profile && typeof profile === 'object' ? (profile.connectionId ?? undefined) : undefined}
+        profile={profile && typeof profile === 'object' ? (profile.profile ?? 'default') : (profile ?? 'default')}
+        request={request}
       />
     </div>
   )

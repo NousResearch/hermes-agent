@@ -1,19 +1,19 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setApiRequestConnection } from '@/api/client'
+import { getMemoryProviderConfig, saveMemoryProviderConfig as saveConfig } from '@/api/system'
+import type { HermesApiRequest } from '@/global'
+import { notify, notifyError } from '@/store/notifications'
+import { $connection } from '@/store/session'
 import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
 
 const saveMemoryProviderConfig = vi.fn()
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/hermes', async importActual => ({
+  ...(await importActual<Record<string, unknown>>()),
   saveMemoryProviderConfig: (provider: string, values: unknown) => saveMemoryProviderConfig(provider, values)
 }))
-
-vi.mock('@/store/profile', async () => {
-  const { atom } = await import('nanostores')
-
-  return { $activeGatewayProfile: atom('default') }
-})
 
 vi.mock('@/store/notifications', () => ({
   notify: vi.fn(),
@@ -62,6 +62,9 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  $connection.set(null)
+  setApiRequestConnection(null)
+  vi.unstubAllGlobals()
   vi.clearAllMocks()
 })
 
@@ -106,6 +109,53 @@ describe('ProviderConfigModal', () => {
     await waitFor(() => expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', { saveMessages: 'false' }))
     await waitFor(() => expect(onSaved).toHaveBeenCalled())
     expect(onOpenChange).toHaveBeenCalledWith(false)
+  })
+
+  it('does not refresh or publish a delayed save after its legacy gateway owner retires', async () => {
+    let finish!: (value: { ok: boolean }) => void
+
+    const held = new Promise<{ ok: boolean }>(resolve => {
+      finish = resolve
+    })
+
+    const api = vi.fn(async (request: HermesApiRequest) => {
+      if (request.method === 'PUT') {
+        return held
+      }
+
+      return schema()
+    })
+
+    vi.stubGlobal('hermesDesktop', { api })
+    setApiRequestConnection('fixture-old')
+    saveMemoryProviderConfig.mockImplementation(saveConfig)
+    const { onSaved, onOpenChange } = await renderModal()
+    onSaved.mockImplementation(() => getMemoryProviderConfig('honcho'))
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    expect(api.mock.calls[0][0]).toMatchObject({ method: 'PUT', connectionId: 'fixture-old' })
+
+    act(() => {
+      setApiRequestConnection('fixture-new')
+      $connection.set({
+        baseUrl: 'https://example.invalid',
+        wsUrl: 'wss://example.invalid',
+        mode: 'remote',
+        token: '',
+        logs: [],
+        isFullscreen: false,
+        nativeOverlayWidth: 0,
+        windowButtonPosition: null
+      })
+    })
+    await act(async () => {
+      finish({ ok: true })
+      await held
+    })
+    expect(onSaved).not.toHaveBeenCalled()
+    expect(onOpenChange).not.toHaveBeenCalled()
+    expect(notify).not.toHaveBeenCalled()
+    expect(notifyError).not.toHaveBeenCalled()
+    expect(api).toHaveBeenCalledTimes(1)
   })
 
   it('renders nothing while closed', async () => {

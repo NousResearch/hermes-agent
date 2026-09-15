@@ -1254,6 +1254,7 @@ export const ru = defineLocale({
       pill: 'Поиск'
     },
     profileScope: {
+      activeGatewayOnly: 'Доступно только для активного шлюза и профиля.',
       appliesTo: 'Применяется к',
       editsProfile: profile => `Изменения на этой странице применяются к профилю «${profile}».`
     },

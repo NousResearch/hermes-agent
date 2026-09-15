@@ -9,6 +9,7 @@ import {
   cancelTelegramOnboarding,
   getTelegramOnboardingStatus,
   type MessagingPlatformInfo,
+  type ProfileScope,
   startTelegramOnboarding,
   type TelegramOnboardingApplyResponse,
   type TelegramOnboardingStartResponse
@@ -56,7 +57,7 @@ export interface TelegramQrSetupProps {
   onApplied: (result: TelegramOnboardingApplyResponse) => void
   platform: MessagingPlatformInfo
   /** Request-shaped profile scope (undefined → active profile). */
-  scopeProfile: string | undefined
+  scopeProfile: ProfileScope
 }
 
 /**

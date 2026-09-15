@@ -172,41 +172,48 @@ export function validateProviderCredential(
   })
 }
 
-export function getCustomEndpoints(): Promise<CustomEndpointsResponse> {
-  return hermesApi<CustomEndpointsResponse>({
-    ...profileScoped(),
+export function getCustomEndpoints(profile?: ProfileScope): Promise<CustomEndpointsResponse> {
+  return window.hermesDesktop.api<CustomEndpointsResponse>({
+    ...capabilityScoped(profile),
     path: '/api/providers/custom-endpoints'
   })
 }
 
-export function saveCustomEndpoint(endpoint: CustomEndpointUpdate): Promise<CustomEndpointsResponse> {
-  return hermesApi<CustomEndpointsResponse>({
-    ...profileScoped(),
+export function saveCustomEndpoint(endpoint: CustomEndpointUpdate, profile?: ProfileScope): Promise<CustomEndpointsResponse> {
+  return window.hermesDesktop.api<CustomEndpointsResponse>({
+    ...capabilityScoped(profile),
     path: '/api/providers/custom-endpoints',
     method: 'POST',
     body: endpoint
   })
 }
 
-export function validateCustomEndpoint(endpoint: CustomEndpointUpdate): Promise<CustomEndpointValidationResponse> {
-  return hermesApi<CustomEndpointValidationResponse>({
+export function validateCustomEndpoint(
+  endpoint: CustomEndpointUpdate,
+  profile?: ProfileScope
+): Promise<CustomEndpointValidationResponse> {
+  return window.hermesDesktop.api<CustomEndpointValidationResponse>({
+    ...capabilityScoped(profile),
     path: '/api/providers/custom-endpoints/validate',
     method: 'POST',
     body: endpoint
   })
 }
 
-export function activateCustomEndpoint(id: string): Promise<{ ok: boolean; provider: string; model: string }> {
-  return hermesApi<{ ok: boolean; provider: string; model: string }>({
-    ...profileScoped(),
+export function activateCustomEndpoint(
+  id: string,
+  profile?: ProfileScope
+): Promise<{ ok: boolean; provider: string; model: string }> {
+  return window.hermesDesktop.api<{ ok: boolean; provider: string; model: string }>({
+    ...capabilityScoped(profile),
     path: `/api/providers/custom-endpoints/${encodeURIComponent(id)}/activate`,
     method: 'POST'
   })
 }
 
-export function deleteCustomEndpoint(id: string): Promise<CustomEndpointsResponse> {
-  return hermesApi<CustomEndpointsResponse>({
-    ...profileScoped(),
+export function deleteCustomEndpoint(id: string, profile?: ProfileScope): Promise<CustomEndpointsResponse> {
+  return window.hermesDesktop.api<CustomEndpointsResponse>({
+    ...capabilityScoped(profile),
     path: `/api/providers/custom-endpoints/${encodeURIComponent(id)}`,
     method: 'DELETE'
   })

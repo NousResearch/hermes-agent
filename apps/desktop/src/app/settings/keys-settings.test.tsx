@@ -2,6 +2,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { MemoryRouter, useNavigate } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $activeProfile } from '@/store/profile'
+import { $connection } from '@/store/session'
 import { stubResizeObserver } from '@/test/jsdom'
 
 import { envVar } from './test-utils'
@@ -13,12 +15,15 @@ stubResizeObserver()
 vi.mock('@/hermes', () => ({
   deleteEnvVar: vi.fn(),
   getEnvVars: (profile?: null | string) => getEnvVars(profile),
+  getProfiles: vi.fn().mockResolvedValue({ active: 'default', profiles: ['default'] }),
   revealEnvVar: vi.fn(),
   setApiRequestProfile: () => undefined,
   setEnvVar: vi.fn()
 }))
 
 beforeEach(() => {
+  $activeProfile.set('default')
+  $connection.set({ mode: 'local' } as never)
   getEnvVars.mockResolvedValue({})
   Object.defineProperty(Element.prototype, 'scrollIntoView', {
     configurable: true,
@@ -54,13 +59,13 @@ function DeepLinkButton({ target }: { target: string }) {
 }
 
 describe('KeysSettings', () => {
-  it('fetches env vars for the active profile (undefined, never null) when unscoped', async () => {
-    // #90549 class: getEnvVars(null) targets the primary profile's env store,
-    // so a non-default profile's Keys page would read (and edit) the wrong
-    // profile. Unscoped must send undefined so the active profile applies.
+  it('fetches env vars from the resolved settings owner', async () => {
+    // #90549 class: an incomplete profile-only scope can target the wrong
+    // gateway's environment store. Settings operations must use the resolved
+    // owner, including its gateway.
     await renderKeysSettings('tools')
 
-    await waitFor(() => expect(getEnvVars).toHaveBeenCalledWith(undefined))
+    await waitFor(() => expect(getEnvVars).toHaveBeenCalledWith({ connectionId: 'local', profile: 'default' }))
   })
 
   it('lists tools and excludes settings / channel-managed credentials', async () => {
@@ -149,7 +154,7 @@ describe('KeysSettings', () => {
       )
 
       expect(await screen.findByText('WIDGET')).toBeTruthy()
-      await waitFor(() => expect(getEnvVars).toHaveBeenCalledWith('profile-b'))
+      await waitFor(() => expect(getEnvVars).toHaveBeenCalledWith({ connectionId: 'local', profile: 'profile-b' }))
 
       // Open the field and type a value without saving it.
       fireEvent.focus(container.querySelector('input[readonly]') as HTMLInputElement)
@@ -165,7 +170,7 @@ describe('KeysSettings', () => {
       await act(async () => {
         $settingsScopeOverride.set('profile-c')
       })
-      await waitFor(() => expect(getEnvVars).toHaveBeenCalledWith('profile-c'))
+      await waitFor(() => expect(getEnvVars).toHaveBeenCalledWith({ connectionId: 'local', profile: 'profile-c' }))
 
       // The draft belonged to the previous target: it is gone, and so is the
       // Save control that would have dispatched it — no path is left that can

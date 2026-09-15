@@ -31,7 +31,6 @@ const PROFILE_INDEPENDENT_QUERY_ROOTS = new Set<string>([
   'public-catalog',
   'marketplace-themes',
   'marketplace-themes-settings',
-  'onboarding-model-options',
   'contrib-logs-tail'
 ])
 

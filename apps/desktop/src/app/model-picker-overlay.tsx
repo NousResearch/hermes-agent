@@ -95,6 +95,11 @@ export function ModelPickerOverlay({
       open={open}
       ownerConnectionId={pickerOwner.connectionId}
       profile={pickerOwner.profile}
+      providerSetupScope={
+        pickerOwner.connectionId
+          ? { connectionId: pickerOwner.connectionId, profile: pickerOwner.profile }
+          : pickerOwner.profile
+      }
       request={pickerOwner.route ? requestPickerGateway : undefined}
       sessionId={sessionId}
     />

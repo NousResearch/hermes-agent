@@ -7,6 +7,7 @@ import {
   activateCustomEndpoint,
   deleteCustomEndpoint,
   getCustomEndpoints,
+  type ProfileScope,
   saveCustomEndpoint,
   validateCustomEndpoint
 } from '@/hermes'
@@ -23,6 +24,7 @@ import { EmptyState, Pill, SectionHeading, SettingsContent, SettingsSkeleton } f
 interface CustomEndpointsSettingsProps {
   onConfigSaved?: () => void
   onMainModelChanged?: (provider: string, model: string) => void
+  scope: ProfileScope
 }
 
 interface EndpointForm {
@@ -76,7 +78,7 @@ function toPayload(form: EndpointForm, models?: string[]): CustomEndpointUpdate 
   }
 }
 
-export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: CustomEndpointsSettingsProps) {
+export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, scope }: CustomEndpointsSettingsProps) {
   const { t } = useI18n()
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -88,7 +90,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([])
 
   async function refresh() {
-    const data = await getCustomEndpoints()
+    const data = await getCustomEndpoints(scope)
     setEndpoints(data.endpoints)
   }
 
@@ -97,7 +99,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
 
     async function load() {
       try {
-        const data = await getCustomEndpoints()
+        const data = await getCustomEndpoints(scope)
 
         if (cancelled) {
           return
@@ -124,12 +126,12 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [scope])
 
   async function handleSave() {
     try {
       setSaving(true)
-      const response = await saveCustomEndpoint(toPayload(form, discoveredModels))
+      const response = await saveCustomEndpoint(toPayload(form, discoveredModels), scope)
       setEndpoints(response.endpoints)
       const saved = response.endpoints.find(endpoint => endpoint.id === response.id)
 
@@ -155,7 +157,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   async function handleValidate() {
     try {
       setTesting(true)
-      const response = await validateCustomEndpoint(toPayload(form))
+      const response = await validateCustomEndpoint(toPayload(form), scope)
       setDiscoveredModels(response.models)
 
       if (response.ok) {
@@ -185,7 +187,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   async function handleActivate(endpoint: CustomEndpoint) {
     try {
       setActivating(endpoint.id)
-      const response = await activateCustomEndpoint(endpoint.id)
+      const response = await activateCustomEndpoint(endpoint.id, scope)
       await refresh()
       onConfigSaved?.()
       onMainModelChanged?.(response.provider, response.model)
@@ -205,7 +207,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
 
     try {
       setDeleting(endpoint.id)
-      const response = await deleteCustomEndpoint(endpoint.id)
+      const response = await deleteCustomEndpoint(endpoint.id, scope)
       setEndpoints(response.endpoints)
 
       if (form.id === endpoint.id) {

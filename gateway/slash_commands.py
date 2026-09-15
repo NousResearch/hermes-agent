@@ -600,7 +600,8 @@ class GatewaySlashCommandsMixin(
         home = HomeChannel(
             platform=source.platform, chat_id=str(chat_id), name=chat_name, thread_id=thread_id,
             user_id=str(source.user_id) if getattr(source, "user_id", None) else None,
-            scope_id=str(source.scope_id) if getattr(source, "scope_id", None) else None)
+            scope_id=str(source.scope_id) if getattr(source, "scope_id", None) else None,
+            chat_type=str(source.chat_type) if getattr(source, "chat_type", None) else None)
         # config.yaml is canonical because it can persist the authenticated logical-target
         # provenance required by Relay after a restart.
         try:

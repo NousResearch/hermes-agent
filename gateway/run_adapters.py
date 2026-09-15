@@ -452,10 +452,45 @@ class GatewayAdapterLifecycleMixin:
         task.add_done_callback(_done)
         return task
 
+    def _reserve_handoff_source(self, session_id: str) -> Optional[tuple[str, int]]:
+        """Fence a routed source session before the watcher first awaits its DB claim.
+
+        The generation token makes release ownership exact: a stale handoff can
+        never clear a successor turn that replaced its sentinel.
+        """
+        routing_store = getattr(self, "session_store", None)
+        lookup = getattr(routing_store, "lookup_by_session_id", None)
+        entry = lookup(session_id) if callable(lookup) else None
+        session_key = getattr(entry, "session_key", None)
+        if not session_key:
+            return None
+        is_running = getattr(self, "_is_session_running", None)
+        if callable(is_running) and is_running(session_key):
+            return (session_key, 0)
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        begin_generation = getattr(self, "_begin_session_run_generation")
+        session_state = getattr(self, "_session_state")
+        generation = begin_generation(session_key)
+        state = session_state(session_key)
+        state.turn.agent = _AGENT_PENDING_SENTINEL
+        state.turn.started_ts = time.time()
+        persist = getattr(self, "_persist_active_agents", None)
+        if callable(persist):
+            persist()
+        return (session_key, generation)
+
+    def _release_handoff_source_reservation(
+        self, reservation: Optional[tuple[str, int]]
+    ) -> None:
+        if reservation and reservation[1]:
+            release = getattr(self, "_release_running_agent_state", None)
+            if callable(release):
+                release(reservation[0], run_generation=reservation[1])
+
     async def _handoff_watcher(self, interval: float = 2.0, drain_timeout: float = 30.0) -> None:
-        """Process pending CLI→gateway session handoffs from ``state.db``: claim atomically (pending
-        → running), re-bind the home channel to the CLI session_id, dispatch a synthetic event, mark
-        ``completed``/``failed``."""
+        """Process pending local→gateway session handoffs from ``state.db``: wait for the source turn
+        to become idle, claim atomically (pending → running), re-bind the destination to the source
+        session_id, dispatch a synthetic event, and mark ``completed``/``failed``."""
         from gateway.run import _async_profile_runtime_scope, _handoff_watch_scopes, _reclaim_stale
         await asyncio.sleep(5)  # let platforms connect before dispatching through them
         # Does _process_handoff accept the profile argument? Test stand-ins bind a one-arg callable.
@@ -467,7 +502,7 @@ class GatewayAdapterLifecycleMixin:
         # In-flight dispatches by session id: a handoff is a FULL agent turn, so never process inline.
         inflight: Dict[str, "asyncio.Task"] = {}
 
-        async def _dispatch(row, session_id, session_db, profile_name) -> None:
+        async def _dispatch(row, session_id, session_db, profile_name, reservation=None) -> None:
             """Run one claimed handoff to a terminal state, off the poll path."""
             try:
                 await self._process_handoff(*((row, profile_name) if _process_takes_profile else (row,)))
@@ -480,6 +515,16 @@ class GatewayAdapterLifecycleMixin:
                 with _log_suppressed(logging.DEBUG, "Could not record handoff failure", exc_info=True):
                     await session_db.fail_handoff(session_id, str(exc))
             finally:
+                turn_lease_holder = row.get("_handoff_turn_lease_holder")
+                release_turn_lease = getattr(session_db, "release_session_turn_lease", None)
+                if turn_lease_holder and callable(release_turn_lease):
+                    with _log_suppressed(
+                        logging.DEBUG, "Could not release handoff turn lease", exc_info=True
+                    ):
+                        await release_turn_lease(session_id, turn_lease_holder)
+                release = getattr(self, "_release_handoff_source_reservation", None)
+                if callable(release):
+                    release(reservation)
                 inflight.pop(session_id, None)
 
         async def _tick(profile_name: Optional[str] = None) -> None:
@@ -494,23 +539,86 @@ class GatewayAdapterLifecycleMixin:
                 session_id = row.get("id")
                 if not session_id or session_id in inflight:
                     continue
-                if not await session_db.claim_handoff(session_id):
-                    # Another tick or another gateway already claimed it.
+                # A programmatic ``hermes sessions handoff`` may be queued from a tool call in the
+                # very session being moved. Leave it pending until that turn releases its running
+                # slot; switching underneath the live turn would race transcript writes and delivery.
+                reserve = getattr(self, "_reserve_handoff_source", None)
+                if callable(reserve):
+                    reservation = reserve(session_id)
+                else:
+                    # Duck-typed watcher stand-ins and older mixins retain the
+                    # pre-reservation busy guard.
+                    routing_store = getattr(self, "session_store", None)
+                    lookup = getattr(routing_store, "lookup_by_session_id", None)
+                    active_entry = lookup(session_id) if callable(lookup) else None
+                    active_key = getattr(active_entry, "session_key", None)
+                    is_running = getattr(self, "_is_session_running", None)
+                    if active_key and callable(is_running) and is_running(active_key):
+                        continue
+                    reservation = None
+                # Generation zero means the route was already owned by a live turn.
+                if isinstance(reservation, tuple) and reservation and not reservation[1]:
                     continue
-                # INVARIANT (do not weaken): created inside _profile_runtime_scope but RUNS after it
-                # exits; it sees the profile scope only because ensure_future copies the Context.
-                # Positional, not keyword: the watcher's existing unit tests bind a stand-in
-                # ``_process_handoff(row)`` with no second parameter, and a keyword call would TypeError
-                # into the failure branch — turning a passing suite into a silent no-op watcher. Arity is
-                # probed above. It still sees the profile's home and secret scope only because
-                # ``set_hermes_home_override`` and ``set_secret_scope`` are ContextVar-based — ensure_future
-                # copies the current Context into the Task. If either seam is ever migrated to a
-                # thread-local or module global, secondary- profile handoffs silently regress to
-                # primary-config delivery (the exact bug fixed in #91217) while still recording
-                # handoff_state='completed'.
-                inflight[session_id] = asyncio.ensure_future(
-                    _dispatch(row, session_id, session_db, profile_name)
-                )
+                turn_lease_holder = None
+                acquire_turn_lease = getattr(session_db, "try_acquire_session_turn_lease", None)
+                if callable(acquire_turn_lease):
+                    turn_lease_holder = (
+                        f"pid={os.getpid()}:handoff={session_id}:nonce={time.time_ns()}"
+                    )
+                    if not await acquire_turn_lease(
+                        session_id, turn_lease_holder, ttl_seconds=300.0, patience_s=0.0
+                    ):
+                        release = getattr(self, "_release_handoff_source_reservation", None)
+                        if callable(release):
+                            release(reservation)
+                        continue
+                    row["_handoff_turn_lease_holder"] = turn_lease_holder
+                claimed = False
+                ownership_transferred = False
+                try:
+                    claimed = await session_db.claim_handoff(session_id)
+                    if not claimed:
+                        # Another tick or gateway claimed it.
+                        continue
+                    row["_handoff_source_reservation"] = reservation
+                    # INVARIANT (do not weaken): created inside _profile_runtime_scope but RUNS after it
+                    # exits; it sees the profile scope only because ensure_future copies the Context.
+                    # Positional, not keyword: the watcher's existing unit tests bind a stand-in
+                    # ``_process_handoff(row)`` with no second parameter, and a keyword call would TypeError
+                    # into the failure branch — turning a passing suite into a silent no-op watcher. Arity is
+                    # probed above. It still sees the profile's home and secret scope only because
+                    # ``set_hermes_home_override`` and ``set_secret_scope`` are ContextVar-based — ensure_future
+                    # copies the current Context into the Task. If either seam is ever migrated to a
+                    # thread-local or module global, secondary-profile handoffs silently regress to
+                    # primary-config delivery (the exact bug fixed in #91217) while still recording
+                    # handoff_state='completed'.
+                    task = asyncio.ensure_future(
+                        _dispatch(row, session_id, session_db, profile_name, reservation)
+                    )
+                    inflight[session_id] = task
+                    ownership_transferred = True
+                except BaseException as exc:
+                    if claimed:
+                        with _log_suppressed(
+                            logging.DEBUG, "Could not fail undispatched handoff", exc_info=True
+                        ):
+                            await session_db.fail_handoff(
+                                session_id, f"could not dispatch handoff: {exc}"
+                            )
+                    raise
+                finally:
+                    if not ownership_transferred:
+                        release_turn_lease = getattr(
+                            session_db, "release_session_turn_lease", None
+                        )
+                        if turn_lease_holder and callable(release_turn_lease):
+                            with _log_suppressed(
+                                logging.DEBUG, "Could not release handoff turn lease", exc_info=True
+                            ):
+                                await release_turn_lease(session_id, turn_lease_holder)
+                        release = getattr(self, "_release_handoff_source_reservation", None)
+                        if callable(release):
+                            release(reservation)
 
         # A row still 'running' at startup died mid-dispatch and blocks request_handoff until reclaimed.
         def _scope(profile_home):  # local: tests bind this watcher onto bare SimpleNamespace runners

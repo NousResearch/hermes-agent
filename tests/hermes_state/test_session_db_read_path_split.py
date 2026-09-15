@@ -102,6 +102,10 @@ def test_background_state_reads_never_touch_shared_writer(db):
         assert db.get_handoff_state("s1") == {
             "state": "pending",
             "platform": "telegram",
+            "target_ref": None,
+            "scope_id": None,
+            "chat_type": None,
+            "require_thread": False,
             "error": None,
         }
         assert [row["id"] for row in db.list_pending_handoffs()] == ["s1"]

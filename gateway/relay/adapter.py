@@ -395,7 +395,8 @@ class RelayAdapter(BasePlatformAdapter):
         structured connector decline (logged at ``decline_level``; None = silent).
         """
         op = action["op"]
-        if self._transport is None or not self.descriptor.supports_op(op):
+        descriptor = self._negotiated_descriptor(platform) or self.descriptor
+        if self._transport is None or not descriptor.supports_op(op):
             return None
         try:
             result = await self._transport.send_outbound(
@@ -2248,6 +2249,9 @@ class RelayAdapter(BasePlatformAdapter):
         self,
         parent_chat_id: str,
         name: str,
+        *,
+        platform: Optional[str] = None,
+        scope_id: Optional[str] = None,
     ) -> Optional[str]:
         """Create a thread/topic under ``parent_chat_id`` via the connector. One
         `thread_create` op covers Discord (channel thread), Telegram (forum topic) and
@@ -2259,10 +2263,14 @@ class RelayAdapter(BasePlatformAdapter):
                 "op": "thread_create",
                 "chat_id": str(parent_chat_id),
                 "thread_name": (str(name or "").strip() or "handoff")[:100],
-                "metadata": self._with_scope(str(parent_chat_id), None),
+                "metadata": {
+                    **self._with_scope(str(parent_chat_id), None),
+                    **({"scope_id": scope_id} if scope_id else {}),
+                },
             },
             decline_level=logging.INFO,
             subject=parent_chat_id,
+            platform=platform,
         )
         if result is None:
             return None

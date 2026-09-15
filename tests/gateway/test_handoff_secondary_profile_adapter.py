@@ -45,6 +45,39 @@ def _config(chat_id):
     return cfg
 
 
+@pytest.mark.asyncio
+async def test_relay_slack_home_preserves_scope_and_mpim_chat_type():
+    runner = object.__new__(GatewayRunner)
+    home = HomeChannel(
+        platform=Platform.SLACK,
+        chat_id="G_MPIM",
+        name="Owner MPIM",
+        scope_id="T_WORKSPACE",
+        chat_type="dm",
+    )
+    config = GatewayConfig(platforms={
+        Platform.SLACK: PlatformConfig(enabled=False, home_channel=home),
+        Platform.RELAY: PlatformConfig(enabled=True),
+    })
+    relay = MagicMock()
+    relay.fronts_platform.side_effect = lambda platform: platform == Platform.SLACK
+    relay.create_handoff_thread = AsyncMock(return_value="1700000000.1")
+    relay.build_handoff_source.return_value = None
+    runner._handoff_resolve_scope = lambda _profile: (config, {Platform.RELAY: relay})
+    runner._session_db = MagicMock()
+    runner._session_db.set_handoff_scope_id = AsyncMock(return_value=True)
+
+    destination = await runner._handoff_resolve_destination(
+        {"id": "session", "handoff_platform": "slack", "title": "work"}, None
+    )
+
+    assert destination.source.scope_id == "T_WORKSPACE"
+    assert destination.source.chat_type == "dm"
+    relay.create_handoff_thread.assert_awaited_once_with(
+        "G_MPIM", "Hermes — work", platform="slack", scope_id="T_WORKSPACE"
+    )
+
+
 def _make_multiplex_runner():
     runner = object.__new__(GatewayRunner)
     runner.config = _config("1111")          # primary/default home
@@ -91,6 +124,7 @@ def _make_multiplex_runner():
 
     async def _handle_message(event):
         captured["source"] = event.source
+        captured["text"] = event.text
         return "ok"
 
     runner._handle_message = AsyncMock(side_effect=_handle_message)
@@ -110,9 +144,15 @@ def _spy_transport_factory(used):
 
         async def _send(_platform, _chat_id, _text, _metadata=None):
             used["sent_via"] = adapter.tag
+            used["sent_chat_id"] = _chat_id
             return SimpleNamespace(success=True)
 
-        return SimpleNamespace(adapter=adapter, send=_send)
+        async def _create_thread(_platform, _chat_id, _name, scope_id=None):
+            return await adapter.create_handoff_thread(_chat_id, _name)
+
+        return SimpleNamespace(
+            adapter=adapter, send=_send, create_handoff_thread=_create_thread
+        )
 
     return _spy
 
@@ -165,6 +205,61 @@ async def test_default_profile_handoff_keeps_primary_adapter(monkeypatch):
 
     assert used["adapter_tag"] == "primary"
     assert used["home_chat_id"] == "1111"
+
+
+@pytest.mark.asyncio
+async def test_explicit_target_handoff_uses_requested_chat(monkeypatch):
+    """Explicit targets resolve under the queued profile and bypass its configured home."""
+    runner, captured = _make_multiplex_runner()
+    adapter = runner._profile_adapters["medicina"][Platform.TELEGRAM]
+    adapter.create_handoff_thread = AsyncMock(return_value="thread-7")
+
+    used = {}
+    monkeypatch.setattr(
+        "gateway.delivery.resolve_delivery_transport", _spy_transport_factory(used),
+    )
+    monkeypatch.setattr("gateway.run.load_gateway_config", lambda: _config("2222"))
+
+    await runner._process_handoff(
+        {
+            "id": "cli-session",
+            "title": "work",
+            "handoff_platform": "telegram",
+            "handoff_target_ref": "9999",
+            "handoff_kickoff_text": "Continue this exact task",
+        },
+        profile_name="medicina",
+    )
+
+    adapter.create_handoff_thread.assert_awaited_once_with("9999", "Hermes — work")
+    assert used["adapter_tag"] == "medicina"
+    assert used["home_chat_id"] == "2222"
+    assert captured["source"].chat_id == "9999"
+    assert captured["source"].thread_id == "thread-7"
+    assert captured["source"].profile == "medicina"
+    assert captured["text"] == "Continue this exact task"
+    runner._handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_require_thread_fails_before_session_rebind(monkeypatch):
+    runner, _ = _make_multiplex_runner()
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.create_handoff_thread = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "gateway.delivery.resolve_delivery_transport", _spy_transport_factory({}),
+    )
+
+    with pytest.raises(RuntimeError, match="required fresh thread"):
+        await runner._process_handoff({
+            "id": "cli-session",
+            "title": "work",
+            "handoff_platform": "telegram",
+            "handoff_target_ref": "9999",
+            "handoff_require_thread": 1,
+        })
+
+    assert runner.session_store.switch_session.await_count == 0
 
 
 @pytest.mark.asyncio

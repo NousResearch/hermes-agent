@@ -311,7 +311,11 @@ def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
                         "type": "object",
                         "properties": {
                             "name": {"type": "string", "description": "Exact tool name to invoke."},
-                            "arguments": {"type": "object", "description": "Arguments matching the tool schema."},
+                            "arguments": {
+                                "type": "object",
+                                "description": "Arguments matching the tool schema.",
+                                "additionalProperties": True,
+                            },
                         },
                         "required": ["name", "arguments"],
                     },

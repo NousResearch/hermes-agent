@@ -156,6 +156,17 @@ def resolve_assets(tag: str, backend: str, os_name: str | None = None,
     label, templates = _ASSET_TEMPLATES[os_name]
     if backend not in templates:
         raise BinaryResolutionError(f"unsupported {label} backend {backend}")
+    # release.yml switched both HIP names at b10356 (0666ad2b2b), then
+    # ROCm 7.14 -> 10.0 at b10767 (cff184438e). Keep older explicit pins.
+    if backend == "hip" and tag.startswith("b") and tag[1:].isascii() and tag[1:].isdigit():
+        build = int(tag[1:])
+        if build >= 10356:
+            if arch != "x64":
+                raise BinaryResolutionError(f"no {label} HIP {arch} asset at {tag}")
+            rocm_ver = "10.0" if build >= 10767 else "7.14"
+            extension = "zip" if os_name == "win" else "tar.gz"
+            return AssetPlan(tag, backend, [
+                f"llama-{tag}-bin-{os_name}-rocm-{rocm_ver}-{arch}.{extension}"])
     cuda_ver = _WIN_CUDA_VERSION_ARM64 if arch == "arm64" else _WIN_CUDA_VERSION
     return AssetPlan(tag, backend, [t.format(tag=tag, arch=arch, cuda_ver=cuda_ver)
                                     for t in templates[backend]])

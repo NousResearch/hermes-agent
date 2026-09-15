@@ -234,7 +234,7 @@ function useMessagesWhileVisible($messages: ReadableAtom<ChatMessage[]>): ChatMe
  * of re-rendering them by element identity and the stream's render cost stays
  * confined to the streaming message's own subtree.
  */
-function ChatRuntimeBoundary({
+export function ChatRuntimeBoundary({
   busy,
   children,
   onCancel,
@@ -306,38 +306,54 @@ function ChatRuntimeBoundary({
   const tailState = storedId && transcriptTailStates ? transcriptTailState(storedId, tailProfile) : undefined
   const restBackfillAvailable = Boolean(tailState?.possiblyTruncated)
 
-  const expandWindow = useCallback(() => {
-    // The store window still holds older messages: growing pages is enough.
-    // Otherwise the whole in-memory transcript is already materialized — if
-    // the REST tail hydration was truncated, fetch the next older page and
-    // PREPEND it to the session store before growing, so the grown window has
-    // something older to show. Fire-and-forget: the prepend lands through the
-    // session-state write path and re-renders this boundary.
-    if (
-      !windowStateRef.current.get(runtimeIdRef.current ?? '')?.state.window.windowed &&
-      runtimeId &&
-      storedId &&
-      transcriptBackfillAvailable(storedId, tailProfile)
-    ) {
-      void backfillOlderTranscriptPage({
-        storedSessionId: storedId,
-        profile: tailProfile,
-        // Stale-response guard: a session switch remounts/re-keys this view;
-        // checking the live atoms (not captured props) discards a page that
-        // resolves after the user moved on — same pattern as isCurrentResume.
-        isCurrent: () => view.$storedId.get() === storedId && view.$runtimeId.get() === runtimeId,
-        applyOlderPage: olderPage => {
-          sessionTileDelegate()?.updateSession(runtimeId, state => {
-            const merged = mergeOlderTranscriptPage(state.messages, olderPage)
+  const expandWindow = useCallback(
+    async (beforePrepend?: () => void) => {
+      // Network latency is not scroll intent. Capture at arrival, immediately
+      // before the store prepend, and only grow a window that has a page to show.
+      if (
+        !windowStateRef.current.get(runtimeIdRef.current ?? '')?.state.window.windowed &&
+        runtimeId &&
+        storedId &&
+        transcriptBackfillAvailable(storedId, tailProfile)
+      ) {
+        let grew = false
+        await backfillOlderTranscriptPage({
+          storedSessionId: storedId,
+          profile: tailProfile,
+          // Stale-response guard: a session switch remounts/re-keys this view;
+          // checking the live atoms (not captured props) discards a page that
+          // resolves after the user moved on — same pattern as isCurrentResume.
+          isCurrent: () => view.$storedId.get() === storedId && view.$runtimeId.get() === runtimeId,
+          applyOlderPage: olderPage => {
+            const current = view.$messages.get()
 
-            return merged === state.messages ? state : { ...state, messages: merged }
-          })
-        }
-      })
-    }
+            if (mergeOlderTranscriptPage(current, olderPage) === current) {
+              return
+            }
 
-    setWindowPages(pages => pages + 1)
-  }, [runtimeId, storedId, tailProfile, view])
+            beforePrepend?.()
+            setWindowPages(pages => pages + 1)
+            sessionTileDelegate()?.updateSession(runtimeId, state => {
+              const merged = mergeOlderTranscriptPage(state.messages, olderPage)
+              grew = merged !== state.messages
+
+              return grew ? { ...state, messages: merged } : state
+            })
+          }
+        })
+
+        // Exhaustion and overlapping-only pages have no structural publication.
+        // Do not leave the list waiting for a commit that will never arrive.
+        return grew
+      }
+
+      beforePrepend?.()
+      setWindowPages(pages => pages + 1)
+
+      return true
+    },
+    [runtimeId, storedId, tailProfile, view]
+  )
 
   const olderAvailable = windowed || restBackfillAvailable
 
@@ -726,6 +742,7 @@ const ChatViewContent = memo(function ChatViewContent({
             onCancel={haltRun}
             onDismissError={onDismissError}
             onRestoreToMessage={onRestoreToMessage}
+            scrollProfile={modelOptionsProfile || activeGatewayProfile}
             sessionId={activeSessionId}
             sessionKey={threadKey}
           />

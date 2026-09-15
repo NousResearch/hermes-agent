@@ -96,6 +96,27 @@ def gemini_requires_tool_call_ids(model: str) -> bool:
     return match is not None and int(match.group(1)) >= 3
 
 
+_API_VERSION_SEGMENT = re.compile(r"^v\d+(?:alpha|beta)?\d*$", re.IGNORECASE)
+
+
+def normalize_gemini_base_url(base_url: Optional[str]) -> str:
+    """Gemini native base URL with the API version segment guaranteed. Google's own client treats the
+    base as a host root and appends the version itself, so users configure ``GEMINI_BASE_URL`` (or a
+    proxy root like ``http://localhost:4000/gemini``) that way; our request builders expect
+    ``{base}/models/{model}:generateContent`` — without ``/v1beta`` that is a guaranteed 404. Trailing
+    slashes and an ``/openai`` suffix are stripped; an existing version segment (``v1``, ``v1beta``,
+    ``v1alpha``, ...) is kept; empty input returns ``DEFAULT_GEMINI_BASE_URL``. Only the LAST path
+    segment is inspected, so ``.../v1beta/extra`` still gets ``/v1beta`` appended; this does not
+    decide routing (see ``is_native_gemini_base_url``)."""
+    trimmed = str(base_url or "").strip().rstrip("/")
+    trimmed = re.sub(r"/openai\Z", "", trimmed, flags=re.IGNORECASE).rstrip("/")
+    if not trimmed:
+        return DEFAULT_GEMINI_BASE_URL
+    if _API_VERSION_SEGMENT.match(trimmed.rsplit("/", 1)[-1]):
+        return trimmed
+    return f"{trimmed}/v1beta"
+
+
 def is_native_gemini_base_url(base_url: str) -> bool:
     """True when the endpoint speaks Gemini's native REST API (not ``/openai``)."""
     normalized = str(base_url or "").strip().rstrip("/").lower()
@@ -116,8 +137,7 @@ def probe_gemini_tier(
     key = (api_key or "").strip()
     if not key:
         return "unknown"
-    base = str(base_url or DEFAULT_GEMINI_BASE_URL).strip().rstrip("/") or DEFAULT_GEMINI_BASE_URL
-    base = re.sub(r"/openai\Z", "", base, flags=re.IGNORECASE)
+    base = normalize_gemini_base_url(base_url)
     payload = {"contents": [{"role": "user", "parts": [{"text": "hi"}]}], "generationConfig": {"maxOutputTokens": 1}}
     headers = {"Content-Type": "application/json", "X-Goog-Api-Client": _API_CLIENT}
     try:
@@ -436,10 +456,14 @@ def _tool_call_extra_from_part(part: Dict[str, Any]) -> Optional[Dict[str, Any]]
     return {"google": {"thought_signature": sig}} if isinstance(sig, str) and sig else None
 
 
+def _provider_call_id(fc: Dict[str, Any]) -> Optional[str]:
+    fc_id = fc.get("id")
+    return fc_id if isinstance(fc_id, str) and fc_id else None
+
+
 def _new_call_id(fc: Dict[str, Any]) -> str:
     """Echo the functionCall/delta ``id`` when present, else mint an OpenAI-style one."""
-    fc_id = fc.get("id")
-    return fc_id if isinstance(fc_id, str) and fc_id else f"call_{uuid.uuid4().hex[:12]}"
+    return _provider_call_id(fc) or f"call_{uuid.uuid4().hex[:12]}"
 
 
 def _dump_call_args(fc: Dict[str, Any], **kwargs: Any) -> str:
@@ -558,6 +582,31 @@ def _iter_sse_events(response: httpx.Response) -> Iterator[Dict[str, Any]]:
             yield payload
 
 
+def _tool_call_slot(fc: Dict[str, Any], part: Dict[str, Any], part_index: int, args_str: str,
+                    tool_call_indices: Dict[str, Dict[str, Any]]) -> tuple[str, Optional[Dict[str, Any]]]:
+    """``(key, existing slot or None)`` for a streamed functionCall.
+
+    Gemini 3 ids each tool call, so the id is the slot identity (``part_index`` and the thought
+    signature drift across events of one call). Gemini 2.5 sends no id and ``part_index`` restarts
+    at 0 per event, so two different calls to one tool in separate events would share a slot and
+    have their arguments concatenated into unparseable JSON: Gemini re-sends full arguments, so a
+    payload that is not a prefix-extension (or resend) of the slot's accumulated arguments is a
+    different call and gets its own ``key#N`` slot, kept reachable so its own resend lands on it.
+    """
+    if fc_id := _provider_call_id(fc):
+        key = json.dumps({"provider_call_id": fc_id}, sort_keys=True)
+        return key, tool_call_indices.get(key)
+    thought_signature = part.get("thoughtSignature") if isinstance(part.get("thoughtSignature"), str) else ""
+    key = json.dumps({"part_index": part_index, "name": fc["name"], "thought_signature": thought_signature}, sort_keys=True)
+    slot = tool_call_indices.get(key)
+    if slot is None or args_str.startswith(slot["last_arguments"]):
+        return key, slot
+    for other_key, other in tool_call_indices.items():
+        if other_key.startswith(f"{key}#") and args_str.startswith(other["last_arguments"]):
+            return other_key, other
+    return f"{key}#{len(tool_call_indices)}", None
+
+
 def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices: Dict[str, Dict[str, Any]]) -> List[_GeminiStreamChunk]:
     candidates = event.get("candidates") or []
     if not candidates:
@@ -577,12 +626,11 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
         if fc := _part_function_call(part):
             name = str(fc["name"])
             args_str = _dump_call_args(fc, sort_keys=True)
-            thought_signature = part.get("thoughtSignature") if isinstance(part.get("thoughtSignature"), str) else ""
-            call_key = json.dumps({"part_index": part_index, "name": name, "thought_signature": thought_signature}, sort_keys=True)
-            if (slot := tool_call_indices.get(call_key)) is None:
+            call_key, slot = _tool_call_slot(fc, part, part_index, args_str, tool_call_indices)
+            if slot is None:
                 slot = tool_call_indices[call_key] = {"index": len(tool_call_indices), "id": _new_call_id(fc), "last_arguments": ""}
             # Gemini re-sends the full args each event; emit only the new suffix.
-            last_arguments = str(slot.get("last_arguments") or "")
+            last_arguments = slot["last_arguments"]
             slot["last_arguments"] = args_str
             delta = {"index": slot["index"], "id": slot["id"], "name": name, "extra_content": _tool_call_extra_from_part(part),
                      "arguments": args_str[len(last_arguments):] if args_str.startswith(last_arguments) else args_str}
@@ -654,7 +702,7 @@ class GeminiNativeClient:
         if not (api_key or "").strip():
             raise RuntimeError(_MISSING_KEY_ERROR)
         self.api_key, self.is_closed = api_key, False
-        self.base_url = (base_url or DEFAULT_GEMINI_BASE_URL).rstrip("/").removesuffix("/openai")
+        self.base_url = normalize_gemini_base_url(base_url)
         self._default_headers = dict(default_headers or {})
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat_completion))
         self._http = http_client or httpx.Client(timeout=timeout or httpx.Timeout(connect=15.0, read=600.0, write=30.0, pool=30.0))

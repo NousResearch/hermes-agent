@@ -216,6 +216,9 @@ export interface GroupPrompt {
   questions?: GroupPromptQuestion[] | null
   requestId: string
   sessionId?: null | string
+  /** The thread the blocking question belongs to — part of the mirror key,
+   *  since a member can be blocked in two threads at once. */
+  thread?: string
 }
 
 export type GroupActivityKind =

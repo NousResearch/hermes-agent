@@ -20,17 +20,17 @@ _mcp_stderr_log_lock = threading.Lock()
 
 
 def _get_mcp_stderr_log() -> Any:
-    """Shared append-mode handle for MCP subprocess stderr, opened once per process PER PROFILE HOME (a
+    """Shared append-mode handle for MCP subprocess stderr, cached until shutdown PER PROFILE HOME (a
     multiplexed gateway's secondary profile must log under ITS ``logs/``, not the launch profile's). Must
     expose a real fd (asyncio wires the child's stderr to it); falls back to ``/dev/null``, then real stderr."""
-    from hermes_constants import get_hermes_home, hermes_home_key
+    from hermes_constants import get_hermes_home, hermes_home_key, mkdir_under_hermes_home
     home_key = hermes_home_key()
     with _mcp_stderr_log_lock:
         fh = _mcp_stderr_log_fh.get(home_key)
-        if fh is None:
+        if fh is None or fh.closed:
             try:
                 log_dir = get_hermes_home() / "logs"
-                log_dir.mkdir(parents=True, exist_ok=True)
+                mkdir_under_hermes_home(log_dir)
                 # Line-buffered so output lands promptly; errors="replace" tolerates garbled binary.
                 fh = open(log_dir / "mcp-stderr.log", "a", encoding="utf-8", errors="replace", buffering=1)
                 fh.fileno()  # confirm a real fd before committing
@@ -42,6 +42,21 @@ def _get_mcp_stderr_log() -> Any:
                     fh = sys.stderr
             _mcp_stderr_log_fh[home_key] = fh
         return fh
+
+
+def _close_mcp_stderr_logs(*, scope: Optional[str] = None) -> None:
+    """Release cached parent handles after the selected MCP transports have stopped."""
+    with _mcp_stderr_log_lock:
+        keys = list(_mcp_stderr_log_fh) if scope is None else [scope]
+        for key in keys:
+            fh = _mcp_stderr_log_fh.pop(key, None)
+            # The last-resort fallback is borrowed, not owned by MCP.
+            if fh is None or fh is sys.stderr or fh is sys.__stderr__:
+                continue
+            try:
+                fh.close()
+            except OSError:
+                logger.warning("Could not close MCP stderr log for %s", key, exc_info=True)
 
 
 def _write_stderr_log_header(server_name: str) -> None:

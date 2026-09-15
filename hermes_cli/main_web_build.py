@@ -196,6 +196,14 @@ def _write_web_ui_build_stamp(project_root: Path, web_dir: Path) -> None:
         _web_ui_stamp_path(), "web UI", lambda: _compute_web_ui_content_hash(project_root, web_dir))
 
 
+def _fmt_elapsed(t0: float) -> str:
+    """Elapsed wall time since *t0*: ``Xs`` under a minute, else ``Xm Ys`` (matches long installs)."""
+    seconds = _time.monotonic() - t0
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    return f"{int(seconds // 60)}m{seconds % 60:.0f}s"
+
+
 def _console_print(text: str) -> None:
     """print() that survives cp1252-style consoles (arrow/check glyphs) via errors="replace"."""
     try:
@@ -488,7 +496,12 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             _console_print("Install Node.js, then run:  cd web && npm install && npm run build")
         return not fatal
     build_env = _npm_lifecycle_env(with_hermes_node_path())
-    _console_print("→ Building web UI...")
+    # Say why the rebuild runs and what to expect: the npm install below is
+    # silent by contract (capture_output + --silent), so minutes can pass with
+    # no output and an update that changed web/ sources looks hung. #102540.
+    _console_print("→ Building web UI: `hermes web` serves a prebuilt dashboard bundle, and its sources")
+    _console_print("  changed since the last build. npm install runs silently first — a few minutes with")
+    _console_print("  no output is normal.")
 
     npm_cwd, npm_workspace_args = _web_npm_install_context(web_dir)
 
@@ -501,9 +514,12 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
         # looks identical to a hang and users reboot mid-install).
         return _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir, env=build_env)
 
+    _t_start = _time.monotonic()
     r1 = _install_web_deps(silent=True)
     if r1.returncode != 0:
         return _report_web_build_failure("npm install", r1, fatal=fatal)
+    _console_print(f"  ✓ web dependencies installed ({_fmt_elapsed(_t_start)})")
+    _t_build = _time.monotonic()
     r2 = _build()
     if r2.returncode != 0:
         # The install can exit 0 over a half-installed tree (lockfile-hash skip,
@@ -534,6 +550,6 @@ def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
                 _console_print("  Build error:\n  " + "\n  ".join(preview.splitlines()[-10:]))
             return True
         return _report_web_build_failure("build", r2, fatal=fatal)
-    _console_print("  ✓ Web UI built")
+    _console_print(f"  ✓ Web UI built ({_fmt_elapsed(_t_start)} total, build {_fmt_elapsed(_t_build)})")
     _write_web_ui_build_stamp(_web_project_root(web_dir), web_dir)
     return True

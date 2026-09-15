@@ -419,3 +419,28 @@ class TestBuildRecoversFromMissingToolchain:
         assert mock_install.call_count == 1
         assert mock_build.call_count == 1
 
+
+
+class TestBuildWebUIProgressMessages:
+    """#102540: an update-triggered rebuild must say WHY it runs (the npm
+    install is silent, so minutes without output look like a hang) and how
+    long each phase took."""
+
+    def test_success_reports_reason_and_elapsed(self, tmp_path, capsys):
+        web_dir, _ = _make_web_dir(tmp_path)
+        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+        Subprocess = __import__("subprocess")
+        install_ok = Subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        build_ok = Subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=install_ok), \
+             patch("hermes_cli.main_web_build._run_with_idle_timeout", return_value=build_ok), \
+             patch("hermes_cli.main_web_build._write_web_ui_build_stamp"):
+            result = _build_web_ui(web_dir)
+
+        assert result is True
+        out = capsys.readouterr().out
+        assert "prebuilt dashboard bundle" in out    # explains why the build runs
+        assert "no output is normal" in out          # silent npm install is expected
+        assert "✓ web dependencies installed (" in out  # phase heartbeat + elapsed
+        assert "✓ Web UI built (" in out             # total + build timing

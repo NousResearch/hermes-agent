@@ -18,6 +18,11 @@ import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { slug } from '@/lib/sanitize'
 import { retireLocalProfileGateways } from '@/store/gateway'
+import {
+  cancelProfileRenameState,
+  completeProfileRenameState,
+  stageProfileRenameState
+} from '@/store/profile-rename-state'
 
 import { isValidProfileName } from './create-profile-dialog'
 
@@ -86,6 +91,10 @@ export function RenameProfileDialog({
     setError(null)
 
     try {
+      if (!isDefault) {
+        stageProfileRenameState(currentName, trimmed)
+      }
+
       // A retained renderer socket for the old name would treat the rename's
       // backend teardown as a transient drop and redial, resurrecting the
       // old-name backend whose ensure_hermes_home() recreates the directory
@@ -95,10 +104,16 @@ export function RenameProfileDialog({
       }
 
       await (scope == null ? renameProfile(currentName, trimmed) : renameProfile(currentName, trimmed, scope))
+      if (!isDefault) {
+        completeProfileRenameState(currentName, trimmed)
+      }
       await onRenamed?.(trimmed)
       setStatus('done')
       window.setTimeout(onClose, 800)
     } catch (err) {
+      if (!isDefault) {
+        cancelProfileRenameState(currentName, trimmed)
+      }
       setStatus('idle')
       setError(err instanceof Error ? err.message : p.failedRename)
     }

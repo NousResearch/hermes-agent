@@ -1023,6 +1023,33 @@ export function setSessionOwnerHint(sessionId: string, route: SessionOwnerRoute)
   }
 }
 
+/** Re-key exact local routes after a profile directory rename. Connection ids
+ * stay stable; only the backend profile identity moves. */
+export function migrateSessionOwnerHintsProfile(oldName: string, newName: string): void {
+  const oldProfile = oldName.trim() || 'default'
+  const newProfile = newName.trim() || 'default'
+  const entries = [...sessionOwnerHints.values()]
+
+  if (
+    oldProfile === newProfile ||
+    !entries.some(entry => entry.route.profile === oldProfile || entry.route.targetProfile === oldProfile)
+  ) {
+    return
+  }
+
+  sessionOwnerHints.clear()
+
+  for (const entry of entries) {
+    rememberSessionOwnerHint(entry.id, {
+      ...entry.route,
+      profile: entry.route.profile === oldProfile ? newProfile : entry.route.profile,
+      ...(entry.route.targetProfile === oldProfile ? { targetProfile: newProfile } : {})
+    })
+  }
+
+  persistSessionOwnerHints()
+}
+
 /** Drop every hint naming `connectionId` — the registry no longer has it, so
  *  nothing can dial that route again (fail-closed would otherwise pin those
  *  sessions to a dead source forever). */

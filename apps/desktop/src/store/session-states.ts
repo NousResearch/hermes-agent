@@ -960,6 +960,49 @@ function saveTiles(tiles: SessionTile[]) {
   $sessionTiles.set(tiles)
 }
 
+/** Move persisted/open tabs with a renamed profile instead of leaving their
+ * owner routes pointed at a backend name that no longer exists. */
+export function migrateSessionTilesProfile(oldName: string, newName: string): void {
+  const oldProfile = normalizeProfileKey(oldName)
+  const newProfile = normalizeProfileKey(newName)
+
+  if (oldProfile === newProfile) {
+    return
+  }
+
+  const migrateTile = (tile: StoredTile): StoredTile => ({
+    ...tile,
+    ...(tile.ownerProfile === oldProfile ? { ownerProfile: newProfile } : {}),
+    ...(tile.ownerRoute
+      ? {
+          ownerRoute: {
+            ...tile.ownerRoute,
+            profile: tile.ownerRoute.profile === oldProfile ? newProfile : tile.ownerRoute.profile,
+            ...(tile.ownerRoute.targetProfile === oldProfile ? { targetProfile: newProfile } : {})
+          }
+        }
+      : {})
+  })
+
+  const moved = [...(tilesByProfile[newProfile] ?? []), ...(tilesByProfile[oldProfile] ?? [])].map(migrateTile)
+
+  if (moved.length > 0) {
+    tilesByProfile[newProfile] = [...new Map(moved.map(tile => [tile.storedSessionId, tile])).values()]
+  }
+
+  delete tilesByProfile[oldProfile]
+
+  if (tilesByProfile[BOTS_TILE_BUCKET]) {
+    tilesByProfile[BOTS_TILE_BUCKET] = tilesByProfile[BOTS_TILE_BUCKET].map(migrateTile)
+  }
+
+  persistTiles()
+
+  if ([oldProfile, newProfile].includes(profileKey())) {
+    $sessionTiles.set([...(tilesByProfile[newProfile] ?? []), ...(tilesByProfile[BOTS_TILE_BUCKET] ?? [])])
+  }
+}
+
 // Profile switch: surface the new profile's tiles with runtime ids cleared so
 // they re-resume against the now-current gateway. (Fires immediately on
 // subscribe; harmless — the init value already matches.) A secondary window

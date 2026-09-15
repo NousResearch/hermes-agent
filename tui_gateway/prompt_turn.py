@@ -529,11 +529,22 @@ def _invoke_agent(
         _interim_assistant_cb if _load_interim_assistant_messages() else None)
     # A synthesized turn is typed at turn START so a crash persist writes a timeline event,
     # not a raw user bubble; the post-turn stamp is the fallback for an older agent.
+    prepersisted_user = session.pop("_prepersisted_user_message", None)
+    if isinstance(prepersisted_user, dict):
+        # Reuse the CLI handoff seam: turn_context swaps this clean persisted
+        # content for ``run_message`` while retaining its durable marker, so the
+        # model receives the full image/API payload without appending the row a
+        # second time at turn start.
+        agent._pending_cli_user_message = prepersisted_user
+    persist_user_message = (
+        prepersisted_user.get("content")
+        if isinstance(prepersisted_user, dict)
+        else (_build_persist_user_message(prompt, images, run_message) if images else prompt)
+    )
     st.run_kwargs = run_kwargs = {
         "conversation_history": list(st.history),
         "stream_callback": _stream,
-        "persist_user_message": (
-            _build_persist_user_message(prompt, images, run_message) if images else prompt)}
+        "persist_user_message": persist_user_message}
     try:
         run_params = inspect.signature(agent.run_conversation).parameters
     except (TypeError, ValueError):

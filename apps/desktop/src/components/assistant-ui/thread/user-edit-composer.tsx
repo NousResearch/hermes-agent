@@ -13,6 +13,7 @@ import {
   useState
 } from 'react'
 
+import { EDITOR_SUPPRESSION_ATTRS } from '@/app/chat/composer/autofill-suppression'
 import { ComposerDirectiveActions } from '@/app/chat/composer/directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from '@/app/chat/composer/drop-affordance'
 import {
@@ -802,7 +803,15 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const handleKeyUp = triggerKeyUpHandler(triggerKeyConsumedRef, refreshTrigger)
 
   return (
-    <ComposerPrimitive.Root className="contents" data-slot="aui_edit-composer-root">
+    <ComposerPrimitive.Root
+      /* #95089: this primitive renders the composer <form>. Safari consults
+         the form's autocomplete state for fields inside it, so the form must
+         opt out too, or the sr-only textarea's own autoComplete="off" can be
+         overridden by the form-level default. */
+      autoComplete="off"
+      className="contents"
+      data-slot="aui_edit-composer-root"
+    >
       <StickyHumanMessageContainer>
         <div
           className="composer-human-message-container human-execution-message-top relative flex w-full items-start rounded-md bg-(--ui-chat-surface-background)"
@@ -846,6 +855,9 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
                 expanded ? 'min-h-16' : 'min-h-[1.25rem]'
               )}
               contentEditable
+              /* WebKit AutoFill suppression (#95089) — same contract as the
+                 main composer's rich editor in chat/composer/index.tsx. */
+              {...EDITOR_SUPPRESSION_ATTRS}
               data-placeholder={copy.editMessage}
               data-slot={RICH_INPUT_SLOT}
               onBeforeInput={handleBeforeInput}

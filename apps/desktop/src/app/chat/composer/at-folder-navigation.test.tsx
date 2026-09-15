@@ -31,16 +31,19 @@ function folderItem(path: string): Unstable_TriggerItem {
 }
 
 function setup(initialText: string) {
+  // eslint-disable-next-line no-restricted-globals -- test harness needs a real contentEditable in the DOM
   const editor = document.createElement('div')
   editor.contentEditable = 'true'
   // The real composer marks its editor with this slot; `composerPlainText`
   // keys off it to decide whether a DIV contributes a trailing newline.
   // Without it the harness would silently diverge from production text.
   editor.dataset.slot = RICH_INPUT_SLOT
+  // eslint-disable-next-line no-restricted-globals -- test harness appends editor to DOM
   document.body.append(editor)
   renderComposerContents(editor, initialText)
 
   // Caret at the end, which is where a typed trigger always leaves it.
+  // eslint-disable-next-line no-restricted-globals -- test harness creates a range for caret placement
   const range = document.createRange()
   range.selectNodeContents(editor)
   range.collapse(false)

@@ -894,7 +894,10 @@ class GatewayNotificationsMixin:
                 "gateway machine, then `hermes gateway restart`."
             )
         logger.warning("Broadcasting state.db failure warning to home channels: %s", error)
+        from gateway.warning_notifications import warning_notifications_enabled
         for platform, _platform_cfg, home, transport in self._home_channel_transports():
+            if not warning_notifications_enabled(platform):
+                continue
             await self._send_home_channel_message(
                 platform, home, transport, message, "state.db warning notification failed for %s:%s: %s",
             )

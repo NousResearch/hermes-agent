@@ -175,6 +175,9 @@ class TurnRunner:
     def _progress_subagent_notice(self, preview, kwargs: dict) -> None:
         """Only terminal failure statuses render (same notice rail as credit warnings)."""
         ctx = self._ctx
+        from gateway.warning_notifications import warning_notifications_enabled
+        if not warning_notifications_enabled(ctx.source.platform, ctx.user_config):
+            return
         status = kwargs.get("status")
         try:
             from tools.delegate_tool import SUBAGENT_FAILURE_STATUSES, format_subagent_failure_line
@@ -876,8 +879,11 @@ class TurnRunner:
 
     def _status_callback_sync(self, event_type: str, message: str) -> None:
         from gateway.run import _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro
+        from gateway.warning_notifications import is_warning_status, warning_notifications_enabled
         ctx = self._ctx
         if not self._status_live():
+            return
+        if is_warning_status(event_type, message) and not warning_notifications_enabled(ctx.source.platform, ctx.user_config):
             return
         prepared = _prepare_gateway_status_message(ctx.source.platform, event_type, message)
         if prepared is None:
@@ -1147,8 +1153,13 @@ class TurnRunner:
         """Credits / out-of-band notices (usage bands, depletion, restored) fire from the agent's
         sync worker thread; hop onto the gateway loop. Fired-once latch lives on the cached agent."""
         from gateway.run import render_notice_line
+        from gateway.warning_notifications import warning_notifications_enabled
         if not self._status_live():
             return
+        if (getattr(notice, "level", None) in {"warn", "error"}
+                or str(getattr(notice, "key", "") or "").startswith("credits.")):
+            if not warning_notifications_enabled(self._ctx.source.platform, self._ctx.user_config):
+                return
         try:
             line = render_notice_line(notice)
         except Exception:

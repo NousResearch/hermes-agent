@@ -1441,7 +1441,7 @@ _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
 
 
 def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
-    """Generic live fetch for any provider registered in providers/ with ``auth_type="api_key"``.
+    """Generic live fetch for API-key and external-process provider profiles.
 
     Live results are merged with the curated list so models the live endpoint omits still appear:
     curated-first by default so the newest curated models lead when the live API lags;
@@ -1452,10 +1452,16 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     from providers import get_provider_profile
 
     profile = get_provider_profile(normalized)
-    if not (profile and profile.auth_type == "api_key" and profile.base_url):
+    if not profile:
         return None
-    api_key, base_url = _api_key_credentials(normalized)
-    live = profile.fetch_models(api_key=api_key, base_url=base_url or profile.base_url or None) if api_key else None
+    if profile.auth_type == "external_process":
+        live = profile.fetch_models()
+    elif profile.auth_type == "api_key" and profile.base_url:
+        api_key, base_url = _api_key_credentials(normalized)
+        live = profile.fetch_models(
+            api_key=api_key, base_url=base_url or profile.base_url or None) if api_key else None
+    else:
+        return None
     if not live:
         return list(profile.fallback_models) if profile.fallback_models else None
     curated = list(_PROVIDER_MODELS.get(normalized, [])) or list(profile.fallback_models or ())
@@ -1596,6 +1602,22 @@ def _credential_fingerprint(provider: str) -> str:
             bev = getattr(pcfg, "base_url_env_var", "") or ""
             if bev:
                 parts.append(f"{bev}={os.environ.get(bev, '')}")
+    except Exception:
+        pass
+
+    # ACP/subprocess providers authenticate and discover models through their
+    # launched program rather than an API key.  Its command and argv overrides
+    # therefore identify the catalog just as an API key/base URL identifies an
+    # HTTP provider's catalog.
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(provider)
+        if profile and profile.auth_type == "external_process":
+            for env_var in getattr(profile, "process_command_env_vars", ()) or ():
+                parts.append(f"{env_var}={os.environ.get(env_var, '')}")
+            args_env_var = str(getattr(profile, "process_args_env_var", "") or "")
+            if args_env_var:
+                parts.append(f"{args_env_var}={os.environ.get(args_env_var, '')}")
     except Exception:
         pass
 

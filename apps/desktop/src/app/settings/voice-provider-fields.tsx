@@ -114,6 +114,12 @@ export function VoiceProviderFields({
   const [elVoices, setElVoices] = useState<string[] | null>(null)
   const [elVoiceLabels, setElVoiceLabels] = useState<Record<string, string>>({})
   const wantsElevenLabs = keys.includes('tts.elevenlabs.voice_id')
+  // getElevenLabsVoices only accepts the plain profile string (no connectionId
+  // routing) — same narrowing store/hub-actions.ts uses for other string-only
+  // calls fed a ProfileScope. Without this, the fetch below ignored `profile`
+  // entirely and always read the ACTIVE profile's ElevenLabs account, even
+  // when this panel is configuring a different profile's TTS.
+  const elevenLabsProfile = profile && typeof profile === 'object' ? profile.profile : profile
 
   useEffect(() => {
     if (!wantsElevenLabs) {
@@ -122,7 +128,7 @@ export function VoiceProviderFields({
 
     let cancelled = false
 
-    getElevenLabsVoices()
+    getElevenLabsVoices(elevenLabsProfile)
       .then(result => {
         if (cancelled || !result.available) {
           return
@@ -139,7 +145,7 @@ export function VoiceProviderFields({
       })
 
     return () => void (cancelled = true)
-  }, [wantsElevenLabs])
+  }, [wantsElevenLabs, elevenLabsProfile])
 
   if (keys.length === 0 || !config) {
     return null

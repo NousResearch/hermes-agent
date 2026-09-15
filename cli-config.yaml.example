@@ -1172,6 +1172,12 @@ agent:
   # Default 3.
   # max_verify_nudges: 3
 
+  # Opt-in: also consult `pre_verify` hooks on turns that edited NO files, so a
+  # hook can demand verification for an answer-only turn (stated numbers,
+  # versions, paths). Off by default — the gate stays edit-only and ordinary
+  # answer turns pay no hook cost.
+  # pre_verify_without_edits: false
+
   # Enable verbose logging
   verbose: false
   

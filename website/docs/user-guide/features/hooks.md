@@ -805,7 +805,7 @@ def register(ctx):
 
 ### `pre_verify`
 
-Fires **once per turn when the agent edited code**, just before it finishes (after the built-in verify-on-stop guard). This is a user/plugin policy gate: a callback can keep the agent going — run a check, defer it, tidy the diff — instead of letting it stop.
+Fires **once per turn when the agent edited code**, just before it finishes (after the built-in verify-on-stop guard). This is a user/plugin policy gate: a callback can keep the agent going — run a check, defer it, tidy the diff — instead of letting it stop. A turn that edited no files is normally out of scope; `agent.pre_verify_without_edits: true` (off by default) opts those answer-only turns in too, so a hook can gate a stated number/version/path that was never looked up.
 
 Hermes' shipped verification guidance is not a default `pre_verify` hook. It is appended to the evidence-based verify-on-stop nudge when edited code lacks fresh verification evidence, so it does not create a second default continuation path. Set `agent.verify_guidance: false` to keep that built-in evidence nudge terse.
 
@@ -824,11 +824,11 @@ def my_callback(session_id: str, platform: str, model: str, coding: bool,
 | `coding` | `bool` | Whether the turn is in the coding posture (in a code workspace) — scope your hook on this |
 | `attempt` | `int` | How many times this turn has already been nudged (0 on the first) — self-throttle on this |
 | `final_response` | `str` | The answer the agent is about to deliver |
-| `changed_paths` | `list` | Files the agent edited this turn (sorted, always non-empty here) |
+| `changed_paths` | `list` | Files the agent edited this turn (sorted, always non-empty — except on the `agent.pre_verify_without_edits` no-edit turns, where it is `[]`) |
 
 Scope a hook to the coding context by checking `coding` and make it one-shot with `attempt` (shell hooks read both from `.extra`), the same way a `pre_tool_call` hook scopes on `tool_name` — so you can register several `pre_verify` hooks, each firing only where it should.
 
-**Fires:** In `agent/conversation_loop.py`, at the point the agent would accept a final answer, immediately after the verify-on-stop check — but only when the agent edited code this turn and at least one `pre_verify` hook is registered.
+**Fires:** In `agent/conversation_loop.py`, at the point the agent would accept a final answer, immediately after the verify-on-stop check — but only when the agent edited code this turn and at least one `pre_verify` hook is registered. With `agent.pre_verify_without_edits: true`, turns that edited nothing are eligible too (`changed_paths` arrives empty, `coding`/`attempt` still scope the hook).
 
 **Return value — keep the agent going:**
 

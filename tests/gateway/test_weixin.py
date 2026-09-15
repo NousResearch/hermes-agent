@@ -880,3 +880,66 @@ class TestWeixinVoiceGatewayHandoff:
             "the wrong transcript instead of re-transcribing (#27300)."
         )
 
+
+
+class TestWeixinInteractGating:
+    """Interact-gating: after N outbound business chunks the adapter pauses and asks the user to
+    reply to continue, instead of pushing sends the upstream per-window limit would reject."""
+
+    def _connected_adapter(self) -> WeixinAdapter:
+        adapter = _make_adapter()
+        adapter._session = object()
+        adapter._send_session = adapter._session
+        adapter._token = "test-token"
+        adapter._base_url = "https://weixin.example.com"
+        adapter._token_store.get = lambda account_id, chat_id: "ctx-token"
+        return adapter
+
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_send_emits_interact_prompt_before_business_send(self, send_message_mock, sleep_mock):
+        adapter = self._connected_adapter()
+        adapter._outbound_interact_every = 2
+        adapter._sent_since_user_msg = 2  # already at the threshold
+        adapter.MAX_MESSAGE_LENGTH = 200
+        send_message_mock.return_value = {"ret": 0, "errcode": 0}
+
+        async def send_with_resume():
+            async def resume():
+                await asyncio.sleep(0.1)
+                adapter._interact_resume_event.set()
+
+            resume_task = asyncio.create_task(resume())
+            result = await adapter.send("wxid_test123", "hello world")
+            await resume_task
+            return result
+
+        result = asyncio.run(send_with_resume())
+
+        assert result.success is True
+        texts = [c.kwargs.get("text", "") for c in send_message_mock.await_args_list]
+        assert any("回复任意消息接着发" in t for t in texts)
+        assert any("hello world" in t for t in texts)
+        prompt_idx = next(i for i, t in enumerate(texts) if "回复任意消息接着发" in t)
+        content_idx = next(i for i, t in enumerate(texts) if "hello world" in t)
+        assert prompt_idx < content_idx
+
+    @pytest.mark.asyncio
+    async def test_short_inbound_reply_after_interact_is_resume_signal(self):
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter._token = None
+        adapter._waiting_interact_reply = True
+        adapter.handle_message = AsyncMock()
+
+        msg = {
+            "from_user_id": "user-123",
+            "message_id": "msg-continue-1",
+            "item_list": [{"type": 1, "text_item": {"text": "继续"}}],
+        }
+
+        await adapter._process_message(msg)
+
+        assert adapter.handle_message.await_count == 0  # consumed as resume signal, no event
+        assert adapter._waiting_interact_reply is False
+        assert adapter._sent_since_user_msg == 0

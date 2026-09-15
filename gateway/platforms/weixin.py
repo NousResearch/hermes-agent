@@ -715,6 +715,16 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         # trigger a separate agent run. 3s / 5s (after a ~2048-char split chunk) suit iLink's cadence.
         self._text_batch_delay_seconds = self._coerce_float_extra("text_batch_delay_seconds", 3.0)
         self._text_batch_split_delay_seconds = self._coerce_float_extra("text_batch_split_delay_seconds", 5.0)
+        # Interact-gating: after N outbound business chunks since the user's last inbound message,
+        # pause and emit a "reply anything to continue" prompt (fills the next slot) instead of
+        # pushing a 10th/11th business send the upstream per-window outbound limit would reject.
+        self._outbound_interact_every = max(1, int(_extra_or_secret(extra, "outbound_interact_every", "9")))
+        self._sent_since_user_msg = 0
+        self._waiting_interact_reply = False
+        # Created lazily on the send path (a running loop is required to build one), never in
+        # __init__ — binding an Event to an event loop that later tests/tasks do not run on wedges
+        # the pause forever.
+        self._interact_resume_event: Optional[asyncio.Event] = None
         persisted = load_weixin_account(hermes_home, self._account_id) if self._account_id and not self._token else None
         if persisted:
             self._token = str(persisted.get("token") or "").strip()
@@ -890,6 +900,19 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 await self._collect_media(candidate, media_paths, media_types)
         if not text and not media_paths:
             return
+        if self._waiting_interact_reply:
+            # First inbound while paused on the interact gate is treated as the "continue" signal
+            # (or, if it looks like a real question, handled normally below).
+            self._waiting_interact_reply = False
+            self._sent_since_user_msg = 0
+            if self._interact_resume_event is not None:
+                self._interact_resume_event.set()
+            is_full_question = (bool(media_paths) or "?" in text or "？" in text or len(text) > 15)
+            if not is_full_question:
+                logger.info("[%s] interact reply treated as resume signal from %s", self.name, _safe_id(sender_id))
+                return
+        else:
+            self._sent_since_user_msg = 0
         source = self.build_source(chat_id=effective_chat_id, chat_type=chat_type, user_id=sender_id, user_name=sender_id)
         event = MessageEvent(
             text=text, message_type=_message_type_from_media(media_types, text), source=source, raw_message=message,
@@ -1037,8 +1060,20 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     logger.warning("[%s] %s delivery failed for %s: %s", self.name, label, path, exc)
             chunks = [c for c in self._split_text(self.format_message(final_content)) if c and c.strip()]
             for idx, chunk in enumerate(chunks):
+                if self._sent_since_user_msg >= self._outbound_interact_every:
+                    # Reached the interact threshold before the next business send: emit the
+                    # "reply anything to continue" prompt (it fills the next slot) and pause until
+                    # the user's continue signal, never pushing a 10th/11th business send that the
+                    # upstream per-window outbound limit would reject.
+                    if self._interact_resume_event is None:
+                        self._interact_resume_event = asyncio.Event()
+                    await self._send_interact_prompt(chat_id=chat_id, context_token=context_token)
+                    self._waiting_interact_reply = True
+                    await self._interact_resume_event.wait()
+                    self._interact_resume_event.clear()
                 client_id = f"hermes-weixin-{uuid.uuid4().hex}"
                 await self._send_text_chunk(chat_id=chat_id, chunk=chunk, context_token=context_token, client_id=client_id)
+                self._sent_since_user_msg += 1
                 last_message_id = client_id
                 if idx < len(chunks) - 1 and self._send_chunk_delay_seconds > 0:
                     await asyncio.sleep(self._send_chunk_delay_seconds)
@@ -1046,6 +1081,12 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         except Exception as exc:
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
             return SendResult(success=False, error=str(exc))
+
+    async def _send_interact_prompt(self, chat_id: str, context_token: Optional[str]) -> None:
+        """Emit the "already sent N, reply anything to continue" prompt (fills the next slot, not counted)."""
+        prompt = f"已发送 {self._sent_since_user_msg + 1} 条，回复任意消息接着发。"
+        client_id = f"hermes-weixin-{uuid.uuid4().hex}"
+        await self._send_text_chunk(chat_id=chat_id, chunk=prompt, context_token=context_token, client_id=client_id)
 
     async def _ensure_typing_ticket(self, chat_id: str) -> Optional[str]:
         """Return a valid typing ticket, refreshing via getConfig once the 600s TTL evicts it —

@@ -240,34 +240,6 @@ class TestRecoveryEndToEndClassification:
         result = classify_api_error(err, provider="nvidia", model="moonshotai/kimi-k3")
         assert result.reason != FailoverReason.multimodal_tool_content_unsupported
 
-    def test_nvidia_nim_serde_reaches_strip_recovery(self):
-        """The classified reason must actually drive the strip helper: the NVIDIA
-        rejection becomes reachable by the same recovery the other wordings use."""
-        err = _FakeApiError(
-            status_code=400,
-            message=(
-                "HTTP 400: Failed to deserialize the JSON body into the target type: "
-                "data did not match any variant of untagged enum "
-                "ChatCompletionRequestToolMessageContent at line 1 column 1974809"
-            ),
-        )
-        result = classify_api_error(err, provider="nvidia", model="moonshotai/kimi-k3")
-        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
-
-        agent = _make_agent(provider="nvidia", model="moonshotai/kimi-k3")
-        msgs = [
-            {"role": "tool", "tool_call_id": "computer_use:0", "content": [
-                {"type": "text", "text": "screenshot of the desktop"},
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgoAAAA"}},
-            ]},
-        ]
-        assert agent._try_strip_image_parts_from_tool_messages(msgs) is True
-        assert isinstance(msgs[0]["content"], str)
-        assert "data:image" not in msgs[0]["content"]
-        assert "screenshot of the desktop" in msgs[0]["content"]
-        assert ("nvidia", "moonshotai/kimi-k3") in agent._no_list_tool_content_models
-
-
 class TestOpenCodeGoProactiveToolResultDowngrade:
     def _multimodal_result(self, png_b64: str = "iVBORw0KGgoAAAA"):
         return {

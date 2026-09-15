@@ -32,6 +32,7 @@ import logging
 import os
 import time
 import urllib.request
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -61,11 +62,17 @@ def _post(text: str, task_id: str = "", event: str = "") -> None:
     url = _cfg().get("url", f"http://127.0.0.1:8644/webhooks/{_ROUTE}")
     body = json.dumps({"text": text, "task_id": task_id, "event": event}).encode()
     ts = str(int(time.time()))
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        "X-Request-ID": str(uuid.uuid4()),
+    }
     sec = _secret()
     if sec:
+        # The gateway verifier (gateway/platforms/webhook.py, `v2_sig`) compares
+        # this header against a BARE lower-case hex digest of "<timestamp>.<body>".
+        # A "sha256=" prefix (GitHub's scheme, not this one) 401s every request.
         sig = hmac.new(sec.encode(), f"{ts}.".encode() + body, hashlib.sha256).hexdigest()
-        headers.update({"X-Webhook-Timestamp": ts, "X-Webhook-Signature-V2": f"sha256={sig}"})
+        headers.update({"X-Webhook-Timestamp": ts, "X-Webhook-Signature-V2": sig})
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=5) as r:
         r.read()
@@ -79,7 +86,6 @@ def _emit(event: str, task_id: str | None, **fields) -> None:
         key = f"{event}:{task_id}"
         if now - _last.get(key, 0) < float(_cfg().get("debounce_seconds", 60)):
             return
-        _last[key] = now
         title = fields.get("title") or ""
         assignee = fields.get("assignee") or ""
         reason = fields.get("reason") or fields.get("blocked_reason") or fields.get("summary") or ""
@@ -100,6 +106,9 @@ def _emit(event: str, task_id: str | None, **fields) -> None:
         head = "BLOCKED" if event == "blocked" else "DONE"
         text = f"KANBAN {head} {task_id} [{assignee}] {title}\n{reason[:1500]}"
         _post(text, task_id, event)
+        # Only a DELIVERED wake is debounced. Recording this before _post meant a
+        # failed delivery suppressed the next attempt for the whole window.
+        _last[key] = time.time()
         logger.info("[kanban-wake] emitted %s for %s", event, task_id)
     except Exception as e:  # never break dispatch
         logger.warning("[kanban-wake] emit failed: %s", e)

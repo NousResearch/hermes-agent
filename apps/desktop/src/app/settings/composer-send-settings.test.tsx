@@ -4,13 +4,14 @@ import {
   DOUBLE_ENTER_DEFAULT_MS,
   HOLD_DEFAULT_MS,
   SEND_GRACE_DEFAULT_MS,
-  SEND_GRACE_DEFAULT_SCOPE,
+  SEND_GRACE_DEFAULT_REASONS,
   TYPING_IDLE_DEFAULT_MS
 } from '@hermes/shared'
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $composerSendPrefs } from '@/store/composer-send'
+import { stubResizeObserver } from '@/test/jsdom'
 
 import { ComposerSendSettings } from './composer-send-settings'
 
@@ -21,6 +22,9 @@ import { ComposerSendSettings } from './composer-send-settings'
  * The store is REAL here — only the IPC bridge and the i18n table are stubbed —
  * so a change that stopped persisting would fail these, not pass them.
  */
+
+// Radix's Popover measures its content with ResizeObserver, which jsdom lacks.
+stubResizeObserver()
 
 const mocks = vi.hoisted(() => ({
   notify: vi.fn(),
@@ -35,22 +39,28 @@ const WORDS = {
   modeEnter: 'Enter',
   modeDoubleEnter: 'Double tap',
   modePause: 'Pause',
-  modeHold: 'Hold',
   modeModEnter: 'Enter + modifier',
   doubleTapTitle: 'Double-tap window',
   doubleTapDescription: 'How fast the two Enter presses have to land.',
   doubleTapUnit: 'ms',
+  holdToggleTitle: 'Press and hold Enter',
+  holdToggleDescription: 'Keep the key down to send.',
   holdMsTitle: 'Hold time',
   holdMsDescription: 'How long Enter has to stay down.',
   holdMsUnit: 'ms',
   typingIdleTitle: 'Typing pause',
   typingIdleDescription: 'How long you have to stop typing.',
   typingIdleUnit: 'ms',
-  graceTitle: 'Hold a guessed send',
-  graceDescription: 'Guessed sends wait a moment so Esc can take them back.',
-  graceOff: 'Never',
-  graceInferred: 'Guessed only',
-  graceAll: 'Every send',
+  graceTitle: 'Wait before sending',
+  graceDescription: 'Sends you pick here wait a moment before they go.',
+  gracePopoverHint: 'Which sends should wait?',
+  graceReasonEnter: 'A bare Enter',
+  graceReasonDoubleTap: 'A double tap',
+  graceReasonPause: 'Enter after a pause',
+  graceReasonHold: 'Press and hold',
+  graceNone: 'None',
+  graceAll: 'All',
+  graceSome: (count: string, total: string) => `${count} of ${total}`,
   graceMsTitle: 'Hold duration',
   graceMsDescription: 'How long a held send waits before it goes.',
   graceMsUnit: 'ms',
@@ -98,8 +108,9 @@ const DEFAULTS = {
   mode: COMPOSER_SEND_DEFAULT_MODE,
   doubleEnterMs: DOUBLE_ENTER_DEFAULT_MS,
   holdMs: HOLD_DEFAULT_MS,
+  sendOnHold: false,
   typingIdleMs: TYPING_IDLE_DEFAULT_MS,
-  sendGrace: SEND_GRACE_DEFAULT_SCOPE,
+  sendGraceFor: SEND_GRACE_DEFAULT_REASONS,
   sendGraceMs: SEND_GRACE_DEFAULT_MS
 }
 
@@ -135,7 +146,7 @@ describe('ComposerSendSettings', () => {
   it('offers every mode, including the pause that the schema already carried', () => {
     const { getByText } = render(<ComposerSendSettings />)
 
-    for (const label of ['Enter', 'Double tap', 'Pause', 'Hold', 'Enter + modifier']) {
+    for (const label of ['Enter', 'Double tap', 'Pause', 'Enter + modifier']) {
       expect(getByText(label)).toBeTruthy()
     }
   })
@@ -159,12 +170,41 @@ describe('ComposerSendSettings', () => {
     expect(getByText('Double-tap window')).toBeTruthy()
   })
 
-  it('offers the hold time only where a long press is the send', () => {
-    setPrefs({ mode: 'hold' })
+  it('offers press-and-hold everywhere a bare Enter does not already send', () => {
+    setPrefs({ mode: 'pause' })
 
     const { getByText } = render(<ComposerSendSettings />)
 
+    expect(getByText('Press and hold Enter')).toBeTruthy()
+  })
+
+  it('withholds press-and-hold in `enter`, where the press has already sent', () => {
+    setPrefs({ mode: 'enter' })
+
+    const { queryByText } = render(<ComposerSendSettings />)
+
+    expect(queryByText('Press and hold Enter')).toBeNull()
+  })
+
+  it('keeps the hold time off until the gesture is switched on', () => {
+    setPrefs({ mode: 'pause', sendOnHold: false })
+
+    const { queryByText } = render(<ComposerSendSettings />)
+
+    expect(queryByText('Hold time')).toBeNull()
+  })
+
+  it('shows the hold time once the gesture is on, and persists the switch', async () => {
+    setPrefs({ mode: 'pause', sendOnHold: true })
+
+    const { getByText, getByRole } = render(<ComposerSendSettings />)
+
     expect(getByText('Hold time')).toBeTruthy()
+
+    fireEvent.click(getByRole('switch', { name: 'Press and hold Enter' }))
+    await later()
+
+    expect(mocks.set).toHaveBeenCalledWith(expect.objectContaining({ sendOnHold: false }))
   })
 
   it('hides both timing rows for a mode that measures neither', () => {
@@ -176,30 +216,55 @@ describe('ComposerSendSettings', () => {
     expect(queryByText('Double-tap window')).toBeNull()
   })
 
-  it('offers the grace window on every mode — default Enter is the one that needs undo-send', () => {
+  it('offers the delay on every mode — default Enter is the one that needs undo-send', () => {
     setPrefs({ mode: 'enter' })
 
     const { getByText } = render(<ComposerSendSettings />)
 
-    expect(getByText('Hold a guessed send')).toBeTruthy()
+    expect(getByText('Wait before sending')).toBeTruthy()
     expect(getByText('Hold duration')).toBeTruthy()
   })
 
-  it('hides the hold duration exactly when nothing can be held', () => {
-    setPrefs({ sendGrace: 'off' })
+  it('summarises the delay as a count, not a fixed scope', () => {
+    setPrefs({ sendGraceFor: ['pause', 'hold'] })
+
+    const { getByText } = render(<ComposerSendSettings />)
+
+    expect(getByText('2 of 4')).toBeTruthy()
+  })
+
+  it('hides the duration exactly when nothing is set to wait', () => {
+    setPrefs({ sendGraceFor: [] })
 
     const { queryByText } = render(<ComposerSendSettings />)
 
     expect(queryByText('Hold duration')).toBeNull()
   })
 
-  it('persists the grace scope', async () => {
-    const { getByText } = render(<ComposerSendSettings />)
+  it('persists one situation at a time', async () => {
+    setPrefs({ sendGraceFor: ['pause'] })
 
-    fireEvent.click(getByText('Every send'))
+    const { getByText, getByRole } = render(<ComposerSendSettings />)
+
+    fireEvent.click(getByRole('button', { name: '1 of 4' }))
+    fireEvent.click(getByText('Press and hold'))
+
     await later()
 
-    expect(mocks.set).toHaveBeenCalledWith(expect.objectContaining({ sendGrace: 'all' }))
+    expect(mocks.set).toHaveBeenCalledWith(expect.objectContaining({ sendGraceFor: ['pause', 'hold'] }))
+  })
+
+  it('can turn a single situation back off without touching the others', async () => {
+    setPrefs({ sendGraceFor: ['pause', 'hold'] })
+
+    const { getByText, getByRole } = render(<ComposerSendSettings />)
+
+    fireEvent.click(getByRole('button', { name: '2 of 4' }))
+    fireEvent.click(getByText('Enter after a pause'))
+
+    await later()
+
+    expect(mocks.set).toHaveBeenCalledWith(expect.objectContaining({ sendGraceFor: ['hold'] }))
   })
 
   it('names the file it persists to, so the hand-edit path is discoverable', () => {

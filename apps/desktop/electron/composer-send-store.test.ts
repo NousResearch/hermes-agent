@@ -12,7 +12,7 @@ import {
   DOUBLE_ENTER_MAX_MS,
   DOUBLE_ENTER_MIN_MS,
   SEND_GRACE_DEFAULT_MS,
-  SEND_GRACE_DEFAULT_SCOPE,
+  SEND_GRACE_DEFAULT_REASONS,
   SEND_GRACE_MIN_MS,
   TYPING_IDLE_DEFAULT_MS,
   TYPING_IDLE_MAX_MS
@@ -39,7 +39,8 @@ const DEFAULTS = {
   doubleEnterMs: DOUBLE_ENTER_DEFAULT_MS,
   holdMs: HOLD_DEFAULT_MS,
   typingIdleMs: TYPING_IDLE_DEFAULT_MS,
-  sendGrace: SEND_GRACE_DEFAULT_SCOPE,
+  sendOnHold: false,
+  sendGraceFor: SEND_GRACE_DEFAULT_REASONS,
   sendGraceMs: SEND_GRACE_DEFAULT_MS
 }
 
@@ -107,18 +108,21 @@ test('writeComposerSendPrefs clamps what it is handed', () => {
   })
 })
 
-test('readComposerSendPrefs clamps the pause knobs and rejects an unknown grace scope', () => {
+test('readComposerSendPrefs clamps the pause knobs and ignores an unknown grace entry', () => {
   withTempDir(directory => {
     fs.writeFileSync(
       configFile(directory),
-      JSON.stringify({ mode: 'pause', sendGrace: 'sometimes', sendGraceMs: -5, typingIdleMs: 99_999 }),
+      JSON.stringify({ mode: 'pause', sendGraceFor: ['sometimes'], sendGraceMs: -5, typingIdleMs: 99_999 }),
       'utf8'
     )
 
     assert.deepEqual(readComposerSendPrefs(configFile(directory)), {
       ...DEFAULTS,
       mode: 'pause',
-      sendGrace: SEND_GRACE_DEFAULT_SCOPE,
+      // An unknown situation is dropped rather than defaulted: the user asked
+      // for something, and silently delaying a send they did not ask for is the
+      // worse failure. The empty set is a real answer.
+      sendGraceFor: [],
       // -5 clamps UP to the minimum (0 = no hold), not down to the maximum.
       sendGraceMs: SEND_GRACE_MIN_MS,
       typingIdleMs: TYPING_IDLE_MAX_MS
@@ -126,11 +130,40 @@ test('readComposerSendPrefs clamps the pause knobs and rejects an unknown grace 
   })
 })
 
-test('writeComposerSendPrefs keeps a chosen grace scope', () => {
+test('readComposerSendPrefs migrates the retired three-way grace scope', () => {
   withTempDir(directory => {
-    const written = writeComposerSendPrefs({ ...DEFAULTS, sendGrace: 'all', sendGraceMs: 0 }, configFile(directory))
+    const legacy = (scope: string) => {
+      fs.writeFileSync(configFile(directory), JSON.stringify({ sendGrace: scope }), 'utf8')
 
-    assert.deepEqual(written, { ...DEFAULTS, sendGrace: 'all', sendGraceMs: 0 })
+      return readComposerSendPrefs(configFile(directory)).sendGraceFor
+    }
+
+    // `inferred` was the guessed send only — a held key was never inferred.
+    assert.deepEqual(legacy('inferred'), ['pause'])
+    assert.deepEqual(legacy('off'), [])
+    assert.deepEqual(legacy('all'), ['enter', 'doubleTap', 'pause', 'hold'])
+  })
+})
+
+test('readComposerSendPrefs migrates a stored `mode: hold` to the flag', () => {
+  withTempDir(directory => {
+    fs.writeFileSync(configFile(directory), JSON.stringify({ mode: 'hold' }), 'utf8')
+
+    const prefs = readComposerSendPrefs(configFile(directory))
+
+    // `hold` was briefly a mode. Landing it as the default `enter` would make
+    // Enter send instantly — the exact behaviour the setting exists to prevent.
+    assert.equal(prefs.mode, 'mod-enter')
+    assert.equal(prefs.sendOnHold, true)
+  })
+})
+
+test('writeComposerSendPrefs keeps a chosen set of situations', () => {
+  withTempDir(directory => {
+    const sendGraceFor = ['doubleTap', 'hold'] as const
+    const written = writeComposerSendPrefs({ ...DEFAULTS, sendGraceFor, sendGraceMs: 0 }, configFile(directory))
+
+    assert.deepEqual(written, { ...DEFAULTS, sendGraceFor, sendGraceMs: 0 })
     assert.deepEqual(readComposerSendPrefs(configFile(directory)), written)
   })
 })

@@ -39,6 +39,7 @@ function Harness({
   doubleEnterMs = DOUBLE_ENTER_MS,
   holdMs = HOLD_MS,
   mode = 'enter',
+  sendOnHold = false,
   queued = [],
   onSubmit,
   onQueue,
@@ -54,6 +55,8 @@ function Harness({
   doubleEnterMs?: number
   holdMs?: number
   mode?: SendMode
+  /** The `sendOnHold` flag: a long press sends, ALONGSIDE the mode's own way. */
+  sendOnHold?: boolean
   queued?: readonly string[]
   onSubmit: (text: string) => void
   onQueue: (text: string) => void
@@ -136,7 +139,7 @@ function Harness({
     // A held key repeats, and a repeat is not a press — except in `hold`, where
     // the repeat IS the gesture (index.tsx reads the mode once at press time).
     if (event.key === 'Enter' && event.repeat) {
-      if (mode === 'enter' || mode === 'hold') {
+      if (mode === 'enter' || sendOnHold) {
         event.preventDefault()
       }
 
@@ -206,11 +209,7 @@ function Harness({
         return
       }
 
-      if (mode === 'mod-enter') {
-        return
-      }
-
-      if (mode === 'hold') {
+      if (sendOnHold) {
         window.clearTimeout(enterHoldTimerRef.current)
         enterHoldTimerRef.current = window.setTimeout(() => {
           enterHoldTimerRef.current = undefined
@@ -224,7 +223,9 @@ function Harness({
 
           submitDraft()
         }, holdMs)
+      }
 
+      if (mode === 'mod-enter') {
         return
       }
 
@@ -247,6 +248,10 @@ function Harness({
       if (editor && live.endsWith('\n')) {
         editor.textContent = live.replace(/\n+$/, '')
       }
+
+      // The send has happened; a pending hold must not fire on the empty box.
+      window.clearTimeout(enterHoldTimerRef.current)
+      enterHoldTimerRef.current = undefined
 
       submitDraft()
     }
@@ -852,7 +857,7 @@ describe('composer Enter — key repeat is not a press', () => {
   })
 })
 
-describe('composer Enter — mode: hold', () => {
+describe('composer Enter — the press-and-hold flag', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-09-14T12:00:00Z'))
@@ -862,28 +867,19 @@ describe('composer Enter — mode: hold', () => {
     vi.useRealTimers()
   })
 
-  it('breaks the line on a tap, however many taps land', async () => {
-    const onSubmit = vi.fn()
-
-    const { getByTestId } = render(<Harness mode="hold" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />)
-
-    const editor = getByTestId('editor')
-
-    await act(async () => {
-      editor.textContent = 'first'
-      fireEvent.keyDown(editor, { key: 'Enter' })
-      fireEvent.keyDown(editor, { key: 'Enter' })
-    })
-
-    // `hold` deliberately gives up the double tap: that is `double-enter`.
-    expect(onSubmit).not.toHaveBeenCalled()
-    expect(editor.textContent).toBe('first')
-  })
-
   it('sends once the key has been down for holdMs, without the break the tap inserted', async () => {
     const onSubmit = vi.fn()
 
-    const { getByTestId } = render(<Harness mode="hold" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />)
+    const { getByTestId } = render(
+      <Harness
+        mode="mod-enter"
+        onCancel={vi.fn()}
+        onDrain={vi.fn()}
+        onQueue={vi.fn()}
+        onSubmit={onSubmit}
+        sendOnHold
+      />
+    )
 
     const editor = getByTestId('editor')
 
@@ -892,7 +888,6 @@ describe('composer Enter — mode: hold', () => {
       fireEvent.keyDown(editor, { key: 'Enter' })
     })
 
-    // Still down, still nothing sent.
     expect(onSubmit).not.toHaveBeenCalled()
 
     act(() => {
@@ -902,10 +897,12 @@ describe('composer Enter — mode: hold', () => {
     expect(onSubmit).toHaveBeenCalledWith('held message')
   })
 
-  it('never sends on a tap however long the pause between taps', async () => {
+  it('never sends on a tap, however long the pause between taps', async () => {
     const onSubmit = vi.fn()
 
-    const { getByTestId } = render(<Harness mode="hold" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />)
+    const { getByTestId } = render(
+      <Harness mode="mod-enter" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} sendOnHold />
+    )
 
     const editor = getByTestId('editor')
 
@@ -925,7 +922,9 @@ describe('composer Enter — mode: hold', () => {
   it('cancels the hold when the key comes up early, even at the last moment', async () => {
     const onSubmit = vi.fn()
 
-    const { getByTestId } = render(<Harness mode="hold" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />)
+    const { getByTestId } = render(
+      <Harness mode="mod-enter" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} sendOnHold />
+    )
 
     const editor = getByTestId('editor')
 
@@ -943,7 +942,9 @@ describe('composer Enter — mode: hold', () => {
   it('holds off while the OS is repeating, because the timer decides', async () => {
     const onSubmit = vi.fn()
 
-    const { getByTestId } = render(<Harness mode="hold" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />)
+    const { getByTestId } = render(
+      <Harness mode="mod-enter" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} sendOnHold />
+    )
 
     const editor = getByTestId('editor')
 
@@ -964,10 +965,42 @@ describe('composer Enter — mode: hold', () => {
     expect(onSubmit).toHaveBeenCalledWith('held')
   })
 
-  it('still lets the ⌘Enter chord send while the mode holds off on plain Enter', async () => {
+  it('composes with the mode rather than replacing it: double tap AND hold both send', async () => {
     const onSubmit = vi.fn()
 
-    const { getByTestId } = render(<Harness mode="hold" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />)
+    const { getByTestId } = render(
+      <Harness mode="double-enter" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} sendOnHold />
+    )
+
+    const editor = getByTestId('editor')
+
+    // The mode's own gesture, with no hold in play.
+    act(() => {
+      editor.textContent = 'by double tap'
+      fireEvent.keyDown(editor, { key: 'Enter' })
+      fireEvent.keyUp(editor, { key: 'Enter' })
+      fireEvent.keyDown(editor, { key: 'Enter' })
+    })
+
+    expect(onSubmit).toHaveBeenCalledWith('by double tap')
+
+    // ...and the flag's gesture, from the same composer.
+    act(() => {
+      editor.textContent = 'by hold'
+      fireEvent.keyDown(editor, { key: 'Enter' })
+      vi.advanceTimersByTime(HOLD_MS)
+    })
+
+    expect(onSubmit).toHaveBeenLastCalledWith('by hold')
+    expect(onSubmit).toHaveBeenCalledTimes(2)
+  })
+
+  it('still lets the ⌘Enter chord send while a bare press only breaks the line', async () => {
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness mode="mod-enter" onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} sendOnHold />
+    )
 
     const editor = getByTestId('editor')
 

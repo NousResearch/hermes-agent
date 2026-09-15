@@ -8,8 +8,6 @@ export interface SendModeHintWords {
   doubleTap: string
   /** 'sends once you stop typing' — the pause mode's inferred send. */
   pause: string
-  /** 'hold it to send' — the hold mode's press-and-wait send. */
-  hold: string
   /** Gets the platform-correct chord, already formatted. */
   chord: (chord: string) => string
 }
@@ -26,10 +24,6 @@ export function composerSendModeHint(mode: ComposerSendMode, words: SendModeHint
 
   if (mode === 'pause') {
     return `${words.newline} · ${words.pause}`
-  }
-
-  if (mode === 'hold') {
-    return `${words.newline} · ${words.hold}`
   }
 
   if (mode === 'mod-enter') {

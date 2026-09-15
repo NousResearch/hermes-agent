@@ -212,11 +212,12 @@ class TestCLIWaitLoop:
 # ---------------------------------------------------------------------------
 
 class TestDesktopHandoffFail:
-    def _call(self, db, session_key):
-        """Invoke the handoff.fail handler body with server-global stand-ins."""
+    def _call(self, db, session_key, monkeypatch):
+        """Invoke the handoff.fail handler with the facade seams it reads (``srv.<name>``) swapped."""
         import contextlib
 
         from tui_gateway import methods_session as ms
+        from tui_gateway import server as srv
 
         handler = None
         for name, fn in ms._registry._pending:
@@ -231,33 +232,28 @@ class TestDesktopHandoffFail:
         def fake_session_db(_s):
             yield db
 
-        globs = dict(handler.__globals__)
-        globs["_sess_nowait"] = lambda p, r: (session, None)
-        globs["_session_db"] = fake_session_db
-        globs["_db_unavailable_error"] = lambda rid, code: {"error": code}
-        rebound = types.FunctionType(
-            handler.__code__, globs, handler.__name__,
-            handler.__defaults__, handler.__closure__,
-        )
+        monkeypatch.setattr(srv, "_sess_nowait", lambda p, r: (session, None))
+        monkeypatch.setattr(srv, "_session_db", fake_session_db)
+        monkeypatch.setattr(srv, "_db_unavailable_error", lambda rid, code: {"error": code})
         # The handler takes the validated params model and returns a HandoffFailResult.
         from tui_gateway.contracts.billing_delegation_pets import HandoffFailParams
 
-        result = rebound("rid", HandoffFailParams(session_id=session_key, error="poll timeout"))
+        result = handler("rid", HandoffFailParams(session_id=session_key, error="poll timeout"))
         assert not isinstance(result, dict), result
         return result.model_dump()
 
-    def test_desktop_fail_refuses_running_row(self, db):
+    def test_desktop_fail_refuses_running_row(self, db, monkeypatch):
         db.ensure_session("d1", "desktop")
         assert db.request_handoff("d1", "discord")
         assert db.claim_handoff("d1")
-        res = self._call(db, "d1")
+        res = self._call(db, "d1", monkeypatch)
         assert res["failed"] is False
         assert res["state"] == "running"
         assert db.get_handoff_state("d1")["state"] == "running"
 
-    def test_desktop_fail_still_fails_pending_row(self, db):
+    def test_desktop_fail_still_fails_pending_row(self, db, monkeypatch):
         db.ensure_session("d2", "desktop")
         assert db.request_handoff("d2", "discord")
-        res = self._call(db, "d2")
+        res = self._call(db, "d2", monkeypatch)
         assert res["failed"] is True
         assert db.get_handoff_state("d2")["state"] == "failed"

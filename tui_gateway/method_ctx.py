@@ -39,6 +39,7 @@ class HandlerRegistry:
         """Register the pending handlers on ``server``. Modules that skip ``bind_module`` pass their
         ``globals()`` so the contract models they import are published too."""
         if module_globals is not None:
+            bind_facade(module_globals, server)
             publish_imported_classes(server, module_globals)
         for name, fn in self._pending:
             real = server._profile_scoped(fn) if getattr(fn, "_hermes_profile_scoped", False) else fn
@@ -46,6 +47,16 @@ class HandlerRegistry:
 
 
 _PLUMBING = {"HandlerRegistry", "method", "_profile_scoped", "register", "logger", "srv", "_"}  # "_": anonymous @method handlers
+
+
+def bind_facade(module_globals: dict, server) -> None:
+    """Point the sibling's ``srv`` at the server instance that is registering it. The tail
+    ``from tui_gateway import server as srv`` already did that in any real process; this matters
+    when a test re-imports ``tui_gateway.server`` after ``patch.dict(sys.modules)`` dropped the
+    first import — the package attribute still names the old instance, so the sibling would
+    answer RPCs against the wrong ``_sessions``."""
+    if "srv" in module_globals:
+        module_globals["srv"] = server
 
 
 def publish_imported_classes(server, module_globals: dict) -> None:
@@ -73,6 +84,7 @@ def bind_module(module_globals: dict, server, *, skip=()) -> None:
     the submodule entries). Imported modules/functions, dunders and registry plumbing are skipped;
     imported classes are published so ``server.Name`` resolves for every sibling."""
     mod_name = module_globals["__name__"]
+    bind_facade(module_globals, server)
     for name, obj in list(module_globals.items()):
         if (name.startswith("__") or name in _PLUMBING or name in skip
                 or isinstance(obj, (types.ModuleType, HandlerRegistry))):

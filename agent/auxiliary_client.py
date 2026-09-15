@@ -3798,8 +3798,23 @@ def _retry_same_provider_sync(*, resolved_provider: str, resolved_api_mode: Opti
     retry_client, retry_kwargs = _prepare_same_provider_retry(
         task=task, resolved_provider=resolved_provider, resolved_api_mode=resolved_api_mode, async_mode=False, **prep,
     )
+    # Honor auxiliary.stream_only_base_urls on the retry path too (mirrors the
+    # _primary wrapper in _call_llm_impl): dropping it here silently downgraded
+    # stream-only endpoints back to non-streaming on recovery retries.
     return _validate_llm_response(
-        _relay_sync_completion(retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode), task,
+        _relay_sync_completion(
+            retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode,
+            create=lambda request: _create_with_progress(
+                retry_client,
+                request,
+                task,
+                force_stream=_provider_requires_stream(
+                    _effective_provider_for_client(retry_client, resolved_provider),
+                    str(getattr(retry_client, "base_url", "") or "") or prep.get("resolved_base_url"),
+                ),
+            ),
+        ),
+        task,
     )
 
 
@@ -3808,9 +3823,24 @@ async def _retry_same_provider_async(*, resolved_provider: str, resolved_api_mod
     retry_client, retry_kwargs = _prepare_same_provider_retry(
         task=task, resolved_provider=resolved_provider, resolved_api_mode=resolved_api_mode, async_mode=True, **prep,
     )
+    # Mirror of the sync-path fix: honor auxiliary.stream_only_base_urls on the
+    # same-provider retry too. ``_acreate_with_progress`` keeps the native-client
+    # exclusions (the Codex/Anthropic/Bedrock adapters don't speak OpenAI-style
+    # stream kwargs), matching the initial async path in _async_call_llm_impl.
     return await asyncio.to_thread(
         _validate_llm_response,
-        await _relay_async_completion(retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode),
+        await _relay_async_completion(
+            retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode,
+            create=lambda request: _acreate_with_progress(
+                retry_client,
+                request,
+                task,
+                force_stream=_provider_requires_stream(
+                    _effective_provider_for_client(retry_client, resolved_provider),
+                    str(getattr(retry_client, "base_url", "") or "") or prep.get("resolved_base_url"),
+                ),
+            ),
+        ),
         task,
     )
 

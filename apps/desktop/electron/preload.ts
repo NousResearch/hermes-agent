@@ -14,6 +14,9 @@ const hudNativeDrag = hudWindowing?.nativeDrag === true
 contextBridge.exposeInMainWorld('hermesDesktop', {
   glassSupported: translucencySupport?.glass === true,
   translucencySupported: translucencySupport?.translucency === true,
+  // Renderer → main: active UI locale, so the native macOS menu can render in
+  // the user's language. Fire-and-forget; main ignores unknown locales.
+  setMenuLocale: locale => ipcRenderer.send('hermes:menu-locale', locale),
   getConnection: profile => ipcRenderer.invoke('hermes:connection', profile),
   // Registry-scoped backend resolution: { connectionId, profile } → descriptor.
   getConnectionFor: payload => ipcRenderer.invoke('hermes:connection:for', payload),

@@ -924,7 +924,9 @@ class AIAgent(
         _quietly(self.shutdown_memory_provider, session_messages if isinstance(session_messages, list) else None)
         self._close_task_resources(getattr(self, "session_id", None) or "")
         self._close_active_children(soft=False)
-        _quietly(self._drop_shared_client, lambda c: self._close_openai_client(c, reason="agent_close", shared=True))
+        # #107475: close() can run on a stranger thread while a request still streams on the shared client;
+        # the in_use-aware close retires it there instead of releasing the pool's FDs under the owning worker.
+        _quietly(self._drop_shared_client, lambda c: self._close_shared_openai_client(c, reason="agent_close"))
         self._close_request_clients("agent_close")
         _quietly(self._close_codex_session)
         # Free conversation history proactively: callers may still hold the closed agent. The DB-flush

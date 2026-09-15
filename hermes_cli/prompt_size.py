@@ -98,9 +98,20 @@ def _compute_skills_breakdown(skills_block: str) -> List[Dict[str, Any]]:
     """
     name_to_path = _skill_md_paths_by_name()
     entries: List[Dict[str, Any]] = []
+    seen_skill_paths: set[Path] = set()
 
     def append_entry(name: str, **index_fields: int) -> None:  # kwarg order == output key order
         path = name_to_path.get(name)
+        canonical_path: Optional[Path] = None
+        if path is not None:
+            try:
+                canonical_path = path.resolve()
+            except (OSError, RuntimeError):
+                pass
+        if canonical_path is not None:
+            if canonical_path in seen_skill_paths:
+                return
+            seen_skill_paths.add(canonical_path)
         md_bytes: Optional[int] = None
         try:
             md_bytes = path.stat().st_size if path is not None else None

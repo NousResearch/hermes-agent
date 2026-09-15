@@ -57,7 +57,8 @@ Adding one: register in that table (no `if name == ...` chain); `tools/todo_tool
   a conversation; the ONLY context mutation is compression. Anything that must inject content
   mid-conversation rides a **user message or tool result**, never the system prompt: skill slash
   commands (`agent/skill_commands.py`) inject as a user message; subdirectory `AGENTS.md` hints
-  (`agent/subdirectory_hints.py`) append to the tool result (head+tail truncated past `_MAX_HINT_CHARS = 32_000`, with a warning).
+  (`agent/subdirectory_hints.py`) append to the tool result (head+tail truncated past `_MAX_HINT_CHARS = 32_000`;
+  the truncation is logged, never queued as a chat status warning — `context_file_max_chars` does not raise that cap).
 - **Strict role alternation.** Never two same-role messages in a row; never a synthetic user
   message injected mid-loop. The one exception is `/steer`, delivered as a standalone user row
   after a tool result (`assistant(tool_calls) → tool → user` is legal on every provider path) —

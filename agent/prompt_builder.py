@@ -1422,22 +1422,26 @@ def _build_skills_system_prompt_inner(
 
 def _truncate_content(
     content: str, filename: str, max_chars: Optional[int] = None, context_length: Optional[int] = None,
-    read_path: Optional[str] = None,
+    read_path: Optional[str] = None, queue_warning: bool = True,
 ) -> str:
     """Head/tail truncation with a marker in the middle; ``read_path`` (default ``filename``) is what the
-    agent is told to ``read_file`` to recover the full content."""
+    agent is told to ``read_file`` to recover the full content. ``queue_warning=False`` is for bounded
+    previews (subdirectory hints) whose fixed cap no config key or model raises: the truncation is logged
+    with the marker as the only disclosure, never queued for the chat status line."""
     if max_chars is None:
         max_chars = _get_context_file_max_chars(context_length)
     if len(content) <= max_chars:
         return content
-    msg = (
-        f"⚠️  Context file {filename} TRUNCATED: {len(content)} chars exceeds limit of {max_chars} — "
-        f"trim the file, pin a larger context_file_max_chars, or use a larger-context model!"
+    remedy = (
+        "trim the file, pin a larger context_file_max_chars, or use a larger-context model!" if queue_warning
+        else f"the full file stays readable with read_file: {read_path or filename}"
     )
+    msg = f"⚠️  Context file {filename} TRUNCATED: {len(content)} chars exceeds limit of {max_chars} — {remedy}"
     logger.warning(msg)
-    if (warnings := _truncation_warnings.get()) is None:
-        _truncation_warnings.set(warnings := [])
-    warnings.append(msg)
+    if queue_warning:
+        if (warnings := _truncation_warnings.get()) is None:
+            _truncation_warnings.set(warnings := [])
+        warnings.append(msg)
     head_chars = int(max_chars * CONTEXT_TRUNCATE_HEAD_RATIO)
     tail_chars = int(max_chars * CONTEXT_TRUNCATE_TAIL_RATIO)
     marker = (

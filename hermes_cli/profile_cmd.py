@@ -214,9 +214,9 @@ def _profile_create(args):
             print(f"Full copy from {source_label} (excluding session history, cron jobs, backups, and snapshots).")
         else:
             print(f"Cloned config, .env, SOUL.md, and skills from {source_label}.")
-            if sync_imports:
-                print(f"Import sources carried over — `hermes -p {name} import-agent --sync` "
-                      "keeps pulling the same Claude Code / Codex trees.")
+        if sync_imports:
+            print(f"Import sources carried over — `hermes -p {name} import-agent --sync` "
+                  "keeps pulling the same Claude Code / Codex trees.")
         _print_channel_clone_notice(name, source_label, clone_channels, "--clone-all" if clone_all else "--clone")
         # Auto-clone Honcho config for the new profile (only with clone operations)
         try:

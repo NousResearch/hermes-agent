@@ -15,7 +15,7 @@ import logging
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Dict, Optional, cast
+from typing import Any, Callable, Dict, Optional, cast
 
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
@@ -799,13 +799,60 @@ class GatewayNotificationsMixin:
             return None
         return "Inference: Nous free tier (nous/welcome). Sign in for more: /login"
 
+    async def _replay_pending_planned_restart_notification(self) -> None:
+        """Checkpoint each successful home notice so unavailable targets survive boot/reconnect.
+
+        Boot sends may outlive the restore gate and overlap reconnects. Serialize the read/send/ack
+        sequence; the marker also carries acknowledgments across process restarts.
+        """
+        from gateway.run import _planned_restart_notification_path
+        from utils import atomic_json_write
+
+        lock = getattr(self, "_planned_restart_notice_lock", None)
+        if lock is None:
+            lock = self._planned_restart_notice_lock = asyncio.Lock()
+        async with lock:
+            path = _planned_restart_notification_path()
+            if not path.exists():
+                return
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                delivered = {tuple(target) for target in data.get("delivered_targets", [])}
+                # Resolve obligations from configuration, never from the currently live transports.
+                # Removed homes and explicit notification opt-outs no longer owe a notice.
+                targets = {
+                    _notice_target_key(platform.value, cfg.home_channel.chat_id, cfg.home_channel.thread_id)
+                    for platform, cfg in self.config.platforms.items()
+                    if cfg.home_channel and cfg.home_channel.chat_id and cfg.gateway_restart_notification
+                }
+                pending = targets - delivered
+
+                def checkpoint(target=None):
+                    if target is not None:
+                        delivered.add(target)
+                        pending.discard(target)
+                    data["delivered_targets"] = list(delivered)
+                    data["pending_targets"] = list(pending)
+                    atomic_json_write(path, data)
+
+                checkpoint()
+                await self._send_home_channel_startup_notifications(
+                    skip_targets=delivered, on_delivered=checkpoint,
+                )
+                if not pending:
+                    path.unlink(missing_ok=True)
+            except Exception:
+                logger.warning("Planned-restart notification remains pending", exc_info=True)
+
     async def _send_home_channel_startup_notifications(
-        self, *, skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None
+        self, *, skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None,
+        on_delivered: Optional[Callable[[tuple[str, str, Optional[str]]], None]] = None,
     ) -> set[tuple[str, str, Optional[str]]]:
         """Notify configured home channels that the gateway is back online.
 
         Best-effort, once per connected platform home channel. ``skip_targets`` lets startup avoid
         duplicate messages when a more specific restart notification is queued for the same chat.
+        ``on_delivered`` persists each acknowledgment before attempting the next transport.
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
@@ -827,6 +874,8 @@ class GatewayNotificationsMixin:
                 platform, home, transport, message, "Home-channel startup notification failed for %s:%s: %s",
             ):
                 delivered.add(target)
+                if on_delivered is not None:
+                    on_delivered(target)
                 logger.info("Sent home-channel startup notification to %s:%s", platform.value, home.chat_id)
         return delivered
 

@@ -45,16 +45,26 @@ export function usePanelTitlebar(ref: RefObject<HTMLElement | null>, enabled: bo
 
     measure()
     const observer = new ResizeObserver(measure)
-
-    for (const element of document.querySelectorAll('[data-titlebar-cluster], [data-tree-group]')) {
-      observer.observe(element)
+    const observeClusters = () => {
+      observer.disconnect()
+      for (const element of document.querySelectorAll('[data-titlebar-cluster], [data-tree-group]')) {
+        observer.observe(element)
+      }
     }
-
+    observeClusters()
+    // Cluster nodes are swapped on route flips / slot (un)mounts — re-observe
+    // and re-measure when the shell signals a chrome change (#110070).
+    const onChromeChanged = () => {
+      observeClusters()
+      measure()
+    }
     window.addEventListener('resize', measure)
+    window.addEventListener('hermes:titlebar-chrome-changed', onChromeChanged)
 
     return () => {
       observer.disconnect()
       window.removeEventListener('resize', measure)
+      window.removeEventListener('hermes:titlebar-chrome-changed', onChromeChanged)
     }
   }, [enabled, measure])
 

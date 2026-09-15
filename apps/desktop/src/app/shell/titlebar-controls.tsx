@@ -264,6 +264,14 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     </>
   )
 
+  // Route flips and slot (un)mounts swap the cluster DOM nodes — tell
+  // usePanelTitlebar() to re-observe and re-measure its reservation
+  // (#110070: without this, --panel-titlebar-left keeps a stale value).
+  const chromeSignature = `${location.pathname}|${pageOwnsTitlebar ? 'owned' : 'app'}|${titleBarLeft.length}:${titleBarCenter.length}:${titleBarRight.length}`
+  useEffect(() => {
+    window.dispatchEvent(new Event('hermes:titlebar-chrome-changed'))
+  }, [chromeSignature])
+
   // `titleBar.center` is genuinely centered — the kanban board switcher (and
   // any other page-projected chrome) used to land inside the left-anchored
   // cluster, overlapping the top-edge pane tabs (#107676, #110070).

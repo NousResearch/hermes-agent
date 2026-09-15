@@ -4339,7 +4339,7 @@ def test_config_sync_failure_emits_error_once_per_edit(monkeypatch):
 
     assert len(emits) == 1
     assert emits[0][0] == "error"
-    assert "broken/model" in emits[0][1]["message"]
+    assert "broken/model" in emits[0][1].message
 
 
 def test_config_sync_config_wins_over_env_seed(monkeypatch):
@@ -17628,7 +17628,7 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
         "--remote-debugging-port=9222" in line for line in resp["result"]["messages"]
     )
     assert "BROWSER_CDP_URL" not in os.environ
-    progress = [p["message"] for evt, p in emitted if evt == "browser.progress"]
+    progress = [p.message for evt, p in emitted if evt == "browser.progress"]
     assert progress == resp["result"]["messages"]
 
 

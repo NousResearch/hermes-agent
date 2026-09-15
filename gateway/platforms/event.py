@@ -7,7 +7,7 @@ gateway.platforms.*.
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from gateway.session import SessionSource
 
@@ -80,6 +80,11 @@ class MessageEvent:
     # Free-form per-event metadata (e.g. ``whatsapp_from_owner=True``); plugins must ``.get()``.
     metadata: Dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)
+    # Per-original provenance for merged presentation text (see
+    # ``plugins.source_context``): which original inbound messages produced
+    # which spans. Empty = unknown (fail-closed read scope, never write
+    # authority). Preserved/rebased by the text coalescers, never forged.
+    source_fragments: Tuple[Any, ...] = ()
     # May this event resolve gateway commands / control prompts? Proactive plugin events set False
     # so untrusted payload text stays conversational. Kept last for positional compat.
     allow_gateway_control: bool = True

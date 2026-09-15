@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import StrictInt
+from pydantic import StrictBool, StrictInt
 
 from .base import JsonValue, MethodParams, Params, Result
 from .common import OkResult
@@ -55,9 +55,12 @@ class RoomActor(Result):
 
 
 class RoomActorInput(Params):
+    """What ``groups.log`` returns for an actor is what ``groups.replicate`` accepts back (``profile`` included)."""
+
     kind: Literal["user", "member", "gateway", "system"]
     id: str
     display_name: str | None = None
+    profile: str | None = None
     connection_id: str | None = None
 
 
@@ -522,7 +525,7 @@ method("groups.replica_state", params=GroupsReplicaStateParams, result=GroupsRep
 
 
 class GroupsPromoteParams(RoomParams):
-    confirm: bool | None = None
+    confirm: StrictBool | None = None  # an authority gate: the handler's literal ``is True`` must not see a coerced "true"
     reason: str | None = None
 
 

@@ -1214,10 +1214,12 @@ export interface RoomEventInput {
   created_at: number
   idempotent: boolean
 }
+/** What ``groups.log`` returns for an actor is what ``groups.replicate`` accepts back (``profile`` included). */
 export interface RoomActorInput {
   kind: 'user' | 'member' | 'gateway' | 'system'
   id: string
   display_name: string | null
+  profile: string | null
   connection_id: string | null
 }
 export interface GroupsReplicateParams {

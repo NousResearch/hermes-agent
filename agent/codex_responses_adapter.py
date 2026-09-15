@@ -588,6 +588,7 @@ def _chat_messages_to_responses_input(
         reasoning_items = [] if not replay_encrypted_reasoning else _replay_reasoning_items(
             msg, seen_item_ids=seen_item_ids, current_issuer_kind=current_issuer_kind,
             current_issuer_model=current_issuer_model, native_compaction_eligible=native_compaction_eligible,
+            is_azure_foundry=is_azure_foundry,
         )
         emit(reasoning_items, msg)
         message_items = _replay_message_items(

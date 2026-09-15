@@ -108,6 +108,37 @@ _ALLOWED_NOUS_INFERENCE_HOSTS: FrozenSet[str] = frozenset({
     # Free-tier (anonymous) host: serves the single ``nous/welcome`` model.
     "welcome-api.nousresearch.com"})
 
+# Every Nous inference gateway, production or not, lives under this domain. Consulted only when
+# the operator has pointed the process at a non-production Portal (see below).
+_NOUS_INFERENCE_HOST_SUFFIX = ".nousresearch.com"
+
+
+def _operator_selected_non_production_portal() -> bool:
+    """True when the trusted ``HERMES_PORTAL_BASE_URL`` override names a Portal outside the
+    production allowlist — the operator has deliberately put this profile on another environment.
+
+    A token minted by that Portal is meant to be spent at that environment's own inference
+    gateway, and the Portal's refresh response names it. Keyed on the operator override, never on
+    the stored ``portal_base_url``, so a poisoned auth.json cannot widen the allowlist and a
+    production-Portal session that finds a foreign inference URL in its state is still refused.
+    """
+    override = _nous_portal_env_override()
+    if not override:
+        return False
+    from hermes_cli.auth import _NOUS_PORTAL_ALLOWED_HOSTS
+    host = urlparse(override).hostname
+    return bool(host) and host not in _NOUS_PORTAL_ALLOWED_HOSTS  # unparseable override: fail closed
+
+
+def _nous_inference_host_allowed(hostname: Optional[str]) -> bool:
+    """Production hosts always; any Nous-domain host when the operator selected another Portal."""
+    if hostname in _ALLOWED_NOUS_INFERENCE_HOSTS:
+        return True
+    if not hostname or not hostname.endswith(_NOUS_INFERENCE_HOST_SUFFIX):
+        return False
+    labels = hostname.removesuffix(_NOUS_INFERENCE_HOST_SUFFIX).split(".")
+    return all(labels) and _operator_selected_non_production_portal()
+
 
 def _validate_nous_inference_url_from_network(url: Optional[str]) -> Optional[str]:
     """Validate a Portal-returned inference URL against the host allowlist.
@@ -126,7 +157,7 @@ def _validate_nous_inference_url_from_network(url: Optional[str]) -> Optional[st
         logger.warning(
             "nous: refusing non-https inference URL scheme %r from Portal response", parsed.scheme)
         return None
-    if parsed.hostname not in _ALLOWED_NOUS_INFERENCE_HOSTS:
+    if not _nous_inference_host_allowed(parsed.hostname):
         logger.warning(
             "nous: refusing inference URL host %r from Portal response "
             "(not in allowlist); falling back to default",

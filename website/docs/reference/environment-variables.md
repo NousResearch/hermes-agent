@@ -138,7 +138,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 
 | Variable | Description |
 |----------|-------------|
-| `HERMES_PORTAL_BASE_URL` | Override Nous Portal URL (for development/testing) |
+| `HERMES_PORTAL_BASE_URL` | Override Nous Portal URL (for development/testing). When it points at a non-production Portal, that Portal's own `*.nousresearch.com` inference host is accepted, so `NOUS_INFERENCE_BASE_URL` is not also required. Per-profile under multiplexing: set it in the served profile's `.env`. |
 | `NOUS_INFERENCE_BASE_URL` | Override Nous inference API URL |
 | `HERMES_NOUS_MIN_KEY_TTL_SECONDS` | Min agent key TTL before re-mint (default: 1800 = 30min) |
 | `HERMES_NOUS_TIMEOUT_SECONDS` | HTTP timeout for Nous credential / token flows |

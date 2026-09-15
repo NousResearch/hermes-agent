@@ -440,3 +440,95 @@ class TestContinuityFlag:
         assert "previous run" in prompt.lower()
 
 
+class TestStubRunDocsSkipped:
+    """Monitor no_change ticks and silent gates still write a short run doc.
+
+    Those stubs are the audit trail proving the job is alive, but they carry no
+    agent output: selecting one as "latest output" buries continuity under an
+    ever-growing pile of placeholders (#104541). Selection must walk past them
+    to the most recent real output instead.
+    """
+
+    STUB_DOCS = [
+        # monitor no_change tick
+        "# Cron Job: ash-tick\n\n"
+        "**Job ID:** d766806f9ead\n"
+        "**Run Time:** 2026-09-06 15:20:03\n"
+        "**Mode:** monitor\n"
+        "**Status:** no_change (agent run suppressed)\n",
+        # script gate silent tick
+        "# Cron Job: gated\n\n"
+        "**Job ID:** d766806f9ead\n"
+        "**Run Time:** 2026-09-06 15:20:03\n\n"
+        "Script gate returned `wakeAgent=false` — agent skipped.\n",
+        # no_agent silent tick (wake gate / empty stdout)
+        "# Cron Job: silent\n\n"
+        "**Job ID:** d766806f9ead\n"
+        "**Run Time:** 2026-09-06 15:20:03\n"
+        "**Mode:** no_agent (script)\n"
+        "**Status:** silent (empty output)\n",
+    ]
+
+    def _make_job(self, cron_env):
+        from cron.jobs import create_job
+
+        return create_job(prompt="Summarize", schedule="every 2h", context_from="self")
+
+    def test_monitor_stub_not_selected_over_real_output(self, cron_env):
+        from cron.jobs import OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+        import time
+
+        job = self._make_job(cron_env)
+        out_dir = OUTPUT_DIR / job["id"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "2026-09-06_14-50-20.md").write_text(
+            "Reported: story A, story B", encoding="utf-8"
+        )
+        for i, stub in enumerate(self.STUB_DOCS):
+            time.sleep(0.01)
+            (out_dir / f"2026-09-06_1{i + 5}-0{i + 3}.md").write_text(
+                stub, encoding="utf-8"
+            )
+
+        prompt = _build_job_prompt(job)
+        assert "Reported: story A, story B" in prompt
+        assert "no_change" not in prompt
+        assert "agent run suppressed" not in prompt
+
+    def test_stub_only_history_injects_nothing(self, cron_env):
+        """First-run parity: stubs alone must not inject a placeholder."""
+        from cron.jobs import OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+        import time
+
+        job = self._make_job(cron_env)
+        out_dir = OUTPUT_DIR / job["id"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for i, stub in enumerate(self.STUB_DOCS):
+            time.sleep(0.01)
+            (out_dir / f"2026-09-06_1{i + 5}-0{i + 3}.md").write_text(
+                stub, encoding="utf-8"
+            )
+
+        prompt = _build_job_prompt(job)
+        assert "Summarize" in prompt
+        assert "previous run" not in prompt.lower()
+        assert "no_change" not in prompt
+
+    def test_real_output_mentioning_status_is_not_filtered(self, cron_env):
+        """A genuine agent report that quotes a stub marker verbatim stays selectable."""
+        from cron.jobs import OUTPUT_DIR
+        from cron.scheduler import _build_job_prompt
+
+        job = self._make_job(cron_env)
+        out_dir = OUTPUT_DIR / job["id"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "2026-09-06_14-50-20.md").write_text(
+            "Last tick doc said: **Status:** silent — nothing to worry about.\n"
+            "Reported: story A.",
+            encoding="utf-8",
+        )
+
+        prompt = _build_job_prompt(job)
+        assert "Reported: story A." in prompt

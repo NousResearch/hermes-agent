@@ -2,7 +2,12 @@ import type { ModelOptionProvider } from '@hermes/shared/gateway-events'
 import { describe, expect, it } from 'vitest'
 
 import { draftModelNameFromArg } from '../components/activeSessionSwitcher.js'
-import { modelPickerCommand, pickerOffersReasoning, REASONING_PICKER_ROWS } from '../components/modelPicker.js'
+import {
+  KEEP_REASONING_IDX,
+  modelPickerCommand,
+  pickerOffersReasoning,
+  REASONING_PICKER_ROWS
+} from '../components/modelPicker.js'
 
 const provider = (capabilities?: ModelOptionProvider['capabilities']): ModelOptionProvider => ({
   capabilities,
@@ -20,7 +25,7 @@ describe('ModelPicker reasoning step', () => {
     )
     // "Keep current effort" (empty value) adds no flag at all.
     expect(modelPickerCommand('gpt-5.6', 'nous', false, '')).toBe('gpt-5.6 --provider nous --tui-session')
-    expect(REASONING_PICKER_ROWS.at(-1)?.value).toBe('')
+    expect(REASONING_PICKER_ROWS[KEEP_REASONING_IDX]?.value).toBe('')
     // The new-session draft label strips the effort flag like it strips --provider.
     expect(draftModelNameFromArg(modelPickerCommand('gpt-5.6', 'nous', false, 'low'))).toBe('gpt-5.6')
   })

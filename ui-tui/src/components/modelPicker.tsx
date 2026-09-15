@@ -54,6 +54,20 @@ export function hopRowSearchText(row: ModelHopRow): string {
   return `${row.selector} ${modelSearchText(row.model)}`
 }
 
+export function hopIsCurrent(h: ModelHopRow, current: string) {
+  return h.selector === current || (!!h.provider.is_current && h.model === current)
+}
+
+export function hopCurrentIndex(rows: ModelHopRow[], current: string) {
+  const i = rows.findIndex(h => hopIsCurrent(h, current))
+  return i < 0 ? 0 : i
+}
+
+/** Printable paste or a single typed char; skip controls (Tab/Esc). */
+export function searchAppend(prev: string, ch: string) {
+  return ch && ch[0] >= ' ' ? prev + ch : prev
+}
+
 export function filterModelHopRows(rows: ModelHopRow[], query: string): ModelHopRow[] {
   const q = query.trim()
   if (!q) {
@@ -90,6 +104,8 @@ export const REASONING_PICKER_ROWS: ReadonlyArray<{ label: string; value: string
   { label: 'none (disable reasoning)', value: 'none' },
   { label: 'Keep current effort', value: '' }
 ]
+
+export const KEEP_REASONING_IDX = REASONING_PICKER_ROWS.length - 1
 
 /** False only when the catalog says the picked model has no reasoning control;
  *  unknown capabilities keep the step (a no-op dial beats hiding a real one). */
@@ -140,7 +156,7 @@ export function ModelPicker({
   const [persistGlobal, setPersistGlobal] = useState(false)
   const [providerIdx, setProviderIdx] = useState(0)
   const [modelIdx, setModelIdx] = useState(0)
-  const [reasoningIdx, setReasoningIdx] = useState(0)
+  const [reasoningIdx, setReasoningIdx] = useState(KEEP_REASONING_IDX)
   // Model chosen on step 2, awaiting the effort pick on step 3.
   const [pendingModel, setPendingModel] = useState('')
   // Hop Enter that offers reasoning must Esc back to the hop catalog, not the
@@ -191,7 +207,7 @@ export function ModelPicker({
             next.findIndex(p => p.is_current)
           )
         )
-        setModelIdx(0)
+        setModelIdx(hopCurrentIndex(buildModelHopRows(next, providerDisplayNames(next)), String(r.model ?? '')))
         setStage(initialStage === 'provider' ? 'provider' : 'hop')
         setErr('')
         setLoading(false)
@@ -270,14 +286,6 @@ export function ModelPicker({
     }
   }, [filteredHopRows.length, modelIdx, stage])
 
-  useEffect(() => {
-    if (stage !== 'hop' || loading || hopRows.length > 0) {
-      return
-    }
-
-    setStage('provider')
-  }, [hopRows.length, loading, stage])
-
   const back = () => {
     // Esc first clears an active filter on the list stages, before navigating.
     if ((stage === 'provider' || stage === 'model' || stage === 'hop') && filter.trim()) {
@@ -300,7 +308,7 @@ export function ModelPicker({
     if (stage === 'reasoning') {
       setStage(reasoningOrigin)
       setPendingModel('')
-      setReasoningIdx(0)
+      setReasoningIdx(KEEP_REASONING_IDX)
 
       return
     }
@@ -519,6 +527,12 @@ export function ModelPicker({
       return
     }
 
+    if (key.tab && stage === 'hop') {
+      setStage('provider')
+      setFilter('')
+      return
+    }
+
     if (key.return) {
       if (stage === 'hop') {
         const hop = filteredHopRows[modelIdx]
@@ -535,7 +549,7 @@ export function ModelPicker({
           }
 
           setPendingModel(hop.model)
-          setReasoningIdx(0)
+          setReasoningIdx(KEEP_REASONING_IDX)
           setReasoningOrigin('hop')
           setStage('reasoning')
         } else {
@@ -588,7 +602,7 @@ export function ModelPicker({
         if (pickerOffersReasoning(provider, model)) {
           // Step 3/3: effort for the picked model (skipped on reasoning-free routes).
           setPendingModel(model)
-          setReasoningIdx(0)
+          setReasoningIdx(KEEP_REASONING_IDX)
           setReasoningOrigin('model')
           setStage('reasoning')
         } else {
@@ -641,9 +655,8 @@ export function ModelPicker({
       return
     }
 
-    // Any other printable single character extends the filter.
-    if (ch && !key.ctrl && !key.meta && ch.length === 1 && ch >= ' ') {
-      setFilter(v => v + ch)
+    if (!key.ctrl && !key.meta && searchAppend('', ch)) {
+      setFilter(v => searchAppend(v, ch))
       setSel(0)
     }
   })
@@ -760,7 +773,6 @@ export function ModelPicker({
   if (stage === 'hop') {
     const labels = filteredHopRows.map(row => row.selector)
     const { items, offset } = windowItems(labels, modelIdx, VISIBLE)
-    const noMatches = !!filter.trim() && labels.length === 0
 
     return (
       <Box flexDirection="column" width={width}>
@@ -782,16 +794,16 @@ export function ModelPicker({
           {offset > 0 ? ` ↑ ${offset} more` : ' '}
         </Text>
 
-        {noMatches ? (
+        {!labels.length ? (
           <Text color={t.color.muted} wrap="truncate-end">
-            no models match
+            {filter.trim() ? 'no models match' : 'no models · Tab for providers'}
           </Text>
         ) : (
           Array.from({ length: VISIBLE }, (_, i) => {
             const row = items[i]
             const idx = offset + i
             const hop = filteredHopRows[idx]
-            const current = Boolean(hop?.provider.is_current && hop.model === currentModel)
+            const current = hop ? hopIsCurrent(hop, currentModel) : false
 
             return row ? (
               <Text
@@ -819,7 +831,7 @@ export function ModelPicker({
           persist: {allowPersistGlobal ? (persistGlobal ? 'global' : 'session') : 'session'}
           {allowPersistGlobal ? ' · ^g toggle' : ' only'}
         </Text>
-        <OverlayHint t={t}>↑/↓ select · Enter use · type nous/claude · Esc close</OverlayHint>
+        <OverlayHint t={t}>↑/↓ select · Enter use · Tab providers · Esc close</OverlayHint>
       </Box>
     )
   }

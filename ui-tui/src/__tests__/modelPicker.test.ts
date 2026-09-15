@@ -1,7 +1,14 @@
 import type { ModelOptionProvider } from '@hermes/shared/gateway-events'
 import { describe, expect, it } from 'vitest'
 
-import { buildModelHopRows, filterModelHopRows, providerIndexAfterClearingFilter } from '../components/modelPicker.js'
+import {
+  buildModelHopRows,
+  filterModelHopRows,
+  hopCurrentIndex,
+  hopIsCurrent,
+  providerIndexAfterClearingFilter,
+  searchAppend
+} from '../components/modelPicker.js'
 
 const provider = (slug: string, name = slug): ModelOptionProvider => ({ name, slug })
 
@@ -94,3 +101,23 @@ describe('ModelPicker hop catalog', () => {
     ])
   })
 })
+
+describe('hop current + paste', () => {
+  it('stars by selector or current-provider id', () => {
+    const nous = provider('nous')
+    nous.is_current = true
+    nous.models = ['hermes-4']
+    const or = provider('openrouter')
+    or.models = ['hermes-4']
+    const rows = buildModelHopRows([nous, or], ['n', 'o'])
+    expect(rows.filter(r => hopIsCurrent(r, 'nous/hermes-4')).map(r => r.selector)).toEqual(['nous/hermes-4'])
+    expect(rows.filter(r => hopIsCurrent(r, 'hermes-4')).map(r => r.selector)).toEqual(['nous/hermes-4'])
+    expect(hopCurrentIndex(rows, 'nous/hermes-4')).toBe(0)
+  })
+
+  it('appends paste, ignores controls', () => {
+    expect(searchAppend('', 'nous/hermes-4')).toBe('nous/hermes-4')
+    expect(searchAppend('n', '\t')).toBe('n')
+  })
+})
+

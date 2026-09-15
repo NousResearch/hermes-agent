@@ -79,6 +79,73 @@ def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
         assert payload.get("kind") == "capability"
 
 
+def test_block_loop_detected_with_alternating_kinds(kanban_home: Path) -> None:
+    """Regression for t_e2f7128f (2026-09): a task that alternates its block
+    ``kind`` on every re-block must still trip the triage safety valve on the
+    2nd re-block, exactly as a same-kind repeat would. Before the fix,
+    ``_route_block`` only accumulated ``block_recurrences`` when the incoming
+    ``kind`` matched the ``block_kind`` stored from the previous block, so
+    needs_input -> untyped -> needs_input reset the counter to 1 every time
+    and never reached BLOCK_RECURRENCE_LIMIT no matter how many cycles ran."""
+    with kbc.connect_closing() as conn:
+        tid = _running_task(conn)
+
+        # Cycle 1: typed needs_input block.
+        kb.block_task(conn, tid, reason="need a decision", kind="needs_input")
+        assert kb.get_task(conn, tid).status == "blocked"
+        assert kb.get_task(conn, tid).block_recurrences == 1
+        kb.unblock_task(conn, tid)
+        _make_running_again(conn, tid)
+
+        # Cycle 2: untyped (kind=None) block -- a DIFFERENT kind than cycle 1.
+        # This must still be the 2nd cycle and trip the breaker, not reset to 1.
+        kb.block_task(conn, tid, reason="more items remain", kind=None)
+        landed = kb.get_task(conn, tid)
+        assert landed.status == "triage", (
+            "alternating block kind must not reset the unblock-loop counter"
+        )
+        assert landed.block_recurrences == 2
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "block_loop_detected"]
+        assert events, "expected triage escalation on the 2nd cycle despite the kind change"
+        payload = events[-1].payload or {}
+        assert payload.get("recurrences") == 2
+        assert payload.get("kind") is None
+        assert payload.get("prev_kind") == "needs_input"
+
+
+def test_block_recurrences_accumulate_across_three_distinct_kinds(kanban_home: Path) -> None:
+    """Three re-blocks with three DIFFERENT kinds (needs_input, then untyped,
+    then needs_input again -- the exact sequence from the incident) must
+    escalate on the 2nd cycle, matching a human needing to look after two
+    block/unblock round-trips regardless of how the reason was phrased."""
+    with kbc.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="run 85", kind="needs_input")
+        assert kb.get_task(conn, tid).status == "blocked"
+        kb.unblock_task(conn, tid)
+        _make_running_again(conn, tid)
+
+        kb.block_task(conn, tid, reason="run 86", kind=None)
+        # Would have incorrectly landed back in 'blocked' under the old logic.
+        assert kb.get_task(conn, tid).status == "triage"
+
+
+def test_complete_task_resets_counter_for_next_genuine_blocker(kanban_home: Path) -> None:
+    """A successful completion clears the loop memory, so a later, wholly
+    unrelated block on a *new* run of work starts a fresh count -- the
+    unification of the counter must not make legitimate future blockers
+    (on work done after a completion) inherit stale recurrence history."""
+    with kbc.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="need creds", kind="capability")
+        kb.unblock_task(conn, tid)
+        _make_running_again(conn, tid)
+        kb.complete_task(conn, tid, result="done")
+        row = kb.get_task(conn, tid)
+        assert row.block_recurrences == 0
+        assert row.block_kind is None
+
+
 # ---------------------------------------------------------------------------
 # Dependency routing
 # ---------------------------------------------------------------------------

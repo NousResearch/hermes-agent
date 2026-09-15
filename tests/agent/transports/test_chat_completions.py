@@ -437,6 +437,153 @@ class TestChatCompletionsBuildKwargs:
         assert kw["max_tokens"] == 4096
 
 
+class TestReasoningOutputFloor:
+    """Reasoning models bill thinking tokens against the same output budget as the answer.
+
+    A tight explicit ``max_tokens`` (health-probe/companion trivial probes, budgeted turns) is
+    consumed by ``reasoning_content`` before any answer starts → ``content:""`` +
+    ``finish_reason:"length"``, which a monitor mistakes for a dead model (#46131). The request
+    side must raise a sub-floor cap so reasoning never starves the answer on the first attempt.
+    """
+
+    def _build(self, transport, **overrides):
+        kwargs = dict(
+            model="nousresearch/deepseek-r1",
+            messages=[{"role": "user", "content": "Hi"}],
+            supports_reasoning=True,
+            reasoning_config={"enabled": True, "effort": "high"},
+            max_tokens=10,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        kwargs.update(overrides)
+        return transport.build_kwargs(**kwargs)
+
+    def test_raises_sub_floor_budget_when_reasoning_active(self, transport):
+        from agent.transports.chat_completions import _REASONING_MIN_OUTPUT_TOKENS
+
+        kw = self._build(transport)
+        assert kw["max_tokens"] == _REASONING_MIN_OUTPUT_TOKENS
+
+    def test_keeps_above_floor_budget(self, transport):
+        kw = self._build(transport, max_tokens=4000)
+        assert kw["max_tokens"] == 4000
+
+    def test_no_floor_when_not_reasoning_capable(self, transport):
+        kw = self._build(transport, supports_reasoning=False)
+        assert kw["max_tokens"] == 10
+
+    def test_no_floor_when_reasoning_disabled(self, transport):
+        kw = self._build(
+            transport, reasoning_config={"enabled": False, "effort": "high"},
+        )
+        assert kw["max_tokens"] == 10
+
+    def test_no_floor_when_effort_none(self, transport):
+        kw = self._build(transport, reasoning_config={"enabled": True, "effort": "none"})
+        assert kw["max_tokens"] == 10
+
+    def test_no_floor_when_gemini_thinking_cap(self, transport):
+        """Gemini gets its provider-native thinking headroom, not the generic floor (#9452-free)."""
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("gemini")
+        kw = transport.build_kwargs(
+            model="gemini-3.7-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_profile=profile,
+            provider_name="gemini",
+            base_url=profile.base_url,
+            supports_reasoning=True,
+            reasoning_config={"enabled": True, "effort": "high"},
+            max_tokens=10,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        from agent.gemini_native_adapter import GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+
+        assert kw["max_tokens"] == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS
+
+    # ── Regression: review P1s on the original revision ──────────────────────
+
+    def test_ephemeral_recovery_cap_stays_provider_authoritative(self, transport):
+        """The one-shot recovery bound must NOT be raised back to the floor.
+
+        ``ephemeral_max_output_tokens`` comes from output-cap recovery, which
+        derives it from the provider's own reported ``available_tokens`` minus a
+        margin (agent/turn_overflow.py). Flooring it to 1024 would resend a
+        request the provider just rejected as over-cap — a retry wedge. The
+        regression the reviewer asked for: a provider bound BELOW the generic
+        floor must reach the wire unchanged.
+        """
+        kw = self._build(
+            transport,
+            ephemeral_max_output_tokens=436,
+            max_tokens=None,
+            model="nousresearch/deepseek-r1",
+        )
+        assert kw["max_tokens"] == 436
+
+        # Reasoning is active here, so this only passes if the ephemeral bound
+        # genuinely bypasses the floor rather than being guarded like max_tokens.
+        from agent.transports.chat_completions import _REASONING_MIN_OUTPUT_TOKENS
+
+        assert 436 < _REASONING_MIN_OUTPUT_TOKENS
+
+    def test_floor_applies_to_higher_family_floor(self, transport):
+        """Per-family floors: GLM needs ~4000, Kimi ~2000, not a global 1024."""
+        glm = self._build(transport, model="glm-5.3-flash", max_tokens=10)
+        assert glm["max_tokens"] == 4000
+
+        kimi = self._build(transport, model="kimi-k2.7-code", max_tokens=10)
+        assert kimi["max_tokens"] == 2000
+
+        other = self._build(transport, model="nousresearch/deepseek-r1", max_tokens=10)
+        assert other["max_tokens"] == 1024
+
+    def test_floor_applies_when_profile_enables_reasoning_by_default(self, transport):
+        """Absent config is NOT 'reasoning off' — DeepSeek V4 defaults to enabled.
+
+        Builds through the real DeepSeek profile with ``reasoning_config=None``;
+        the profile emits ``thinking: {type: enabled}``. The floor must still
+        apply (review P1 #2).
+        """
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("deepseek")
+        kw = transport.build_kwargs(
+            model="deepseek-v4-pro",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_profile=profile,
+            provider_name="deepseek",
+            base_url=profile.base_url,
+            supports_reasoning=True,
+            reasoning_config=None,
+            max_tokens=10,
+            max_tokens_fn=None,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["max_tokens"] == 1024
+        assert (kw.get("extra_body") or {}).get("thinking") == {"type": "enabled"}
+
+    def test_no_floor_when_profile_disables_reasoning(self, transport):
+        """An explicit profile-level disable still suppresses the floor."""
+        from providers import get_provider_profile
+
+        profile = get_provider_profile("deepseek")
+        kw = transport.build_kwargs(
+            model="deepseek-v4-pro",
+            messages=[{"role": "user", "content": "Hi"}],
+            provider_profile=profile,
+            provider_name="deepseek",
+            base_url=profile.base_url,
+            supports_reasoning=True,
+            reasoning_config={"enabled": False},
+            max_tokens=10,
+            max_tokens_fn=None,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["max_tokens"] == 10
+
+
 
 
 

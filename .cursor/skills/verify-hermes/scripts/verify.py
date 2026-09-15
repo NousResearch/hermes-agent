@@ -59,12 +59,12 @@ class VerificationSession:
         """Load existing session data."""
         if not self.session_file.exists():
             raise FileNotFoundError(f"No session found at {self.workspace}")
-        with open(self.session_file) as f:
+        with open(self.session_file, encoding="utf-8") as f:
             return json.load(f)
 
     def save_session(self, data: Dict):
         """Save session data."""
-        with open(self.session_file, "w") as f:
+        with open(self.session_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
     def update_phase(self, phase: str, status: str, **kwargs):
@@ -199,7 +199,7 @@ class DrivePhase:
 
             # Save output
             output_file = self.session.evidence_dir / f"{surface}-output.txt"
-            with open(output_file, "w") as f:
+            with open(output_file, "w", encoding="utf-8") as f:
                 f.write(output)
 
             status = "PASSED ✓" if passed else "FAILED ✗"
@@ -280,7 +280,7 @@ class EvidencePhase:
 
         # Save summary
         summary_file = self.session.evidence_dir / "summary.json"
-        with open(summary_file, "w") as f:
+        with open(summary_file, "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2)
 
         # Print report
@@ -370,13 +370,13 @@ class CleanupPhase:
         # Update session (in archive)
         session_file = archive_path / "session.json"
         if session_file.exists():
-            with open(session_file) as f:
+            with open(session_file, encoding="utf-8") as f:
                 data = json.load(f)
             data["phases"]["cleanup"] = {
                 "status": "complete",
                 "timestamp": datetime.now().isoformat(),
             }
-            with open(session_file, "w") as f:
+            with open(session_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
 
         print()

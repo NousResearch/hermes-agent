@@ -449,3 +449,11 @@ def test_multiplex_scope_reads_profile_own_env_not_default(
     seeded = _env_enablement()
     assert seeded == {"ws_url": "ws://profile:5225", "group_allowed": "g1"}
     assert check_requirements() is True
+
+
+def test_setup_prompts_no_longer_offer_display_names():
+    """The setup wizard must not suggest display names as SIMPLEX_ALLOWED_USERS
+    values: authorization only matches the stable numeric contactId, and a
+    display-name entry would silently fail closed (#44729)."""
+    prompts = dict(_simplex._SETUP_PROMPTS)
+    assert "display name" not in prompts["SIMPLEX_ALLOWED_USERS"].lower()

@@ -71,6 +71,12 @@ def will_retry(job: Dict[str, Any]) -> bool:
     used by the scheduler to suppress the interim failure notice."""
     if not _is_recurring(job) or job.get("state") == "paused":
         return False
+    repeat = job.get("repeat") or {}
+    times = repeat.get("times")
+    # Delivery precedes mark_job_run: that write counts THIS run before deciding
+    # whether any retry is possible. Keep its final failure notice visible.
+    if times and repeat.get("completed", 0) + 1 >= times:
+        return False
     state = job.get(STATE_KEY) or {}
     if int(state.get("attempt") or 0) >= len(RETRY_DELAYS_SECONDS):
         return False

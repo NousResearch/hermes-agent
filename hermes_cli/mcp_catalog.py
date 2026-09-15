@@ -51,6 +51,7 @@ class TransportSpec:
     command: Optional[str] = None
     args: List[str] = field(default_factory=list)
     url: Optional[str] = None
+    url_env_overrides: Dict[str, str] = field(default_factory=dict)
     version: Optional[str] = None  # informational, pinned
     # Static env for the stdio subprocess (telemetry opt-outs, mode flags). NOT for secrets — those
     # go through auth.env so they are prompted for and land in ~/.hermes/.env.
@@ -156,14 +157,32 @@ def _parse_transport(path: Path, raw: Any) -> TransportSpec:
         isinstance(k, str) and isinstance(v, str) for k, v in env_raw.items()
     ):
         raise CatalogError(f"{path}: transport.env must be a mapping of string to string")
+    url_env_overrides_raw = transport_raw.get("url_env_overrides") or {}
+    if not isinstance(url_env_overrides_raw, dict):
+        raise CatalogError(f"{path}: transport.url_env_overrides must be a mapping")
     transport = TransportSpec(
         type=t_type, command=transport_raw.get("command"), args=[str(a) for a in args],
-        url=transport_raw.get("url"), version=transport_raw.get("version"), env=dict(env_raw))
+        url=transport_raw.get("url"), version=transport_raw.get("version"), env=dict(env_raw),
+        url_env_overrides={
+            str(k): str(v) for k, v in url_env_overrides_raw.items()
+        })
     if t_type == "stdio" and not transport.command:
         raise CatalogError(f"{path}: stdio transport requires 'command'")
     if t_type == "http" and not transport.url:
         raise CatalogError(f"{path}: http transport requires 'url'")
     return transport
+
+
+def _http_bearer_env_var(entry: CatalogEntry) -> str:
+    """The env var the server's Authorization header template references: the
+    first secret declared in ``auth.env`` (a manifest may use a vendor key name
+    like ``YDC_API_KEY``), else the canonical ``MCP_<NAME>_API_KEY``."""
+    secret = next((s for s in entry.auth.env if s.secret), None)
+    if secret:
+        return secret.name
+    from hermes_cli.mcp_config import _env_key_for_server
+
+    return _env_key_for_server(entry.name)
 
 
 def _parse_auth(path: Path, raw: Any, name: str, http: bool) -> AuthSpec:
@@ -173,16 +192,20 @@ def _parse_auth(path: Path, raw: Any, name: str, http: bool) -> AuthSpec:
         raise CatalogError(f"{path}: auth.type must be 'api_key'|'oauth'|'none'")
     env_list = [_parse_env_spec(e) for e in _require_list(path, "auth.env", auth_raw.get("env") or [])]
     if http and a_type == "api_key":
-        # _build_server_config emits an Authorization header referencing ${MCP_<NAME>_API_KEY}, but
-        # install_entry only persists the env vars DECLARED in auth.env. Enforce the naming contract
-        # here, or a manifest declaring e.g. N8N_API_KEY would send a literal-placeholder header (401).
+        # _build_server_config emits an Authorization header referencing the bearer env var (the
+        # first secret declared in auth.env, else MCP_<NAME>_API_KEY), but install_entry only
+        # persists the env vars DECLARED in auth.env. Enforce the contract here, or a manifest
+        # referencing an undeclared key would install cleanly yet send a literal-placeholder
+        # header (401) at connect time.
         from hermes_cli.mcp_config import _env_key_for_server
 
-        _required_key = _env_key_for_server(name)
-        if all(spec.name != _required_key for spec in env_list):
+        _referenced_key = next(
+            (spec.name for spec in env_list if spec.secret), None
+        ) or _env_key_for_server(name)
+        if all(spec.name != _referenced_key for spec in env_list):
             raise CatalogError(
                 f"{path}: http + api_key auth requires auth.env to declare "
-                f"'{_required_key}' (the key the Authorization header references)"
+                f"'{_referenced_key}' (the key the Authorization header references)"
             )
     return AuthSpec(
         type=a_type, env=env_list, provider=auth_raw.get("provider"),
@@ -409,6 +432,22 @@ def _expand_install_dir(value: str, install_dir: Optional[Path]) -> str:
     return value.replace(_INSTALL_DIR_VAR, str(install_dir))
 
 
+def _template_env_names(value: str) -> List[str]:
+    """Return ${ENV_VAR} placeholders referenced by a manifest string."""
+    return re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", value or "")
+
+
+def _template_is_resolved(value: str) -> bool:
+    """True when every ${ENV_VAR} placeholder currently has a value."""
+    return all(get_env_value(name) for name in _template_env_names(value))
+
+
+def _env_selector_is_resolved(selector: str) -> bool:
+    """True when every env var in an override selector has a value."""
+    names = [part.strip() for part in selector.split("+") if part.strip()]
+    return bool(names) and all(get_env_value(name) for name in names)
+
+
 def _prompt_env_vars(specs: List[EnvVarSpec]) -> Dict[str, str]:
     """Prompt for each env spec; secrets and non-secrets alike go to ~/.hermes/.env."""
     collected: Dict[str, str] = {}
@@ -438,13 +477,38 @@ def _build_server_config(entry: CatalogEntry, install_dir: Optional[Path]) -> di
         if t.env:
             cfg["env"] = dict(t.env)
     elif t.type == "http":
-        cfg["url"] = t.url
+        url = t.url
+        override_items = sorted(
+            t.url_env_overrides.items(),
+            key=lambda item: len([part for part in item[0].split("+") if part.strip()]),
+            reverse=True,
+        )
+        for env_selector, override_url in override_items:
+            if _env_selector_is_resolved(env_selector):
+                url = override_url
+                break
+        cfg["url"] = url
         if entry.auth.type == "oauth":
             cfg["auth"] = "oauth"
         elif entry.auth.type == "api_key":
             from hermes_cli.mcp_config import _bearer_auth_headers
 
-            cfg["headers"] = _bearer_auth_headers(entry.name)
+            canonical_key = _http_bearer_env_var(entry)
+            bearer = _bearer_auth_headers(entry.name, env_var=canonical_key)
+            key_spec = next(
+                (s for s in entry.auth.env if s.name == canonical_key), None
+            )
+            # Required keys always emit the bearer header (the template is
+            # resolved from .env at connect time). Optional keys — e.g. a
+            # free-profile MCP whose key is `required: false` — only emit
+            # when the key is actually set, so the keyless endpoint doesn't
+            # receive a literal `${...}` placeholder Authorization header
+            # (unset vars keep the placeholder at connect time, see
+            # tools/mcp_tool.py:_interpolate_env_vars).
+            if key_spec is None or key_spec.required or all(
+                _template_is_resolved(v) for v in bearer.values()
+            ):
+                cfg["headers"] = bearer
     return cfg
 
 

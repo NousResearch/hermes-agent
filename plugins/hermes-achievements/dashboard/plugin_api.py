@@ -139,6 +139,10 @@ ACHIEVEMENTS: List[Dict[str, Any]] = [
 
 SNAPSHOT_FILE = "scan_snapshot.json"
 CHECKPOINT_FILE = "scan_checkpoint.json"
+# Checkpoint schema 2: stats were computed from the full (inactive+compacted, deduped)
+# history so rewind/compaction never shrink lifetime sums.  Version 1 caches (active-only
+# window) are treated as stale and force a one-time rescan.
+_CHECKPOINT_SCHEMA_VERSION = 2
 
 
 def _data_dir() -> Path:
@@ -209,7 +213,7 @@ def load_checkpoint() -> Dict[str, Any]:
         data.setdefault("sessions", {})
         if isinstance(data.get("sessions"), dict):
             return data
-    return {"schema_version": 1, "generated_at": 0, "sessions": {}}
+    return {"schema_version": _CHECKPOINT_SCHEMA_VERSION, "generated_at": 0, "sessions": {}}
 
 
 def session_fingerprint(meta: Dict[str, Any]) -> Dict[str, Any]:
@@ -558,7 +562,9 @@ def scan_sessions(limit: Optional[int] = None, progress_callback: Optional[Any] 
     except Exception as exc:
         return {"sessions": [], "aggregate": {}, "error": f"Could not open SessionDB: {exc}", "scan_meta": _scan_meta("failed", 0)}
 
-    previous_sessions = load_checkpoint()["sessions"]  # load_checkpoint guarantees a dict
+    previous_checkpoint = load_checkpoint()
+    previous_sessions = previous_checkpoint["sessions"]  # load_checkpoint guarantees a dict
+    checkpoint_is_current = int(previous_checkpoint.get("schema_version") or 0) == _CHECKPOINT_SCHEMA_VERSION
     reused = rescanned = 0
     db_limit = -1 if (limit is None or limit <= 0) else int(limit)
     try:
@@ -574,11 +580,18 @@ def scan_sessions(limit: Optional[int] = None, progress_callback: Optional[Any] 
             cached = previous_sessions.get(sid)
             cached = cached if isinstance(cached, dict) else {}
             title = meta.get("title") or meta.get("preview")
-            if isinstance(cached.get("stats"), dict) and cached.get("fingerprint") == fp:
+            if checkpoint_is_current and isinstance(cached.get("stats"), dict) and cached.get("fingerprint") == fp:
                 stats = dict(cached["stats"])
                 reused += 1
             else:
-                stats = analyze_messages(sid, title or "Untitled", db.get_messages(sid))
+                # Full history (inactive + compacted, deduped) so rewind/compaction never
+                # shrink lifetime sums.  Dedup collapses compaction generations (#112273).
+                try:
+                    messages = db.get_messages(sid, include_inactive=True, include_compacted=True)
+                except TypeError:
+                    # Test fakes / older SessionDB builds without the flags.
+                    messages = db.get_messages(sid)
+                stats = analyze_messages(sid, title or "Untitled", messages)
                 rescanned += 1
             stats.update(session_id=sid, title=title or stats.get("title") or "Untitled", started_at=meta.get("started_at"), last_active=meta.get("last_active"), source=meta.get("source"))
             if meta.get("model"):
@@ -599,7 +612,7 @@ def scan_sessions(limit: Optional[int] = None, progress_callback: Optional[Any] 
                     progress_callback(list(sessions), idx, total_sessions)
                 except Exception:
                     pass  # Advisory — a broken publisher must never abort the scan.
-        _write_json(CHECKPOINT_FILE, {"schema_version": 1, "generated_at": int(time.time()), "sessions": checkpoint_sessions})
+        _write_json(CHECKPOINT_FILE, {"schema_version": _CHECKPOINT_SCHEMA_VERSION, "generated_at": int(time.time()), "sessions": checkpoint_sessions})
     finally:
         db.close()
     return {
@@ -714,6 +727,17 @@ def _compute_from_scan(scan: Dict[str, Any], *, is_partial: bool = False) -> Dic
         unlock_id = definition["id"]
         if not is_partial and result["unlocked"] and unlock_id not in unlocks:
             unlocks[unlock_id] = {"unlocked_at": now, "first_tier": result.get("tier"), "evidence": evidence_for(definition, scan.get("sessions", []))}
+        # Sticky unlocks: once recorded in state.json, an achievement stays unlocked even
+        # if a later scan's aggregate dips below threshold (rewind/compaction shrink, #112273).
+        was_unlocked = unlock_id in unlocks
+        if was_unlocked and not result["unlocked"]:
+            result = dict(result)
+            result["unlocked"] = True
+            result["discovered"] = True
+            result["state"] = "unlocked"
+            # Preserve a tier for display when the live aggregate no longer reaches one.
+            if result.get("tier") is None:
+                result["tier"] = unlocks[unlock_id].get("first_tier")
         item = {**definition, **result}
         if result["unlocked"]:
             item["unlocked_at"] = unlocks.get(unlock_id, {}).get("unlocked_at")

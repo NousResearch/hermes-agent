@@ -411,7 +411,7 @@ mais recentes, e não devem ser confundidos com BrowserSessionState.
 
 ## 9. Fluxo de Decisão de Footprint (The Footprint Ladder)
 
-O Hermes Workstation respeita rigorosamente o **Footprint Ladder** (`AGENTS.md`). Não adicionamos ferramentas Core a torto e a direito para resolver problemas do Workstation, pois cada ferramenta adicionada é cobrada em tokens em **todas** as chamadas de API:
+O Hermes Workstation respeita rigorosamente o **Footprint Ladder** (`AGENTS.md`). Não adicionamos ferramentas Core a torto e direito para resolver problemas do Workstation, pois cada ferramenta adicionada é cobrada em tokens em **todas** as chamadas de API:
 
 1. **Estender código existente:** Zero novo surface.
 2. **CLI command + skill:** Gerencia configurações expressíveis via terminal (`hermes cron`, `hermes tools`). Zero footprint no schema do modelo.
@@ -1570,7 +1570,7 @@ policy que deixa atravessar um path sensível ou retorno ao polling mecânico.
 
 ---
 
-## 27. Revisão de coerência e provas adicionais — 2026-09-15
+## 34. Revisão de coerência e provas adicionais — 2026-09-15
 
 Esta rodada posterior auditou o `main` já consolidado em
 `220a684f465b063411626028b3bdd7444083e3f2`, depois de verificar o código, os
@@ -1579,7 +1579,7 @@ testes e o histórico recente. O snapshot do `main` auditado e
 extensões dos owners existentes; não houve criação de um segundo controller,
 store, DB, lifecycle ou stack realtime.
 
-### 27.1. Resolução implícita de controle humano deve seguir a aba visível
+### 34.1. Resolução implícita de controle humano deve seguir a aba visível
 
 O Browser Hub chama `takeControl()` sem `taskId` porque a intenção humana é
 assumir o conteúdo atualmente visível. O runtime ainda mantém
@@ -1614,7 +1614,7 @@ expiração antes de capturar `listTasks()`, caso contrário uma única resposta
 poderia conter `controlOwner: agent` junto de um snapshot de task ainda exibindo
 a lease vencida.
 
-### 27.2. Progressão de Agent Task usa o event boundary canônico do Kanban
+### 34.2. Progressão de Agent Task usa o event boundary canônico do Kanban
 
 O WebSocket `/api/plugins/kanban/events` continua sendo o único canal de
 atualização. Ele mantém a conexão SQLite no seu
@@ -1640,7 +1640,7 @@ e uma task vinculada atualiza apenas seus cards. A activity continua durável,
 portanto um cliente que reconecta pode recuperar o evento pelo cursor
 `hybrid_since`.
 
-### 27.3. Contratos de teste executados nesta revisão
+### 34.3. Contratos de teste executados nesta revisão
 
 As provas focadas que fecharam essa rodada foram:
 
@@ -1666,7 +1666,7 @@ relaxados. Uma tentativa inicial de Pytest dentro do sandbox falhou antes da
 coleta por `WinError 5` no diretório temporário global do Windows; a execução
 aprovada fora dessa limitação confirmou os resultados acima.
 
-### 27.4. Ledger final desta revisão
+### 34.4. Ledger final desta revisão
 
 | Item | Classificação | Evidência | Decisão |
 | --- | --- | --- | --- |
@@ -1677,7 +1677,7 @@ aprovada fora dessa limitação confirmou os resultados acima.
 | Marketplace semântico e UI dedicada de extensões | `DELIBERATELY_DEFERRED` | roadmap e seção de extensões | não ampliar escopo |
 | Proteção obrigatória de branch e checks críticos | `REPO_CONFIGURATION` | estado do repositório não é configurado por código | recomendação permanece para administradores do GitHub |
 
-### 27.5. Adjudicação do WIP encontrado durante a consolidação
+### 34.5. Adjudicação do WIP encontrado durante a consolidação
 
 Depois do checkout do `main`, havia alterações não commitadas de uma frente de
 WIP de Workstation no mesmo diretório. O histórico da branch
@@ -1711,7 +1711,498 @@ trabalho de outra frente e evita comprometer os invariantes do produto. Para
 uma futura promoção, a frente precisa primeiro reutilizar os owners canônicos,
 remover as duplicações, corrigir o contrato da API/UI, adicionar testes com
 terminação bounded e passar por uma revisão independente de arquitetura. O WIP
-foi preservado de forma recuperável em `stash@{0}` com a mensagem
-`preserved workstation WIP excluded from main pending canonical-owner review`;
+foi preservado de forma recuperável em um stash Git criado antes da
+sincronização;
 os commits de documentação desta rodada contêm somente a inteligência
 revisada.
+---
+
+## 27. Backend Desktop, Gateway e readiness: separar boot, transporte, sessão e provider
+
+O Desktop não deve inferir que “Hermes está pronto” a partir de uma linha de
+stdout/stderr, de um PID vivo ou da simples existência de uma porta. O contrato
+atual é um backend **headless** separado da UI: o comando canônico é
+`hermes serve --host 127.0.0.1 --port 0`; apenas runtimes antigos que ainda não
+registram `serve` recebem o fallback compatível `dashboard --no-open`. A UI
+Electron e o browser interno continuam sendo processos/superfícies distintas do
+Gateway.
+
+### 27.1. Readiness autenticada é um protocolo, não um sleep
+
+`apps/desktop/electron/backend-health.ts` trata readiness como polling de
+`/api/health`, com orçamento default de 45 s, intervalo de 500 ms e timeout de
+5 s por health probe. O fallback para `/api/status` existe somente para runtimes
+legados em que `/api/health` está realmente ausente ou escondido por um gate
+anônimo compatível.
+
+A classificação de falhas faz parte do contrato:
+
+- `401/403` em **probe credenciado** significa sessão rejeitada e deve falhar
+  rápido para reautenticação; não é “backend ainda subindo”;
+- `404` genuíno de `/api/health` pode significar runtime antigo e habilitar o
+  fallback compatível;
+- `429` e timeouts permanecem transitórios dentro do budget;
+- `502/503/504` são falhas server-side e não devem ser reescritas como erro de
+  configuração local;
+- sucesso de health significa que o backend respondeu ao protocolo esperado,
+  não que um provider remoto específico terá baixa latência.
+
+Uma regressão histórica do corpus fazia o boot depender da stream errada:
+readiness era emitida em stderr enquanto o launcher observava stdout. A lição
+durável é **não fazer a autoridade de readiness depender de uma única stream de
+logs**. No `main` atual, a autoridade é o endpoint de health, não a antiga linha
+de console.
+
+### 27.2. Tentativas concorrentes usam geração para evitar teardown stale
+
+`createBackendConnectionState()` mantém uma `generation`. Um attempt ou child
+process só pode instalar/limpar promise/processo se ainda pertencer à geração
+vigente. `invalidate()` incrementa a geração antes de devolver o processo antigo
+para teardown.
+
+Isso impede uma race importante:
+
+```text
+attempt A inicia
+attempt B invalida A e inicia
+A termina atrasado
+A NÃO pode limpar/substituir o processo ou promise de B
+```
+
+Não troque esse mecanismo por um booleano global `connecting` nem permita que
+callbacks de um child antigo mutem o owner novo.
+
+### 27.3. Teardown precisa matar a árvore certa
+
+O child gerenciado pelo Desktop tem semântica diferente por SO:
+
+- Windows usa tree-kill (`taskkill /T /F`) para encerrar o root e seus
+  descendentes;
+- POSIX sinaliza primeiro o process group (`process.kill(-pid, SIGTERM)`), pois
+  o backend é lançado em grupo/sessão própria; se isso falhar, cai para o child
+  direto.
+
+Encerrar apenas o PID pai pode deixar gateway/workers órfãos; matar por nome de
+processo, por outro lado, pode atingir instâncias que pertencem a outro usuário,
+perfil ou teste.
+
+### 27.4. O reader do Gateway é infraestrutura de controle
+
+O loop que lê RPC não pode ficar bloqueado por operações de segundos/minutos.
+Handlers lentos — inclusive `workstation.resources` e `workstation.events` —
+são enviados para um pool, deixando `approval.respond`,
+`session.interrupt` e o fast path legíveis enquanto o trabalho continua.
+
+Sessões WebSocket desconectadas são estacionadas por um curto grace period para
+reconexão, mas não ficam órfãs indefinidamente: o Gateway interrompe e reapa uma
+sessão abandonada após o budget configurado. Reconexão temporária e abandono
+definitivo são estados diferentes.
+
+### 27.5. Taxonomia de diagnóstico
+
+Antes de “corrigir a lentidão”, localize o domínio:
+
+1. **boot do backend local** — processo não iniciou/health não responde;
+2. **auth/transporte do Gateway** — credencial rejeitada, WebSocket/RPC,
+   reconnect;
+3. **controller do Workstation Browser** — descriptor/token/loopback da
+   automação web;
+4. **provider LLM** — TTFT/rate limit/latência depois que o Gateway já está
+   saudável;
+5. **site externo** — navegação, auth wall, Cloudflare, rede do destino.
+
+Misturar essas camadas produz falsos fixes — por exemplo, aumentar timeout do
+provider não corrige health local, e reiniciar o Browser Controller não corrige
+TTFT de uma API remota.
+
+---
+
+## 28. Isolamento multi-sessão e execução de browser em background
+
+As conversas de dogfooding mostraram uma falha de produto particularmente
+perigosa: duas conversas podiam “brigar” pela aba visualmente ativa. O contrato
+correto é o oposto: **a aba ativa é uma escolha de apresentação; a identidade da
+execução é a BrowserTask**.
+
+No runtime atual, cada entrada task-owned carrega `ownerTaskId`. A resolução de
+uma ação do controller recebe a task específica e opera naquela `BrowserEntry`,
+inclusive quando ela está em background. Uma ação de uma task em background não
+deve ativar/focar a aba só para poder clicar, digitar, extrair ou navegar.
+
+A ativação visual ocorre quando é semanticamente necessária, por exemplo:
+
+- não existe aba ativa ainda;
+- a própria task já é a ativa;
+- a UI anexou o viewport com aquela task como `preferredTaskId` porque o usuário
+  mudou deliberadamente para a conversa/host correspondente.
+
+`attach(window, bounds, host, preferredTaskId)` é, portanto, uma operação de
+apresentação/seleção, não uma transferência de ownership operacional.
+
+### 28.1. `hide`, `park` e `setVisible(false)` não são sinônimos
+
+Uma nuance importante descoberta no corpus e confirmada no runtime atual:
+
+- **hide** desanexa a view da superfície visível sem destruir a página;
+- **setVisible(false)** também pode remover a view nativa temporariamente, por
+  exemplo para permitir overlays React/Radix sobre o compositor;
+- **park** preserva uma task viva em background e pode manter uma view
+  task-owned acoplada no compositor na borda da janela, com apenas um sliver
+  mínimo visível e frame rate reduzido. Isso existe porque páginas Chromium
+  completamente retiradas do compositor podem deixar de renderizar/avançar
+  como uma automação background espera.
+
+As views são criadas com `backgroundThrottling: false`; o runtime ainda reduz
+explicitamente o FPS das entradas não visíveis. Não “otimize” removendo
+indiscriminadamente toda view estacionada nem mantenha todas a 60 FPS.
+
+### 28.2. Invariantes de isolamento
+
+- uma `BrowserTask` possui no máximo uma live page;
+- uma live page não pertence a duas tasks;
+- `sessionHost`, `kanbanCardId` e `runId` são linhagem, não chaves alternativas
+  para compartilhar a mesma page;
+- uma task em background pode continuar, mas não pode roubar foco/viewport da
+  sessão que o usuário está olhando;
+- mudar de chat não migra implicitamente a task anterior;
+- `activeTabId` não determina qual task um worker pode mutar;
+- crash/restart restaura identidade estrutural e perfil, nunca o mesmo objeto
+  `WebContents`;
+- qualquer fallback que mova uma task bound para outro browser viola isolamento.
+
+Esse contrato deve ser testado com **duas sessões simultâneas**, não apenas uma
+task isolada: navegação/ação em A enquanto B está visível, troca para A, volta
+para B, background progress e restart.
+
+---
+
+## 29. Promoção automática para Kanban e follow-ups descobertos em execução
+
+O Agentic Kanban não serve apenas como UI. `WorkstationKanbanBridge` é a ponte
+que transforma trabalho suficientemente longo/multistep em uma task canônica do
+Kanban existente.
+
+### 29.1. Promoção do pedido raiz
+
+`promote_request_if_multistep()`:
+
+- respeita `tasks.create_kanban_for_multistep`;
+- usa `is_multistep_request()` para reconhecer workflows, automação,
+  pesquisa/web/browser, batch e pedidos compostos;
+- cria a task via `hermes_cli.kanban_db` com `created_by="workstation"`,
+  `session_id` e estado inicial `running`;
+- inicia/continua o `ExecutionJournal` da mesma task e grava `TASK_CREATED`.
+
+A heurística decide **visibilidade operacional**, não cria um novo executor.
+Desabilitar a UI do Kanban não deve mudar o owner da execução.
+
+### 29.2. Dependências de follow-up têm direção semântica
+
+Quando uma execução descobre uma nova `DiscoveredTask`, a relação depende de ela
+ser necessária para terminar o pai:
+
+- **required_for_parent:** o child precisa ser imediatamente executável; por
+  isso ele nasce sem depender do pai, depois é criado o vínculo
+  `child -> parent` (child é pré-requisito do pai) e o pai fica `blocked`;
+- **opcional/depois do pai:** o child pode nascer com o pai como pré-requisito.
+
+Inverter esse vínculo cria deadlock lógico: um child obrigatório não pode
+depender da task que justamente está bloqueada esperando por ele.
+
+O journal do pai guarda `child_task_id`, razão, descobridor, origem,
+`required_for_parent` e evidências. A hierarquia de produto e a direção do
+grafo de dependência são relacionadas, mas **não são a mesma coisa**.
+
+### 29.3. Conclusão exige relatório estruturado
+
+`complete_task_with_report()` usa `BrowserTaskReport` para levar objetivo,
+resultado, sites e evidências ao Kanban canônico e grava `TASK_COMPLETED` no
+Journal. Não marque uma task como concluída apenas porque a UI fechou a aba ou
+porque o modelo produziu uma resposta textual.
+
+Esse fluxo é distinto do Hybrid Kanban humano da seção 20: promoção automática
+cria/acompanha **Agent Tasks**; delegação de Human Card cria um vínculo explícito
+entre os dois lifecycles.
+
+---
+
+## 30. Control plane agêntico V1–V3: owners complementares, não um “super store”
+
+As conversas mais longas do corpus registram a evolução de um conjunto de
+subsistemas que permanece presente no `main`. Eles devem ser entendidos como
+**camadas complementares sobre a task canônica**, e não como bancos concorrentes.
+
+### 30.1. Perception Engine: o modelo vê uma projeção, não o DOM bruto
+
+`PerceptionEngine` transforma captura DOM/accessibility em `PerceptionView`
+compacta, com refs e provenance path. Dois hardenings são especialmente
+duradouros:
+
+- nós explicitamente ocultos (`hidden`, `aria-hidden`, `type=hidden`,
+  `display:none`, `visibility:hidden`) são excluídos antes de virar evidência;
+- quando o token budget aperta, actions/forms/inputs são Tier 1, links Tier 2 e
+  conteúdo estático Tier 3. A truncation preserva primeiro o que permite agir.
+
+Não volte a truncar “do topo para baixo”: CTAs e formulários no footer podem ser
+semanticamente mais importantes que centenas de blocos de texto anteriores.
+
+### 30.2. Procedural Memory: memória de como fazer, não PKM
+
+`ProceduralMemory` persiste `WebProcedure` e `MemoryRecord`. Um `ProcedureStep`
+pode resolver target por fallback semântico na ordem:
+
+```text
+data-testid -> role/name -> texto -> selector original
+```
+
+Isso reduz fragilidade de selectors Tailwind/CSS e permite revalidar uma
+procedure quando o DOM muda. Procedures têm lifecycle
+`discovered -> validated -> promoted -> retired`, evidência de validação,
+confidence e contadores de sucesso/falha.
+
+Não confunda essa store com SessionDB, Vault ou BrowserSessionState.
+
+### 30.3. Drift Governor: adaptar só dentro do risco permitido
+
+`DriftGovernor` compara expectativa procedural com a percepção atual e classifica
+`none`, `benign`, `structural` ou `breaking`. Ele pode sugerir proceed,
+adapted-target retry, dismiss overlay, re-explore, approval ou halt.
+
+Guardas duráveis:
+
+- CAPTCHA/security check/session expired são breaking e pedem intervenção;
+- overlays de consent/cookies podem receber `DISMISS_OVERLAY` quando há alvo
+  seguro;
+- drift estrutural com candidato semântico forte pode adaptar;
+- se a ação for high/critical ou já exigir approval, **drift nunca autoriza
+  auto-adaptação de alto impacto**.
+
+### 30.4. Scheduler: lease e heartbeat evitam ownership órfão
+
+`MultiTaskScheduler` mantém estados `queued`, `active`,
+`waiting_for_human`, `parked`, `completed`, `failed`; dispatch é prioridade
+descendente + FIFO. A task ativa recebe lease com expiry, renovável por
+`heartbeat()`. `reap_expired_leases()` estaciona owner abandonado e libera a
+fila.
+
+Esse scheduler é uma camada de coordenação em memória e não substitui o Kanban
+durável nem o `BrowserHumanControlLease`. O estado `ACTIVE` do scheduler deve
+ser lido como ownership do slot que ele governa, **não** como prova de que toda
+BrowserTask `parked` deixou de progredir: o runtime de browser atual suporta
+pages task-owned em background. Scheduler state e BrowserTask visibility são
+projeções diferentes e não devem ser colapsadas.
+
+### 30.5. EvidenceState: `running` precisa ser conquistado
+
+`EvidenceState` não aceita `RUNNING` como mero label. Sem
+`OperationalEvidence` viva, uma transição para running degrada para `STALLED`
+com recovery strategy. Evidência expira e `reconcile()` rebaixa uma task cuja
+prova operacional ficou stale.
+
+Isso impede o anti-pattern “task marcada running para sempre porque um JSON
+antigo dizia running”.
+
+### 30.6. EventBus, Supervisor e Recovery Plane
+
+`RuntimeEventBus` faz fan-out não bloqueante com filas limitadas. Quando uma fila
+estoura, o drop é contado; erro de journal fica observável e não trava todos os
+subscribers.
+
+`RuntimeSupervisor` vive fora do runtime supervisionado, faz health/restart com
+limite de crash loop e pode checkpointar/restaurar artifact last-known-good.
+`RecoveryPlane` registra quarantine/restore/diagnostics fora da task normal.
+
+A recuperação não deve depender do mesmo componente que acabou de morrer.
+
+### 30.7. Host capabilities, events e policy
+
+`HostCapabilityProvider` expõe filesystem/process/clipboard/git/notification/
+diagnostics atrás de adapters de SO. Resultado de capability é estruturado; o
+caller não deve inferir sucesso apenas de stdout.
+
+`SystemEventPipeline` recebe crash, build failure/success, download, mudança de
+repo/controller, completion e necessidade de atenção. Se já há task alvo, ele
+enriquece o `ExecutionJournal`; evento crítico sem task pode ser promovido via
+`WorkstationKanbanBridge`. Não existe um “event-task DB” paralelo.
+
+`ScopedPolicyEngine` decide `ALLOW`, `SANDBOX`, `REQUIRE_APPROVAL` ou `DENY`
+com task/session/capability/target/workspace. Comandos destrutivos, paths
+sensíveis, boundary de workspace e extensões de risco são avaliados antes da
+execução. Policy deve usar a gramática cross-platform da seção 21.
+
+### 30.8. Budget e roteamento de modelo continuam fora do provider call
+
+`BudgetTracker` aplica tetos explícitos de actions, tokens e custo e lança
+`BudgetExceeded` antes de aceitar consumo que ultrapasse o limite. `ModelRouter`
+escolhe deterministicamente entre candidatos disponíveis ponderando qualidade,
+custo e latência; a chamada real ao provider permanece em outra camada.
+
+Isso evita dois anti-patterns: esconder budget dentro de prompts (“tente gastar
+pouco”) e acoplar a decisão de modelo ao transporte/provider. Budget é contrato
+de execução; routing é decisão observável; provider call é efeito externo.
+
+### 30.9. Lightpanda é rota opt-in e fail-closed
+
+O adapter Lightpanda só pode aceitar tarefas:
+
+```text
+enabled
+AND public_read_only
+AND headless_ok
+AND NOT bound_to_internal
+AND NOT requires_auth
+AND NOT requires_visible_state
+```
+
+Redirect para login/auth falha fechado; gzip/deflate são tratados antes da
+extração. Uma tarefa autenticada ou já bound ao Chromium interno nunca deve ser
+“otimizada” silenciosamente para um browser stateless.
+
+---
+
+## 31. Hermes Vault: PKM local-first separado da memória operacional
+
+`workstation/vault.py` implementa uma base de conhecimento Markdown sob
+`$HERMES_HOME/vault` por default. É deliberadamente interoperável com a
+gramática de PKM estilo Obsidian:
+
+- `.md` como formato primário;
+- YAML frontmatter;
+- tags inline/frontmatter;
+- aliases;
+- `[[wikilinks]]`, inclusive heading e alias;
+- índice bidirecional de forward links/backlinks;
+- pesquisa por título/tag/conteúdo;
+- grafo `nodes/edges` derivado dos wikilinks;
+- sugestões de wikilink/autocomplete.
+
+O índice é reconstruível a partir dos arquivos; **os Markdown são a fonte
+durável**, não o grafo em memória.
+
+### 31.1. Fronteiras com outros stores
+
+| Store | Pergunta que responde |
+|---|---|
+| SessionDB | “o que aconteceu nesta conversa/sessão?” |
+| ExecutionJournal | “o que esta task executou e que evidência produziu?” |
+| ProceduralMemory | “como executar novamente este tipo de procedimento?” |
+| Vault | “que conhecimento/notas o usuário quer conservar e conectar?” |
+| BrowserSessionState | “que estrutura de tabs/tasks pode ser recuperada?” |
+
+Não copie automaticamente todo chat, tool result ou Journal para o Vault.
+Promoção de conhecimento deve ser explícita/criteriosa; do contrário PKM vira
+um segundo log operacional impossível de manter.
+
+### 31.2. Segurança de path é parte da API
+
+`VaultManager.write_note()` aceita `subfolder`; qualquer evolução de escrita,
+importação, sync ou plugin deve garantir containment real dentro de
+`vault_dir`, inclusive `..`, symlink/reparse point e diferenças de gramática de
+path. O fato de a implementação atual resolver paths não transforma toda entrada
+futura em segura por definição.
+
+---
+
+## 32. Validação nativa: processo real, baseline exato e evidência negativa
+
+O corpus contém várias sessões em que testes “verdes” seriam insuficientes para
+provar o comportamento do Workstation. A metodologia consolidada é:
+
+### 32.1. Compare identidades de teste, não quantidade de vermelhos
+
+Para causalidade baseline×candidate:
+
+1. derive a lista exata de arquivos/testes do baseline;
+2. rode **a mesma lista** no candidate;
+3. registre ambiente (SO/build, Node/npm/Python/Git), SHA e comando;
+4. compare nomes/primeiro erro de cada falha;
+5. classifique `PASS`, `FAIL regression`, `FAIL baseline` ou
+   `NON-EXECUTABLE`.
+
+Testes novos do candidate são úteis para cobertura, mas não podem alterar a
+população usada para provar causalidade contra o baseline.
+
+### 32.2. BrowserSessionState precisa atravessar um processo Electron real
+
+A validação nativa do corpus provou, em um candidato histórico, sequência com
+tabs ordinárias + task tab, ordem restaurada, active tab lógica, lazy restore,
+primeiro/segundo `showTask`, ownership único, separação de perfil, ausência de
+process identity no snapshot e recuperação após saída abrupta.
+
+A lição é o formato do teste, não o SHA histórico:
+
+- teste unitário de persistence não substitui restart entre processos;
+- graceful shutdown e abrupt exit são cenários separados;
+- cookies/login pertencem ao perfil Chromium, não ao JSON estrutural;
+- restore lazy deve provar **zero pages eager antes do show**;
+- repetir show não pode criar segunda page;
+- segredo deve ser procurado no retorno, no JSON em disco, no reload e na
+  reserialização — evidência negativa em todas as fronteiras.
+
+### 32.3. Harness também pode causar falso negativo
+
+No Windows, um subprocess Electron pode ter terminado logicamente e ainda
+parecer “pendurado” ao harness por handles/pipes stdout/stderr herdados. Testes
+de exit precisam administrar streams e árvore de processos explicitamente.
+
+Da mesma forma, compositor nativo `WebContentsView`, z-order/oclusão e alguns
+fluxos visuais não devem ser declarados PASS só porque uma simulação headless
+passou. Use smoke nativo/artefato visual/manual quando a propriedade que está
+sendo testada existe no compositor real.
+
+### 32.4. Fault injection deve atingir o seam certo
+
+Para crash consistency, injete falha entre os replacements reais e reinicie a
+partir do snapshot intermediário exato. “Mockar save como false” sem reproduzir
+o ordering de efeitos pode esconder o bug que se queria testar.
+
+---
+
+## 33. Corpus ampliado desta auditoria: como usar conversas históricas sem criar doc drift
+
+O arquivo `conversations.zip` analisado nesta sessão continha **23 bancos SQLite
+de trajetória**. A leitura percorreu **14.509 steps** e recuperou cerca de
+**73,35 milhões de caracteres** de strings presentes em prompts, respostas,
+tool calls/results, erros e metadados.
+
+Esse corpus inclui:
+
+- sessões profundas do Hermes Workstation;
+- subagents interrompidos/rate-limited;
+- pesquisas e implementação em branches históricas;
+- conversas de outros projetos, como SudoExpo Match e K-Tools.
+
+Tudo foi inventariado, mas somente conteúdo pertencente ao Hermes Workstation
+deve entrar nesta inteligência.
+
+### 33.1. Regra de promoção do histórico
+
+Uma afirmação encontrada em conversa histórica recebe uma destas classes:
+
+- **CURRENT-CONFIRMED:** o `main` atual ainda possui código/contrato que a prova;
+- **DURABLE-LESSON:** o bug antigo pode já estar corrigido, mas o invariant/teste
+  que ele revelou continua válido;
+- **HISTORICAL-ONLY:** descreve SHA/branch/launcher que já não existe;
+- **UNPROVEN:** plano, hipótese ou claim de agente sem confirmação no checkout;
+- **OUT-OF-DOMAIN:** pertence a outro projeto.
+
+Somente as duas primeiras devem ser promovidas como conhecimento arquitetural
+normal. `HISTORICAL-ONLY` só entra quando explica um anti-pattern importante;
+`UNPROVEN` permanece em journal/roadmap/known issue; `OUT-OF-DOMAIN` é excluído.
+
+### 33.2. Conversa não vence código
+
+Exemplos desta própria auditoria:
+
+- o corpus descrevia `HERMES_DESKTOP_READY_FILE`; o `main` atual não o possui,
+  portanto ele não é documentado como protocolo vigente;
+- claims antigos de lease humano global foram superados pelo lease task-scoped
+  atual;
+- a delegação Human Card -> Agent Task era roadmap em uma sessão e virou
+  implementação depois; o intelligence deve refletir o estado confirmado mais
+  recente;
+- bugs de BrowserSessionState em SHAs históricos entram como regressions que os
+  testes devem impedir, não como bugs atuais automaticamente.
+
+Esse procedimento é a defesa principal contra transformar
+`HERMES_WORKSTATION_INTELLIGENCE.md` em arqueologia contraditória.

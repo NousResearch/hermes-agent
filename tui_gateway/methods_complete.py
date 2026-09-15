@@ -7,6 +7,19 @@ bodies reference server globals bare (``_ok``, ``_err``, ``_sessions``, ...).
 from __future__ import annotations
 
 from .method_ctx import HandlerRegistry, bind_module
+from .contracts.config_free_tier_control import ModelOptionsParams, ModelOptionsResult
+from .contracts.profiles_vault_complete_foreign_subagents import (
+    CompletePathParams,
+    CompleteSlashParams,
+    CompleteSlashResult,
+    CompletionItemsResult,
+    ModelDisconnectParams,
+    ModelDisconnectResult,
+    ModelSaveKeyParams,
+    ModelSaveKeyResult,
+    PasteCollapseParams,
+    PasteCollapseResult,
+)
 
 _registry = HandlerRegistry()
 method = _registry.method

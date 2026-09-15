@@ -9,6 +9,22 @@ from __future__ import annotations
 import contextlib
 
 from .method_ctx import HandlerRegistry, bind_module
+from .contracts.profiles_vault_complete_foreign_subagents import (
+    ProfileNameParams,
+    ProfilesConfigureParams,
+    ProfilesConfigureResult,
+    ProfilesCreateParams,
+    ProfilesCreateResult,
+    ProfilesDescribeResult,
+    ProfilesGetAssetParams,
+    ProfilesGetAssetResult,
+    ProfilesListParams,
+    ProfilesListResult,
+    ProfilesRememberOnboardingParams,
+    ProfilesRememberOnboardingResult,
+    ProfilesSetAssetParams,
+    ProfilesSetAssetResult,
+)
 
 _registry = HandlerRegistry()
 method = _registry.method

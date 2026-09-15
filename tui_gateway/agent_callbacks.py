@@ -18,9 +18,18 @@ from .method_ctx import bind_module
 from .contracts.common import SessionLiveInfo
 from .contracts.connectors_operation import ConnectionRequestPayload
 from .contracts.events import (
-    MessageCompletePayload, MessageInterimPayload, NotificationClearPayload, NotificationShowPayload,
-    PreviewRestartProgressPayload, ReactionPayload, StreamDeltaPayload, ToolCompletePayload,
-    ToolGeneratingPayload, ToolStartPayload)
+    MessageCompletePayload,
+    MessageInterimPayload,
+    NotificationClearPayload,
+    NotificationShowPayload,
+    PreviewRestartProgressPayload,
+    ReactionPayload,
+    SessionInfoPayload,
+    StreamDeltaPayload,
+    ToolCompletePayload,
+    ToolGeneratingPayload,
+    ToolStartPayload,
+)
 
 
 # Child-session live mirror: a delegated child's activity reaches the gateway only as

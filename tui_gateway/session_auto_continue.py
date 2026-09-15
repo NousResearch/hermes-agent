@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 
 from .method_ctx import bind_module
+from .contracts.prompt_voice import PromptSubmitResult, PromptSubmitStatus
 
 # A concluded turn (success, handled error, interrupt) clears its durable marker (turn_marker.py) in _run_prompt_submit's
 # finally; only a process death leaves it behind, so a marker at session.resume proves the turn never finished AND the

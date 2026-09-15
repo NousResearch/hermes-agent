@@ -14587,6 +14587,18 @@
         "additionalProperties": false,
         "description": "One Desktop roster row normalized by ``tools/bot_relay.py::_normalize_roster_row``.",
         "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
           "handle": {
             "anyOf": [
               {

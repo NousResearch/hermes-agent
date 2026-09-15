@@ -12,7 +12,10 @@ import platform
 import sys
 from pathlib import Path
 
-from tools.environments.local_env_policy import _ACTIVE_VENV_MARKER_VARS
+from tools.environments.local_env_policy import (
+    _ACTIVE_VENV_MARKER_VARS,
+    _CONDA_ACTIVATION_STATE_VARS,
+)
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -117,7 +120,7 @@ def _strip_hermes_owned_pythonpath_and_runtime_markers(env: dict) -> None:
     load-bearing: PYTHONPATH filtering runs BEFORE the markers go so a validated Windows
     base-interpreter launch (VIRTUAL_ENV -> <repo>/venv) can still prove ownership."""
     _strip_hermes_owned_pythonpath(env)
-    for _marker in _ACTIVE_VENV_MARKER_VARS:
+    for _marker in (*_ACTIVE_VENV_MARKER_VARS, *_CONDA_ACTIVATION_STATE_VARS):
         env.pop(_marker, None)
 
 

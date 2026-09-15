@@ -596,6 +596,60 @@ class TestActiveVenvMarkerStripping:
         assert "VIRTUAL_ENV" in _ACTIVE_VENV_MARKER_VARS
         assert "CONDA_PREFIX" in _ACTIVE_VENV_MARKER_VARS
 
+    def test_conda_activation_state_stripped_with_the_prefix(self):
+        """A half-scrubbed conda activation crashes conda itself.
+
+        With CONDA_SHLVL>=1 and no CONDA_PREFIX, `conda activate` believes an
+        environment is already active and builds a deactivate stack for it,
+        then dies resolving the missing prefix -- every login/interactive child
+        shell prints a conda crash report (#109973). The activation state has
+        to leave with the prefix it belongs to.
+        """
+        result_env = _run_with_env(extra_os_env={
+            "CONDA_PREFIX": "/opt/conda/envs/hermes",
+            "CONDA_SHLVL": "1",
+            "CONDA_DEFAULT_ENV": "base",
+            "CONDA_PROMPT_MODIFIER": "(base) ",
+        })
+        assert "CONDA_PREFIX" not in result_env
+        assert "CONDA_SHLVL" not in result_env
+        assert "CONDA_DEFAULT_ENV" not in result_env
+        assert "CONDA_PROMPT_MODIFIER" not in result_env
+
+    def test_conda_installation_pointers_survive(self):
+        """CONDA_EXE/CONDA_PYTHON_EXE name the installation, not an active
+        environment: scripts use them to find conda, and they are harmless
+        without a prefix. Stripping them would remove working functionality,
+        so the fix for #109973 deliberately stops at the activation state."""
+        result_env = _run_with_env(extra_os_env={
+            "CONDA_PREFIX": "/opt/conda/envs/hermes",
+            "CONDA_SHLVL": "1",
+            "CONDA_EXE": "/opt/conda/bin/conda",
+            "CONDA_PYTHON_EXE": "/opt/conda/bin/python",
+        })
+        assert result_env.get("CONDA_EXE") == "/opt/conda/bin/conda"
+        assert result_env.get("CONDA_PYTHON_EXE") == "/opt/conda/bin/python"
+
+    def test_sanitize_subprocess_env_strips_conda_activation_state(self):
+        from tools.environments.local import _sanitize_subprocess_env
+        base = {
+            "CONDA_PREFIX": "/conda",
+            "CONDA_SHLVL": "1",
+            "CONDA_DEFAULT_ENV": "base",
+            "HOME": "/home/user",
+        }
+        result = _sanitize_subprocess_env(base, None)
+        assert "CONDA_SHLVL" not in result
+        assert "CONDA_DEFAULT_ENV" not in result
+        assert result.get("HOME") == "/home/user"
+
+    def test_conda_activation_state_constant_contents(self):
+        from tools.environments.local_env_policy import _CONDA_ACTIVATION_STATE_VARS
+        assert "CONDA_SHLVL" in _CONDA_ACTIVATION_STATE_VARS
+        assert "CONDA_DEFAULT_ENV" in _CONDA_ACTIVATION_STATE_VARS
+        assert "CONDA_PROMPT_MODIFIER" in _CONDA_ACTIVATION_STATE_VARS
+        assert "CONDA_EXE" not in _CONDA_ACTIVATION_STATE_VARS
+
 
 def _make_directory_link(link: Path, target: Path) -> None:
     """Create a directory link without requiring symlink privileges.

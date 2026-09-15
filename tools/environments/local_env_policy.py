@@ -168,6 +168,23 @@ def _is_terminal_first_party_env(name: str) -> bool:
 # _strip_hermes_owned_pythonpath() which removes only Hermes-owned entries, preserving user-set paths.
 _ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONHOME")
 
+# Conda splits one activation across several variables, so stripping CONDA_PREFIX alone
+# leaves a state conda itself cannot parse: with CONDA_SHLVL>=1 and no prefix, `conda
+# activate` believes an environment is already active and builds a deactivate stack for
+# it -- `_build_activate_stack` -> `_get_deactivate_scripts(old_conda_prefix)` with
+# old_conda_prefix None -- and dies on `TypeError: expected str, bytes or os.PathLike
+# object, not NoneType`. Every login/interactive child shell then prints a full conda
+# crash report (#109973). These three carry no path of their own, so dropping them
+# cannot reintroduce the leak CONDA_PREFIX is stripped for; it only completes the
+# removal. CONDA_EXE/CONDA_PYTHON_EXE are deliberately NOT included: they point at the
+# conda INSTALLATION rather than an active environment, scripts legitimately use them to
+# find conda, and they are harmless without a prefix.
+_CONDA_ACTIVATION_STATE_VARS = (
+    "CONDA_SHLVL",
+    "CONDA_DEFAULT_ENV",
+    "CONDA_PROMPT_MODIFIER",
+)
+
 
 def _is_hermes_internal_secret(key: str) -> bool:
     """True for Hermes-internal secrets injected under *dynamic* names the static

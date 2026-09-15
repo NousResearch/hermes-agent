@@ -266,11 +266,13 @@ def native_preparation_capture(authority, handle):
                             (generation, *identity, copy_id))
                 conn.execute('INSERT OR IGNORE INTO input_custody_native_items VALUES(?,?,?)',
                     (handle.preparation_id, copy_id, generation))
-        # All preparations and admission GC on this owner serialize across the
-        # durable intent commit and publication. No alias collector runs online.
-        with db._lock:
-            db._execute_write(plan)
+        # The intent must commit before publication; a failed second transaction
+        # leaves restart-safe leased collector work, not unowned durable bytes.
+        db._execute_write(plan)
+        def materialize(conn):
+            preparation(conn, epoch=epoch, handle=handle)
             publish()
+        db._execute_write(materialize)
     token = _preparation_capture.set(capture)
     try:
         yield

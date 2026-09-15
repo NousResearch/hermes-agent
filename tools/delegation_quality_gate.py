@@ -252,6 +252,26 @@ def _judge_env(config: GateConfig) -> Dict[str, str]:
     return delegated_child_subprocess_env(env)
 
 
+def _terminate_process_tree(proc: subprocess.Popen) -> None:
+    """Best-effort termination of the judge subprocess and its whole process group.
+
+    The judge is spawned with ``start_new_session=True`` (POSIX) / ``CREATE_NEW_PROCESS_GROUP``
+    (Windows), so ``proc.pid`` doubles as the process group id on POSIX. The shared
+    ``terminate_command_process_tree`` helper returns early once the leader has already exited,
+    which can leave longer-lived descendants in the same group alive — a judge whose leader exits
+    right before the timeout fires must still have its group swept, so this always killpg's on top
+    of the shared helper's best-effort terminate.
+    """
+    from tools.tts_command_provider import terminate_command_process_tree
+    terminate_command_process_tree(proc)
+    if os.name != "nt":
+        import signal
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
 def run_gate(config: GateConfig, request: Dict[str, Any]) -> Verdict:
     """Run the judge once for one request; never raises. ``timeout_seconds`` is a hard wall-clock cap
     after which the whole process tree is terminated."""
@@ -274,8 +294,7 @@ def run_gate(config: GateConfig, request: Dict[str, Any]) -> Verdict:
             json.dumps(request, ensure_ascii=False, default=str), timeout=config.timeout_seconds,
         )
     except subprocess.TimeoutExpired:
-        from tools.tts_command_provider import terminate_command_process_tree
-        terminate_command_process_tree(proc)
+        _terminate_process_tree(proc)
         try:
             proc.communicate(timeout=2)
         except (subprocess.TimeoutExpired, OSError, ValueError):

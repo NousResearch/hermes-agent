@@ -205,9 +205,14 @@ class GatewayAgentCacheMixin:
         return model, runtime_kwargs
 
     def _snapshot_session_model_override(self, session_key: str) -> dict:
-        """Capture a gateway session override before a one-turn switch."""
-        override = self._session_model_override(session_key)
-        return {"had_override": override is not None, "override": dict(override) if override is not None else None}
+        """Capture model state before a one-turn model switch."""
+        state = self._peek_session_state(session_key)
+        model_override = state.conversation.model_override if state else None
+        return {
+            "had_override": model_override is not None,
+            "override": dict(model_override) if model_override is not None else None,
+            "restore_reasoning": False,
+        }
 
     def _claim_one_turn_restore(self, session_key: str, snapshot: Optional[dict] = None) -> None:
         """Arm the one-shot restore snapshot for ``/model --once`` / ``/moa``. A repeated one-shot
@@ -219,14 +224,53 @@ class GatewayAgentCacheMixin:
         if not conv.one_turn_restore:
             conv.one_turn_restore = dict(snapshot) if snapshot is not None else self._snapshot_session_model_override(session_key)
 
+    def _claim_one_turn_reasoning_restore(self, session_key: str) -> bool:
+        """Capture reasoning before its first temporary override; False if superseded."""
+        conv = self._session_state(session_key).conversation
+        snapshot = conv.one_turn_restore
+        if not snapshot:
+            return False
+        if snapshot.get("restore_reasoning"):
+            return True
+        reasoning_override = conv.reasoning_override
+        snapshot.update(
+            restore_reasoning=True,
+            had_reasoning_override=reasoning_override is not None,
+            reasoning_override=(
+                dict(reasoning_override) if reasoning_override is not None else None
+            ),
+        )
+        return True
+
+    def _cancel_one_turn_restore_for_model_switch(self, session_key: str) -> None:
+        """Cancel a pending one-shot while preserving a later permanent model switch."""
+        state = self._peek_session_state(session_key)
+        snapshot = state.conversation.one_turn_restore if state else None
+        if not snapshot:
+            return
+        state.conversation.one_turn_restore = None
+        if snapshot.get("restore_reasoning"):
+            if snapshot["had_reasoning_override"]:
+                state.conversation.reasoning_override = dict(
+                    snapshot.get("reasoning_override") or {}
+                )
+            else:
+                state.conversation.reasoning_override = None
+
     def _restore_session_model_override(self, session_key: str, snapshot: dict) -> None:
-        """Restore the session override captured before a one-turn switch."""
+        """Restore the session overrides captured before a one-turn model switch."""
         if not session_key:
             return
+        state = self._session_state(session_key)
         if snapshot.get("had_override"):
-            self._session_state(session_key).conversation.model_override = dict(snapshot.get("override") or {})
-        elif (state := self._peek_session_state(session_key)) is not None:
+            state.conversation.model_override = dict(snapshot.get("override") or {})
+        else:
             state.conversation.model_override = None
+        if snapshot.get("restore_reasoning"):
+            if snapshot["had_reasoning_override"]:
+                state.conversation.reasoning_override = dict(snapshot.get("reasoning_override") or {})
+            else:
+                state.conversation.reasoning_override = None
         self._evict_cached_agent(session_key)
 
     def _is_intentional_model_switch(self, session_key: str, agent: Any, config_model: str) -> bool:

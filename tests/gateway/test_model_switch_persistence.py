@@ -11,11 +11,13 @@ Tests exercise the real ``_apply_session_model_override()`` and
 ``_is_intentional_model_switch()`` methods on ``GatewayRunner``.
 """
 
+import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import yaml
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.session import SessionEntry, SessionSource, build_session_key
@@ -178,17 +180,31 @@ class TestOneTurnModelOverrideRestore:
             "base_url": "https://openrouter.ai/api/v1",
             "api_mode": "chat_completions",
         }
+        previous_reasoning = {"enabled": True, "effort": "low"}
         runner._session_model_overrides[sk] = previous
+        runner._session_reasoning_overrides[sk] = previous_reasoning
 
         snapshot = runner._snapshot_session_model_override(sk)
+        runner._claim_one_turn_restore(sk, snapshot)
+        runner._claim_one_turn_reasoning_restore(sk)
         runner._session_model_overrides[sk] = {
             "model": "temp/model",
             "provider": "anthropic",
         }
+        runner._session_reasoning_overrides[sk] = {"enabled": True, "effort": "high"}
 
-        runner._restore_session_model_override(sk, snapshot)
+        runner._restore_pending_one_turn_model_override(sk)
 
         assert runner._session_model_overrides[sk] == previous
+        assert runner._session_reasoning_overrides[sk] == previous_reasoning
+
+        model_only_snapshot = runner._snapshot_session_model_override(sk)
+        later_reasoning = {"enabled": True, "effort": "xhigh"}
+        runner._session_reasoning_overrides[sk] = later_reasoning
+
+        runner._restore_session_model_override(sk, model_only_snapshot)
+
+        assert runner._session_reasoning_overrides[sk] == later_reasoning
 
 
 class TestOneTurnNeverPersisted:
@@ -203,8 +219,6 @@ class TestOneTurnNeverPersisted:
 
     @staticmethod
     def _runner_with_store(tmp_path, monkeypatch):
-        import yaml as _yaml
-
         import gateway.run as gateway_run
         from gateway.run import GatewayRunner
         from hermes_cli.model_switch import ModelSwitchResult
@@ -212,8 +226,11 @@ class TestOneTurnNeverPersisted:
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         (hermes_home / "config.yaml").write_text(
-            _yaml.safe_dump(
-                {"model": {"default": "old-model", "provider": "openrouter"}}
+            yaml.safe_dump(
+                {
+                    "agent": {"reasoning_effort": "low"},
+                    "model": {"default": "old-model", "provider": "openrouter"},
+                }
             ),
             encoding="utf-8",
         )
@@ -262,14 +279,14 @@ class TestOneTurnNeverPersisted:
         )
 
     @pytest.mark.asyncio
-    async def test_once_skips_session_store_write_through(
+    async def test_once_keeps_model_and_reasoning_non_persistent(
         self, tmp_path, monkeypatch
     ):
         runner = self._runner_with_store(tmp_path, monkeypatch)
         sk = build_session_key(_make_source())
 
         result = await runner._handle_model_command(
-            self._event("/model gpt-5.5 --once")
+            self._event("/model gpt-5.5 --reasoning high --once")
         )
 
         assert result is not None and "gpt-5.5" in result
@@ -278,9 +295,20 @@ class TestOneTurnNeverPersisted:
         assert runner._session_model_overrides[sk]["capabilities"] == {
             "openai_native_compaction": True
         }
+        assert runner._session_reasoning_overrides[sk] == {"enabled": True, "effort": "high"}
         assert sk in runner._pending_one_turn_model_restores
+        assert runner._pending_one_turn_model_restores[sk]["had_reasoning_override"] is False
         # ...but NEVER written through to the persistent session store.
         runner.async_session_store.set_model_override.assert_not_awaited()
+        config = yaml.safe_load((tmp_path / ".hermes" / "config.yaml").read_text(encoding="utf-8"))
+        assert config["agent"]["reasoning_effort"] == "low"
+
+        runner._restore_pending_one_turn_model_override(sk)
+
+        assert sk not in runner._session_reasoning_overrides
+        assert runner._resolve_session_reasoning_config(session_key=sk, model="old-model") == {
+            "enabled": True, "effort": "low"
+        }
 
     @pytest.mark.asyncio
     async def test_repeated_once_keeps_the_earliest_restore_target(self, tmp_path, monkeypatch):
@@ -289,12 +317,100 @@ class TestOneTurnNeverPersisted:
         first temporary model permanent."""
         runner = self._runner_with_store(tmp_path, monkeypatch)
         sk = build_session_key(_make_source())
+        prior_reasoning = {"enabled": True, "effort": "medium"}
+        runner._session_reasoning_overrides[sk] = prior_reasoning
 
         await runner._handle_model_command(self._event("/model gpt-5.5 --once"))
         assert runner._session_model_overrides[sk]["model"] == "gpt-5.5"
-        await runner._handle_model_command(self._event("/model gpt-5.5 --once"))
+        await runner._handle_model_command(self._event("/model gpt-5.5 --reasoning xhigh --once"))
 
         # The second producer call snapshotted the live gpt-5.5 override; the pending restore
         # must still be the ORIGINAL "no override" state.
         assert runner._pending_one_turn_model_restores[sk]["had_override"] is False
+        assert runner._pending_one_turn_model_restores[sk]["restore_reasoning"] is True
+        assert runner._pending_one_turn_model_restores[sk]["reasoning_override"] == prior_reasoning
+        assert runner._session_reasoning_overrides[sk] == {"enabled": True, "effort": "xhigh"}
+
+    @pytest.mark.asyncio
+    async def test_reasoning_restore_starts_when_first_reasoning_once_is_queued(
+        self, tmp_path, monkeypatch
+    ):
+        runner = self._runner_with_store(tmp_path, monkeypatch)
+        sk = build_session_key(_make_source())
+        runner._session_reasoning_overrides[sk] = {"enabled": True, "effort": "medium"}
+
+        await runner._handle_model_command(self._event("/model gpt-5.5 --once"))
+        await runner._handle_reasoning_command(self._event("/reasoning high"))
+        await runner._handle_model_command(
+            self._event("/model gpt-5.5 --reasoning xhigh --once")
+        )
+
+        runner._restore_pending_one_turn_model_override(sk)
+
+        assert runner._session_reasoning_overrides[sk] == {"enabled": True, "effort": "high"}
+
+    @pytest.mark.asyncio
+    async def test_reasoning_restore_uses_state_at_one_turn_commit(
+        self, tmp_path, monkeypatch
+    ):
+        runner = self._runner_with_store(tmp_path, monkeypatch)
+        sk = build_session_key(_make_source())
+        runner._session_reasoning_overrides[sk] = {"enabled": True, "effort": "medium"}
+        switch_started = asyncio.Event()
+        continue_switch = asyncio.Event()
+        perform_switch = runner._perform_model_switch
+
+        async def paused_switch(*args, **kwargs):
+            switch_started.set()
+            await continue_switch.wait()
+            return await perform_switch(*args, **kwargs)
+
+        runner._perform_model_switch = paused_switch
+        model_command = asyncio.create_task(
+            runner._handle_model_command(
+                self._event("/model gpt-5.5 --reasoning xhigh --once")
+            )
+        )
+        await switch_started.wait()
+        await runner._handle_reasoning_command(self._event("/reasoning high"))
+        continue_switch.set()
+        await model_command
+
+        runner._restore_pending_one_turn_model_override(sk)
+
+        assert runner._session_reasoning_overrides[sk] == {"enabled": True, "effort": "high"}
+
+    @pytest.mark.asyncio
+    async def test_superseded_one_turn_switch_does_not_apply_reasoning(
+        self, tmp_path, monkeypatch
+    ):
+        runner = self._runner_with_store(tmp_path, monkeypatch)
+        sk = build_session_key(_make_source())
+        runner._session_reasoning_overrides[sk] = {"enabled": True, "effort": "medium"}
+        confirmation_started = asyncio.Event()
+        continue_confirmation = asyncio.Event()
+        build_confirmation = runner._model_switch_confirmation
+        confirmation_count = 0
+
+        async def paused_first_confirmation(*args, **kwargs):
+            nonlocal confirmation_count
+            confirmation_count += 1
+            if confirmation_count == 1:
+                confirmation_started.set()
+                await continue_confirmation.wait()
+            return await build_confirmation(*args, **kwargs)
+
+        runner._model_switch_confirmation = paused_first_confirmation
+        one_turn_command = asyncio.create_task(
+            runner._handle_model_command(
+                self._event("/model gpt-5.5 --reasoning xhigh --once")
+            )
+        )
+        await confirmation_started.wait()
+        await runner._handle_model_command(self._event("/model gpt-5.5 --session"))
+        continue_confirmation.set()
+        await one_turn_command
+
+        assert sk not in runner._pending_one_turn_model_restores
+        assert runner._session_reasoning_overrides[sk] == {"enabled": True, "effort": "medium"}
 

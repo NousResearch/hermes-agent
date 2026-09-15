@@ -2,7 +2,7 @@
 
 import unittest
 
-from tools.delegate_tool import _expand_parent_toolsets
+from tools.delegate_tool import _expand_parent_toolsets, _strip_blocked_tools
 
 
 class TestExpandParentToolsets(unittest.TestCase):
@@ -25,6 +25,14 @@ class TestExpandParentToolsets(unittest.TestCase):
         toolsets = ["web"]
         child_toolsets = [t for t in toolsets if t in expanded]
         self.assertEqual(child_toolsets, ["web"])
+
+    def test_composites_with_allowed_included_tools_are_not_stripped(self):
+        toolsets = ["safe", "hermes-gateway", "hermes-cli", "delegation", "kanban"]
+
+        self.assertEqual(
+            _strip_blocked_tools(toolsets),
+            ["safe", "hermes-gateway", "hermes-cli"],
+        )
 
 
 if __name__ == "__main__":

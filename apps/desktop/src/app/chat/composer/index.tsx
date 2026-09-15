@@ -32,7 +32,7 @@ import { sessionCompacting } from '@/store/compaction'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
-import { $composerSendPrefs, enterBreaksLine } from '@/store/composer-send'
+import { $composerSendPrefs, enterBreaksLine, type SendGraceReason } from '@/store/composer-send'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { sessionBlockingPrompt } from '@/store/prompts'
@@ -500,6 +500,28 @@ export function ChatBar({
   // A composer that unmounts mid-press must not fire a send into a dead tree.
   useEffect(() => cancelEnterHold, [cancelEnterHold])
 
+  /** Commit the draft a long press has been holding. Drops the break the press
+   *  inserted, so a hold sends the same text a tap would have left in the box,
+   *  and goes through the same grace window every other send uses — the hold is
+   *  its own situation, so it is delayed only if the user asked for that one. */
+  const commitHeldEnter = useCallback(() => {
+    const editor = editorRef.current
+    const live = editor ? composerPlainText(editor) : ''
+
+    if (editor && live.endsWith('\n')) {
+      renderComposerContents(editor, live.replace(/\n+$/, ''))
+    }
+
+    if ($composerSendPrefs.get().sendGraceFor.includes('hold') && sendGrace.hold()) {
+      triggerHaptic('submit')
+
+      return
+    }
+
+    submitDraft()
+    // `editorRef` is a ref (stable identity); the rule wants it named.
+  }, [editorRef, sendGrace, submitDraft])
+
   // Resting / reconnecting / starting placeholder text, re-rolled only on a real
   // conversation change.
   const placeholder = useComposerPlaceholder({ disabled, reconnecting, sessionId })
@@ -787,7 +809,9 @@ export function ChatBar({
     // mid-gesture (a settings change while the key is held would otherwise make
     // the repeat that arrives a few ms later mean something else), and the
     // handler reads them on paths that run before its own later declaration.
-    const { holdMs: holdMsAtHand, mode: sendModeAtHand, sendGrace: sendGraceAtHand } = $composerSendPrefs.get()
+    const { holdMs: holdMsAtHand, mode: sendModeAtHand, sendGraceFor, sendOnHold } = $composerSendPrefs.get()
+    /** Does a send started THIS way wait for the grace window? */
+    const delays = (reason: SendGraceReason) => sendGraceFor.includes(reason)
 
     // Undo/redo before anything else — we own the stack (see useComposerUndo),
     // so these never reach Chromium's native history, which has no record of
@@ -1063,7 +1087,7 @@ export function ChatBar({
     // the key keeps inserting them; `enter` and `hold` give a repeat no meaning,
     // and there it is swallowed rather than leaving stray breaks behind.
     if (event.key === 'Enter' && event.repeat) {
-      if (sendModeAtHand === 'enter' || sendModeAtHand === 'hold') {
+      if (sendModeAtHand === 'enter' || sendOnHold) {
         event.preventDefault()
       }
 
@@ -1150,12 +1174,11 @@ export function ChatBar({
       // Mode and grace scope come from the single press-time read above.
       const { doubleEnterMs, typingIdleMs } = $composerSendPrefs.get()
       const sendMode = sendModeAtHand
-      const graceScope = sendGraceAtHand
 
       if (!enterBreaksLine(sendMode)) {
         event.preventDefault()
 
-        if (graceScope === 'all' && sendGrace.hold()) {
+        if (delays('enter') && sendGrace.hold()) {
           triggerHaptic('submit')
 
           return
@@ -1166,42 +1189,27 @@ export function ChatBar({
         return
       }
 
+      // `hold` (the flag, not a mode) starts its timer here, before the branches
+      // below can return: a long press is an ADDITIONAL way out of the composer,
+      // so it has to work in every mode where a bare Enter does not already
+      // commit — `mod-enter` included, which is where it is most useful.
+      const holdApplies = sendOnHold && !(sendMode === 'pause' && Date.now() - typedAtRef.current > typingIdleMs)
+
+      cancelEnterHold()
+
+      if (holdApplies) {
+        enterHoldTimerRef.current = window.setTimeout(() => {
+          enterHoldTimerRef.current = undefined
+          commitHeldEnter()
+        }, holdMsAtHand)
+      }
+
       // `mod-enter`: a bare Enter only ever breaks the line. The ⌘/Ctrl+Enter
       // branch above is the send path.
       if (sendMode === 'mod-enter') {
         return
       }
 
-      // `hold`: a tap breaks the line (this path falls through UNPREVENTED, so
-      // the editor inserts it) and a long press replaces that break with a send.
-      // The threshold is `holdMs` and the TIMER below is what enforces it — the
-      // press alone decides, and keyup cancels, so a tap can never send and the
-      // gesture survives a user with key repeat switched off.
-      if (sendMode === 'hold') {
-        cancelEnterHold()
-        enterHoldTimerRef.current = window.setTimeout(() => {
-          enterHoldTimerRef.current = undefined
-
-          const held = editorRef.current
-          const live = held ? composerPlainText(held) : ''
-
-          // Drop the break the press inserted, so a hold sends exactly what a
-          // tap would have left in the box.
-          if (held && live.endsWith('\n')) {
-            renderComposerContents(held, live.replace(/\n+$/, ''))
-          }
-
-          if (graceScope !== 'off' && sendGrace.hold()) {
-            triggerHaptic('submit')
-
-            return
-          }
-
-          submitDraft()
-        }, holdMsAtHand)
-
-        return
-      }
 
       // `pause`: an Enter after you have stopped typing is the send you meant,
       // so it commits — held for the grace window when one is configured, which
@@ -1211,7 +1219,7 @@ export function ChatBar({
       if (sendMode === 'pause' && Date.now() - typedAtRef.current > typingIdleMs) {
         event.preventDefault()
 
-        if (graceScope !== 'off' && sendGrace.hold()) {
+        if (delays('pause') && sendGrace.hold()) {
           triggerHaptic('submit')
 
           return
@@ -1249,7 +1257,9 @@ export function ChatBar({
         }
       }
 
-      if (graceScope === 'all' && sendGrace.hold()) {
+      cancelEnterHold()
+
+      if (delays('doubleTap') && sendGrace.hold()) {
         triggerHaptic('submit')
 
         return

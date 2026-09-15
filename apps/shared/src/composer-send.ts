@@ -12,18 +12,19 @@
  * never change what Enter does to someone who never opens Settings.
  */
 
-export const COMPOSER_SEND_MODES = ['enter', 'double-enter', 'pause', 'hold', 'mod-enter'] as const
+export const COMPOSER_SEND_MODES = ['enter', 'double-enter', 'pause', 'mod-enter'] as const
 
 /** - `enter` — Enter sends; Shift+Enter breaks the line.
  *  - `double-enter` — Enter breaks the line; tapping it twice in a row sends.
  *  - `pause` — Enter breaks the line while you're mid-flow, and sends once you
  *    have stopped typing (held briefly, see `sendGraceMs`, so a wrong guess is
  *    cancellable instead of destructive).
- *  - `hold` — Enter breaks the line; holding the key down sends. The press
- *    becomes a send once the operating system's key repeat starts, so the
- *    threshold is the user's own repeat setting rather than a number we invent,
- *    and a stray tap can never send.
- *  - `mod-enter` — Enter only ever breaks the line; ⌘/Ctrl+Enter sends. */
+ *  - `mod-enter` — Enter only ever breaks the line; ⌘/Ctrl+Enter sends.
+ *
+ *  `hold` is deliberately NOT a mode: it is the `sendOnHold` flag below, so it
+ *  rides ALONGSIDE whichever mode is chosen. "Hold to send" is an extra way out
+ *  of the composer, not a different opinion about what a tap means — a user who
+ *  likes double-tap should not have to give it up to get the long press. */
 export type ComposerSendMode = (typeof COMPOSER_SEND_MODES)[number]
 
 export const COMPOSER_SEND_DEFAULT_MODE: ComposerSendMode = 'enter'
@@ -39,7 +40,7 @@ export const DOUBLE_ENTER_DEFAULT_MS = 400
 export const DOUBLE_ENTER_MIN_MS = 120
 export const DOUBLE_ENTER_MAX_MS = 1500
 
-/** `hold` only: how long the key has to stay down before the press becomes a
+/** `sendOnHold` only: how long the key has to stay down before the press becomes a
  *  send. The TIMER is the threshold, not the operating system's key repeat —
  *  otherwise it could not be set to a precise value and the gesture would stop
  *  firing entirely for anyone with key repeat switched off. Comfortably under
@@ -56,20 +57,26 @@ export const TYPING_IDLE_MIN_MS = 400
 export const TYPING_IDLE_MAX_MS = 5000
 
 /**
- * Which sends get held before they go, so Esc can take them back.
+ * Which sends wait for the grace window so Esc can take them back.
  *
- * - `off` — nothing is held; every send fires on its keystroke.
- * - `inferred` — only the sends the app decided on the user's behalf (the
- *   single Enter after a typing pause). An explicit gesture never waits.
- * - `all` — every send started by a bare Enter, including the default mode's,
- *   so undo-send works for people who never change their binding. Modifier
- *   chords are never held: you cannot hit ⌘Enter or Shift+Enter by accident,
- *   and a deliberate correction should not be delayed.
+ * Per-situation rather than a three-way scope, because the situations are not
+ * interchangeable: a held key is a DELIBERATE act and should not pay a delay
+ * someone only wanted on the send the app guessed. One entry per way a draft
+ * can be committed:
+ *
+ * - `enter` — the default mode's bare Enter.
+ * - `doubleTap` — the second of two fast presses.
+ * - `pause` — the single Enter after a typing pause: the one send Hermes works
+ *   out on the user's behalf, and the default.
+ * - `hold` — the long press.
+ *
+ * A modifier chord is never in this list and never will be: you cannot hit
+ * ⌘Enter by accident, and there is nothing to take back.
  */
-export const SEND_GRACE_SCOPES = ['off', 'inferred', 'all'] as const
-export type SendGraceScope = (typeof SEND_GRACE_SCOPES)[number]
+export const SEND_GRACE_REASONS = ['enter', 'doubleTap', 'pause', 'hold'] as const
+export type SendGraceReason = (typeof SEND_GRACE_REASONS)[number]
 
-export const SEND_GRACE_DEFAULT_SCOPE: SendGraceScope = 'inferred'
+export const SEND_GRACE_DEFAULT_REASONS: readonly SendGraceReason[] = ['pause']
 
 /** How long a held send waits before it goes. */
 export const SEND_GRACE_DEFAULT_MS = 900
@@ -79,18 +86,42 @@ export const SEND_GRACE_MAX_MS = 5000
 export interface ComposerSendPrefs {
   mode: ComposerSendMode
   doubleEnterMs: number
+  /** Independent of `mode`: holding Enter down sends, wherever a bare Enter
+   *  does not already send on the press. Composes with every mode but `enter`,
+   *  where the press has already committed by the time a hold could register. */
+  sendOnHold: boolean
   holdMs: number
   typingIdleMs: number
-  sendGrace: SendGraceScope
+  /** Which sends wait for the grace window (see `SEND_GRACE_REASONS`). */
+  sendGraceFor: readonly SendGraceReason[]
   sendGraceMs: number
-}
-
-export function isSendGraceScope(value: unknown): value is SendGraceScope {
-  return SEND_GRACE_SCOPES.includes(value as SendGraceScope)
 }
 
 export function isComposerSendMode(value: unknown): value is ComposerSendMode {
   return COMPOSER_SEND_MODES.includes(value as ComposerSendMode)
+}
+
+/** Keep only the known situations, in canonical order, so a hand-edited file
+ *  cannot introduce a duplicate or an unknown entry. */
+function normalizeGraceReasons(record: Record<string, unknown>): readonly SendGraceReason[] {
+  const stored = record.sendGraceFor
+
+  if (Array.isArray(stored)) {
+    return SEND_GRACE_REASONS.filter(reason => stored.includes(reason))
+  }
+
+  // Legacy three-way scope, from before this became per-situation. `inferred`
+  // was the scope that covered the guessed send only — a held key was never
+  // inferred, so it does not come along.
+  if (record.sendGrace === 'all') {
+    return [...SEND_GRACE_REASONS]
+  }
+
+  if (record.sendGrace === 'off') {
+    return []
+  }
+
+  return SEND_GRACE_DEFAULT_REASONS
 }
 
 export function clampDoubleEnterMs(value: unknown): number {
@@ -136,14 +167,20 @@ export function clampSendGraceMs(value: unknown): number {
 /** Coerce anything read off disk (or off the IPC bridge) into valid prefs. An
  *  unparseable mode falls back to the default; an out-of-range window clamps. */
 export function normalizeComposerSendPrefs(value: unknown): ComposerSendPrefs {
-  const record = (value ?? {}) as Partial<ComposerSendPrefs>
+  const record = (value ?? {}) as Omit<Partial<ComposerSendPrefs>, 'mode'> & { mode?: unknown }
+  // `mode: 'hold'` predates the flag — it was briefly a mode of its own before
+  // becoming something that rides alongside one. Preserve its behaviour exactly
+  // rather than falling back to the default: a bare Enter only ever breaks the
+  // line, and the long press sends.
+  const legacyHold = record.mode === 'hold'
 
   return {
-    mode: isComposerSendMode(record.mode) ? record.mode : COMPOSER_SEND_DEFAULT_MODE,
+    mode: legacyHold ? 'mod-enter' : isComposerSendMode(record.mode) ? record.mode : COMPOSER_SEND_DEFAULT_MODE,
     doubleEnterMs: clampDoubleEnterMs(record.doubleEnterMs ?? DOUBLE_ENTER_DEFAULT_MS),
     holdMs: clampHoldMs(record.holdMs ?? HOLD_DEFAULT_MS),
+    sendOnHold: legacyHold || record.sendOnHold === true,
     typingIdleMs: clampTypingIdleMs(record.typingIdleMs ?? TYPING_IDLE_DEFAULT_MS),
-    sendGrace: isSendGraceScope(record.sendGrace) ? record.sendGrace : SEND_GRACE_DEFAULT_SCOPE,
+    sendGraceFor: normalizeGraceReasons(record as Record<string, unknown>),
     sendGraceMs: clampSendGraceMs(record.sendGraceMs ?? SEND_GRACE_DEFAULT_MS)
   }
 }

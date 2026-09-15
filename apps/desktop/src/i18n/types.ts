@@ -704,7 +704,6 @@ export interface Translations {
       modeEnter: string
       modeDoubleEnter: string
       modePause: string
-      modeHold: string
       modeModEnter: string
       doubleTapTitle: string
       doubleTapDescription: string
@@ -715,11 +714,18 @@ export interface Translations {
       typingIdleTitle: string
       typingIdleDescription: string
       typingIdleUnit: string
+      holdToggleTitle: string
+      holdToggleDescription: string
       graceTitle: string
       graceDescription: string
-      graceOff: string
-      graceInferred: string
+      gracePopoverHint: string
+      graceReasonEnter: string
+      graceReasonDoubleTap: string
+      graceReasonPause: string
+      graceReasonHold: string
+      graceNone: string
       graceAll: string
+      graceSome: (count: string, total: string) => string
       graceMsTitle: string
       graceMsDescription: string
       graceMsUnit: string
@@ -3200,7 +3206,6 @@ export interface Translations {
     placeholderSendChord: (chord: string) => string
     placeholderSendEnterSends: string
     placeholderSendPause: string
-    placeholderSendHold: string
     sendHold: string
     newSessionPlaceholders: readonly string[]
     followUpPlaceholders: readonly string[]

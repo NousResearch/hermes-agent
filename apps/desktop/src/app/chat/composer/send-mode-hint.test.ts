@@ -9,7 +9,6 @@ const words = {
   doubleTap: 'tap Enter twice to send',
   enterSends: 'Enter sends',
   newline: 'Enter starts a new line',
-  hold: 'hold it to send',
   pause: 'sends once you stop typing'
 }
 
@@ -30,9 +29,5 @@ describe('composerSendModeHint', () => {
 
   it('confirms the default back after a switch away from it', () => {
     expect(composerSendModeHint('enter', words)).toBe('Enter sends')
-  })
-
-  it('says hold, not double tap, when the send is the long press', () => {
-    expect(composerSendModeHint('hold', words)).toBe('Enter starts a new line · hold it to send')
   })
 })

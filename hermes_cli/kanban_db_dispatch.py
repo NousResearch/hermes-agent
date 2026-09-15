@@ -1631,10 +1631,12 @@ def _run_reclaim_phase(
     stale_timeout_seconds: int,
     failure_limit: int,
     reconcile_orphans: bool,
+    board: Optional[str],
 ) -> None:
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
     reap_worker_zombies()
     result.reclaimed = _kb.release_stale_claims(conn)
+    reclaimed_ids = getattr(_kb.release_stale_claims, "_last_reclaimed_task_ids", [])
     if reconcile_orphans:
         result.reconciled_orphans = reconcile_orphaned_running(conn)
     result.stale = detect_stale_running(conn, stale_timeout_seconds=stale_timeout_seconds)
@@ -1644,6 +1646,10 @@ def _run_reclaim_phase(
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
     result.timed_out = enforce_max_runtime(conn)
+    for task_id in (
+        [*reclaimed_ids, *result.reconciled_orphans, *result.stale, *result.crashed, *result.timed_out]
+    ):
+        _cleanup_worker_resource_lease(conn, task_id, board=board)
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
 
 
@@ -1770,7 +1776,7 @@ def _dispatch_once_locked(
     result = DispatchResult()
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
-        failure_limit=failure_limit, reconcile_orphans=reconcile_orphans,
+        failure_limit=failure_limit, reconcile_orphans=reconcile_orphans, board=board,
     )
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
@@ -2069,6 +2075,51 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
 _retagged_workspace_roots: set[str] = set()
 
 
+def _prepare_worker_resource_lease(task: Task, workspace: str, board: Optional[str]):
+    """Create the task/run ownership manifest before a worker is spawned."""
+    if task.current_run_id is None:
+        return None
+    from hermes_cli.kanban_resources import lease_for_run
+
+    resolved_board = _kb._normalize_board_slug(board) or _kb.get_current_board()
+    return lease_for_run(
+        board_dir=_kb.board_dir(resolved_board),
+        board=resolved_board,
+        task_id=task.id,
+        run_id=int(task.current_run_id),
+        workspace=workspace,
+    )
+
+
+def _cleanup_worker_resource_lease(
+    conn: sqlite3.Connection, task_id: str, run_id: Optional[int] = None,
+    *, board: Optional[str] = None,
+) -> Optional[dict]:
+    """Best-effort cleanup for a terminal/reclaimed worker run."""
+    try:
+        if run_id is None:
+            row = conn.execute(
+                "SELECT id FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1", (task_id,)
+            ).fetchone()
+            run_id = int(row["id"]) if row else None
+        if run_id is None:
+            return None
+        from hermes_cli.kanban_resources import cleanup_owned_resources, lease_from_path, lease_path
+
+        board = _kb._normalize_board_slug(board) or _kb.get_current_board()
+        path = lease_path(board_dir=_kb.board_dir(board), task_id=task_id, run_id=int(run_id))
+        lease = lease_from_path(path)
+        if lease is None:
+            return None
+        outcome = cleanup_owned_resources(lease)
+        with _kb.write_txn(conn):
+            _kb._append_event(conn, task_id, "resources_reconciled", outcome, run_id=int(run_id))
+        return outcome
+    except Exception as exc:
+        _kb._log.warning("kanban resource cleanup failed for task %s run %s: %s", task_id, run_id, exc)
+        return None
+
+
 def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
     """Reclaim pre-tag worker rows in state.db so they leave the session lists.
 
@@ -2191,6 +2242,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         raise ValueError(f"task {task.id} has no assignee")
 
     from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+    resource_lease = _prepare_worker_resource_lease(task, workspace, board)
 
     profile_arg = normalize_profile_name(task.assignee)
 
@@ -2238,6 +2290,9 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         strip_launch_profile_env(env, profile_home)
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
+    from hermes_cli.kanban_resources import resource_environment
+    if resource_lease is not None:
+        env.update(resource_environment(resource_lease))
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
     # Tag the session `kanban` so session-browsing surfaces filter it out by
@@ -2309,12 +2364,23 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
             start_new_session=True,
             creationflags=subprocess.CREATE_NO_WINDOW if _kb._IS_WINDOWS else 0,
         )
-    except FileNotFoundError:
+    except FileNotFoundError as exc:
         log_f.close()
+        with contextlib.closing(_kbc.connect()) as cleanup_conn:
+            _cleanup_worker_resource_lease(
+                cleanup_conn, task.id, task.current_run_id, board=board,
+            )
         raise RuntimeError(
             "`hermes` executable not found on PATH. "
             "Install Hermes Agent or activate its venv before running the kanban dispatcher."
-        )
+        ) from exc
+    except Exception:
+        log_f.close()
+        with contextlib.closing(_kbc.connect()) as cleanup_conn:
+            _cleanup_worker_resource_lease(
+                cleanup_conn, task.id, task.current_run_id, board=board,
+            )
+        raise
     # Intentionally NOT closing log_f: the child keeps writing after return;
     # the OS-level FD stays open in the child until it exits.
     return proc.pid

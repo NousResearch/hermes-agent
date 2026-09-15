@@ -282,8 +282,64 @@ def _cmd_watch(args: argparse.Namespace) -> int:
     return _poll_loop(args.interval, tick)
 
 
+def _cmd_resource_gc(args: argparse.Namespace) -> int:
+    """Reconcile owned resource leases, optionally without deleting anything."""
+    from hermes_cli.kanban_resources import cleanup_owned_resources, iter_leases
+
+    board = kb.get_current_board()
+    leases = iter_leases(kb.board_dir(board))
+    now = int(time.time())
+    candidates = []
+    retained = []
+    with kbc.connect_closing() as conn:
+        for lease in leases:
+            row = conn.execute(
+                "SELECT t.status, t.current_run_id, t.claim_expires, t.worker_pid, "
+                "       r.ended_at "
+                "FROM tasks t LEFT JOIN task_runs r ON r.id = ? WHERE t.id = ?",
+                (lease.run_id, lease.task_id),
+            ).fetchone()
+            if row is None:
+                candidates.append((lease, "task_missing"))
+                continue
+            pid_alive = bool(row["worker_pid"] and kb._pid_alive(row["worker_pid"]))
+            terminal = row["status"] in {"done", "archived", "failed", "cancelled", "blocked"}
+            ended = row["ended_at"] is not None
+            expired_dead = (
+                row["status"] == "running"
+                and row["current_run_id"] == lease.run_id
+                and row["claim_expires"] is not None
+                and int(row["claim_expires"]) < now
+                and not pid_alive
+            )
+            superseded = row["current_run_id"] != lease.run_id
+            if terminal or ended or expired_dead or superseded:
+                candidates.append((lease, "terminal" if terminal or ended else "lease_expired"))
+            else:
+                retained.append(lease.task_id)
+
+    cleaned = []
+    for lease, reason in candidates:
+        if getattr(args, "dry_run", False):
+            cleaned.append({"task_id": lease.task_id, "run_id": lease.run_id, "reason": reason, "dry_run": True})
+            continue
+        outcome = cleanup_owned_resources(lease)
+        cleaned.append({"task_id": lease.task_id, "run_id": lease.run_id, "reason": reason, **outcome})
+
+    if getattr(args, "json", False):
+        _print_json({"board": board, "candidates": cleaned, "retained": retained, "dry_run": bool(getattr(args, "dry_run", False))}, ascii=True)
+    else:
+        mode = "dry-run" if getattr(args, "dry_run", False) else "reconcile"
+        print(f"Resource GC ({mode}): {len(cleaned)} candidate(s), {len(retained)} retained")
+        for item in cleaned:
+            print(f"  - {item['task_id']} run={item['run_id']} reason={item['reason']}")
+    return 0
+
+
 def _cmd_gc(args: argparse.Namespace) -> int:
     """Remove archived tasks' scratch workspaces, old events, and old worker logs."""
+    if getattr(args, "resources", False):
+        return _cmd_resource_gc(args)
     import shutil
     scratch_root = kb.workspaces_root()
     removed_ws = 0

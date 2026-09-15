@@ -837,6 +837,26 @@ class TestToolsConfigIncludeMode:
 
 
 class TestShippedCatalog:
+    def test_ibkr_manifest_curates_draft_order_tools(self, monkeypatch):
+        """IBKR stays read-only by default while preserving explicit draft opt-in."""
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        from hermes_cli.mcp_catalog import get_entry
+
+        entry = get_entry("ibkr")
+
+        assert entry is not None
+        assert entry.transport.type == "http"
+        assert entry.transport.url == "https://api.ibkr.com/v1/api/mcp-public"
+        assert entry.auth.type == "oauth"
+        assert entry.auth.scopes == ["mcp.read"]
+        assert entry.tools.default_excluded == [
+            "create_order_instruction",
+            "delete_order_instruction",
+        ]
+        assert entry.suggest is not None
+        assert entry.suggest.keywords == ["ibkr", "interactive brokers", "brokerage", "portfolio"]
+        assert entry.suggest.hosts == ["interactivebrokers.com", "ibkr.com"]
+
     def test_all_shipped_manifests_parse(self, monkeypatch):
         """Every manifest in optional-mcps/ must parse cleanly.
 

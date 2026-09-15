@@ -300,6 +300,19 @@ def _resolve_codex_usage_credentials(
     explicit_key = str(api_key or "").strip()
     if explicit_key and not force_refresh:
         return explicit_key, str(base_url or "").strip(), None
+    if explicit_key:
+        # Forced retry for a live agent's own credential: refresh THAT credential (singleton or the
+        # pool entry that issued it), never re-resolve — that would render another pool account's usage.
+        try:
+            singleton_key = str((_read_codex_tokens().get("tokens") or {}).get("access_token", "") or "").strip()
+        except AuthError:
+            singleton_key = ""
+        if singleton_key != explicit_key:
+            from agent.credential_pool import load_pool
+            entry = load_pool("openai-codex").try_refresh_matching(api_key_hint=explicit_key)
+            if entry is None:
+                raise RuntimeError("Could not refresh the Codex credential this session runs on")
+            return entry.runtime_api_key, str(entry.runtime_base_url or base_url or "").strip(), None
     # Only AuthError is caught so tier 3 can run: a broad except would mask a transient refresh/network failure
     # and hand back a DIFFERENT pool account's usage; such errors must propagate to the fail-open outer guard.
     # account_id is best-effort: a partial singleton store must not sink a usable credential.
@@ -507,9 +520,13 @@ def redeem_codex_reset_credit(
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code != 401 or attempt > 0:
                     raise
-                token, resolved_base_url, account_id = _resolve_codex_usage_credentials(
-                    base_url, api_key, force_refresh=True,
-                )
+                try:
+                    token, resolved_base_url, account_id = _resolve_codex_usage_credentials(
+                        base_url, api_key, force_refresh=True,
+                    )
+                except Exception:
+                    # Refresh token dead too: the 401 hint (re-login) is the actionable message.
+                    raise exc from None
     except httpx.HTTPStatusError as exc:
         code = exc.response.status_code
         if code in (401, 403):

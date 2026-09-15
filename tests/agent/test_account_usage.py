@@ -308,3 +308,40 @@ def test_redeem_missing_credentials_reports_unavailable(monkeypatch):
 
     assert result.status == "unavailable"
     assert "hermes auth" in result.message
+
+
+def test_codex_usage_401_retry_refreshes_the_explicit_credential_not_another_account(monkeypatch, codex_usage_payload):
+    """A live agent on pool entry B hands its own api_key in; after a 401 the retry must refresh B,
+    not re-resolve and render the singleton/pool account A's usage."""
+    request_calls = []
+    refresh_hints = []
+    responses = [_FakeResponse({}, status_code=401), _FakeResponse(codex_usage_payload)]
+
+    class Pool:
+        def try_refresh_matching(self, api_key_hint=None, credential_id=None):
+            refresh_hints.append(api_key_hint)
+            return SimpleNamespace(runtime_api_key="pool-B-fresh", runtime_base_url=None)
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get(self, url, headers):
+            request_calls.append(headers["Authorization"])
+            return responses.pop(0)
+
+    monkeypatch.setattr(account_usage, "resolve_codex_runtime_credentials",
+                        lambda **kwargs: pytest.fail("must not re-resolve another account's credential"))
+    monkeypatch.setattr(account_usage, "_read_codex_tokens", lambda: {"tokens": {"access_token": "singleton-A"}})
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: Pool())
+    monkeypatch.setattr(account_usage.httpx, "Client", lambda timeout: Client())
+
+    snapshot = account_usage.fetch_account_usage(
+        "openai-codex", base_url="https://chatgpt.com/backend-api/codex", api_key="pool-B-revoked")
+
+    assert snapshot is not None
+    assert refresh_hints == ["pool-B-revoked"]
+    assert request_calls == ["Bearer pool-B-revoked", "Bearer pool-B-fresh"]

@@ -151,6 +151,11 @@ class TestEnvAssignments:
              "$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$aGFzaHZhbHVl"),
             ("SESSION_SECRET=/8f3kd9sKd0alsKDJ2mfkeisl3kdMc9dksla",
              "8f3kd9sKd0alsKDJ2mfkeisl3kdMc9dksla"),
+            # A second '/' (~1 in 3 of the '/'-led AWS secrets) must not turn it into a "path".
+            ("AWS_SECRET_ACCESS_KEY=/wJalrXUtnFEMIK7MDENG/bPxRfiCYEXAMPLEKEY",
+             "wJalrXUtnFEMIK7MDENG/bPxRfiCYEXAMPLEKEY"),
+            ("API_SECRET=~wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY",
+             "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"),
         ],
     )
     def test_secret_that_only_starts_like_a_path_or_var_still_redacts(
@@ -170,6 +175,7 @@ class TestEnvAssignments:
             "SSH_AUTH_SOCK=/run/user/$UID/keyring/ssh",
             "export SSH_AUTH_SOCK=$(gpgconf --list-dirs agent-ssh-socket)",
             "DOCKER_AUTH_CONFIG=/home/u/.docker",
+            "DOCKER_AUTH_CONFIG=/home/u/.docker/MyProject2024Build.d/config.json",
             "MY_KEY_PATH=~/.ssh/id_rsa",
             "SECRET_DIR=/etc",
         ],

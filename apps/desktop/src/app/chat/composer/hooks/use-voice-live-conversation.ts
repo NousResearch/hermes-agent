@@ -68,11 +68,7 @@ export function delegationPrompt(context: LiveTranscriptFragment[]): { context: 
   return { context: transcript, prompt: prompt || transcript.slice(-400) }
 }
 
-/**
- * Close reasons the app itself emits, mapped to their friendly copy key.
- * Server-sent `session.closed` reasons are unbounded, so anything unlisted
- * passes through verbatim (never redacted, never mislabeled).
- */
+/** Close reasons the app itself emits, mapped to their friendly copy key. Server-sent reasons are unbounded, so unlisted ones pass through verbatim. */
 const FRIENDLY_END_REASON_KEYS = {
   closed: 'liveEndedClosed',
   connection_lost: 'liveEndedConnectionLost'

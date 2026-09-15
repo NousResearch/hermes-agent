@@ -750,6 +750,83 @@ def test_triggered_location_message_uses_shared_session_in_observe_mode():
 # ---------------------------------------------------------------------------
 
 
+def _reply_text_event():
+    from gateway.platforms.event import MessageEvent
+
+    return MessageEvent(
+        text="continue",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-100",
+            chat_type="group",
+            user_id="111",
+            user_name="Alice",
+        ),
+        media_urls=[],
+        media_types=[],
+    )
+
+
+def test_replied_voice_keeps_voice_semantics_for_gateway_stt():
+    """A replied-to native voice note must stay VOICE after cache attach so the
+    gateway STT pipeline sees it; collapsing it to AUDIO silently skips STT."""
+    async def _run():
+        adapter = _make_adapter()
+        cached = SimpleNamespace(
+            path="/tmp/replied-voice.ogg",
+            media_type="audio/ogg",
+            kind="audio",
+            display_name="voice.ogg",
+        )
+        adapter._download_observed_media = AsyncMock(return_value=("ok", cached))
+        msg = SimpleNamespace(
+            reply_to_message=SimpleNamespace(voice=SimpleNamespace(file_name="voice.ogg"), audio=None)
+        )
+        event = _reply_text_event()
+
+        await adapter._cache_replied_media(msg, event)
+
+        from gateway.run import _event_media_is_stt_input
+
+        assert event.message_type == MessageType.VOICE
+        assert event.media_urls == [cached.path]
+        assert event.media_types == ["audio/ogg"]
+        assert _event_media_is_stt_input(event, 0) is True
+        assert "[Replied-to audio 'voice.ogg' saved at:" in event.text
+
+    asyncio.run(_run())
+
+
+def test_replied_audio_file_remains_non_stt_audio():
+    """A replied-to generic audio FILE carries no voice semantics: it stays AUDIO
+    and must not enter the automatic STT pipeline."""
+    async def _run():
+        adapter = _make_adapter()
+        cached = SimpleNamespace(
+            path="/tmp/replied-audio.mp3",
+            media_type="audio/mpeg",
+            kind="audio",
+            display_name="recording.mp3",
+        )
+        adapter._download_observed_media = AsyncMock(return_value=("ok", cached))
+        msg = SimpleNamespace(
+            reply_to_message=SimpleNamespace(voice=None, audio=SimpleNamespace(file_name="recording.mp3"))
+        )
+        event = _reply_text_event()
+
+        await adapter._cache_replied_media(msg, event)
+
+        from gateway.run import _event_media_is_stt_input
+
+        assert event.message_type == MessageType.AUDIO
+        assert event.media_urls == [cached.path]
+        assert event.media_types == ["audio/mpeg"]
+        assert _event_media_is_stt_input(event, 0) is False
+
+    asyncio.run(_run())
+
+
 # ---------------------------------------------------------------------------
 # Observed-media caching (unmentioned group attachments)
 # ---------------------------------------------------------------------------

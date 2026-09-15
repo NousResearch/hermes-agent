@@ -238,6 +238,14 @@ DEFAULT_CONFIG = {
         # provider or get a last-chance text fallback); "text" = always pre-analyze with
         # vision_analyze and prepend the description. vision_analyze stays a tool regardless.
         "image_input_mode": "auto",
+        # Capability-first image routing (WebUI Settings toggle writes this). True: in "auto"
+        # mode, ANY model whose vision capability resolves to True attaches images natively —
+        # a configured auxiliary.vision backend keeps its documented fallback role (describing
+        # images for text-only mains) instead of capturing every image. False (default):
+        # an explicitly configured auxiliary.vision backend is the de-facto image route for all
+        # models (#97339). Explicit per-model supports_vision declarations and
+        # image_input_mode overrides win over this either way.
+        "vision_capability_first": False,
         "disabled_toolsets": [],
         # Model name (any reasonable spelling) -> effort level; overrides agent.reasoning_effort
         # when the current model matches. Edit in config.yaml (no CLI support: dots in keys).

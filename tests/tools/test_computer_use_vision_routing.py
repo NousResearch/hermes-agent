@@ -138,6 +138,23 @@ class TestRouteDecision:
                 "custom", "Qwen3.6-35B-A3B-local-vlm", cfg
             ) is False
 
+    def test_user_declared_vision_beats_aux_override(self):
+        """Parity with agent.image_routing: a config-declared
+        ``supports_vision: true`` beats an explicitly configured
+        ``auxiliary.vision`` backend. #97339's de-facto rule governs
+        catalog/discovered capability, not a direct user declaration."""
+        from tools.computer_use import vision_routing
+
+        cfg = {
+            "auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}},
+            "custom_providers": [
+                {"name": "vllm", "models": {"GLM-5.3-Flash-512K": {"supports_vision": True}}}
+            ],
+        }
+        assert vision_routing.should_route_capture_to_aux_vision(
+            "custom:vllm", "GLM-5.3-Flash-512K", cfg
+        ) is False
+
 
     def test_unknown_provider_capabilities_fail_closed(self):
         """When tool-result lookup returns None, route to aux (safe default)."""

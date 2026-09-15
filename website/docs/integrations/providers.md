@@ -1412,7 +1412,7 @@ The configured `extra_body` follows the provider everywhere: it is merged at age
 
 The `hermes model` → Custom Endpoint wizard now prompts for the API mode explicitly and persists your answer to `config.yaml` (as `transport` on the provider entry). URL-based auto-detection (e.g. `/anthropic` paths → `anthropic_messages`) still happens as a fallback when the field is left blank.
 
-**Native vision for custom-provider models.** If your custom endpoint serves a vision-capable model that isn't in models.dev, set `model.supports_vision: true` so Hermes routes attached images natively (as `image_url` parts) instead of pre-processing them through `vision_analyze`. Single knob — no need to also set `agent.image_input_mode: native`.
+**Native vision for custom-provider models.** If your custom endpoint serves a vision-capable model that isn't in models.dev, set `model.supports_vision: true` so Hermes routes attached images natively (as `image_url` parts) instead of pre-processing them through `vision_analyze`. Single knob — no need to also set `agent.image_input_mode: native`. An explicit `supports_vision: true` declaration takes precedence even when an `auxiliary.vision` backend is configured: a direct capability declaration for a specific model is not overridden by side-task routing preferences (catalog-discovered vision capability still defers to a configured `auxiliary.vision` backend).
 
 ```yaml
 model:

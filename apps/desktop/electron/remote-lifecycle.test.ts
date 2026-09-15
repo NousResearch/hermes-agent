@@ -2009,3 +2009,28 @@ test('cleanupStale reaps after one lost ownership answer and keeps the lockfile 
   assert.ok(!silent.calls.some(c => /(^|[^-\d])kill(?: -\w+)? 777\b/.test(c) && !/kill -0/.test(c)), 'must not kill unproven')
   assert.ok(!silent.calls.some(c => /rm -f .*backend\.lock\.json/.test(c)), 'record must survive for the next connect to reap')
 })
+
+test('connect() post-spawn cleanup that cannot prove ownership keeps the original boot error', async () => {
+  const boot: any = new Error('dashboard never answered')
+  boot.kind = 'boot-failed'
+
+  const ssh = fakeSsh([
+    [/uname/, 'Linux\nx86_64'],
+    [/\[ -x/, 'OK'],
+    [/cat .*lock\.json/, ''],
+    [/grep -q ssh-session-token-file/, 'YES\n'],
+    [/python3 -c/, ''],
+    [/printf '%s\\n'/, ''],
+    [/setsid/, '777\n'],
+    [/kill -0 777/, 'ALIVE\n'],
+    [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=51999\n'],
+    [/print\("OWNED"/, '']
+  ])
+
+  await assert.rejects(
+    connect(connectDeps(ssh, { platform: { os: 'Linux', arch: 'x86_64' }, waitForHermes: async () => { throw boot } })),
+    (error: any) => error === boot && error.cleanupCause?.kind === 'transient-transport-error'
+  )
+
+  assert.ok(!ssh.calls.some(c => /rm -f .*backend\.lock\.json/.test(c)), 'record must survive for the next connect to reap')
+})

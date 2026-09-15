@@ -1700,7 +1700,15 @@ async function connect(deps) {
     // cleanupStale re-runs the ownership proof, which keeps the record when
     // nothing can be proven and lets the next connect reap by exact ownership.
     const pidAlive = await remotePidAlive(ssh, pid).catch(() => true)
-    await cleanupStale(ssh, ownershipId, ownedSpawn, pidAlive)
+
+    try {
+      await cleanupStale(ssh, ownershipId, ownedSpawn, pidAlive)
+    } catch (cleanupError) {
+      // An unsettled ownership proof must not replace the boot failure the
+      // user needs to see; keep it reachable for diagnostics instead.
+      error.cleanupCause = cleanupError
+    }
+
     throw error
   }
 }

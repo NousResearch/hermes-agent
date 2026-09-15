@@ -133,6 +133,44 @@ class TestSlackSendClarify:
                 action_ids = [element["action_id"] for element in block["elements"]]
                 assert len(action_ids) == len(set(action_ids))
 
+    @pytest.mark.asyncio
+    async def test_channel_clarify_mentions_requester_for_push_notification(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "2.2"})
+
+        await adapter.send_clarify(
+            chat_id="C1",
+            question="Which direction?",
+            choices=["one", "two"],
+            clarify_id="cid-notify",
+            session_key="sk-notify",
+            metadata={"recipient_user_id": "U123", "slack_team_id": "T1"},
+        )
+
+        kwargs = mock_client.chat_postMessage.call_args.kwargs
+        assert kwargs["text"].startswith("<@U123> ❓")
+        assert kwargs["blocks"][0]["text"]["text"].startswith("<@U123> ❓")
+
+    @pytest.mark.asyncio
+    async def test_dm_clarify_does_not_repeat_requester_mention(self):
+        adapter = _make_adapter()
+        adapter._team_clients["T1"].chat_postMessage = AsyncMock(return_value={"ts": "3.3"})
+        adapter._channel_team["D1"] = "T1"
+
+        await adapter.send_clarify(
+            chat_id="D1",
+            question="Which direction?",
+            choices=["one", "two"],
+            clarify_id="cid-dm",
+            session_key="sk-dm",
+            metadata={"recipient_user_id": "U123", "slack_team_id": "T1"},
+        )
+
+        kwargs = adapter._team_clients["T1"].chat_postMessage.call_args.kwargs
+        assert not kwargs["text"].startswith("<@U123>")
+        assert not kwargs["blocks"][0]["text"]["text"].startswith("<@U123>")
+
 
     @pytest.mark.asyncio
     async def test_mrkdwn_escapes_question(self):

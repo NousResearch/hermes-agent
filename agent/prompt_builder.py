@@ -1356,13 +1356,7 @@ def _build_skills_system_prompt_inner(
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
     project_dirs = project_dirs or []
-    # The skills-dir manifest fingerprint is part of the key: skills installed,
-    # deleted, or edited outside the skill manager (which clears the LRU) must
-    # invalidate the in-process cache instead of being served as phantom entries
-    # for the rest of the process (#8845). The manifest is an os.stat walk —
-    # cheap next to parsing every SKILL.md frontmatter — and is reused below by
-    # the snapshot validation and snapshot write paths so a cache miss walks
-    # the disk only once.
+    # Fingerprint the skills-dir manifest into the cache key: externally added/removed skills must not be served as phantoms (#8845).
     manifest = _build_skills_manifest(skills_dir)
     manifest_fingerprint = hashlib.md5(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
     cache_key = (

@@ -164,6 +164,46 @@ describe('reconcileBackgroundProcesses', () => {
 
     expect(itemsOf('sess-arm')).toEqual([])
   })
+
+  // ── notify_on_complete: the chat is owed a result ──────────────────────────
+  // `terminal(background=true, notify_on_complete=true)` is the only shape that
+  // comes with a delivery contract: the gateway re-enters this same session with
+  // the result. The row must therefore carry the contract (so the chat can say a
+  // follow-up is coming) and must NOT evaporate on finish (or the user who left
+  // and came back has no in-chat evidence the task ended).
+
+  const notified = (id: string) => ({ ...running(id), notify_on_complete: true })
+  const notifiedExit = (id: string, code = 0) => ({ ...exited(id, code), notify_on_complete: true })
+
+  it('carries notify_on_complete onto the row and leaves plain tasks alone', () => {
+    reconcileBackgroundProcesses('sess-owes', [notified('a'), running('b'), exited('c', 1)])
+
+    expect(itemsOf('sess-owes').map(i => [i.id, i.notifyOnComplete])).toEqual([
+      ['a', true],
+      ['b', false],
+      ['c', false]
+    ])
+  })
+
+  it('flips a notify row to its result instead of self-clearing it', () => {
+    reconcileBackgroundProcesses('sess-owes-done', [notified('a')])
+    expect(itemsOf('sess-owes-done')[0]!.state).toBe('running')
+
+    reconcileBackgroundProcesses('sess-owes-done', [notifiedExit('a', 1)])
+
+    // Well past both linger windows: the finished row is the chat's only proof
+    // the task ended (and of why), so it survives until the user dismisses it.
+    vi.advanceTimersByTime(120_000)
+
+    expect(itemsOf('sess-owes-done').map(i => [i.id, i.state, i.exitCode])).toEqual([['a', 'failed', 1]])
+  })
+
+  it('still lets the user dismiss a finished notify row', () => {
+    reconcileBackgroundProcesses('sess-owes-x', [notifiedExit('a', 0)])
+    dismissBackgroundProcess('sess-owes-x', 'a')
+
+    expect(itemsOf('sess-owes-x')).toEqual([])
+  })
 })
 
 // ── Dead-session polling guard (#94219 fallout) ──────────────────────────────

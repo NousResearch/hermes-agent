@@ -2574,6 +2574,10 @@ export interface Translations {
     stop: string
     dismiss: string
     exit: (code: number) => string
+    /** background row: Hermes owes this chat the task's result. */
+    willNotifyChat: string
+    notifySent: string
+    openOutput: string
     control: {
       goalActiveTurns: (turn: number, maxTurns: number) => string
       goalDoneTurns: (turns: number) => string

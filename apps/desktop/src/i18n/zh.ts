@@ -3189,6 +3189,9 @@ export const zh = defineLocale({
     stop: '停止',
     dismiss: '关闭',
     exit: code => `退出码 ${code}`,
+    willNotifyChat: '结果稍后发到本会话',
+    notifySent: '结果已发到本会话',
+    openOutput: '点击查看输出',
     control: {
       goalActiveTurns: (turn, maxTurns) => `第 ${turn}/${maxTurns} 轮`,
       goalDoneTurns: turns => `共 ${turns} 轮`,

@@ -173,6 +173,19 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
             {s.exit(item.exitCode)}
           </span>
         )}
+        {/* Background rows spell out the part the chat must not have to guess:
+            whether Hermes still owes this conversation a result, and — once it
+            has one — how to see a failed task's output. Both come from the
+            registry row (`notify_on_complete`), never from renderer memory, so
+            the promise survives leaving the chat and coming back. */}
+        {item.type === 'background' && failed && (
+          <span className="shrink-0 truncate text-[0.62rem] leading-4 text-destructive/70">{s.openOutput}</span>
+        )}
+        {item.type === 'background' && item.notifyOnComplete && !failed && (
+          <span className="shrink-0 truncate text-[0.62rem] leading-4 text-muted-foreground/70">
+            {running ? s.willNotifyChat : s.notifySent}
+          </span>
+        )}
       </StatusRow>
     </Fragment>
   )

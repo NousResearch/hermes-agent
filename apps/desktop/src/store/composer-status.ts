@@ -33,6 +33,11 @@ export interface ComposerStatusItem {
   currentTool?: string
   /** todo: nesting depth (0 = top-level) for indented subtask rows. */
   depth?: number
+  /** background: the registry's `notify_on_complete` — Hermes owes THIS chat a
+   *  follow-up message with the result. That is what makes a finished row a
+   *  deliverable promise instead of a dead spinner: the row says the result will
+   *  arrive while running, and says it arrived once it exits. */
+  notifyOnComplete?: boolean
   /** goal: active | paused | waiting | done. */
   goalStatus?: GoalStatus
   id: string
@@ -195,6 +200,7 @@ const sameStatusItem = (a: ComposerStatusItem, b: ComposerStatusItem) =>
   a.goalStatus === b.goalStatus &&
   a.todoStatus === b.todoStatus &&
   a.depth === b.depth &&
+  a.notifyOnComplete === b.notifyOnComplete &&
   a.sessionId === b.sessionId
 
 const stabilizeItems = (prev: ComposerStatusItem[] | undefined, next: ComposerStatusItem[]): ComposerStatusItem[] => {
@@ -291,6 +297,7 @@ const writeBackground = (sid: string, items: ComposerStatusItem[]) => {
 interface GatewayProcessEntry {
   command?: string
   exit_code?: number
+  notify_on_complete?: boolean
   output_tail?: string
   session_id?: string
   status?: string
@@ -303,6 +310,7 @@ const toBackgroundItem = (proc: GatewayProcessEntry): ComposerStatusItem => {
   return {
     exitCode,
     id: proc.session_id ?? '',
+    notifyOnComplete: proc.notify_on_complete === true,
     output: proc.output_tail || undefined,
     state: exited ? (exitCode ? 'failed' : 'done') : 'running',
     title: (proc.command ?? '').split('\n')[0]!.trim() || 'background process',
@@ -311,7 +319,11 @@ const toBackgroundItem = (proc: GatewayProcessEntry): ComposerStatusItem => {
 }
 
 const sameItem = (a: ComposerStatusItem, b: ComposerStatusItem) =>
-  a.state === b.state && a.title === b.title && a.output === b.output && a.exitCode === b.exitCode
+  a.state === b.state &&
+  a.title === b.title &&
+  a.output === b.output &&
+  a.exitCode === b.exitCode &&
+  a.notifyOnComplete === b.notifyOnComplete
 
 /**
  * Layout-stable sync of the registry snapshot into the store: existing rows
@@ -370,9 +382,21 @@ export function reconcileBackgroundProcesses(sid: string, procs: GatewayProcessE
 
   // Arm the self-clear on every finished task (failures linger longer); cancel
   // it for anything running again or gone from the snapshot.
+  //
+  // A `notify_on_complete` task is exempt: it owes this chat a follow-up
+  // message, so its row is the only durable, in-chat proof that the work ended
+  // and that the result belongs to THIS conversation — auto-clearing it in 4s
+  // rebuilt exactly the "did it finish?" hole this row exists to close. It
+  // stays until the user dismisses it (or the registry, which
+  // `reconcileBackgroundProcesses` re-reads on every mount, prunes it).
+  // ponytail: no auto-clear on CONFIRMED delivery — that needs the gateway's
+  // completion-delivery ledger (gateway/run_notifications.py
+  // `_completion_deliveries_delivered`) exposed over RPC. Add it when the ledger
+  // is on the wire; until then a permanent row the user can X is the honest
+  // version of the same promise.
   const finishedDelay = new Map(
     next
-      .filter(item => item.state !== 'running')
+      .filter(item => item.state !== 'running' && !item.notifyOnComplete)
       .map(item => [item.id, item.state === 'failed' ? FAILURE_LINGER_MS : SUCCESS_LINGER_MS])
   )
 

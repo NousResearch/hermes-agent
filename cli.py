@@ -717,6 +717,10 @@ def _arm_exit_watchdog(timeout_s: float | None = None, *, from_signal: bool = Fa
         except Exception:
             pass
         _flush_logging_and_stdio()
+        # Best-effort memory session-end flush before the hard exit — the
+        # finally/atexit cleanup never ran (that's why we're here). No-op when
+        # _run_cleanup already ran (guard), never raises.
+        _emit_session_end_before_hard_exit()
         os._exit(0)
 
     with suppress(Exception):  # never block shutdown on watchdog setup
@@ -775,6 +779,43 @@ def _shutdown_agent_memory_provider(agent) -> None:
     else:
         logger.info("CLI cleanup calling memory shutdown for session %s without session message list", _sid)
         agent.shutdown_memory_provider()
+
+
+def _emit_session_end_before_hard_exit() -> None:
+    """Best-effort memory ``on_session_end`` flush on the kanban hard-exit paths.
+
+    The single-query signal handler (``_signal_handler_q``) and the exit watchdog
+    terminate the process with ``os._exit(0)``, which bypasses the ``finally:`` /
+    ``atexit`` machinery that would otherwise run ``_finalize_single_query`` →
+    ``_run_cleanup`` → ``_shutdown_agent_memory_provider`` → memory providers'
+    ``on_session_end``. When the process is a kanban worker this flushes the memory
+    provider so it can ingest the worker's last turns before the hard exit.
+
+    This is NOT a parallel implementation: it routes through the same
+    ``_shutdown_agent_memory_provider`` helper the normal ``_run_cleanup`` path
+    uses, so it inherits the same ``flush_pending(timeout=10)`` drain and the same
+    ``_session_messages``-vs-no-arg call shape — there is no second copy of that
+    logic to keep in sync.
+
+    Exactly-once relies on the existing ``_cleanup_done`` flag: if ``_run_cleanup``
+    already ran (or is wedged mid-run with the flag set), this is a no-op, so a
+    normal ``finally:`` exit can never double-emit. A raising provider is swallowed
+    (after a warning), so it can never prevent the process exit. Never raises —
+    safe to call from a signal handler or the watchdog thread.
+    """
+    global _cleanup_done
+    if _cleanup_done:
+        return
+    agent = _active_agent_ref
+    if agent is None or not hasattr(agent, "shutdown_memory_provider"):
+        return
+    _cleanup_done = True
+    try:
+        _shutdown_agent_memory_provider(agent)
+    except Exception:
+        # Mirrors _run_cleanup's failure log so a lost hard-exit flush is
+        # diagnosable rather than silent (review #85022).
+        logger.warning("CLI hard-exit memory shutdown failed", exc_info=True)
 
 
 def _stop_cli_wake_word() -> None:
@@ -4168,6 +4209,12 @@ def _run_quiet_single_query(cli, effective_query):
                 _exit_code = _RL_CODE
             except Exception:
                 _exit_code = 1
+    # The memory session-end flush is NOT emitted here: on this normal ``-Q`` exit
+    # path the enclosing ``finally`` runs ``_run_cleanup`` → ``_shutdown_agent_memory_provider``
+    # (exactly once, via its ``_cleanup_done`` guard), so adding a flush here would
+    # double-emit. Only the hard ``os._exit(0)`` paths — the signal handler and the
+    # exit watchdog — skip that machinery, and they get the flush from
+    # ``_emit_session_end_before_hard_exit``.
     sys.exit(_exit_code)
 
 
@@ -4280,6 +4327,19 @@ def _install_single_query_signal_handlers(cli):
                 # store here or the worker's turn (and its usage deltas) never become durable (#88583 /
                 # #50881 class). Best-effort under the SIGALRM deadman above.
                 _flush_one_shot_session_store(cli)
+            # Memory on_session_end on a background thread so arbitrary provider code
+            # (network I/O, provider-thread joins) never runs inline on the interrupted
+            # main thread — that would re-enter code holding a lock the main thread may
+            # still own, the reentrancy window the flush must avoid. The join below is
+            # bounded by the SIGALRM(5) deadman; if the provider wedges, the alarm
+            # os._exit(0)s regardless.
+            _emit_thread = threading.Thread(
+                target=_emit_session_end_before_hard_exit,
+                name="kanban-session-end-emit",
+                daemon=True,
+            )
+            _emit_thread.start()
+            _emit_thread.join(timeout=4.0)
             _flush_logging_and_stdio()
             os._exit(0)
         raise KeyboardInterrupt()

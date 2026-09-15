@@ -215,3 +215,31 @@ describe('wake-word ear visibility', () => {
     expect((ear as HTMLButtonElement).disabled).toBe(true)
   })
 })
+
+describe('voice pill turn-status caption', () => {
+  it('renders the turn-status caption as visible text (not sr-only) during active voice states', () => {
+    const statuses = ['listening', 'thinking', 'speaking', 'transcribing'] as const
+
+    for (const status of statuses) {
+      cleanup()
+
+      renderControls({
+        conversation: {
+          active: true,
+          level: 0,
+          muted: false,
+          onEnd: vi.fn(),
+          onStart: vi.fn(),
+          onStopTurn: vi.fn(),
+          onToggleMute: vi.fn(),
+          status
+        }
+      })
+      const statusEl = screen.getByRole('status')
+      expect(statusEl.textContent).not.toBe('')
+      expect(statusEl.classList.contains('sr-only')).toBe(false)
+    }
+
+    cleanup()
+  })
+})

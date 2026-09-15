@@ -405,3 +405,27 @@ class TestUnscopedSecretReadLogging:
 
         assert boot and all(r.levelno == logging.DEBUG and r.exc_info is None for r in boot)
         assert any(r.levelno >= logging.WARNING and r.exc_info for r in lost)
+
+    def test_no_cache_probe_classifies_unresolved_multiplex_scope_as_expected(self, caplog):
+        """A no-cache probe must still distinguish an expected unscoped boot read from a lost scope."""
+        import logging
+
+        import tools.registry as reg
+        from agent.secret_scope import get_secret, set_multiplex_active
+
+        def probe():
+            return bool(get_secret("REGISTRY_NO_CACHE_LOG_PROBE_TOKEN", ""))
+
+        reg.no_cache_check_fn(probe)
+        set_multiplex_active(True)
+        try:
+            with caplog.at_level(logging.DEBUG, logger="tools.registry"):
+                assert reg._check_fn_cached(probe) is False
+            verdicts = [r for r in caplog.records if r.name == "tools.registry"]
+        finally:
+            set_multiplex_active(False)
+            reg._NO_CACHE_CHECK_FNS.discard(probe)
+
+        assert verdicts
+        assert all(r.levelno == logging.DEBUG and r.exc_info is None for r in verdicts)
+        assert any("multiplex fail-closed path" in r.getMessage() for r in verdicts)

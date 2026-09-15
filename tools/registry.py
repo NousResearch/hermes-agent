@@ -300,9 +300,9 @@ def _run_check_fn_uncached(fn: Callable, *, unresolved_scope: bool = False) -> b
 def _check_fn_cached(fn: Callable) -> bool:
     """Return bool(fn()), TTL-cached across calls."""
     now = time.monotonic()
-    if fn in _NO_CACHE_CHECK_FNS:
-        return _run_check_fn_uncached(fn)
     scope = check_fn_cache_scope()
+    if fn in _NO_CACHE_CHECK_FNS:
+        return _run_check_fn_uncached(fn, unresolved_scope=scope == CHECK_FN_CACHE_BYPASS)
     if scope == CHECK_FN_CACHE_BYPASS:
         return _run_check_fn_uncached(fn, unresolved_scope=True)
     cache_key = (fn, scope)

@@ -9158,9 +9158,10 @@ def test_probe_credentials_allows_keyless_custom_runtime():
 
 def test_setup_runtime_check_rejects_empty_runtime_key(monkeypatch):
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("openrouter/test-model", None))
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
-        lambda requested=None: {
+        lambda requested=None, **_kw: {
             "provider": "openrouter",
             "api_key": "",
             "source": "env/config",
@@ -9172,7 +9173,7 @@ def test_setup_runtime_check_rejects_empty_runtime_key(monkeypatch):
     assert resp["result"] == {
         "ok": False,
         "provider": "openrouter",
-        "model": None,
+        "model": "openrouter/test-model",
         "source": "env/config",
         "error": "No usable credentials found for openrouter.",
     }
@@ -9182,7 +9183,7 @@ def test_setup_runtime_check_allows_no_key_custom_runtime(monkeypatch):
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
-        lambda requested=None: {
+        lambda requested=None, **_kw: {
             "provider": "custom",
             "api_key": "no-key-required",
             "source": "env/config",
@@ -9199,7 +9200,7 @@ def test_setup_runtime_check_rejects_implicit_bedrock_when_unconfigured(monkeypa
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: False)
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
-        lambda requested=None: {
+        lambda requested=None, **_kw: {
             "provider": "bedrock",
             "api_key": "aws-sdk",
             "source": "iam-role",
@@ -9243,6 +9244,89 @@ def test_setup_runtime_check_honors_requested_provider(monkeypatch):
     default = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
     assert default["result"]["ok"] is False
     assert default["result"]["provider"] == "anthropic"
+
+
+def test_setup_runtime_check_agrees_with_session_fallback_chain(monkeypatch):
+    """#111775: with the primary blocked and a complete fallback entry, the probe answers what
+    ``_make_agent`` would build (fallback provider + model); an explicit ``provider`` stays strict
+    so another provider's fallback cannot mask a failed connection."""
+    from hermes_cli.auth import AuthError
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("claude-sonnet-4-5", None))
+    monkeypatch.setattr(server, "_load_fallback_model",
+                        lambda: [{"provider": "openrouter", "model": "openai/gpt-4.1-mini", "api_key": "sk-or-fb"}])
+
+    def fake_resolve(*, requested=None, target_model=None, explicit_api_key=None, **_kw):
+        if requested == "openrouter":
+            return {"provider": "openrouter", "api_key": explicit_api_key, "source": "explicit"}
+        raise AuthError("No Anthropic credentials found.", provider="anthropic")
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve)
+
+    default = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
+    assert default["result"]["ok"] is True
+    assert (default["result"]["provider"], default["result"]["model"]) == ("openrouter", "openai/gpt-4.1-mini")
+
+    strict = server.handle_request(
+        {"id": "2", "method": "setup.runtime_check", "params": {"provider": "anthropic"}})
+    assert strict["result"]["ok"] is False
+    assert "Anthropic" in strict["result"]["error"]
+
+
+def test_setup_runtime_check_reports_target_model_on_credential_failure(monkeypatch):
+    """#111775: the probe names the model session creation would use, never ``model: null``."""
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("z-ai/glm-5.2", None))
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda *, requested=None, target_model=None: {
+            "provider": "zai", "api_key": "", "source": "env/config"
+        },
+    )
+
+    resp = server.handle_request({"id": "1", "method": "setup.runtime_check", "params": {}})
+
+    assert resp["result"]["ok"] is False
+    assert resp["result"]["model"] == "z-ai/glm-5.2"
+
+def test_setup_runtime_check_scopes_launch_profile_in_multiplex_backend(monkeypatch, tmp_path):
+    """The launch profile needs a scope too when its Codex route reads an override."""
+    from agent import secret_scope
+    from tui_gateway import launch_profile_policy
+
+    launch_home = tmp_path / ".hermes"
+    launch_home.mkdir()
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", "https://codex.launch.test/v1")
+    monkeypatch.setattr(server, "_hermes_home", launch_home)
+    monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
+    monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("gpt-5.3-codex", None))
+
+    def resolve_codex(requested=None, **_kwargs):
+        assert requested == "openai-codex"
+        return {
+            "provider": "openai-codex",
+            "api_key": "codex-oauth-token",
+            "base_url": secret_scope.get_secret("HERMES_CODEX_BASE_URL"),
+            "source": "credential-pool",
+        }
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", resolve_codex)
+    secret_scope.set_multiplex_active(True)
+    try:
+        response = server.handle_request(
+            {"id": "1", "method": "setup.runtime_check", "params": {"provider": "openai-codex"}}
+        )
+    finally:
+        secret_scope.set_multiplex_active(False)
+
+    assert response["result"] == {
+        "ok": True,
+        "provider": "openai-codex",
+        "model": "gpt-5.3-codex",
+        "source": "credential-pool",
+        "free_tier": False,
+    }
 
 
 def test_setup_readiness_scopes_to_requested_profile(monkeypatch, tmp_path):

@@ -110,9 +110,12 @@ database:
   # reordering; EXTRA is honored.
   # synchronous: FULL
 
-  # Optional WAL sizing pragmas (integers). Unset = SQLite defaults.
-  # wal_autocheckpoint: 1000     # pages between automatic checkpoints
-  # journal_size_limit: 67108864 # cap the WAL/journal size in bytes
+  # Optional WAL sizing pragmas (integers).
+  # wal_autocheckpoint: 1000     # pages between automatic checkpoints;
+  #                              # unset = SQLite default
+  # journal_size_limit: 67108864 # bytes; unset → Hermes still applies 64 MiB
+  # default via _apply_wal_size_limit so state.db-wal cannot retain unlimited
+  # high-water slack after checkpoints. Set explicitly to override.
 ```
 
 Hermes also warns (once per process per database) when an existing

@@ -334,3 +334,121 @@ class TestResolveServerLazy:
 
     def test_explicit_false(self):
         assert _mcp_discovery._resolve_server_lazy("s", {"command": "npx", "lazy": False}) is False
+
+
+class TestLazyServerIsReportedAsWorking:
+    """A lazily registered server has live, callable cached tools and no process yet.
+
+    Before the ``lazy`` status every surface misread it: ``get_mcp_status`` said ``configured``
+    (never started) and the discovery summary said ``MCP: 0 tool(s) from 0 server(s) (2 failed)``
+    right after registering every cached tool, observed verbatim on a live install.
+    """
+
+    _CONFIG = {
+        "playwright": {"command": "npx", "args": ["-y", "@playwright/mcp"], "lazy": True},
+    }
+
+    @pytest.fixture(autouse=True)
+    def _isolate_error_state(self):
+        # The module fixture does not restore the connect-error and cooldown registries, and the
+        # first-use failure tests above leave a "playwright" error behind.
+        old_errors = dict(mcp._server_connect_errors)
+        old_retry = dict(mcp._server_connect_retry_after)
+        mcp._server_connect_errors.pop("playwright", None)
+        mcp._server_connect_retry_after.pop("playwright", None)
+        yield
+        mcp._server_connect_errors.clear()
+        mcp._server_connect_errors.update(old_errors)
+        mcp._server_connect_retry_after.clear()
+        mcp._server_connect_retry_after.update(old_retry)
+
+    def _fake_register_from_cache(self, name, cfg, entry):
+        # What the real _register_from_cache_sync records, minus the registry writes.
+        names = ["mcp_playwright_browser_navigate", "mcp_playwright_browser_click"]
+        with mcp._lock:
+            mcp._lazy_server_configs[name] = dict(cfg)
+            mcp._lazy_server_fingerprints[name] = "abc"
+            mcp._lazy_server_tool_names[name] = list(names)
+        return names
+
+    def _discover(self):
+        with patch("tools.mcp_tool_config._load_mcp_config", return_value=dict(self._CONFIG)), \
+             patch("tools.mcp_tool._ensure_mcp_sdk", return_value=True), \
+             patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_schema_cache.config_fingerprint", return_value="abc"), \
+             patch("tools.mcp_schema_cache.get_cached_entry", return_value=_fake_cache_entry()), \
+             patch("tools.mcp_tool_registration._register_from_cache_sync", side_effect=self._fake_register_from_cache), \
+             patch("tools.mcp_tool_discovery._discover_and_register_server", new_callable=AsyncMock), \
+             patch("tools.mcp_tool_loop._ensure_mcp_loop"), patch("tools.mcp_tool_loop._run_on_mcp_loop"):
+            _mcp_discovery.discover_mcp_tools()
+
+    def _status(self):
+        with patch("tools.mcp_tool_config._load_mcp_config", return_value=dict(self._CONFIG)):
+            [entry] = _mcp_discovery.get_mcp_status()
+        return entry
+
+    def test_a_lazy_server_reads_as_working_on_every_surface(self, caplog):
+        from hermes_cli import banner
+
+        with caplog.at_level("INFO", logger="tools.mcp_tool"):
+            self._discover()
+        summaries = [r.getMessage() for r in caplog.records if "server(s)" in r.getMessage()]
+        assert summaries == ["  MCP: 2 tool(s) from 1 server(s) (1 lazy, not spawned yet)"]
+        caplog.clear()
+        with caplog.at_level("INFO", logger="tools.mcp_tool"):
+            self._discover()  # a repeat run neither re-announces nor fails it
+        assert not any("failed" in r.getMessage() or "server(s)" in r.getMessage() for r in caplog.records)
+
+        entry = self._status()
+        assert (entry["status"], entry["tools"], entry["connected"]) == ("lazy", 2, False)
+        line = banner._mcp_server_line(entry, dim="dim", text="text")
+        assert "2 tool(s)" in line and "lazy, starts on first use" in line and "failed" not in line
+
+        # Controls: a first-use connect in flight or failed outranks lazy, and once a connect has
+        # succeeded (the parked config is gone) a stale tool list is not lazy.
+        mcp._server_connecting.add("playwright")
+        assert self._status()["status"] == "connecting"
+        mcp._server_connecting.discard("playwright")
+        mcp._server_connect_errors["playwright"] = "spawn failed: npx not found"
+        assert self._status()["status"] == "failed"
+        del mcp._server_connect_errors["playwright"]
+        mcp._lazy_server_configs.pop("playwright")
+        assert self._status()["status"] == "configured"
+
+    def test_lazy_state_is_read_by_server_key_and_scoped_to_its_owner(self):
+        """Under a multiplexer the lazy dicts are keyed by resolved server key, not by name.
+
+        Two things this pins, both invisible without a multiplexer (where key == name):
+        reading them by NAME finds nothing for a scoped profile, and gating them with
+        ``_server_visible_in_scope`` — the predicate the LIVE dicts use — hides the server
+        from the profile that owns it, because a lazy registration never populates the
+        adoption/teardown maps that predicate reads.
+        """
+        from tools.mcp_tool_scope import _server_key
+
+        key = _server_key("playwright", "profile-b", current=False)
+        assert key != "playwright"
+        mcp._lazy_server_configs[key] = dict(self._CONFIG["playwright"])
+        mcp._lazy_server_fingerprints[key] = "abc"
+        mcp._lazy_server_tool_names[key] = ["mcp_playwright_browser_navigate",
+                                            "mcp_playwright_browser_click"]
+
+        def status_from(scope):
+            with patch.object(mcp, "_mcp_registry_scope", return_value=scope):
+                [entry] = _mcp_discovery.get_mcp_status(configured=dict(self._CONFIG))
+            return entry
+
+        owner = status_from("profile-b")
+        assert owner["status"] == "lazy"
+        assert owner["tools"] == 2
+
+        # A different profile must not see another profile's lazy registration.
+        other = status_from("profile-a")
+        assert other["status"] == "configured"
+        assert other["tools"] == 0
+
+        # ``include_runtime=False`` hides it from the owner too.
+        with patch.object(mcp, "_mcp_registry_scope", return_value="profile-b"):
+            [no_runtime] = _mcp_discovery.get_mcp_status(configured=dict(self._CONFIG),
+                                                         include_runtime=False)
+        assert no_runtime["status"] == "configured"

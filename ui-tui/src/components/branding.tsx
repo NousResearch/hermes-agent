@@ -209,6 +209,37 @@ const SKELETON_ROWS: readonly (readonly [number, number])[] = [
 const SKILLS_MAX = 8
 const TOOLSETS_MAX = 8
 
+/** One MCP server row, typed as the wire entry ``session.info`` carries. Exported so the render
+ *  can be pinned in a test: the MCP accordion is collapsed by default, so ``SessionPanel`` never
+ *  renders these rows. */
+export function McpServerLine({ s, t }: { s: NonNullable<SessionInfo['mcp_servers']>[number]; t: Theme }) {
+  return (
+    <Text wrap="truncate">
+      <Text color={t.color.muted}>{`  ${s.name} `}</Text>
+      <Text color={t.color.muted}>{`[${s.transport}]`}</Text>
+      <Text color={t.color.muted}>: </Text>
+      {s.connected ? (
+        <Text color={t.color.text}>
+          {s.tools} tool{s.tools === 1 ? '' : 's'}
+        </Text>
+      ) : s.disabled || s.status === 'disabled' ? (
+        <Text color={t.color.muted}>disabled</Text>
+      ) : s.status === 'connecting' ? (
+        <Text color={t.color.warn}>connecting</Text>
+      ) : s.status === 'lazy' ? (
+        // Registered from the schema cache, not spawned yet: its cached tools are callable.
+        <Text color={t.color.text}>
+          {s.tools} tool{s.tools === 1 ? '' : 's'} <Text color={t.color.muted}>(lazy)</Text>
+        </Text>
+      ) : s.status === 'configured' ? (
+        <Text color={t.color.muted}>configured</Text>
+      ) : (
+        <Text color={t.color.error}>failed</Text>
+      )}
+    </Text>
+  )
+}
+
 export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const term = useStdout().stdout?.columns ?? 100
   const cols = Math.max(20, Math.min(term, maxWidth ?? term))
@@ -312,24 +343,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const mcpBody = () => (
     <>
       {(info.mcp_servers ?? []).map(s => (
-        <Text key={s.name} wrap="truncate">
-          <Text color={t.color.muted}>{`  ${s.name} `}</Text>
-          <Text color={t.color.muted}>{`[${s.transport}]`}</Text>
-          <Text color={t.color.muted}>: </Text>
-          {s.connected ? (
-            <Text color={t.color.text}>
-              {s.tools} tool{s.tools === 1 ? '' : 's'}
-            </Text>
-          ) : s.disabled || s.status === 'disabled' ? (
-            <Text color={t.color.muted}>disabled</Text>
-          ) : s.status === 'connecting' ? (
-            <Text color={t.color.warn}>connecting</Text>
-          ) : s.status === 'configured' ? (
-            <Text color={t.color.muted}>configured</Text>
-          ) : (
-            <Text color={t.color.error}>failed</Text>
-          )}
-        </Text>
+        <McpServerLine key={s.name} s={s} t={t} />
       ))}
     </>
   )

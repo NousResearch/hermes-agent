@@ -65,10 +65,26 @@ def _has_configured_mcp_servers() -> bool:
         return True  # conservative: still try discovery in the background; startup can't block
 
 
+def _discovery_registered_servers(status) -> bool:
+    """True when discovery did what was asked of it. A lazy server is registered without ever
+    connecting, and ``-t/--toolsets`` may exclude every configured server on purpose; counting
+    only ``connected`` read both as failed runs and re-armed the retry on every call."""
+    entries = [entry for entry in (status or []) if isinstance(entry, dict)]
+    for entry in entries:
+        if entry.get("connected") or entry.get("status") == "lazy":
+            return True
+    allowed = get_mcp_server_filter()
+    if allowed is not None and entries:
+        # Only a filter that excluded EVERY server; one it named that did not come up is a failure.
+        if not ({str(entry.get("name") or "") for entry in entries} & set(allowed)):
+            return True
+    return False
+
+
 def _any_mcp_connected() -> bool:
     from tools.mcp_tool_discovery import get_mcp_status
 
-    return any(entry.get("connected") for entry in (get_mcp_status() or []))
+    return _discovery_registered_servers(get_mcp_status() or [])
 
 
 def start_background_mcp_discovery(*, logger, thread_name: str) -> None:

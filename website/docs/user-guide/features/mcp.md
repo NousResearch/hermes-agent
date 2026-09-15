@@ -395,6 +395,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `idle_timeout_seconds` | number | Recycle a stdio server after this many seconds without a tool call (`0` = never, default). The server restarts transparently on the next tool call. |
 | `max_lifetime_seconds` | number | Recycle a stdio server after this total age (`0` = never, default). Restarts transparently on next use. |
 | `enabled` | bool | If `false`, Hermes skips the server entirely |
+| `lazy` | bool | Register the server's tools from the on-disk schema cache and spawn it only on the first tool call (default `false`). Until then the banner, `hermes mcp status` and the TUI show it as `lazy` with its cached tool count. Needs one prior live connect to fill the cache; a missing or stale entry connects eagerly instead. |
 | `supports_parallel_tool_calls` | bool | If `true`, tools from this server may run concurrently |
 | `tools` | mapping | Per-server tool filtering and utility policy |
 

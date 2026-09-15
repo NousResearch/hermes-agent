@@ -309,7 +309,7 @@ def _retry_logger():
     )
 
 
-def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict):
+def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict, status: list | None = None):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.config",
@@ -327,7 +327,7 @@ def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict):
         "tools.mcp_tool_discovery",
         types.SimpleNamespace(
             discover_mcp_tools=lambda: calls.__setitem__("mcp", calls["mcp"] + 1),
-            get_mcp_status=lambda: [{"connected": connected}],
+            get_mcp_status=lambda: status if status is not None else [{"connected": connected}],
         ),
     )
 
@@ -440,3 +440,50 @@ def test_prepare_agent_startup_installs_server_filter(monkeypatch, _reset_mcp_se
     monkeypatch.setattr(main_mod, "_command_has_dedicated_mcp_startup", lambda args: True)
     main_mod._prepare_agent_startup(_agent_args(toolsets="terminal,code-mcp"))
     assert mcp_startup.get_mcp_server_filter() == ["terminal", "code-mcp"]
+def _recording_logger(warnings: list):
+    return types.SimpleNamespace(
+        debug=lambda *_a, **_k: None,
+        warning=lambda msg, *a, **_k: warnings.append(msg % a if a else msg),
+    )
+
+
+def _join_discovery_thread():
+    # ``_mcp_discovery_thread`` is keyed per profile home (#67605), not a single thread.
+    for thread in list(mcp_startup._mcp_discovery_thread.values()):
+        thread.join(timeout=5.0)
+
+
+def _configured(*names):
+    return [{"name": n, "connected": False, "status": "configured", "tools": 0} for n in names]
+
+
+@pytest.mark.parametrize(
+    ("status", "server_filter", "succeeded"),
+    [
+        ([{"name": "demo", "connected": False, "status": "lazy", "tools": 3}], None, True),
+        (_configured("linear", "mem0"), "terminal", True),  # -t excluded every server on purpose
+        (_configured("linear", "mem0"), None, False),  # control: nothing came up
+        (_configured("linear", "mem0"), "terminal,linear", False),  # control: a named server did not
+    ],
+    ids=["all-lazy", "filtered-out", "nothing-up", "named-server-missing"],
+)
+def test_a_run_whose_servers_are_lazy_or_filtered_out_is_not_a_failed_run(
+    monkeypatch, _reset_mcp_server_filter, status, server_filter, succeeded,
+):
+    """Only a run that brought up nothing it was asked for may warn and re-arm the #66981 retry.
+
+    A lazy server is up (tools cached, spawned on first use) and ``-t`` may exclude every server
+    on purpose; both read as failed runs and re-ran discovery on every call.
+    """
+    if server_filter is not None:
+        mcp_startup.set_mcp_server_filter(server_filter)
+    _install_retry_stubs(monkeypatch, connected=False, calls={"mcp": 0}, status=status)
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_started", {mcp_startup.hermes_home_key()})
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", {})
+
+    warnings: list = []
+    mcp_startup.start_background_mcp_discovery(logger=_recording_logger(warnings), thread_name="t")
+    _join_discovery_thread()
+
+    assert mcp_startup._any_mcp_connected() is succeeded
+    assert any("retrying discovery thread" in w for w in warnings) is not succeeded

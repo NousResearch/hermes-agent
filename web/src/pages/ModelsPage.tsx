@@ -558,6 +558,7 @@ function AuxiliaryTasksModal({
   onSaved(): void;
   onClose(): void;
 }) {
+  const { t } = useI18n();
   const [picker, setPicker] = useState<PickerTarget | null>(null);
   const [resetBusy, setResetBusy] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
@@ -627,20 +628,20 @@ function AuxiliaryTasksModal({
         </header>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-1">
-          {AUX_TASKS.map((t) => {
-            const cur = aux?.tasks.find((a) => a.task === t.key);
+          {AUX_TASKS.map((task) => {
+            const cur = aux?.tasks.find((a) => a.task === task.key);
             const isAuto =
               !cur || cur.provider === "auto" || !cur.provider;
             return (
               <div
-                key={t.key}
+                key={task.key}
                 className="flex items-center justify-between gap-3 px-3 py-2 border border-border/30 bg-card/50 hover:bg-muted/20 transition-colors"
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2">
-                    <span className="text-xs font-medium">{t.label}</span>
+                    <span className="text-xs font-medium">{task.label}</span>
                     <span className="text-xs text-text-tertiary">
-                      {t.hint}
+                      {task.hint}
                     </span>
                   </div>
                   <div className="text-xs font-mono text-text-secondary truncate">
@@ -652,10 +653,10 @@ function AuxiliaryTasksModal({
                 <Button
                   size="sm"
                   outlined
-                  onClick={() => setPicker({ kind: "aux", task: t.key })}
+                  onClick={() => setPicker({ kind: "aux", task: task.key })}
                   className="h-6 text-xs uppercase"
                 >
-                  Change
+                  {t.models.change}
                 </Button>
               </div>
             );
@@ -711,6 +712,7 @@ function MoaModelsModal({
   onClose(): void;
   onSaved(next: MoaConfigResponse): void;
 }) {
+  const { t } = useI18n();
   const [draft, setDraft] = useState<MoaConfigResponse>(config);
   const [selected, setSelected] = useState(config.default_preset || Object.keys(config.presets)[0] || "default");
   const [newName, setNewName] = useState("");
@@ -877,7 +879,7 @@ function MoaModelsModal({
                   }
                 />
                 <div className="min-w-0 flex-1 truncate font-mono text-xs text-text-secondary">{slotLabel(slot)}</div>
-                <Button size="sm" outlined onClick={() => setPicker({ kind: "reference", index })}>Change</Button>
+                <Button size="sm" outlined onClick={() => setPicker({ kind: "reference", index })}>{t.models.change}</Button>
                 <Button size="sm" ghost disabled={preset.reference_models.length <= 1} onClick={() => updateSelectedPreset((prev) => ({ ...prev, reference_models: prev.reference_models.filter((_, i) => i !== index) }))}>Remove</Button>
               </div>
             ))}
@@ -888,7 +890,7 @@ function MoaModelsModal({
             <div className="text-display text-xs font-medium tracking-wider">Aggregator</div>
             <div className="flex items-center gap-2 border border-border/50 bg-muted/20 px-3 py-2">
               <div className="min-w-0 flex-1 truncate font-mono text-xs text-text-secondary">{slotLabel(preset.aggregator)}</div>
-              <Button size="sm" outlined onClick={() => setPicker({ kind: "aggregator" })}>Change</Button>
+              <Button size="sm" outlined onClick={() => setPicker({ kind: "aggregator" })}>{t.models.change}</Button>
             </div>
           </div>
 
@@ -936,6 +938,7 @@ function ModelSettingsPanel({
   refreshKey: number;
   onSaved(): void;
 }) {
+  const { t } = useI18n();
   const [auxModalOpen, setAuxModalOpen] = useState(false);
   const [moaModalOpen, setMoaModalOpen] = useState(false);
   const [moa, setMoa] = useState<MoaConfigResponse | null>(null);
@@ -1013,7 +1016,7 @@ function ModelSettingsPanel({
             onClick={() => setPicker({ kind: "main" })}
             className="shrink-0 self-start text-xs uppercase sm:self-center"
           >
-            Change
+            {t.models.change}
           </Button>
         </div>
 
@@ -1038,7 +1041,7 @@ function ModelSettingsPanel({
             onClick={() => setAuxModalOpen(true)}
             className="shrink-0 self-start text-xs uppercase sm:self-center"
           >
-            Configure
+            {t.models.configure}
           </Button>
         </div>
 
@@ -1063,7 +1066,7 @@ function ModelSettingsPanel({
             disabled={!moa}
             className="shrink-0 self-start text-xs uppercase sm:self-center"
           >
-            Configure
+            {t.models.configure}
           </Button>
         </div>
 
@@ -1072,7 +1075,7 @@ function ModelSettingsPanel({
             key={`picker-${refreshKey}`}
             loader={api.getModelOptions}
             alwaysGlobal
-            title="Set Main Model"
+            title={t.models.setMainModel}
             onApply={async ({ provider, model, confirmExpensiveModel }) => {
               const result = await applyAssignment({
                 confirmExpensiveModel,

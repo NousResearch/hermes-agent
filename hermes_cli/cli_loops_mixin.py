@@ -419,10 +419,9 @@ class CLILoopsMixin:
             except Exception as exc:
                 _cprint(f"  Steer failed: {exc}")
             else:
-                if accepted:
-                    _cprint(f"  ⏩ Steer queued — arrives after the next tool call: {_preview(payload)}")
-                else:
+                if not accepted:
                     _cprint("  Steer rejected (empty payload).")
+                # accepted: the agent's steer observer renders the transcript line.
         else:
             self._pending_input.put(payload)
             _cprint(f"  No agent running; queued as next turn: {_preview(payload)}")

@@ -586,6 +586,52 @@ def test_idle_sweep_busy_model_resets_clock(tmp_path, monkeypatch, stub_server):
     assert handler.unloaded == []
 
 
+def test_idle_sweep_honours_the_configured_threshold(tmp_path, monkeypatch, stub_server):
+    """The user's TTL governs the eject, not the built-in default: a model idle past a
+    configured 60s unloads long before IDLE_UNLOAD_S would have fired, and a threshold of 0
+    means residency never ends on its own (an explicit eject is then the only exit)."""
+    port, handler = stub_server
+    handler.models = {"data": [{"id": "model-a", "status": {"value": "loaded"}}]}
+    handler.slots = []
+    handler.requests_processing = 0
+    handler.unloaded = []
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    short = LlamaServerSupervisor(tmp_path / "i", tmp_path / "m", port=port, unload_after_idle_s=60)
+    assert short.unload_after_idle_s < short.IDLE_UNLOAD_S      # the premise of this test
+    t0 = 1000.0
+    assert short.sweep_idle(now=t0) == []                 # clock starts
+    assert short.sweep_idle(now=t0 + 59) == []            # before the user's threshold
+    assert short.sweep_idle(now=t0 + 61) == ["model-a"]
+    assert handler.unloaded == ["model-a"]
+
+    handler.unloaded = []
+    off = LlamaServerSupervisor(tmp_path / "i", tmp_path / "m", port=port, unload_after_idle_s=0)
+    assert off.sweep_idle(now=t0) == []
+    assert off.sweep_idle(now=t0 + off.IDLE_UNLOAD_S * 10) == []
+    assert handler.unloaded == []
+
+
+def test_idle_unload_normalisation_and_sweep_cadence(tmp_path, monkeypatch):
+    """Two contracts around a user-supplied TTL: it is either off or long enough to be worth
+    loading for, and the sweeper wakes often enough to honour it (an eject must not land a
+    whole default sweep window after the deadline the user asked for)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime.bootstrap import _sweep_interval
+    from hermes_cli.local_runtime.supervisor import MIN_UNLOAD_AFTER_IDLE_S, normalize_unload_after_idle
+
+    assert normalize_unload_after_idle(0) == 0
+    assert normalize_unload_after_idle(1) == MIN_UNLOAD_AFTER_IDLE_S      # floored, never honoured as-is
+    assert normalize_unload_after_idle(600) == 600
+    assert normalize_unload_after_idle("nonsense") > 0              # unreadable -> the safe default
+
+    for ttl in (MIN_UNLOAD_AFTER_IDLE_S, 60, 300, 900, 7200):
+        assert _sweep_interval(ttl) <= ttl, "a sweep slower than the TTL can never honour it"
+        assert _sweep_interval(ttl) >= 5, "sweeping faster than 5s costs more than it frees"
+
+
 def test_staged_models_requires_every_split_part(tmp_path, monkeypatch):
     """A split GGUF mid-download must NOT count as staged: the picker, the
     catalog's 'downloaded' flag, and the router's model list all read

@@ -540,9 +540,41 @@ def _repair_node_deps_on_current_checkout(
     return bool(print_completion(completion_message))
 
 
+def _update_whatsapp_bridge_dependencies(npm: str, env: dict) -> bool:
+    """Refresh an installed WhatsApp bridge outside gateway runtime."""
+    from hermes_cli.update_cmd import _m
+    from gateway.platforms.whatsapp_common import (
+        record_whatsapp_bridge_dependency_fingerprint,
+        whatsapp_bridge_dependencies_fresh,
+    )
+
+    bridge_dir = _m().PROJECT_ROOT / "scripts" / "whatsapp-bridge"
+    if not (bridge_dir / "node_modules").is_dir():
+        return True
+    if whatsapp_bridge_dependencies_fresh(bridge_dir):
+        return True
+
+    print("→ Updating WhatsApp bridge dependencies...")
+    result = _m()._run_npm_install_deterministic(
+        npm,
+        bridge_dir,
+        extra_args=("--no-fund", "--no-audit", "--prefer-offline", "--progress=false"),
+        capture_output=False,
+        env=env,
+    )
+    if result.returncode != 0:
+        print("  ⚠ WhatsApp bridge npm install failed")
+        return False
+    if not record_whatsapp_bridge_dependency_fingerprint(bridge_dir):
+        print("  ⚠ WhatsApp bridge dependency version stamp could not be written")
+        return False
+    print("  ✓ WhatsApp bridge dependencies installed")
+    return True
+
+
 def _update_node_dependencies() -> list[str]:
-    """Refresh Node deps for ui-tui and web. Returns labels whose npm install failed (empty on
-    success) so the caller reports a partial update instead of ``Update complete!``.
+    """Refresh installed WhatsApp, ui-tui, and web Node deps. Return failed labels so the
+    caller reports a partial update instead of ``Update complete!``.
 
     See #30271.
     """
@@ -574,9 +606,13 @@ def _update_node_dependencies() -> list[str]:
             return ["ui-tui, web workspaces"] if has_workspace else []
         return []
 
-    from hermes_constants import get_default_hermes_root
+    from hermes_constants import get_default_hermes_root, with_hermes_node_path
     # node_modules is shared by every profile on this checkout: one per-checkout cache.
     shared_hermes_root = get_default_hermes_root()
+    nixos_env = with_hermes_node_path(_m()._nixos_build_env())
+    failures: list[str] = []
+    if not _update_whatsapp_bridge_dependencies(npm, nixos_env):
+        failures.append("WhatsApp bridge")
 
     # Best-effort npx cache warm before the lockfile-unchanged early return. Can block
     # ~11s on a cold cache — print first so it doesn't look like a hang.
@@ -589,7 +625,7 @@ def _update_node_dependencies() -> list[str]:
 
     if not _m()._npm_lockfile_changed(shared_hermes_root):
         logger.info("npm lockfile unchanged, skipping npm install")
-        return []
+        return failures
 
     # Root package.json has no deps of its own, so a workspace-scoped install prunes nothing
     # root-only. apps/desktop is deliberately never named: its Electron devDependency has a
@@ -602,9 +638,6 @@ def _update_node_dependencies() -> list[str]:
         # scoped install; apps/desktop stays excluded since it is never named above.
         "--include-workspace-root"]
 
-    from hermes_constants import with_hermes_node_path
-    nixos_env = with_hermes_node_path(_m()._nixos_build_env())
-
     # capture_output=False is deliberate: postinstall scripts print download progress and
     # capturing makes a long download look hung.
     # The chatty npm-deprecation noise during `hermes update` comes from the *desktop* build, not this step;
@@ -614,7 +647,7 @@ def _update_node_dependencies() -> list[str]:
     if result.returncode == 0:
         _record_npm_lockfile_hash(shared_hermes_root)
         print("  ✓ ui-tui, web workspaces installed (desktop skipped)")
-        return []
+        return failures
     print("  ⚠ npm install failed")
     stderr = (result.stderr or "").strip()
     if stderr:
@@ -623,7 +656,8 @@ def _update_node_dependencies() -> list[str]:
     print("  ⚠ Node.js dependency refresh did not complete cleanly; the")
     print("    installation may be in a mixed state (updated code, stale Node")
     print("    deps). Fix npm and re-run `hermes update`.")
-    return ["ui-tui, web workspaces"]
+    failures.append("ui-tui, web workspaces")
+    return failures
 
 
 def _venv_core_imports_healthy() -> tuple[bool, str]:

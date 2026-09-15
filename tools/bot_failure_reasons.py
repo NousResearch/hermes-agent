@@ -11,6 +11,7 @@ provider 401 bodies (e.g. Anthropic) say "invalid, blocked or out of funds".
 from __future__ import annotations
 
 import re
+from typing import Any
 
 # platform-side
 RUNTIME_OFFLINE = "runtime_offline"
@@ -52,6 +53,16 @@ def is_auto_retryable(reason: str) -> bool:
 RETRY_RESUME = "resume"
 RETRY_COMPRESS_THEN_RESUME = "compress_then_resume"
 RETRY_NONE = "none"
+
+
+def transport_failure_reason(proc: Any) -> str:
+    """Typed reason for a failed ``hermes ... -Q`` delivery turn. The CLI writes the provider prose
+    to stdout and only session bookkeeping (plus the typed refusal marker) to stderr, so
+    ``stderr or stdout`` classified the bookkeeping and never opened a retry gate. Both streams are
+    classified; the first typed answer wins."""
+    texts = [text.strip()[-500:] for text in (getattr(proc, "stdout", ""), getattr(proc, "stderr", ""))
+             if text and text.strip()]
+    return next((reason for reason in map(classify_agent_error, texts) if reason != UNKNOWN), UNKNOWN)
 
 
 def retry_action(reason: str) -> str:

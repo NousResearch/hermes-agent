@@ -9,6 +9,7 @@ returns a ``TurnContext`` with only the locals the loop reads back.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import threading
 import time
@@ -582,6 +583,34 @@ def _stage_turn_user_message(
     return user_msg, pending_cli_message
 
 
+# Internal: a re-running caller sets this for the retried process. Opt-in, because the transcript
+# alone cannot tell a re-run from a person sending the same text a second time.
+RESUME_UNANSWERED_TURN_ENV = "HERMES_RESUME_UNANSWERED_TURN"
+_RESUME_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _resume_unanswered_requested() -> bool:
+    return str(os.environ.get(RESUME_UNANSWERED_TURN_ENV, "")).strip().lower() in _RESUME_TRUTHY
+
+
+def _resumes_unanswered_user_turn(messages: List[Any], user_msg: Dict[str, Any]) -> bool:
+    """True when this process was told it re-runs a delivery whose identical, unanswered user row
+    is already the transcript tail: the failed attempt persisted it, and a fresh process has no
+    in-process ``_DB_PERSISTED_MARKER`` to dedup it. A message with a ``platform_message_id`` is
+    never adopted; that id is load-bearing for restart drain-window dedup."""
+    if not _resume_unanswered_requested():
+        return False
+    if user_msg.get("platform_message_id"):
+        return False
+    tail = messages[-1] if messages else None
+    return (
+        isinstance(tail, dict)
+        and tail.get("role") == "user"
+        and tail.get("content") == user_msg.get("content")
+        and bool(user_msg.get("content"))
+    )
+
+
 def _hydrate_from_history(agent: Any, conversation_history: Optional[List[Any]]) -> None:
     """Hydrate process-local state from persisted history on the first resumed turn."""
     if not conversation_history:
@@ -929,8 +958,16 @@ def build_turn_context(
     _hydrate_from_history(agent, conversation_history)
     # Every estimator this turn prices images at the cost learned from this model's real usage.
     bind_image_token_cost(agent)
-    # Append the user message now that close persistence is safe.
-    append_message(messages, user_msg)
+    # Append the user message now that close persistence is safe, unless this turn re-runs one that
+    # died unanswered and its identical row is already the durable tail.
+    if _resumes_unanswered_user_turn(messages, user_msg):
+        # The staged CLI dict is then in no list, and the close path re-appends any staged dict not
+        # in ``messages``: the duplicate, written after the answer (the #43849 replay state).
+        if pending_cli_message is user_msg:
+            agent._pending_cli_user_message = None
+            pending_cli_message = None
+    else:
+        append_message(messages, user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
 

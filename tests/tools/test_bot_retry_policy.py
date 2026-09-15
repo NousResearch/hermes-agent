@@ -215,3 +215,82 @@ def test_run_delivery_no_retry_for_missing_config(monkeypatch, tmp_path):
     )
     assert rc == 1
     assert len(calls) == 1
+
+
+# ── the stream a failed turn actually writes to ──────────────────────────────
+#
+# The CLI splits a failed turn across BOTH streams: provider prose on stdout, session bookkeeping
+# (plus the typed refusal marker) on stderr. The tests above hand the error to stderr and leave
+# stdout empty, which no real run does, so ``stderr or stdout`` looked right while classifying
+# only bookkeeping in production.
+
+# Verbatim shape of a real failed delivery: stderr carries only bookkeeping.
+REAL_STDERR = (
+    'Session 20260908_050239_c0dd40 found but has no messages. Starting fresh.\n'
+    '\nsession_id: 20260908_050239_c0dd40\n'
+)
+REAL_STDOUT_500 = 'API call failed after 3 retries: HTTP 500: server error: upstream overloaded\n'
+REAL_STDOUT_AUTH = 'API call failed: authentication_error\n'
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "attempts"),
+    [
+        (REAL_STDOUT_500, REAL_STDERR, 2),
+        ("This model's maximum context length is 200000 tokens\n", REAL_STDERR, 2),
+        (REAL_STDOUT_AUTH, REAL_STDERR, 1),  # a permanent class never retries
+        ("", "No LLM provider configured\n", 1),  # the typed refusal on stderr still wins
+    ],
+    ids=["server-error-on-stdout", "overflow-on-stdout", "auth-on-stdout", "refusal-on-stderr"],
+)
+def test_run_delivery_classifies_the_stream_that_carries_the_failure(monkeypatch, tmp_path, stdout, stderr, attempts):
+    """The #93091 policy retry never fired for a real provider failure. A retry re-runs the same
+    argv and tells the re-run to adopt the user row the first attempt already persisted."""
+    from tools import bot_mode_dm
+
+    dm = tmp_path / "dm.txt"
+    dm.write_text("hello")
+    calls = []
+
+    def _fake_run(argv, **kwargs):
+        calls.append((list(argv), kwargs.get("env")))
+        if len(calls) == 1:
+            return _Proc(1, stdout=stdout, stderr=stderr)
+        return _Proc(0, stdout="the reply text", stderr=REAL_STDERR)
+
+    monkeypatch.setattr(bot_mode_dm.subprocess, "run", _fake_run)
+    bot_mode_dm._run_delivery(["hermes", "-p", "ops", "chat"], str(dm), stdin_file=False)
+
+    assert len(calls) == attempts
+    if attempts == 2:
+        assert calls[0][0] == calls[1][0], "the retry re-runs the SAME session/argv"
+        first_env, retry_env = calls[0][1], calls[1][1]
+        assert "HERMES_RESUME_UNANSWERED_TURN" not in first_env
+        # The re-run adopts the persisted row, and its env is the delivery's scrubbed env plus
+        # exactly that flag (never the launch process's os.environ).
+        assert retry_env == {**first_env, "HERMES_RESUME_UNANSWERED_TURN": "1"}
+
+
+def test_the_relay_deliver_classifies_the_stream_that_carries_the_failure(home, monkeypatch):
+    """``bot_relay.deliver`` had the same gate: its re-run never fired, and the typed reason it
+    hands back to the sender was always 'unknown'."""
+    flags = []
+
+    def _fake_run(argv, **kwargs):
+        if not _is_hermes_cli(list(argv)):
+            return _Proc(0)
+        flags.append((kwargs.get("env") or {}).get("HERMES_RESUME_UNANSWERED_TURN"))
+        if len(flags) == 1:
+            return _Proc(1, stdout=REAL_STDOUT_500, stderr=REAL_STDERR)
+        return _Proc(0, stdout="recovered reply", stderr=REAL_STDERR)
+
+    monkeypatch.setattr("subprocess.run", _fake_run)
+    out = _deliver({"profile": "ops", "message": "ping"})
+    assert out["result"]["reply"] == "recovered reply"
+    assert flags == [None, "1"]
+
+    # A permanent failure whose prose is on stdout still reaches the sender typed.
+    monkeypatch.setattr("subprocess.run", lambda argv, **_kw: _Proc(0) if not _is_hermes_cli(list(argv))
+                        else _Proc(1, stdout=REAL_STDOUT_AUTH, stderr=REAL_STDERR))
+    out = _deliver({"profile": "ops", "message": "ping"})
+    assert out["error"]["data"]["reason"] == bfr.PROVIDER_AUTH_OR_ACCESS

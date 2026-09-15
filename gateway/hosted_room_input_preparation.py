@@ -244,34 +244,54 @@ def native_preparation_capture(authority, handle):
         def plan(conn):
             require_initialized(conn, db)
             preparation(conn, epoch=epoch, handle=handle)
-            for temporary, reference in zip(staged, references):
+            planned = []
+            for reference in references:
                 path = Path(reference['path'])
-                identity = verified_identity(path if path.exists() else temporary,
-                    reference['sha256'], reference['size'])
+                identity = (verified_identity(path, reference['sha256'], reference['size'])
+                    if path.exists() or path.is_symlink() else None)
                 row = conn.execute("SELECT * FROM input_custody_copies WHERE namespace='native' AND digest=? AND name=?",
                     (reference['sha256'], path.name)).fetchone()
+                state = 'ready' if identity is not None else 'preparing'
                 if row is None:
                     copy_id, generation = uuid.uuid4().hex, 1
                     conn.execute('INSERT INTO input_custody_copies VALUES(?,?,?,?,?,?,?,?,?)',
-                        (copy_id, 'native', path.name, reference['sha256'], reference['size'], generation, 'ready', *identity))
+                        (copy_id, 'native', path.name, reference['sha256'], reference['size'], generation,
+                         state, *(identity or (None, None))))
                 else:
                     copy_id, generation = row['copy_id'], row['generation']
-                    if row['state'] == 'sealed' or row['size'] != reference['size']:
+                    if row['state'] not in {'preparing', 'ready', 'removed'} or row['size'] != reference['size']:
                         raise RuntimeStoreError('input_preparation_busy')
-                    if row['state'] == 'removed' or (row['device'], row['inode']) != identity:
+                    if row['state'] == 'preparing' and (row['device'], row['inode']) != (None, None):
+                        raise RuntimeStoreError('input_preparation_busy')
+                    if row['state'] == 'ready' and identity is not None and (row['device'], row['inode']) != identity:
+                        # An existing replacement is not a new publication generation.
+                        raise RuntimeStoreError('input_preparation_busy')
+                    if row['state'] == 'removed' or (row['state'] == 'ready' and identity is None):
                         if copy_is_held(conn, row, time.time()):
                             raise RuntimeStoreError('input_preparation_busy')
                         generation += 1
-                        conn.execute("UPDATE input_custody_copies SET generation=?,state='ready',device=?,inode=? WHERE copy_id=?",
-                            (generation, *identity, copy_id))
+                        conn.execute('UPDATE input_custody_copies SET generation=?,state=?,device=?,inode=? WHERE copy_id=?',
+                            (generation, state, *(identity or (None, None)), copy_id))
                 conn.execute('INSERT OR IGNORE INTO input_custody_native_items VALUES(?,?,?)',
                     (handle.preparation_id, copy_id, generation))
-        # The intent must commit before publication; a failed second transaction
-        # leaves restart-safe leased collector work, not unowned durable bytes.
-        db._execute_write(plan)
+                planned.append((copy_id, generation, reference))
+            return planned
+        # An absent target is a provisional path reservation, NEVER a staging inode.
+        # Rollback after publication leaves this committed unbound intent collectible.
+        planned = db._execute_write(plan)
         def materialize(conn):
             preparation(conn, epoch=epoch, handle=handle)
             publish()
+            for copy_id, generation, reference in planned:
+                row = conn.execute('SELECT * FROM input_custody_copies WHERE copy_id=?', (copy_id,)).fetchone()
+                if row is None or row['generation'] != generation or row['state'] not in {'preparing', 'ready'}:
+                    raise RuntimeStoreError('input_preparation_busy')
+                identity = verified_identity(Path(reference['path']), reference['sha256'], reference['size'])
+                if row['state'] == 'preparing' and (row['device'], row['inode']) == (None, None):
+                    conn.execute("UPDATE input_custody_copies SET state='ready',device=?,inode=? WHERE copy_id=?",
+                        (*identity, copy_id))
+                elif row['state'] != 'ready' or (row['device'], row['inode']) != identity:
+                    raise RuntimeStoreError('input_preparation_busy')
         db._execute_write(materialize)
     token = _preparation_capture.set(capture)
     try:

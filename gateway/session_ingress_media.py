@@ -92,12 +92,21 @@ def capture_native_media(paths):
         for value in paths:
             _capture_file(Path(value), limit, total, references, staged)
             total = sum(reference['size'] for reference in references)
-        publish = lambda: _publish_native_media(staged, references)
+        # Ownership is per physical target; admission semantics remain per entry.
+        # Keep duplicates in references (and in the byte budget), not in publication.
+        targets = {}
+        for temporary, reference in zip(staged, references):
+            existing = targets.setdefault(reference['path'], (temporary, reference))
+            if existing[1] != reference:
+                raise RuntimeStoreError('invalid_params')
+        unique_staged = [item[0] for item in targets.values()]
+        unique_references = [item[1] for item in targets.values()]
+        publish = lambda: _publish_native_media(unique_staged, unique_references)
         custody = _preparation_capture.get()
         if custody is None:
             publish()
         else:
-            custody(staged, references, publish)
+            custody(unique_staged, unique_references, publish)
     finally:
         for temporary in staged:
             temporary.unlink(missing_ok=True)
@@ -116,6 +125,9 @@ def _publish_native_media(staged, references):
             os.link(temporary, target)
         except FileExistsError:
             restore_native_media([reference])
+        # Drop our private link before subsequent fallible sync/identity handoff.
+        # Unknown surviving hardlinks still make the collector refuse deletion.
+        temporary.unlink()
         for directory in (target.parent, root, root.parent, root.parent.parent, root.parent.parent.parent):
             _sync_directory(directory)
 

@@ -644,6 +644,47 @@ def test_gemini_2x_does_not_embed_image_parts():
     assert "parts" not in fr
 
 
+def test_user_video_url_part_becomes_inline_data():
+    """video_analyze's OpenAI ``video_url`` data URL reaches Gemini as inlineData.
+
+    Before the fix the part was dropped in translation and the model received a
+    text-only prompt, answering "no video attached" with HTTP 200 — a silent miss.
+    """
+    from agent.gemini_native_adapter import build_gemini_request
+
+    video_url = {"type": "video_url", "video_url": {"url": "data:video/mp4;base64,AAAAIGZ0eXA="}}
+    request = build_gemini_request(
+        messages=[{"role": "user", "content": [{"type": "text", "text": "describe"}, video_url]}],
+        model="gemini-3.6-flash",
+    )
+    parts = request["contents"][0]["parts"]
+    assert len(parts) == 2, "video part must survive translation"
+    assert parts[1]["inlineData"]["mimeType"] == "video/mp4"
+    assert parts[1]["inlineData"]["data"]
+
+
+def test_video_not_embedded_in_function_response_parts():
+    """Gemini rejects inlineData videos in functionResponse.parts — tool results stay images-only."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "video_analyze", "arguments": "{}"}}],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "c1",
+            "name": "video_analyze",
+            "content": [{"type": "video_url", "video_url": {"url": "data:video/mp4;base64,AAAA"}}],
+        },
+    ]
+    request = build_gemini_request(messages=messages, model="gemini-3.6-flash", tools=[], tool_choice=None)
+    fr = request["contents"][1]["parts"][0]["functionResponse"]
+    assert "parts" not in fr
+
+
 def test_text_only_tool_result_has_no_parts():
     """Text-only Gemini 3.x tool result does not add empty parts."""
     from agent.gemini_native_adapter import build_gemini_request

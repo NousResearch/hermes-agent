@@ -115,4 +115,15 @@ jobs:
           git add README.md AGENTS.md
           git rm .github/workflows/document-authorized-redteam.yml
           git commit -m "docs(security): document authorized red-team harness"
-          git push origin HEAD:main
+
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            echo "main advanced concurrently; rebasing documentation commit (attempt ${attempt})"
+            git fetch origin main
+            git rebase origin/main
+          done
+
+          echo "unable to push documentation after retries" >&2
+          exit 1

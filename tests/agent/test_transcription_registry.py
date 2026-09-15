@@ -67,10 +67,10 @@ def _reset_registry():
 
 class TestRegistration:
     def test_happy_path(self):
-        p = _FakeProvider(name="openrouter")
+        p = _FakeProvider(name="acme-stt")
         transcription_registry.register_provider(p)
-        assert transcription_registry.get_provider("openrouter") is p
-        assert [r.name for r in transcription_registry.list_providers()] == ["openrouter"]
+        assert transcription_registry.get_provider("acme-stt") is p
+        assert [r.name for r in transcription_registry.list_providers()] == ["acme-stt"]
 
 
 
@@ -82,6 +82,7 @@ class TestRegistration:
             "local_command",
             "groq",
             "openai",
+            "openrouter",
             "mistral",
             "xai",
             "elevenlabs",
@@ -147,13 +148,13 @@ class TestABCContract:
             def list_models(self):
                 return [{"id": "whisper-large-v3-turbo"}, {"id": "whisper-large-v3"}]
 
-        p = WithModels(name="openrouter")
+        p = WithModels(name="acme-stt")
         assert p.default_model() == "whisper-large-v3-turbo"
 
     def test_get_setup_schema_default_minimal(self):
-        p = _FakeProvider(name="openrouter")
+        p = _FakeProvider(name="acme-stt")
         schema = p.get_setup_schema()
-        assert schema["name"] == "Openrouter"
+        assert schema["name"] == "Acme-Stt"
         assert schema["env_vars"] == []
 
 

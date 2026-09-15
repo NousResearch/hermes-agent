@@ -3231,6 +3231,17 @@ def _suggest_closest_key(key: str, candidates: set[str], cutoff: float = 0.6) ->
     return next(iter(difflib.get_close_matches(key, sorted(candidates), n=1, cutoff=cutoff)), None)
 
 
+# Leaf keys the RUNTIME reads (and the tools picker / Voice settings write) that DEFAULT_CONFIG
+# deliberately does NOT seed: a stored value counts as an explicit user pick and disables the
+# category's auto-detect ladder, so seeding one would change behavior for every user. Walking
+# DEFAULT_CONFIG below would otherwise flag these legitimate keys as unknown — the #34067 notice
+# then claims "Hermes may not read it", which is false.
+# Keep in sync with `_SCHEMA_OVERRIDES` in hermes_cli/web_server_config.py.
+_SCHEMA_ONLY_LEAF_KEYS: frozenset[str] = frozenset({
+    "stt.provider",  # tools/transcription_tools.py:_get_provider + tool_backend_helpers.read_selection("stt")
+})
+
+
 def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     """Validate a dotted config-key path against the known schema -> ``(is_known, suggestion)``.
 
@@ -3259,7 +3270,7 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
         rest = ".".join(segments[1:])
         return False, f"{suggestion}.{rest}" if rest else suggestion
 
-    if top in _OPEN_SUBKEY_TOP_LEVEL_KEYS:
+    if top in _OPEN_SUBKEY_TOP_LEVEL_KEYS or key in _SCHEMA_ONLY_LEAF_KEYS:
         return True, None
 
     # Walk DEFAULT_CONFIG: a nested ``platforms`` container or a scalar leaf hit before the path is

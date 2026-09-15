@@ -1074,8 +1074,9 @@ DEFAULT_CONFIG = {
         # Echo the raw transcript of gateway voice messages back as a 🎙️ message.
         "echo_transcripts": True,
         # No seeded "provider": a stored value counts as an explicit user pick; unset = autodetect
-        # ladder. Valid: "local" (faster-whisper) | "groq" | "openai" | "mistral" | "elevenlabs" |
-        # "deepinfra". Global language hint unless a per-provider language overrides it. "en"
+        # ladder. Valid: "local" (faster-whisper) | "groq" | "openai" | "openrouter" | "mistral" |
+        # "elevenlabs" | "deepinfra". Global language hint unless a per-provider language overrides
+        # it. "en"
         # because Whisper auto-detect misreads short/accented clips; "" = auto; or "es", "zh", ...
         "language": "en",
         # Client-side ffmpeg silence trim before cloud upload (local whisper uses VAD): silence
@@ -1122,6 +1123,14 @@ DEFAULT_CONFIG = {
         "deepinfra": {
             "model": "",  # empty = first stt-tagged model from the live catalog
             # optional "base_url" key overrides DEEPINFRA_BASE_URL for STT only
+        },
+        "openrouter": {
+            # OpenRouter multiplexes every vendor, so the model is a vendor-prefixed catalog
+            # slug (vendor/model) — never a native name like "whisper-1". Live list:
+            # curl "https://openrouter.ai/api/v1/models?output_modalities=transcription"
+            "model": "openai/whisper-large-v3",
+            "language": "",  # auto-detect; set "en", "es", ... to force
+            # optional "base_url" key overrides STT_OPENROUTER_BASE_URL for STT only
         },
     },
 

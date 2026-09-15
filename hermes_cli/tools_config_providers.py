@@ -14,6 +14,7 @@ from hermes_cli.colors import Colors, color
 from hermes_cli.config import cfg_get, get_env_value, load_config, save_config, save_env_value
 from hermes_cli.nous_account import format_nous_portal_entitlement_message
 from hermes_cli.nous_subscription import MANAGED_FEATURE_COVERAGE_CATEGORY, NousSubscriptionFeatures
+from tools.transcription_common import OPENROUTER_STT_MODELS
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, fal_key_is_configured
 from utils import base_url_hostname, is_truthy_value
 
@@ -626,6 +627,8 @@ STT_MODEL_CATALOG = {
     "local": ["base", "tiny", "small", "medium", "large-v3"],
     "groq": ["whisper-large-v3-turbo", "whisper-large-v3", "distil-whisper-large-v3-en"],
     "openai": ["whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe"],
+    # Single source for the OpenRouter slugs: tools/transcription_common.OPENROUTER_STT_MODELS.
+    "openrouter": list(OPENROUTER_STT_MODELS),
     "elevenlabs": ["scribe_v2", "scribe_v1"]}
 
 # ElevenLabs historically uses ``model_id`` instead of ``model``.

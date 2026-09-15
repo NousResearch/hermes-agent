@@ -524,11 +524,11 @@ class TestPluginProviderThreading:
 
             @property
             def name(self):
-                return "openrouter"
+                return "acme-stt"
 
             def transcribe(self, file_path, **kw):
                 self.last_call = {"file_path": file_path, "kwargs": dict(kw)}
-                return {"success": True, "transcript": "hi", "provider": "openrouter"}
+                return {"success": True, "transcript": "hi", "provider": "acme-stt"}
 
         provider = _FakeProvider()
         transcription_registry.register_provider(provider)
@@ -542,7 +542,7 @@ class TestPluginProviderThreading:
         _fake_hooks(monkeypatch, [{"prompt": PROMPT, "language": "en"}])
 
         cfg_patch, prov_patch = _dispatch_ctx(
-            {"provider": "openrouter"}, "openrouter",
+            {"provider": "acme-stt"}, "acme-stt",
         )
         with cfg_patch, prov_patch:
             result = transcription_tools.transcribe_audio(audio)
@@ -559,7 +559,7 @@ class TestPluginProviderThreading:
         _no_hooks(monkeypatch)
 
         cfg_patch, prov_patch = _dispatch_ctx(
-            {"provider": "openrouter"}, "openrouter",
+            {"provider": "acme-stt"}, "acme-stt",
         )
         with cfg_patch, prov_patch:
             transcription_tools.transcribe_audio(audio)

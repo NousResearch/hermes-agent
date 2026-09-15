@@ -103,16 +103,16 @@ try:
     if plugin_register == "yes":
         class _FakeProvider(TranscriptionProvider):
             @property
-            def name(self): return "openrouter"
+            def name(self): return "acme-stt"
             def transcribe(self, file_path, **kw):
-                return {"success": True, "transcript": "PLUGIN: openrouter transcript", "provider": "openrouter"}
+                return {"success": True, "transcript": "PLUGIN: acme-stt transcript", "provider": "acme-stt"}
 
         transcription_registry._reset_for_tests()
         transcription_registry.register_provider(_FakeProvider())
     elif plugin_register == "unavailable":
         class _UnavailablePlugin(TranscriptionProvider):
             @property
-            def name(self): return "openrouter"
+            def name(self): return "acme-stt"
             def is_available(self): return False
             def transcribe(self, file_path, **kw):
                 return {"success": True, "transcript": "should not run"}
@@ -247,12 +247,12 @@ SCENARIOS: list[tuple[str, str, dict[str, str], str]] = [
     # Mistral is quarantined → _get_provider returns "none" today, hence no_provider_error.
     ("explicit-mistral-quarantine", "stt:\n  provider: mistral\n", {}, "no"),
     # Unknown name + no plugin → both: no_provider_error
-    ("unknown-no-plugin", "stt:\n  provider: openrouter\n", {}, "no"),
+    ("unknown-no-plugin", "stt:\n  provider: acme-stt\n", {}, "no"),
     # Unknown name + plugin installed → main: no_provider_error, PR: plugin
-    ("plugin-installed", "stt:\n  provider: openrouter\n", {}, "yes"),
+    ("plugin-installed", "stt:\n  provider: acme-stt\n", {}, "yes"),
     # Unknown name + plugin reports unavailable → main: no_provider_error,
     # PR: plugin_unavailable (cleaner envelope, names the plugin)
-    ("plugin-installed-unavailable", "stt:\n  provider: openrouter\n", {}, "unavailable"),
+    ("plugin-installed-unavailable", "stt:\n  provider: acme-stt\n", {}, "unavailable"),
     # Built-in name + plugin tries to shadow → both: built-in
     ("explicit-openai-with-plugin-registered", "stt:\n  provider: openai\n", {}, "yes"),
     # NEW (this PR): stt.providers.<name>: type: command registry.
@@ -266,14 +266,14 @@ SCENARIOS: list[tuple[str, str, dict[str, str], str]] = [
         "no",
     ),
     # NEW (this PR): same name registered as BOTH a command provider and
-    # a plugin under "openrouter". Command must win (config more local
+    # a plugin under "acme-stt". Command must win (config more local
     # than plugin install). The plugin emits "PLUGIN:..." — assertion is
     # that the transcript is "CMD:...", proving command-wins precedence.
     (
         "command-vs-plugin-same-name",
-        _cmd_yaml("openrouter", "CMD: openrouter via command wins"),
+        _cmd_yaml("acme-stt", "CMD: acme-stt via command wins"),
         {},
-        "yes",  # also register a plugin under "openrouter" — must NOT fire
+        "yes",  # also register a plugin under "acme-stt" — must NOT fire
     ),
     # NEW (this PR): built-in name with a command provider declared under
     # it → built-in still wins (built-in elif chain has precedence).

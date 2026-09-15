@@ -200,7 +200,7 @@ voice:
   client_direct: false
 ```
 
-Client-direct wire support: OpenAI (incl. Nous-managed audio), Groq, Mistral, and DeepInfra via the OpenAI-compatible shapes, xAI Grok STT, and ElevenLabs STT + TTS. xAI configured through OAuth stays on the relay (the OAuth bearer refreshes server-side).
+Client-direct wire support: OpenAI (incl. Nous-managed audio), Groq, Mistral, DeepInfra, and OpenRouter via the OpenAI-compatible shapes, xAI Grok STT, and ElevenLabs STT + TTS. xAI configured through OAuth stays on the relay (the OAuth bearer refreshes server-side).
 
 ### Desktop: GPT-Live voice chat mode (full duplex, delegates to Hermes)
 
@@ -469,7 +469,7 @@ stt:
                                     # passes its path to the agent as part of the
                                     # inbound message, useful for custom pipelines
                                     # (diarization, alignment, archival, etc.)
-  provider: "local"                  # "local" (free) | "groq" | "openai" | "mistral" | "xai"
+  provider: "local"                  # "local" (free) | "groq" | "openai" | "openrouter" | "mistral" | "xai"
   local:
     model: "base"                    # tiny, base, small, medium, large-v3
     language: ""                     # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect

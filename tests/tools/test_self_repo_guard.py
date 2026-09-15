@@ -147,6 +147,55 @@ class TestBlocksMutationsInSourceRepo:
         hit, _ = _detect(command, repo, repo)
         assert hit is True
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat <<'EOF' | bash\ngit checkout main\nEOF\n",
+            "cat <<'EOF' | sh\ngit reset --hard\nEOF\n",
+            "cat <<'EOF' | tee f | bash\ngit checkout main\nEOF\n",
+            "cat <<'EOF' | grep -v x | zsh\ngit checkout main\nEOF\n",
+            "cat <<'EOF' | (bash)\ngit checkout main\nEOF\n",
+            "cat <<'EOF' | { bash; }\ngit checkout main\nEOF\n",
+            "cat <<'EOF' | sudo bash\ngit checkout main\nEOF\n",
+            "cat <<'EOF' | env bash\ngit checkout main\nEOF\n",
+            "cat <<'EOF' |& bash\ngit checkout main\nEOF\n",
+            # Pipeline continues on the next line: `|` at end of line or `\` join.
+            "cat <<'EOF' |\nbash\ngit checkout main\nEOF\n",
+            "cat <<'EOF' | \\\nbash\ngit checkout main\nEOF\n",
+            "cat <<'EOF' |\ngrep x |\nbash\ngit checkout main\nEOF\n",
+            "cat <<'EOF' \\\n| bash\ngit checkout main\nEOF\n",
+        ],
+    )
+    def test_heredoc_piped_to_shell_is_executed(self, repo, command):
+        # A pipe after the `<<` opener feeds the body to a shell; the body is code,
+        # not data, and must be scanned like a `bash <<EOF` body.
+        hit, _ = _detect(command, repo, repo)
+        assert hit is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat <<'EOF' | grep x\ngit checkout main\nEOF\n",
+            "cat <<'EOF' | bash -c 'echo hi'\ngit checkout main\nEOF\n",
+            "cat <<'EOF' | bash run.sh\ngit checkout main\nEOF\n",
+            # `&&` / `||` / `;` end the pipeline: a shell there never sees the body.
+            "cat <<'EOF' && bash\ngit checkout main\nEOF\n",
+            "cat <<'EOF' || bash\ngit checkout main\nEOF\n",
+            "cat <<'EOF' ; bash\ngit checkout main\nEOF\n",
+            # A bare `\` join makes the next line's first word an argument, not a
+            # pipeline member; only an explicit `|` later in the chain consumes.
+            "cat <<'EOF' \\\nbash\ngit checkout main\nEOF\n",
+            # Non-shell interpreters stay data (pinned contract).
+            "cat <<'EOF' | python3\ngit checkout main\nEOF\n",
+            "cat <<'EOF' | xargs bash\ngit checkout main\nEOF\n",
+        ],
+    )
+    def test_heredoc_piped_to_non_bare_shell_is_not_executed(self, repo, command):
+        # Non-shell consumers and shells running a visible script leave the body
+        # as data on stdin; the payload is the visible command, already scanned.
+        hit, _ = _detect(command, repo, repo)
+        assert hit is False
+
     def test_tilde_dash_c_path(self, repo, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(repo.parent))
         hit, _ = _detect("git -C ~/hermes-agent checkout main", tmp_path, repo)

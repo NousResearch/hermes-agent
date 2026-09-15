@@ -30035,26 +30035,6 @@
         "title": "SubscriptionUpgradeResult",
         "type": "object"
       },
-      "SudoRequestParams": {
-        "additionalProperties": false,
-        "description": "Original command, redacted server-side before any password-injection rewrite.",
-        "properties": {
-          "session_id": {
-            "title": "Session Id",
-            "type": "string"
-          },
-          "command": {
-            "default": "",
-            "title": "Command",
-            "type": "string"
-          }
-        },
-        "required": [
-          "session_id"
-        ],
-        "title": "SudoRequestParams",
-        "type": "object"
-      },
       "SystemBatteryParams": {
         "additionalProperties": false,
         "properties": {
@@ -31547,7 +31527,7 @@
       },
       "ValueResult": {
         "additionalProperties": false,
-        "description": "The answer to any one-string prompt (sudo, secret, vault prompts, desktop bridges):\n``''`` means skipped / declined.",
+        "description": "The answer to any one-string prompt (secret, vault prompts, desktop bridges):\n``''`` means skipped / declined.",
         "properties": {
           "value": {
             "title": "Value",
@@ -33521,24 +33501,6 @@
           "name": "params",
           "schema": {
             "$ref": "#/components/schemas/SecretRequestParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/ValueResult"
-        }
-      }
-    },
-    {
-      "name": "sudo",
-      "summary": "Masked sudo password for the terminal tool.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/SudoRequestParams"
           }
         }
       ],

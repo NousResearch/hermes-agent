@@ -20,7 +20,7 @@ class ServerRequestParams(Params):
 
 
 class ValueResult(Result):
-    """The answer to any one-string prompt (sudo, secret, vault prompts, desktop bridges):
+    """The answer to any one-string prompt (secret, vault prompts, desktop bridges):
     ``''`` means skipped / declined."""
 
     value: str
@@ -100,16 +100,6 @@ server_request("approval", params=ApprovalRequestParams, result=ApprovalResult,
 
 class EmptyRequestParams(ServerRequestParams):
     pass
-
-
-class SudoRequestParams(ServerRequestParams):
-    """Original command, redacted server-side before any password-injection rewrite."""
-
-    command: str = ""
-
-
-server_request("sudo", params=SudoRequestParams, result=ValueResult,
-               doc="Masked sudo password for the terminal tool.")
 
 
 class SecretRequestParams(ServerRequestParams):

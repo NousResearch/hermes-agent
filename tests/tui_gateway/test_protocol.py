@@ -299,11 +299,11 @@ def test_server_request_round_trip_uses_response_frame(capture):
     from tui_gateway import server_requests
     server, buf = capture
     box = {}
-    thread = threading.Thread(target=lambda: box.__setitem__("r", server._ask("sudo", "s1", {}, timeout=5)), daemon=True)
+    thread = threading.Thread(target=lambda: box.__setitem__("r", server._ask("secret", "s1", {}, timeout=5)), daemon=True)
     thread.start()
     req = _wait_open(server_requests, buf)
     frame = _frames(buf)[-1]
-    assert frame == {"jsonrpc": "2.0", "id": req.id, "method": "sudo", "params": {"session_id": "s1"}}
+    assert frame == {"jsonrpc": "2.0", "id": req.id, "method": "secret", "params": {"session_id": "s1"}}
     assert req.id.startswith("srq-")
 
     assert server.dispatch({"jsonrpc": "2.0", "id": req.id, "result": {"value": "hunter2"}}) is None
@@ -313,7 +313,7 @@ def test_server_request_round_trip_uses_response_frame(capture):
         assert not server_requests._open
 
 
-@pytest.mark.parametrize("method", ["secret", "sudo", "terminal.read", "tour"])
+@pytest.mark.parametrize("method", ["secret", "terminal.read", "tour"])
 def test_server_request_timeout_emits_one_request_cancel(capture, method):
     from tui_gateway import server_requests
     server, buf = capture
@@ -397,17 +397,17 @@ def test_clarify_batch_cancel_all_is_a_response_without_answers(capture):
 def test_clear_pending_cancels_only_that_session(capture):
     from tui_gateway import server_requests
     server, buf = capture
-    a = threading.Thread(target=lambda: server_requests.send("sudo", "sid-a", {}, timeout=None), daemon=True)
-    b = threading.Thread(target=lambda: server_requests.send("sudo", "sid-b", {}, timeout=None), daemon=True)
+    a = threading.Thread(target=lambda: server_requests.send("secret", "sid-a", {}, timeout=None), daemon=True)
+    b = threading.Thread(target=lambda: server_requests.send("secret", "sid-b", {}, timeout=None), daemon=True)
     a.start(); b.start()
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline and len(server_requests._open) < 2:
         time.sleep(0.01)
-    assert server._session_pending_kind("sid-a") == "sudo"
+    assert server._session_pending_kind("sid-a") == "secret"
     server._clear_pending("sid-a")
     a.join(timeout=2)
     assert not a.is_alive() and b.is_alive()
-    assert server._session_pending_kind("sid-a") == "" and server._session_pending_kind("sid-b") == "sudo"
+    assert server._session_pending_kind("sid-a") == "" and server._session_pending_kind("sid-b") == "secret"
     server._clear_pending()
     b.join(timeout=2)
     assert not b.is_alive()

@@ -205,11 +205,6 @@ def _resolve_cwd(cwd: Optional[str | Path]) -> Path:
         return Path(os.getcwd())
 
 
-def _git_root(cwd: Path) -> Optional[Path]:
-    current = cwd.resolve()
-    return next((p for p in (current, *current.parents) if (p / ".git").exists()), None)
-
-
 def _home() -> Optional[Path]:
     try:
         return Path.home().resolve()
@@ -217,16 +212,30 @@ def _home() -> Optional[Path]:
         return None
 
 
+def _workspace_root_skip_dirs() -> tuple[Optional[Path], ...]:
+    """Directories that must never themselves be reported as a workspace root: ``$HOME``
+    and the shared temp root. A stray ``.git`` or manifest sitting directly in one of
+    these (dotfiles repo, leftover debris from an unrelated process) must not flip every
+    session rooted under it into treating that shared directory as "the project"."""
+    try:
+        temp_root = Path(tempfile.gettempdir()).resolve()
+    except Exception:
+        temp_root = None
+    return (_home(), temp_root)
+
+
+def _git_root(cwd: Path) -> Optional[Path]:
+    current = cwd.resolve()
+    skip = _workspace_root_skip_dirs()
+    return next((p for p in (current, *current.parents) if p not in skip and (p / ".git").exists()), None)
+
+
 def _marker_root(cwd: Path) -> Optional[Path]:
     """Nearest ancestor (≤6 levels) that looks like a project root, or ``None``. ``$HOME``
     and the shared temp root are skipped: a Makefile/AGENTS.md in the home dir is global
     config, and a stray manifest in /tmp must not flip every session under it."""
     current = cwd.resolve()
-    try:
-        temp_root = Path(tempfile.gettempdir()).resolve()
-    except Exception:
-        temp_root = None
-    skip = (_home(), temp_root)
+    skip = _workspace_root_skip_dirs()
     for parent in (current, *current.parents)[:7]:
         if parent not in skip and any((parent / marker).exists() for marker in _PROJECT_MARKERS):
             return parent

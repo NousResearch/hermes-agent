@@ -25,7 +25,8 @@ def test_copy_copies_latest_assistant_message():
         {"role": "assistant", "content": "latest"},
     ]
 
-    with patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_copy:
+    with patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_copy, \
+         patch("hermes_cli.clipboard.is_remote_shell_session", return_value=False):
         result = cli_obj.process_command("/copy")
 
     assert result is True
@@ -39,7 +40,8 @@ def test_copy_with_index_uses_requested_assistant_message():
         {"role": "assistant", "content": "two"},
     ]
 
-    with patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_copy:
+    with patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_copy, \
+         patch("hermes_cli.clipboard.is_remote_shell_session", return_value=False):
         cli_obj.process_command("/copy 1")
 
     mock_copy.assert_called_once_with("one")
@@ -54,7 +56,8 @@ def test_copy_strips_reasoning_blocks_before_copy():
         }
     ]
 
-    with patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_copy:
+    with patch("hermes_cli.clipboard.write_clipboard_text", return_value=True) as mock_copy, \
+         patch("hermes_cli.clipboard.is_remote_shell_session", return_value=False):
         cli_obj.process_command("/copy")
 
     mock_copy.assert_called_once_with("Visible answer")

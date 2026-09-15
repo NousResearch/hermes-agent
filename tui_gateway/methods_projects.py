@@ -129,11 +129,14 @@ def _(rid, params, pdb, conn) -> dict:
 
 
 def _non_workspace_dirs() -> set[str]:
-    """Never-a-workspace dirs: ``/``, the user's home, the dir homes live in, plus both POSIX
-    spellings on every host (remote shells hand back Linux paths; promoting one mints a
-    catch-all project)."""
+    """Never-a-workspace dirs: ``/``, the user's home, the dir homes live in, the OS temp
+    root, plus both POSIX spellings on every host (remote shells hand back Linux paths;
+    promoting one mints a catch-all project). The temp root matters because a stray
+    ``.git`` directly under it (however it got there) must never turn the whole temp
+    filesystem into a discovered "project" for every session whose cwd lives under it."""
+    import tempfile
     home = os.path.realpath(os.path.expanduser("~"))
-    candidates = (os.sep, home, os.path.dirname(home), "/home", "/Users")
+    candidates = (os.sep, home, os.path.dirname(home), "/home", "/Users", tempfile.gettempdir())
     return {os.path.normcase(os.path.realpath(path)) for path in candidates if path}
 
 

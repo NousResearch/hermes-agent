@@ -3722,20 +3722,15 @@ export interface ApprovalResult {
   choice: ApprovalChoice
   all?: boolean | null
 }
-/** Original command, redacted server-side before any password-injection rewrite. */
-export interface SudoRequestParams {
-  session_id: string
-  command?: string
-}
-/** The answer to any one-string prompt (sudo, secret, vault prompts, desktop bridges): ``''`` means skipped / declined. */
-export interface ValueResult {
-  value: string
-}
 export interface SecretRequestParams {
   session_id: string
   env_var: string
   prompt: string
   metadata?: Record<string, unknown> | null
+}
+/** The answer to any one-string prompt (secret, vault prompts, desktop bridges): ``''`` means skipped / declined. */
+export interface ValueResult {
+  value: string
 }
 export interface VaultUnlockRequestParams {
   session_id: string
@@ -4838,8 +4833,6 @@ export interface ServerRequestMap {
   'preview.read': { params: ReadRangeRequestParams; result: ValueResult }
   /** Masked value for a named env var (skills / setup flows). */
   secret: { params: SecretRequestParams; result: ValueResult }
-  /** Masked sudo password for the terminal tool. */
-  sudo: { params: SudoRequestParams; result: ValueResult }
   /** Read the visible in-app terminal buffer (JSON text answer). */
   'terminal.read': { params: ReadRangeRequestParams; result: ValueResult }
   /** Drive a guided tour highlight in the desktop renderer. */
@@ -4860,7 +4853,6 @@ export const SERVER_REQUEST_METHODS = [
   'preview.act',
   'preview.read',
   'secret',
-  'sudo',
   'terminal.read',
   'tour',
   'vault.code',

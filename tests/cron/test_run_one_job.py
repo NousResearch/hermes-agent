@@ -127,9 +127,13 @@ def test_run_one_job_delivers_exception_escaping_normal_completion(monkeypatch):
 
     assert s.run_one_job(job) is False
 
-    assert delivered == [
-        ("outer-failure", "⚠️ Cron 'Outer failure' failed: outer boom")
-    ]
+    assert len(delivered) == 1 and delivered[0][0] == "outer-failure"
+    notice = delivered[0][1]
+    assert notice.startswith("⚠️ Cron 'Outer failure' failed: outer boom.")
+    assert "hermes cron runs outer-failure" in notice
+    assert "hermes cron run outer-failure" in notice
+    assert "hermes cron edit outer-failure" in notice
+    assert "hermes cron pause outer-failure" in notice
     assert marked == [
         (("outer-failure", False, "outer boom"), {"delivery_error": None})
     ]

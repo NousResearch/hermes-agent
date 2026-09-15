@@ -2354,7 +2354,7 @@ def save_config(
 
 # load_env() memo keyed on (path, mtime, size). Editing .env bumps mtime -> rebuild;
 # invalidate_env_cache() is the explicit knob for writers on coarse-mtime filesystems.
-_env_cache: Optional[Tuple[Tuple[str, Optional[float], Optional[int]], Dict[str, str]]] = None
+_env_cache: Optional[Tuple[Tuple[str, Optional[int], Optional[int]], Dict[str, str]]] = None
 
 
 def load_env() -> Dict[str, str]:
@@ -2365,7 +2365,7 @@ def load_env() -> Dict[str, str]:
 
     try:
         st = env_path.stat()
-        cache_key = (str(env_path), st.st_mtime, st.st_size)
+        cache_key = (str(env_path), st.st_mtime_ns, st.st_size)
     except FileNotFoundError:
         cache_key = (str(env_path), None, None)
     except Exception:

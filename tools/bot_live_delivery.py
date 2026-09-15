@@ -4,34 +4,147 @@ Adapted from FalconOrtiz's live-owner mailbox (#101564). A single private
 record advances queued -> claimed -> terminal under a process-shared lock.
 Claims never expire: a crashed consumer leaves an inspectable unknown outcome,
 not permission to execute the same input again. Receipts are permanent.
+
+A pinned lease is a destination only while its consumer proves it is still
+consuming: the owner's poll loop renews the lease stamp
+(``hermes_cli.active_sessions.touch_active_session_lease``) and an entry whose
+stamp is older than ``LIVE_CONSUMER_TTL_SECONDS`` is not a live owner, however
+alive its process is. Mail pinned to a lease that is gone is reclaimed by the
+profile's current live owner along the same compression lineage — but only
+after the session store proves the body is not already there, so a reclaim can
+never run the same input twice.
+
+Two lanes share the spool. Mail with a pinned ``owner`` is the live-owner lane
+above. Mail with ``lane == LEASE_QUEUE_LANE`` is a conversation lane: a turn that
+could not out-wait the conversation's session turn lease hands its inbound
+delivery here, pinned to the conversation instead of to a lease (the holder it
+failed to out-wait is exactly the holder it must not name as its own), and the
+next turn admitted on that conversation drains it as its first user message. A
+queue record is never claimable by the live-owner lane and vice versa.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import os
 import re
+import tempfile
 import time
 import uuid
 from contextlib import contextmanager
-
-from utils import atomic_json_write, fsync_directory
 from pathlib import Path
 from typing import Any
 
 from hermes_cli.active_sessions import _FileLock
 
+logger = logging.getLogger(__name__)
+
 DELIVERY_DIR_NAME = "bot_live_delivery"
+QUARANTINE_DIR_NAME = "quarantine"
 _OWNER_KEYS = ("profile_home", "session_id", "lease_id", "live_session_id")
 _TERMINAL = frozenset({"settled", "failed", "cancelled", "ambiguous"})
+# A live consumer renews its lease stamp on every poll tick (writes are throttled inside the
+# registry), so this only has to outlast one long turn in an open pane: the poll loop keeps
+# stamping between turns. Anything older is a consumer that stopped polling. Measured: a leaked
+# dashboard Bot Chat lease whose process stayed alive ~20h held 68 queued peer messages.
+LIVE_CONSUMER_TTL_SECONDS = 900.0
+# A queued record this profile's live consumer can never reach along its compression lineage is
+# terminal after this long instead of sitting silent forever. Reachable records keep their place:
+# an owner may appear later.
+UNREACHABLE_AFTER_SECONDS = 24 * 3600.0
+# Below this length a body substring is too weak a signal to call a message already delivered.
+_SHORTEST_SUBSTRING_BODY = 64
+# Lane tag for mail pinned to a conversation rather than to a live-owner lease (a turn that lost
+# the session turn lease wait). Absent tag + a pinned ``owner`` dict means the live-owner lane.
+LEASE_QUEUE_LANE = "lease_queue"
 
 
-def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None:
+def _is_live_owner_record(record: dict[str, Any]) -> bool:
+    """True when this record belongs to the live-owner lane (pinned to a lease/live pair)."""
+    return isinstance(record.get("owner"), dict)
+
+
+def _next_sequence(root: Path) -> int:
+    """Admission high-water mark across both lanes, allocated under the cross-process lock.
+
+    Wall time can roll back; the stored sequence is what orders mail.
+    """
+    return max((record.get("sequence") or record.get("created_at") or 0
+                for candidate in root.glob("*.json")
+                if (record := _read(candidate)) is not None), default=0) + 1
+
+
+def _now(now: float | None = None) -> float:
+    return time.time() if now is None else float(now)
+
+
+def _stamp(entry: dict[str, Any], key: str) -> float:
+    try:
+        return float(entry.get(key) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _is_live_consumer(entry: dict[str, Any], *, now: float, ttl_seconds: float) -> bool:
+    """True when the entry advertises the mailbox capability and is still being renewed."""
+    meta = entry.get("metadata") or {}
+    if meta.get("bot_live_delivery_consumer") is not True or not meta.get("live_session_id"):
+        return False
+    stamp = max(_stamp(entry, "updated_at"), _stamp(entry, "started_at"))
+    return stamp > 0.0 and now - stamp <= ttl_seconds
+
+
+def _registry_entry(profile_home: Path | str, owner: dict[str, Any]) -> dict[str, Any] | None:
+    """Registry entry for this exact lease/live pair, or None when it is not provably live.
+
+    Strict liveness prunes entries whose process is dead, and an unprovable registry (unreadable,
+    or an owner whose liveness cannot be established) yields None rather than a guess: "could not
+    prove an owner" must never become "this owner is live", or a corpse stays a destination.
+    """
+    from hermes_cli.active_sessions import ActiveSessionRegistryError, active_session_registry_snapshot
+
+    try:
+        entries = active_session_registry_snapshot(
+            registry_home=Path(profile_home).resolve(), strict=True)
+    except ActiveSessionRegistryError:
+        logger.warning("Active-session registry is unprovable; owner is not live", exc_info=True)
+        return None
+    for entry in entries:
+        if entry.get("lease_id") != owner["lease_id"]:
+            continue
+        if ((entry.get("metadata") or {}).get("live_session_id")) != owner["live_session_id"]:
+            continue
+        return entry
+    return None
+
+
+def _owner_is_live_consumer(
+    profile_home: Path | str, owner: dict[str, Any], *,
+    now: float | None = None, ttl_seconds: float = LIVE_CONSUMER_TTL_SECONDS,
+) -> bool:
+    """True when this owner is a registered consumer whose poll loop is still renewing."""
+    entry = _registry_entry(profile_home, owner)
+    if entry is None:
+        return False
+    return _is_live_consumer(entry, now=_now(now), ttl_seconds=ttl_seconds)
+
+
+def find_canonical_live_owner(
+    profile_home: Path | str, *, now: float | None = None,
+    ttl_seconds: float = LIVE_CONSUMER_TTL_SECONDS,
+) -> dict[str, Any] | None:
     """Resolve exact Bot Chat's compression tip without creating/migrating its DB.
 
-    Capability advertisement is mandatory; old Desktop/TUI processes must not
-    receive work they cannot consume. Registry errors propagate, failing closed.
+    Capability advertisement is mandatory AND must be current, and the registry must prove the
+    owner's process is alive (strict liveness prunes dead leases). Old Desktop/TUI processes must
+    not receive work they cannot consume, and neither may a lease whose consumer stopped polling —
+    its process can outlive its poll loop by hours (measured on this fleet: a Bot Chat lease whose
+    last stamp was 14.9h old, still the only capability-advertising entry). An unreadable registry
+    yields None, never a stale owner: the caller then takes the plain transport path, so an
+    unprovable registry degrades to pre-mailbox behaviour instead of stranding mail in a mailbox.
     """
-    from hermes_cli.active_sessions import active_session_registry_snapshot
+    from hermes_cli.active_sessions import ActiveSessionRegistryError, active_session_registry_snapshot
     from hermes_state import SessionDB
 
     home = Path(profile_home).resolve()
@@ -45,11 +158,16 @@ def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None
         db.close()
     if not session_id:
         return None
-    for entry in active_session_registry_snapshot(registry_home=home):
+    try:
+        entries = active_session_registry_snapshot(registry_home=home, strict=True)
+    except ActiveSessionRegistryError:
+        logger.warning("Active-session registry is unprovable; no live owner resolved", exc_info=True)
+        return None
+    stamp = _now(now)
+    for entry in entries:
         meta = entry.get("metadata") or {}
         if (entry["session_id"] == session_id
-                and meta.get("bot_live_delivery_consumer") is True
-                and meta.get("live_session_id")):
+                and _is_live_consumer(entry, now=stamp, ttl_seconds=ttl_seconds)):
             return dict(profile_home=str(home), session_id=session_id,
                         lease_id=entry["lease_id"], live_session_id=meta["live_session_id"])
     return None
@@ -74,14 +192,25 @@ def _root(home: Path | str) -> Path:
     return Path(home).resolve() / "runtime" / DELIVERY_DIR_NAME
 
 
+def _fsync_dir(path: Path) -> None:
+    # Windows cannot open directories with os.open; file fsync still applies.
+    if os.name == "nt":
+        return
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 @contextmanager
 def _locked(home: Path | str):
     root = _root(home)
     root.parent.mkdir(parents=True, exist_ok=True)
     root.mkdir(mode=0o700, exist_ok=True)
     root.chmod(0o700)
-    fsync_directory(root.parent)
-    fsync_directory(root.parent.parent)
+    _fsync_dir(root.parent)
+    _fsync_dir(root.parent.parent)
     lock = root / ".lock"
     fd = os.open(lock, os.O_CREAT | os.O_WRONLY, 0o600)
     os.close(fd)
@@ -90,14 +219,155 @@ def _locked(home: Path | str):
 
 
 def _read(path: Path) -> dict[str, Any] | None:
+    """Return the record, or None when it is absent, unreadable, or not a record.
+
+    A corrupt ``*.json`` is moved to ``<spool>/quarantine/`` instead of raising: one bad byte
+    must not wedge every later pass of the lane, and re-reading it on every sweep would keep
+    the lane noisy forever. The record itself is preserved, never deleted.
+    """
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        record = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
+    except (OSError, ValueError) as exc:  # JSONDecodeError and UnicodeDecodeError are ValueError
+        _quarantine(path, exc)
+        return None
+    if not isinstance(record, dict):
+        _quarantine(path, ValueError("delivery record is not a JSON object"))
+        return None
+    return record
+
+
+def _quarantine(path: Path, exc: BaseException) -> None:
+    target = path.parent / QUARANTINE_DIR_NAME
+    try:
+        target.mkdir(mode=0o700, exist_ok=True)
+        destination = target / path.name
+        if destination.exists():
+            destination = target / f"{path.stem}.{uuid.uuid4().hex[:8]}{path.suffix}"
+        os.replace(path, destination)
+        _fsync_dir(target)
+        logger.warning("Quarantined unreadable delivery record %s: %s", destination.name, exc)
+    except OSError:  # pragma: no cover - defensive: quarantine must never raise into a sweep
+        logger.error("Could not quarantine unreadable delivery record %s", path, exc_info=True)
 
 
 def _write(path: Path, record: dict[str, Any]) -> None:
-    atomic_json_write(path, record, indent=None, sort_keys=True, fsync_dir=True, mode=0o600)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".delivery-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(record, stream, ensure_ascii=False, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        _fsync_dir(path.parent)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def _digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _finish_in_place(
+    root: Path, record: dict[str, Any], *, status: str, reason: str, detail: str = "",
+) -> dict[str, Any]:
+    """Write a terminal receipt under the caller's lock.
+
+    ``complete_delivery`` takes the same lock, so it cannot be used from inside a claim pass.
+    """
+    record.update(status=status, reply="", error="", reason=reason, status_detail=detail,
+                  completed_at=time.time_ns())
+    _write(root / f"{record['delivery_id']}.json", record)
+    logger.info("Delivery %s finished as %s (%s)", record["delivery_id"], status, reason)
+    return record
+
+
+class _LineageIndex:
+    """Compression-tip lookups for one claim pass (memoised; the store is opened at most once)."""
+
+    def __init__(self, home: Path | str) -> None:
+        self._path = Path(home).resolve() / "state.db"
+        self._db = None
+        self._tips: dict[str, str | None] = {}
+
+    def _session_db(self):
+        if self._db is None:
+            from hermes_state import SessionDB
+
+            try:
+                self._db = SessionDB(db_path=self._path, read_only=True)
+            except Exception:
+                logger.warning("Could not open session store for lineage lookup", exc_info=True)
+                self._db = False
+        return self._db or None
+
+    def tip(self, session_id: str) -> str | None:
+        if session_id not in self._tips:
+            db = self._session_db()
+            if db is None:
+                self._tips[session_id] = None
+            else:
+                try:
+                    self._tips[session_id] = db.get_compression_tip(session_id)
+                except Exception:
+                    logger.warning("Could not resolve compression tip of %s", session_id, exc_info=True)
+                    self._tips[session_id] = None
+        return self._tips[session_id]
+
+    def matches(self, record: dict[str, Any], owner: dict[str, str]) -> bool:
+        pinned = str(record["owner"]["session_id"])
+        return pinned == owner["session_id"] or self.tip(pinned) == owner["session_id"]
+
+
+class _StoreBodies:
+    """role=user bodies (with their sha256) of the sessions a reclaim could collide with.
+
+    Read once per claim pass. The instrument is exact sha256 plus a substring fallback, matching
+    the audit that produced this card's numbers (59/59 settled records matched, 0/90 queued):
+    sha256 equality of two bodies IS exact string equality, so the hash is the fast path for the
+    same predicate — it adds no tolerance, and a hit means the bytes are already in the store.
+    """
+
+    def __init__(self, home: Path | str, session_ids: tuple[str, ...]) -> None:
+        self._digests: set[str] = set()
+        self._bodies: list[str] = []
+        state = Path(home).resolve() / "state.db"
+        if not state.is_file():
+            return
+        from hermes_state import SessionDB
+
+        try:
+            db = SessionDB(db_path=state, read_only=True)
+        except Exception:
+            logger.warning("Could not open session store for delivery reclaim", exc_info=True)
+            return
+        try:
+            for session_id in dict.fromkeys(sid for sid in session_ids if sid):
+                try:
+                    rows = db.get_messages(session_id, include_inactive=True, include_compacted=True)
+                except Exception:
+                    logger.warning("Could not read session %s for delivery reclaim", session_id, exc_info=True)
+                    continue
+                for row in rows:
+                    if str(row.get("role") or "") != "user":
+                        continue
+                    body = row.get("content")
+                    if isinstance(body, str) and body.strip():
+                        text = body.strip()
+                        self._digests.add(_digest(text))
+                        self._bodies.append(text)
+        finally:
+            db.close()
+
+    def contains(self, message: Any) -> bool:
+        """True when this body is already in the store, so running it again would duplicate it."""
+        body = message.strip() if isinstance(message, str) else ""
+        if not body:
+            return False
+        if _digest(body) in self._digests:
+            return True
+        return any(len(body) >= _SHORTEST_SUBSTRING_BODY and body in text for text in self._bodies)
 
 
 def deliver_to_live_owner(
@@ -148,23 +418,69 @@ def _matches(home: Path | str, record: dict, owner: dict) -> bool:
 
 
 def claim_pending_delivery(
-    profile_home: Path | str, owner: dict[str, Any],
+    profile_home: Path | str, owner: dict[str, Any], *, now: float | None = None,
 ) -> dict[str, Any] | None:
     """Claim oldest matching input exactly once; caller supplies its current lease.
 
     A lease transfer across compression is accepted only along the original
     stored session's compression chain. A new lease/live session cannot steal it.
     Caller must hold its normal turn-admission guard before invoking this.
+
+    Two lanes keep the spool bounded and honest:
+
+    * Reclaim: a record whose pinned owner is no longer a live consumer (lease released, or
+      its poll loop stopped renewing) is claimable by this profile's current live consumer when
+      the record sits on that consumer's compression lineage. Before such a record is handed
+      over, the session store is checked for its body: mail that already ran is settled in place
+      with an ``already_present`` receipt and never runs again.
+    * Expiry: a queued record this consumer can never reach (a different lineage, its pinned
+      owner gone) becomes ``failed``/``no_live_consumer`` once it is older than
+      ``UNREACHABLE_AFTER_SECONDS`` — an unreachable ask is reported, not left silent. Its body
+      stays in the receipt.
+
+    Only a provably-live consumer may reclaim or expire: an unregistered caller cannot take
+    mail off another lease's hands.
     """
     current = _owner(profile_home, owner)
     if not _root(profile_home).is_dir():
         return None
+    stamp = _now(now)
     with _locked(profile_home) as root:
-        pending = []
+        claimant_is_live = _owner_is_live_consumer(profile_home, current, now=stamp)
+        lineage = _LineageIndex(profile_home)
+        bodies: _StoreBodies | None = None
+        pending: list[dict[str, Any]] = []
         for path in root.glob("*.json"):
             record = _read(path)
-            if record is not None and record["status"] == "queued" and _matches(profile_home, record, current):
+            if record is None or record.get("status") != "queued":
+                continue
+            if not _is_live_owner_record(record):
+                # Conversation-lane mail is claimed by the turn that takes that conversation's
+                # session turn lease, never by a live-owner consumer.
+                continue
+            if _matches(profile_home, record, current):
                 pending.append(record)
+                continue
+            if not claimant_is_live:
+                continue
+            pinned = record["owner"]
+            if not lineage.matches(record, current):
+                created_at = float(record.get("created_at") or 0.0)
+                reachable_by_its_owner = (pinned["lease_id"] == current["lease_id"])
+                if (not reachable_by_its_owner
+                        and stamp - created_at / 1e9 > UNREACHABLE_AFTER_SECONDS):
+                    _finish_in_place(root, record, status="failed", reason="no_live_consumer",
+                                     detail="no_live_consumer")
+                continue
+            if _owner_is_live_consumer(profile_home, pinned, now=stamp):
+                continue  # its owner is still consuming: never steal a live owner's mail
+            if bodies is None:
+                bodies = _StoreBodies(profile_home, (pinned["session_id"], current["session_id"]))
+            if bodies.contains(record.get("message")):
+                _finish_in_place(root, record, status="settled", reason="already_present",
+                                 detail="already_present")
+                continue
+            pending.append(record)
         if not pending:
             return None
         record = min(pending, key=lambda item: (
@@ -174,29 +490,49 @@ def claim_pending_delivery(
         return record
 
 
+def _complete_in_place(
+    root: Path, key: str, *, status: str, reply: str, error: str, reason: str,
+) -> dict[str, Any]:
+    """Terminal-receipt discipline for both lanes: immutable, idempotent, claimed-first."""
+    if status not in _TERMINAL:
+        raise ValueError("invalid terminal delivery status")
+    outcome = dict(status=status, reply=reply, error=error, reason=reason)
+    path = root / f"{key}.json"
+    record = _read(path)
+    if record is None:
+        raise FileNotFoundError(f"delivery not found: {key}")
+    if record["status"] in _TERMINAL:
+        if any(record.get(k) != v for k, v in outcome.items()):
+            raise ValueError("delivery already has a different terminal receipt")
+        return record
+    if record["status"] != "claimed":
+        raise ValueError("delivery must be claimed before completion")
+    record.update(outcome, completed_at=time.time_ns())
+    _write(path, record)
+    return record
+
+
 def complete_delivery(
     profile_home: Path | str, delivery_id: str, *, status: str,
     reply: str = "", error: str = "", reason: str = "",
 ) -> dict[str, Any]:
     """Persist an immutable terminal receipt; duplicate identical completion is safe."""
-    key = _delivery_id(delivery_id)
-    if status not in _TERMINAL:
-        raise ValueError("invalid terminal delivery status")
-    outcome = dict(status=status, reply=reply, error=error, reason=reason)
     with _locked(profile_home) as root:
-        path = root / f"{key}.json"
-        record = _read(path)
-        if record is None:
-            raise FileNotFoundError(f"delivery not found: {key}")
-        if record["status"] in _TERMINAL:
-            if any(record.get(k) != v for k, v in outcome.items()):
-                raise ValueError("delivery already has a different terminal receipt")
-            return record
-        if record["status"] != "claimed":
-            raise ValueError("delivery must be claimed before completion")
-        record.update(outcome, completed_at=time.time_ns())
-        _write(path, record)
-        return record
+        return _complete_in_place(
+            root, _delivery_id(delivery_id), status=status, reply=reply, error=error, reason=reason,
+        )
+
+
+def complete_lease_delivery(
+    profile_home: Path | str, delivery_id: str, *, status: str,
+    reply: str = "", error: str = "", reason: str = "",
+) -> dict[str, Any]:
+    """Persist a conversation-lane terminal receipt (same discipline as ``complete_delivery``)."""
+    with _locked(profile_home) as root:
+        return _complete_in_place(
+            root, _lease_queue_key(delivery_id), status=status, reply=reply, error=error,
+            reason=reason,
+        )
 
 
 #: ENUM B (§4.8): a sender never sees the transport's storage words. The storage layer keeps
@@ -228,3 +564,111 @@ def read_public_delivery_result(profile_home: Path | str, delivery_id: str) -> d
 def read_delivery_result(profile_home: Path | str, delivery_id: str) -> dict[str, Any] | None:
     """Read admission/claim/terminal state without waiting or deleting its receipt."""
     return _read(_root(profile_home) / f"{_delivery_id(delivery_id)}.json")
+
+
+def _lease_queue_key(delivery_id: str) -> str:
+    """Filesystem-safe spool key for a conversation-lane delivery id.
+
+    The live-owner lane hands over canonical hex ids; a turn that loses the lease wait hands over
+    whatever its caller uses (peer receipts, request ids), so a foreign id is digested, never
+    trusted as a path component.
+    """
+    if re.fullmatch(r"[0-9a-f]{32,64}", delivery_id):
+        return delivery_id
+    return _digest(delivery_id)
+
+
+def enqueue_lease_delivery(
+    profile_home: Path | str, *, conversation_id: str, message: str, holder: str = "",
+    author: str | dict[str, Any] | None = None, delivery_id: str | None = None,
+) -> dict[str, Any]:
+    """Spool an inbound turn that lost the session turn lease wait onto its conversation.
+
+    ``holder`` is recorded for inspection only: the point of this lane is that the delivery is
+    pinned to the CONVERSATION, not to a lease, so the next turn admitted on that conversation runs
+    the message instead of the transcript losing it. Re-sending the same ``delivery_id`` with the
+    same payload returns the record unchanged and a terminal record is never reopened, so a peer
+    that retries after delivery cannot make the conversation run the same message twice.
+    """
+    if not isinstance(conversation_id, str) or not conversation_id.strip():
+        raise ValueError("conversation_id must be a non-empty string")
+    if not isinstance(message, str) or not message.strip():
+        raise ValueError("message must be a non-empty string")
+    if author is not None and not isinstance(author, (str, dict)):
+        raise ValueError("author must be a string, a dict, or None")
+    record_id = str(delivery_id).strip() if delivery_id else uuid.uuid4().hex
+    if not record_id:
+        raise ValueError("delivery_id must be a non-empty string when given")
+    pinned_author = author.strip() if isinstance(author, str) else author
+    if not pinned_author:
+        pinned_author = None
+    with _locked(profile_home) as root:
+        path = root / f"{_lease_queue_key(record_id)}.json"
+        existing = _read(path)
+        if existing is not None:
+            if (
+                existing.get("lane") != LEASE_QUEUE_LANE
+                or existing.get("conversation_id") != conversation_id
+                or existing.get("message") != message
+                or existing.get("author") != pinned_author
+            ):
+                raise ValueError("delivery id already belongs to a different payload")
+            return existing
+        record: dict[str, Any] = {
+            "delivery_id": record_id,
+            "id": record_id,
+            "lane": LEASE_QUEUE_LANE,
+            "conversation_id": conversation_id,
+            "holder": str(holder or ""),
+            "message": message,
+            "status": "queued",
+            "created_at": time.time_ns(),
+            "sequence": _next_sequence(root),
+        }
+        if pinned_author is not None:
+            record["author"] = pinned_author
+        _write(path, record)
+        return record
+
+
+def read_lease_delivery(profile_home: Path | str, delivery_id: str) -> dict[str, Any] | None:
+    """Read a conversation-lane record's state without consuming it (receipt inspection)."""
+    return _read(_root(profile_home) / f"{_lease_queue_key(delivery_id)}.json")
+
+
+def claim_lease_delivery(
+    profile_home: Path | str, *, conversation_id: str,
+) -> dict[str, Any] | None:
+    """Claim this conversation's oldest queued lease delivery, exactly once.
+
+    The claimant (a turn that just took the conversation's session turn lease) owns the body from
+    here: the record is marked claimed and stays inspectable, so a crash mid-turn leaves a receipt
+    of an unknown outcome rather than a message that runs twice. ``complete_delivery`` closes it
+    once the body has been handed to the turn.
+    """
+    if not isinstance(conversation_id, str) or not conversation_id.strip():
+        raise ValueError("conversation_id must be a non-empty string")
+    if not _root(profile_home).is_dir():
+        # Nothing spooled for this profile: never create a store just to look in it.
+        return None
+    with _locked(profile_home) as root:
+        candidates: list[tuple[float, str, dict[str, Any]]] = []
+        for path in root.glob("*.json"):
+            record = _read(path)
+            if record is None or record.get("status") != "queued":
+                continue
+            if record.get("lane") != LEASE_QUEUE_LANE:
+                continue
+            if record.get("conversation_id") != conversation_id:
+                continue
+            candidates.append((
+                record.get("sequence") or record.get("created_at") or 0.0,
+                str(record.get("delivery_id") or path.name),
+                record,
+            ))
+        if not candidates:
+            return None
+        _, _, record = min(candidates, key=lambda item: (item[0], item[1]))
+        record.update(status="claimed", claimed_at=time.time_ns())
+        _write(root / f"{_lease_queue_key(str(record['delivery_id']))}.json", record)
+        return record

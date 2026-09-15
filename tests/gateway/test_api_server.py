@@ -1462,6 +1462,105 @@ class TestResponsesEndpoint:
             assert data["output"][0]["content"][0]["type"] == "output_text"
             assert data["output"][0]["content"][0]["text"] == "Paris is the capital of France."
 
+    @pytest.mark.asyncio
+    async def test_response_completed_carries_turn_transcript(self, adapter):
+        """response.completed (Responses surface) must carry the authoritative
+        per-turn transcript so SSE clients can reconcile intermediate
+        assistant/tool segments lost from live deltas. Mirrors run.completed on
+        the chat surface (refs #34703). Refs #105886."""
+        import json as _json
+        from gateway.platforms.api_server_openai_routes import _ResponsesStream
+
+        result = {
+            "final_response": "Here is the summary.",
+            "messages": [
+                {"role": "user", "content": "search then summarize"},
+                {
+                    "role": "assistant",
+                    "content": "Let me search for that:",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "web_search", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "content": "results",
+                 "tool_call_id": "call_1", "tool_name": "web_search"},
+                {"role": "assistant", "content": "Here is the summary."},
+            ],
+        }
+
+        response = MagicMock()
+        captured = []
+
+        async def _capture_write(payload):
+            captured.append(payload)
+
+        response.write = _capture_write
+
+        stream = _ResponsesStream(
+            adapter, response, response_id="resp_test", model="hermes-agent", created_at=0,
+            conversation_history=[], user_message="search then summarize",
+            instructions=None, conversation=None, store=False, session_id="s1")
+        stream.result = result
+        stream.final_response_text = "Here is the summary."
+
+        await stream.emit_completed()
+
+        assert captured, "emit_completed must write the response.completed event"
+        frame = captured[-1]
+        text = frame.decode() if isinstance(frame, (bytes, bytearray)) else frame
+        assert "response.completed" in text
+        payload = _json.loads(text.split("data: ", 1)[1].split("\n", 1)[0])
+        messages = payload.get("messages")
+        assert isinstance(messages, list) and messages, \
+            "response.completed must carry the authoritative per-turn transcript (refs #105886)"
+        assert [m.get("role") for m in messages] == ["assistant", "tool", "assistant"]
+        assert messages[0]["content"] == "Let me search for that:"
+        assert messages[1]["tool_call_id"] == "call_1"
+        assert messages[2]["content"] == "Here is the summary."
+
+    @pytest.mark.asyncio
+    async def test_response_completed_skips_malformed_transcript_rows_without_split_brain(self, adapter):
+        """Additive projection errors must not turn a persisted completed response into SSE failed."""
+        import json as _json
+        from gateway.platforms.api_server_openai_routes import _ResponsesStream
+
+        response = MagicMock()
+        captured = []
+
+        async def _capture_write(payload):
+            captured.append(payload)
+
+        response.write = _capture_write
+        stream = _ResponsesStream(
+            adapter, response, response_id="resp_malformed", model="hermes-agent", created_at=0,
+            conversation_history=[], user_message="hello", instructions=None, conversation=None,
+            store=True, session_id="s1")
+        stream.result = {
+            "final_response": "done",
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {"role": [], "content": "plugin-mutated malformed row"},
+                {"role": "assistant", "content": {"not-json"}},
+                {"role": "assistant", "content": "done"},
+            ],
+        }
+        stream.final_response_text = "done"
+
+        await stream.emit_completed()
+
+        frames = [
+            _json.loads((f.decode() if isinstance(f, bytes) else f).split("data: ", 1)[1].split("\n", 1)[0])
+            for f in captured
+        ]
+        assert [frame["type"] for frame in frames] == ["response.completed"]
+        assert frames[0]["messages"] == [{"role": "assistant", "content": "done"}]
+        stored = adapter._response_store.get("resp_malformed")
+        assert stored["response"]["status"] == "completed"
+
 
     @pytest.mark.asyncio
     async def test_previous_response_id_stores_compressed_transcript_directly(self, adapter):

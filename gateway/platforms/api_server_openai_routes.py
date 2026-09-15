@@ -357,6 +357,10 @@ class _ResponsesStream:
     async def emit_completed(self) -> None:
         env = self.terminal_envelope("completed", self._final_items())
         result = self.result
+        # Projection is additive client metadata. Compute it before persisting the terminal
+        # snapshot so a future regression can never split GET=completed from SSE=failed.
+        turn_messages = self.adapter._turn_transcript_messages(
+            self.conversation_history, self.user_message, result)
         full_history = self.adapter._build_response_conversation_history(
             self.conversation_history, self.user_message, result, self.final_response_text)
         # Transcript substitution for result["_compressed"] happens in the history builder; only
@@ -365,8 +369,12 @@ class _ResponsesStream:
         self.persist_snapshot(
             env, history=full_history, session_id=sid if isinstance(sid, str) and sid else None)
         self.terminal_snapshot_persisted = True
-        await self.write_event(
-            "response.completed", {"type": "response.completed", "response": env})
+        # Attach the authoritative per-turn transcript so a client that consumed
+        # streaming deltas can reconcile intermediate assistant/tool segments
+        # that preceded tool calls without a separate GET /messages round-trip.
+        # Purely additive; mirrors run.completed on the chat surface (refs #34703).
+        await self.write_event("response.completed", {
+            "type": "response.completed", "response": env, "messages": turn_messages})
 
     async def emit_crash(self, exc: BaseException) -> None:
         error = self._api._redact_api_error_text(exc, limit=500)
@@ -1011,11 +1019,22 @@ class OpenAICompatRoutesMixin:
         start = cls._response_messages_turn_start_index(conversation_history, user_message, result)
         out: List[Dict[str, Any]] = []
         for msg in agent_messages[start:]:
-            if not isinstance(msg, dict) or msg.get("role") not in {"assistant", "tool"}:
+            if not isinstance(msg, dict):
                 continue
-            # _message_response projects compaction scaffolding; pure handoffs are "hidden".
-            projected = cls._message_response(msg)
-            if projected.get("display_kind") != "hidden":
+            role = msg.get("role")
+            if not isinstance(role, str) or role not in {"assistant", "tool"}:
+                continue
+            # Projection is additive terminal metadata: one malformed plugin-mutated row must not
+            # turn a successful agent run into a failed terminal event.
+            try:
+                projected = cls._message_response(msg)
+                # Validate the exact wire shape here, not later in the terminal SSE encoder: nested
+                # plugin-mutated values can survive projection but still be non-JSON-serializable.
+                json.dumps(projected)
+            except (TypeError, ValueError):
+                logger.debug("Skipping malformed per-turn transcript row", exc_info=True)
+                continue
+            if isinstance(projected, dict) and projected.get("display_kind") != "hidden":
                 out.append(projected)
         return out
 

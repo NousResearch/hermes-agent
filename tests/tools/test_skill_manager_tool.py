@@ -511,7 +511,7 @@ class TestSkillManageDispatcher:
         bump_patch.assert_not_called()
 
 
-    def test_background_review_delete_refuses_bundled_even_with_absorbed_into(self, tmp_path):
+    def test_background_review_delete_refuses_bundled_when_prune_builtins_off(self, tmp_path):
         from tools.skill_provenance import (
             BACKGROUND_REVIEW,
             reset_current_write_origin,
@@ -523,6 +523,7 @@ class TestSkillManageDispatcher:
             with _skill_dir(tmp_path), \
                  patch("tools.skill_usage.is_protected_builtin", return_value=False), \
                  patch("tools.skill_usage.is_hub_installed", return_value=False), \
+                 patch("tools.skill_usage._prune_builtins_enabled", return_value=False), \
                  patch("tools.skill_usage.is_bundled",
                        side_effect=lambda skill_name: skill_name == "bundled"):
                 skill_manage(action="create", name="umbrella", content=VALID_SKILL_CONTENT)
@@ -1191,3 +1192,61 @@ class TestCuratorConsolidationDeleteGuard:
             assert allowed["success"] is True, allowed
 
         _reset_background_review_read_marks()
+
+
+class TestPruneBuiltinsToolSurface:
+    """prune_builtins ships default-ON and the consolidation prompt invites the
+    LLM pass to archive stale built-ins — but the write guards refused every
+    bundled write without consulting the config, so the feature could never
+    execute (dead on arrival). The guards must honor the same
+    ``skill_usage._prune_builtins_enabled`` the deterministic staleness pass
+    reads. Scope: delete (archive) only — patches to bundled skills stay
+    refused; non-bundled bare prunes stay refused.
+    """
+
+    def test_bundled_prune_allowed_when_prune_builtins_on(self, tmp_path, monkeypatch):
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root, \
+             patch("tools.skill_usage.is_bundled",
+                   side_effect=lambda n: n == "stale-builtin"), \
+             patch("tools.skill_usage._prune_builtins_enabled", return_value=True):
+            _create_curator_skill("stale-builtin", _skill_content("stale-builtin"))
+            result = _delete_skill("stale-builtin", absorbed_into="")
+        assert result["success"] is True, result
+        # Archived (recoverable), not rmtree'd, not left active.
+        assert not (skills_root / "stale-builtin").exists()
+
+    def test_bundled_prune_refused_when_prune_builtins_off(self, tmp_path, monkeypatch):
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root, \
+             patch("tools.skill_usage.is_bundled",
+                   side_effect=lambda n: n == "stale-builtin"), \
+             patch("tools.skill_usage._prune_builtins_enabled", return_value=False):
+            _create_curator_skill("stale-builtin", _skill_content("stale-builtin"))
+            result = _delete_skill("stale-builtin", absorbed_into="")
+        assert result["success"] is False
+        assert "bundled" in result["error"].lower()
+        assert (skills_root / "stale-builtin").exists()
+
+    def test_bundled_patch_still_refused_when_prune_builtins_on(self, tmp_path, monkeypatch):
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch), \
+             patch("tools.skill_usage.is_bundled",
+                   side_effect=lambda n: n == "stale-builtin"), \
+             patch("tools.skill_usage._prune_builtins_enabled", return_value=True):
+            _create_curator_skill("stale-builtin", _skill_content("stale-builtin"))
+            result = json.loads(skill_manage(
+                action="patch",
+                name="stale-builtin",
+                old_string="Step 1: Do the thing.",
+                new_string="Step 1: Do the other thing.",
+            ))
+        assert result["success"] is False
+        assert "bundled" in result["error"].lower()
+
+    def test_agent_skill_bare_prune_still_refused_when_prune_builtins_on(self, tmp_path, monkeypatch):
+        with _curator_pass(tmp_path, monkeypatch=monkeypatch) as skills_root, \
+             patch("tools.skill_usage.is_bundled", return_value=False), \
+             patch("tools.skill_usage._prune_builtins_enabled", return_value=True):
+            _create_curator_skill("active-skill", VALID_SKILL_CONTENT)
+            result = _delete_skill("active-skill", absorbed_into="")
+        assert result["success"] is False
+        assert result.get("_fail_closed") is True
+        assert (skills_root / "active-skill").exists()

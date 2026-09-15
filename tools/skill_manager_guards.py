@@ -188,6 +188,14 @@ def _background_review_write_guard(
             (skill_usage.is_hub_installed, "hub-installed"),
             (skill_usage.is_bundled, "bundled")):
             if predicate(name):
+                if (label == "bundled" and action == "delete"
+                        and skill_usage._prune_builtins_enabled()):
+                    # prune_builtins mode (default ON): the consolidation pass
+                    # MAY archive stale built-ins — the deterministic path
+                    # already treats them as managed for exactly this. Archive
+                    # scope only: every other action stays refused above, and
+                    # the consolidation delete guard still audits the delete.
+                    return None
                 return _refusal(f"{refuse} {label} skill '{name}'.")
         # Not curator-managed (no `created_by: "agent"`) => user-owned. A MISSING
         # record and an explicit `created_by: null` must resolve IDENTICALLY (keying
@@ -252,6 +260,14 @@ def _curator_consolidation_delete_guard(
     """
     if not _is_background_review() or (isinstance(absorbed_into, str) and absorbed_into.strip()):
         return None
+    # prune_builtins mode (default ON) explicitly invites archiving stale
+    # built-ins with no umbrella target — without this carve-out the advertised
+    # feature is refused by construction. Agent-created sediment still fails
+    # closed (#29912); the deterministic staleness pass owns time-based pruning.
+    with suppress(Exception):
+        from tools import skill_usage
+        if skill_usage._prune_builtins_enabled() and skill_usage.is_bundled(name):
+            return None
     return _refusal(
         f"Refusing background curator delete of skill '{name}': the consolidation pass may only "
         f"archive a skill it has absorbed into an umbrella. Pass absorbed_into=<umbrella> (the "

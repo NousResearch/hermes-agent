@@ -403,8 +403,15 @@ def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, st
         }))
         return 1
     # Re-emit the transport's streams: stdout is the reply text the
-    # completion notification carries back to the sending agent.
-    for stream, text in ((sys.stdout, proc.stdout), (sys.stderr, proc.stderr)):
+    # completion notification carries back to the sending agent. A successful bare
+    # silence marker is a delivery decision (same rule as the gateway and the live
+    # Bot Chat completion): the turn stays in the target's transcript, the sender
+    # never sees the marker as prose.
+    from gateway.response_filters import is_intentional_silence_response
+    reply = proc.stdout or ""
+    if proc.returncode == 0 and is_intentional_silence_response(reply):
+        reply = ""
+    for stream, text in ((sys.stdout, reply), (sys.stderr, proc.stderr)):
         if text:
             stream.write(text)
             stream.flush()

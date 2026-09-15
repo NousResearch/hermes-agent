@@ -108,38 +108,19 @@ def test_deliver_requires_params(home):
     assert "error" in err
 
 
-@pytest.mark.parametrize("reply", [
-    "NO_REPLY", " [silent] ", "silent", "no reply", "*NO_REPLY*",
-])
-def test_deliver_suppresses_successful_silence_markers(home, monkeypatch, reply):
-    """A successful subprocess relay never returns a bare silence marker to Bot Mode."""
+def test_deliver_relays_empty_reply_for_a_bare_silence_marker(home, monkeypatch):
+    """#110782: the subprocess transport applies the gateway's silence rule — a bare marker
+    relays as "", prose that merely mentions one is relayed verbatim."""
     class _Proc:
-        returncode = 0
-        stdout = reply
-        stderr = ""
+        returncode, stderr = 0, ""
+        stdout = " *NO_REPLY* "
 
-    monkeypatch.setattr("subprocess.run", lambda *_args, **_kwargs: _Proc())
+    monkeypatch.setattr("subprocess.run", lambda *_a, **_k: _Proc())
+    assert _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping"}))["reply"] == ""
 
+    _Proc.stdout = "The NO_REPLY marker means do not answer."
     out = _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping"}))
-
-    assert out["reply"] == ""
-
-
-@pytest.mark.parametrize("reply", [
-    "The NO_REPLY marker means do not answer.",
-    "[SILENT] is mentioned here, but this is a real answer.",
-])
-def test_deliver_keeps_substantive_marker_mentions(home, monkeypatch, reply):
-    class _Proc:
-        returncode = 0
-        stdout = reply
-        stderr = ""
-
-    monkeypatch.setattr("subprocess.run", lambda *_args, **_kwargs: _Proc())
-
-    out = _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping"}))
-
-    assert out["reply"] == reply
+    assert out["reply"] == _Proc.stdout.strip()
 
 
 def test_deliver_lands_in_live_bot_chat_instead_of_subprocess(home, monkeypatch):

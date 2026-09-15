@@ -593,6 +593,22 @@ def test_delivery_runner_surfaces_live_owner_refusal(tmp_path, capsys):
     assert "NOT delivered" in payload["error"]
 
 
+def test_local_turn_reemits_empty_stdout_for_a_bare_silence_marker(tmp_path, capsys):
+    """#110782: the one-shot ``hermes chat -c "Bot Chat"`` transport applies the gateway's
+    silence rule — a successful bare marker reaches the sender as "", prose stays verbatim."""
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("thanks, bye", encoding="utf-8")
+    child = tmp_path / "quiet.py"
+    child.write_text("import sys\nprint(sys.argv[1])\n", encoding="utf-8")
+
+    assert bot_mode_dm._run_local_turn([sys.executable, str(child), "NO_REPLY"], str(dm_file)) == 0
+    assert capsys.readouterr().out == ""
+
+    prose = "The NO_REPLY marker means do not answer."
+    assert bot_mode_dm._run_local_turn([sys.executable, str(child), prose], str(dm_file)) == 0
+    assert capsys.readouterr().out.strip() == prose
+
+
 def test_query_file_delivery_closes_stdin_for_initial_attempt_and_retry(
     tmp_path, monkeypatch
 ):

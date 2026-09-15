@@ -29,9 +29,15 @@ def _bot_mode_delivery_text(response: Any, *, successful: bool) -> Any:
 
 
 def _is_bot_mode_session(session: dict) -> bool:
-    """Whether this completion belongs to the canonical Bot Chat surface."""
+    """Whether this completion belongs to the canonical Bot Chat surface.
+
+    Same resolution as the system-prompt gate: the agent's title hint first (the DB
+    title lands after turn 1 and ``pending_title`` is cleared once it does), then the
+    live title from the session store.
+    """
     from tools.bot_mode_probe import BOT_CHAT_TITLE
-    return any(session.get(field) == BOT_CHAT_TITLE for field in ("pending_title", "title"))
+    hint = str(getattr(session.get("agent"), "_session_title_hint", "") or "").strip()
+    return (hint or _session_live_title(session, _session_lookup_key(session))) == BOT_CHAT_TITLE
 
 
 def _hook_failure(what: str, exc: BaseException) -> None:

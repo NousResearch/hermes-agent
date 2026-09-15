@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $activeProfile } from '@/store/profile'
 import { $connection } from '@/store/session'
+import { $settingsOwner } from '@/store/settings-scope'
 import { stubResizeObserver } from '@/test/jsdom'
 
 import { envVar } from './test-utils'
@@ -65,7 +66,7 @@ describe('KeysSettings', () => {
     // owner, including its gateway.
     await renderKeysSettings('tools')
 
-    await waitFor(() => expect(getEnvVars).toHaveBeenCalledWith({ connectionId: 'local', profile: 'default' }))
+    await waitFor(() => expect(getEnvVars).toHaveBeenCalledWith($settingsOwner.get()))
   })
 
   it('lists tools and excludes settings / channel-managed credentials', async () => {
@@ -154,7 +155,7 @@ describe('KeysSettings', () => {
       )
 
       expect(await screen.findByText('WIDGET')).toBeTruthy()
-      await waitFor(() => expect(getEnvVars).toHaveBeenCalledWith({ connectionId: 'local', profile: 'profile-b' }))
+      await waitFor(() => expect(getEnvVars).toHaveBeenCalledWith($settingsOwner.get()))
 
       // Open the field and type a value without saving it.
       fireEvent.focus(container.querySelector('input[readonly]') as HTMLInputElement)
@@ -170,7 +171,7 @@ describe('KeysSettings', () => {
       await act(async () => {
         $settingsScopeOverride.set('profile-c')
       })
-      await waitFor(() => expect(getEnvVars).toHaveBeenCalledWith({ connectionId: 'local', profile: 'profile-c' }))
+      await waitFor(() => expect(getEnvVars).toHaveBeenCalledWith($settingsOwner.get()))
 
       // The draft belonged to the previous target: it is gone, and so is the
       // Save control that would have dispatched it — no path is left that can

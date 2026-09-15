@@ -282,6 +282,75 @@ class TestListNavigation:
         assert entry["base_url"] == "https://a.example.com"
         assert set(entry["models"].keys()) == {"foo", "bar"}
 
+    def test_numeric_segment_into_missing_container_is_refused(self, _isolated_hermes_home, capsys):
+        """A numeric segment must never silently create a dict-with-'0'-keys.
+
+        Repro: ``moa.presets.default.reference_models`` does not exist yet, so every
+        intermediate mapping is created on demand. ``_set_nested`` used to create the
+        LAST one as a plain dict too and store the index as the literal string key
+        ``"0"``. The write reported success, but ``moa_config._reference_slots`` only
+        accepts a list -- a mapping is wrapped as ONE slot, so the whole preset
+        silently degraded back to the built-in default model. Fail loudly instead.
+        """
+        self._write_config(_isolated_hermes_home, "moa:\n  presets: {}\n")
+
+        with pytest.raises(SystemExit):
+            set_config_value("moa.presets.default.reference_models.0.model", "gpt-5.6-sol-900k")
+        assert "numeric index" in capsys.readouterr().err
+
+        # The refused write must leave the file untouched -- no phantom "0" key.
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["moa"]["presets"] == {}
+
+    def test_numeric_segment_into_empty_mapping_is_refused(self, _isolated_hermes_home, capsys):
+        """An existing EMPTY mapping must not absorb a numeric index as a string key."""
+        self._write_config(_isolated_hermes_home, (
+            "custom_providers: {}\n"
+        ))
+
+        with pytest.raises(SystemExit):
+            set_config_value("custom_providers.0.api_key", "new-a")
+        assert "numeric index" in capsys.readouterr().err
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["custom_providers"] == {}
+
+    def test_numeric_segment_out_of_range_reports_cleanly(self, _isolated_hermes_home, capsys):
+        """An out-of-range index must be a clean CLI error, not an IndexError traceback."""
+        self._write_config(_isolated_hermes_home, (
+            "custom_providers:\n"
+            "- name: provider-a\n"
+            "  api_key: old-a\n"
+        ))
+
+        with pytest.raises(SystemExit):
+            set_config_value("custom_providers.5.api_key", "new")
+        assert "out of range" in capsys.readouterr().err
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["custom_providers"] == [{"name": "provider-a", "api_key": "old-a"}]
+
+    def test_whole_list_write_via_json_value_succeeds(self, _isolated_hermes_home):
+        """The documented replacement for an indexed write: pass the whole list as JSON.
+
+        This is the path the refusal message points users at, so it must actually work
+        and produce a real YAML list (not a string, not a mapping).
+        """
+        self._write_config(_isolated_hermes_home, "moa:\n  presets: {}\n")
+
+        set_config_value(
+            "moa.presets.default.reference_models",
+            '[{"provider": "openai-codex", "model": "gpt-5.6-sol-900k"}]')
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        refs = reloaded["moa"]["presets"]["default"]["reference_models"]
+        assert isinstance(refs, list)
+        assert refs == [{"provider": "openai-codex", "model": "gpt-5.6-sol-900k"}]
+
     def test_deeper_nesting_through_list(self, _isolated_hermes_home):
         """Navigation path mixing dict → list → dict → scalar."""
         self._write_config(_isolated_hermes_home, (

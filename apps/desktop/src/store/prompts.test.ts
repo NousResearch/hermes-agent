@@ -54,7 +54,9 @@ function fakeGateway(
         throw new Error(`unexpected RPC ${method}`)
       }
 
-      return reply
+      // SAFETY: `replies` is keyed by method; relating Replies[M] to RpcMethods[M]['result'] generically
+      // makes tsc compare every method's result (37 s / 4 GB on this file alone).
+      return reply as RpcMethods[M]['result']
     }
   }
 

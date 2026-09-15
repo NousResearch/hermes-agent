@@ -1102,6 +1102,16 @@ test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#11
   // session pipes open until the full timeout on the healthy path.
   assert.ok(healthyElapsed < 4000, `healthy probe returned fast (took ${healthyElapsed}ms)`)
 
+  // zsh rejects `set -m` in a non-interactive SSH command, which used to make
+  // every Desktop SSH capability probe falsely report an unsupported backend.
+  const zsh = await execFileAsync('sh', ['-c', 'command -v zsh || true']).then((r: { stdout: string }) => r.stdout.trim())
+
+  if (zsh) {
+    const { stdout: zshStdout } = await execFileAsync(zsh, ['-c', withRemoteTimeout('echo hello', 5)])
+
+    assert.equal(zshStdout, 'hello\n', 'healthy probe succeeds under non-interactive zsh')
+  }
+
   // … a hung command is killed promptly with a non-zero exit … The duration
   // is unique to this run so the orphan sweep below cannot match an unrelated
   // `sleep` on a busy host.

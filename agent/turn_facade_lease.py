@@ -449,6 +449,7 @@ def _lease_admission_result(
         "messages": list(conversation_history or []),
         "api_calls": 0,
         "completed": False,
+        "status": "queued",
         "queued": True,
         "delivery_id": record.get("delivery_id"),
         **observation,

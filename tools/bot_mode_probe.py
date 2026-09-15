@@ -8,6 +8,12 @@ the section to SOUL.md; ``strip_legacy_protocol`` drops it at load time so the l
 here is the only copy any session sees. Cached per (process, home) so compression rebuilds
 produce identical bytes. Toggle: ``agent.bot_mode_protocol``. Also hosts path/roster
 helpers shared by ``bot_mode_dm`` and ``bot_relay``.
+
+Mesh membership (#111737): a profile can opt out of every OTHER agent's roster — per agent
+via ``ui_meta['hermes-bots'].private``, install-wide via ``bots.force_private`` in the root
+config.yaml. Both funnel through ``_visible_roster()``, the one build point every
+advertisement reads; ``_roster()`` itself stays complete so resolution and the Bot Mode gate
+are untouched.
 """
 
 from __future__ import annotations
@@ -108,6 +114,58 @@ def _any_managed(root: Path) -> bool:
     return any(_is_bot_managed(d) for _n, d in _roster(root))
 
 
+# ── mesh membership (#111737) ────────────────────────────────────────────────
+# Every managed profile is a teammate to every other one. "Private" is about what OTHERS
+# see: the agent keeps running, keeps its own protocol section and tools, stays reachable
+# by the human — it just drops out of every OTHER agent's roster (the local prompt roster
+# and the Desktop relay's). Two levers, install-wide one outranking the per-agent one.
+
+# Honoured spellings. Anything else (a typo, "false", 2, …) leaves the agent PUBLIC —
+# fail open, so a mistake can never silently isolate a teammate.
+_TRUE_FLAGS = {"true", "yes", "1"}
+
+
+def _flag_true(value: object) -> bool:
+    """Truthy membership flag: bool, int 1, or true/yes/1 in any case/quoting."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value == 1
+    return str(value or "").strip().lower() in _TRUE_FLAGS
+
+
+def _force_private(root: Path) -> bool:
+    """Install-wide ``bots.force_private`` from the shared root config.yaml — takes every
+    agent out at once, outranking each agent's own choice. Read directly, like ``_peers``
+    (the block is absent on most installs). Never raises."""
+    def _read() -> bool:
+        bots = (_read_yaml_dict(root / "config.yaml", "force_private") or {}).get("bots")
+        return _flag_true(bots.get("force_private") if isinstance(bots, dict) else None)
+
+    return _swallow(_read, False)
+
+
+def _is_private(profile_dir: Path) -> bool:
+    """Per-agent ``ui_meta['hermes-bots'].private`` — the desktop-owned block, so the flag
+    rides the ``_ui_meta_revisions`` sync every other bot setting uses. Never raises."""
+    def _read() -> bool:
+        bots = _bots_meta(_read_yaml_dict(profile_dir / "profile.yaml", "hermes-bots")) or {}
+        return _flag_true(bots.get("private"))
+
+    return _swallow(_read, False)
+
+
+def _visible_roster(root: Path) -> list[tuple[str, Path]]:
+    """The peers OTHER agents may see: ``_roster`` minus mesh-private agents (all of them
+    under ``bots.force_private``). Visibility ONLY, deliberately separate from ``_roster``:
+    an all-private install stays managed, keeps its protocol section, and every agent stays
+    resolvable by name (a private peer must not read as "no such teammate"). Never raises."""
+    def _filter() -> list[tuple[str, Path]]:
+        return [] if _force_private(root) else [(n, d) for n, d in _roster(root) if not _is_private(d)]
+
+    return _swallow(_filter, [])
+
+
 def is_bot_mode_managed(home: str | os.PathLike | None = None) -> bool:
     """True when ANY profile on this install is Bot-Mode-managed. Never raises. The
     ``message_agent`` injection gate — deliberately independent of the protocol section's
@@ -197,7 +255,7 @@ def _build_section(home: Path) -> str:
     if not _any_managed(root):
         return ""
 
-    roster_lines = [_bullet(f"@{_handle(name)}", _profile_role(d)) for name, d in _roster(root) if name != me]
+    roster_lines = [_bullet(f"@{_handle(name)}", _profile_role(d)) for name, d in _visible_roster(root) if name != me]
     roster_block = "\n".join(roster_lines) or "- (no teammates yet)"
 
     return (
@@ -294,11 +352,13 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     surface["soul"] = _swallow(_soul, "")
     surface["skills"] = _swallow(_skills, [])
     try:
-        roster = _roster(root)
-        surface["roster"] = sorted(n for n, d in roster if _is_bot_managed(d))
+        visible = _visible_roster(root)
+        surface["roster"] = sorted(n for n, d in visible if _is_bot_managed(d))
         # Roles are part of the messaging surface: renaming a bot or editing a
         # description must refresh the roster block teammates pick recipients from.
-        surface["roster_roles"] = sorted(f"{n}:{_profile_role(d)}" for n, d in roster)
+        # Private peers are absent here too, so going private (or flipping
+        # ``bots.force_private``) refreshes the prompt that still listed them.
+        surface["roster_roles"] = sorted(f"{n}:{_profile_role(d)}" for n, d in visible)
     except Exception:
         surface["roster"] = []
     # Protocol-text version salt: bumping it refreshes every eternal Bot Chat

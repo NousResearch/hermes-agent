@@ -273,3 +273,130 @@ def test_fingerprint_changes_when_a_peer_is_registered(tmp_path):
     )
     after = bot_mode_probe.capability_fingerprint(home)
     assert before != after
+
+
+# ── mesh membership: private agents stay out of every OTHER agent's roster ───
+
+
+def _profile(root, name, *, private=None, description="secret mission", title="Shadow"):
+    """A Bot-Mode profile; ``private=None`` leaves the flag out entirely."""
+    d = root / "profiles" / name
+    d.mkdir(parents=True, exist_ok=True)
+    lines = [f"description: {description}", "ui_meta:", "  hermes-bots:", f"    title: {title}"]
+    if private is not None:
+        lines.append(f"    private: {private}")
+    (d / "profile.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return d
+
+
+def test_private_agent_leaves_the_prompt_roster(tmp_path):
+    """`ui_meta['hermes-bots'].private: true` → no roster line, no role text."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    _profile(home, "prediction", private="true")
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert "`@researcher`" in section  # control: the public peer is still listed
+    assert "`@prediction`" not in section
+    assert "Shadow" not in section and "secret mission" not in section
+
+
+def test_private_flag_is_per_agent(tmp_path):
+    """Only the flagged agent disappears; siblings keep their line."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _profile(home, "prediction", private="true")
+    _profile(home, "reviewer", private="false", description="reads diffs", title="Reviewer")
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert "`@reviewer`" in section and "Reviewer" in section
+    assert "`@prediction`" not in section
+
+
+def test_private_flag_parsing_fails_open(tmp_path):
+    """true/yes/1 honoured (bool, YAML and quoted); a typo never isolates a teammate."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    for name, value in (("aa", "yes"), ("bb", "1"), ("cc", "'true'"), ("dd", "maybe"), ("ee", "'TRUE'")):
+        _profile(home, name, private=value)
+
+    assert bot_mode_probe._force_private(home) is False
+    assert bot_mode_probe._is_private(home / "profiles" / "aa") is True
+    assert bot_mode_probe._is_private(home / "profiles" / "bb") is True
+    assert bot_mode_probe._is_private(home / "profiles" / "cc") is True
+    assert bot_mode_probe._is_private(home / "profiles" / "ee") is True
+    assert bot_mode_probe._is_private(home / "profiles" / "dd") is False
+
+    visible = [n for n, _d in bot_mode_probe._visible_roster(home)]
+    assert visible == ["default", "dd"]
+
+
+def test_force_private_empties_every_roster_without_unmanaging(tmp_path):
+    """Install-wide knob outranks each agent's own (unset) choice — and Bot Mode stays ON:
+    an all-private install must not read as unmanaged nor lose the protocol section."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    _make_bot_profile(home, "coder", managed=True)
+    (home / "config.yaml").write_text("bots:\n  force_private: true\n", encoding="utf-8")
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert section.startswith("## Messaging other agents")
+    assert "- (no teammates yet)" in section
+    assert "`@researcher`" not in section and "`@coder`" not in section
+    assert bot_mode_probe.is_bot_mode_managed(home) is True
+    # Not a typo: an unrecognised value leaves everyone public (fail open).
+    (home / "config.yaml").write_text("bots:\n  force_private: 'nope'\n", encoding="utf-8")
+    assert bot_mode_probe._force_private(home) is False
+
+
+def test_private_agent_itself_still_runs(tmp_path):
+    """The private agent keeps its own protocol section (it still sees public peers),
+    the install still counts as managed, and nothing raises on the empty roster."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    private_dir = _profile(home, "prediction", private="true")
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(private_dir)
+    assert "`@researcher`" in section
+    # never in a roster block — not even its own (self is always excluded)
+    assert "- `@prediction`" not in section
+    assert bot_mode_probe.is_bot_mode_managed(private_dir) is True
+    assert bot_mode_probe.capability_fingerprint(private_dir) != "unavailable"
+
+
+def test_private_remote_row_never_reaches_the_prompt(tmp_path):
+    """The cross-machine relay roster loses the private peer AND its description."""
+    from tools.bot_relay import write_remote_roster
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    write_remote_roster(home, [
+        {"profile": "scout", "handle": "scout", "connection_id": "ssh-vps",
+         "connection_label": "VPS", "title": "Scout", "description": "watches feeds"},
+        {"profile": "prediction", "handle": "prediction", "connection_id": "ssh-vps",
+         "connection_label": "VPS", "title": "Shadow", "description": "secret mission", "private": True},
+    ])
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert "`@scout` — on VPS — Scout — watches feeds" in section
+    assert "- `@prediction`" not in section
+    assert "Shadow" not in section and "secret mission" not in section
+
+
+def test_flipping_private_refreshes_the_epoch(tmp_path):
+    """Visibility rides the capability epoch: an eternal Bot Chat prompt stops
+    carrying a peer that just went private."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "researcher", managed=True)
+    d = _profile(home, "prediction", private="false")
+    public = bot_mode_probe.capability_fingerprint(home)
+
+    _profile(home, "prediction", private="true")  # same role text, now private
+    assert bot_mode_probe.capability_fingerprint(home) != public
+    assert bot_mode_probe.capability_fingerprint(home) != "unavailable"
+    assert "`@prediction`" not in bot_mode_probe.get_bot_mode_protocol_section(home)

@@ -502,6 +502,9 @@ class RelayAgentRow(Params):
     title: str | None = None
     description: str | None = None
     online: bool | None = None
+    # Mesh membership (``ui_meta['hermes-bots'].private`` / ``bots.force_private``): a
+    # private row is dropped server-side, so it never reaches another agent's roster.
+    private: bool | None = None
     model_config = Params.model_config | {"extra": "allow"}
 
 

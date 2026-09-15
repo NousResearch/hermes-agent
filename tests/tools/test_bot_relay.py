@@ -105,6 +105,34 @@ def test_resolve_ambiguous_handle_across_connections(root):
     assert "hermes" in forms  # unique handle stays bare
 
 
+def test_private_agent_rows_are_refused_on_both_relay_sides(root):
+    """Mesh membership on the relay roster: a row flagged ``private`` is dropped on
+    write AND on read, so a peer's build (or a hand-spliced roster.json) cannot
+    re-publish a private agent nor its description."""
+    rows = _rows() + [
+        {"profile": "prediction", "handle": "prediction", "connection_id": "ssh-vps",
+         "connection_label": "VPS", "title": "Shadow", "description": "secret mission", "private": True},
+        {"profile": "reviewer", "handle": "reviewer", "connection_id": "cloud-1", "private": "yes"},
+        # Fail open: an unrecognised value is NOT private.
+        {"profile": "scout", "handle": "scout", "connection_id": "cloud-1", "private": "maybe"},
+    ]
+    assert bot_relay.write_remote_roster(root, rows) == 3
+    roster = bot_relay.read_remote_roster(root)
+    # rows are keyed by (connection_id, profile): cloud-1's two, then ssh-vps'
+    assert [r["profile"] for r in roster] == ["default", "scout", "researcher"]
+    assert bot_relay.resolve_remote_target("prediction", roster) is None
+    assert bot_relay.resolve_remote_target("reviewer", roster) is None
+
+    # A roster.json written behind the gateway's back (older peer build pushing
+    # unflagged rows) still cannot surface them: read re-normalizes.
+    (bot_relay.relay_root(root) / bot_relay.ROSTER_FILE).write_text(
+        json.dumps({"updated_at": 1, "agents": rows}), encoding="utf-8"
+    )
+    assert [r["profile"] for r in bot_relay.read_remote_roster(root)] == ["default", "researcher", "scout"]
+    # Nothing left to deliver to a private peer either.
+    assert bot_relay.resolve_remote_target("prediction@ssh-vps", bot_relay.read_remote_roster(root)) is None
+
+
 # ── outbox / replies ─────────────────────────────────────────────────────────
 
 

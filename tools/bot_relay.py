@@ -26,7 +26,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from tools.bot_mode_probe import _default_home, _hermes_root
+from tools.bot_mode_probe import _default_home, _flag_true, _hermes_root
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -111,6 +111,11 @@ def _normalize_roster_row(row: Any) -> Optional[dict]:
     """Validated, minimal roster row or None. Rows come from the Desktop over
     RPC — treat as untrusted input."""
     if not isinstance(row, dict):
+        return None
+    # Mesh membership: a row for a private agent is refused HERE, which is both relay
+    # sides (write_remote_roster and read_remote_roster both normalize), so a peer's
+    # older build cannot re-publish a private agent into anyone's roster.
+    if _flag_true(row.get("private")):
         return None
     profile = str(row.get("profile") or "").strip()
     handle = str(row.get("handle") or "").strip().lstrip("@") or ("hermes" if profile == "default" else profile)

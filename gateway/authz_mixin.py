@@ -578,6 +578,12 @@ class GatewayAuthorizationMixin:
             with contextlib.suppress(Exception):
                 platform_allow_env = getattr(entry, "allowed_users_env", "") or platform_allow_env
                 platform_allow_all_var = getattr(entry, "allow_all_env", "") or platform_allow_all_var
+        global_allow_all = (
+            getattr(getattr(self, "config", None), "allow_all_users", False)
+            or _env_truthy("GATEWAY_ALLOW_ALL_USERS")
+        )
+        if global_allow_all:
+            return True
         if platform_allow_all_var and _env_truthy(platform_allow_all_var):
             return True
         # Adapter-verified role auth (Discord DISCORD_ALLOWED_ROLES). ``is True``: no MagicMock pass.
@@ -602,7 +608,10 @@ class GatewayAuthorizationMixin:
                     return verdict
             if self._adapter_extra_allowlist_authorizes(source, user_id, is_group):
                 return True
-            return _env_truthy("GATEWAY_ALLOW_ALL_USERS")
+            return bool(
+                getattr(getattr(self, "config", None), "allow_all_users", False)
+                or _env_truthy("GATEWAY_ALLOW_ALL_USERS")
+            )
 
         if is_group_or_forum and source.chat_id:
             # Telegram group traffic authorized by chat ID (TELEGRAM_GROUP_ALLOWED_USERS gates the sender).

@@ -354,18 +354,23 @@ def _transcribe_local(
         transcribe_kwargs = build_local_transcribe_kwargs(stt_config)
         transcribe_kwargs.update({k: v for k, v in (("language", language), ("initial_prompt", prompt))
                                   if v})
+        def transcribe_and_join(current_model):
+            # faster-whisper returns lazy segments, so CUDA can first fail while this
+            # consumes them rather than during transcribe() itself.
+            segments, current_info = current_model.transcribe(file_path, **transcribe_kwargs)
+            return _join_confident_segments(segments, local_cfg), current_info
+
         try:
-            segments, info = model.transcribe(file_path, **transcribe_kwargs)
+            transcript, info = transcribe_and_join(model)
         except Exception as exc:
-            # CUDA libs can fail at dlopen-on-first-use, AFTER loading: evict the poisoned
-            # cached model, reload on CPU and retry once, else every later message fails.
+            # CUDA libs can fail at dlopen-on-first-use, including while consuming lazy
+            # segments. Evict the poisoned cached model, reload on CPU, and restart once.
             if not _looks_like_cuda_lib_error(exc):
                 raise
             logger.warning("faster-whisper CUDA runtime failed mid-transcribe (%s) — "
                            "evicting cached model and retrying on CPU (int8).", exc)
             model = _replace_cached_model_on_cpu(model_name)
-            segments, info = model.transcribe(file_path, **transcribe_kwargs)
-        transcript = _join_confident_segments(segments, local_cfg)
+            transcript, info = transcribe_and_join(model)
         logger.info("Transcribed %s via local whisper (%s, lang=%s, %.1fs audio)",
                     Path(file_path).name, model_name, info.language, info.duration)
         _touch_transcription_time()

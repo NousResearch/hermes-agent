@@ -498,6 +498,55 @@ class TestTranscribeLocalExtended:
         assert result["success"] is False
         assert "CUDA out of memory" in result["error"]
 
+    def test_cuda_error_while_consuming_segments_retries_on_cpu(self, tmp_path):
+        """A lazy CUDA failure must evict the cached model and restart transcription."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+        info = MagicMock(language="en", duration=1.0)
+
+        def cuda_failure():
+            raise RuntimeError("Could not load libcublas64_12.dll")
+            yield  # pragma: no cover
+
+        cuda_model = MagicMock()
+        cuda_model.transcribe.return_value = (cuda_failure(), info)
+        cpu_segment = MagicMock(text="retried transcript")
+        cpu_model = MagicMock()
+        cpu_model.transcribe.return_value = ([cpu_segment], info)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._get_or_load_local_model", return_value=cuda_model), \
+             patch("tools.transcription_tools._replace_cached_model_on_cpu", return_value=cpu_model) as replace:
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result == {"success": True, "transcript": "retried transcript", "provider": "local"}
+        replace.assert_called_once_with("base")
+        assert cpu_model.transcribe.call_count == 1
+
+    def test_non_cuda_error_while_consuming_segments_does_not_retry(self, tmp_path):
+        """Lazy transcription errors unrelated to CUDA remain visible to the user."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+        info = MagicMock(language="en", duration=1.0)
+
+        def decode_failure():
+            raise RuntimeError("invalid audio frame")
+            yield  # pragma: no cover
+
+        model = MagicMock()
+        model.transcribe.return_value = (decode_failure(), info)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._get_or_load_local_model", return_value=model), \
+             patch("tools.transcription_tools._replace_cached_model_on_cpu") as replace:
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is False
+        assert "invalid audio frame" in result["error"]
+        replace.assert_not_called()
+
 
 # ============================================================================
 # Model auto-correction

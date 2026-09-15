@@ -499,6 +499,39 @@ class TestPreflightCompression:
             ("compacted", COMPACTION_DONE_STATUS),
         ]
 
+    def test_compress_context_skips_duplicate_status_when_pre_emitted(self, agent):
+        """A gate that already announced compacting must not emit the same phase again."""
+        agent.compression_enabled = False
+        events = []
+        agent.status_callback = lambda ev, msg: events.append((ev, msg))
+
+        def _fake_compress(
+            messages,
+            current_tokens=None,
+            focus_topic=None,
+            force=False,
+            memory_context="",
+        ):
+            events.append(("compress", "started"))
+            return [{"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"}]
+
+        with (
+            patch.object(agent.context_compressor, "compress", side_effect=_fake_compress),
+            patch.object(agent, "_build_system_prompt", return_value="new system prompt"),
+            patch("agent.conversation_compression.estimate_request_tokens_rough", return_value=42),
+        ):
+            agent._compress_context(
+                [{"role": "user", "content": "hello"}],
+                "system prompt",
+                approx_tokens=1234,
+                pre_emitted_status=COMPACTION_STATUS,
+            )
+
+        assert events == [
+            ("compress", "started"),
+            ("compacted", COMPACTION_DONE_STATUS),
+        ]
+
     def test_compress_context_emits_one_terminal_status_when_lock_is_unavailable(self, agent):
         """A rejected lock must retire the started desktop compaction phase."""
         agent.compression_enabled = False

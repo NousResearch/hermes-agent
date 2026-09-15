@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.context_engine import automatic_compaction_status_message
 from agent.conversation_compression import (
-    PRE_API_COMPRESSION_STATUS_TEMPLATE, compression_blocked_transiently,
+    COMPACTION_STATUS, PRE_API_COMPRESSION_STATUS_TEMPLATE, compression_blocked_transiently,
     compression_skipped_due_to_lock, context_compression_timed_out,
     conversation_history_after_compression,
 )
@@ -143,7 +143,7 @@ def run_preflight_compression(
         _pre_api_input = v.messages
         v.messages, v.active_system_prompt = agent._compress_context(
             v.messages, system_message, approx_tokens=request_pressure_tokens,
-            task_id=effective_task_id,
+            task_id=effective_task_id, pre_emitted_status=_pre_api_status,
         )
         if context_compression_timed_out(agent):
             # Progress-aware timeout: never reached the provider — refund the
@@ -298,11 +298,27 @@ def compress_after_tool_results(
         # future blocked turn can warn again.
         _clear_overflow_warn(agent)
         agent._safe_print("  ⟳ compacting context…")
+        # Worker announce runs after the automatic gate and the lazy aux-provider
+        # feasibility probe. Publish the visible compaction phase here so a
+        # blocking probe (live catalog / provider lookup) does not leave remote
+        # clients on a bare working indicator. Lease acquisition is already after
+        # the worker's own announce; do not re-emit once the worker starts.
+        _post_tool_status = automatic_compaction_status_message(
+            _compressor,
+            phase="post_tool",
+            default_message=COMPACTION_STATUS,
+            approx_tokens=_real_tokens,
+            message_count=len(messages),
+            model=agent.model,
+        )
+        if _post_tool_status:
+            agent._emit_status(_post_tool_status)
         _post_tool_input = messages
         # Pass overhead-aware _real_tokens, not last_prompt_tokens (0 in the
         # no-usage fallback), so the overflow guard sees the true size.
         messages, active_system_prompt = agent._compress_context(
-            messages, system_message, approx_tokens=_real_tokens, task_id=effective_task_id
+            messages, system_message, approx_tokens=_real_tokens, task_id=effective_task_id,
+            pre_emitted_status=_post_tool_status,
         )
         if messages is _post_tool_input and compression_skipped_due_to_lock(agent):
             # Lock-skip no-op is a temporary defer, not evidence about compressibility:

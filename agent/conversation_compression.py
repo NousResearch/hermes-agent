@@ -3545,13 +3545,21 @@ def _route_codex_compaction(
 
 
 def _announce_compression_start(
-    agent: Any, *, message_count: int, approx_tokens: Optional[int], focus_topic: Optional[str], force: bool
+    agent: Any, *, message_count: int, approx_tokens: Optional[int], focus_topic: Optional[str], force: bool,
+    pre_emitted_status: Optional[str] = None,
 ) -> _CompactionLifecycle:
-    """Log the attempt, emit the (engine-customisable) compacting status, return the lifecycle."""
+    """Log the attempt, emit the (engine-customisable) compacting status, return the lifecycle.
+
+    Callers that already published a visible compacting frame (post-tool / pre-API
+    gates) pass ``pre_emitted_status`` so this helper does not emit a second
+    phase. ``status_emitted=True`` still arms ``_emit_compaction_done``.
+    """
     logger.info(
         "context compression started: session=%s messages=%d tokens=~%s model=%s focus=%r", agent.session_id or "none",
         message_count, f"{approx_tokens:,}" if approx_tokens else "unknown", agent.model, focus_topic,
     )
+    if pre_emitted_status is not None:
+        return _CompactionLifecycle(agent, True)
     status = COMPACTION_STATUS
     if not force:
         status = automatic_compaction_status_message(
@@ -3568,6 +3576,7 @@ def compress_context(
     task_id: str = "default", focus_topic: Optional[str] = None, force: bool = False,
     bypass_cooldown: bool = False, defer_context_engine_notification: bool = False,
     commit_fence: Optional[CompressionCommitFence] = None,
+    pre_emitted_status: Optional[str] = None,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
     ``force`` (manual /compress) clears the summary-failure cooldown; ``bypass_cooldown`` (provider-proven
@@ -3588,7 +3597,9 @@ def compress_context(
     failed attempt records its cooldown normally. defer_context_engine_notification: Delay the existing
     context-engine hook until a manual host commits its outer history transaction. commit_fence: Optional
     cooperative fence for executor callers that may time out. It prevents a late worker from mutating
-    session state after its caller has moved on.
+    session state after its caller has moved on. pre_emitted_status: When a gate already published the
+    compacting frame, pass that text so ``_announce_compression_start`` skips a second emit while still
+    arming the terminal ``compacted`` edge.
     """
     attempt = _begin_compression_attempt(agent, force=force, defer_notification=defer_context_engine_notification)
 
@@ -3622,7 +3633,8 @@ def compress_context(
     # missing attribute must default True, not rotation, which can wedge sessions.
     in_place = bool(getattr(agent, "compression_in_place", True))
     lifecycle = _announce_compression_start(
-        agent, message_count=_pre_msg_count, approx_tokens=approx_tokens, focus_topic=focus_topic, force=force
+        agent, message_count=_pre_msg_count, approx_tokens=approx_tokens, focus_topic=focus_topic, force=force,
+        pre_emitted_status=pre_emitted_status,
     )
     lease, _abort_prompt = _acquire_compression_lease(
         agent, commit_fence=commit_fence, lifecycle=lifecycle, system_message=system_message,

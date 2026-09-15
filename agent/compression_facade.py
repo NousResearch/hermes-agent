@@ -190,6 +190,7 @@ class CompressionFacadeMixin:
         self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default",
         focus_topic: str = None, force: bool = False, bypass_cooldown: bool = False,
         defer_context_engine_notification: bool = False, commit_fence=None,
+        pre_emitted_status: str = None,
     ) -> tuple:
         """Forwarder — see ``agent.conversation_compression.compress_context``.
         ``force=True`` (manual /compress) bypasses the summary-failure cooldown; ``bypass_cooldown=True``
@@ -248,6 +249,7 @@ class CompressionFacadeMixin:
                     approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic, force=force,
                     bypass_cooldown=bypass_cooldown,
                     defer_context_engine_notification=(defer_context_engine_notification), commit_fence=fence,
+                    pre_emitted_status=pre_emitted_status,
                 )
 
             # Callers that already own a progress-aware wait (gateway session

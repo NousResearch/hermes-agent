@@ -10,6 +10,7 @@ import {
   $currentModel,
   $currentProvider,
   getCurrentModelSource,
+  setComposerSelectionOwner,
   setCurrentModel,
   setCurrentModelSource,
   setCurrentProvider
@@ -79,7 +80,143 @@ function Harness({
 }
 
 describe('useModelControls', () => {
+  it.each(['reject', 'confirm', 'success', 'confirmed-reject', 'confirmed-success', 'owner'])(
+    'a stale %s for A cannot repaint or finish in foreground B',
+    async outcome => {
+      const response = deferred<Record<string, unknown>>()
+      const queryClient = new QueryClient()
+      const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+      const request = vi.fn().mockReturnValue(response.promise)
+      $activeGatewayProfile.set('alpha')
+      $activeSessionId.set('runtime-a')
+      setCurrentModel('a-old')
+      setCurrentProvider('provider-a')
+
+      const { result } = renderHook(() =>
+        useModelControls({
+          cacheOwnerConnectionId: 'connection-a',
+          cacheProfile: 'alpha',
+          queryClient,
+          requestGateway: request
+        })
+      )
+
+      if (outcome.startsWith('confirmed-')) {
+        request.mockResolvedValueOnce({ confirm_required: true })
+      }
+
+      let pending!: Promise<unknown>
+      await act(async () => {
+        pending = result.current.selectModel({ model: 'a-new', provider: 'provider-a' })
+
+        if (outcome.startsWith('confirmed-')) {
+          await pending
+          pending = notify.mock.calls.at(-1)![0].action.onClick()
+        }
+      })
+      act(() => {
+        if (outcome === 'owner') {
+          setComposerSelectionOwner('connection-b', 'alpha')
+        } else {
+          $activeGatewayProfile.set('beta')
+          $activeSessionId.set('runtime-b')
+        }
+
+        // Reused ids/model values cannot make a different owner current again.
+        setCurrentModel(outcome === 'owner' ? 'a-new' : 'b-model')
+        setCurrentProvider(outcome === 'owner' ? 'provider-a' : 'provider-b')
+      })
+      notify.mockClear()
+      await act(async () => {
+        if (outcome.endsWith('reject')) {
+          response.reject(new Error('A write failed'))
+        } else {
+          response.resolve(outcome === 'confirm' ? { confirm_required: true } : {})
+        }
+
+        await pending
+      })
+      expect([$currentProvider.get(), $currentModel.get()]).toEqual(
+        outcome === 'owner' ? ['provider-a', 'a-new'] : ['provider-b', 'b-model']
+      )
+      expect(queryClient.getQueryData(modelOptionsQueryKey('alpha', 'runtime-a', 'connection-a'))).toMatchObject({
+        model: 'a-new',
+        provider: 'provider-a'
+      })
+      expect(invalidate).not.toHaveBeenCalled()
+      expect(notify).not.toHaveBeenCalled()
+      expect(notifyError).not.toHaveBeenCalled()
+    }
+  )
+
+  it.each(['reject', 'confirm', 'success', 'confirmed-reject', 'confirmed-success', 'warning'])(
+    'an older %s cannot override a newer same-row pick',
+    async outcome => {
+      const response = deferred<Record<string, unknown>>()
+      const queryClient = new QueryClient()
+      const request = vi.fn().mockReturnValueOnce(response.promise).mockResolvedValue({})
+      $activeSessionId.set('runtime-a')
+      setCurrentModel('old')
+      setCurrentProvider('provider-a')
+      const { result } = renderHook(() => useModelControls({ queryClient, requestGateway: request }))
+
+      if (outcome.startsWith('confirmed-') || outcome === 'warning') {
+        request
+          .mockReset()
+          .mockResolvedValueOnce({ confirm_required: true })
+          .mockReturnValueOnce(response.promise)
+          .mockResolvedValue({})
+      }
+
+      let pending!: Promise<unknown>
+      let confirm!: () => Promise<void>
+      await act(async () => {
+        pending = result.current.selectModel({ model: 'first', provider: 'provider-a' })
+
+        if (outcome.startsWith('confirmed-') || outcome === 'warning') {
+          await pending
+          confirm = notify.mock.calls.at(-1)![0].action.onClick
+
+          if (outcome !== 'warning') {
+            pending = confirm()
+          } else {
+            request.mockReset().mockResolvedValue({})
+          }
+        }
+      })
+      const newerModel = outcome === 'warning' ? 'old' : 'first'
+      await act(async () => {
+        await result.current.selectModel({ model: newerModel, provider: 'provider-a' })
+      })
+      const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+      notify.mockClear()
+      await act(async () => {
+        if (outcome === 'warning') {
+          await confirm()
+          expect(request).toHaveBeenCalledTimes(1)
+        } else {
+          if (outcome.endsWith('reject')) {
+            response.reject(new Error('first failed'))
+          } else {
+            response.resolve(outcome === 'confirm' ? { confirm_required: true } : {})
+          }
+
+          await pending
+        }
+      })
+      expect($currentModel.get()).toBe(newerModel)
+      expect(queryClient.getQueryData(modelOptionsQueryKey('default', 'runtime-a'))).toMatchObject({
+        model: newerModel,
+        provider: 'provider-a'
+      })
+      expect(invalidate).not.toHaveBeenCalled()
+      expect(notify).not.toHaveBeenCalled()
+      expect(notifyError).not.toHaveBeenCalled()
+    }
+  )
   beforeEach(() => {
+    vi.clearAllMocks()
+    setComposerSelectionOwner('local', 'default')
     $activeGatewayProfile.set('default')
     $activeSessionId.set(null)
     setCurrentModel('')
@@ -91,6 +228,7 @@ describe('useModelControls', () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    setComposerSelectionOwner('local', 'default')
     $activeGatewayProfile.set('default')
     $activeSessionId.set(null)
     setCurrentModel('')

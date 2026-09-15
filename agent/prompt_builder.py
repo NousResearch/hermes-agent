@@ -233,6 +233,42 @@ SKILLS_GUIDANCE = (
     "remaining `[SKILL_PRUNED]` markers for that same skill; they are historical artifacts of earlier compactions."
 )
 
+# Board-side guidance for profiles that carry the kanban toolset WITHOUT a
+# dispatched task (orchestrator profiles, and cron/scheduled agents on such
+# profiles). Deliberately excludes the worker lifecycle: its mandatory
+# "call `kanban_show()` first" step fails with "task_id is required" when
+# no $HERMES_KANBAN_TASK exists (issue #68592). The routing rules below were
+# folded into the always-injected guidance when the standalone
+# kanban-orchestrator skill was removed, so they must survive the split.
+KANBAN_ORCHESTRATOR_GUIDANCE = (
+    "# Kanban board guidance\n"
+    "This profile carries the `kanban_*` tools for routing work on the "
+    "shared board at `~/.hermes/kanban.db`. You are NOT a dispatched "
+    "worker: this session owns no dispatched task (any inherited "
+    "`$HERMES_KANBAN_TASK` is not yours), and `kanban_show()` requires an "
+    "explicit `task_id` argument.\n"
+    "- **Route, don't implement.** Use `kanban_create(title=..., "
+    "assignee=<right-profile>, parents=[...])` to fan work out to "
+    "specialist profiles, expressing dependencies via `parents=[...]`, "
+    "not prose.\n"
+    "- **Discover profiles first.** The dispatcher SILENTLY drops a card "
+    "with an unknown assignee (it sits in `ready` forever). Ground every "
+    "assignee in a real profile (`hermes profile list`, or ask the user).\n"
+    "- **Decision ownership.** Design decisions belong to you, the orchestrator, "
+    "not to workers: settle naming schemes, schemas, file formats, and API shapes "
+    "before fanning out. Never let two subtree cards decide the same question; "
+    "decide it yourself and write the decision into BOTH card bodies. Every child "
+    "card body must carry the decisions it depends on, because workers cannot "
+    "see sibling context.\n"
+    "- **Created cards.** Reference task ids only when captured from a "
+    "successful `kanban_create` return — never invent or paste ids.\n"
+    "- **Attachments.** Attach real downloadable artifacts with "
+    "`kanban_attach` / `kanban_attach_url` (25 MB cap) instead of pasting "
+    "links in comments.\n"
+    "- Do not shell out to `hermes kanban <verb>` for board operations. "
+    "Use the `kanban_*` tools — they work across all terminal backends.\n"
+)
+
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
     "You have been assigned ONE task from the shared board at `~/.hermes/kanban.db`. Your task id is in "

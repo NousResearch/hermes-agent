@@ -636,6 +636,199 @@ def test_worker_lifecycle_through_tools(worker_env):
 # System-prompt guidance injection
 # ---------------------------------------------------------------------------
 
+def test_kanban_guidance_not_in_normal_prompt(monkeypatch, tmp_path):
+    """A normal chat session (no HERMES_KANBAN_TASK) must NOT have
+    KANBAN_GUIDANCE in its system prompt."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pathlib import Path as _P
+    monkeypatch.setattr(_P, "home", lambda: tmp_path)
+
+    from tools.registry import invalidate_check_fn_cache
+    from model_tools import _clear_tool_defs_cache
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+
+    from run_agent import AIAgent
+    a = AIAgent(
+        api_key="test",
+        base_url="https://openrouter.ai/api/v1",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    prompt = a._build_system_prompt()
+    assert "You are a Kanban worker" not in prompt
+    assert "kanban_show()" not in prompt
+
+
+def test_kanban_guidance_not_in_orchestrator_profile_prompt(monkeypatch, tmp_path):
+    """A profile with the ``kanban`` toolset enabled but NO
+    ``HERMES_KANBAN_TASK`` (orchestrator profiles, and notably cron agents
+    on such profiles, issue #68592) gets the kanban tool surface — but must
+    NOT get the WORKER task-execution protocol, whose mandatory first step
+    ``kanban_show()`` fails with "task_id is required" when no task id
+    exists."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pathlib import Path as _P
+    monkeypatch.setattr(_P, "home", lambda: tmp_path)
+
+    from tools.registry import invalidate_check_fn_cache
+    from model_tools import _clear_tool_defs_cache
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+
+    from run_agent import AIAgent
+    a = AIAgent(
+        api_key="test",
+        base_url="https://openrouter.ai/api/v1",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    prompt = a._build_system_prompt()
+    # The tool surface IS present for orchestrator profiles...
+    assert "kanban_show" in a.valid_tool_names, (
+        "test setup: kanban toolset should expose kanban tools"
+    )
+    # ...but the worker lifecycle protocol must not be injected.
+    assert "Kanban task execution protocol" not in prompt
+    assert "kanban_show()` first" not in prompt
+    # The board-routing guidance IS injected instead — the routing rules
+    # (profile discovery, parents deps, no phantom ids) were folded into
+    # the always-injected guidance when the standalone orchestrator skill
+    # was removed, and must survive the worker/orchestrator split.
+    assert "Kanban board guidance" in prompt
+    assert "unknown assignee" in prompt
+
+
+def test_kanban_guidance_fallback_three_way_split(monkeypatch, tmp_path):
+    """The system_prompt fallback (code paths that bypass agent_init leave
+    ``_kanban_worker_guidance`` unset → None) mirrors the same three-way
+    split as agent_init: worker protocol only for a dispatcher-owned
+    HERMES_KANBAN_TASK, board guidance for tool-only."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pathlib import Path as _P
+    monkeypatch.setattr(_P, "home", lambda: tmp_path)
+
+    from tools.registry import invalidate_check_fn_cache
+    from model_tools import _clear_tool_defs_cache
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+
+    from run_agent import AIAgent
+    from agent.system_prompt import invalidate_system_prompt
+    a = AIAgent(
+        api_key="test",
+        base_url="https://openrouter.ai/api/v1",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    assert "kanban_show" in a.valid_tool_names
+    # Simulate a code path that bypassed agent_init's resolution.
+    del a._kanban_worker_guidance
+
+    invalidate_system_prompt(a)
+    prompt = a._build_system_prompt()
+    assert "Kanban board guidance" in prompt
+    assert "Kanban task execution protocol" not in prompt
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fallback")
+    invalidate_system_prompt(a)
+    prompt = a._build_system_prompt()
+    assert "Kanban task execution protocol" in prompt
+    assert "Kanban board guidance" not in prompt
+
+
+def test_kanban_guidance_cron_inside_worker_is_not_worker_protocol(monkeypatch, tmp_path):
+    """A cron run inside a worker gets board guidance, not worker protocol."""
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_inherited")
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pathlib import Path as _P
+    monkeypatch.setattr(_P, "home", lambda: tmp_path)
+
+    from agent.delegation_context import non_dispatcher_owned_context
+    from agent.system_prompt import invalidate_system_prompt
+    from model_tools import _clear_tool_defs_cache
+    from run_agent import AIAgent
+    from tools.registry import invalidate_check_fn_cache
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+
+    with non_dispatcher_owned_context():
+        a = AIAgent(
+            api_key="test",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        prompt = a._build_system_prompt()
+
+    assert "kanban_show" in a.valid_tool_names
+    assert "Kanban board guidance" in prompt
+    assert "Kanban task execution protocol" not in prompt
+
+    del a._kanban_worker_guidance
+    with non_dispatcher_owned_context():
+        invalidate_system_prompt(a)
+        prompt = a._build_system_prompt()
+    assert "Kanban board guidance" in prompt
+    assert "Kanban task execution protocol" not in prompt
+
+    invalidate_system_prompt(a)
+    prompt = a._build_system_prompt()
+    assert "Kanban task execution protocol" in prompt
+
+
+def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
+    """A worker session (HERMES_KANBAN_TASK set) MUST have the full
+    lifecycle guidance in its system prompt."""
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pathlib import Path as _P
+    monkeypatch.setattr(_P, "home", lambda: tmp_path)
+
+    from tools.registry import invalidate_check_fn_cache
+    from model_tools import _clear_tool_defs_cache
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+
+    from run_agent import AIAgent
+    a = AIAgent(
+        api_key="test",
+        base_url="https://openrouter.ai/api/v1",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    prompt = a._build_system_prompt()
+    # Header phrase (identity-free — SOUL.md owns identity, layer 3 is protocol)
+    assert "Kanban task execution protocol" in prompt
+    # Lifecycle signals
+    assert "kanban_show()" in prompt
+    assert "kanban_complete" in prompt
+    assert "kanban_block" in prompt
+    assert "kanban_create" in prompt
+    # Anti-shell guidance
+    assert "Do not shell out" in prompt or "tools — they work" in prompt
+
 
 def test_kanban_guidance_prompt_size_bounded():
     """KANBAN_GUIDANCE is injected into every kanban-capable process's system
@@ -663,6 +856,36 @@ def test_kanban_guidance_orchestrator_decision_ownership():
     assert KANBAN_GUIDANCE.count("Decision ownership.") == 1
     assert "Never let two subtree cards decide the same question" in KANBAN_GUIDANCE
     assert "workers cannot see sibling context" in KANBAN_GUIDANCE
+
+
+def test_kanban_orchestrator_guidance_keeps_decision_ownership(monkeypatch, tmp_path):
+    """The assembled orchestrator prompt keeps its decision-ownership rules."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pathlib import Path as _P
+    monkeypatch.setattr(_P, "home", lambda: tmp_path)
+
+    from model_tools import _clear_tool_defs_cache
+    from run_agent import AIAgent
+    from tools.registry import invalidate_check_fn_cache
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+
+    a = AIAgent(
+        api_key="test",
+        base_url="https://openrouter.ai/api/v1",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    prompt = a._build_system_prompt()
+    assert "Decision ownership." in prompt
+    assert "Never let two subtree cards decide the same question" in prompt
+    assert "workers cannot see sibling context" in prompt
+    assert "Kanban task execution protocol" not in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -1025,7 +1248,8 @@ def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env,
     home = tmp_path / "gate-home" / ".hermes"
     home.mkdir(parents=True)
     (home / "config.yaml").write_text(
-        "kanban:\n  auto_subscribe_on_create: false\n"
+        "kanban:\n  auto_subscribe_on_create: false\n",
+        encoding="utf-8",
     )
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")

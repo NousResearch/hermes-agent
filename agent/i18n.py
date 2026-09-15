@@ -25,7 +25,7 @@ Language resolution order:
     3. ``display.language`` from config.yaml
     4. ``"en"`` (baseline)
 
-Supported languages: en, zh, zh-hant, ja, de, es, fr, tr, uk, af, ko, it, ga,
+Supported languages: en, zh, zh-hant, ja, de, es, fa, fr, tr, uk, af, ko, it, ga,
 pt, ru, hu, ar.  Unknown values fall back to en.
 """
 
@@ -41,7 +41,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 SUPPORTED_LANGUAGES: tuple[str, ...] = (
-    "en", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
+    "en", "zh", "zh-hant", "ja", "de", "es", "fa", "fr", "tr", "uk",
     "af", "ko", "it", "ga", "pt", "ru", "hu", "ar",
 )
 DEFAULT_LANGUAGE = "en"
@@ -82,6 +82,10 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     # Arabic — bare "arabic"/endonym plus the common regional BCP-47 tags.
     "arabic": "ar", "العربية": "ar",
     "ar-sa": "ar", "ar-eg": "ar", "ar-ae": "ar", "ar-ma": "ar", "ar-dz": "ar",
+    # Persian / Farsi — bare "farsi"/"persian"/endonym plus the common
+    # regional BCP-47 tags (fa-IR covers Iran; fa-AF/Dari renders fine here).
+    "persian": "fa", "farsi": "fa", "فارسی": "fa", "فarsi": "fa",
+    "fa-ir": "fa", "fa_ir": "fa", "fa-af": "fa", "fa-afgh": "fa",
 }
 
 _catalog_cache: dict[str, dict[str, str]] = {}

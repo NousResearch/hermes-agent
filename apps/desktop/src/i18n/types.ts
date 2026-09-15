@@ -2177,6 +2177,9 @@ export interface Translations {
     scriptOnlyEditHint: string
     saveChanges: string
     createAction: string
+    modelSwitcher: string
+    modelUpdated: string
+    changeModel: string
     tabs: {
       jobs: string
       blueprints: string

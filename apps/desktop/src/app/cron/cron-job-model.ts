@@ -45,6 +45,14 @@ export interface CronEditorSaveValues {
   schedule: string
 }
 
+/** Build the narrow update payload used by the detail-panel model picker. */
+export function cronModelUpdates(provider: string, model: string): CronJobUpdates {
+  return {
+    model: model.trim() || null,
+    provider: provider.trim() || null
+  }
+}
+
 export function parseCronDeliveryTargets(value: string): string[] {
   const targets = value
     .split(',')

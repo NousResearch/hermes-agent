@@ -696,8 +696,10 @@ DEFAULT_CONFIG = {
         # Per-task blocks share one shape (_aux): provider "auto" = inherit the main model; base_url
         # overrides provider; api_key falls back to OPENAI_API_KEY; reasoning_effort:
         # none|minimal|low|medium|high|xhigh|max|ultra ("" = provider default); extra_body =
-        # OpenAI-compatible request fields. Vision: download_timeout = image HTTP download (s).
-        "vision": _aux(120, download_timeout=30),
+        # OpenAI-compatible request fields. Vision: download_timeout = image HTTP download (s);
+        # embed_target_bytes / embed_max_dimension = size cap for images embedded natively into
+        # tool results (default 256 KB / 1568 px, sized for screenshots; raise for document pages).
+        "vision": _aux(120, download_timeout=30, embed_target_bytes=256 * 1024, embed_max_dimension=1568),
         # web_extract and session_search no longer use an aux LLM; leftover blocks in user config
         # are ignored. Compression: raise timeout for local models.
         "compression": _aux(120),

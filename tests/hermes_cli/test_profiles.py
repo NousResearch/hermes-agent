@@ -201,6 +201,7 @@ class TestCreateProfile:
         assert (profile_dir / ".env").read_text().strip() == "KEY=val"
         assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
 
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="special files need a POSIX filesystem")
     def test_clone_all_does_not_copy_cron_jobs(self, profile_env):
         # Cron jobs are scheduled work bound to the source profile + origin channel; a clone
         # that inherits jobs.json fires every job twice (two gateways, same job ids).
@@ -209,12 +210,20 @@ class TestCreateProfile:
         (default_home / "cron").mkdir()
         (default_home / "cron" / "jobs.json").write_text(json.dumps({"jobs": [{"id": "abc123def456"}]}))
         (default_home / "cron" / "output").mkdir()
+        # A live source profile holds special files copytree cannot copy (e.g. a suffixless
+        # agent-browser control socket); one of them must not abort the whole clone.
+        browser_dir = default_home / "home" / ".agent-browser"
+        browser_dir.mkdir(parents=True)
+        (browser_dir / "state.json").write_text("{}")
+        os.mkfifo(browser_dir / "control")
 
         profile_dir = create_profile("coder", clone_all=True, no_alias=True)
 
         assert (profile_dir / "cron").is_dir()
         assert not any((profile_dir / "cron").iterdir())
         assert yaml.safe_load((profile_dir / "config.yaml").read_text())["model"] == "test"
+        assert (profile_dir / "home" / ".agent-browser" / "state.json").is_file()
+        assert not (profile_dir / "home" / ".agent-browser" / "control").exists()
 
 
 

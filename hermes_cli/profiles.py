@@ -80,19 +80,21 @@ def _clone_all_copytree_ignore(source_dir: Path):
     if source_resolved == _get_default_hermes_home().resolve():
         root_exclude |= _CLONE_ALL_DEFAULT_EXCLUDE_ROOT
 
-    def _ignore(directory: str, names: List[str]) -> List[str]:
+    def _ignore(directory: str, names: List[str]) -> set:
         try:
             at_root = Path(directory).resolve() == source_resolved
         except (OSError, ValueError):
             # resolve() can fail on odd FS layouts (broken symlinks, missing parents).
             # Fail open — better to over-copy than silently drop user data.
             at_root = False
-        return [
+        # A live source profile carries gateway/agent-browser sockets that copytree
+        # cannot copy; _non_exportable_entries drops them (and __pycache__/*.sock/*.tmp).
+        ignored = _non_exportable_entries(directory, names)
+        ignored.update(
             entry for entry in names
-            if entry == "__pycache__"
-            or entry.endswith((".pyc", ".pyo", ".sock", ".tmp"))
-            or (at_root and entry in root_exclude)
-        ]
+            if entry.endswith((".pyc", ".pyo")) or (at_root and entry in root_exclude)
+        )
+        return ignored
 
     return _ignore
 

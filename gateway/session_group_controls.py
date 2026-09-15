@@ -3,9 +3,14 @@ import asyncio
 from pathlib import Path
 
 from hermes_state_runtime import RuntimeStoreError
+from gateway.session_group_messaging_read import (
+    BINDING_FIELDS, BINDING_METHODS, _InventoryRead, commit_native_binding,
+    prepare_native_binding, validate_page,
+)
 
 
 GROUP_METHODS = {
+    **BINDING_METHODS,
     'groups.capabilities': 'session:read',
     'groups.list': 'session:read',
     'groups.state': 'session:read',
@@ -22,6 +27,7 @@ GROUP_METHODS = {
     'groups.approve': 'session:approve',
 }
 _FIELDS = {
+    **BINDING_FIELDS,
     'groups.capabilities': set(),
     'groups.list': {'limit', 'offset', 'include_disbanded'},
     'groups.state': {'room_id', 'include_disbanded'},
@@ -42,6 +48,12 @@ _FIELDS = {
 
 
 async def dispatch_group_control(connection, method, params):
+    inventory = connection if isinstance(connection, _InventoryRead) else None
+    if inventory is not None:
+        if method != 'groups.list' or inventory.state_json is None:
+            raise RuntimeStoreError('permission_denied')
+        validate_page(params)
+        inventory.require_current()
     authority, actor = connection.authority, connection.actor
     capability = GROUP_METHODS.get(method, 'session:read')
     if capability not in actor.capabilities:
@@ -60,28 +72,34 @@ async def dispatch_group_control(connection, method, params):
     if profile and not profile_matches_home(profile, home):
         raise RuntimeStoreError('profile_mismatch')
     supplied = {key: value for key, value in params.items() if key != 'profile'}
+    prepared = prepare_native_binding(connection, method, supplied) if method in BINDING_METHODS else None
 
     def invoke():
         from gateway.run import _profile_runtime_scope
         from gateway.hosted_rooms import HostedRoomError
         with _profile_runtime_scope(home):
+            if prepared is not None:
+                return commit_native_binding(prepared)
+            if inventory is not None:
+                inventory.require_current()
             if method == 'profiles.list':
                 return _profiles(authority, actor, home, supplied)
             try:
-                return _group(authority, actor, home, method, supplied)
+                return _group(authority, actor, home, method, supplied, inventory=inventory)
             except RuntimeStoreError:
                 raise
             except HostedRoomError as exc:
                 raise RuntimeStoreError(getattr(exc, 'reason', None) or 'invalid_params') from exc
             except (ValueError, TypeError) as exc:
                 raise RuntimeStoreError('invalid_params') from exc
-    return await asyncio.to_thread(invoke)
+    result = await asyncio.to_thread(invoke)
+    return inventory.project(result) if inventory is not None else result
 
 
-def _group(authority, actor, home, method, params):
+def _group(authority, actor, home, method, params, *, inventory=None):
     from gateway import hosted_rooms as rooms
     db_path = authority.db.db_path
-    gateway_id = rooms.local_authority_gateway_id()
+    gateway_id = rooms.local_authority_gateway_id() if inventory is None else None
     service = getattr(authority, 'hosted_room_service', None)
     room_authorizer = getattr(service, 'authorize_room', None)
     if service is not None:
@@ -118,6 +136,7 @@ def _group(authority, actor, home, method, params):
 
     def listing():
         limit, offset = params.get('limit', rooms.MAX_ROOM_LIST_LIMIT), params.get('offset', 0)
+        owner = inventory.require_current()['owner'] if inventory is not None else actor.subject
         result = rooms.list_rooms(db_path, **params)
         next_offset = offset + limit if len(result) == limit else None
         if getattr(authority, 'hosted_room_service', None) is not None:
@@ -126,7 +145,7 @@ def _group(authority, actor, home, method, params):
                 if room_authorizer is None:
                     raise RuntimeStoreError('permission_denied')
                 try:
-                    room_authorizer(actor.subject, room['room_id'])
+                    room_authorizer(owner, room['room_id'])
                 except RuntimeStoreError as exc:
                     if exc.reason != 'permission_denied':
                         raise

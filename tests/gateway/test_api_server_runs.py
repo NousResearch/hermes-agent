@@ -416,6 +416,29 @@ class TestRunStatus:
 
 class TestRunEvents:
     @pytest.mark.asyncio
+    async def test_tool_completed_event_includes_redacted_bounded_result_preview(self, adapter):
+        loop = asyncio.get_running_loop()
+        adapter._run_streams["run_tool"] = asyncio.Queue()
+        callback = adapter._make_run_event_callback("run_tool", loop)
+
+        callback(
+            "tool.completed", "terminal", duration=0.077, is_error=True,
+            result={
+                "exit_code": 2,
+                "error": "BLOCKED: approval required",
+                "token": "sk-abcdefghijklmnopqrstuvwxyz",
+                "output": "x" * 600,
+            },
+        )
+        event = await adapter._run_streams["run_tool"].get()
+
+        assert event["error"] is True
+        assert "BLOCKED: approval required" in event["preview"]
+        assert "abcdefghijklmnopqrstuvwxyz" not in event["preview"]
+        assert len(event["preview"]) <= 500
+        assert event["preview"].endswith("...")
+
+    @pytest.mark.asyncio
     async def test_events_stream_returns_completed(self, adapter):
         """Events stream should receive run.completed when agent finishes."""
         app = _create_runs_app(adapter)

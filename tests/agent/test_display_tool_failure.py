@@ -57,6 +57,11 @@ class TestDetectToolFailureTerminal:
         assert suffix.startswith(" [")
         assert suffix.endswith("]")
 
+    def test_nonzero_dict_result_is_a_failure(self):
+        is_failure, suffix = _detect_tool_failure("terminal", {"exit_code": 2})
+        assert is_failure is True
+        assert suffix == " [exit 2]"
+
 
 
 
@@ -118,4 +123,3 @@ class TestGetCuteToolMessageFailureSuffix:
         ok = json.dumps({"success": True, "data": "hi"})
         line = get_cute_tool_message("web_search", {"query": "hi"}, 0.2, result=ok)
         assert "[" not in line.split("0.2s", 1)[1]
-

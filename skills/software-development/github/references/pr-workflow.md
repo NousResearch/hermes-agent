@@ -118,10 +118,11 @@ Options: `--draft`, `--reviewer user1,user2`, `--label "enhancement"`, `--base d
 **With git + curl:**
 
 ```bash
+GH_AUTH="Authorization: token <token>"
 BRANCH=$(git branch --show-current)
 
 curl -s -X POST \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   -H "Accept: application/vnd.github.v3+json" \
   https://api.github.com/repos/$OWNER/$REPO/pulls \
   -d "{
@@ -153,12 +154,13 @@ gh pr checks --watch
 **With git + curl:**
 
 ```bash
+GH_AUTH="Authorization: token <token>"
 # Get the latest commit SHA on the current branch
 SHA=$(git rev-parse HEAD)
 
 # Query the combined status
 curl -s \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO/commits/$SHA/status \
   | python -c "
 import sys, json
@@ -169,7 +171,7 @@ for s in data.get('statuses', []):
 
 # Also check GitHub Actions check runs (separate endpoint)
 curl -s \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO/commits/$SHA/check-runs \
   | python -c "
 import sys, json
@@ -181,11 +183,12 @@ for cr in data.get('check_runs', []):
 ### Poll Until Complete (git + curl)
 
 ```bash
+GH_AUTH="Authorization: token <token>"
 # Simple polling loop — check every 30 seconds, up to 10 minutes
 SHA=$(git rev-parse HEAD)
 for i in $(seq 1 20); do
   STATUS=$(curl -s \
-    -H "Authorization: token $GITHUB_TOKEN" \
+    -H "$GH_AUTH" \
     https://api.github.com/repos/$OWNER/$REPO/commits/$SHA/status \
     | python -c "import sys,json; print(json.load(sys.stdin)['state'])")
   echo "Check $i: $STATUS"
@@ -215,11 +218,12 @@ gh run view <RUN_ID> --log-failed
 **With git + curl:**
 
 ```bash
+GH_AUTH="Authorization: token <token>"
 BRANCH=$(git branch --show-current)
 
 # List workflow runs on this branch
 curl -s \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   "https://api.github.com/repos/$OWNER/$REPO/actions/runs?branch=$BRANCH&per_page=5" \
   | python -c "
 import sys, json
@@ -230,7 +234,7 @@ for r in runs:
 # Get failed job logs (download as zip, extract, read)
 RUN_ID=<run_id>
 curl -s -L \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO/actions/runs/$RUN_ID/logs \
   -o /tmp/ci-logs.zip
 cd /tmp && unzip -o ci-logs.zip -d ci-logs && cat ci-logs/*.txt
@@ -276,11 +280,12 @@ gh pr merge --auto --squash --delete-branch
 **With git + curl:**
 
 ```bash
+GH_AUTH="Authorization: token <token>"
 PR_NUMBER=<number>
 
 # Merge the PR via API (squash)
 curl -s -X PUT \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO/pulls/$PR_NUMBER/merge \
   -d "{
     \"merge_method\": \"squash\",
@@ -301,15 +306,16 @@ Merge methods: `"merge"` (merge commit), `"squash"`, `"rebase"`
 ### Enable Auto-Merge (curl)
 
 ```bash
+GH_AUTH="Authorization: token <token>"
 # Auto-merge requires the repo to have it enabled in settings.
 # This uses the GraphQL API since REST doesn't support auto-merge.
 PR_NODE_ID=$(curl -s \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/repos/$OWNER/$REPO/pulls/$PR_NUMBER \
   | python -c "import sys,json; print(json.load(sys.stdin)['node_id'])")
 
 curl -s -X POST \
-  -H "Authorization: token $GITHUB_TOKEN" \
+  -H "$GH_AUTH" \
   https://api.github.com/graphql \
   -d "{\"query\": \"mutation { enablePullRequestAutoMerge(input: {pullRequestId: \\\"$PR_NODE_ID\\\", mergeMethod: SQUASH}) { clientMutationId } }\"}"
 ```
@@ -346,7 +352,7 @@ git push -u origin HEAD
 
 | Action | gh | git + curl |
 |--------|-----|-----------|
-| List my PRs | `gh pr list --author @me` | `curl -s -H "Authorization: token $GITHUB_TOKEN" "https://api.github.com/repos/$OWNER/$REPO/pulls?state=open"` |
+| List my PRs | `gh pr list --author @me` | `curl -s -H "$GH_AUTH" "https://api.github.com/repos/$OWNER/$REPO/pulls?state=open"` |
 | View PR diff | `gh pr diff` | `git diff main...HEAD` (local) or `curl -H "Accept: application/vnd.github.diff" ...` |
 | Add comment | `gh pr comment N --body "..."` | `curl -X POST .../issues/N/comments -d '{"body":"..."}'` |
 | Request review | `gh pr edit N --add-reviewer user` | `curl -X POST .../pulls/N/requested_reviewers -d '{"reviewers":["user"]}'` |

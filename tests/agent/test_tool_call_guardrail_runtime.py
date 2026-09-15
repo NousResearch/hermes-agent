@@ -1,6 +1,7 @@
 """Runtime tests for tool-call loop guardrails."""
 
 import json
+import threading
 import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -249,6 +250,229 @@ def test_config_enabled_hard_stop_concurrent_path_does_not_submit_blocked_calls_
     assert started_events == [("tool.started", "web_search", allowed_args, {})]
     assert len(completed_events) == 1
     assert completed_events[0][1] == "web_search"
+
+
+def test_parallel_batches_preserve_one_full_authorized_reanchor_result():
+    read_args = {"path": "src/b.py"}
+    read_result = "same file contents\n" * 40
+    hard_stop = _hard_stop_config(
+        hard_stop_after={
+            "exact_failure": 2,
+            "same_tool_failure": 8,
+            "idempotent_no_progress": 3,
+        }
+    )
+    agent = _make_agent("patch", "read_file", config=hard_stop)
+    guardrails = agent._tool_guardrails
+    for _ in range(3):
+        guardrails.after_call("read_file", read_args, read_result, failed=False)
+    for call_id in ("old-1", "old-2"):
+        guardrails.observe_call(
+            "read_file", read_args, read_result, tool_call_id=call_id, failed=False
+        )
+    guardrails.note_compaction()
+
+    patch_args = {
+        "path": "src/a.py",
+        "old_string": "before",
+        "new_string": "after",
+    }
+    calls = [
+        _mock_tool_call("patch", json.dumps(patch_args), "c-patch"),
+        _mock_tool_call("read_file", json.dumps(read_args), "c-reanchor"),
+    ]
+    messages = []
+
+    def patch_then_read(name, _args, _task_id, **_kwargs):
+        if name == "patch":
+            return json.dumps({"success": True, "bytes_written": 1})
+        return read_result
+
+    with patch("model_tools.handle_function_call", side_effect=patch_then_read):
+        agent._execute_tool_calls_concurrent(
+            SimpleNamespace(content="", tool_calls=calls), messages, "task-1"
+        )
+
+    assert [message["tool_call_id"] for message in messages] == ["c-patch", "c-reanchor"]
+    assert messages[1]["content"] == read_result
+    assert agent._tool_guardrail_halt_decision is None
+    blocked = guardrails.before_call("read_file", read_args)
+    assert blocked.action == "block"
+    assert "proceed to the write/update step" in blocked.message
+
+    # Force the second worker through its pre-hook first. The start-order gate
+    # must still give the exact one-shot grace to the first model-ordered call;
+    # the duplicate is blocked at the existing hard-stop threshold.
+    contended = _make_agent("read_file", config=hard_stop)
+    contended_guardrails = contended._tool_guardrails
+    for _ in range(3):
+        contended_guardrails.after_call(
+            "read_file", read_args, read_result, failed=False
+        )
+    for call_id in ("old-1", "old-2"):
+        contended_guardrails.observe_call(
+            "read_file", read_args, read_result, tool_call_id=call_id, failed=False
+        )
+    contended_guardrails.note_compaction()
+    duplicate_calls = [
+        _mock_tool_call("read_file", json.dumps(read_args), "c-first"),
+        _mock_tool_call("read_file", json.dumps(read_args), "c-second"),
+    ]
+    duplicate_messages = []
+    second_pre_hook_ready = threading.Event()
+
+    def reverse_pre_hook_order(_agent, ref):
+        if ref.call_id == "c-first":
+            assert second_pre_hook_ready.wait(2)
+        else:
+            second_pre_hook_ready.set()
+        return None, ref.args
+
+    with (
+        patch(
+            "agent.tool_executor._ConcurrentToolAuthorizationGate.run",
+            new=lambda _self, callback: callback(),
+        ),
+        patch(
+            "agent.tool_executor._pre_tool_block",
+            side_effect=reverse_pre_hook_order,
+        ),
+        patch("model_tools.handle_function_call", return_value=read_result) as execute_read,
+    ):
+        contended._execute_tool_calls_concurrent(
+            SimpleNamespace(content="", tool_calls=duplicate_calls),
+            duplicate_messages,
+            "task-2",
+        )
+
+    assert duplicate_messages[0]["content"] == read_result
+    assert "idempotent_no_progress_block" in duplicate_messages[1]["content"]
+    execute_read.assert_called_once()
+    assert contended._tool_guardrail_halt_decision.code == "idempotent_no_progress_block"
+
+
+def test_abandoned_parallel_reanchor_restores_its_one_shot_grant():
+    read_args = {"path": "src/app.py"}
+    read_result = "same file contents\n" * 40
+    agent = _make_agent(
+        "terminal",
+        "read_file",
+        config=_hard_stop_config(
+            hard_stop_after={
+                "exact_failure": 2,
+                "same_tool_failure": 8,
+                "idempotent_no_progress": 3,
+            }
+        ),
+    )
+    guardrails = agent._tool_guardrails
+    for _ in range(3):
+        guardrails.after_call("read_file", read_args, read_result, failed=False)
+    guardrails.note_compaction()
+
+    release_wedged_policy = threading.Event()
+    reanchor_reserved = threading.Event()
+    original_before_call = guardrails.before_call
+    original_reserve = guardrails.reserve_post_compaction_reanchor
+
+    def wedge_first_policy(name, args, **kwargs):
+        if name == "terminal":
+            release_wedged_policy.wait(10)
+        return original_before_call(name, args, **kwargs)
+
+    def observe_reservation(name, args, **kwargs):
+        granted = original_reserve(name, args, **kwargs)
+        if granted:
+            reanchor_reserved.set()
+        return granted
+
+    def interrupt_after_reservation():
+        assert reanchor_reserved.wait(2)
+        agent.interrupt("test abandonment")
+
+    interrupter = threading.Thread(target=interrupt_after_reservation, daemon=True)
+    interrupter.start()
+    calls = [
+        _mock_tool_call("terminal", '{"command":"pwd"}', "c-wedged"),
+        _mock_tool_call("read_file", json.dumps(read_args), "c-abandoned-read"),
+    ]
+    messages = []
+    try:
+        with (
+            patch.object(guardrails, "before_call", side_effect=wedge_first_policy),
+            patch.object(
+                guardrails,
+                "reserve_post_compaction_reanchor",
+                side_effect=observe_reservation,
+            ),
+            patch("agent.tool_executor._START_ORDER_GATE_TIMEOUT_S", 30.0),
+            patch("agent.tool_executor._resolve_concurrent_tool_timeout", return_value=60.0),
+            patch("model_tools.handle_function_call") as dispatch,
+        ):
+            agent._execute_tool_calls_concurrent(
+                SimpleNamespace(content="", tool_calls=calls), messages, "task-3"
+            )
+        dispatch.assert_not_called()
+    finally:
+        release_wedged_policy.set()
+        agent.clear_interrupt()
+        interrupter.join(timeout=2)
+
+    assert reanchor_reserved.is_set()
+    assert "cancelled" in messages[1]["content"]
+    assert guardrails.before_call("read_file", read_args).action == "allow"
+
+
+def test_failed_parallel_reanchor_keeps_count_for_retry_and_next_block():
+    read_args = {"path": "src/app.py"}
+    read_result = "same file contents\n" * 40
+    agent = _make_agent(
+        "read_file",
+        config=_hard_stop_config(
+            hard_stop_after={
+                "exact_failure": 2,
+                "same_tool_failure": 8,
+                "idempotent_no_progress": 3,
+            }
+        ),
+    )
+    guardrails = agent._tool_guardrails
+    for _ in range(3):
+        guardrails.after_call("read_file", read_args, read_result, failed=False)
+    guardrails.note_compaction()
+
+    calls = [
+        _mock_tool_call("read_file", json.dumps(read_args), "c-failed-read"),
+    ]
+    with patch(
+        "model_tools.handle_function_call", side_effect=RuntimeError("read failed")
+    ):
+        agent._execute_tool_calls_concurrent(
+            SimpleNamespace(content="", tool_calls=calls), [], "task-4"
+        )
+
+    retry_calls = [
+        _mock_tool_call("read_file", json.dumps(read_args), "c-retry-read"),
+    ]
+    with patch("model_tools.handle_function_call", return_value=read_result):
+        retry_messages = []
+        agent._execute_tool_calls_concurrent(
+            SimpleNamespace(content="", tool_calls=retry_calls),
+            retry_messages,
+            "task-4",
+        )
+    assert retry_messages[0]["content"] == read_result
+
+    blocked_calls = [
+        _mock_tool_call("read_file", json.dumps(read_args), "c-blocked-read"),
+    ]
+    blocked_messages = []
+    agent._execute_tool_calls_concurrent(
+        SimpleNamespace(content="", tool_calls=blocked_calls),
+        blocked_messages,
+        "task-4",
+    )
+    assert "idempotent_no_progress_block" in blocked_messages[0]["content"]
 
 
 def test_relay_rewrite_precedes_sequential_policy_approval_checkpoint_and_dispatch():

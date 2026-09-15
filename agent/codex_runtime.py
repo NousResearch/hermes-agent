@@ -175,6 +175,10 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
     # Provider-side context was rewritten; the usage anchor's transcript snapshot no longer matches.
     set_usage_anchor(agent, None)
     agent._last_compaction_in_place = False
+    _call_guarded(
+        getattr(getattr(agent, "_tool_guardrails", None), "note_compaction", None),
+        "tool guardrail codex compaction hook failed",
+    )
     _call_guarded(getattr(agent, "event_callback", None) or None, "event_callback error on codex session:compress",
                   args=("session:compress", {
                       "platform": getattr(agent, "platform", None) or "", "session_id": getattr(agent, "session_id", None) or "",

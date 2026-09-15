@@ -1533,12 +1533,14 @@ class TestBuildAssistantMessage:
         msg = _mock_assistant_msg(content="Compacted")
         msg.codex_reasoning_items = [checkpoint]
         agent.context_compressor.note_native_compaction_checkpoint = MagicMock()
+        agent._tool_guardrails.note_compaction = MagicMock()
         self._enable_native_compaction(agent)
 
         result = agent._build_assistant_message(msg, "stop")
 
         assert result["codex_reasoning_items"] == [checkpoint]
         agent.context_compressor.note_native_compaction_checkpoint.assert_called_once_with()
+        agent._tool_guardrails.note_compaction.assert_called_once_with()
 
     def test_native_checkpoint_remains_compatible_with_plugin_context_engine(self, agent):
         checkpoint = {
@@ -1549,11 +1551,13 @@ class TestBuildAssistantMessage:
         msg = _mock_assistant_msg(content="Compacted")
         msg.codex_reasoning_items = [checkpoint]
         agent.context_compressor = SimpleNamespace(threshold_tokens=204_000)
+        agent._tool_guardrails.note_compaction = MagicMock()
         self._enable_native_compaction(agent)
 
         result = agent._build_assistant_message(msg, "stop")
 
         assert result["codex_reasoning_items"] == [checkpoint]
+        agent._tool_guardrails.note_compaction.assert_called_once_with()
 
     @pytest.mark.parametrize("encrypted_content", ["", " "])
     def test_malformed_checkpoint_does_not_arm_deferral(
@@ -1567,16 +1571,19 @@ class TestBuildAssistantMessage:
         }
         msg = _mock_assistant_msg(content="Compacted")
         msg.codex_reasoning_items = [malformed]
+        agent._tool_guardrails.note_compaction = MagicMock()
         self._enable_native_compaction(agent)
 
         result = agent._build_assistant_message(msg, "stop")
 
         assert result["codex_reasoning_items"] == [malformed]
         note_checkpoint.assert_not_called()
+        agent._tool_guardrails.note_compaction.assert_not_called()
 
     def test_ineligible_route_checkpoint_does_not_arm_deferral(self, agent):
         note_checkpoint = MagicMock()
         agent.context_compressor.note_native_compaction_checkpoint = note_checkpoint
+        agent._tool_guardrails.note_compaction = MagicMock()
         checkpoint = {"type": "compaction", "encrypted_content": "opaque-checkpoint"}
         msg = _mock_assistant_msg(content="Compacted")
         msg.codex_reasoning_items = [checkpoint]
@@ -1585,6 +1592,7 @@ class TestBuildAssistantMessage:
 
         assert result["codex_reasoning_items"] == [checkpoint]
         note_checkpoint.assert_not_called()
+        agent._tool_guardrails.note_compaction.assert_not_called()
 
 
 

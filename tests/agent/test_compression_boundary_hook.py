@@ -21,6 +21,7 @@ import pytest
 from agent.conversation_compression import (
     finalize_context_engine_compression_notification,
 )
+from agent.tool_guardrails import ToolCallGuardrailConfig, ToolCallGuardrailController
 
 class TestCompressionBoundaryHook:
     def _make_agent(self, session_db):
@@ -46,6 +47,19 @@ class TestCompressionBoundaryHook:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = SessionDB(db_path=Path(tmpdir) / "test.db")
             agent = self._make_agent(db)
+            agent._tool_guardrails = ToolCallGuardrailController(
+                ToolCallGuardrailConfig(
+                    hard_stop_enabled=True,
+                    no_progress_warn_after=2,
+                    no_progress_block_after=3,
+                )
+            )
+            read_args = {"path": "src/app.py"}
+            read_result = "same file contents"
+            for _ in range(3):
+                agent._tool_guardrails.after_call(
+                    "read_file", read_args, read_result, failed=False
+                )
 
             # Stub the context compressor: we only need to observe the hook.
             compressor = MagicMock()
@@ -70,7 +84,24 @@ class TestCompressionBoundaryHook:
                 {"role": "user", "content": f"m{i}"} for i in range(10)
             ]
 
-            agent._compress_context(messages, "sys", approx_tokens=10_000)
+            with patch.object(
+                agent._tool_guardrails,
+                "note_compaction",
+                wraps=agent._tool_guardrails.note_compaction,
+            ) as note_compaction:
+                agent._compress_context(messages, "sys", approx_tokens=10_000)
+            note_compaction.assert_called_once_with()
+
+            # A real committed rotation now allows exactly one execution of
+            # the exact pre-compaction read, without resetting its counter.
+            assert agent._tool_guardrails.before_call("read_file", read_args).action == "allow"
+            reanchor = agent._tool_guardrails.after_call(
+                "read_file", read_args, read_result, failed=False
+            )
+            assert reanchor.action == "allow" and reanchor.count == 4
+            blocked = agent._tool_guardrails.before_call("read_file", read_args)
+            assert blocked.action == "block"
+            assert "proceed to the write/update step" in blocked.message
 
             # Session_id rotated
             assert agent.session_id != original_sid, \
@@ -148,14 +179,16 @@ class TestCompressionBoundaryHook:
             compressor.compress.side_effect = RuntimeError("synthetic compression failure")
             agent.context_compressor = compressor
 
-            with pytest.raises(RuntimeError, match="synthetic compression failure"):
-                agent._compress_context(
-                    [{"role": "user", "content": "request"}],
-                    "sys",
-                    approx_tokens=100,
-                )
+            with patch.object(agent._tool_guardrails, "note_compaction") as note_compaction:
+                with pytest.raises(RuntimeError, match="synthetic compression failure"):
+                    agent._compress_context(
+                        [{"role": "user", "content": "request"}],
+                        "sys",
+                        approx_tokens=100,
+                    )
 
             compressor.on_session_start.assert_not_called()
+            note_compaction.assert_not_called()
 
 
     def test_no_progress_does_not_notify(self):
@@ -170,14 +203,16 @@ class TestCompressionBoundaryHook:
             agent.context_compressor = compressor
             messages = [{"role": "user", "content": "request"}]
 
-            returned, _ = agent._compress_context(
-                messages,
-                "sys",
-                approx_tokens=100,
-            )
+            with patch.object(agent._tool_guardrails, "note_compaction") as note_compaction:
+                returned, _ = agent._compress_context(
+                    messages,
+                    "sys",
+                    approx_tokens=100,
+                )
 
             assert returned is messages
             compressor.on_session_start.assert_not_called()
+            note_compaction.assert_not_called()
 
 
     def test_no_hook_when_no_session_db(self):
@@ -201,13 +236,19 @@ class TestCompressionBoundaryHook:
         compressor.last_prompt_tokens = 0
         compressor.last_completion_tokens = 0
         compressor._last_summary_error = None
+        compressor._last_compress_aborted = False
+        compressor._last_compression_made_progress = True
+        compressor._last_summary_fallback_used = False
+        compressor._last_feasibility_skip = False
         agent.context_compressor = compressor
 
         original_sid = agent.session_id
-        agent._compress_context([{"role": "user", "content": "m"}], "sys", approx_tokens=100)
+        with patch.object(agent._tool_guardrails, "note_compaction") as note_compaction:
+            agent._compress_context([{"role": "user", "content": "m"}], "sys", approx_tokens=100)
 
         # No DB => no rotation => no compression-boundary hook
         assert agent.session_id == original_sid
+        note_compaction.assert_called_once_with()
         comp_calls = [
             c for c in compressor.on_session_start.call_args_list
             if c.kwargs.get("boundary_reason") == "compression"
@@ -246,11 +287,13 @@ class TestCompressionBoundaryHook:
             # Must not raise. Input must be large enough that the fake
             # compressor's one-message summary is a genuine shrink — the
             # no-growth commit guard refuses to rotate on transcript growth.
-            compressed, _prompt = agent._compress_context(
-                [{"role": "user", "content": "m" * 400}], "sys", approx_tokens=100
-            )
+            with patch.object(agent._tool_guardrails, "note_compaction") as note_compaction:
+                compressed, _prompt = agent._compress_context(
+                    [{"role": "user", "content": "m" * 400}], "sys", approx_tokens=100
+                )
             assert compressed
             assert agent.session_id != original_sid
+            note_compaction.assert_called_once_with()
 
 
 class TestSessionCompressEvent:
@@ -324,4 +367,3 @@ class TestSessionCompressEvent:
                 [{"role": "user", "content": "m"}], "sys", approx_tokens=100
             )
             assert compressed
-

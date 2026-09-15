@@ -123,10 +123,14 @@ class TestInPlaceCommitFailureRollback:
             def _locked(*_a, **_kw):
                 raise RuntimeError("database is locked (concurrent drain)")
 
-            with patch.object(SessionDB, "archive_and_compact", _locked):
+            with (
+                patch.object(SessionDB, "archive_and_compact", _locked),
+                patch.object(agent._tool_guardrails, "note_compaction") as note_compaction,
+            ):
                 compressed, _prompt = compress_context(
                     agent, messages, approx_tokens=900_000, system_message="sys"
                 )
+            note_compaction.assert_not_called()
 
             # ── Precondition: the commit genuinely did not land. Without this
             # the assertions below would pass vacuously on a path that
@@ -151,7 +155,7 @@ class TestInPlaceCommitFailureRollback:
             )
 
     def test_successful_commit_still_compacts_in_place(self):
-        """The rollback must not fire when the commit landed (#98450 guard)."""
+        """A landed commit stays compacted, even if later bookkeeping fails."""
         from hermes_state import SessionDB
         from agent.context_compressor import _DB_PERSISTED_MARKER
         from agent.conversation_compression import compress_context
@@ -174,3 +178,32 @@ class TestInPlaceCommitFailureRollback:
 
             agent._flush_messages_to_session_db(compressed)
             assert _counts(db, sid) == (12, 4)
+
+        # The transcript is already durable when update_system_prompt runs. A
+        # failure there must not hide the boundary from the guardrail.
+        with _session_db("post-commit.db") as db:
+            sid = "20260831_120002_post_commit"
+            _seed(db, sid, n=8)
+            agent = _make_agent(db, sid)
+            agent._last_flushed_db_idx = 8
+            messages = [{"role": "user", "content": f"m{i}"} for i in range(8)]
+
+            with (
+                patch.object(
+                    SessionDB,
+                    "update_system_prompt",
+                    side_effect=RuntimeError("post-commit bookkeeping failed"),
+                ),
+                patch.object(
+                    agent._tool_guardrails,
+                    "note_compaction",
+                    wraps=agent._tool_guardrails.note_compaction,
+                ) as note_compaction,
+            ):
+                compressed, _prompt = compress_context(
+                    agent, messages, approx_tokens=900_000, system_message="sys"
+                )
+
+            assert len(compressed) == 4
+            assert _counts(db, sid) == (12, 4)
+            note_compaction.assert_called_once_with()

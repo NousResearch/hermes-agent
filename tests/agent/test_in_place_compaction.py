@@ -72,9 +72,11 @@ class TestInPlaceCompaction:
             agent._last_flushed_db_idx = 5
 
             messages = [{"role": "user", "content": f"m{i}"} for i in range(8)]
-            compressed, _sp = compress_context(
-                agent, messages, approx_tokens=100_000, system_message="sys"
-            )
+            with patch.object(agent._tool_guardrails, "note_compaction") as note_compaction:
+                compressed, _sp = compress_context(
+                    agent, messages, approx_tokens=100_000, system_message="sys"
+                )
+            note_compaction.assert_called_once_with()
 
             # Identity never moved.
             assert agent.session_id == sid

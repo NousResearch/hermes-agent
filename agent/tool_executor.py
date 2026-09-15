@@ -624,6 +624,15 @@ def _blocked_tool_result(agent, ref: _ToolCallRef, *, block_message: Optional[st
     return result
 
 
+def _restore_post_compaction_reanchor(agent, tool_call_id: str) -> None:
+    """Release a concurrent reread reservation whose result cannot reach the model."""
+    restore = getattr(
+        agent._tool_guardrails, "restore_post_compaction_reanchor", None
+    )
+    if callable(restore):
+        restore(tool_call_id)
+
+
 def _pre_tool_block(agent, ref: _ToolCallRef):
     """Run ``pre_tool_call`` plugin hooks; returns ``(block_message, final_args)`` with any
     hook-modified args applied. Hook failures never block."""
@@ -650,6 +659,7 @@ def _dispatch_authorized_once(
     scope_block: str | None,
     display_index: int | None,
     begin_execution,
+    reserve_guardrail,
     authorization_gate: _ConcurrentToolAuthorizationGate | None,
 ) -> Any:
     """Hermes policy (scope → plugin pre-hooks → guardrails) then the one real dispatch.
@@ -664,6 +674,12 @@ def _dispatch_authorized_once(
         elif callback is not None:
             callback()
 
+    def _advance_guardrail_order(callback=None) -> None:
+        if reserve_guardrail is not None:
+            reserve_guardrail(callback)
+        elif callback is not None:
+            callback()
+
     block_message, block_error_type = scope_block, "tool_scope_block"
     if block_message is None:
         block_error_type = "plugin_block"
@@ -671,27 +687,65 @@ def _dispatch_authorized_once(
         block_message, ref.args = resolve() if authorization_gate is None else authorization_gate.run(resolve)
         state.args = ref.args
 
-    guardrail_decision = None
-    if block_message is None:
-        guardrail_decision = agent._tool_guardrails.before_call(ref.name, ref.args)
-        if guardrail_decision.allows_execution:
-            guardrail_decision = None
-
-    if block_message is not None or guardrail_decision is not None:
+    if block_message is not None:
+        _advance_guardrail_order()
         _advance_start_order()
         state.blocked = True
         return _blocked_tool_result(
             agent, ref,
-            block_message=block_message, block_error_type=block_error_type, guardrail_decision=guardrail_decision,
+            block_message=block_message, block_error_type=block_error_type, guardrail_decision=None,
         )
 
-    if ref.name == "memory":
-        agent._turns_since_memory = 0
-    elif ref.name == "skill_manage":
-        agent._iters_since_skill = 0
+    # Reserve the one-shot post-compaction reread in model order, but run the
+    # full guardrail outside either ordering lock. Guardrail implementations may
+    # block; the existing bounded start gate must still be able to release later
+    # tools rather than starving the whole batch.
+    reanchor_reserved = False
 
-    _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
-    return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
+    def _reserve_reanchor() -> None:
+        nonlocal reanchor_reserved
+        reserve = getattr(agent._tool_guardrails, "reserve_post_compaction_reanchor", None)
+        if callable(reserve):
+            reanchor_reserved = reserve(
+                ref.name, ref.args, reservation_id=ref.call_id
+            ) is True
+
+    _advance_guardrail_order(_reserve_reanchor)
+    try:
+        if reanchor_reserved:
+            guardrail_decision = agent._tool_guardrails.before_call(
+                ref.name,
+                ref.args,
+                post_compaction_reanchor_granted=True,
+            )
+        else:
+            guardrail_decision = agent._tool_guardrails.before_call(ref.name, ref.args)
+        if not guardrail_decision.allows_execution:
+            _advance_start_order()
+            state.blocked = True
+            return _blocked_tool_result(
+                agent, ref,
+                block_message=None, block_error_type=block_error_type, guardrail_decision=guardrail_decision,
+            )
+
+        if ref.name == "memory":
+            agent._turns_since_memory = 0
+        elif ref.name == "skill_manage":
+            agent._iters_since_skill = 0
+
+        _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
+
+        return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
+    except _BatchAbandoned:
+        if reanchor_reserved:
+            _restore_post_compaction_reanchor(agent, ref.call_id)
+        raise
+    except BaseException:
+        # Ordinary execution failures are converted into an observed tool
+        # result by the worker. Leave the reservation in flight until
+        # after_call() sees that failure so it can preserve the existing
+        # no-progress count and restore the candidate itself.
+        raise
 
 
 def _run_agent_tool_execution_middleware(
@@ -706,6 +760,7 @@ def _run_agent_tool_execution_middleware(
     display_index: int | None = None,
     middleware_trace: list[dict[str, Any]] | None = None,
     begin_execution=None,
+    reserve_guardrail=None,
     authorization_gate: _ConcurrentToolAuthorizationGate | None = None,
 ) -> _ManagedToolResult:
     """Run Relay rewrites before Hermes policy and dispatch exactly once."""
@@ -734,6 +789,7 @@ def _run_agent_tool_execution_middleware(
             scope_block=scope_block,
             display_index=display_index,
             begin_execution=begin_execution,
+            reserve_guardrail=reserve_guardrail,
             authorization_gate=authorization_gate,
         )
 
@@ -1170,10 +1226,18 @@ class _ConcurrentBatch:
             if pc.parse_error is not None:
                 self.results[i] = _ToolOutcome(pc.ref(effective_task_id), pc.parse_error, 0.0, True, True)
         self.gate = _StartOrderGate(_start_order_gate_timeout(timeout_s))
+        self.guardrail_gate = _StartOrderGate(_start_order_gate_timeout(timeout_s))
         self.authorization_gate = _ConcurrentToolAuthorizationGate()
         self.timed_out_indices: set[int] = set()
 
-    def _dispatch_worker(self, index: int, ref: _ToolCallRef, scope_block, start_gate: _WorkerStartOnce) -> Optional[_ToolOutcome]:
+    def _dispatch_worker(
+        self,
+        index: int,
+        ref: _ToolCallRef,
+        scope_block,
+        start_gate: _WorkerStartOnce,
+        guardrail_gate: _WorkerStartOnce,
+    ) -> Optional[_ToolOutcome]:
         """Run one call through the middleware and synthesize its slot outcome; ``None`` when
         abandoned at the gate (the main thread already wrote this slot; emitting would
         double-report the tool_call_id)."""
@@ -1197,6 +1261,7 @@ class _ConcurrentBatch:
                 scope_block=scope_block,
                 display_index=index + 1,
                 begin_execution=start_gate.advance,
+                reserve_guardrail=guardrail_gate.advance,
                 authorization_gate=self.authorization_gate,
             )
             result, ref.args, ref.trace = managed.result, managed.args, managed.middleware_trace
@@ -1233,11 +1298,20 @@ class _ConcurrentBatch:
                 _interrupt_worker_tids(agent, [_worker_tid], reason=getattr(agent, "_tool_interrupt_reason", None))
             _set_worker_activity_callback(agent)
             start_gate = _WorkerStartOnce(self.gate, start_order, pc.name)
+            guardrail_gate = _WorkerStartOnce(self.guardrail_gate, start_order, pc.name)
             try:
-                outcome = self._dispatch_worker(index, pc.ref(self.effective_task_id), pc.scope_block, start_gate)
+                outcome = self._dispatch_worker(
+                    index,
+                    pc.ref(self.effective_task_id),
+                    pc.scope_block,
+                    start_gate,
+                    guardrail_gate,
+                )
                 if outcome is not None:
                     self.results[index] = outcome
             finally:
+                with contextlib.suppress(_BatchAbandoned):
+                    guardrail_gate.advance()  # keep later policy reservations moving
                 with contextlib.suppress(_BatchAbandoned):
                     start_gate.advance()  # keep later-ordered workers moving
 
@@ -1319,6 +1393,7 @@ class _ConcurrentBatch:
             # Release gate-parked workers BEFORE interrupt fan-out so none later
             # dispatches a tool the turn already reported as timed out / interrupted.
             self.gate.abandon()
+            self.guardrail_gate.abandon()
             if timed_out:
                 with agent._tool_worker_threads_lock:
                     worker_tids = list(agent._tool_worker_threads)
@@ -1347,6 +1422,7 @@ class _ConcurrentBatch:
             # detached rather than joining them; normal completion joins.
             if abandon_executor:
                 self.gate.abandon()
+                self.guardrail_gate.abandon()
             executor.shutdown(wait=not abandon_executor, cancel_futures=abandon_executor)
 
 
@@ -1380,6 +1456,7 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
         # prefer its real result over a fabricated timeout.
         if r is None:
             ref, is_error, blocked = pc.ref(effective_task_id), True, False
+            _restore_post_compaction_reanchor(agent, ref.call_id)
             function_result, tool_duration, effect_disposition = _unfinished_tool_result(
                 agent, ref, timed_out=i in batch.timed_out_indices, timeout_s=batch.timeout_s,
             )

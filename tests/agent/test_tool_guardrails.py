@@ -184,9 +184,135 @@ def test_skill_read_tools_are_idempotent_and_block_repeated_identical_success_ou
         assert warn.action == "warn"
         assert warn.code == "idempotent_no_progress_warning"
 
+        controller.note_compaction()
         blocked = controller.before_call(tool_name, args)
         assert blocked.action == "block"
         assert blocked.code == "idempotent_no_progress_block"
+
+
+def test_post_compaction_reanchor_is_exact_single_use_and_write_oriented():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            no_progress_warn_after=2,
+            no_progress_block_after=3,
+        )
+    )
+    target_args = {"path": "src/app.py"}
+    other_args = {"path": "src/other.py"}
+    result = "same file contents\n" * 40
+
+    # Reach the hard-stop boundary before compaction. Keep the independent
+    # identical-call detector one call short of its threshold as well.
+    for _ in range(3):
+        controller.after_call("read_file", target_args, result, failed=False)
+    for _ in range(2):
+        controller.observe_call("read_file", target_args, result, failed=False)
+
+    # Repeated notifications do not stack extra attempts. A read signature
+    # that did not exist before compaction receives ordinary loop handling.
+    controller.note_compaction()
+    controller.note_compaction()
+    controller.after_call(
+        "terminal", {"command": "pwd"}, '{"exit_code": 0}', failed=False
+    )
+    assert controller.before_call("read_file", other_args).action == "allow"
+    controller.after_call("read_file", other_args, result, failed=False)
+    assert controller.before_call("read_file", other_args).action == "allow"
+    unrelated_warning = controller.after_call("read_file", other_args, result, failed=False)
+    assert unrelated_warning.action == "warn"
+    assert "change the query" in unrelated_warning.message
+    assert "post-compaction" not in unrelated_warning.message
+
+    # The exact pre-compaction read gets one real execution even though its
+    # counter is already at the block threshold. Its counters still advance,
+    # while warning/halt output is suppressed for this one anchoring call.
+    assert controller.before_call("read_file", target_args).action == "allow"
+    reanchor = controller.after_call("read_file", target_args, result, failed=False)
+    observation = controller.observe_call(
+        "read_file", target_args, result, tool_call_id="reanchor-read", failed=False
+    )
+    assert reanchor.action == "allow" and reanchor.count == 4
+    assert observation.notice is None
+    assert observation.stub is None
+    assert controller.halt_decision is None
+
+    blocked = controller.before_call("read_file", target_args)
+    assert blocked.action == "block"
+    assert blocked.code == "idempotent_no_progress_block"
+    assert "post-compaction" in blocked.message
+    assert "proceed to the write/update step" in blocked.message
+    assert "change the query" not in blocked.message
+
+    expired = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=3)
+    )
+    for _ in range(3):
+        expired.after_call("read_file", target_args, result, failed=False)
+    expired.note_compaction()
+    expired.after_call("patch", {"path": "src/app.py"}, '{"success": true}', failed=False)
+    expired_block = expired.before_call("read_file", target_args)
+    assert expired_block.action == "block"
+    assert "post-compaction" not in expired_block.message
+
+    restored = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=3)
+    )
+    for _ in range(3):
+        restored.after_call("read_file", target_args, result, failed=False)
+    restored.note_compaction()
+    assert restored.reserve_post_compaction_reanchor(
+        "read_file", target_args, reservation_id="abandoned-read"
+    )
+    assert restored.restore_post_compaction_reanchor("abandoned-read")
+    assert restored.before_call("read_file", target_args).action == "allow"
+
+    failed_reanchor = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=3)
+    )
+    for _ in range(3):
+        failed_reanchor.after_call("read_file", target_args, result, failed=False)
+    failed_reanchor.note_compaction()
+    assert failed_reanchor.before_call("read_file", target_args).action == "allow"
+    failed_reanchor.after_call(
+        "read_file", target_args, '{"error":"temporary"}', failed=True
+    )
+    assert failed_reanchor.before_call("read_file", target_args).action == "allow"
+    retry = failed_reanchor.after_call(
+        "read_file", target_args, result, failed=False
+    )
+    assert retry.count == 4
+    assert failed_reanchor.before_call("read_file", target_args).action == "block"
+
+    # In warning-only sessions the full re-anchor becomes the new reference
+    # target, so a later duplicate stub never points into compacted-away text.
+    soft = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=False))
+    soft.after_call("read_file", target_args, result, failed=False)
+    soft.observe_call("read_file", target_args, result, tool_call_id="old-read", failed=False)
+    soft.note_compaction()
+    soft.before_call("read_file", target_args)
+    soft.after_call("read_file", target_args, result, failed=False)
+    replay = soft.observe_call(
+        "read_file", target_args, result, tool_call_id="fresh-read", failed=False
+    )
+    assert replay.stub is None
+    soft.before_call("read_file", target_args)
+    soft.after_call("read_file", target_args, result, failed=False)
+    duplicate = soft.observe_call(
+        "read_file", target_args, result, tool_call_id="later-read", failed=False
+    )
+    assert "tool_call_id fresh-read" in duplicate.stub
+
+    mcp = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=2)
+    )
+    mcp_name = "mcp__filesystem__read_file"
+    for _ in range(2):
+        mcp.after_call(mcp_name, target_args, result, failed=False)
+    mcp.note_compaction()
+    assert mcp.before_call(mcp_name, target_args).action == "allow"
+    mcp.after_call(mcp_name, target_args, result, failed=False)
+    assert mcp.before_call(mcp_name, target_args).action == "block"
 
 
 def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_success_output_by_default():

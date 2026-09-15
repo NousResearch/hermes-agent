@@ -3083,6 +3083,23 @@ def _finish_compaction_boundary(
             if callable(_clear_labels := getattr(type(_labels_db), "clear_session_activity_labels", None)):
                 _clear_labels(_labels_db, _old_sid)
 
+    # Once the transcript rewrite is committed, exact file reads from the old
+    # context may need one replay so the model can resume an in-flight edit.
+    # Arm this before plugin/status bookkeeping: a later callback failure does
+    # not undo the already-committed boundary. Rejected/no-op candidates and
+    # failed persistence attempts never reach either commit signal below.
+    committed_boundary = compacted_in_place or (
+        session_commit_succeeded and bool(_old_sid)
+    ) or (
+        not getattr(agent, "_session_db", None) and compression_made_progress
+    )
+    if committed_boundary:
+        with _swallow("tool guardrail compaction hook failed (ignored)", exc_info=True):
+            guardrails = getattr(agent, "_tool_guardrails", None)
+            note_compaction = getattr(guardrails, "note_compaction", None)
+            if callable(note_compaction):
+                note_compaction()
+
     # Plugin engines use boundary_reason="compression" to keep lineage/checkpoint
     # state. Fires in BOTH modes: in-place passes the same id, the boundary is real.
     if session_commit_succeeded and (bool(_old_sid) or compacted_in_place):
@@ -3288,6 +3305,9 @@ def _commit_compaction(
                     watermark=lease.watermark, lock_holder=lease.holder,
                     tail_count=sum(1 for m in compressed if id(m) in _tail_tagged_ids),
                 )
+                # The atomic transcript rewrite is now durable. Keep this fact
+                # even if later marker/system-prompt bookkeeping raises.
+                compacted_in_place = True
                 split_status = "in_place_committed"
                 # compress() returned marker-swept copies; stamp them as persisted or the next
                 # flush re-INSERTs the whole compacted transcript, doubling the live set. Reset
@@ -3296,7 +3316,6 @@ def _commit_compaction(
                 agent._flushed_db_message_ids = set()
                 # Rotation-independent signal; the gateway reads this (not an id diff) to
                 # re-baseline transcript handling.
-                compacted_in_place = True
                 # In-place still updates the current row's prompt; rotation published it atomically above.
                 agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
                 agent._last_flushed_db_idx = 0

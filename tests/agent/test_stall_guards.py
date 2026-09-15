@@ -399,17 +399,25 @@ def test_repeating_two_call_cycle_fires_notice_and_halts_under_hard_stop():
     from agent.tool_guardrails import ToolCallGuardrailConfig
 
     c = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
-    pairs = (({"command": "make build"}, "error: X\n"),
-             ({"command": "tail -5 build.log"}, "still broken\n"))
+    pairs = (
+        ("read_file", {"path": "build.log"}, "same source\n"),
+        ("terminal", {"command": "make build"}, "error: X\n"),
+    )
     first_notice_call = None
+    noted_compaction = False
     calls = 0
     for _ in range(30):
-        for args, result in pairs:
+        for tool_name, args, result in pairs:
             calls += 1
-            notice = c.observe_call("terminal", args, result).notice
+            assert c.before_call(tool_name, args).allows_execution
+            c.after_call(tool_name, args, result, failed=False)
+            notice = c.observe_call(tool_name, args, result).notice
             if notice is not None and first_notice_call is None:
                 first_notice_call = calls
                 assert "cycle" in notice
+        if first_notice_call is not None and not noted_compaction:
+            c.note_compaction()
+            noted_compaction = True
         if c.halt_decision is not None:
             break
     # Notice on the last call of the threshold-th lap (period 2 × threshold 3).

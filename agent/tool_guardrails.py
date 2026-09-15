@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from collections import deque
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Mapping
@@ -22,7 +23,24 @@ IDEMPOTENT_TOOL_NAMES = frozenset({
     "browser_snapshot", "browser_console", "browser_get_images", "mcp_filesystem_read_file",
     "mcp_filesystem_read_text_file", "mcp_filesystem_read_multiple_files", "mcp_filesystem_list_directory",
     "mcp_filesystem_list_directory_with_sizes", "mcp_filesystem_directory_tree", "mcp_filesystem_get_file_info",
-    "mcp_filesystem_search_files",
+    "mcp_filesystem_search_files", "mcp__filesystem__read_file", "mcp__filesystem__read_text_file",
+    "mcp__filesystem__read_multiple_files",
+})
+
+# Exact file reads seen before compaction may be replayed once to recover the
+# source text that was removed from the model's context. Search and web calls
+# are deliberately excluded: compaction does not make their results necessary
+# for an in-flight file edit.
+_POST_COMPACTION_REANCHOR_READ_TOOLS = frozenset({
+    "read_file",
+    "mcp_filesystem_read_file",
+    "mcp_filesystem_read_text_file",
+    "mcp_filesystem_read_multiple_files",
+})
+_MCP_REANCHOR_READ_TOOL_NAMES = frozenset({
+    "read_file",
+    "read_text_file",
+    "read_multiple_files",
 })
 
 MUTATING_TOOL_NAMES = frozenset({
@@ -88,6 +106,19 @@ _ATTENDED_PLATFORMS = frozenset({"cli", "tui", "desktop", "acp", "subagent", "ap
 def is_stall_guard_repeatable(tool_name: str) -> bool:
     """Whether a tool is exempt from the identical-call loop notice."""
     return tool_name in STALL_GUARD_REPEATABLE_TOOLS or tool_name.endswith(_STALL_GUARD_REPEATABLE_SUFFIXES)
+
+
+def _is_post_compaction_reanchor_read(tool_name: str) -> bool:
+    """Recognize local/legacy reads plus the live ``mcp__server__tool`` wire shape."""
+    if tool_name in _POST_COMPACTION_REANCHOR_READ_TOOLS:
+        return True
+    parts = tool_name.split("__", 2)
+    return (
+        len(parts) == 3
+        and parts[0] == "mcp"
+        and bool(parts[1])
+        and parts[2] in _MCP_REANCHOR_READ_TOOL_NAMES
+    )
 
 
 def _is_non_interactive_platform(platform: str | None) -> bool:
@@ -274,6 +305,16 @@ _DECISION_MESSAGES: dict[str, str] = {
     ),
 }
 
+_POST_COMPACTION_REANCHOR_WARNING = (
+    "{tool_name} has returned the same result {count} times this turn. The post-compaction "
+    "re-read already restored the exact file state; proceed to the write/update step."
+)
+_POST_COMPACTION_REANCHOR_BLOCK = (
+    "Blocked {tool_name}: this read has returned the same result {count} times this turn. "
+    "The post-compaction re-read already restored the exact file state; proceed to the "
+    "write/update step."
+)
+
 _IDENTICAL_CALL_NOTICE = (
     "[hermes note: this is the {ordinal} consecutive identical call to "
     "{tool_name} with identical arguments returning the same result. "
@@ -324,6 +365,16 @@ class ToolCallGuardrailController:
         # (signature, result_hash, repeatable) for every observed call this turn, so a repeating
         # multi-call cycle (A,B,A,B,...) is caught even though it resets the consecutive streak above.
         self._call_history: deque[tuple[ToolCallSignature, str, bool]] = deque(maxlen=_STALL_GUARD_CYCLE_HISTORY)
+        # A committed compaction can justify one replay of an exact file-read
+        # signature already seen this turn. Keep this state separate from the
+        # loop counters so unrelated loops and the upstream A/B cycle detector
+        # retain their full history.
+        self._post_compaction_reanchor_lock = threading.Lock()
+        self._post_compaction_reanchor_candidates: set[ToolCallSignature] = set()
+        self._post_compaction_reanchor_inflight: set[ToolCallSignature] = set()
+        self._post_compaction_reanchor_reservations: dict[str, ToolCallSignature] = {}
+        self._post_compaction_reanchor_observe_once: set[ToolCallSignature] = set()
+        self._post_compaction_reanchor_guidance: set[ToolCallSignature] = set()
         # tool_call_id -> spillover path, so a stub referencing a persisted-output preview can't dangle.
         self._persisted_result_paths: dict[str, str] = {}
         self._turn_web_search_count = 0
@@ -345,22 +396,41 @@ class ToolCallGuardrailController:
             self._halt_decision = decision
         return decision
 
-    def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
+    def before_call(
+        self,
+        tool_name: str,
+        args: Mapping[str, Any] | None,
+        *,
+        post_compaction_reanchor_granted: bool = False,
+    ) -> ToolGuardrailDecision:
         args = _coerce_args(args)
         signature = ToolCallSignature.from_call(tool_name, args)
         allow = ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
         # Loop caps apply regardless of hard_stop_enabled (which only governs the detector).
         cap_block = self._check_loop_cap(tool_name, args, signature)
-        if cap_block is not None or not self.config.hard_stop_enabled:
-            return cap_block or allow
+        if cap_block is not None:
+            if post_compaction_reanchor_granted:
+                self._cancel_post_compaction_reanchor(signature)
+            return cap_block
+        if not self.config.hard_stop_enabled:
+            if not post_compaction_reanchor_granted:
+                self._claim_post_compaction_reanchor(signature)
+            return allow
         # A mutation since this call last failed makes the retry a new experiment.
         exact_count = 0 if self._progress_since_failure.get(signature) else self._exact_failure_counts.get(signature, 0)
         if exact_count >= self.config.exact_failure_block_after:
+            if post_compaction_reanchor_granted:
+                self._cancel_post_compaction_reanchor(signature)
             return self._decide("block", "repeated_exact_failure_block", tool_name, exact_count, signature)
+        if post_compaction_reanchor_granted or self._claim_post_compaction_reanchor(signature):
+            return allow
         record = self._no_progress.get(signature) if self._is_idempotent(tool_name) else None
         if record is not None and record[1] >= self.config.no_progress_block_after:
-            return self._decide("block", "idempotent_no_progress_block", tool_name, record[1], signature)
+            return self._decide(
+                "block", "idempotent_no_progress_block", tool_name, record[1], signature,
+                message=self._post_compaction_reanchor_message(signature, record[1], blocked=True),
+            )
         return allow
 
     def after_call(
@@ -372,6 +442,15 @@ class ToolCallGuardrailController:
         if failed is None:
             failed, _ = classify_tool_failure(tool_name, result)
         warnings = self.config.warnings_enabled
+        with self._post_compaction_reanchor_lock:
+            reanchor_grace = signature in self._post_compaction_reanchor_inflight
+            self._post_compaction_reanchor_inflight.discard(signature)
+            self._drop_post_compaction_reservation_locked(signature)
+            if reanchor_grace and failed:
+                # A failed read did not restore any context. Keep the one-shot
+                # candidate available; normal exact-failure thresholds still
+                # bound repeated failures.
+                self._post_compaction_reanchor_candidates.add(signature)
 
         if failed:
             # An identical failing call is only a REPLAY if nothing landed in between;
@@ -380,7 +459,8 @@ class ToolCallGuardrailController:
                 self._exact_failure_counts.pop(signature, None)
             exact_count = self._exact_failure_counts[signature] = self._exact_failure_counts.get(signature, 0) + 1
             same_count = self._same_tool_failure_counts[tool_name] = self._same_tool_failure_counts.get(tool_name, 0) + 1
-            self._no_progress.pop(signature, None)
+            if not reanchor_grace:
+                self._no_progress.pop(signature, None)
             # same_tool_failure counts DIFFERENT args on one tool; for failure-tolerant
             # tools a run of distinct red commands is diagnosis, not a loop — warn, never halt.
             if (
@@ -408,9 +488,12 @@ class ToolCallGuardrailController:
         self._same_tool_failure_counts.pop(tool_name, None)
         # A successful mutation is progress for every failing signature still counted
         # this turn. Pure loops never mutate between attempts, so the replay detector keeps its teeth.
-        if tool_name in PROGRESS_RESET_TOOL_NAMES or file_mutation_result_landed(tool_name, result):
+        file_mutation_landed = file_mutation_result_landed(tool_name, result)
+        if tool_name in PROGRESS_RESET_TOOL_NAMES or file_mutation_landed:
             self._progress_since_failure.update(dict.fromkeys(self._exact_failure_counts, True))
             self._same_tool_failure_counts.clear()
+        if file_mutation_landed:
+            self._expire_unclaimed_post_compaction_reanchors()
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
@@ -419,12 +502,113 @@ class ToolCallGuardrailController:
         previous = self._no_progress.get(signature)
         repeat_count = previous[1] + 1 if previous is not None and previous[0] == result_hash else 1
         self._no_progress[signature] = (result_hash, repeat_count)
+        if reanchor_grace:
+            with self._post_compaction_reanchor_lock:
+                self._post_compaction_reanchor_guidance.add(signature)
+                self._post_compaction_reanchor_observe_once.add(signature)
         if warnings and repeat_count >= self.config.no_progress_warn_after:
-            return self._decide("warn", "idempotent_no_progress_warning", tool_name, repeat_count, signature)
+            if reanchor_grace:
+                return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
+            return self._decide(
+                "warn", "idempotent_no_progress_warning", tool_name, repeat_count, signature,
+                message=self._post_compaction_reanchor_message(signature, repeat_count),
+            )
         return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
 
+    def note_compaction(self) -> None:
+        """Allow one replay per exact pre-compaction file read after a committed rewrite."""
+        with self._post_compaction_reanchor_lock:
+            self._post_compaction_reanchor_candidates = {
+                signature
+                for signature in self._no_progress
+                if _is_post_compaction_reanchor_read(signature.tool_name)
+            }
+            self._post_compaction_reanchor_inflight.clear()
+            self._post_compaction_reanchor_reservations.clear()
+            self._post_compaction_reanchor_observe_once.clear()
+            self._post_compaction_reanchor_guidance.clear()
+
+    def reserve_post_compaction_reanchor(
+        self,
+        tool_name: str,
+        args: Mapping[str, Any] | None,
+        *,
+        reservation_id: str = "",
+    ) -> bool:
+        """Reserve one exact reread for an ordered concurrent worker.
+
+        The executor calls this tiny atomic step through a dedicated ordering
+        gate, then runs the full guardrail outside that gate. This keeps the
+        one-shot grant deterministic without letting a slow policy check starve
+        every later tool in the batch.
+        """
+        signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
+        return self._claim_post_compaction_reanchor(
+            signature, reservation_id=reservation_id
+        )
+
+    def _claim_post_compaction_reanchor(
+        self, signature: ToolCallSignature, *, reservation_id: str = "",
+    ) -> bool:
+        with self._post_compaction_reanchor_lock:
+            if signature not in self._post_compaction_reanchor_candidates:
+                return False
+            self._post_compaction_reanchor_candidates.remove(signature)
+            self._post_compaction_reanchor_inflight.add(signature)
+            if reservation_id:
+                self._post_compaction_reanchor_reservations[reservation_id] = signature
+            return True
+
+    def _cancel_post_compaction_reanchor(self, signature: ToolCallSignature) -> None:
+        with self._post_compaction_reanchor_lock:
+            self._post_compaction_reanchor_inflight.discard(signature)
+            self._drop_post_compaction_reservation_locked(signature)
+
+    def restore_post_compaction_reanchor(self, reservation_id: str) -> bool:
+        """Return an unobserved concurrent reservation to the candidate set."""
+        if not reservation_id:
+            return False
+        with self._post_compaction_reanchor_lock:
+            signature = self._post_compaction_reanchor_reservations.pop(
+                reservation_id, None
+            )
+            if signature is None or signature not in self._post_compaction_reanchor_inflight:
+                return False
+            self._post_compaction_reanchor_inflight.remove(signature)
+            self._post_compaction_reanchor_candidates.add(signature)
+            self._post_compaction_reanchor_observe_once.discard(signature)
+            self._post_compaction_reanchor_guidance.discard(signature)
+            return True
+
+    def _drop_post_compaction_reservation_locked(
+        self, signature: ToolCallSignature,
+    ) -> None:
+        for reservation_id, reserved_signature in tuple(
+            self._post_compaction_reanchor_reservations.items()
+        ):
+            if reserved_signature == signature:
+                self._post_compaction_reanchor_reservations.pop(reservation_id, None)
+
+    def _expire_unclaimed_post_compaction_reanchors(self) -> None:
+        """Expire future grace without revoking a read already authorized in a parallel batch."""
+        with self._post_compaction_reanchor_lock:
+            self._post_compaction_reanchor_candidates.clear()
+            self._post_compaction_reanchor_guidance.clear()
+
+    def _post_compaction_reanchor_message(
+        self, signature: ToolCallSignature, count: int, *, blocked: bool = False,
+    ) -> str | None:
+        with self._post_compaction_reanchor_lock:
+            if signature not in self._post_compaction_reanchor_guidance:
+                return None
+        template = _POST_COMPACTION_REANCHOR_BLOCK if blocked else _POST_COMPACTION_REANCHOR_WARNING
+        return template.format(tool_name=signature.tool_name, count=count)
+
     def _is_idempotent(self, tool_name: str) -> bool:
-        return tool_name not in self.config.mutating_tools and tool_name in self.config.idempotent_tools
+        return tool_name not in self.config.mutating_tools and (
+            tool_name in self.config.idempotent_tools
+            or _is_post_compaction_reanchor_read(tool_name)
+        )
 
     def observe_call(
         self, tool_name: str, args: Mapping[str, Any] | None, result: str | None,
@@ -440,6 +624,9 @@ class ToolCallGuardrailController:
         is_plain_str = isinstance(result, str)
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
         result_hash = _result_hash(result) if is_plain_str else ""
+        with self._post_compaction_reanchor_lock:
+            reanchor_grace = signature in self._post_compaction_reanchor_observe_once
+            self._post_compaction_reanchor_observe_once.discard(signature)
 
         if is_plain_str and (signature, result_hash) == (self._identical_streak_sig, self._identical_streak_result_hash):
             self._identical_streak_count += 1
@@ -449,16 +636,28 @@ class ToolCallGuardrailController:
             self._identical_streak_result_hash = result_hash
             self._identical_streak_count = 1 if is_plain_str else 0
             self._identical_streak_first_call_id = tool_call_id or ""
+        if reanchor_grace:
+            # The pre-compaction result may no longer exist in the transcript.
+            # Keep the loop count, but make this full replay the new reference
+            # target for any later duplicate-result stubs.
+            self._identical_streak_first_call_id = tool_call_id or ""
         count = self._identical_streak_count
 
         notice = None
-        if not is_stall_guard_repeatable(tool_name) and count >= STALL_GUARD_IDENTICAL_CALL_THRESHOLD:
+        if (
+            not reanchor_grace
+            and not is_stall_guard_repeatable(tool_name)
+            and count >= STALL_GUARD_IDENTICAL_CALL_THRESHOLD
+        ):
             notice = _IDENTICAL_CALL_NOTICE.format(ordinal=_ordinal(count), tool_name=tool_name)
             # The no-progress BLOCK in before_call only covers idempotent_tools; this streak
             # is tool-agnostic, so with hard stops on, halt at the same threshold (a model
             # replaying a successful `terminal` call otherwise runs to the budget).
             if self.config.hard_stop_enabled and count >= self.config.no_progress_block_after and self._halt_decision is None:
-                self._decide("halt", "identical_call_streak_halt", tool_name, count, signature)
+                self._decide(
+                    "halt", "identical_call_streak_halt", tool_name, count, signature,
+                    message=self._post_compaction_reanchor_message(signature, count, blocked=True),
+                )
 
         # Batch-cycle detection (oh-my-pi#10521): a repeating multi-call cycle resets the
         # consecutive streak on every alternation, so check the call history for a period-p lap.
@@ -466,7 +665,7 @@ class ToolCallGuardrailController:
             self._call_history.append((signature, result_hash, is_stall_guard_repeatable(tool_name)))
         else:
             self._call_history.clear()
-        if notice is None and is_plain_str:
+        if notice is None and is_plain_str and not reanchor_grace:
             cycle = self._detect_identical_cycle()
             if cycle is not None:
                 period, laps = cycle
@@ -475,7 +674,13 @@ class ToolCallGuardrailController:
                     self._decide("halt", "identical_cycle_halt", tool_name, laps, signature, period=period)
 
         stub = None
-        if is_plain_str and count >= 2 and not failed and len(result) >= IDENTICAL_RESULT_STUB_MIN_CHARS:
+        if (
+            not reanchor_grace
+            and is_plain_str
+            and count >= 2
+            and not failed
+            and len(result) >= IDENTICAL_RESULT_STUB_MIN_CHARS
+        ):
             stub = self._build_result_reference_stub(tool_name, args)
         return IdenticalCallObservation(notice=notice, stub=stub)
 

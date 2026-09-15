@@ -1,5 +1,6 @@
 import time
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -71,6 +72,7 @@ class DummyAgent:
         self.touch_calls = []
         self.touch_provenances = []
         self._compression_activity_heartbeat_interval = 0.1
+        self._tool_guardrails = SimpleNamespace(note_compaction=MagicMock())
 
     def _touch_activity(self, desc, *, provenance=None, force_persist=False):
         self.touch_calls.append(desc)
@@ -111,6 +113,7 @@ def test_codex_app_server_native_auto_mode_leaves_thread_compaction_to_codex():
     assert agent._codex_session.calls == 0
     assert agent.context_compressor.compression_count == 0
     assert agent.events == []
+    agent._tool_guardrails.note_compaction.assert_not_called()
 
 
 def test_codex_app_server_compaction_heartbeat_refreshes_activity_while_waiting():
@@ -144,6 +147,7 @@ def test_codex_app_server_compaction_heartbeat_refreshes_activity_while_waiting(
     assert all(
         p is ActivityProvenance.AGENT_COMPRESSION for p in agent.touch_provenances
     )
+    agent._tool_guardrails.note_compaction.assert_called_once_with()
 
 
 
@@ -174,6 +178,7 @@ def test_codex_app_server_compression_failure_preserves_bookkeeping():
         ("lifecycle", COMPACTION_STATUS),
         ("warn", "⚠ Codex app-server compaction failed: compact failed"),
     ]
+    agent._tool_guardrails.note_compaction.assert_not_called()
 
 
 

@@ -5783,6 +5783,14 @@ def _wizard_post_setup() -> None:
     """Offer to install/start/restart the gateway once at least one platform has progress."""
     print()
     print(color("─" * 58, Colors.DIM))
+    if named_profile_served_by_running_multiplexer():
+        # #111958: same multiplexer refusal as the run/start/install CLI entry points — a
+        # standalone service here would double-bind the profile's platforms (two pollers on
+        # one bot token, port conflicts), so the wizard skips the install entirely.
+        print()
+        print_info("  Served now by the running multiplexed gateway — no separate")
+        print_info("  service needed for this profile. Add its bot token and it connects.")
+        return
     service_installed = _is_service_installed()
     service_running = _is_service_running()
 

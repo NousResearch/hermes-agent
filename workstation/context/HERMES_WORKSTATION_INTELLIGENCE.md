@@ -1710,6 +1710,8 @@ não como código integrado. A decisão evita “resolver” o conflito apagando
 trabalho de outra frente e evita comprometer os invariantes do produto. Para
 uma futura promoção, a frente precisa primeiro reutilizar os owners canônicos,
 remover as duplicações, corrigir o contrato da API/UI, adicionar testes com
-terminação bounded e passar por uma revisão independente de arquitetura. O
-Os commits de documentação desta rodada contêm somente a inteligência
-revisada; o WIP não foi incluído neles.
+terminação bounded e passar por uma revisão independente de arquitetura. O WIP
+foi preservado de forma recuperável em `stash@{0}` com a mensagem
+`preserved workstation WIP excluded from main pending canonical-owner review`;
+os commits de documentação desta rodada contêm somente a inteligência
+revisada.

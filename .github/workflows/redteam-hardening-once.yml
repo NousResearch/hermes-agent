@@ -43,6 +43,7 @@ jobs:
             workstation/artifacts.py \
             workstation/browser_supervisor.py \
             workstation/workers.py \
+            workstation/workload_benchmark.py \
             workstation/tests/test_redteam_hardening.py
 
       - name: Install uv
@@ -106,10 +107,12 @@ jobs:
             workstation/artifacts.py \
             workstation/browser_supervisor.py \
             workstation/workers.py \
+            workstation/workload_benchmark.py \
+            workstation/benchmarks/workload_baseline.json \
             apps/desktop/electron/workstation-browser-runtime.ts \
             workstation/tests/test_redteam_hardening.py
           git commit -m "fix(workstation): close red-team trust and durability gaps"
           git push origin HEAD:main
           echo "validated_commit=$(git rev-parse HEAD)"
 
-# redteam bootstrap revision 6
+# redteam bootstrap revision 7

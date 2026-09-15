@@ -932,10 +932,19 @@ def _contains_unsafe_gateway_action(
         if recurse(payload, cwd):
             return True
 
-    for script_path in _iter_referenced_shell_scripts(walk_command, cwd=cwd):
+    # Paths named only inside a masked body are still READ: an interpreter body that hands
+    # `/x/restart.sh` to os.system() executes it. Only the fail-closed verdicts (cloud placeholder,
+    # oversized/binary) stay restricted to the masked view — a mere data mention must not trip them.
+    candidates = [(path, True) for path in _iter_referenced_shell_scripts(walk_command, cwd=cwd)]
+    if walk_command != command:
+        candidates += [(path, False) for path in _iter_referenced_shell_scripts(command, cwd=cwd)]
+
+    for script_path, executed in candidates:
         # Do not touch a FileProvider path even to discover whether the file is hydrated.
         if _on_cloud_path(script_path):
-            return True
+            if executed:
+                return True
+            continue
         resolved = _resolve_lenient(script_path)
         if resolved in visited:
             continue
@@ -946,7 +955,9 @@ def _contains_unsafe_gateway_action(
         # remainder fails closed exactly like an oversized one.
         script_text, unsafe = _read_referenced_script(script_path, max_bytes=budget.bytes_remaining)
         if unsafe:
-            return True
+            if executed:
+                return True
+            continue
         if script_text is None and read_remote_script is not None:
             # Local path missing; the remote backend's output crosses the same trust boundary as a
             # local read — sanitize identically (binary skip + size fail-closed).
@@ -956,7 +967,9 @@ def _contains_unsafe_gateway_action(
                 read_remote_script(str(script_path)), max_bytes=budget.bytes_remaining
             )
             if unsafe:
-                return True
+                if executed:
+                    return True
+                continue
         if not script_text:
             continue
         # Relative references inside a script resolve against that script's directory, not the cwd.

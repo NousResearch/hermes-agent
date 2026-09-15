@@ -25,3 +25,12 @@ def test_unquoted_heredoc_body_path_still_walked(tmp_path):
     """An expansion-capable body is not provably inert: the walk still sees it and fails closed."""
     big = _big_file(tmp_path)
     assert guard(f"cat > /tmp/x <<EOF\n{big}\nEOF", cwd=str(tmp_path)) is True
+
+
+def test_inert_heredoc_body_script_path_still_read(tmp_path):
+    """Masking hides the body from the *executed* view only: a lifecycle script named inside a
+    Python body is still handed to ``os.system`` at runtime, so its contents must still be read."""
+    script = tmp_path / "restart.sh"
+    script.write_text("#!/bin/sh\nhermes gateway restart\n")
+    command = f"python3 - <<'PY'\nimport os\nos.system('{script}')\nPY"
+    assert guard(command, cwd=str(tmp_path)) is True

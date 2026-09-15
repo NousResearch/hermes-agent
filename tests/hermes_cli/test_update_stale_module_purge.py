@@ -9,9 +9,10 @@ import ...` in the restart phase raised ImportError, the whole phase
 aborted, and the running gateway kept serving pre-update code.
 
 The old mitigation (_UPDATE_RUNTIME_RELOAD_MODULES) reloaded 3 hardcoded
-modules — re-fixed per symptom. The purge evicts EVERY cached module under
-the Hermes package prefixes so later imports rebuild a self-consistent
-module graph from the updated checkout.
+modules — re-fixed per symptom. The purge evicts EVERY cached module whose
+top-level name is a ``.py`` file or package in the checkout root (minus
+``tests``) so later imports rebuild a self-consistent module graph from the
+updated checkout.
 """
 
 from __future__ import annotations

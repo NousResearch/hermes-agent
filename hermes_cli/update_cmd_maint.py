@@ -25,10 +25,6 @@ logger = logging.getLogger("hermes_cli.update_cmd")
 
 _UPDATE_RUNTIME_RELOAD_MODULES = "hermes_constants", "tools.environments.local", "tools.lazy_deps"
 
-#: Owned by the checkout but never purged: pytest resolves fixtures through the identity of
-#: its own already-imported test modules, and evicting them mid-session breaks that.
-_STALE_PURGE_EXCLUDED_TOP_LEVEL = frozenset({"tests"})
-
 #: Modules EXECUTING the update survive the purge: evicting them buys nothing (running frames
 #: keep them alive) and reloading them mid-flight is the one genuinely unsafe move.
 #: ``hermes_logging`` is protected for a different reason: its queue listener, handler list and
@@ -105,7 +101,9 @@ def _stale_purge_prefixes() -> frozenset:
             names.add(entry.stem)
         elif (entry / "__init__.py").is_file():
             names.add(entry.name)
-    return frozenset(names) - _STALE_PURGE_EXCLUDED_TOP_LEVEL
+    # ``tests`` is owned by the checkout but never purged: the in-process purge tests would
+    # otherwise re-import a fresh copy of the very test module their monkeypatches point at.
+    return frozenset(names) - {"tests"}
 
 
 def _purge_stale_hermes_modules() -> None:

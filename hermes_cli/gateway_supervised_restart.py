@@ -23,9 +23,12 @@ def gateway_declares_external_supervisor(pid: int, home: Path | None = None) -> 
     """True when the running gateway ``pid`` was launched for an external supervisor.
 
     The supervisor is SELF-declared by the gateway from its launch context: the control socket
-    ``identify`` answer (``supervisor: "external"``), else the ``--external-supervisor`` argv marker
-    read live (same marker ``_prepare_profile_gateway_update_restart`` trusts), else the argv the
-    gateway stamped into ``gateway_state.json`` when psutil cannot read the live command line.
+    ``identify`` answer (any ``supervisor`` other than ``"manual"`` — a custom systemd unit or
+    launchd agent sets INVOCATION_ID / the XPC name, so the gateway answers ``systemd``/``launchd``
+    even though ``_installed_service_kind_for`` saw no canonical unit, and the same supervisor owns
+    the respawn), OR the ``--external-supervisor`` argv marker read live (same marker
+    ``_prepare_profile_gateway_update_restart`` trusts), else the argv the gateway stamped into
+    ``gateway_state.json`` when psutil cannot read the live command line.
     """
     if not pid or pid <= 1:
         return False
@@ -35,8 +38,8 @@ def gateway_declares_external_supervisor(pid: int, home: Path | None = None) -> 
 
     home = home or _get_process_hermes_home()
     identity = identify_gateway(home) or {}
-    if identity.get("pid") == pid and identity.get("supervisor"):
-        return identity.get("supervisor") == "external"
+    if identity.get("pid") == pid and identity.get("supervisor") not in (None, "", "manual"):
+        return True
     argv = _capture_gateway_argv(pid)
     if argv is None:
         record = read_runtime_status(home / "gateway_state.json") or {}
@@ -90,7 +93,7 @@ def restart_externally_supervised_gateway(supervised_pid: int) -> None:
             return
         print("⚠ Supervisor did not relaunch the gateway after its graceful exit")
     else:
-        print(f"⚠ Gateway drain timed out after {wait_budget:.0f}s")
+        print(f"⚠ Gateway did not exit within {wait_budget:.0f}s of SIGUSR1 (or the signal could not be sent)")
     _print_lines(
         "",
         "✗ Not stopping or foreground-running a supervisor-owned gateway.",

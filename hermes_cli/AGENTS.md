@@ -157,7 +157,7 @@ blockers for the hook) and the `gateway.auto_multiplex_migration` opt-out (#1099
 new HTTP-inbound adapter when it answers the prefix, never extend a list here.
 `hermes gateway restart` for a gateway Hermes did not install (custom launchd agent / unit running
 `gateway run --external-supervisor`): `gateway_supervised_restart.py` — the gateway's SELF-declared
-supervisor (control-socket `identify`, then the argv marker) decides; hand back via SIGUSR1 and wait
+supervisor (control-socket `identify` answering anything but `manual`, OR the argv marker) decides; hand back via SIGUSR1 and wait
 for a fresh supervised PID, never stop + foreground `run_gateway` (that stamps the CLI's PID and wedges
 every KeepAlive respawn, #110637).
 

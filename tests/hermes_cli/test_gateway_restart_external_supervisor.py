@@ -67,6 +67,18 @@ def test_external_supervisor_gateway_restarts_via_sigusr1_handback(restart_calls
     )
 
 
+def test_custom_systemd_unit_gateway_hands_back_despite_socket_saying_systemd(restart_calls, monkeypatch):
+    # A custom (non-canonical) unit running `gateway run --external-supervisor` sets INVOCATION_ID,
+    # so the gateway self-identifies as "systemd", not "external"; that unit still owns the respawn,
+    # so the socket answer must not demote the argv contract back to the stop + foreground wedge.
+    monkeypatch.setattr(
+        "gateway.control_socket.identify_gateway", lambda home, **k: {"pid": 4321, "supervisor": "systemd"}
+    )
+    _run_restart()
+    assert restart_calls["sigusr1"] == (4321, 7.0)
+    assert not restart_calls["stopped"] and not restart_calls["started"]
+
+
 @pytest.mark.parametrize("sigusr1_returns, replacement", [(True, None), (False, 5555)])
 def test_handback_failure_never_takes_ownership(restart_calls, sigusr1_returns, replacement):
     # An unloaded supervisor (clean exit, no replacement) or a drain timeout must fail loudly;

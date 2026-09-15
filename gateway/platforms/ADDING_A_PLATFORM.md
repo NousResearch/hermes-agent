@@ -81,6 +81,30 @@ See `plugins/platforms/irc/`, `plugins/platforms/teams/`, and
 `website/docs/developer-guide/adding-platform-adapters.md` for the full
 plugin guide with code examples and hook documentation.
 
+### Idempotent final-response delivery
+
+An adapter backed by a durable message endpoint can opt in with the class attribute
+`idempotent_delivery = True`. For ledgered final text, `send()` then receives
+`metadata["_delivery_obligation_id"]` on the original attempt, inline retries and
+recovery after restart or reconnect. Recovery preserves the original text instead
+of prepending a recovered-reply marker. Inline failure returns the failed
+`SendResult` without sending a formatting fallback or failure notice under that ID.
+Other adapters retain the existing recovery and fallback behavior.
+
+The adapter must persist the ID and original payload before acknowledging delivery,
+return the original result for an identical retry and reject a different payload
+under the same ID. Deduplication must survive adapter restarts. Scope the ID to the
+receiving connection and retain it for at least the gateway's recovery window. If
+the adapter splits the text, derive stable child IDs for its chunks. The ID and text
+are stable; other metadata is not guaranteed to survive recovery. In particular,
+the ledger restores `thread_id` but not `reply_to` or arbitrary caller metadata.
+
+This contract covers ledgered final text only. Slash commands, ephemeral replies,
+media and sends through other paths may have no obligation ID. A disabled or failed
+ledger also produces no ID. The adapter must handle absence explicitly if its
+endpoint requires idempotency. The capability does not make agent/tool execution
+exactly once, add a durable inbound queue or remove the ledger's recovery limits.
+
 ---
 
 ## Built-in Path (Core Contributors Only)

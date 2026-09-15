@@ -1769,6 +1769,9 @@ class BasePlatformAdapter(ABC):
     supports_code_blocks: bool = False
     # Typing indicator renders TEXT (status line); the gateway then feeds set_status_text().
     supports_status_text: bool = False
+    # The adapter durably deduplicates ledgered sends by _delivery_obligation_id and
+    # rejects a different body under that ID. Existing adapters keep recovery markers.
+    idempotent_delivery: bool = False
 
     def set_status_text(self, chat_id: str, text: Optional[str]) -> None:
         """Set or clear (``None``) the live working-state phrase for a chat. In-memory only: the
@@ -3282,7 +3285,10 @@ class BasePlatformAdapter(ABC):
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Any = None,
         max_retries: int = 2, base_delay: float = 2.0) -> "SendResult":
         """Send with exponential-backoff retry on transient network errors; permanent
-        failures fall back to a plain-text send, exhausted retries notify the user."""
+        failures fall back to a plain-text send, exhausted retries notify the user.
+        Idempotent ledgered sends return the failure instead of changing the body."""
+        idempotent = (self.idempotent_delivery is True and isinstance(metadata, dict)
+                      and bool(metadata.get("_delivery_obligation_id")))
         async def _send(text: str) -> "SendResult":
             return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
         result = await _send(content)
@@ -3350,6 +3356,10 @@ class BasePlatformAdapter(ABC):
                 ):
                     break  # error switched to non-transient — fall through to plain-text fallback
             else:
+                # A notice under the same key would either conflict with the answer
+                # or occupy its key before the ledger can redeliver the answer.
+                if idempotent:
+                    return result
                 # All retries exhausted (loop completed without break) — notify user.
                 # If the final failure is a rate-limit / still carries a server
                 # retry_after, do NOT send the delivery-failure notice now: the notice
@@ -3376,6 +3386,8 @@ class BasePlatformAdapter(ABC):
         # Non-network / post-retry formatting failure: try plain text as fallback. A
         # rate-limited error never reaches here: it classifies as network above and the
         # loop only breaks on a non-transient, non-rate-limited error.
+        if idempotent:
+            return result
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
         fallback_result = await self._send_plain_fallback(chat_id, content, reply_to=reply_to, metadata=metadata)
         if not fallback_result.success:
@@ -3950,6 +3962,13 @@ class BasePlatformAdapter(ABC):
                     len(text_content), event.source.chat_id)
         obligation_id = await self._record_delivery_obligation(
             event, session_key, text_content, delivery_adapter, is_ephemeral_response)
+        if delivery_adapter.idempotent_delivery is True:
+            metadata = dict(metadata or {})
+            # Only the ledger may supply this identity; caller metadata is not proof
+            # that an obligation was recorded (including disabled/failed ledger writes).
+            metadata.pop("_delivery_obligation_id", None)
+            if obligation_id is not None:
+                metadata["_delivery_obligation_id"] = obligation_id
         result = await delivery_adapter._send_with_retry(
             chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
         if obligation_id is not None:

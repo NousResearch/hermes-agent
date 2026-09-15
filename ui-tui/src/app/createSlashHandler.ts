@@ -90,9 +90,9 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
         }
 
         if (matches.length > 1) {
-          sys(`ambiguous command: ${matches.slice(0, 6).join(', ')}${matches.length > 6 ? ', …' : ''}`)
-
-          return true
+          // Don't block — fall through to slash.exec so the gateway can
+          // resolve the command (e.g. a skill whose name collides with a
+          // substring of multiple built-ins like /do vs /undo+/handoff).
         }
       }
     }

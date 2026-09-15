@@ -600,28 +600,16 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None,
         except (ValueError, TypeError):
             parsed = {}
         proc_id = parsed.get("session_id") or ""
-        # A populated error wins over the approval branch below: the "blocked"
-        # response carries a real explanation, and status is "blocked" rather
-        # than "pending_approval", so nothing is lost by reporting it verbatim.
-        # Do not reorder these two checks.
         if parsed.get("error"):
             return _err(f"Delivery to {label} failed to start: {parsed['error']}")
-        # terminal_tool's approval gate returns status=pending_approval with
-        # error DELIBERATELY empty (#28323: "removes misleading error signal")
-        # and no session_id, so the falsy-error check above skips it and the
-        # generic no-process-id message below would blame the spawn for what is
-        # really an unanswered approval. Non-interactive turns (api_server,
-        # peer dm, cron) can never get that approval, so the distinction is
-        # load-bearing rather than cosmetic.
+        # The approval gate answers with an empty error and no session_id (#28323), and a
+        # non-interactive turn can never grant it: that is not "no process id".
         if not proc_id and (
             parsed.get("approval_pending") or parsed.get("status") == "pending_approval"
         ):
             if dm_file is None:
-                # Relay: the envelope was queued before this waiter spawned and
-                # the Desktop drains it independently, so the message IS going
-                # to arrive — only the reply-wake is lost. Reporting a hard
-                # failure here makes the agent resend and duplicate the
-                # envelope, which is worse than the missing wake.
+                # Relay: the envelope is already queued and the Desktop drains it on its own, so
+                # the message arrives and only the reply wake is lost; a resend would duplicate it.
                 return json.dumps(
                     {
                         "status": "sent_no_reply_wake",
@@ -636,9 +624,8 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None,
                         "sent_at": int(time.time()),
                     }
                 )
-            # Local/peer DM: this spawn IS the delivery, so nothing was sent.
-            # Leaving `transferred` False lets the finally-block reclaim the
-            # plaintext DM file instead of orphaning it.
+            # Local/peer DM: this spawn IS the delivery. `transferred` stays False, so the
+            # finally block reclaims the plaintext DM file.
             return _err(
                 f"Delivery to {label} needs terminal-command approval before it can start, "
                 "so nothing was sent. Approve the command (or add it to command_allowlist) "

@@ -30,6 +30,7 @@ test('Windows spawn holds the update mutex across marker check and helper spawn'
   const encoded = command.match(/-EncodedCommand\s+([^\s]+)$/)?.[1]
   const script = encoded ? Buffer.from(encoded, 'base64').toString('utf16le') : ''
   assert.match(script, /\.hermes-update-in-progress/)
+  assert.doesNotMatch(script, /\$home=/i, 'PowerShell HOME is reserved and must not be assigned')
   assert.match(script, /\$mutexPath=\$marker\+"\.mutex"/)
   assert.match(script, /\.Lock\(0,1\)/)
   assert.match(script, /windows_ssh_runtime.*spawn/)
@@ -75,8 +76,11 @@ test('Windows relaunch gate refuses live and uncertain markers before executing 
   for (const observation of ['LIVE:4242', 'UNCERTAIN']) {
     const scripts: string[] = []
 
-    const ssh = sshWith(async command => {
-      const script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+    const ssh = sshWith(async (command, options) => {
+      const script = options?.stdinData
+        ? Buffer.from(options.stdinData, 'base64').toString('utf8')
+        : Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+
       scripts.push(script)
 
       if (script.includes('Get-Command hermes.exe')) {
@@ -117,28 +121,47 @@ test('Windows relaunch gate refuses live and uncertain markers before executing 
 })
 
 test('Windows relaunch gate uses strict install-wide marker parsing and fail-closed PID probing', async () => {
+  let command = ''
+  let stdinData = ''
   let script = ''
 
-  const ssh = sshWith(async command => {
-    script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+  const ssh = sshWith(async (value, options) => {
+    command = value
+    stdinData = options?.stdinData ?? ''
+    script = stdinData
+      ? Buffer.from(stdinData, 'base64').toString('utf8')
+      : Buffer.from(value.split(' ').at(-1) || '', 'base64').toString('utf16le')
 
     return 'CLEAR'
   })
 
-  await assertWindowsRemoteInstallUpdateClear(ssh, 'C:\\Users\\alice\\.hermes\\profiles\\research')
+  await assertWindowsRemoteInstallUpdateClear(ssh, 'C:\\Users\\José\\.hermes\\profiles\\research')
+  assert.ok(command.length < 8191, `PowerShell marker transport command is too long: ${command.length}`)
+  assert.match(command, /-EncodedCommand\s+/)
+  const bootstrap = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+  assert.match(bootstrap, /\[Console\]::In\.ReadToEnd\(\)/)
+  assert.match(bootstrap, /\[Convert\]::FromBase64String/)
+  assert.match(bootstrap, /\[Text\.Encoding\]::UTF8\.GetString/)
+  assert.match(bootstrap, /\[scriptblock\]::Create/)
+  assert.match(stdinData, /^[A-Za-z0-9+/]*={0,2}$/)
+  assert.match(script, /José/)
   assert.match(script, /\.hermes-update-in-progress/)
   assert.match(script, /Split-Path -Leaf \$parent.*profiles/)
   assert.match(script, /UTF8Encoding.*true/)
   assert.match(script, /\\A\(\[1-9\]/)
   assert.match(script, /GetProcessById/)
   assert.doesNotMatch(script, /ErrorAction SilentlyContinue/)
+  assert.doesNotMatch(script, /\$home=/i, 'PowerShell HOME is reserved and must not be assigned')
+  assert.doesNotMatch(script, /};catch/, 'PowerShell catch must not be separated by a semicolon')
 })
 
 test('Windows probe validates Hermes and Python topology before selection', async () => {
   let script = ''
   await probeWindowsRemote(
-    sshWith(async command => {
-      script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+    sshWith(async (command, options) => {
+      script = options?.stdinData
+        ? Buffer.from(options.stdinData, 'base64').toString('utf8')
+        : Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
 
       return JSON.stringify({
         os: 'Windows',
@@ -160,6 +183,7 @@ test('Windows probe validates Hermes and Python topology before selection', asyn
   const pythonCheck = script.indexOf('Assert-NoReparse $python $false')
   const output = script.indexOf('[ordered]@{')
 
+  assert.equal(script.includes('};catch'), false, 'PowerShell catch must not be separated by a semicolon')
   assert.ok(explicitCheck >= 0)
   assert.ok(explicitCheck < explicitPythonCheck)
   assert.ok(explicitPythonCheck < fallbackJoin)
@@ -193,7 +217,42 @@ test('platform detection preserves POSIX and falls back to Windows PowerShell', 
   )
 
   assert.equal(result.os, 'Windows')
-  assert.match(calls[1], /EncodedCommand/)
+  assert.match(calls[1], /-EncodedCommand\s+/)
+})
+
+test('Windows platform probe stays below the command-line budget by using stdin', async () => {
+  let command = ''
+  let stdinData = ''
+
+  await probeWindowsRemote(
+    {
+      exec: async (value: string, options?: { stdinData?: string }) => {
+        command = value
+        stdinData = options?.stdinData || ''
+
+        return JSON.stringify({
+          os: 'Windows',
+          arch: 'AMD64',
+          hermesHome: 'C:\\Users\\José\\.hermes',
+          hermesPath: 'C:\\Users\\José\\.hermes\\hermes-agent\\venv\\Scripts\\hermes.exe',
+          python: 'C:\\Users\\José\\.hermes\\hermes-agent\\venv\\Scripts\\python.exe'
+        })
+      }
+    },
+    'C:\\Users\\José\\.hermes\\hermes-agent\\venv\\Scripts\\hermes.exe'
+  )
+
+  assert.ok(command.length < 8191, `PowerShell transport command is too long: ${command.length}`)
+  assert.match(command, /-EncodedCommand\s+/)
+  const bootstrap = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+  assert.match(bootstrap, /\[Convert\]::FromBase64String/)
+  assert.match(bootstrap, /\[Text\.Encoding\]::UTF8\.GetString/)
+  assert.match(bootstrap, /\[Console\]::OutputEncoding=.*UTF8Encoding/)
+  assert.match(stdinData, /^[A-Za-z0-9+/]*={0,2}$/)
+  const script = Buffer.from(stdinData, 'base64').toString('utf8')
+  assert.match(script, /Assert-NoReparse/)
+  assert.match(script, /José/)
+  assert.ok(script.length > 3000, `probe script was unexpectedly shortened: ${script.length}`)
 })
 
 test('platform detection surfaces transport failures as themselves, not unsupported-platform', async () => {

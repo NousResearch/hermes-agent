@@ -379,12 +379,13 @@ def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, st
     compact the transcript first (no fresh session is ever minted). Auth/quota/config never retry."""
 
     def _turn(*, resuming: bool = False):
-        # The retry re-runs the SAME session with the SAME query file, and the failed attempt
-        # already persisted the user row. Tell the retried process so it adopts that row instead
-        # of appending a second copy (agent.turn_context.RESUME_UNANSWERED_TURN_ENV).
-        env = {**os.environ, "HERMES_RESUME_UNANSWERED_TURN": "1"} if resuming else None
+        # The failed attempt already persisted the user row: the re-run adopts it, not a copy.
+        # Add only the flag to the caller's scrubbed env (delivery_env); never widen it.
+        turn_env = env
+        if resuming:
+            turn_env = {**(os.environ if env is None else env), "HERMES_RESUME_UNANSWERED_TURN": "1"}
         return subprocess.run([*argv, "--query-file", dm_file], check=False, stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True, env=env)
+                              capture_output=True, text=True, env=turn_env)
 
     proc = _turn()
     if proc.returncode != 0:

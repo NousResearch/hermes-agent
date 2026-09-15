@@ -30,9 +30,8 @@ def _relay_root() -> Path:
 def _run_delivery(profile: str, tmp: str, env: dict | None = None, *,
                   resuming: bool = False) -> subprocess.CompletedProcess:
     from tools.bot_relay import local_delivery_command
-    # The re-run replays the SAME session and the SAME payload file, and the failed attempt already
-    # persisted the user row, so the retried process is told to adopt it rather than append a second
-    # copy (agent.turn_context.RESUME_UNANSWERED_TURN_ENV). The per-turn env (sender identity) is kept.
+    # The failed attempt already persisted the user row: the re-run adopts it, not a copy. The
+    # per-turn env (sender identity) is kept.
     if resuming:
         env = {**(os.environ if env is None else env), "HERMES_RESUME_UNANSWERED_TURN": "1"}
     return subprocess.run(

@@ -18,8 +18,9 @@ import pytest
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
-def _reset_backend():
-    """Tear down the cached backend between tests."""
+def _reset_backend(grant_computer_use_approvals):
+    """Tear down the cached backend between tests; destructive actions get an interactive "once"
+    through the shared approval gate (the tool fails closed with nobody to ask)."""
     from tools.computer_use.tool import reset_backend_for_tests
     reset_backend_for_tests()
     # Force the noop backend.
@@ -2226,6 +2227,17 @@ class TestElementTokenAttachment:
         assert args["element_index"] == 5
         # The matching token rode along — cua-driver will prefer it.
         assert args["element_token"] == "s0001:5"
+
+    def test_token_attached_when_only_input_schema_advertises_it(self):
+        """cua-driver >= 0.21 dropped the per-tool `capabilities[]` array from tools/list but advertises
+        `element_token` in `click`'s inputSchema and REFUSES a bare element_index (`snapshot_id_required`).
+        The token must ride along from the live schema alone, or every element click is refused."""
+        backend = self._backend_with_session({})  # no capabilities[] at all — the modern shape
+        backend._session.supports_input_property = lambda tool, prop: (tool, prop) == ("click", "element_token")
+        backend._snapshot_tokens = {5: "s00000001:5"}
+        backend.click(element=5, button="left")
+        _, args = backend._session.call_tool.call_args.args
+        assert args["element_token"] == "s00000001:5"
 
 
     def test_capture_refreshes_snapshot_tokens(self):

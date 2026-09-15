@@ -140,6 +140,8 @@ The blocklist is the floor below `--yolo`. It trips **before** the approval laye
 
 If you hit the blocklist, the tool call returns an explanatory error to the agent and nothing runs. If a legitimate workflow needs one of these commands (you're the operator of a wipe-and-reinstall pipeline, for example), run it outside the agent.
 
+The floor also fails closed on a command whose shell quoting cannot be parsed (`grep 'unterminated`): the error says `malformed executable payload`. Quoting is judged on the command exactly as written, so shell-valid escapes inside a quoted pattern (`grep -o "[^\"]*" file`) are not malformed, and an escaped quote before a separator (`echo "a\"b"; reboot`) does not hide the command that follows it.
+
 ### User-Defined Deny Rules (`approvals.deny`)
 
 The hardline blocklist is fixed and code-shipped. `approvals.deny` is its user-editable counterpart: a list of glob patterns that block matching terminal commands unconditionally — **before** `--yolo`, `/yolo`, and `approvals.mode: off` are consulted. Use it to run yolo-with-exceptions: "let the agent do everything, except these specific things, ever."
@@ -273,6 +275,13 @@ your configuration file.
 
 :::tip
 Use `hermes config edit` to review or remove patterns from your permanent allowlist.
+:::
+
+:::caution
+The list is read when Hermes starts. A pattern you remove while a session is
+already running stays approved in that session until it next writes the file
+(the next time you answer `always` to a prompt) or you restart Hermes. If you
+removed it for safety reasons, restart.
 :::
 
 ### Mining Approval History (`hermes approvals suggest`)

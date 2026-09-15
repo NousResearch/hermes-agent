@@ -272,6 +272,42 @@ class TestMigrateGoalToSession:
         assert load_goal("c3").goal == "child already has one"
 
 
+class TestSessionDbCacheAfterProfileDelete:
+    """``hermes profile delete`` force-closes every registry handle under the profile home
+    (``close_all_under``) and rmtrees it; recreating the same name in the long-lived dashboard
+    process must not keep persisting goals into the torn-down handle."""
+
+    def test_delete_then_recreate_gets_a_live_store(self, hermes_home):
+        import shutil
+
+        import hermes_state
+        import hermes_state_registry as registry
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_cli.goals import GoalState, _get_session_db, load_goal, save_goal
+
+        # conftest re-points DEFAULT_DB_PATH at one fixed file; the registry must resolve the
+        # scoped profile home here, as production does.
+        with patch.object(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH):
+            profile = hermes_home / "profiles" / "p1"
+            profile.mkdir(parents=True)
+            token = set_hermes_home_override(profile)
+            try:
+                save_goal("s1", GoalState(goal="before delete"))
+                stale = _get_session_db()
+                assert registry.close_all_under(profile) == 1
+                shutil.rmtree(profile)
+                profile.mkdir(parents=True)
+
+                save_goal("s2", GoalState(goal="after recreate"))
+
+                assert _get_session_db() is not stale
+                assert (profile / "state.db").exists()
+                assert load_goal("s2").goal == "after recreate"
+            finally:
+                reset_hermes_home_override(token)
+                registry.close_all_under(profile)
+
+
 class TestGoalManagerSubgoals:
     def test_add_subgoal(self, hermes_home):
         from hermes_cli.goals import GoalManager
@@ -873,3 +909,20 @@ class TestBlockedVerdict:
         assert mgr.state is not None
         assert mgr.state.status == "paused"
         assert "unachievable" in (mgr.state.paused_reason or "").lower()
+
+
+def test_goal_session_db_is_the_registry_shared_handle(hermes_home):
+    """GoalManager must borrow the process-wide registry handle for ``state.db`` rather than
+    minting a bare ``SessionDB()``: a second writer per profile carries its own token-writer
+    thread and close-time checkpoint beside the gateway's handle (the #90837 corruption shape)."""
+    from hermes_cli import goals
+    import hermes_state_registry as registry
+
+    db = goals._get_session_db()
+    assert db is not None
+    try:
+        assert any(shared is db for shared in registry.live_shared_session_dbs())
+        assert goals._get_session_db() is db
+    finally:
+        goals._DB_CACHE.clear()
+        registry.release_or_close(db)

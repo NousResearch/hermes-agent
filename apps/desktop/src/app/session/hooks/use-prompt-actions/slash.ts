@@ -1,10 +1,11 @@
 import { skillInvocationText } from '@hermes/shared'
+import { parseCommandDispatch, parseSlashCommand } from '@hermes/shared'
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
 import { getProfiles } from '@/hermes'
 import type { Translations } from '@/i18n'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
-import { parseCommandDispatch, parseSlashCommand, sessionTitle } from '@/lib/chat-runtime'
+import { sessionTitle } from '@/lib/chat-runtime'
 import {
   type CommandsCatalogLike,
   type DesktopActionId,

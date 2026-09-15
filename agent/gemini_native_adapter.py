@@ -20,7 +20,8 @@ from typing import Any, Dict, Iterator, List, Optional
 import httpx
 
 from agent.bounded_response import read_streaming_error_body
-from agent.gemini_schema import sanitize_gemini_tool_parameters
+from agent.retry_utils import parse_retry_after_seconds
+from agent.gemini_schema import prepare_gemini_tool_parameters, sanitize_gemini_tool_parameters
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,13 @@ def is_native_gemini_base_url(base_url: str) -> bool:
     """True when the endpoint speaks Gemini's native REST API (not ``/openai``)."""
     normalized = str(base_url or "").strip().rstrip("/").lower()
     return "generativelanguage.googleapis.com" in normalized and not normalized.endswith("/openai")
+
+
+def gemini_accepts_parameters_json_schema(base_url: str) -> bool:
+    """``FunctionDeclaration.parametersJsonSchema`` exists only in the ``v1beta`` surface of
+    generativelanguage (absent from ``v1`` / ``v1alpha`` content.proto); other versions and
+    unknown proxies get the legacy ``parameters`` subset."""
+    return str(base_url or "").strip().rstrip("/").lower().endswith("/v1beta")
 
 
 def probe_gemini_tier(
@@ -328,7 +336,7 @@ def _build_gemini_contents(
     return _merge_alternating(contents), ({"role": "system", "parts": [{"text": joined_system}]} if joined_system else None)
 
 
-def _function_declaration(tool: Any) -> Optional[Dict[str, Any]]:
+def _function_declaration(tool: Any, *, json_schema: bool = False) -> Optional[Dict[str, Any]]:
     fn = (tool.get("function") or {}) if isinstance(tool, dict) else None
     if not isinstance(fn, dict) or not (isinstance(fn.get("name"), str) and fn["name"]):
         return None
@@ -336,12 +344,18 @@ def _function_declaration(tool: Any) -> Optional[Dict[str, Any]]:
     if isinstance(fn.get("description"), str) and fn["description"]:
         decl["description"] = fn["description"]
     if isinstance(fn.get("parameters"), dict):
-        decl["parameters"] = sanitize_gemini_tool_parameters(fn["parameters"])
+        # Full JSON Schema where the API version has the field (unions, bare arrays,
+        # $ref survive); the lossy OpenAPI subset elsewhere. Mutually exclusive on the wire.
+        if json_schema:
+            decl["parametersJsonSchema"] = prepare_gemini_tool_parameters(fn["parameters"])
+        else:
+            decl["parameters"] = sanitize_gemini_tool_parameters(fn["parameters"])
     return decl
 
 
-def _translate_tools_to_gemini(tools: Any) -> List[Dict[str, Any]]:
-    declarations = [d for d in map(_function_declaration, tools if isinstance(tools, list) else []) if d]
+def _translate_tools_to_gemini(tools: Any, *, json_schema: bool = False) -> List[Dict[str, Any]]:
+    declarations = [d for d in (_function_declaration(t, json_schema=json_schema)
+                                for t in (tools if isinstance(tools, list) else [])) if d]
     return [{"functionDeclarations": declarations}] if declarations else []
 
 
@@ -395,13 +409,14 @@ def _effective_gemini_max_output_tokens(max_tokens: Optional[int], thinking_conf
 def build_gemini_request(
     *, messages: List[Dict[str, Any]], tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None,
     max_tokens: Optional[int] = None, top_p: Optional[float] = None, stop: Any = None, thinking_config: Any = None,
-    model: str = "",
+    model: str = "", tools_as_json_schema: bool = False,
 ) -> Dict[str, Any]:
     # Gemini 3+ both requires tool-call ids and accepts multimodal functionResponse parts.
     is_gemini3 = gemini_requires_tool_call_ids(model)
     contents, system_instruction = _build_gemini_contents(messages, include_tool_call_ids=is_gemini3, is_gemini3=is_gemini3)
     optional = (
-        ("systemInstruction", system_instruction), ("tools", _translate_tools_to_gemini(tools)),
+        ("systemInstruction", system_instruction),
+        ("tools", _translate_tools_to_gemini(tools, json_schema=tools_as_json_schema)),
         ("toolConfig", _translate_tool_choice_to_gemini(tool_choice)),
     )
     request: Dict[str, Any] = {"contents": contents, **{k: v for k, v in optional if v}}
@@ -421,10 +436,14 @@ def _tool_call_extra_from_part(part: Dict[str, Any]) -> Optional[Dict[str, Any]]
     return {"google": {"thought_signature": sig}} if isinstance(sig, str) and sig else None
 
 
+def _provider_call_id(fc: Dict[str, Any]) -> Optional[str]:
+    fc_id = fc.get("id")
+    return fc_id if isinstance(fc_id, str) and fc_id else None
+
+
 def _new_call_id(fc: Dict[str, Any]) -> str:
     """Echo the functionCall/delta ``id`` when present, else mint an OpenAI-style one."""
-    fc_id = fc.get("id")
-    return fc_id if isinstance(fc_id, str) and fc_id else f"call_{uuid.uuid4().hex[:12]}"
+    return _provider_call_id(fc) or f"call_{uuid.uuid4().hex[:12]}"
 
 
 def _dump_call_args(fc: Dict[str, Any], **kwargs: Any) -> str:
@@ -506,24 +525,66 @@ def _make_stream_chunk(
     return _envelope(model, "chat.completion.chunk", choice, None, cls=_GeminiStreamChunk)
 
 
+_SSE_DONE = object()  # sentinel: terminal [DONE] frame
+
+
+def _parse_sse_line(line: str) -> Any:
+    """One SSE line → payload dict, ``_SSE_DONE`` for the terminal frame, or None."""
+    line = line.rstrip("\r")
+    if not line.startswith("data: "):
+        return None
+    if (data := line[6:]) == "[DONE]":
+        return _SSE_DONE
+    try:
+        payload = json.loads(data)
+    except json.JSONDecodeError:
+        logger.debug("Non-JSON Gemini SSE line: %s", data[:200])
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def _iter_sse_events(response: httpx.Response) -> Iterator[Dict[str, Any]]:
     buffer = ""
     for chunk in response.iter_text():
         buffer += chunk or ""
         while "\n" in buffer:
             line, buffer = buffer.split("\n", 1)
-            line = line.rstrip("\r")
-            if not line.startswith("data: "):
-                continue
-            if (data := line[6:]) == "[DONE]":
+            payload = _parse_sse_line(line)
+            if payload is _SSE_DONE:
                 return
-            try:
-                payload = json.loads(data)
-            except json.JSONDecodeError:
-                logger.debug("Non-JSON Gemini SSE line: %s", data[:200])
-                continue
-            if isinstance(payload, dict):
+            if payload is not None:
                 yield payload
+    # The final frame may not be newline-terminated: flush the residual buffer
+    # after EOF instead of silently dropping its content (pi#8997 bug class).
+    if buffer:
+        payload = _parse_sse_line(buffer)
+        if payload is not None and payload is not _SSE_DONE:
+            yield payload
+
+
+def _tool_call_slot(fc: Dict[str, Any], part: Dict[str, Any], part_index: int, args_str: str,
+                    tool_call_indices: Dict[str, Dict[str, Any]]) -> tuple[str, Optional[Dict[str, Any]]]:
+    """``(key, existing slot or None)`` for a streamed functionCall.
+
+    Gemini 3 ids each tool call, so the id is the slot identity (``part_index`` and the thought
+    signature drift across events of one call). Gemini 2.5 sends no id and ``part_index`` restarts
+    at 0 per event, so two different calls to one tool in separate events would share a slot and
+    have their arguments concatenated into unparseable JSON: Gemini re-sends full arguments, so a
+    payload that is not a prefix-extension (or resend) of the slot's accumulated arguments is a
+    different call and gets its own ``key#N`` slot, kept reachable so its own resend lands on it.
+    """
+    if fc_id := _provider_call_id(fc):
+        key = json.dumps({"provider_call_id": fc_id}, sort_keys=True)
+        return key, tool_call_indices.get(key)
+    thought_signature = part.get("thoughtSignature") if isinstance(part.get("thoughtSignature"), str) else ""
+    key = json.dumps({"part_index": part_index, "name": fc["name"], "thought_signature": thought_signature}, sort_keys=True)
+    slot = tool_call_indices.get(key)
+    if slot is None or args_str.startswith(slot["last_arguments"]):
+        return key, slot
+    for other_key, other in tool_call_indices.items():
+        if other_key.startswith(f"{key}#") and args_str.startswith(other["last_arguments"]):
+            return other_key, other
+    return f"{key}#{len(tool_call_indices)}", None
 
 
 def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices: Dict[str, Dict[str, Any]]) -> List[_GeminiStreamChunk]:
@@ -545,12 +606,11 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
         if fc := _part_function_call(part):
             name = str(fc["name"])
             args_str = _dump_call_args(fc, sort_keys=True)
-            thought_signature = part.get("thoughtSignature") if isinstance(part.get("thoughtSignature"), str) else ""
-            call_key = json.dumps({"part_index": part_index, "name": name, "thought_signature": thought_signature}, sort_keys=True)
-            if (slot := tool_call_indices.get(call_key)) is None:
+            call_key, slot = _tool_call_slot(fc, part, part_index, args_str, tool_call_indices)
+            if slot is None:
                 slot = tool_call_indices[call_key] = {"index": len(tool_call_indices), "id": _new_call_id(fc), "last_arguments": ""}
             # Gemini re-sends the full args each event; emit only the new suffix.
-            last_arguments = str(slot.get("last_arguments") or "")
+            last_arguments = slot["last_arguments"]
             slot["last_arguments"] = args_str
             delta = {"index": slot["index"], "id": slot["id"], "name": name, "extra_content": _tool_call_extra_from_part(part),
                      "arguments": args_str[len(last_arguments):] if args_str.startswith(last_arguments) else args_str}
@@ -591,10 +651,7 @@ def gemini_http_error(response: httpx.Response, *, body_text: Optional[str] = No
     err_obj = _error_object(body_text)
     err_status, err_message = (str(err_obj.get(k) or "").strip() for k in ("status", "message"))
     reason, metadata = _error_info(err_obj)
-    try:
-        retry_after: Optional[float] = float(response.headers.get("Retry-After") or response.headers.get("retry-after"))
-    except (TypeError, ValueError):
-        retry_after = None
+    retry_after = parse_retry_after_seconds(response.headers)
     message = (
         f"Gemini HTTP {status} ({err_status or 'error'}): {err_message}" if err_message
         else f"Gemini returned HTTP {status}: {body_text[:500]}"
@@ -660,6 +717,7 @@ class GeminiNativeClient:
         request = build_gemini_request(
             messages=messages or [], tools=tools, tool_choice=tool_choice, temperature=temperature, max_tokens=max_tokens,
             top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"), model=model,
+            tools_as_json_schema=gemini_accepts_parameters_json_schema(self.base_url),
         )
         model = bare_gemini_model_id(model)
         url = f"{self.base_url}/models/{model}:"

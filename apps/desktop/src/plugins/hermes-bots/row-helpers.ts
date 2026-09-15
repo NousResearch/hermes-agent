@@ -104,11 +104,22 @@ export function botWorkingMood(
   owner: WorkingOwner | null,
   turnBusy: boolean,
   activeConnectionId = 'local',
-  now = Date.now()
+  now = Date.now(),
+  groupKeys?: ReadonlySet<string>
 ): 'idle' | 'think' | 'work' {
+  if (groupKeys?.has(botRosterKey(bot))) {
+    return 'think'
+  }
+
   const botConnectionId = bot.connectionId || (bot.remoteSource ? '' : activeConnectionId)
 
-  if (turnBusy && owner?.authoritative && owner.connectionId && owner.name === bot.name && owner.connectionId === botConnectionId) {
+  if (
+    turnBusy &&
+    owner?.authoritative &&
+    owner.connectionId &&
+    owner.name === bot.name &&
+    owner.connectionId === botConnectionId
+  ) {
     return 'think'
   }
 
@@ -121,10 +132,11 @@ export function activeBots(
   owner: WorkingOwner | null,
   turnBusy: boolean,
   now = Date.now(),
-  activeConnectionId = 'local'
+  activeConnectionId = 'local',
+  groupKeys?: ReadonlySet<string>
 ): RosterRow[] {
   return (roster || []).filter(bot => {
-    const busyTurn = botWorkingMood(bot, owner, turnBusy, activeConnectionId, now) !== 'idle'
+    const busyTurn = botWorkingMood(bot, owner, turnBusy, activeConnectionId, now, groupKeys) !== 'idle'
     const last = botActivitySession(bot)?.last_active || 0
     const inWindow = Boolean(last && now / 1000 - last < ACTIVE_WINDOW_S)
 

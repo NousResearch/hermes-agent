@@ -1282,7 +1282,9 @@ export const host = {
 
   /** HEAR the gateway stream (message deltas, session lifecycle, tool
    *  activity, …) by event type — `'*'` for everything. Returns a disposer.
-   *  Listeners are isolated; a throw can't affect app dispatch. */
+   *  Listeners are isolated; a throw can't affect app dispatch. Subscriptions
+   *  made while a plugin registers are unloaded with it; anywhere else, wire
+   *  the disposer to `ctx.onDispose` (or use `ctx.onEvent`, which is tracked). */
   onEvent: onGatewayEvent,
 
   /** Restart the backend gateway (progress surfaces in the core statusbar). */

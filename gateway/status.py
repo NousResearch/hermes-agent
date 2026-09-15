@@ -325,6 +325,12 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # Gateway-dedicated entrypoints carry no subcommand to inspect.
     if any(t == "gateway/run.py" or t.endswith("/gateway/run.py") for t in tokens):
         return "run"
+    # Atomic Hermes' bundled desktop runner shares HERMES_HOME with the CLI;
+    # without this, `gateway run --replace` does not recognise it, skips the
+    # replace/lock-handoff path, and collides with its still-held scoped
+    # locks (e.g. Discord bot token). See #22418.
+    if any(b == "desktop-gateway.py" for b in basenames):
+        return "run"
     if any(b in ("hermes-gateway", "hermes-gateway.exe") for b in basenames):
         return "run"
     joined = " ".join(tokens)

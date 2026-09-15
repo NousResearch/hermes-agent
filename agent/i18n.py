@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import string
 import threading
 from functools import lru_cache
 from pathlib import Path
@@ -49,8 +51,43 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "ar-sa": "ar", "ar-eg": "ar", "ar-ae": "ar", "ar-ma": "ar", "ar-dz": "ar",
 }
 
+_MUTABLE_CATEGORIES = frozenset({"progress", "lifecycle", "info", "compression"})
+# Only notification messages whose callers treat an empty string as "do not
+# send" belong here. Errors, approvals and command replies remain visible.
+GATEWAY_MESSAGE_CATEGORIES: dict[str, str] = {
+    "gateway.long_running": "progress",
+    "gateway.no_activity_warning": "progress",
+    "gateway.subagent_working": "progress",
+    "gateway.queued_next_turn": "progress",
+    "gateway.interrupting_task": "progress",
+    "gateway.compaction_done": "progress",
+    "gateway.steered_into_run": "progress",
+    "gateway.restart_success": "lifecycle",
+    "gateway.gateway_online": "lifecycle",
+    "gateway.shutdown_restarting": "lifecycle",
+    "gateway.shutdown_shutting_down": "lifecycle",
+    "gateway.codex_gpt55_autoraise_notice": "info",
+    "gateway.kanban_done": "info",
+    "gateway.kanban_blocked": "info",
+    "gateway.kanban_crashed": "info",
+    "gateway.kanban_gave_up": "info",
+    "gateway.kanban_timed_out": "info",
+    "gateway.kanban_review_requested": "info",
+    "gateway.compression_aux_unavailable": "info",
+    "gateway.compression_no_provider": "info",
+    "gateway.compress_aux_model_failed": "info",
+    "gateway.preflight_compression": "info",
+    "gateway.stale_connections_cleaned": "info",
+    "gateway.iteration_budget_exhausted": "info",
+    "gateway.thinking_prefill_retry": "info",
+}
+
 _catalog_cache: dict[str, dict[str, str]] = {}
 _catalog_lock = threading.Lock()
+_overrides_cache: dict[str, dict[str, str]] = {}
+_overrides_lock = threading.Lock()
+_suppress_cache: dict[str, frozenset[str]] = {}
+_suppress_lock = threading.Lock()
 
 
 def _locales_dir() -> Path:
@@ -137,11 +174,217 @@ def _config_language() -> str | None:
     return _config_language_cached(str(get_hermes_home()))
 
 
+def _config_dict() -> dict[str, Any]:
+    """Read the active profile's configuration without making translation fatal."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        config = load_config_readonly()
+        return config if isinstance(config, dict) else {}
+    except Exception as exc:
+        logger.debug("Could not read config for i18n: %s", exc)
+        return {}
+
+
+def _profile_cache_key() -> str:
+    from hermes_constants import get_hermes_home
+    return str(get_hermes_home())
+
+
+@lru_cache(maxsize=8)
+def agent_display_name(hermes_home: str | None = None) -> str:
+    """Configured branding name for ``{name}`` substitutions."""
+    config = _config_dict()
+    display = config.get("display") or {}
+    skin_name = display.get("skin", "default") if isinstance(display, dict) else "default"
+    try:
+        from hermes_cli.skin_engine import load_skin
+        name = load_skin(str(skin_name or "default")).get_branding("agent_name", "Hermes")
+        return name.strip() if isinstance(name, str) and name.strip() else "Hermes"
+    except Exception as exc:
+        logger.debug("Could not resolve i18n branding: %s", exc)
+        return "Hermes"
+
+
+def _gateway_overrides() -> dict[str, str]:
+    """Return the active profile's ``gateway.system_messages`` overrides.
+
+    Config keys use short names (``restart_success``); catalog keys retain the
+    ``gateway.`` prefix.  The cache is profile-scoped so a multiplexed gateway
+    cannot leak one profile's custom wording into another profile's session.
+    """
+    profile_key = _profile_cache_key()
+    with _overrides_lock:
+        cached = _overrides_cache.get(profile_key)
+        if cached is not None:
+            return cached
+    raw = (_config_dict().get("gateway") or {}).get("system_messages") or {}
+    overrides = {
+        f"gateway.{name}": template
+        for name, template in raw.items()
+        if isinstance(name, str) and isinstance(template, str)
+    } if isinstance(raw, dict) else {}
+    with _overrides_lock:
+        return _overrides_cache.setdefault(profile_key, overrides)
+
+
+def _suppressed_categories() -> frozenset[str]:
+    """Return active-profile notification categories muted by configuration."""
+    profile_key = _profile_cache_key()
+    with _suppress_lock:
+        cached = _suppress_cache.get(profile_key)
+        if cached is not None:
+            return cached
+    raw = (_config_dict().get("gateway") or {}).get("system_messages") or {}
+    spec = raw.get("suppress") if isinstance(raw, dict) else None
+    values = [spec] if isinstance(spec, str) else spec if isinstance(spec, list) else []
+    result: set[str] = set()
+    for value in values:
+        if value == "all":
+            result.update(_MUTABLE_CATEGORIES)
+        elif value in _MUTABLE_CATEGORIES:
+            result.add(value)
+        elif value is not None:
+            logger.warning("Ignoring non-suppressible system-message category %r", value)
+    frozen = frozenset(result)
+    with _suppress_lock:
+        return _suppress_cache.setdefault(profile_key, frozen)
+
+
+def is_gateway_system_message_suppressed(category: str) -> bool:
+    """Whether the active profile muted a user-visible gateway message category.
+
+    Raw operational notices use this instead of going through ``t()``: they
+    share the same profile-scoped policy without treating arbitrary model text
+    as a suppressible system message.
+    """
+    return category in _suppressed_categories()
+
+
+class _MissingField(str):
+    """A format placeholder that remains visible when an override omits data."""
+
+
+class _SafeFormatter(string.Formatter):
+    def get_value(self, key: Any, args: Any, kwargs: Any) -> Any:
+        if isinstance(key, str):
+            return kwargs[key] if key in kwargs else _MissingField("{" + key + "}")
+        try:
+            return args[key]
+        except (IndexError, KeyError):
+            return _MissingField("{" + str(key) + "}")
+
+    def get_field(self, field_name: str, args: Any, kwargs: Any) -> tuple[Any, Any]:
+        """Preserve an unresolved compound field as its complete raw token.
+
+        ``string.Formatter.get_field`` performs ``.attr`` / ``[item]``
+        traversal after :meth:`get_value`. A missing root is therefore not
+        enough on its own: traversing the ``_MissingField`` sentinel would
+        otherwise raise ``AttributeError`` or ``TypeError``. Known roots whose
+        requested attribute/item is absent degrade the same way.
+        """
+        root = field_name.split(".", 1)[0].split("[", 1)[0]
+        lookup_key: Any = int(root) if root.isdecimal() else root
+        root_value = self.get_value(lookup_key, args, kwargs)
+        if isinstance(root_value, _MissingField):
+            return _MissingField("{" + field_name + "}"), lookup_key
+        try:
+            return super().get_field(field_name, args, kwargs)
+        except (AttributeError, KeyError, IndexError, TypeError):
+            return _MissingField("{" + field_name + "}"), lookup_key
+
+    def format_field(self, value: Any, format_spec: str) -> str:
+        if isinstance(value, _MissingField):
+            return value[:-1] + (":" + format_spec if format_spec else "") + "}"
+        try:
+            return super().format_field(value, format_spec)
+        except (ValueError, TypeError):
+            return str(value)
+
+
+_SAFE_FORMATTER = _SafeFormatter()
+
+
+@lru_cache(maxsize=8)
+def _gateway_message_matchers(lang: str) -> tuple[dict[str, str], tuple[tuple[re.Pattern[str], str], ...]]:
+    """Index English gateway templates for delivery-time compatibility translation.
+
+    Hermes historically emitted many static gateway messages as raw strings.
+    The refactored gateway now spreads those sites over dedicated modules; this
+    bridge keeps existing catalog entries effective while those paths migrate
+    to direct ``t()`` calls.  It only matches a complete known English system
+    template, so model-generated replies and ordinary user text pass through.
+    """
+    exact: dict[str, str] = {}
+    patterns: list[tuple[re.Pattern[str], str]] = []
+    for key, template in _load_catalog(DEFAULT_LANGUAGE).items():
+        if not key.startswith("gateway."):
+            continue
+        parsed = list(string.Formatter().parse(template))
+        if not any(field is not None for _, field, _, _ in parsed):
+            exact.setdefault(template, key)
+            continue
+        parts: list[str] = ["^"]
+        fields: set[str] = set()
+        usable = True
+        for literal, field, _spec, _conversion in parsed:
+            parts.append(re.escape(literal))
+            if field is not None:
+                if not field.isidentifier():
+                    usable = False
+                    break
+                if field in fields:
+                    parts.append(f"(?P={field})")
+                else:
+                    parts.append(f"(?P<{field}>.+?)")
+                    fields.add(field)
+        if usable:
+            parts.append("$")
+            patterns.append((re.compile("".join(parts), re.DOTALL), key))
+    return exact, tuple(patterns)
+
+
+def localize_gateway_message(message: str, lang: str | None = None) -> str:
+    """Translate one complete known gateway system message at delivery time.
+
+    New call sites should prefer :func:`t`; this is deliberately a narrow
+    compatibility bridge for static strings that upstream moved into modules
+    during the i18n branch's rebase.
+    """
+    if not isinstance(message, str) or not message:
+        return message
+    target = _normalize_lang(lang) if lang else get_language()
+    if target == DEFAULT_LANGUAGE:
+        return message
+    exact, patterns = _gateway_message_matchers(target)
+    key = exact.get(message)
+    if key:
+        return t(key, lang=target)
+    for pattern, candidate in patterns:
+        match = pattern.fullmatch(message)
+        if match:
+            return t(candidate, lang=target, **match.groupdict())
+    return message
+
+
+def _safe_format(template: str, **kwargs: Any) -> str:
+    try:
+        return _SAFE_FORMATTER.vformat(template, (), kwargs)
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError) as exc:
+        logger.warning("i18n safe-format failed for template %r: %s", template, exc)
+        return template
+
+
 def reset_language_cache() -> None:
     """Invalidate cached language resolution and catalogs (call after ``save_config`` changes ``display.language``)."""
     _config_language_cached.cache_clear()
+    agent_display_name.cache_clear()
+    _gateway_message_matchers.cache_clear()
     with _catalog_lock:
         _catalog_cache.clear()
+    with _overrides_lock:
+        _overrides_cache.clear()
+    with _suppress_lock:
+        _suppress_cache.clear()
 
 
 def get_language() -> str:
@@ -162,20 +405,25 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
     ``format_kwargs`` are applied with ``str.format``. Falls back to English,
     then to the bare key; a format failure returns the unformatted string.
     """
+    category = GATEWAY_MESSAGE_CATEGORIES.get(key)
+    if category in _suppressed_categories():
+        return ""
     target = _normalize_lang(lang) if lang else get_language()
-    value = _load_catalog(target).get(key)
+    value = _gateway_overrides().get(key) if key.startswith("gateway.") else None
+    if value is None:
+        value = _load_catalog(target).get(key)
     if value is None and target != DEFAULT_LANGUAGE:
         value = _load_catalog(DEFAULT_LANGUAGE).get(key)
     if value is None:
         logger.debug("i18n miss: key=%r lang=%r", key, target)
         value = key
-    if not format_kwargs:
-        return value
-    try:
-        return value.format(**format_kwargs)
-    except (KeyError, IndexError, ValueError) as exc:
-        logger.warning("i18n format failed for key=%r lang=%r kwargs=%r: %s", key, target, format_kwargs, exc)
-        return value
+    if "{name}" in value and "name" not in format_kwargs:
+        format_kwargs = {**format_kwargs, "name": agent_display_name(_profile_cache_key())}
+    return _safe_format(value, **format_kwargs) if format_kwargs else value
 
 
-__all__ = ["SUPPORTED_LANGUAGES", "DEFAULT_LANGUAGE", "t", "get_language", "reset_language_cache"]
+__all__ = [
+    "SUPPORTED_LANGUAGES", "DEFAULT_LANGUAGE", "GATEWAY_MESSAGE_CATEGORIES", "t", "get_language",
+    "localize_gateway_message", "reset_language_cache", "agent_display_name",
+    "is_gateway_system_message_suppressed",
+]

@@ -650,6 +650,22 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
+def _is_compression_warning(text: str) -> bool:
+    """True for actionable compression-failure warnings, never routine progress.
+
+    These messages use the agent status callback rather than a catalog key, so
+    the category decision has to happen at the gateway delivery boundary.
+    Restrict the match to failure/blocked wording: a model response is never
+    routed through this function and ordinary compression progress remains
+    governed by ``compression.progress_notices`` below.
+    """
+    normalized = str(text or "").casefold()
+    return "compression" in normalized and any(marker in normalized for marker in (
+        "timed out", "aborted", "total ceiling", "over the compression threshold",
+        "compression is currently blocked",
+    ))
+
+
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery.
 
@@ -659,6 +675,11 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         return None
     if _gateway_surface_passes_raw_text(platform):
         return text
+
+    if _is_compression_warning(text):
+        from agent.i18n import is_gateway_system_message_suppressed
+        if is_gateway_system_message_suppressed("compression"):
+            return None
 
     text = _redact_gateway_user_facing_secrets(text)
     # Opt-in `compression.progress_notices` lets ROUTINE (template-derived) progress through; other noise stays.

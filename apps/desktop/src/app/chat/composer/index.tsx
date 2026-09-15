@@ -1049,6 +1049,7 @@ export function ChatBar({
     busy,
     clearDraft,
     disabled,
+    dictationEnabled: state.voice.enabled,
     focusInput,
     insertText,
     maxRecordingSeconds,

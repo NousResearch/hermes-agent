@@ -4,7 +4,7 @@ import { en } from '@/i18n/en'
 
 import { defaultBindings, KEYBIND_ACTIONS, keybindAction } from './actions'
 
-describe('session.archive keybind action', () => {
+describe('rebindable keybind actions', () => {
   it('is registered under the session category', () => {
     const action = keybindAction('session.archive')
 
@@ -29,5 +29,15 @@ describe('session.archive keybind action', () => {
     const matches = KEYBIND_ACTIONS.filter(action => action.id === 'session.archive')
 
     expect(matches).toHaveLength(1)
+  })
+
+  it('registers dictation as an unbound composer action with an English label', () => {
+    const action = keybindAction('composer.dictate')
+
+    expect(action?.category).toBe('composer')
+    expect(action?.defaults).toEqual([])
+    expect(defaultBindings()['composer.dictate']).toEqual([])
+    expect(en.keybinds.actions['composer.dictate']).toBe('Start / stop dictation')
+    expect(KEYBIND_ACTIONS.filter(candidate => candidate.id === 'composer.dictate')).toHaveLength(1)
   })
 })

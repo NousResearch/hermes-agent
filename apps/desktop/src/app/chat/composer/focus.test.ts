@@ -7,9 +7,11 @@ import {
   focusComposerInput,
   getActiveComposer,
   markActiveComposer,
+  onComposerDictateRequest,
   onComposerFocusRequest,
   onComposerModelMenuRequest,
   releaseActiveComposer,
+  requestComposerDictate,
   requestComposerFocus,
   requestModelMenuToggle
 } from './focus'
@@ -178,6 +180,24 @@ describe('releaseActiveComposer', () => {
     off()
 
     expect(mainComposerSaw).toEqual(['main'])
+  })
+})
+
+describe('requestComposerDictate', () => {
+  it('dispatches a targeted dictation request only to the active composer', async () => {
+    const mainSaw: string[] = []
+    const tileSaw: string[] = []
+    const offMain = onComposerDictateRequest(target => target === 'main' && mainSaw.push(target))
+    const offTile = onComposerDictateRequest(target => target === 'tile:other' && tileSaw.push(target))
+
+    markActiveComposer('main')
+    requestComposerDictate('active')
+    await new Promise(resolve => window.setTimeout(resolve, 0))
+    offMain()
+    offTile()
+
+    expect(mainSaw).toEqual(['main'])
+    expect(tileSaw).toEqual([])
   })
 })
 

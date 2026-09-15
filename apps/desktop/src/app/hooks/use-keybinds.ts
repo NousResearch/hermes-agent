@@ -66,7 +66,7 @@ import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
 import { openNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
-import { requestComposerFocus, requestModelMenuToggle, requestVoiceToggle } from '../chat/composer/focus'
+import { requestComposerDictate, requestComposerFocus, requestModelMenuToggle, requestVoiceToggle } from '../chat/composer/focus'
 import { handleComposerFocusChord } from '../chat/composer/focus-chord'
 import { handleWindowPaste } from '../chat/composer/paste-to-focus'
 import { openSession } from '../open-session'
@@ -194,6 +194,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       }
     },
     'composer.voice': requestVoiceToggle,
+    'composer.dictate': requestComposerDictate,
 
     // On the Settings overlay, ⌘K scopes to settings search; the second press
     // (or Esc) still closes as usual via toggle.

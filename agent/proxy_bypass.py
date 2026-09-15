@@ -69,8 +69,11 @@ LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
 def is_loopback_host(host: str | None) -> bool:
-    """True for a host that must always bypass a proxy (loopback literal or ``localhost``)."""
-    return str(host or "").strip().lower().strip("[]") in LOOPBACK_HOSTS
+    """True for a host that must always bypass a proxy: ``localhost`` or any loopback IP literal
+    (``127.x.x.x``, ``::1``, ``::ffff:127.0.0.1``)."""
+    host = str(host or "").strip().lower().strip("[]")
+    ip = _ip_or_none(host)
+    return host == "localhost" or (ip is not None and ip.is_loopback)
 
 
 def loopback_connect_kwargs(url: str) -> dict:
@@ -80,9 +83,19 @@ def loopback_connect_kwargs(url: str) -> dict:
     return {"proxy": None} if is_loopback_host(split_host_port(url)[0]) else {}
 
 
+def loopback_request_kwargs(url: str) -> dict:
+    """``requests.get`` kwargs for an in-process HTTP dial (CDP ``/json/version`` discovery /
+    readiness): ``{"proxies": {"http": None, "https": None}}`` when ``url`` targets loopback so
+    ``requests`` skips ``getproxies()`` (env and macOS system proxy), else ``{}``."""
+    return {"proxies": {"http": None, "https": None}} if is_loopback_host(split_host_port(url)[0]) else {}
+
+
 def add_loopback_no_proxy(env: dict) -> dict:
     """Append the loopback hosts to ``NO_PROXY`` / ``no_proxy`` in ``env`` (both casings),
-    keeping every operator-provided entry; returns ``env``."""
+    keeping every operator-provided entry; returns ``env``. An operator ``*`` (bypass everything)
+    already covers loopback and would stop being the wildcard once anything is appended to it."""
+    if any("*" in no_proxy_entries(env.get(key) or "") for key in ("NO_PROXY", "no_proxy")):
+        return env  # both casings: requests/urllib read ``no_proxy`` first, so a loopback-only one would win
     for key in ("NO_PROXY", "no_proxy"):
         entries = no_proxy_entries(env.get(key) or "")
         missing = [host for host in LOOPBACK_HOSTS if host not in entries]

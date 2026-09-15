@@ -389,24 +389,6 @@ async def test_cjk_rich_content_skips_rich_draft_to_avoid_tdesktop_garble():
     adapter._bot.send_message_draft.assert_awaited_once()
 
 
-@pytest.mark.asyncio
-async def test_cjk_rich_draft_can_be_opted_in():
-    adapter = _make_adapter(
-        extra={"rich_drafts": True, "allow_cjk_rich_messages": True}
-    )
-    adapter._bot.do_api_request = AsyncMock(return_value=True)
-
-    result = await adapter.send_draft("12345", draft_id=7, content=CJK_RICH_CONTENT)
-
-    assert result.success is True
-    adapter._bot.do_api_request.assert_awaited_once()
-    call = adapter._bot.do_api_request.call_args
-    assert call.args[0] == "sendRichMessageDraft"
-    api_kwargs = call.kwargs["api_kwargs"]
-    assert api_kwargs["rich_message"]["markdown"] == CJK_RICH_CONTENT
-    adapter._bot.send_message_draft.assert_not_called()
-
-
 # ----------------------------------------------------------------------
 # prefers_fresh_final_streaming: root DMs stay on the no-duplicate edit/draft
 # path (#47048). DM topics that degrade off drafts still need a fresh

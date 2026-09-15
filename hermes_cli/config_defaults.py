@@ -341,6 +341,12 @@ DEFAULT_CONFIG = {
         "docker_snap_compat": False,
         # Trusted profiles sharing one Docker container identity; empty = per-profile boundary.
         "docker_shared_container_key": "",
+        # shared = one container reused across all sessions (current); session = one container per chat session, resumed on reattach (#46041)
+        "docker_container_scope": "shared",
+        # stop_on_session_end (default; stopped at session close, restarted on resume) | keep_running | remove_on_session_end | idle_ttl
+        "docker_session_container_retention": "stop_on_session_end",
+        # idle_ttl retention: session container removed after this many idle seconds (0 = use terminal.lifetime_seconds)
+        "docker_session_container_ttl_seconds": 3600,
         # Keep a long-lived bash shell across execute() calls so cwd/env/shell variables survive.
         # Applies to non-local backends (SSH); local is opt-in via TERMINAL_LOCAL_PERSISTENT env.
         "persistent_shell": True,

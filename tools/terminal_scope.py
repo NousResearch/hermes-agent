@@ -28,7 +28,8 @@ _TOOL_LEVEL_DEFAULTS: Dict[str, Any] = {
     "cwd": ".", "ssh_host": "", "ssh_user": "", "ssh_port": 22, "ssh_key": "",
     "docker_orphan_reaper": True, "docker_persist_across_processes": True,
     "sandbox_dir": "", "lifetime_seconds": 300, "docker_shared_container_key": "",
-    "home_mode": "auto",
+    "docker_container_scope": "shared", "docker_session_container_retention": "stop_on_session_end",
+    "docker_session_container_ttl_seconds": 3600, "home_mode": "auto",
 }
 
 

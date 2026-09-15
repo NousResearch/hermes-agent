@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from datetime import datetime
 from types import SimpleNamespace
@@ -265,15 +266,22 @@ def _make_runner(current_source: SessionSource, entries: list[SessionEntry]):
     runner._evict_cached_agent = MagicMock()
     runner._queue_depth = MagicMock(return_value=0)
     runner._session_db = AsyncSessionDB(MagicMock())
-    runner._session_db._db.list_sessions_rich.return_value = [
+    rows = [
         {"id": entry.session_id, "title": entry.display_name, "preview": ""}
         for entry in entries
     ]
+    runner._session_db._db.list_sessions_rich.side_effect = (
+        lambda *, limit, offset=0, **kwargs: rows[offset:offset + limit]
+    )
     runner._session_db._db.resolve_resume_session_id.side_effect = lambda sid: sid
     runner._session_db._db.get_session_title.side_effect = lambda sid: {
         entry.session_id: entry.display_name for entry in entries
     }.get(sid)
     runner._session_db._db.get_session.return_value = None
+    runner._session_db._db.list_session_title_candidates.side_effect = lambda title: [
+        {"id": entry.session_id} for entry in entries if entry.display_name == title
+    ]
+    runner._clear_conversation_scope = MagicMock()
     return runner
 
 
@@ -318,11 +326,17 @@ async def test_matrix_resume_quoted_title_same_room():
     )
 
     assert "Resumed session" in result
-    runner._session_db._db.resolve_session_by_title.assert_called_once_with("Project B Plan")
+    runner._session_db._db.list_session_title_candidates.assert_called_once_with("Project B Plan")
+
+
+def _configure_matrix_admin(runner) -> None:
+    runner.config.platforms[Platform.MATRIX].extra["group_allow_admin_from"] = [SENDER]
 
 
 @pytest.mark.asyncio
-async def test_matrix_resume_cross_room_requires_explicit_flag_and_warns():
+@pytest.mark.parametrize("flag", ["--cross-room", "--all"])
+async def test_matrix_resume_cross_room_flag_does_not_bypass_admin_gate(flag):
+
     source_a = _make_matrix_source(PROJECT_A_ROOM_ID, PROJECT_A_NAME, PROJECT_A_TOPIC)
     source_b = _make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC)
     entry_a = _entry(source_a, "session-a", "Project A Plan")
@@ -332,11 +346,149 @@ async def test_matrix_resume_cross_room_requires_explicit_flag_and_warns():
     runner._session_db._db.resolve_session_by_title.return_value = "session-a"
 
     result = await runner._handle_resume_command(
-        _event("/resume --cross-room Project A Plan", source_b)
+        _event(f"/resume {flag} Project A Plan", source_b)
     )
 
-    assert "Cross-room resume" in result
-    assert PROJECT_B_NAME in result
+    assert "No session found" in result
+    assert PROJECT_A_NAME not in result
+    assert PROJECT_A_ROOM_ID not in result
+    runner.session_store.switch_session.assert_not_called()
+    runner.session_store.load_transcript.assert_not_called()
+    runner._clear_conversation_scope.assert_not_called()
+    runner._evict_cached_agent.assert_not_called()
+    runner._release_running_agent_state.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("flag", ["--cross-room", "--all"])
+async def test_matrix_resume_cross_room_allows_configured_admin_and_warns(flag):
+    source_a = _make_matrix_source(PROJECT_A_ROOM_ID, PROJECT_A_NAME, PROJECT_A_TOPIC)
+    source_b = _make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC)
+    entry_a = _entry(source_a, "session-a", "Project A Plan")
+    entry_b = _entry(source_b, "session-b", "Project B Plan")
+    runner = _make_runner(source_b, [entry_a, entry_b])
+    _configure_matrix_admin(runner)
+    runner.session_store.switch_session.return_value = entry_a
+    runner._session_db._db.resolve_session_by_title.return_value = "session-a"
+
+    result = await runner._handle_resume_command(
+        _event(f"/resume {flag} Project A Plan", source_b)
+    )
+
+    if flag == "--cross-room":
+        assert "Cross-room resume" in result
+        assert PROJECT_B_NAME in result
+    else:
+        assert "Resumed session" in result
     runner.session_store.switch_session.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_matrix_resume_cross_room_flag_keeps_nonadmin_same_room_behavior_normal():
+    source_b = _make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC)
+    entry_b = _entry(source_b, "session-b-old", "Project B Plan")
+    runner = _make_runner(source_b, [entry_b])
+    runner.session_store.get_or_create_session.return_value = _entry(
+        source_b, "session-b-current", "Current Project B"
+    )
+    runner.session_store.switch_session.return_value = entry_b
+    runner._session_db._db.resolve_session_by_title.return_value = "session-b-old"
+
+    result = await runner._handle_resume_command(
+        _event("/resume --cross-room Project B Plan", source_b)
+    )
+
+    assert "Resumed session" in result
+    assert "Cross-room resume" not in result
+    runner.session_store.switch_session.assert_called_once()
+
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["/resume --all", "/sessions all", "/sessions all full"])
+@pytest.mark.parametrize("admin", [False, True])
+async def test_matrix_cross_room_listings_label_historical_rows_from_persisted_origin(
+    tmp_path, command, admin
+):
+    from hermes_state import SessionDB
+
+    source_a = _make_matrix_source(PROJECT_A_ROOM_ID, PROJECT_A_NAME, PROJECT_A_TOPIC)
+    source_b = _make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC)
+    runner = _make_runner(source_b, [_entry(source_b, "session-b", "Project B Plan")])
+    if admin:
+        _configure_matrix_admin(runner)
+    db = SessionDB(db_path=tmp_path / "state.db")
+    for sid, source in [("historical-a", source_a), ("session-b", source_b)]:
+        db.create_session(
+            sid, "matrix", session_key=build_session_key(source), user_id=source.user_id,
+            chat_id=source.chat_id, chat_type=source.chat_type, thread_id=source.thread_id,
+            origin_json=json.dumps(source.to_dict()), display_name="Persisted display fallback",
+        )
+        db.set_session_title(sid, "Historical Plan" if sid == "historical-a" else "Current Plan")
+        db.append_message(sid, "user", "PRIVATE_PREVIEW" if sid == "historical-a" else "own preview")
+    runner._session_db = AsyncSessionDB(db)
+    try:
+        event = _event(command, source_b)
+        result = await (runner._handle_resume_command(event) if command.startswith("/resume")
+                        else runner._handle_sessions_command(event))
+        assert "Current Plan" in result
+        if command.startswith("/sessions"):
+            assert "(current)" in result
+            assert ("historical-a" in result) is admin
+        elif not admin:
+            assert "historical-a" not in result
+        for value in ("Historical Plan", "PRIVATE_PREVIEW", PROJECT_A_NAME):
+            assert (value in result) is admin
+        assert PROJECT_A_TOPIC not in result and SENDER not in result
+        assert "Persisted display fallback" not in result
+        assert db.get_session_title("historical-a") == "Historical Plan"
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("origin_json, display_name, expected", [
+    ("{malformed SECRET_RAW_ORIGIN", PROJECT_A_NAME, PROJECT_A_NAME),
+    ("[]", "", PROJECT_A_ROOM_ID),
+    (json.dumps({"chat_name": ["SECRET_RAW_ORIGIN"]}), PROJECT_A_NAME, PROJECT_A_NAME),
+])
+async def test_matrix_listing_labels_defensively_fall_back_without_mutating_rows(
+    origin_json, display_name, expected
+):
+    source_b = _make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC)
+    runner = _make_runner(source_b, [_entry(source_b, "session-b", "Project B Plan")])
+    _configure_matrix_admin(runner)
+    rows = [{"id": "historical-a", "title": "Historical Plan", "source": "matrix",
+             "origin_json": origin_json, "display_name": display_name, "chat_id": PROJECT_A_ROOM_ID}]
+    original = dict(rows[0])
+    runner._session_db._db.list_sessions_rich.side_effect = (
+        lambda *, limit, offset=0, **kwargs: rows[offset:offset + limit]
+    )
+    result = await runner._handle_sessions_command(_event("/sessions all", source_b))
+    assert f"Historical Plan — {expected}" in result
+    assert "SECRET_RAW_ORIGIN" not in result
+    assert rows == [original]
+
+
+@pytest.mark.asyncio
+async def test_matrix_listing_labels_prefer_live_origin_and_leave_other_sources_alone():
+    source_a = _make_matrix_source(PROJECT_A_ROOM_ID, PROJECT_A_NAME, PROJECT_A_TOPIC)
+    source_b = _make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC)
+    runner = _make_runner(source_b, [_entry(source_a, "session-a", "Plan A"),
+                                     _entry(source_b, "session-b", "Plan B")])
+    _configure_matrix_admin(runner)
+    rows = [
+        {"id": "session-a", "title": "Plan A", "source": "matrix",
+         "origin_json": json.dumps(source_b.to_dict())},
+        {"id": "cli-session", "title": "CLI Work", "source": "cli", "display_name": "Not a room"},
+    ]
+    original = [dict(row) for row in rows]
+    runner._session_db._db.list_sessions_rich.side_effect = (
+        lambda *, limit, offset=0, **kwargs: rows[offset:offset + limit]
+    )
+    result = await runner._handle_sessions_command(_event("/sessions all", source_b))
+    assert f"Plan A — {PROJECT_A_NAME}" in result
+    assert PROJECT_B_NAME not in result and "Not a room" not in result
+    assert "**CLI Work**" in result
+    assert rows == original

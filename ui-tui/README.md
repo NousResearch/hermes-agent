@@ -159,6 +159,7 @@ Current input behavior is split across `app.tsx`, `components/textInput.tsx`, an
 | `Ctrl+V` / `Alt+V`              | Paste text first, then fall back to image/path attachment when applicable                                                                               |
 | `Tab`                           | Apply the active completion                                                                                                                             |
 | `Up/Down`                       | Cycle completions if the completion list is open; otherwise edit queued messages first, then walk input history                                         |
+| `Alt+Up` / `Alt+Down`           | Jump to the previous / next user prompt in the transcript                                                                                                |
 | `Left/Right`                    | Move the cursor                                                                                                                                         |
 | modified `Left/Right`           | Move by word when the terminal sends `Ctrl` or `Meta` with the arrow key                                                                                |
 | `Home` / `Ctrl+A`               | Start of line                                                                                                                                           |
@@ -179,6 +180,8 @@ Notes:
 - `Tab` only applies completions when completions are present and you are not in multiline mode.
 - Queue/history navigation only applies when you are not in multiline mode.
 - `PgUp` / `PgDn` are left to the terminal emulator; the TUI does not handle them.
+- `Alt+Up` / `Alt+Down` jump prompt to prompt without travelling the distance in between, so they are the way back into a long session.
+- The right-edge column carries a tick per user prompt at its proportional position, drawn over the scrollbar thumb; clicking a tick jumps straight to that prompt rather than scrubbing near it. Reading the column: the **line** is the scrollbar — thin is the whole conversation, thick is the part on screen — and the **dots** are your prompts, one per prompt, oldest at the top. The prompt you are on is a **filled dot in the accent colour** (`●`); every other prompt is a dim dot (`•`). Fill carries the meaning, not colour: the accent is also the scrollbar's hover colour, so shape is what tells you which dot is *yours*.
 
 ### Prompt and picker modes
 

@@ -24,6 +24,7 @@ export const HOTKEYS: [string, string][] = [
   ['Esc Esc', 'discard draft (recall with ↑)'],
   ['Tab', 'apply completion'],
   ['↑/↓', 'completions / queue edit / history'],
+  ['Alt+↑/↓', 'jump to the previous / next prompt in the transcript'],
   ['Ctrl+X', 'open live session switcher (deletes queued message while editing)'],
   ['Ctrl+T', 'expand live agents (keeps your draft)'],
   ['F7', 'collapse / restore live agent preview'],

@@ -127,3 +127,27 @@ def test_moa_progress_callback_none_safe(moa_config, monkeypatch):
     # Turn still resolved cleanly; aggregator slot populated as usual.
     assert facade.last_aggregator_slot is not None
     assert facade.last_aggregator_slot["model"] == "anthropic/claude-opus-4.8"
+
+
+def test_moa_reference_fanout_refreshes_owner_activity_without_display_callback(moa_config, monkeypatch):
+    """Advisor completions keep the owner alive even when no display hook is installed."""
+    from agent.moa_loop import MoAChatCompletions
+
+    def fake_call_llm(**kwargs):
+        if kwargs.get("task") == "moa_reference":
+            return _response("advice")
+        return _response("acted")
+
+    monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
+    activity: list[str] = []
+    owner = SimpleNamespace(_touch_activity=activity.append)
+    facade = MoAChatCompletions("closed", agent=owner)
+
+    facade.create(
+        model="closed",
+        messages=[{"role": "user", "content": "long healthy fan-out"}],
+    )
+
+    assert activity[0] == "MoA reference fan-out started (3 advisors)"
+    assert sum("MoA reference progress" in update for update in activity) == 3
+    assert activity[-1] == "MoA reference fan-out complete (3/3 advisors)"

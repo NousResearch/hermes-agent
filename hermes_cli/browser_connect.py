@@ -26,7 +26,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, get_real_home
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +184,7 @@ def real_profile_data_dir(browser: str, system: str | None = None) -> str | None
     if b is None:
         return None
     system = system or platform.system()
-    home = os.path.expanduser("~")
+    home = get_real_home()
     if system == "Darwin":
         return posixpath.join(home, "Library", "Application Support", *b.mac_support)
     if system == "Windows":
@@ -217,7 +217,7 @@ def chromium_executable(browser: str, system: str | None = None) -> str | None:
         bases = [
             os.environ.get("PROGRAMFILES", r"C:\Program Files"),
             os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)"),
-            os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))]
+            os.environ.get("LOCALAPPDATA", str(Path(get_real_home()) / "AppData" / "Local"))]
         return _first_present(os.path.join(base, *parts) for base in bases for parts in b.win_install)
     # Linux: PATH lookup first, then the known absolute install paths.
     found = next(filter(None, map(shutil.which, b.linux_exec or b.linux_bins)), None)

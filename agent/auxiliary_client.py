@@ -789,8 +789,12 @@ def _task_prefers_fast_model(task: Optional[str]) -> bool:
         _get_auxiliary_task_config(task).get("prefer_fast_model"), default=False)
 
 
-# Dedicated vision models for direct providers whose main chat model differs.
-_PROVIDER_VISION_MODELS: Dict[str, str] = {"xiaomi": "mimo-v2.5", "zai": "glm-5v-turbo"}
+# Dedicated vision models for direct providers whose main chat model differs. zai: glm-5.3-flash
+# is the only image-capable GLM id served on every Z.AI surface (pay-as-you-go and Coding Plan,
+# global and CN); the former glm-5v-turbo pin 404s / 1211 "Unknown Model" on the coding endpoints
+# (#111429). ZaiProfile has no default_vision_model(), so dropping the pin would route vision to
+# the user's text-only chat model and skip Z.AI entirely.
+_PROVIDER_VISION_MODELS: Dict[str, str] = {"xiaomi": "mimo-v2.5", "zai": "glm-5.3-flash"}
 
 
 def _resolve_provider_vision_default(provider: str) -> Optional[str]:

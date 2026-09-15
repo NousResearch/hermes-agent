@@ -53,6 +53,30 @@ function patchUnixTerminalAsarPaths(destRoot) {
   }
 }
 
+// get-windows' macOS provider resolves its Swift helper binary relative to
+// `import.meta.url` (i.e. `__dirname`), exactly like node-pty's unpatched
+// unixTerminal.js did. Copied verbatim into a packaged app, `__dirname` sits
+// inside `app.asar` (a file, not a directory), so `execFile(binary, ...)`
+// dies with `ENOTDIR` the first time `read_window_below` runs. Only
+// lib/windows.js is rewritten at staging time (STAGED_WINDOWS_JS below) —
+// the macOS provider was missed. Same asar->unpacked rewrite as
+// patchUnixTerminalAsarPaths, applied to the one line that builds the
+// helper's path.
+function patchMacosAsarPaths(destRoot) {
+  const filePath = join(destRoot, 'lib', 'macos.js')
+  if (!existsSync(filePath)) return
+
+  const source = readFileSync(filePath, 'utf8')
+  const patched = source.replace(
+    "const binary = path.join(__dirname, '../main');",
+    "const binary = path.join(__dirname.replace(/app\\.asar(?!\\.unpacked)/, 'app.asar.unpacked'), '../main');"
+  )
+
+  if (patched !== source) {
+    writeFileSync(filePath, patched)
+  }
+}
+
 /**
  * Locate node-pty's package root via real module resolution, so this
  * works whether it's hoisted to a workspace root or local to this app.
@@ -466,6 +490,7 @@ export function stageGetWindowsInto(
       cpSync(join(srcRoot, 'lib', entry.name), join(destRoot, 'lib', entry.name))
     }
   }
+  patchMacosAsarPaths(destRoot)
 
   writeFileSync(join(destRoot, 'lib', 'windows.js'), STAGED_WINDOWS_JS)
 

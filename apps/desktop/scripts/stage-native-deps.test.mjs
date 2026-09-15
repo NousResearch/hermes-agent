@@ -364,11 +364,32 @@ test('validation rejects a staged binary with the wrong platform magic', () => {
 // ─── stageGetWindowsInto tests ──────────────────────────────────────
 
 /** Create a minimal fake get-windows source tree in a temp dir. */
+// The real get-windows@9.3.0 lib/macos.js resolves its Swift helper binary
+// relative to import.meta.url. Reproduced verbatim (minus comments) so the
+// asar-rewrite test below exercises the actual pattern being patched, not a
+// simplified stand-in that could drift from upstream.
+const REAL_MACOS_JS = `import path from 'node:path';
+import {promisify} from 'node:util';
+import childProcess from 'node:child_process';
+import {fileURLToPath} from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+const execFile = promisify(childProcess.execFile);
+const binary = path.join(__dirname, '../main');
+
+export async function activeWindow(options) {
+	const {stdout} = await execFile(binary, []);
+	return JSON.parse(stdout);
+}
+`
+
 function makeFakeGetWindows(srcRoot, { version = '9.3.0', bindings = [] } = {}) {
   fs.mkdirSync(join(srcRoot, 'lib'), { recursive: true })
   fs.writeFileSync(join(srcRoot, 'package.json'), JSON.stringify({ name: 'get-windows', version, main: 'index.js' }))
   fs.writeFileSync(join(srcRoot, 'index.js'), 'export {};')
   fs.writeFileSync(join(srcRoot, 'lib', 'windows.js'), '// upstream pre-gyp loader')
+  fs.writeFileSync(join(srcRoot, 'lib', 'macos.js'), REAL_MACOS_JS)
   fs.writeFileSync(join(srcRoot, 'main'), '#!/bin/sh\n')
 
   for (const { dir, platform } of bindings) {
@@ -598,6 +619,48 @@ test('darwin staging ships the Swift helper executable and the rewritten windows
     const staged = fs.readFileSync(join(destRoot, 'lib', 'windows.js'), 'utf8')
     assert.match(staged, /Rewritten by stage-native-deps\.mjs/)
     assert.ok(!staged.includes('node-pre-gyp'), 'pre-gyp loader must not survive staging')
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+// #104384: lib/macos.js resolves the Swift helper binary relative to
+// __dirname, exactly like node-pty's unixTerminal.js does for spawn-helper.
+// Only lib/windows.js was rewritten at staging time; lib/macos.js was copied
+// verbatim, so in a packaged app __dirname sits inside app.asar (a file) and
+// execFile(binary, ...) dies with ENOTDIR the first time read_window_below
+// runs. This must stay fixed the same way patchUnixTerminalAsarPaths already
+// fixes node-pty's identical asar-traversal bug.
+test('darwin staging rewrites the macOS helper path so it survives asar packaging', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const srcRoot = join(tmp, 'get-windows')
+    const destRoot = join(tmp, 'dest')
+
+    makeFakeGetWindows(srcRoot)
+
+    stageGetWindowsInto(srcRoot, destRoot, { platform: 'darwin' })
+
+    const staged = fs.readFileSync(join(destRoot, 'lib', 'macos.js'), 'utf8')
+    assert.ok(
+      !staged.includes("path.join(__dirname, '../main')"),
+      'the raw, asar-unsafe join must not survive staging'
+    )
+    assert.match(
+      staged,
+      /__dirname\.replace\(\/app\\\.asar\(\?!\\\.unpacked\)\/, 'app\.asar\.unpacked'\)/,
+      "must rewrite app.asar -> app.asar.unpacked before joining, like node-pty's spawn-helper fix"
+    )
+
+    // Prove the rewrite actually resolves outside app.asar for the exact
+    // shape a packaged app produces, by applying the same regex the staged
+    // file now runs at require-time to a real __dirname a packaged app would
+    // have.
+    const fakeDirname = '/Applications/Hermes.app/Contents/Resources/app.asar/dist/node_modules/get-windows/lib'
+    const resolvedDir = fakeDirname.replace(/app\.asar(?!\.unpacked)/, 'app.asar.unpacked')
+    const resolvedBinary = path.join(resolvedDir, '../main')
+    assert.ok(!resolvedBinary.includes('app.asar/'), `resolved binary path must not traverse app.asar, got: ${resolvedBinary}`)
+    assert.ok(resolvedBinary.includes('app.asar.unpacked/'), `resolved binary path must go through app.asar.unpacked, got: ${resolvedBinary}`)
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true })
   }

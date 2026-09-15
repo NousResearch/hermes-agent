@@ -849,6 +849,10 @@ def test_dashboard_surfaces_ready_blocked_error_inline():
     assert "const [patchErr, setPatchErr] = useState(null);" in bundle
     assert "setPatchErr(parseApiErrorMessage(e))" in bundle
     assert "setPatchErr(null)" in bundle
+    # The stored error must actually be rendered — wiring-only assertions
+    # stay green when the render hunk is missing (the exact gap #26744
+    # reported: state written, never read).
+    assert "}, patchErr) : null," in bundle
 
 
 def test_dashboard_dependency_selects_use_value_change_handler():

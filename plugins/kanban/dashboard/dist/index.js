@@ -3689,7 +3689,11 @@
         loading ? h("div", { className: "p-4 text-sm text-muted-foreground" },
           tx(t, "loadingDetail", "Loading…")) :
         err ? h("div", { className: "p-4 text-sm text-destructive" }, err) :
-        data ? h(TaskDetail, {
+        patchErr ? h("div", {
+          className: "px-4 pt-2 text-sm text-destructive",
+          role: "alert",
+        }, patchErr) : null,
+        !loading && !err && data ? h(TaskDetail, {
           data, editing, setEditing,
           renderMarkdown: props.renderMarkdown,
           allTasks: props.allTasks,

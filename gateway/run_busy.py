@@ -574,6 +574,21 @@ class GatewayBusySessionMixin:
             logger.debug("Busy steer ack suppressed for session %s", session_key)
         return steer_ack_enabled
 
+    def _busy_ack_enabled(self, event: MessageEvent, session_key: str) -> bool:
+        # SMS defaults this off so a mid-turn follow-up is still processed but the
+        # "↪ Redirected current run" / interrupt/queue/steer bubble never hits the phone.
+        from gateway.run import _load_gateway_config, _platform_config_key
+        from gateway.display_config import resolve_display_setting
+        ack_enabled = bool(
+            resolve_display_setting(
+                _load_gateway_config(), _platform_config_key(event.source.platform),
+                "busy_ack_enabled", True,
+            )
+        )
+        if not ack_enabled:
+            logger.debug("Busy ack suppressed for session %s", session_key)
+        return ack_enabled
+
     _BUSY_DEMOTED_TAIL = (
         " — your message is queued for when it finishes (use /stop to cancel everything)."
     )
@@ -739,6 +754,8 @@ class GatewayBusySessionMixin:
             return True  # interrupt sent (if not queue), ack already delivered recently
 
         if is_steer_mode and not self._busy_steer_ack_enabled(event, session_key):
+            return True
+        if not self._busy_ack_enabled(event, session_key):
             return True
 
         self._session_state(session_key).turn.busy_ack_ts = now

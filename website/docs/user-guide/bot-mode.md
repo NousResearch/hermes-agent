@@ -134,6 +134,8 @@ Bots message each other with attribution, and you can hand work off from any cha
 
 Local messages also reach a Bot Chat that stays open in Desktop or the TUI. The receiving backend keeps ownership: it reads durable ingress on its existing notification poller, admits immediately when idle, or waits until the running turn and already queued human prompts finish. A `queued` acknowledgement confirms durable admission, **not** a completed reply. The target profile retains the delivery ID and receipt under `runtime/bot_live_delivery/`; `settled` confirms completion. A crashed or cancelled imported turn is not automatically replayed, and pending work pinned to a departed owner remains inspectable rather than being silently rerun. Do not resend a delivery whose outcome is unknown. Older backends without live-delivery capability retain the existing ownership refusal; restart that backend after upgrading.
 
+- **Staying silent** — a Bot that has nothing to add may end a turn with one of the [intentional silence tokens](./messaging/index.md#intentional-silence-tokens) (`[SILENT]`, `NO_REPLY`, …). The Bot Chat keeps that turn in its transcript but renders nothing, and a teammate that messaged it gets an empty reply instead of the token. Failed turns and prose that merely mentions a token are shown as-is.
+
 The backend teaches each Bot's canonical Bot Chat session the messaging protocol automatically at prompt-build time — including when a teammate opens it headlessly from the CLI. Only the canonical Bot Chat gets the protocol section; your regular sessions and your SOUL.md stay untouched. This is controlled by `agent.bot_mode_protocol` in `config.yaml` (default: on):
 
 ```yaml

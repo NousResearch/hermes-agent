@@ -761,6 +761,7 @@ export const zhHant = defineLocale({
       compression: {
         enabled: '自動壓縮',
         threshold: '壓縮閾值',
+        codexGpt55Autoraise: 'Codex 壓縮自動提高',
         targetRatio: '壓縮目標',
         protectLastN: '保護最近訊息'
       },
@@ -825,7 +826,8 @@ export const zhHant = defineLocale({
         engine: '長對話接近上下文上限時的管理策略。'
       },
       compression: {
-        enabled: '對話變大時摘要較早的上下文。'
+        enabled: '對話變大時摘要較早的上下文。',
+        codexGpt55Autoraise: '為支援的 ChatGPT Codex OAuth 模型將壓縮閾值提高到 85%。'
       },
       browser: {
         useRealProfile:

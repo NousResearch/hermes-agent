@@ -3611,19 +3611,27 @@ def compress_context(
     if not force and _automatic_compression_gate_blocks(agent, bypass_cooldown):
         return messages, _existing_system_prompt(agent, system_message)
 
-    # Lazy feasibility probe (~400ms cold) on first attempt, not __init__; it sets
-    # _compression_warning so status replay still surfaces the warning. Marked checked
-    # only after the probe completes (transient failures are swallowed inside).
-    if not getattr(agent, "_compression_feasibility_checked", False):
-        check_compression_model_feasibility(agent)
-        agent._compression_feasibility_checked = True
     _pre_msg_count = len(messages)
     # In-place keeps the SAME session_id (no rotation/child/renumber/re-sync). A
     # missing attribute must default True, not rotation, which can wedge sessions.
     in_place = bool(getattr(agent, "compression_in_place", True))
+    # Announce BEFORE the lazy feasibility probe: its live catalog / provider lookups are
+    # network-bound (connect timeouts stack up through proxies), and until this status lands
+    # the Desktop working row is a bare spinner with no "Summarizing thread" label (#111294).
     lifecycle = _announce_compression_start(
         agent, message_count=_pre_msg_count, approx_tokens=approx_tokens, focus_topic=focus_topic, force=force
     )
+    # Lazy feasibility probe (~400ms cold) on first attempt, not __init__; it sets
+    # _compression_warning so status replay still surfaces the warning. Marked checked
+    # only after the probe completes (transient failures are swallowed inside). A hard
+    # rejection propagates; retire the announced phase first so the client is not left compacting.
+    if not getattr(agent, "_compression_feasibility_checked", False):
+        try:
+            check_compression_model_feasibility(agent)
+        except Exception:
+            lifecycle.complete(force_terminal=True)
+            raise
+        agent._compression_feasibility_checked = True
     lease, _abort_prompt = _acquire_compression_lease(
         agent, commit_fence=commit_fence, lifecycle=lifecycle, system_message=system_message,
         approx_tokens=approx_tokens, attempt_started_at=attempt.started_at,

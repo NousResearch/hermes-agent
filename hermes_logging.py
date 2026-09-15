@@ -169,6 +169,37 @@ COMPONENT_PREFIXES = {
 }
 
 
+def _known_log_homes() -> set[Path]:
+    """Homes the queued file handlers already serve: static handlers by their file, routers by
+    their default home plus every profile home they route. Caller holds ``_queue_state_lock``."""
+    homes: set[Path] = set()
+    for handler in _queued_file_handlers:
+        if isinstance(handler, _ProfileRoutingFileHandler):
+            homes.add(handler._default_home)
+            homes.update(handler._profile_homes)
+        elif isinstance(handler, RotatingFileHandler):
+            try:
+                homes.add(Path(handler.baseFilename).resolve().parent.parent)
+            except (TypeError, ValueError, OSError):
+                continue
+    return homes
+
+
+def _adopt_secondary_home(home: Path) -> bool:
+    """Route *home*'s records to its own files when this process already logs for another home.
+    Enables profile routing for the union of homes (or widens the live routers); False when
+    *home* is the first home seen or is already served."""
+    try:
+        resolved = Path(home).expanduser().resolve()
+    except (TypeError, ValueError, OSError):
+        return False
+    with _queue_state_lock:
+        known = _known_log_homes()
+    if not known or resolved in known:
+        return False
+    return enable_profile_log_routing([*sorted(known), resolved])
+
+
 def setup_logging(
     *,
     hermes_home: Optional[Path] = None,
@@ -187,6 +218,13 @@ def setup_logging(
     global _logging_initialized
     home = hermes_home or get_hermes_home()
     log_dir = mkdir_under_hermes_home(home / "logs")
+    # A second Hermes home in a process that already logs for another one — a dashboard or
+    # ``hermes serve`` backend building agents for several profiles, a multiplexed gateway —
+    # gets routed by record home. Stacking another file handler here would hand it EVERY
+    # profile's records (the handlers carry no home filter), and a duplicate writer on top of
+    # an existing router.
+    if _adopt_secondary_home(home):
+        return log_dir
     cfg_level, cfg_max_size, cfg_backup = _read_logging_config()
     level_name = (log_level or cfg_level or "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
@@ -615,10 +653,15 @@ def _add_rotating_handler(
     """Register a queued ``RotatingFileHandler`` for *path*; idempotent per resolved path."""
     resolved = path.resolve()
     for existing in _queued_file_handlers:
-        # Already attached directly, or already covered by the profile router.
+        # Already attached directly, or already covered by the profile router — for its default
+        # home or any profile home it routes (a bare handler beside it would take every record).
         if getattr(existing, "_hermes_routed_log_path", None) == resolved or (
             isinstance(existing, RotatingFileHandler)
             and Path(getattr(existing, "baseFilename", "")).resolve() == resolved
+        ):
+            return
+        if isinstance(existing, _ProfileRoutingFileHandler) and existing._filename == resolved.name and (
+            resolved.parent.parent == existing._default_home or resolved.parent.parent in existing._profile_homes
         ):
             return
     handler = _new_file_handler(
@@ -626,6 +669,17 @@ def _add_rotating_handler(
     )
     if log_filter is not None:
         handler.addFilter(log_filter)
+    # Routing already on (a second home adopted earlier): a component log added now —
+    # ``mode="gateway"`` after the fact — must route too, or it takes every home's records.
+    routers = [h for h in _queued_file_handlers if isinstance(h, _ProfileRoutingFileHandler)]
+    if routers:
+        homes: set[Path] = set()
+        for router in routers:
+            homes.add(router._default_home)
+            homes.update(router._profile_homes)
+        routed = _ProfileRoutingFileHandler(handler, sorted(homes))
+        _quietly(handler.close)
+        handler = routed
     # Queue, not ``addHandler``: the rotation-lock wait never runs on the caller's thread.
     _register_queued_handler(handler)
 

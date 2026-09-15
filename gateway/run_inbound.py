@@ -1093,6 +1093,9 @@ class GatewayInboundMixin:
         """Reply for a /command that is not built-in/plugin/skill; None when it is known."""
         from gateway.run import _check_unavailable_skill
         from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+        # Known commands never need an unavailable-skill hint (which can require a cold scan).
+        if command.replace("_", "-") in GATEWAY_KNOWN_COMMANDS:
+            return None
         # Known-but-disabled or uninstalled skill → actionable guidance.
         _unavail_msg = _check_unavailable_skill(command)
         if _unavail_msg:
@@ -1100,8 +1103,6 @@ class GatewayInboundMixin:
         # Genuinely unrecognized: warn instead of forwarding to the LLM as free text (it invents
         # tool calls). Normalize to hyphenated form first: the quick-command block may have set an
         # alias target, so the resolved def can be stale.
-        if command.replace("_", "-") in GATEWAY_KNOWN_COMMANDS:
-            return None
         logger.warning(
             "Unrecognized slash command /%s from %s — replying with unknown-command notice",
             command, source.platform.value if source.platform else "?",
@@ -1205,7 +1206,12 @@ class GatewayInboundMixin:
         if not _handled:
             _handled, _result, command = await self._hm_dispatch_quick_and_plugin_commands(event, source, command)
         if not _handled:
-            _result = self._hm_skill_slash_rewrite(event, source, _quick_key, command)
+            # Skill-slash resolution is disk-bound (cold skill scan, skill file loads, the
+            # unavailable-skill rglob over every skills dir) and uncached on a first hit; on a
+            # large install it held the loop past the liveness watchdog (#111091). The executor
+            # hop carries the profile contextvars the scan is scoped to.
+            _result = await self._run_in_executor_with_context(
+                self._hm_skill_slash_rewrite, event, source, _quick_key, command)
             _handled = _result is not None
         return _handled, _result
 

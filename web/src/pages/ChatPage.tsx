@@ -64,7 +64,7 @@ import {
   normalizePtyMobileInput,
   shouldTreatInputAsMobileReplacement,
 } from "@/lib/pty-mobile-input";
-import { computeKeyboardInset, shouldPinScroll } from "@/lib/keyboard-inset";
+import { computeKeyboardInset, keyboardRevealScrollDelta } from "@/lib/keyboard-inset";
 import {
   resolvePtyKeyboardShortcut,
   sendPtyShortcutSequence,
@@ -1038,31 +1038,31 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         vv ? { height: vv.height, offsetTop: vv.offsetTop } : null,
         window.innerHeight,
       );
-      if (shouldPinScroll(inset)) {
-        // iOS auto-scrolls the page to reveal xterm's hidden textarea when
-        // the keyboard opens. The shell is a fixed h-dvh column that must
-        // never scroll — pin it back so the terminal chrome stays put.
-        window.scrollTo(0, 0);
-        const scroller = document.scrollingElement;
-        if (scroller && scroller.scrollTop !== 0) scroller.scrollTop = 0;
+      if (inset !== appliedKeyboardInset) {
+        appliedKeyboardInset = inset;
+        wrap.style.paddingBottom = inset > 0 ? `${inset}px` : "";
+        scheduleHostSync();
       }
-      if (inset === appliedKeyboardInset) return;
-      appliedKeyboardInset = inset;
-      if (inset > 0) {
-        wrap.style.paddingBottom = `${inset}px`;
-        // Keep the freshly-resized input line in view.
+      const revealComposer = () => {
+        if (inset <= 0 || !vv) return;
         try {
           term.scrollToBottom();
         } catch {
           /* ignore */
         }
-      } else {
-        wrap.style.paddingBottom = "";
+        const delta = keyboardRevealScrollDelta(host.getBoundingClientRect().bottom, {
+          height: vv.height,
+          offsetTop: vv.offsetTop,
+        });
+        if (delta) window.scrollBy(0, delta);
+      };
+      if (inset > 0) {
+        revealComposer();
+        requestAnimationFrame(() => {
+          revealComposer();
+          requestAnimationFrame(revealComposer);
+        });
       }
-      // The wrapper padding change resizes the host; the ResizeObserver
-      // will refit, but schedule one explicitly in case the observer
-      // coalesces with an in-flight frame.
-      scheduleHostSync();
     };
     const onViewportChange = () => {
       syncKeyboardInset();
@@ -1080,6 +1080,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       appliedKeyboardInset = 0;
       if (termWrap) termWrap.style.paddingBottom = "";
     };
+    let keyboardRevealTimer = 0;
+    const onTerminalFocus = () => {
+      onViewportChange();
+      window.clearTimeout(keyboardRevealTimer);
+      keyboardRevealTimer = window.setTimeout(onViewportChange, 350);
+    };
+    term.textarea?.addEventListener("focus", onTerminalFocus);
     scheduleHostSync();
     requestAnimationFrame(() => scheduleHostSync());
 
@@ -1543,6 +1550,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       host.removeEventListener("drop", handleBrowserDrop, true);
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
+      window.clearTimeout(keyboardRevealTimer);
+      term.textarea?.removeEventListener("focus", onTerminalFocus);
       keyboardInsetSyncRef.current = null;
       keyboardInsetResetRef.current = null;
       const wrap = termWrap;
@@ -1588,7 +1597,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // NS-434 follow-up: attach the visualViewport keyboard-inset listeners
   // ONLY while the chat tab is actually visible. ChatPage stays mounted
   // (display:none) on every other dashboard route, so unconditional
-  // listeners made the scroll pin (`window.scrollTo(0, 0)`) fire whenever a
+  // listeners made the composer reveal (`window.scrollBy`) fire whenever a
   // soft keyboard opened on Settings/Sessions/etc., fighting iOS Safari's
   // own scroll-into-view for the focused input there. The handlers read
   // through refs populated by the main PTY effect, so attach/detach here is

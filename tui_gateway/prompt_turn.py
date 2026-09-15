@@ -16,6 +16,32 @@ from .method_ctx import HandlerRegistry, bind_module
 _registry = HandlerRegistry()
 
 
+def _bot_mode_delivery_text(response: Any, *, successful: bool) -> Any:
+    """Return the text Bot Mode may render or relay after a completed turn.
+
+    The gateway owns the canonical marker set.  Keep the row and completion
+    event intact, but make a successful bare marker invisible at every Bot
+    Mode delivery boundary.  Failed turns intentionally fail open so their
+    diagnostic text is never swallowed.
+    """
+    from gateway.response_filters import is_intentional_silence_response
+    return "" if successful and is_intentional_silence_response(response) else response
+
+
+def _is_bot_mode_session(session: dict) -> bool:
+    """Whether this completion belongs to the canonical Bot Chat surface.
+
+    Same resolution as the system-prompt gate: the agent's title hint first (the DB
+    title lands after turn 1 and ``pending_title`` is cleared once it does), then the
+    live title from the session store.
+    """
+    from tools.bot_mode_probe import BOT_CHAT_TITLE
+    hint = str(getattr(session.get("agent"), "_session_title_hint", "") or "").strip()
+    if hint:  # any explicit hint decides; only an empty one costs a session-store read
+        return hint == BOT_CHAT_TITLE
+    return _session_live_title(session, _session_lookup_key(session)) == BOT_CHAT_TITLE
+
+
 def _hook_failure(what: str, exc: BaseException) -> None:
     print(f"[tui_gateway] {what} failed: {type(exc).__name__}: {exc}", file=sys.stderr)
 
@@ -510,8 +536,19 @@ def _invoke_agent(
     turn_author: dict | None = None) -> None:
     """Wire the streaming callbacks and run the conversation into ``st.result``."""
     agent = st.agent
+    # Bot Chat mirrors gateway.stream_consumer: deltas are withheld while the streamed buffer
+    # could still resolve to a silence marker ("NO"->"NO_REPLY"), so a bare marker is never
+    # shown and then retracted (the client keeps streamed text when message.complete is "").
+    hold = {"buf": "", "held": ""} if _is_bot_mode_session(session) else None
 
     def _stream(delta):
+        if hold is not None and isinstance(delta, str):
+            from gateway.response_filters import is_partial_silence_marker
+            hold["buf"] += delta
+            if is_partial_silence_marker(hold["buf"]):
+                hold["held"] += delta
+                return
+            delta, hold["held"] = hold["held"] + delta, ""
         with session["history_lock"]:
             _append_inflight_delta(session, delta)
         payload = {"text": delta}
@@ -638,6 +675,8 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
         except Exception:
             _error_surface = None
     raw, status, last_reasoning = _turn_outcome(result, _error_surface)
+    if _is_bot_mode_session(session):
+        raw = _bot_mode_delivery_text(raw, successful=status == "complete")
     payload = {"text": raw, "usage": _get_usage(agent), "status": status}
     if last_reasoning:
         payload["reasoning"] = last_reasoning

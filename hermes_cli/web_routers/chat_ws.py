@@ -518,7 +518,11 @@ async def pty_ws(ws: WebSocket) -> None:
     # A fresh xterm can't rebuild the TUI from an arbitrary tail of alternate-
     # screen differential output; reused PTYs emit a full frame after replay.
     if not await session.attach(ws, force_redraw=not _created):
-        await _close_stalled_pty_input(ws, path="keepalive-redraw")
+        # attach() detaches itself when the client dropped mid-replay, and a socket
+        # superseded during replay is already closed by its replacement; only a
+        # stalled redraw write leaves THIS socket attached and worth closing.
+        if session._ws is ws:
+            await _close_stalled_pty_input(ws, path="keepalive-redraw")
         PTY_REGISTRY.detach(attach_token, ws)
         return
 

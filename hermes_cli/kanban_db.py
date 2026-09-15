@@ -1375,6 +1375,17 @@ def create_task(
                         "blocked",
                         {"reason": "initial_status", "status": "blocked", "actor": created_by or "user"},
                     )
+                if task_status == "todo":
+                    # Parked behind an open parent: record why, exactly as
+                    # link_tasks does, so the board never shows an unexplained todo.
+                    gating = [p for p in parents if _task_status(conn, p) not in ("done", "archived")]
+                    if gating:
+                        _append_event(
+                            conn,
+                            task_id,
+                            "dependency_wait",
+                            {"reason": "parent_not_done", "parent": gating[0]},
+                        )
                 # ACK-edge: the originating channel hears a child BLOCK, not just the fan-in.
                 inherit_creator_origin(conn, task_id, creator_task_id, created_at=now)
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
@@ -1581,9 +1592,13 @@ def set_reasoning_effort(conn: sqlite3.Connection, task_id: str, effort: Optiona
 
 # --- Links ---
 
-def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
+def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
+    """Link ``parent_id -> child_id``. Returns True when the link gated a
+    ``ready`` child back to ``todo`` (the new parent is not yet terminal), so
+    callers can surface the demotion instead of a silent status flip."""
     if parent_id == child_id:
         raise ValueError("a task cannot depend on itself")
+    gated = False
     with write_txn(conn):
         missing = _missing_task_ids(conn, [parent_id, child_id])
         if missing:
@@ -1591,15 +1606,29 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
         if _would_cycle(conn, parent_id, child_id):
             raise ValueError(f"linking {parent_id} -> {child_id} would create a cycle")
         _link(conn, parent_id, child_id)
-        # If child was ready but parent is not yet done, demote child to todo.
-        if _task_status(conn, parent_id) != "done":
-            conn.execute(
-                "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'", (child_id,),
+        # If child was ready but parent is not yet terminal, demote child to todo
+        # (archived counts as terminal, matching _parents_satisfied/recompute_ready).
+        if _task_status(conn, parent_id) not in ("done", "archived"):
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
+                (child_id,),
             )
+            gated = cur.rowcount == 1
+            if gated:
+                _append_event(
+                    conn,
+                    child_id,
+                    "dependency_wait",
+                    {"reason": "parent_not_done", "demoted": True, "parent": parent_id},
+                )
         _append_event(
-            conn, child_id, "linked", {"parent": parent_id, "child": child_id},
+            conn,
+            child_id,
+            "linked",
+            {"parent": parent_id, "child": child_id},
         )
         _inherit_notify_subs(conn, child_id, (parent_id,))
+    return gated
 
 
 def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
@@ -2297,8 +2326,16 @@ def _extend_run_claim(conn: sqlite3.Connection, task_id: str, expires: int) -> O
     return run_id
 
 
-def release_stale_claims(conn: sqlite3.Connection, *, signal_fn=None) -> int:
+def release_stale_claims(
+    conn: sqlite3.Connection, *, signal_fn=None, failure_limit: Optional[int] = None,
+) -> int:
     """Reclaim ``running`` tasks whose claim expired; returns the count reclaimed.
+
+    Every reclaim that actually releases a claim is a non-success attempt and
+    is booked through ``_record_task_failure`` (#111306): a claim that expired
+    without a worker ever spawning otherwise loops claim -> reclaim -> claim
+    with ``consecutive_failures`` stuck at 0, so the breaker never trips.
+    ``reclaim_task`` (operator path) deliberately resets the counter instead.
 
     A host-local worker that is still alive gets its claim *extended* instead
     (a slow model can sit longer than the TTL inside one tool-free call, so no
@@ -2376,6 +2413,15 @@ def release_stale_claims(conn: sqlite3.Connection, *, signal_fn=None) -> int:
                 },
             )
             reclaimed += 1
+        # Own txn, after the reclaim commit (same shape as ``enforce_max_runtime``):
+        # the run ended without a verdict, so it counts toward the breaker and a
+        # trip flips the task to ``blocked`` + ``gave_up`` on top of ``reclaimed``.
+        _record_task_failure(
+            conn, row["id"], f"stale_lock={row['claim_lock']}",
+            outcome="reclaimed", failure_limit=failure_limit,
+            release_claim=False, end_run=False,
+            event_payload_extra={"worker_pid": _opt_int(row["worker_pid"]), "retry_status": retry_status},
+        )
         # Post-commit observer; every non-reclaim branch ``continue``d above.
         if _kanban_observer_consumed("on_kanban_worker_stale_claim"):
             _fire_kanban_lifecycle_hook(
@@ -4142,6 +4188,7 @@ from hermes_cli.kanban_db_dispatch import (  # noqa: E402
     _clear_failure_counter,
     _defer_reclaim_for_live_worker,
     _pid_alive,
+    _record_task_failure,
     _terminate_reclaimed_worker,
     _worker_alive,
     _worker_survived_termination,

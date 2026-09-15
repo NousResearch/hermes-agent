@@ -2591,7 +2591,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         # Telegram allows 100 commands but has an undocumented ~4KB payload limit; default cap 60.
         max_commands = telegram_menu_max_commands()
-        menu_commands, hidden_count = telegram_menu_commands(max_commands=max_commands)
+        # Skill discovery resolves every skill path on disk; a slow filesystem after a reconnect must
+        # not hold the gateway loop past the liveness watchdog (#110707). Only the Bot API call stays here.
+        menu_commands, hidden_count = await asyncio.to_thread(telegram_menu_commands, max_commands=max_commands)
         bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
         for scope_cls in (BotCommandScopeDefault, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats):
             scope_name = getattr(scope_cls, "__name__", str(scope_cls))
@@ -4265,7 +4267,9 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             from telegram import InlineQueryResultArticle, InputTextMessageContent
             from plugins.platforms.telegram.inline_picker import CACHE_TIME_SECONDS as _CACHE, build_inline_results
-            results, next_offset = build_inline_results(
+            # Per-keystroke catalog build resolves every skill path; keep it off the loop (#110707).
+            results, next_offset = await asyncio.to_thread(
+                build_inline_results,
                 getattr(inline_query, "query", "") or "", offset=getattr(inline_query, "offset", "") or "")
             articles = [
                 InlineQueryResultArticle(
@@ -5884,7 +5888,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     return
                 from telegram import BotCommand, BotCommandScopeChat
                 from hermes_cli.commands_platforms import telegram_menu_commands, telegram_menu_max_commands
-                menu_commands, _ = telegram_menu_commands(max_commands=telegram_menu_max_commands())
+                menu_commands, _ = await asyncio.to_thread(
+                    telegram_menu_commands, max_commands=telegram_menu_max_commands())
                 bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
                 await self._bot.set_my_commands(bot_commands, scope=BotCommandScopeChat(chat_id=chat_id))
                 self._forum_command_registered.add(chat_id)

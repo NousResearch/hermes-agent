@@ -14,6 +14,8 @@ import json
 from io import BytesIO
 from unittest.mock import patch
 
+import pytest
+
 
 from tools.vision_tools import (
     _build_native_vision_tool_result,
@@ -474,3 +476,151 @@ class TestHandleVisionAnalyzeFastPath:
         assert isinstance(result, str)
         assert json.loads(result) == {"sentinel": "aux-path"}
         mock_aux.assert_called_once()
+
+
+# ─── native fast-path per-image repeat guard (#112095) ───────────────────────
+
+
+def _clear_guard_state():
+    """Reset the per-image load registry between tests (safe pre-fix)."""
+    from tools import vision_tools
+
+    loads = getattr(vision_tools, "_native_vision_loads", None)
+    if loads is not None:
+        with vision_tools._native_vision_loads_lock:
+            loads.clear()
+
+
+class TestNativeVisionRepeatGuard:
+    """Per-image repeat cap for the native fast path (issue #112095).
+
+    A delegated subagent re-requested the same five screenshots 158 times in
+    15 minutes (~4M input tokens): every native-path load re-embeds the full
+    image into conversation history, and nothing refused the repeat. The
+    guard caps successful native loads per image per session (default 3) and
+    refuses with an explicit "already loaded" message instead of burning
+    another embed. Expected behavior from the issue: fail fast well before
+    150 API calls.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_guard_state(self):
+        _clear_guard_state()
+        yield
+        _clear_guard_state()
+
+    def _load(self, image_url, question="describe"):
+        return asyncio.get_event_loop().run_until_complete(
+            _vision_analyze_native(image_url, question)
+        )
+
+    def test_repeat_load_refused_after_default_cap(self, tmp_path):
+        img = tmp_path / "shot.png"
+        img.write_bytes(_TINY_PNG)
+
+        for _ in range(3):
+            result = self._load(str(img))
+            assert isinstance(result, dict) and result.get("_multimodal") is True
+
+        result = self._load(str(img))
+        assert isinstance(result, str), (
+            f"4th load of the same image must be refused, got {type(result).__name__}"
+        )
+        payload = json.loads(result)
+        assert payload.get("success") is False
+        assert "already been loaded" in payload.get("error", "")
+        assert "vision.max_calls_per_image" in payload.get("error", "")
+
+    def test_zero_cap_means_unlimited(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.vision_tools._native_vision_repeat_cap", lambda: 0)
+        img = tmp_path / "shot.png"
+        img.write_bytes(_TINY_PNG)
+
+        for _ in range(6):
+            result = self._load(str(img))
+            assert isinstance(result, dict) and result.get("_multimodal") is True
+
+    def test_configured_cap_one_refuses_second_load(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.vision_tools._native_vision_repeat_cap", lambda: 1)
+        img = tmp_path / "shot.png"
+        img.write_bytes(_TINY_PNG)
+
+        assert isinstance(self._load(str(img)), dict)
+        result = self._load(str(img))
+        assert isinstance(result, str)
+        assert json.loads(result).get("success") is False
+
+    def test_distinct_images_do_not_collide(self, tmp_path):
+        first, second = tmp_path / "a.png", tmp_path / "b.png"
+        first.write_bytes(_TINY_PNG)
+        second.write_bytes(_TINY_PNG)
+
+        for _ in range(3):
+            assert isinstance(self._load(str(first)), dict)
+        # A different image in the same session is unaffected by A's count.
+        assert isinstance(self._load(str(second)), dict)
+
+    def test_sessions_have_independent_counts(self, tmp_path, monkeypatch):
+        img = tmp_path / "shot.png"
+        img.write_bytes(_TINY_PNG)
+
+        monkeypatch.setattr("tools.vision_tools._native_vision_session_key", lambda: "sess-a")
+        for _ in range(3):
+            assert isinstance(self._load(str(img)), dict)
+        result = self._load(str(img))
+        assert isinstance(result, str), "session A must be capped at 3 loads"
+
+        # A different session has its own counter and still loads the image.
+        monkeypatch.setattr("tools.vision_tools._native_vision_session_key", lambda: "sess-b")
+        assert isinstance(self._load(str(img)), dict)
+
+    def test_failed_loads_do_not_consume_cap(self, tmp_path):
+        missing = tmp_path / "missing.png"
+        for _ in range(5):
+            result = self._load(str(missing))
+            assert isinstance(result, str)
+            assert json.loads(result).get("success") is False
+
+        # A real image is still loadable afterwards — failures never counted.
+        img = tmp_path / "ok.png"
+        img.write_bytes(_TINY_PNG)
+        assert isinstance(self._load(str(img)), dict)
+
+    def test_default_cap_resolves_to_nonzero(self):
+        from tools.vision_tools import _native_vision_repeat_cap
+
+        assert _native_vision_repeat_cap() == 3
+
+    def test_cap_reader_honors_config(self, monkeypatch):
+        from tools.vision_tools import _native_vision_repeat_cap
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"vision": {"max_calls_per_image": 1}},
+        )
+        assert _native_vision_repeat_cap() == 1
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"vision": {"max_calls_per_image": 0}},
+        )
+        assert _native_vision_repeat_cap() == 0
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        assert _native_vision_repeat_cap() == 3
+
+    def test_cap_reader_roundtrip_through_user_config(self):
+        """A user config.yaml value must reach the reader through the real loader."""
+        from hermes_cli.config import get_config_path
+        from tools.vision_tools import _native_vision_repeat_cap
+
+        path = get_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("vision:\n  max_calls_per_image: 7\n", encoding="utf-8")
+        assert _native_vision_repeat_cap() == 7
+
+    def test_default_config_ships_nonzero_cap(self):
+        """The incident default (unlimited) must not be the shipped default."""
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["vision"]["max_calls_per_image"] == 3

@@ -16,7 +16,8 @@ import {
   psLiteral,
   reusableWindowsLock,
   terminateOwnedWindowsDashboardForUpdate,
-  validLock
+  validLock,
+  waitReady
 } from './windows-remote-lifecycle'
 
 const ownershipId = '0123456789abcdef0123456789abcdef'
@@ -375,5 +376,94 @@ test('managed update drain rechecks Windows PID/create-time ownership before exa
   assert.equal(
     operations.some(operation => operation.includes("'remove-lock'")),
     false
+  )
+})
+
+const waitReadyRuntime = {
+  python: 'C:\\h\\python.exe',
+  hermesPath: 'C:\\h\\hermes.exe',
+  hermesHome: 'C:\\h'
+}
+
+const waitReadyLock = {
+  pid: 10,
+  creationTimeNs: '1784219690452757504',
+  hermesPath: 'C:\\h\\hermes.exe',
+  spawnNonce: '0123456789abcdef'
+}
+
+function waitReadySsh({
+  alive = true,
+  owned = true,
+  indeterminate = false,
+  log = ''
+}: {
+  alive?: boolean
+  owned?: boolean
+  indeterminate?: boolean
+  log?: string
+} = {}) {
+  return sshWith(async command => {
+    const script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+
+    if (script.includes("'process-state'")) {
+      return JSON.stringify({ alive, owned, indeterminate })
+    }
+
+    if (script.includes("'read-log'")) {
+      return JSON.stringify({ content: log })
+    }
+
+    throw new Error(`unexpected waitReady command: ${script}`)
+  })
+}
+
+test('waitReady attaches a sanitized spawn-log tail on timeout and dead-before-ready', async () => {
+  await assert.rejects(
+    () =>
+      waitReady(
+        waitReadySsh({ log: 'still starting...\nOOM killed\n' }),
+        waitReadyRuntime,
+        ownershipId,
+        waitReadyLock,
+        60,
+        undefined
+      ),
+    (err: any) => err.kind === 'ready-timeout' && /OOM killed/.test(err.detail)
+  )
+
+  await assert.rejects(
+    () =>
+      waitReady(
+        waitReadySsh({
+          alive: false,
+          owned: false,
+          log: 'Traceback (most recent call last):\nPermissionError: denied\n'
+        }),
+        waitReadyRuntime,
+        ownershipId,
+        waitReadyLock,
+        1000,
+        undefined
+      ),
+    (err: any) => err.kind === 'spawn-failed' && /PermissionError/.test(err.detail)
+  )
+
+  await assert.rejects(
+    () =>
+      waitReady(
+        waitReadySsh({ alive: false, owned: false, log: '' }),
+        waitReadyRuntime,
+        ownershipId,
+        waitReadyLock,
+        1000,
+        undefined
+      ),
+    (err: any) => err.kind === 'spawn-failed' && !err.detail
+  )
+
+  await assert.rejects(
+    () => waitReady(waitReadySsh({ log: '   \n' }), waitReadyRuntime, ownershipId, waitReadyLock, 60, undefined),
+    (err: any) => err.kind === 'ready-timeout' && !err.detail
   )
 })

@@ -944,28 +944,37 @@ test('scrapeReadyPort reads only the named spawn log', async () => {
 })
 
 test('scrapeReadyPort times out and reports a dead spawn', async () => {
-  // never emits a READY line
-  const ssh = fakeSsh([[/cat .*\.log/, 'still starting...']])
-  await assert.rejects(
-    () => scrapeReadyPort(ssh, spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE), { timeoutMs: 60 }),
-    (err: any) => {
-      assert.equal(err.kind, 'ready-timeout')
+  const logPath = spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE)
 
-      return true
-    }
+  // ready-timeout: last cat tail attached
+  await assert.rejects(
+    () => scrapeReadyPort(fakeSsh([[/cat .*\.log/, 'still starting...\nOOM killed\n']]), logPath, { timeoutMs: 60 }),
+    (err: any) => err.kind === 'ready-timeout' && /OOM killed/.test(err.detail)
   )
-  // dead process before announcement → spawn-failed
+
+  // dead-before-ready: current main has no err.detail
   await assert.rejects(
     () =>
-      scrapeReadyPort(fakeSsh([[/cat/, '']]), spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE), {
+      scrapeReadyPort(fakeSsh([[/cat/, 'Traceback (most recent call last):\nPermissionError: denied\n']]), logPath, {
         timeoutMs: 1000,
         isAlive: async () => false
       }),
-    (err: any) => {
-      assert.equal(err.kind, 'spawn-failed')
+    (err: any) => err.kind === 'spawn-failed' && /PermissionError/.test(err.detail)
+  )
 
-      return true
-    }
+  // fail-open: empty log → no/empty detail, kind preserved
+  await assert.rejects(
+    () =>
+      scrapeReadyPort(fakeSsh([[/cat/, '']]), logPath, {
+        timeoutMs: 1000,
+        isAlive: async () => false
+      }),
+    (err: any) => err.kind === 'spawn-failed' && !err.detail
+  )
+
+  await assert.rejects(
+    () => scrapeReadyPort(fakeSsh([[/cat .*\.log/, '   \n']]), logPath, { timeoutMs: 60 }),
+    (err: any) => err.kind === 'ready-timeout' && !err.detail
   )
 })
 

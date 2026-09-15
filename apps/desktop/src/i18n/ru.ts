@@ -2628,6 +2628,7 @@ export const ru = defineLocale({
   },
   composer: {
     message: 'Сообщение',
+    draftRestored: 'Черновик восстановлен',
     wakingProfile: profile => `Пробуждаем ${profile}…`,
     placeholderStarting: 'Запуск Hermes...',
     placeholderReconnecting: 'Переподключение к Hermes…',

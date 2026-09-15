@@ -1814,8 +1814,15 @@ def _is_verification_artifact_cleanup(command: str) -> bool:
     operand = argv[2]
     temp_dir = os.path.realpath(tempfile.gettempdir())
     basename = os.path.basename(operand)
+    allowed_parents = {temp_dir}
+    # macOS: /tmp is a symlink to /private/tmp. The existing test mocks
+    # gettempdir to /tmp and spells the operand that way; require the
+    # canonical parent, plus /tmp only when it realpaths to that same dir.
+    # Arbitrary user symlinks stay excluded (see the linked-temp test).
+    if os.path.realpath("/tmp") == temp_dir:
+        allowed_parents.add("/tmp")
     return (
-        operand == os.path.join(temp_dir, basename)
+        os.path.dirname(operand) in allowed_parents
         and os.path.dirname(os.path.realpath(operand)) == temp_dir
         and re.fullmatch(r"hermes-(?:verify|ad-hoc)-[A-Za-z0-9_.-]+", basename) is not None
     )

@@ -187,3 +187,27 @@ describe('navigateToWorkspacePage', () => {
     expect(revealTreePane).not.toHaveBeenCalled()
   })
 })
+
+describe('host.navigate', () => {
+  it('fronts the workspace pane for a built-in page route', async () => {
+    const { host } = await import('@/sdk')
+
+    host.navigate(SKILLS_ROUTE)
+
+    expect(fronted()).toBe(true)
+  })
+
+  it('fronts the workspace pane for a contributed plugin page', async () => {
+    const dispose = contributeRoute()
+
+    try {
+      const { host } = await import('@/sdk')
+
+      host.navigate(CONTRIBUTED_ROUTE)
+
+      expect(fronted()).toBe(true)
+    } finally {
+      dispose()
+    }
+  })
+})

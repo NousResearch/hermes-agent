@@ -89,6 +89,47 @@ class TestFetchSuccess:
             assert json.load(fh) == manifest
 
 
+class TestCheckoutRefresh:
+    def test_missing_manifest_still_invalidates_every_profile_provider_cache(
+        self, isolated_home, tmp_path
+    ):
+        from hermes_cli import model_catalog
+
+        provider_cache = isolated_home / "provider_models_cache.json"
+        provider_cache.write_text("{}", encoding="utf-8")
+        sibling_cache = isolated_home / "profiles" / "work" / "provider_models_cache.json"
+        sibling_cache.parent.mkdir(parents=True)
+        sibling_cache.write_text("{}", encoding="utf-8")
+
+        assert model_catalog.seed_cache_from_checkout(tmp_path / "missing-checkout") is False
+        assert not provider_cache.exists()
+        assert not sibling_cache.exists()
+
+    def test_default_root_failure_does_not_block_named_profile_invalidation(
+        self, isolated_home, tmp_path
+    ):
+        from hermes_cli import model_catalog
+
+        named_home = isolated_home / "profiles" / "work"
+        named_home.mkdir(parents=True, exist_ok=True)
+        named_cache = named_home / "provider_models_cache.json"
+        named_cache.write_text("{}", encoding="utf-8")
+
+        with (
+            patch(
+                "hermes_constants.get_default_hermes_root",
+                side_effect=OSError("default root unavailable"),
+            ),
+            patch(
+                "hermes_cli.profiles._iter_named_profile_dirs",
+                return_value=[named_home],
+            ),
+        ):
+            assert model_catalog.seed_cache_from_checkout(tmp_path / "missing-checkout") is False
+
+        assert not named_cache.exists()
+
+
 class TestFetchFailure:
     def test_network_failure_returns_empty_when_no_cache(self, isolated_home):
         from hermes_cli import model_catalog

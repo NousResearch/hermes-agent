@@ -317,10 +317,38 @@ def get_default_model_from_cache(provider: str) -> str | None:
     return _default_model_from_block(_block_of(disk_data, provider)) if disk_data is not None else None
 
 
+def _invalidate_provider_model_caches_after_update() -> None:
+    """Remove live provider catalogs for every profile that shares the updated checkout."""
+    homes = []
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        homes.append(get_default_hermes_root())
+    except Exception:
+        logger.debug("default provider model cache resolution after update failed", exc_info=True)
+
+    try:
+        from hermes_cli.profiles import _iter_named_profile_dirs
+
+        homes.extend(_iter_named_profile_dirs())
+    except Exception:
+        logger.debug("named-profile model cache enumeration after update failed", exc_info=True)
+
+    for home in homes:
+        try:
+            (home / "provider_models_cache.json").unlink(missing_ok=True)
+        except OSError:
+            logger.debug("provider model cache invalidation after update failed for %s", home, exc_info=True)
+
+
 def seed_cache_from_checkout(project_root: "Path | str") -> bool:
-    """Overwrite the disk cache with the checkout's ``website/static/api/model-catalog.json``.
-    After ``hermes update`` that file IS the newest catalog, so the picker stays current even when
-    the remote fetch is bot-gated. Validated, then written via the same atomic writer."""
+    """Refresh model caches after ``hermes update`` using the updated module's code.
+
+    The pre-update process imports this function lazily after replacing the checkout, so keep the
+    live-provider invalidation on this existing call boundary: a new updater function would not run
+    until the following update.  The bundled manifest is then validated and written atomically.
+    """
+    _invalidate_provider_model_caches_after_update()
     src = Path(project_root) / "website" / "static" / "api" / "model-catalog.json"
     try:
         with open(src, encoding="utf-8") as fh:

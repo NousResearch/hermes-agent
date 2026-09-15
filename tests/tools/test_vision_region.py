@@ -96,7 +96,7 @@ class TestNativePathRegion:
 
         src = _make_png(tmp_path / "img.png", 100, 50)
         result = asyncio.get_event_loop().run_until_complete(
-            _vision_analyze_native(str(src), "zoom", region=[10, 10, 60, 40])
+            _vision_analyze_native(str(src), region=[10, 10, 60, 40])
         )
         assert isinstance(result, dict) and result.get("_multimodal") is True
         url = next(
@@ -111,7 +111,7 @@ class TestNativePathRegion:
 
         src = _make_png(tmp_path / "img.png", 100, 50)
         result = asyncio.get_event_loop().run_until_complete(
-            _vision_analyze_native(str(src), "full shot")
+            _vision_analyze_native(str(src))
         )
         assert isinstance(result, dict) and result.get("_multimodal") is True
         url = next(
@@ -128,7 +128,7 @@ class TestNativePathRegion:
 
         src = _make_png(tmp_path / "img.png", 100, 50)
         result = asyncio.get_event_loop().run_until_complete(
-            _vision_analyze_native(str(src), "zoom", region=[500, 500, 600, 600])
+            _vision_analyze_native(str(src), region=[500, 500, 600, 600])
         )
         assert isinstance(result, str)
         payload = json.loads(result)
@@ -148,7 +148,7 @@ class TestNativePathRegion:
             big, format="PNG"
         )
         result = asyncio.get_event_loop().run_until_complete(
-            _vision_analyze_native(str(big), "zoom", region=[0, 0, 200, 300])
+            _vision_analyze_native(str(big), region=[0, 0, 200, 300])
         )
         assert isinstance(result, dict) and result.get("_multimodal") is True
         url = next(
@@ -174,6 +174,15 @@ class TestSchemaAndHandler:
         # Description must document original-image pixel space.
         assert "original" in props["region"]["description"].lower()
 
+    def test_schema_question_is_optional(self):
+        """Native image loading must not force the main model to restate a
+        request it already has in context."""
+        from tools.vision_tools import VISION_ANALYZE_SCHEMA
+
+        required = VISION_ANALYZE_SCHEMA["parameters"]["required"]
+        assert required == ["image_url"]
+        assert "question" in VISION_ANALYZE_SCHEMA["parameters"]["properties"]
+
     def test_handler_passes_region_to_native_path(self, tmp_path, monkeypatch):
         from tools import vision_tools
         from tools.vision_tools import _handle_vision_analyze
@@ -181,7 +190,7 @@ class TestSchemaAndHandler:
         src = _make_png(tmp_path / "img.png", 100, 50)
         seen = {}
 
-        async def _fake_native(image_url, question, task_id=None, region=None):
+        async def _fake_native(image_url, task_id=None, region=None):
             seen["region"] = region
             return {"_multimodal": True, "content": []}
 

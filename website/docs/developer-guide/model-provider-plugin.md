@@ -152,6 +152,15 @@ class AcmeProfile(ProviderProfile):
         and pick what you need. A raise is logged and falls back to the
         standard client."""
         return None
+
+    def resolve_auxiliary_runtime(self, *, main_runtime, task=None):
+        """Optional acting runtime for a virtual provider's side tasks.
+        Return None to keep normal routing, or a dict with provider/model and
+        optional base_url/api_key/api_mode. Omitted transport credentials are
+        resolved for the target provider; virtual-client credentials are not
+        inherited. Explicit auxiliary.<task> settings still take precedence.
+        This changes only auxiliary routing, never the user's main model."""
+        return None
 ```
 
 ## External-process (ACP) providers

@@ -333,6 +333,10 @@ class TestTurnTraceIsolation:
         # Each turn opened its OWN root trace.  On the pre-fix code the second
         # turn reused turn 1's lingering state and only one trace was opened.
         assert len(started) == 2
+        # The Langfuse trace identity itself must be turn-scoped too.  A distinct
+        # in-process state key with a stable session/task-derived remote trace ID
+        # still merges every room reply into one Cloud trace.
+        assert len(set(started)) == 2
 
         # Turn 2 finalized and was popped by _finish_trace; only turn 1's
         # (non-finalizing) state lingers.  Assert the surviving key is turn 1's

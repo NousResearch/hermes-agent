@@ -198,9 +198,6 @@ def parse_interaction_event(raw: Dict[str, Any]) -> InteractionEvent:
 import logging  # noqa: F401,E402
 from typing import Awaitable  # noqa: F401,E402
 from typing import Callable  # noqa: F401,E402
-from typing import Awaitable  # noqa: F401,E402
-from typing import Callable  # noqa: F401,E402
-import logging  # noqa: F401,E402
 
 logger = logging.getLogger(__name__)
 

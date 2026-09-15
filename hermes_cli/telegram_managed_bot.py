@@ -190,8 +190,6 @@ def auto_setup_telegram_bot_result(
 # The whole block is removed by reverting the commit that added it.
 import secrets  # noqa: F401,E402
 import urllib.parse  # noqa: F401,E402
-import secrets  # noqa: F401,E402
-import urllib.parse  # noqa: F401,E402
 
 DEFAULT_MANAGER_BOT = "HermesSetupBot"
 

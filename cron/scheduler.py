@@ -1275,15 +1275,16 @@ def _run_no_agent_job(
 
 def _apply_monitor_gate(
     job: dict, job_id: str, job_name: str, extra_prompt: Optional[str],
-) -> tuple[Optional[tuple], Optional[str]]:
+) -> tuple[Optional[tuple], Optional[str], Optional[str]]:
     """Monitor gate (hash-suppressed change detection). Must run BEFORE any agent machinery so an
-    unchanged tick costs no LLM/delivery. Returns ``(early_result | None, extra_prompt)``; when
-    early_result is None, extra_prompt may carry the injected monitor context.
+    unchanged tick costs no LLM/delivery. Returns ``(early_result | None, extra_prompt,
+    monitor_context)``. Monitor context is runtime data and must remain distinct from a
+    user-authored ``extra_prompt`` so the prompt scanner keeps its strict user-input boundary.
     """
     from cron.monitor import check_monitor, job_has_monitor
 
     if not job_has_monitor(job):
-        return None, extra_prompt
+        return None, extra_prompt, None
     _mon = check_monitor(job)
     _mon_now = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
     header = _job_doc_header(job_name, job_id, _mon_now, "monitor")
@@ -1298,19 +1299,16 @@ def _apply_monitor_gate(
         )
         return (
             False, f"{header}**Status:** monitor source failed\n\n{_mon.error}\n", _mon_alert, _mon.error,
-        ), extra_prompt
+        ), extra_prompt, None
     if not _mon.changed:
         # Unchanged: silent no_change tick (ledger doc kept; SILENT_MARKER blocks delivery).
         logger.info("Job '%s': monitor output unchanged — suppressing agent run", job_id)
         return (
             True, f"{header}**Status:** no_change (agent run suppressed)\n", SILENT_MARKER, None,
-        ), extra_prompt
-    # Changed (or first run): inject monitor context via the per-run seam, then normal agent run.
-    if _mon.context_block:
-        extra_prompt = (
-            f"{_mon.context_block}\n\n{extra_prompt}" if extra_prompt else _mon.context_block
-        )
-    return None, extra_prompt
+        ), extra_prompt, None
+    # Changed (or first run): pass monitor output through the runtime-data seam. Keep any manual
+    # per-run prompt separate: it remains user input and is therefore still strict-scanned.
+    return None, extra_prompt, _mon.context_block
 
 
 @dataclass
@@ -1949,7 +1947,7 @@ def _prepare_job_prompt(
     if job_payload_is_empty(job):
         return _block_and_pause_job(job_id, job_name, EMPTY_PAYLOAD_ERROR), None
 
-    _early, extra_prompt = _apply_monitor_gate(job, job_id, job_name, extra_prompt)
+    _early, extra_prompt, monitor_context = _apply_monitor_gate(job, job_id, job_name, extra_prompt)
     if _early is not None:
         return _early, None
 
@@ -1981,7 +1979,10 @@ def _prepare_job_prompt(
             return (True, silent_doc, SILENT_MARKER, None), None
 
     try:
-        prompt = _build_job_prompt(job, prerun_script=prerun_script, extra_prompt=extra_prompt)
+        build_kwargs = {"prerun_script": prerun_script, "extra_prompt": extra_prompt}
+        if monitor_context:
+            build_kwargs["runtime_data_prompt"] = monitor_context
+        prompt = _build_job_prompt(job, **build_kwargs)
     except CronPromptInjectionBlocked as block_exc:
         # Injection scanner tripped: refuse this tick and tell the operator WHY.
         logger.warning(

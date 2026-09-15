@@ -393,3 +393,25 @@ class TestScriptOutputNotStrictScanned:
         assert "\u200b" not in prompt
         assert "item oneitem two" in prompt
 
+
+class TestMonitorOutputIsRuntimeData:
+    """Monitor context is runtime data, not part of the stored user prompt."""
+
+    def test_bidi_monitor_output_is_sanitized_not_blocked(self, cron_env):
+        _, scheduler = cron_env
+        prompt = scheduler._build_job_prompt(
+            {"id": "job-monitor", "name": "WhatsApp", "prompt": "Summarize changes."},
+            runtime_data_prompt="## Monitor Baseline\n\nWhatsApp: Alice\u202a Work",
+        )
+        assert prompt is not None
+        assert "\u202a" not in prompt
+        assert "WhatsApp: Alice Work" in prompt
+
+    def test_stored_user_prompt_remains_strict_with_monitor_data(self, cron_env):
+        _, scheduler = cron_env
+        with pytest.raises(scheduler.CronPromptInjectionBlocked) as exc_info:
+            scheduler._build_job_prompt(
+                {"id": "job-monitor", "name": "legacy", "prompt": "normal\u202atext"},
+                runtime_data_prompt="## Monitor Baseline\n\nordinary monitor output",
+            )
+        assert "invisible unicode" in str(exc_info.value)

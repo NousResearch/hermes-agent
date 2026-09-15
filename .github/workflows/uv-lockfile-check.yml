@@ -178,3 +178,90 @@ jobs:
           retention-days: 1
           overwrite: true
           if-no-files-found: ignore
+
+  # Same lockfile, checked with the uv Hermes actually installs.
+  #
+  # The check above runs the uv this repo pins (0.9.28). Hermes does not use a pinned uv: the
+  # installer, and `hermes update` after it, bootstrap Astral's official installer into
+  # $HERMES_HOME/bin — so the product always runs a ROLLING uv (0.12.x at the time of writing) and
+  # the two versions can disagree about whether uv.lock is current. Only the product's verdict
+  # reaches users, and uv only ever gets stricter about lockfile validation, so the pinned check is
+  # structurally the older one.
+  #
+  # That divergence is not hypothetical: uv 0.12 counts an exclude-newer exemption declared in
+  # pyproject.toml but absent from uv.lock as drift, so it rejected the lock 0.9.28 accepts.
+  # `managed_uv._stage_candidate_venv` builds the replacement venv with `uv sync --locked`, so the
+  # rejection meant the SQLite runtime repair could never stage a candidate on an affected install —
+  # `hermes update` ended at "partially complete" forever (#111417).
+  #
+  # Keep this version at or above the uv Hermes installs. Pinned rather than "latest" on purpose:
+  # an unpinned setup-uv fetches a 'latest' manifest from raw.githubusercontent.com on every job
+  # (the 2026-07-28 incident noted above), and a registry/manifest blip must never read as a stale
+  # lockfile.
+  check-shipped-uv:
+    name: uv lock --check (uv Hermes ships)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv (the version Hermes installs)
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: "0.12.9"
+
+      # The retry shape is deliberately a copy of the one in `check` instead of a shared script:
+      # this job is additive and must not be able to change the existing gate's behaviour or its
+      # review_status contract.
+      - name: Verify uv.lock is up-to-date under the shipped uv
+        run: |
+          ok=false
+          net_fail=false
+          delays=(5 15 45)
+          for i in 1 2 3; do
+            if uv lock --check >lock-check.log 2>&1; then
+              ok=true
+              net_fail=false
+              cat lock-check.log
+              break
+            fi
+            cat lock-check.log
+            if grep -qiE "Request failed after|Failed to fetch|error sending request|connection (reset|closed)|timed out" lock-check.log; then
+              net_fail=true
+            else
+              net_fail=false
+              break
+            fi
+            [ "$i" = 3 ] && break
+            echo "::warning::uv lock --check (shipped uv) could not reach the registry (attempt $i); retrying in ${delays[$((i-1))]}s"
+            sleep "${delays[$((i-1))]}"
+          done
+          if [ "$ok" != true ] && [ "$net_fail" = true ]; then
+            echo "::error title=uv.lock check (shipped uv) could not reach PyPI::Registry unreachable after 3 attempts — infrastructure failure, not a stale lockfile. Re-run the job."
+            exit 1
+          fi
+          if [ "$ok" != true ]; then
+            cat <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          ## ❌ uv.lock is stale for the uv Hermes installs
+
+          `uv lock --check` failed under the uv the product installs while the pinned check above
+          passed. Hermes never runs the pinned uv — the installer and `hermes update` bootstrap
+          Astral's rolling uv into `$HERMES_HOME/bin` — so a lockfile only the older uv accepts
+          still breaks real installs (a lockfile-gated `uv sync` failing is what blocks the SQLite
+          runtime repair: #111417).
+
+          Regenerate the lockfile with the newer uv and commit the result:
+
+          ```bash
+          git fetch origin main
+          git rebase origin/main
+          uv lock
+          git add uv.lock
+          git commit -m "chore: refresh uv.lock"
+          ```
+          EOF
+            echo "::error title=uv.lock stale for the shipped uv::\`uv lock --check\` failed with the uv Hermes installs but passed with the pinned version above. Run \`uv lock\` and commit the result."
+            exit 1
+          fi
+          echo "::notice::uv.lock is current for the uv Hermes installs."

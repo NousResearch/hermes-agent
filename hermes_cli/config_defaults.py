@@ -459,9 +459,11 @@ DEFAULT_CONFIG = {
         "max_total_size_mb": 500,
         # Skip files larger than this (MB) when staging (datasets, model weights). 0 = no filter.
         "max_file_size_mb": 10,
-        # Startup sweep (at most once per min_interval_hours): deletes projects whose last_touch is
-        # older than retention_days, GCs the shared store, enforces max_total_size_mb, deletes
-        # legacy-* archives older than retention_days. It NEVER deletes orphans (workdir missing on
+        # Background sweep (CLI helper thread / gateway housekeeping tick, at most once per
+        # min_interval_hours; never on the startup path — its git gc can block for tens of seconds):
+        # deletes projects whose last_touch is older than retention_days, GCs the shared store when
+        # refs moved, enforces max_total_size_mb, deletes legacy-* archives older than retention_days.
+        # It NEVER deletes orphans (workdir missing on
         # disk) — a missing workdir may just be an unmounted volume/VPN, and an unattended sweep
         # must not guess. Orphans: `hermes checkpoints prune` (`--keep-orphans` to skip).
         "auto_prune": True,
@@ -1355,6 +1357,10 @@ DEFAULT_CONFIG = {
         "project_discovery": True,
         # Trusted project roots; managed by `hermes skills trust` / `untrust`.
         "trusted_project_dirs": [],
+        # Skill names pinned as fully loaded in every new session (CLI, TUI, gateway, cron, API).
+        # Resolved once when the agent's prompt is first built; missing/disabled names warn and
+        # skip; HERMES_IGNORE_RULES suppresses the list like the other auto-injected context.
+        "auto_load": [],
         # Substitute ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} in SKILL.md content.
         "template_vars": True,
         # Pre-execute !`cmd` snippets in SKILL.md, inlining stdout (dates, git state...). Off:
@@ -1454,6 +1460,9 @@ DEFAULT_CONFIG = {
         "websocket_liveness_failure_threshold": 2,
         "websocket_heartbeat_ack_max_age_seconds": 60,
         "websocket_max_latency_seconds": 30,
+        # Dispatch-side dimension: a socket that ACKs heartbeats but delivers no events for this
+        # long is treated as deaf. 4 h absorbs a quiet server overnight; 0 disables it.
+        "websocket_event_max_silence_seconds": 14400,
         # per-channel ephemeral system prompts (forum parents apply to child threads)
         "channel_prompts": {},
         # Opt-in DM role auth: DISCORD_ALLOWED_ROLES normally authorizes guild messages only (DMs
@@ -1516,6 +1525,9 @@ DEFAULT_CONFIG = {
             # Experimental rich draft previews while streaming DMs; off because Telegram
             # Desktop/macOS can overlay draft frames until the chat redraws.
             "rich_drafts": False,
+            # CJK stays on legacy MarkdownV2 (Telegram Desktop/macOS garbles rich CJK, #47653);
+            # set True on an unaffected client to get native rich tables for CJK.
+            "allow_cjk_rich_messages": False,
         },
     },
 
@@ -1744,6 +1756,19 @@ DEFAULT_CONFIG = {
         # early failure evidence from long-running workers.
         "worker_log_rotate_bytes": 2 * 1024 * 1024,
         "worker_log_backup_count": 1,
+        # Rule-1 batch-approval dispatch gate (decision-hud bridge): when True, a board's
+        # dispatch tick refuses to promote/spawn unless its board.json batch_approval_gate
+        # names a decision-hud-approved batch. Ships False — every currently-live board has
+        # no gate configured, so enabling this by default would halt dispatch everywhere
+        # (see decision-hub-first-work/plans/02-minimal-bridge-alternative.md, section 5).
+        "batch_approval_gate_enabled": False,
+        # Rule-4 retry-cap missing-constraint escalation (decision-hud bridge): when True,
+        # a task hitting 3 consecutive dispatch failures is gated on a resolved decision-hud
+        # missing_constraint card before it can be claimed again. Ships False — an operator
+        # must opt in per the same rationale as batch_approval_gate_enabled: fail-closed
+        # gating with no escape valve would permanently strand tasks on any board that
+        # hasn't adopted decision-hud, or during a decision-hud outage.
+        "retry_cap_escalation_enabled": False,
         # Profile for the root/orchestration task after Triage decomposition; "" = default profile.
         # Does not control the decomposer LLM path (see auxiliary.kanban_decomposer).
         "orchestrator_profile": "",
@@ -1768,6 +1793,12 @@ DEFAULT_CONFIG = {
         # fan-out workflows that would otherwise saturate one profile's local model / API quota / browser
         # pool while leaving other profiles idle. See #21582.
         "max_in_progress_per_profile": None,
+        # Per-home claim allowlist for boards shared across Hermes homes (#110995): profile names
+        # this home's dispatcher may claim (list or comma-separated string). None = any existing
+        # profile is claimable. Set = fail-closed (an empty list claims nothing). Every home has a
+        # root profile named "default", so on a shared kanban.db every home can otherwise claim
+        # default-assigned cards.
+        "dispatch_profiles": None,
         # Auto-run the decomposer on Triage tasks every tick. False = manual via `hermes kanban
         # decompose <id>` or the dashboard's Decompose button.
         "auto_decompose": True,
@@ -1785,6 +1816,13 @@ DEFAULT_CONFIG = {
         # On boards that never archive, the notifier GC purges subscriptions for tasks done with no
         # activity for this many days so stale rows aren't scanned forever. 0 = off.
         "done_sub_retention_days": 30,
+        # Wave2/2c: deterministic dispatch-time gate precheck
+        # (hermes_cli/kanban_gate_precheck.py::gate_precheck) re-implementing the
+        # mechanically-checkable subset of the atomic-task-gate / ears-sensibility-gate
+        # skills' discriminants. False (default) = no precheck at all — this is a new,
+        # unproven heuristic with a materially different risk profile than other
+        # dispatch guards, so it stays fully opt-in until an operator turns it on.
+        "gate_precheck_enabled": False,
     },
     # Bot Mode cross-connection relay (tools/bot_relay.py): envelopes queued by message_agent for
     # agents on other connections wait in an on-disk outbox until the Desktop drains them.
@@ -1945,6 +1983,8 @@ DEFAULT_CONFIG = {
         "loop_watchdog_probe_interval_s": 30.0,
         "loop_watchdog_probe_timeout_s": 10.0,
         "loop_watchdog_max_strikes": 3,
+        # Allow all users without allowlists (security opt-in).
+        "allow_all_users": False,
         # Bot-to-bot loop guard: admitted bot messages per conversation before a cooldown.
         "bot_loop_guard": {"enabled": True, "max_events": 20, "window_seconds": 300, "cooldown_seconds": 600},
         # Startup-liveness watchdog: stdlib-only daemon thread armed at process entry that
@@ -1972,7 +2012,7 @@ DEFAULT_CONFIG = {
         # Set to False to stay on per-profile gateways — a durable opt-out that survives updates, so
         # the decision is not re-litigated on every release. Only the AUTOMATIC path reads this:
         # `hermes gateway migrate --multiplex` is an explicit request and always proceeds.
-        "auto_migrate": True,
+        "auto_multiplex_migration": True,
         # Route inbound chats of the default profile's bots to another profile
         # (gateway/profile_routing.py): [{profile, platform, chat_id|user_id|guild_id|...}].
         # Most-specific match wins; only read by the multiplexing default gateway.
@@ -2331,6 +2371,10 @@ DEFAULT_CONFIG = {
         "extra_allowed_hosts": [],
     },
     "desktop": {  # Hermes Desktop (Electron) launch options; only affect `hermes desktop`.
+        # CSS font-family for the app's chat and UI text (e.g. "OpenDyslexic"). Layered in front
+        # of the active theme's own sans stack so missing glyphs still fall through. Empty = the
+        # theme's face. The terminal pane is terminal.font_family.
+        "font_family": "",
         # Git repo discovery for the Projects sidebar; empty roots = bounded scan of $HOME.
         "repo_scan_enabled": True,
         "repo_scan_roots": [],
@@ -2406,7 +2450,7 @@ DEFAULT_CONFIG = {
         # Off = detection-only (Hermes still finds an external llama-server you run).
         "enabled": False,
         # Pinned llama.cpp release tag; bumped by Hermes releases after validation.
-        "tag": "b10679",
+        "tag": "b10964",
         # auto = CUDA on NVIDIA, Metal on macOS, Vulkan on other GPUs, else CPU. Explicit:
         # cuda|metal|vulkan|hip|cpu.
         "backend": "auto",
@@ -2415,7 +2459,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 44,  # Config schema version - bump this when adding new required fields
+    "_config_version": 45,  # Config schema version - bump this when adding new required fields
 }
 
 

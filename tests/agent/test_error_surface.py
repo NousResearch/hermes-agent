@@ -229,3 +229,32 @@ def test_exception_never_raises_on_weird_input():
 
     # Must not raise, whatever it returns.
     build_error_surface_from_exception(Hostile("x"))
+
+
+# ── Nous free tier ────────────────────────────────────────────────────────
+
+
+def test_free_tier_block_gets_its_own_code_and_carries_the_sentence():
+    """A free-tier refusal is never an OAuth re-login: its own ``free_tier_<kind>`` code on the
+    provider layer, with the chat sentence riding along as the card body."""
+    result = _failed_result("auth_permanent", error="HTTP 403: no permissions",
+                            free_tier={"kind": "disabled", "message": "Using Hermes without signing in is switched off."})
+    surface = build_error_surface_from_result(result, provider="nous", model="nous/welcome")
+    assert surface["layer"] == LAYER_PROVIDER and surface["code"] == "free_tier_disabled"
+    assert surface["retryable"] is False and "auth_kind" not in surface
+    assert surface["message"] == "Using Hermes without signing in is switched off."
+
+
+@pytest.mark.parametrize("kind,retryable", [
+    ("rate_limited", True), ("at_capacity", True), ("outage", True),
+    ("disabled", False), ("model_not_free", False), ("route", False), ("refused", False),
+])
+def test_free_tier_kinds_say_whether_a_later_send_can_succeed(kind, retryable):
+    surface = build_error_surface_from_result(_failed_result("rate_limit", free_tier={"kind": kind}), provider="nous")
+    assert surface["code"] == f"free_tier_{kind}" and surface["retryable"] is retryable
+    assert "message" not in surface
+
+
+def test_a_free_tier_block_without_a_kind_is_ignored():
+    surface = build_error_surface_from_result(_failed_result("auth_permanent", free_tier={}), provider="nous")
+    assert surface["code"] == "auth_permanent" and surface["layer"] == LAYER_AUTH

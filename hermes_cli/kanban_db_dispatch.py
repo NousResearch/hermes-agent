@@ -32,6 +32,15 @@ if TYPE_CHECKING:
 # dispatcher parks the task in ``blocked`` with a reason — prevents retry storms.
 DEFAULT_FAILURE_LIMIT = 2
 
+# Rule 4 (no-infinite-retry): once a task's consecutive_failures counter
+# reaches this threshold, dispatch escalates to a PO via a decision-hud
+# missing_constraint card instead of retrying it again — independent of
+# (and enforced in addition to) DEFAULT_FAILURE_LIMIT/max_retries above,
+# which may trip the ordinary breaker earlier or later than this. Owner
+# decision: N=3 ("1 retry with the missing constraint, escalate to PO on
+# the 2nd consecutive failure" — i.e. at exactly 3 consecutive failures).
+RETRY_CAP_ESCALATION_THRESHOLD = 3
+
 # Worker log files larger than this at spawn time are rotated.
 DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
 DEFAULT_LOG_BACKUP_COUNT = 1
@@ -110,6 +119,12 @@ class DispatchResult:
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
+    skipped_gate_precheck: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, reason)`` blocked by the Wave2/2c deterministic gate
+    precheck (``kanban_gate_precheck.gate_precheck``) when
+    ``kanban.gate_precheck_enabled`` is set in ``config.yaml``. Distinct from
+    ``respawn_guarded`` (a different, always-on mechanism) so telemetry can
+    tell them apart."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -118,10 +133,25 @@ class DispatchResult:
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
     stale: list[str] = field(default_factory=list)
     """Task ids reclaimed for no heartbeat within ``dispatch_stale_timeout_seconds``."""
+    board_dispatch_disabled: bool = False
+    """True when this board's ``board.json`` has ``dispatch_enabled: false`` (F5):
+    the tick still ran reclaim/promotion bookkeeping but spawned nothing new this
+    tick -- an intake gate only, never a retroactive kill of an already-running
+    task. Narrowing-only: a missing key defaults to enabled (``True``) so boards
+    written before this field existed keep dispatching exactly as before."""
     respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
     """``(task_id, reason)`` skipped by the respawn guard: ``"blocker_auth"``
     (quota/auth error — also auto-blocked), ``"recent_success"`` (completed run
     within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    retry_cap_blocked: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, reason)`` refused by Rule 4 (no-infinite-retry): the task
+    hit ``consecutive_failures >= RETRY_CAP_ESCALATION_THRESHOLD`` (3) and has
+    an unresolved decision-hud ``missing_constraint`` card open for it (either
+    just pushed this tick, or pushed on an earlier tick and still pending PO
+    resolution). Distinct from ``respawn_guarded`` (a different, always-on
+    mechanism) so telemetry can tell the two apart. Fails CLOSED: a
+    decision-hud error/unavailability at or above the threshold also lands
+    here, never a silent dispatch."""
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
@@ -133,6 +163,13 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    batch_approval_blocked: Optional[str] = None
+    """Reason string when this tick was refused because the board's
+    batch_approval_gate is unset or not decision-hud-approved. None when the
+    gate passed, the board has no gate configured (feature flag disabled), or
+    the feature flag ``HERMES_KANBAN_BATCH_APPROVAL_GATE_ENABLED`` is unset
+    (see _check_batch_approval_gate). Reclaim/promotion bookkeeping still
+    ran; this only blocks the spawn phase."""
 
 
 # Bounded registry of recently-reaped worker exits, filled by the reap loop in
@@ -256,6 +293,30 @@ def _pid_alive(pid: Optional[int]) -> bool:
     return True
 
 
+def _worker_alive(pid: Optional[int], started_at: Optional[int]) -> bool:
+    """True when ``pid`` is live AND is still the worker we spawned. ``started_at`` is the start-time
+    fingerprint recorded by ``_set_worker_pid``; after a reboot (or any PID recycle) an unrelated
+    process can own the number, so bare existence is never enough to extend a claim or to signal.
+    A legacy row without a fingerprint keeps the existence answer: killing it is the pre-fingerprint
+    behaviour and the row is rewritten with a fingerprint on its next spawn."""
+    return _kb._pid_alive(pid) and not _pid_recycled(pid, started_at)
+
+
+def _pid_recycled(pid: Optional[int], started_at: Optional[int]) -> bool:
+    """True when a live ``pid`` is NOT the process fingerprinted at spawn (or the fingerprint can no
+    longer be read). Signalling it would hit a stranger. ``None`` fingerprint = legacy row, never recycled."""
+    if started_at is None or not pid:
+        return False
+    from gateway.status import _start_times_agree, get_process_start_time
+    current = get_process_start_time(int(pid))
+    if current is None:
+        return True
+    try:
+        return not _start_times_agree(current, started_at)
+    except (TypeError, ValueError):
+        return True
+
+
 def _kill_fn(signal_fn) -> Optional[Callable[[int, int], None]]:
     """``signal_fn`` test hook, else ``os.kill`` when the platform has one."""
     if signal_fn is not None:
@@ -263,10 +324,10 @@ def _kill_fn(signal_fn) -> Optional[Callable[[int, int], None]]:
     return os.kill if hasattr(os, "kill") else None
 
 
-def _poll_worker_exit(pid: int) -> bool:
+def _poll_worker_exit(pid: int, started_at: Optional[int] = None) -> bool:
     """Poll ~5 s (10 x 0.5 s) for ``pid`` to die; True once it is gone."""
     for _ in range(10):
-        if not _kb._pid_alive(pid):
+        if not _worker_alive(pid, started_at):
             return True
         time.sleep(0.5)
     return False
@@ -287,8 +348,11 @@ def _terminate_reclaimed_worker(
     claim_lock: Optional[str],
     *,
     signal_fn=None,
+    started_at: Optional[int] = None,
 ) -> dict[str, Any]:
-    """Best-effort host-local worker termination for reclaim paths."""
+    """Best-effort host-local worker termination for reclaim paths. ``started_at`` is the spawn-time
+    fingerprint: when the live process no longer matches it, the PID was recycled and nothing is
+    signalled — the worker is gone, which is what the reclaim wanted (``terminated`` = True)."""
     info: dict[str, Any] = {
         "prev_pid": int(pid) if pid else None,
         "host_local": False,
@@ -305,6 +369,10 @@ def _terminate_reclaimed_worker(
     kill = _kill_fn(signal_fn)
     if kill is None:
         return info
+    if _kb._pid_alive(pid) and _pid_recycled(pid, started_at):
+        info["terminated"] = True
+        info["pid_recycled"] = True
+        return info
 
     info["termination_attempted"] = True
     try:
@@ -317,14 +385,14 @@ def _terminate_reclaimed_worker(
     except OSError:
         return info
 
-    if _poll_worker_exit(pid):
+    if _poll_worker_exit(pid, started_at):
         info["terminated"] = True
         return info
-    if _kb._pid_alive(pid):
+    if _worker_alive(pid, started_at):
         if not _sigkill(kill, pid):
             return info
         info["sigkill"] = True
-    info["terminated"] = not _kb._pid_alive(pid)
+    info["terminated"] = not _worker_alive(pid, started_at)
     return info
 
 
@@ -427,7 +495,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
     host_prefix = _kb._host_prefix()
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, "
+        "SELECT t.id, t.worker_pid, t.worker_started_at, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
         "       t.max_runtime_seconds, t.claim_lock "
         "FROM tasks t "
@@ -449,16 +517,18 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
 
         pid = int(row["worker_pid"])
         tid = row["id"]
+        started_at = _kb._row_get(row, "worker_started_at")
         # SIGTERM then SIGKILL after 5 s grace; workers wanting a cleaner
-        # shutdown install their own SIGTERM handler.
+        # shutdown install their own SIGTERM handler. A recycled PID (fingerprint
+        # mismatch) is never signalled: the worker is already gone.
         killed = False
         kill = _kill_fn(signal_fn)
-        if kill is not None:
+        if kill is not None and not (_kb._pid_alive(pid) and _pid_recycled(pid, started_at)):
             with contextlib.suppress(ProcessLookupError, OSError):
                 kill(pid, signal.SIGTERM)
             # Short polling wait — no time.sleep on the write txn.
-            _poll_worker_exit(pid)
-            if _kb._pid_alive(pid):
+            _poll_worker_exit(pid, started_at)
+            if _worker_alive(pid, started_at):
                 killed = _sigkill(kill, pid)
 
         error = f"elapsed {int(elapsed)}s > limit {limit}s"
@@ -529,7 +599,7 @@ def detect_stale_running(
     reclaimed: list[str] = []
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, t.last_heartbeat_at, t.claim_lock, "
+        "SELECT t.id, t.worker_pid, t.worker_started_at, t.last_heartbeat_at, t.claim_lock, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
@@ -552,7 +622,8 @@ def detect_stale_running(
         tid = row["id"]
         lock = row["claim_lock"] or ""
 
-        termination = _kb._terminate_reclaimed_worker(pid, lock, signal_fn=signal_fn)
+        termination = _kb._terminate_reclaimed_worker(
+            pid, lock, signal_fn=signal_fn, started_at=_kb._row_get(row, "worker_started_at"))
 
         # Never release a claim while our own worker is still alive: that would
         # spawn a duplicate beside it. Hold the claim and retry next tick.
@@ -615,14 +686,14 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
     now = int(time.time())
     reconciled: list[str] = []
     rows = conn.execute(
-        "SELECT id, claim_lock, claim_expires, worker_pid FROM tasks "
+        "SELECT id, claim_lock, claim_expires, worker_pid, worker_started_at FROM tasks "
         "WHERE status = 'running' "
         "  AND (claim_lock IS NULL OR claim_expires IS NULL)"
     ).fetchall()
     for row in rows:
         tid = row["id"]
         pid = row["worker_pid"]
-        if pid and _kb._pid_alive(pid):
+        if pid and _worker_alive(pid, _kb._row_get(row, "worker_started_at")):
             # Never requeue beside a live process. Retry next tick.
             _kb._log.debug(
                 "kanban reconcile: task %s has broken claim bookkeeping but "
@@ -807,7 +878,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
     sweep = _CrashSweep()
     with _kb.write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at, assignee "
+            "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, assignee "
             "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
@@ -821,7 +892,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
             started_at = _kb._row_get(row, "started_at")
             if started_at is not None and time.time() - started_at < _kb._resolve_crash_grace_seconds():
                 continue
-            if _kb._pid_alive(row["worker_pid"]):
+            if _worker_alive(row["worker_pid"], _kb._row_get(row, "worker_started_at")):
                 continue
 
             pid = int(row["worker_pid"])
@@ -1098,13 +1169,18 @@ def _record_task_failure(
 
 
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
-    """Record the spawned child's pid + emit a ``spawned`` event carrying it."""
+    """Record the spawned child's pid + its start-time fingerprint, and emit a ``spawned`` event
+    carrying them. The fingerprint is what lets every later liveness/kill decision tell OUR worker
+    from a process that recycled the PID after a reboot."""
+    from gateway.status import get_process_start_time
+    started_at = get_process_start_time(int(pid))
     with _kb.write_txn(conn):
-        conn.execute("UPDATE tasks SET worker_pid = ? WHERE id = ?", (int(pid), task_id))
+        conn.execute("UPDATE tasks SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
+                     (int(pid), started_at, task_id))
         run_id = _kb._current_run_id(conn, task_id)
         if run_id is not None:
             conn.execute("UPDATE task_runs SET worker_pid = ? WHERE id = ?", (int(pid), run_id))
-        _kb._append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
+        _kb._append_event(conn, task_id, "spawned", {"pid": int(pid), "started_at": started_at}, run_id=run_id)
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
@@ -1218,12 +1294,62 @@ def check_respawn_guard(
 def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
     """``hermes_cli.profiles.profile_exists``, or ``None`` when it cannot be
     imported (local import avoids a cycle; callers fall back to trusting the
-    assignee)."""
+    assignee).
+
+    When ``kanban.dispatch_profiles`` is set (#110995) the returned predicate
+    additionally requires the assignee to be listed, fail-closed — so a card
+    assigned to ``default`` is only claimable by homes that opted into it.
+    Foreign assignees land in the existing ``skipped_nonspawnable`` bucket.
+    """
     try:
-        from hermes_cli.profiles import profile_exists
+        from hermes_cli.profiles import normalize_profile_name, profile_exists
     except Exception:
         return None
-    return profile_exists
+    allowlist = _dispatch_profile_allowlist(normalize_profile_name)
+    if allowlist is None:
+        return profile_exists
+
+    def _gated(name: str) -> bool:
+        try:
+            canon = normalize_profile_name(name)
+        except ValueError:
+            return False
+        return canon in allowlist and bool(profile_exists(name))
+
+    return _gated
+
+
+def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
+    """Per-home claim allowlist ``kanban.dispatch_profiles`` (#110995).
+
+    On a shared board (one ``kanban.db`` mounted across several Hermes homes),
+    every home's ``profile_exists`` returns True for ``default`` — the root
+    profile every home has — so a card assigned to ``default`` is claimable by
+    every home's dispatcher. A home opts out of foreign claims by declaring
+    which assignees it may claim::
+
+        kanban:
+          dispatch_profiles: ["sage", "researcher"]   # or "sage,researcher"
+
+    Returns ``None`` when the key is unset (upstream behavior: any existing
+    profile is claimable). A set value is fail-closed: an empty list claims
+    nothing. Config read is fail-open like the sibling ``kanban.*`` readers.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        raw = (load_config_readonly() or {}).get("kanban", {}).get("dispatch_profiles")
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    names = [str(n) for n in raw] if isinstance(raw, (list, tuple)) else str(raw).split(",")
+    allowed = set()
+    for n in names:
+        try:
+            allowed.add(normalize_profile_name(n))
+        except ValueError:
+            continue
+    return frozenset(allowed)
 
 
 def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
@@ -1487,6 +1613,86 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _retry_cap_gate_ok(board: Optional[str], task_id: str, consecutive_failures: int) -> tuple[bool, str]:
+    """Rule 4 (no-infinite-retry) per-task gate. Returns ``(True, "")`` when
+    the task is clear to dispatch; ``(False, reason)`` when it must be
+    refused this tick.
+
+    Below :data:`RETRY_CAP_ESCALATION_THRESHOLD` this is always a no-op
+    ``(True, "")`` — the ordinary breaker (``_record_task_failure`` /
+    ``DEFAULT_FAILURE_LIMIT`` / per-task ``max_retries``) is the only
+    mechanism that applies there, unchanged.
+
+    At or above the threshold: check whether a decision-hud
+    ``missing_constraint`` card is already resolved for this exact
+    ``(project, task_id)`` FIRST — a resolved row must re-enable dispatch,
+    not trigger a fresh push-then-recheck that would re-open a brand-new
+    unresolved row every tick. Only when still unresolved do we push a
+    ``missing_constraint`` card via ``push_task_missing_constraint`` (a
+    no-op, not an error, when one is already open per the bridge's
+    documented duplicate handling).
+
+    Same fail-closed contract as ``check_batch_approval``: a ``project``
+    that cannot be resolved, or any decision-hud error/unavailability, is
+    treated as NOT resolved (refuse), never as "skip the check".
+
+    Config-gated via ``kanban.retry_cap_escalation_enabled`` (default
+    False): a true no-op below the threshold check when unset, matching
+    the opt-in precedent set by ``kanban.batch_approval_gate_enabled`` and
+    ``kanban.gate_precheck_enabled`` — adversarial review flagged that
+    without this, a decision-hud outage or a board that never adopted
+    decision-hud would permanently strand any task hitting 3 consecutive
+    failures, with no escape valve. Fail-closed only applies once an
+    operator has opted a board's Rule 4 gate in.
+    """
+    from hermes_cli.config import load_config
+
+    try:
+        kanban_cfg = load_config().get("kanban") or {}
+        if not isinstance(kanban_cfg, dict):
+            kanban_cfg = {}
+    except Exception:
+        kanban_cfg = {}
+    if not kanban_cfg.get("retry_cap_escalation_enabled", False):
+        return True, ""
+    if consecutive_failures < RETRY_CAP_ESCALATION_THRESHOLD:
+        return True, ""
+    project = _kb._slug_or_default(board)
+    try:
+        from hermes_cli.plugin_bridges import decision_hud as _dh_bridge
+    except Exception as exc:
+        return False, f"decision-hud bridge unavailable: {exc}"
+    # Check resolution FIRST: decision-hud allows a fresh push once the
+    # existing row is resolved (a task can legitimately hit an independent
+    # 2nd escalation later), so pushing unconditionally here would re-open a
+    # brand-new unresolved row on every tick after the PO already resolved
+    # it, re-blocking a task that should now be clear to dispatch.
+    try:
+        if _dh_bridge.check_constraint_resolved(project=project, task_id=task_id):
+            return True, ""
+    except Exception as exc:
+        return False, f"missing_constraint resolution check failed: {exc}"
+    question = (
+        f"Task {task_id!r} has failed {consecutive_failures} consecutive times. "
+        "What constraint/spec is missing, or how should it proceed?"
+    )
+    try:
+        pushed, push_reason = _dh_bridge.push_task_missing_constraint(
+            project=project, task_id=task_id, question=question,
+        )
+    except Exception as exc:
+        return False, f"missing_constraint push failed: {exc}"
+    if pushed:
+        return False, (
+            f"task {task_id!r} hit {consecutive_failures} consecutive failures; "
+            "pushed a decision-hud missing_constraint card, awaiting PO resolution"
+        )
+    return False, (
+        f"task {task_id!r} hit {consecutive_failures} consecutive failures; "
+        f"missing_constraint still unresolved ({push_reason})"
+    )
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -1535,6 +1741,38 @@ def _dispatch_lane_task(
         if not dry_run:
             with _kb.write_txn(conn):
                 _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
+        return False
+
+    # Wave2/2c: deterministic gate precheck, opt-in via kanban.gate_precheck_enabled
+    # in config.yaml (default False — a new, unproven heuristic with a materially
+    # different risk profile than the always-on respawn guard above, so it stays
+    # opt-in). Distinct bucket (skipped_gate_precheck) from respawn_guarded so
+    # telemetry can tell the two mechanisms apart.
+    if gate_precheck_enabled():
+        task_for_precheck = _kb.get_task(conn, task_id)
+        if task_for_precheck is not None:
+            precheck = _gate_precheck.gate_precheck(task_for_precheck)
+            if precheck["status"] == _gate_precheck.STATUS_BLOCKED:
+                result.skipped_gate_precheck.append((task_id, precheck["reason"]))
+                return False
+
+    # Rule 4 (no-infinite-retry): once consecutive_failures hits
+    # RETRY_CAP_ESCALATION_THRESHOLD, escalate to a PO via decision-hud
+    # instead of letting the ordinary breaker's retry budget keep respawning
+    # it. Same fail-closed contract as batch_approval_gate: an error
+    # anywhere in this check refuses the task, never dispatches it anyway.
+    # Read fresh from the DB each tick — this per-tick lane query is a
+    # narrow id/assignee projection that doesn't carry consecutive_failures.
+    failures_row = conn.execute(
+        "SELECT consecutive_failures FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    consecutive_failures = int(failures_row["consecutive_failures"]) if failures_row is not None else 0
+    retry_ok, retry_reason = _retry_cap_gate_ok(board, task_id, consecutive_failures)
+    if not retry_ok:
+        result.retry_cap_blocked.append((task_id, retry_reason))
+        if not dry_run:
+            with _kb.write_txn(conn):
+                _kb._append_event(conn, task_id, "retry_cap_blocked", {"reason": retry_reason})
         return False
 
     def _count_spawn(name: str) -> None:
@@ -1634,7 +1872,7 @@ def _run_reclaim_phase(
 ) -> None:
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
     reap_worker_zombies()
-    result.reclaimed = _kb.release_stale_claims(conn)
+    result.reclaimed = _kb.release_stale_claims(conn, failure_limit=failure_limit)
     if reconcile_orphans:
         result.reconciled_orphans = reconcile_orphaned_running(conn)
     result.stale = detect_stale_running(conn, stale_timeout_seconds=stale_timeout_seconds)
@@ -1729,24 +1967,58 @@ def _any_spawnable_review(review_rows: list[sqlite3.Row]) -> bool:
 
 
 def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
-    """``kanban.default_assignee`` when it names a real profile. When the
-    profiles module isn't importable trust the operator's config: the
-    downstream profile_exists check still buckets a missing profile as
-    nonspawnable."""
+    """``kanban.default_assignee`` when it names a real profile this home may
+    claim (``kanban.dispatch_profiles`` gated, same predicate as the spawn
+    gate). Otherwise ``None`` so an unassigned shared-board card is never
+    written to. When the profiles module isn't importable trust the
+    operator's config: the downstream check still buckets a missing profile
+    as nonspawnable."""
     name = (default_assignee or "").strip() or None
     if name:
-        try:
-            from hermes_cli.profiles import profile_exists
-            if not profile_exists(name):
-                return None
-        except Exception:
-            pass
+        profile_exists = _profile_exists_fn()
+        if profile_exists is not None and not profile_exists(name):
+            return None
     return name
 
 
 # The dispatch lock has been released here. Fire the tick observer strictly OUTSIDE the single-writer
 # critical section (#56066 sweeper finding / #64231 disposition): a slow subscriber must never extend the
 # lock hold and stall a sibling dispatcher's tick.
+def _check_batch_approval_gate(board: Optional[str]) -> Optional[str]:
+    """Return a block reason string if this board's dispatch tick must not
+    spawn, else None. Config-gated via ``kanban.batch_approval_gate_enabled``
+    (default False): no-op (always returns None immediately, without
+    touching board metadata) unless set True, since the underlying behavior
+    is DEFAULT-GATED — an unset batch_approval_gate is treated as "blocked",
+    not "passed through". See
+    decision-hub-first-work/plans/02-minimal-bridge-alternative.md section 5
+    for the migration/rollout rationale: shipping this gate enabled by
+    default would halt every board with no gate configured (including
+    boards with proven live dispatch activity), so it ships disabled until
+    an operator explicitly opts in via config.yaml.
+    """
+    from hermes_cli.config import load_config
+
+    try:
+        kanban_cfg = load_config().get("kanban") or {}
+        if not isinstance(kanban_cfg, dict):
+            kanban_cfg = {}
+    except Exception:
+        kanban_cfg = {}
+    if not kanban_cfg.get("batch_approval_gate_enabled", False):
+        return None
+    meta = _kb.read_board_metadata(board=board)
+    gate = meta.get("batch_approval_gate")
+    if not gate:
+        return "no batch_approval_gate configured on this board"
+    project = meta.get("project_id") or _kb._slug_or_default(board)
+    from hermes_cli.plugin_bridges.decision_hud import check_batch_approval
+    approved, reason = check_batch_approval(project=project, batch_id=str(gate))
+    if not approved:
+        return reason or f"batch {gate!r} not approved"
+    return None
+
+
 def _dispatch_once_locked(
     conn: sqlite3.Connection,
     *,
@@ -1772,6 +2044,20 @@ def _dispatch_once_locked(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans,
     )
+    block_reason = _check_batch_approval_gate(board)
+    if block_reason is not None:
+        result.batch_approval_blocked = block_reason
+        return result
+    # F5: per-board dispatch_enabled from board.json (PR #11's desktop toggle),
+    # read fresh every tick so a flip takes effect on the very next one. Intake
+    # gate ONLY -- reclaim/promotion bookkeeping above already ran, and an
+    # already-running task is never touched here; this just stops NEW spawns.
+    # Narrowing-only: default True, so a board.json with no `dispatch_enabled`
+    # key (every board written before this field existed) keeps dispatching
+    # exactly as before.
+    if not _kb.read_board_metadata(board=board).get("dispatch_enabled", True):
+        result.board_dispatch_disabled = True
+        return result
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
     )
@@ -1852,6 +2138,25 @@ def _positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
     except (TypeError, ValueError):
         return default
     return parsed if parsed >= minimum else default
+
+
+def gate_precheck_enabled(kanban_cfg: Optional[dict] = None) -> bool:
+    """Return whether the Wave2/2c deterministic gate precheck
+    (``hermes_cli.kanban_gate_precheck.gate_precheck``) should run before a
+    task is spawned. Opt-in: ``kanban.gate_precheck_enabled`` in
+    ``config.yaml``, default ``False`` — same ``load_config().get("kanban")``
+    pattern as :func:`worker_log_rotation_config`, NOT an env var.
+    """
+    if kanban_cfg is None:
+        try:
+            from hermes_cli.config import load_config
+
+            kanban_cfg = (load_config().get("kanban") or {})
+        except Exception:
+            kanban_cfg = {}
+    if not isinstance(kanban_cfg, dict):
+        kanban_cfg = {}
+    return bool(kanban_cfg.get("gate_precheck_enabled", False))
 
 
 def worker_log_rotation_config(kanban_cfg: Optional[dict] = None) -> tuple[int, int]:
@@ -2384,3 +2689,4 @@ def run_daemon(
 from hermes_cli import kanban_db as _kb  # noqa: E402
 from hermes_cli import kanban_db_connect as _kbc  # noqa: E402
 from hermes_cli import kanban_db_workspace as _kbw  # noqa: E402
+from hermes_cli import kanban_gate_precheck as _gate_precheck  # noqa: E402

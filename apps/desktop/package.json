@@ -1,8 +1,9 @@
 {
   "name": "hermes",
   "productName": "Hermes",
+  "desktopName": "Hermes.desktop",
   "private": true,
-  "version": "0.17.2",
+  "version": "0.17.3",
   "description": "Native desktop shell for Hermes Agent.",
   "author": "Nous Research",
   "repository": {
@@ -291,6 +292,8 @@
       "category": "Development",
       "maintainer": "Nous Research <support@nousresearch.com>",
       "synopsis": "Native desktop shell for Hermes Agent.",
+      "icon": "assets/icons",
+      "syncDesktopName": true,
       "target": [
         "AppImage",
         "deb",

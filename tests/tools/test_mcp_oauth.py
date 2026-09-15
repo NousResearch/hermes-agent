@@ -3,6 +3,7 @@
 import json
 import stat
 import sys
+import time
 from io import BytesIO
 from unittest.mock import patch, MagicMock
 from urllib.parse import quote

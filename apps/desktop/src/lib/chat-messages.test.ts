@@ -14,6 +14,7 @@ import {
   preserveLocalAssistantErrors,
   reasoningPart,
   renderMediaTags,
+  restorePendingClarifyToolCall,
   sealOpenToolParts,
   stripPendingClarifyProjectionForCache,
   toChatMessages,
@@ -1411,6 +1412,67 @@ describe('sealOpenToolParts', () => {
       parts,
       ...over
     }) as ChatMessage
+
+  it('a sealed clarify never becomes the fallback row for a new, uncorrelated clarify request', () => {
+    // Turn 1 blocked on a clarify, the user stopped it; settle sealed the call
+    // (no result). A later turn raises a *different* clarify whose request id
+    // and question match nothing on the transcript.
+    const stopped = sealOpenToolParts([
+      assistantWithParts(
+        upsertToolPart(
+          [],
+          { tool_id: 'old-provider-id', name: 'clarify', args: { question: 'Old question?', choices: ['A', 'B'] } },
+          'running',
+          1
+        ),
+        { id: 'old-turn', pending: false }
+      )
+    ])
+
+    const messages = [...stopped, { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'ask something else' }] } as ChatMessage]
+
+    const restored = restorePendingClarifyToolCall(
+      messages,
+      { id: 'new-request-id', name: 'clarify', args: { question: 'New question?', choices: ['C', 'D'] } },
+      3
+    )
+
+    expect(restored.streamId).not.toBe('old-turn')
+    const oldTurn = restored.messages.find(message => message.id === 'old-turn')
+    expect(oldTurn?.pending).not.toBe(true)
+
+    const newQuestion = restored.messages
+      .flatMap(message => message.parts)
+      .find(part => part.type === 'tool-call' && part.toolCallId === 'new-request-id')
+
+    expect(newQuestion).toBeDefined()
+  })
+
+  it('a sealed clarify is still re-armed when the resume request genuinely correlates to it', () => {
+    const stopped = sealOpenToolParts([
+      assistantWithParts(
+        upsertToolPart(
+          [],
+          { tool_id: 'provider-id', name: 'clarify', args: { question: 'Same question?', choices: ['A', 'B'] } },
+          'running',
+          1
+        ),
+        { id: 'turn', pending: false }
+      )
+    ])
+
+    const restored = restorePendingClarifyToolCall(
+      stopped,
+      { id: 'request-id', name: 'clarify', args: { question: 'Same question?', choices: ['A', 'B'] } },
+      2
+    )
+
+    expect(restored.streamId).toBe('turn')
+    expect(restored.messages[0].pending).toBe(true)
+    expect(restored.messages).toHaveLength(1)
+    // The seal comes off so the row renders as the live question again.
+    expect(restored.messages[0].parts[0].completedAt).toBeUndefined()
+  })
 
   it('seals open tool-call parts in settled assistant messages', () => {
     const messages = [assistantWithParts([toolPart()])]

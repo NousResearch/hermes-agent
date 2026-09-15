@@ -258,6 +258,42 @@ def _stub_external_worker_launch(scheduler, monkeypatch):
     return spawned, payloads, handoff, get
 
 
+def test_scoped_wrapper_exit_without_user_bus_names_the_cause_and_invalidates_probe(
+    tmp_path, monkeypatch
+):
+    """#110803: a stale True scope verdict wraps the worker in ``systemd-run --user --scope``
+    after the user bus vanished; the wrapper exits 1 with no child. The job error must name the
+    missing bus (not a bare exit code) and the cached verdict must flip so the next fire re-probes."""
+    import cron.scheduler as scheduler
+    import tools.process_registry as pr
+    from tools.process_registry import GatewayChildDispatch
+
+    job = {"id": "job-bus", "execution_id": "exec-1", "prompt": "work"}
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, **_: GatewayChildDispatch("scoped", ["systemd-run", "--", *command]),
+    )
+    monkeypatch.setattr(scheduler, "mark_execution_handoff_pending",
+                        lambda _eid: {"id": "exec-1", "handoff_pending": 1})
+
+    class DeadWrapper:
+        returncode = 1
+
+        def poll(self):
+            return 1
+
+    monkeypatch.setattr(scheduler.subprocess, "Popen", lambda *a, **k: DeadWrapper())
+    # Bus gone: systemd_user_bus_env derives nothing.
+    monkeypatch.setattr(pr, "systemd_user_bus_env", lambda base_env=None: dict(base_env or {}))
+    monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", True)
+    monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", pr.time.monotonic())
+
+    with pytest.raises(RuntimeError, match="user D-Bus session .* disappeared"):
+        scheduler._launch_external_cron_worker(job)
+    assert pr._SYSTEMD_SCOPE_AVAILABLE is False
+
+
 def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
     tmp_path, monkeypatch
 ):

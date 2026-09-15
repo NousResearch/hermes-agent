@@ -92,8 +92,9 @@ headers show the profile name.
 Use a gateway or profile section's menu to **Rename group**, **Reset name**, **Move up**, or
 **Move down**. Renaming changes only the sidebar label, not the gateway or profile.
 Gateways reorder as complete sections, and profiles reorder within their own gateway.
-Drag the section's leading icon to reorder it, or focus that handle and use
-Space, arrow keys, then Space to place it. Names, order, and collapsed sections
+Drag the section header anywhere (its icon, its name, or the empty space) to
+reorder it, or focus the header and use Space, arrow keys, then Space to place
+it. Names, order, and collapsed sections
 are remembered on this desktop. Collapsing a gateway preserves its profiles'
 individual collapse states. Each profile's new-session action targets that
 profile on its owning gateway.

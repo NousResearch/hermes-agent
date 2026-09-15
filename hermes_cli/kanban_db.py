@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from toolsets import get_toolset_names
+from utils import atomic_write_text
 
 _log = logging.getLogger(__name__)
 
@@ -118,20 +119,18 @@ _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024  # one cap for dashboard, tools and CLI
 
 
-def _assert_not_delegated_child_mutation() -> None:
+def _assert_not_delegated_child_mutation(path: "str | Path | None" = None) -> None:
     """Reject Kanban mutations from ``delegate_task`` child contexts.
 
     The tool/CLI fast-fail guards are UX, not a trust boundary (a child can shell
     out or import this module); the invariant lives here so every ``write_txn``
     user and board-metadata mutator fails closed before touching durable state.
+    *path* is the board DB / metadata root being mutated; ``None`` means the
+    lineage's own board (``kanban_home()``).
     """
-    try:
-        from agent.delegation_context import is_delegated_child_process_context
+    from agent.delegation_context import kanban_path_is_fenced
 
-        delegated = is_delegated_child_process_context()
-    except Exception:
-        delegated = bool(os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT"))
-    if delegated:
+    if kanban_path_is_fenced(kanban_home() if path is None else path):
         raise PermissionError("delegate_task child contexts cannot mutate Kanban tasks or boards")
 
 
@@ -526,9 +525,74 @@ def _default_board_display_name(slug: str) -> str:
     return " ".join(part.capitalize() for part in slug.replace("_", "-").split("-") if part) or slug
 
 
+@contextlib.contextmanager
+def _board_metadata_lock(board_json_path: Path):
+    """Cross-process exclusive lock around a board.json read-modify-write cycle.
+
+    A sibling ``board.json.lock`` file, ``fcntl.flock``-guarded (``msvcrt`` on
+    Windows) — same shape as ``kanban_db_connect._cross_process_init_lock``.
+    Blocking (not non-blocking/bounded like the init lock): a board.json write
+    is a small, fast, bounded critical section (no network/DB I/O), so a brief
+    wait for a concurrent writer is the correct trade — unlike the init lock,
+    which guards a potentially-slow first-connect path and must never wedge
+    the dispatcher's tick.
+    """
+    board_json_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = board_json_path.with_name(board_json_path.name + ".lock")
+    if _IS_WINDOWS:
+        import msvcrt
+
+        handle = lock_path.open("a+b")
+        try:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        finally:
+            handle.close()
+    else:
+        import fcntl
+
+        handle = lock_path.open("a+b")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+
+# Safety-relevant toggles: a corrupt/unparsable board.json must fail CLOSED
+# on these (never silently re-enable a board an operator may have paused),
+# while a genuinely missing board.json (new board) defaults them to True
+# ("inherit global" / enabled) — see read_board_metadata().
+_BOARD_SAFETY_TOGGLE_FIELDS = (
+    "dispatch_enabled",
+    "auto_decompose_enabled",
+    "review_dispatch_enabled",
+)
+
+
 def read_board_metadata(board: Optional[str] = None) -> dict:
     """``board.json`` merged over defaults, plus ``slug`` and ``db_path``. Never
-    raises — a missing/malformed file yields the synthesized entry."""
+    raises — a missing/malformed file yields the synthesized entry.
+
+    A genuinely missing ``board.json`` (new/never-created board) is the normal
+    case and defaults every safety toggle to enabled (``True`` = "inherit
+    global", not "off"). A *present but corrupt/unparsable* ``board.json`` is a
+    different failure class — e.g. a torn write from a crash mid-write, or
+    invalid UTF-8 bytes — and means we cannot trust what the operator last
+    set, so the safety-relevant toggle fields (``dispatch_enabled`` /
+    ``auto_decompose_enabled`` / ``review_dispatch_enabled``) fail CLOSED
+    (``False``) instead of silently re-enabling a board an operator may have
+    deliberately paused. A WARNING is logged with the board slug and the
+    exception so the corruption is visible, not silent.
+    """
     slug = _slug_or_default(board)
     meta: dict[str, Any] = {
         "slug": slug,
@@ -541,18 +605,39 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "project_id": None,
         "created_at": None,
         "archived": False,
+        "dispatch_enabled": True,
+        "auto_decompose_enabled": True,
+        "review_dispatch_enabled": True,
     }
+    p = board_metadata_path(slug)
     try:
-        p = board_metadata_path(slug)
-        if p.exists():
+        file_exists = p.exists()
+    except OSError:
+        file_exists = False
+    if file_exists:
+        try:
             raw = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            # File exists but could not be parsed — corruption (e.g. a torn
+            # write or invalid UTF-8), not "no board.json yet". Fail closed on
+            # the safety-relevant toggles rather than silently re-enabling
+            # dispatch/auto-decompose/review-dispatch on a board an operator
+            # may have paused.
+            _log.warning(
+                "board.json for board %r exists but failed to parse (%s: %s) — "
+                "failing CLOSED on dispatch_enabled/auto_decompose_enabled/"
+                "review_dispatch_enabled for this read rather than silently "
+                "re-enabling a possibly-paused board.",
+                slug, type(exc).__name__, exc,
+            )
+            for field in _BOARD_SAFETY_TOGGLE_FIELDS:
+                meta[field] = False
+        else:
             if isinstance(raw, dict):
                 # Never let the metadata file claim a different slug than
                 # its directory — trust the filesystem.
                 raw["slug"] = slug
                 meta.update(raw)
-    except (OSError, json.JSONDecodeError):
-        pass
     meta["db_path"] = str(kanban_db_path(slug))
     return meta
 
@@ -561,32 +646,51 @@ def write_board_metadata(
     board: Optional[str], *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,
     default_workdir: Optional[str] = None, project_id: Optional[str] = None,
+    dispatch_enabled: Optional[bool] = None, auto_decompose_enabled: Optional[bool] = None,
+    review_dispatch_enabled: Optional[bool] = None,
 ) -> dict:
     """Create/update ``board.json``; unmentioned fields are preserved, ``created_at``
     set on first write. ``project_id``/``default_workdir``: ``None`` = unchanged,
-    "" = clear (``project_id`` is not validated here)."""
+    "" = clear (``project_id`` is not validated here). ``dispatch_enabled`` /
+    ``auto_decompose_enabled`` / ``review_dispatch_enabled``: ``None`` = unchanged
+    (tri-state like ``archived``, not the string-clearing convention above).
+
+    The whole read-modify-write cycle runs under a per-board
+    :func:`_board_metadata_lock` so concurrent writers (CLI, dashboard PATCH,
+    kanban_transfer import, ...) cannot interleave and clobber each other's
+    field changes, and the final write goes through the shared
+    :func:`utils.atomic_write_text` (temp file + fsync + ``os.replace``) so a
+    crash/kill mid-write can never leave a truncated/corrupt board.json.
+    """
     _assert_not_delegated_child_mutation()
     slug = _slug_or_default(board)
-    meta = read_board_metadata(slug)
-    # db_path is derived on every read; never persist it into board.json.
-    meta.pop("db_path", None)
-    if name is not None:
-        meta["name"] = str(name).strip() or _default_board_display_name(slug)
-    for key, value in (("description", description), ("icon", icon), ("color", color)):
-        if value is not None:
-            meta[key] = str(value)
-    if archived is not None:
-        meta["archived"] = bool(archived)
-    for key, value in (("default_workdir", default_workdir), ("project_id", project_id)):
-        if value is not None:
-            meta[key] = str(value) if value else None
-    if not meta.get("created_at"):
-        meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8",
-    )
+    with _board_metadata_lock(path):
+        meta = read_board_metadata(slug)
+        # db_path is derived on every read; never persist it into board.json.
+        meta.pop("db_path", None)
+        if name is not None:
+            meta["name"] = str(name).strip() or _default_board_display_name(slug)
+        for key, value in (("description", description), ("icon", icon), ("color", color)):
+            if value is not None:
+                meta[key] = str(value)
+        if archived is not None:
+            meta["archived"] = bool(archived)
+        if dispatch_enabled is not None:
+            meta["dispatch_enabled"] = bool(dispatch_enabled)
+        if auto_decompose_enabled is not None:
+            meta["auto_decompose_enabled"] = bool(auto_decompose_enabled)
+        if review_dispatch_enabled is not None:
+            meta["review_dispatch_enabled"] = bool(review_dispatch_enabled)
+        for key, value in (("default_workdir", default_workdir), ("project_id", project_id)):
+            if value is not None:
+                meta[key] = str(value) if value else None
+        if not meta.get("created_at"):
+            meta["created_at"] = int(time.time())
+        atomic_write_text(
+            path, json.dumps(meta, indent=2, ensure_ascii=False) + "\n", tmp_prefix=".board_",
+        )
     meta["db_path"] = str(kanban_db_path(slug))
     return meta
 
@@ -715,12 +819,23 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    # Wave2/2c gate precheck (hermes_cli/kanban_gate_precheck.py). Column
+    # semantics: see SCHEMA_SQL. None = not populated; scope_paths follows
+    # the same None-vs-[] convention as ``skills``.
+    ears_sentence: Optional[str] = None
+    scope_paths: Optional[list] = None
+    # Rule 2: heuristic verification-rigor mode ('autocomplete'|'chat'|'agent')
+    # set by the decomposer at creation time; NULL if unset. Schema-population
+    # only — see kanban_task_mode.py.
+    task_mode: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
         g = lambda col, default=None: _row_get(row, col, default)  # noqa: E731
         parsed = _json_or(g("skills"))
         skills_value = [str(s) for s in parsed if s] if isinstance(parsed, list) else None
+        scope_parsed = _json_or(g("scope_paths"))
+        scope_paths_value = list(scope_parsed) if isinstance(scope_parsed, list) else None
         return cls(
             **{col: row[col] for col in _TASK_REQUIRED_COLUMNS},
             **{col: g(col) for col in _TASK_OPTIONAL_COLUMNS},
@@ -730,6 +845,7 @@ class Task:
             consecutive_failures=g("consecutive_failures", g("spawn_failures", 0)),
             last_failure_error=g("last_failure_error", g("last_spawn_error")),
             skills=skills_value,
+            scope_paths=scope_paths_value,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
         )
@@ -745,6 +861,7 @@ _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
+    "ears_sentence", "task_mode",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -878,6 +995,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- exceeds DEFAULT_FAILURE_LIMIT consecutive non-successes.
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
     worker_pid           INTEGER,
+    -- Start-time fingerprint of worker_pid (gateway.status.get_process_start_time) recorded at
+    -- spawn: liveness and kills require pid AND fingerprint to agree, so a PID recycled after a
+    -- reboot is never read as our worker or signalled. NULL = legacy row (pre-fingerprint spawn).
+    worker_started_at    INTEGER,
     -- Short excerpt of the most recent failure's error text.
     last_failure_error   TEXT,
     max_runtime_seconds  INTEGER,
@@ -941,7 +1062,24 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Wave2/2c gate precheck: single EARS-shaped requirement sentence for
+    -- this task, populated by the ears-sensibility-gate skill (or manually).
+    -- NULL = not yet routed through the EARS gate; gate_precheck() treats
+    -- that as not_gated (dispatchable), never forced.
+    ears_sentence         TEXT,
+    -- Wave2/2c gate precheck: JSON array of file paths this task is
+    -- declared to touch, populated by the atomic-task-gate skill (or
+    -- manually). NULL = no declared scope (not the same as an empty list);
+    -- matches the skills column's None-vs-[] semantics.
+    scope_paths           TEXT,
+    -- Rule 2: verification-rigor classification ('autocomplete'|'chat'|
+    -- 'agent') assigned by the decomposer's heuristic classifier at
+    -- creation time (hermes_cli/kanban_task_mode.py). NULL for tasks
+    -- created outside the decomposer (CLI, dashboard) or on legacy rows.
+    -- Schema-population only today: no dispatch/gate/enforcement logic
+    -- reads this column.
+    task_mode            TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1232,6 +1370,8 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    ears_sentence: Optional[str] = None,
+    scope_paths: Optional[Iterable[str]] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1285,6 +1425,7 @@ def create_task(
     )
     parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
+    scope_paths_list = list(scope_paths) if scope_paths is not None else None
 
     # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
     # race may insert twice, the next lookup stabilises on the newest.
@@ -1331,8 +1472,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract,
+                        ears_sentence, scope_paths
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1342,6 +1484,8 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        ears_sentence,
+                        json.dumps(scope_paths_list) if scope_paths_list is not None else None,
                     ),
                 )
                 for pid in parents:
@@ -1373,6 +1517,17 @@ def create_task(
                         "blocked",
                         {"reason": "initial_status", "status": "blocked", "actor": created_by or "user"},
                     )
+                if task_status == "todo":
+                    # Parked behind an open parent: record why, exactly as
+                    # link_tasks does, so the board never shows an unexplained todo.
+                    gating = [p for p in parents if _task_status(conn, p) not in ("done", "archived")]
+                    if gating:
+                        _append_event(
+                            conn,
+                            task_id,
+                            "dependency_wait",
+                            {"reason": "parent_not_done", "parent": gating[0]},
+                        )
                 # ACK-edge: the originating channel hears a child BLOCK, not just the fan-in.
                 inherit_creator_origin(conn, task_id, creator_task_id, created_at=now)
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
@@ -1579,9 +1734,13 @@ def set_reasoning_effort(conn: sqlite3.Connection, task_id: str, effort: Optiona
 
 # --- Links ---
 
-def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
+def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
+    """Link ``parent_id -> child_id``. Returns True when the link gated a
+    ``ready`` child back to ``todo`` (the new parent is not yet terminal), so
+    callers can surface the demotion instead of a silent status flip."""
     if parent_id == child_id:
         raise ValueError("a task cannot depend on itself")
+    gated = False
     with write_txn(conn):
         missing = _missing_task_ids(conn, [parent_id, child_id])
         if missing:
@@ -1589,15 +1748,29 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
         if _would_cycle(conn, parent_id, child_id):
             raise ValueError(f"linking {parent_id} -> {child_id} would create a cycle")
         _link(conn, parent_id, child_id)
-        # If child was ready but parent is not yet done, demote child to todo.
-        if _task_status(conn, parent_id) != "done":
-            conn.execute(
-                "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'", (child_id,),
+        # If child was ready but parent is not yet terminal, demote child to todo
+        # (archived counts as terminal, matching _parents_satisfied/recompute_ready).
+        if _task_status(conn, parent_id) not in ("done", "archived"):
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
+                (child_id,),
             )
+            gated = cur.rowcount == 1
+            if gated:
+                _append_event(
+                    conn,
+                    child_id,
+                    "dependency_wait",
+                    {"reason": "parent_not_done", "demoted": True, "parent": parent_id},
+                )
         _append_event(
-            conn, child_id, "linked", {"parent": parent_id, "child": child_id},
+            conn,
+            child_id,
+            "linked",
+            {"parent": parent_id, "child": child_id},
         )
         _inherit_notify_subs(conn, child_id, (parent_id,))
+    return gated
 
 
 def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
@@ -1917,31 +2090,46 @@ def _current_run_id(conn: sqlite3.Connection, task_id: str) -> Optional[int]:
     return int(row["current_run_id"]) if row and row["current_run_id"] else None
 
 
+# Distinguishes "caller named the acting profile" (which may legitimately be
+# None for an unassigned card) from "read the card's current assignee".
+_UNSET: Any = object()
+
+
 def _end_or_synthesize_run(
     conn: sqlite3.Connection, task_id: str, *, outcome: str, status: str,
     summary: Optional[str] = None, metadata: Optional[dict] = None, synthesize: bool,
+    profile: Any = _UNSET,
 ) -> Optional[int]:
     """:func:`_end_run`; when no run was active and ``synthesize`` holds, record a
-    zero-duration run instead so the handoff fields survive in attempt history."""
+    zero-duration run instead so the handoff fields survive in attempt history.
+    ``profile`` overrides the profile read off the task row for the synthesized
+    run — transitions that reassign the task (e.g. review handoff) pass the
+    acting profile captured before the rewrite."""
     run_id = _end_run(conn, task_id, outcome=outcome, status=status, summary=summary, metadata=metadata)
     if run_id is None and synthesize:
-        run_id = _synthesize_ended_run(conn, task_id, outcome=outcome, summary=summary, metadata=metadata)
+        run_id = _synthesize_ended_run(conn, task_id, outcome=outcome, summary=summary, metadata=metadata, profile=profile)
     return run_id
 
 
 def _synthesize_ended_run(
     conn: sqlite3.Connection, task_id: str, *, outcome: str, summary: Optional[str] = None,
     error: Optional[str] = None, metadata: Optional[dict] = None,
+    profile: Any = _UNSET,
 ) -> int:
     """Zero-duration closed run for a terminal transition on a never-claimed
     task, so the handoff fields aren't silently dropped (``_end_run`` is a
     no-op then). ``started_at == ended_at`` keeps elapsed stats honest. Does
-    NOT touch the tasks row."""
+    NOT touch the tasks row.
+
+    ``profile`` overrides the profile read off the task row: transitions that
+    reassign the task (e.g. review handoff) pass the acting profile captured
+    before the rewrite, so the run names the actor, not the new assignee."""
     now = int(time.time())
     trow = conn.execute(
         "SELECT assignee, current_step_key FROM tasks WHERE id = ?", (task_id,),
     ).fetchone()
-    profile = trow["assignee"] if trow else None
+    if profile is _UNSET:
+        profile = trow["assignee"] if trow else None
     step_key = trow["current_step_key"] if trow else None
     cur = conn.execute(
         """
@@ -2280,8 +2468,16 @@ def _extend_run_claim(conn: sqlite3.Connection, task_id: str, expires: int) -> O
     return run_id
 
 
-def release_stale_claims(conn: sqlite3.Connection, *, signal_fn=None) -> int:
+def release_stale_claims(
+    conn: sqlite3.Connection, *, signal_fn=None, failure_limit: Optional[int] = None,
+) -> int:
     """Reclaim ``running`` tasks whose claim expired; returns the count reclaimed.
+
+    Every reclaim that actually releases a claim is a non-success attempt and
+    is booked through ``_record_task_failure`` (#111306): a claim that expired
+    without a worker ever spawning otherwise loops claim -> reclaim -> claim
+    with ``consecutive_failures`` stuck at 0, so the breaker never trips.
+    ``reclaim_task`` (operator path) deliberately resets the counter instead.
 
     A host-local worker that is still alive gets its claim *extended* instead
     (a slow model can sit longer than the TTL inside one tool-free call, so no
@@ -2305,7 +2501,7 @@ def release_stale_claims(conn: sqlite3.Connection, *, signal_fn=None) -> int:
     reclaimed = 0
     host_prefix = _host_prefix()
     stale = conn.execute(
-        "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at, "
+        "SELECT id, claim_lock, worker_pid, worker_started_at, claim_expires, last_heartbeat_at, "
         "       assignee "
         "FROM tasks "
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
@@ -2317,12 +2513,14 @@ def release_stale_claims(conn: sqlite3.Connection, *, signal_fn=None) -> int:
         # Backstop: a heartbeat older than the max-stale threshold means no
         # observable progress — reclaim even if the PID is alive (logic loop).
         heartbeat_stale = hb is not None and (now - int(hb)) > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
-        if host_local and row["worker_pid"] and _pid_alive(row["worker_pid"]) and not heartbeat_stale:
+        started_at = _row_get(row, "worker_started_at")
+        if (host_local and row["worker_pid"] and _worker_alive(row["worker_pid"], started_at)
+                and not heartbeat_stale):
             _extend_live_stale_claim(conn, row, now)
             continue
 
         termination = _terminate_reclaimed_worker(
-            row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
+            row["worker_pid"], row["claim_lock"], signal_fn=signal_fn, started_at=started_at,
         )
         # A live worker of ours must keep its claim (else a duplicate spawns beside it).
         if _worker_survived_termination(termination):
@@ -2357,6 +2555,15 @@ def release_stale_claims(conn: sqlite3.Connection, *, signal_fn=None) -> int:
                 },
             )
             reclaimed += 1
+        # Own txn, after the reclaim commit (same shape as ``enforce_max_runtime``):
+        # the run ended without a verdict, so it counts toward the breaker and a
+        # trip flips the task to ``blocked`` + ``gave_up`` on top of ``reclaimed``.
+        _record_task_failure(
+            conn, row["id"], f"stale_lock={row['claim_lock']}",
+            outcome="reclaimed", failure_limit=failure_limit,
+            release_claim=False, end_run=False,
+            event_payload_extra={"worker_pid": _opt_int(row["worker_pid"]), "retry_status": retry_status},
+        )
         # Post-commit observer; every non-reclaim branch ``continue``d above.
         if _kanban_observer_consumed("on_kanban_worker_stale_claim"):
             _fire_kanban_lifecycle_hook(
@@ -2416,7 +2623,7 @@ def reclaim_task(
     """Operator reclaim regardless of TTL: release the claim, restore the source
     phase, reset the failure counter. False when not running."""
     row = conn.execute(
-        "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?", (task_id,),
+        "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?", (task_id,),
     ).fetchone()
     if not row:
         return False
@@ -2424,7 +2631,8 @@ def reclaim_task(
         # Nothing to reclaim — already ready / blocked / done.
         return False
     prev_lock = row["claim_lock"]
-    termination = _terminate_reclaimed_worker(row["worker_pid"], prev_lock, signal_fn=signal_fn)
+    termination = _terminate_reclaimed_worker(
+        row["worker_pid"], prev_lock, signal_fn=signal_fn, started_at=row["worker_started_at"])
     with write_txn(conn):
         retry_status = _retry_status_for_run(conn, task_id)
         cur = conn.execute(
@@ -3120,6 +3328,7 @@ def request_review(
             run_id = _end_or_synthesize_run(
                 conn, task_id, outcome="review_requested", status="review",
                 summary=summary, metadata=metadata, synthesize=bool(summary or metadata),
+                profile=implementer,
             )
             payload: dict = {
                 "summary": _first_line(summary, 400) or None,
@@ -3403,12 +3612,12 @@ def invalidate_descendants_for_parent_reopen(
     action), the opposite of :func:`reopen_review_task`.
 
     Returns ``{"invalidated": [{id, prior_status, new_status, resume_status}],
-    "terminations": [(worker_pid, claim_lock)]}``.
+    "terminations": [(worker_pid, claim_lock, worker_started_at)]}``.
     """
     caller_owns_txn = bool(conn.in_transaction)
     now = int(time.time())
     invalidated: list[dict[str, Any]] = []
-    terminations: list[tuple[Optional[int], Optional[str]]] = []
+    terminations: list[tuple[Optional[int], Optional[str], Optional[int]]] = []
     with write_txn(conn, allow_nested=True):
         rows = conn.execute(
             """
@@ -3419,7 +3628,7 @@ def invalidate_descendants_for_parent_reopen(
                 FROM task_links l
                 JOIN descendants d ON d.id = l.parent_id
             )
-            SELECT t.id, t.status, t.current_run_id, t.worker_pid, t.claim_lock
+            SELECT t.id, t.status, t.current_run_id, t.worker_pid, t.claim_lock, t.worker_started_at
             FROM descendants d
             JOIN tasks t ON t.id = d.id
             ORDER BY t.id
@@ -3436,7 +3645,7 @@ def invalidate_descendants_for_parent_reopen(
                 resume_status = "review"
             elif previous_status == "running":
                 resume_status = _retry_status_for_run(conn, row["id"], row["current_run_id"])
-                terminations.append((row["worker_pid"], row["claim_lock"]))
+                terminations.append((row["worker_pid"], row["claim_lock"], row["worker_started_at"]))
                 run_id = _end_run(
                     conn, row["id"], outcome="reclaimed", status="todo",
                     summary=f"ancestor {task_id} reopened",
@@ -3476,18 +3685,26 @@ def invalidate_descendants_for_parent_reopen(
     if not caller_owns_txn:
         # Standalone: committed above, audit trail durable, safe to kill now.
         # Composed calls leave this to the caller post-commit.
-        for pid, claim_lock in terminations:
-            _terminate_reclaimed_worker(pid, claim_lock)
+        for pid, claim_lock, started_at in terminations:
+            _terminate_reclaimed_worker(pid, claim_lock, started_at=started_at)
     return {"invalidated": invalidated, "terminations": terminations}
 
 
 def specify_triage_task(
     conn: sqlite3.Connection, task_id: str, *, title: Optional[str] = None,
     body: Optional[str] = None, assignee: Optional[str] = None, author: Optional[str] = None,
+    ears_sentence: Optional[str] = None,
+    task_mode: Optional[str] = None,
 ) -> bool:
     """Update title/body/assignee (when given) and move ``triage -> todo`` in one
     txn; False when not in triage. Lands in ``todo`` (not ``ready``) so parent
     gating still applies; the audit comment is written only when a field changed.
+    ``ears_sentence``: Rule 6 EARS-restated requirement, stored verbatim when
+    given (already mechanically validated by the caller — see
+    ``kanban_decompose._resolve_ears_sentence``; never validated here).
+
+    ``task_mode``: Rule 2 schema-population field (see kanban_task_mode.py).
+    Unset (``None``) leaves the column untouched.
     """
     if title is not None and not title.strip():
         raise ValueError("title cannot be blank")
@@ -3514,6 +3731,12 @@ def specify_triage_task(
             sets.append("assignee = ?")
             params.append(assignee)
             changed_fields.append("assignee")
+        if ears_sentence is not None:
+            sets.append("ears_sentence = ?")
+            params.append(ears_sentence)
+        if task_mode is not None:
+            sets.append("task_mode = ?")
+            params.append(task_mode)
         params.append(task_id)
         cur = conn.execute(
             f"UPDATE tasks SET {', '.join(sets)} "
@@ -3554,13 +3777,13 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
     """
     with write_txn(conn):
         row = conn.execute(
-            "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
+            "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if not row:
             return False
         was_running = row["status"] == "running"
-        prev_pid, prev_lock = row["worker_pid"], row["claim_lock"]
+        prev_pid, prev_lock, prev_started = row["worker_pid"], row["claim_lock"], row["worker_started_at"]
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
             "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
@@ -3575,7 +3798,7 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
         )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
     if was_running:
-        termination = _terminate_reclaimed_worker(prev_pid, prev_lock, signal_fn=signal_fn)
+        termination = _terminate_reclaimed_worker(prev_pid, prev_lock, signal_fn=signal_fn, started_at=prev_started)
         with write_txn(conn):
             _append_event(conn, task_id, "archive_worker_termination", termination, run_id=run_id)
     # ``archived`` parents no longer block children; promote them now.
@@ -4121,7 +4344,9 @@ from hermes_cli.kanban_db_dispatch import (  # noqa: E402
     _clear_failure_counter,
     _defer_reclaim_for_live_worker,
     _pid_alive,
+    _record_task_failure,
     _terminate_reclaimed_worker,
+    _worker_alive,
     _worker_survived_termination,
     _worker_terminal_timeout_env,
 )

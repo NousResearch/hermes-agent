@@ -196,15 +196,21 @@ def _insert_decomposed_child(
         child_ws_path = None
     new_id = _new_task_id()
     body = child.get("body")
+    # Rule 6: caller (kanban_decompose._resolve_ears_sentence) has already
+    # mechanically validated this — stored verbatim, never re-validated here.
+    ears_sentence = child.get("ears_sentence")
+    task_mode = child.get("task_mode")
     conn.execute(
         "INSERT INTO tasks "
         "(id, title, body, assignee, status, workspace_kind, "
-        " workspace_path, tenant, created_at, created_by) "
-        "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+        " workspace_path, tenant, created_at, created_by, ears_sentence, task_mode) "
+        "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?)",
         (
             new_id, child["title"].strip(), body if isinstance(body, str) else None,
             _canonical_assignee(child.get("assignee")), child_ws_kind, child_ws_path,
             root_row["tenant"], now, (author or "decomposer"),
+            ears_sentence if isinstance(ears_sentence, str) else None,
+            task_mode if isinstance(task_mode, str) and task_mode else None,
         ),
     )
     _append_event(

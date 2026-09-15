@@ -28,6 +28,9 @@ source-text level (same style as test_install_ps1_uv_powershell_host.py).
 """
 
 import re
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -119,6 +122,37 @@ def test_existing_uv_salvage_rung_present(source: str):
     )
 
 
+def test_every_managed_uv_candidate_requires_successful_version_check(source: str):
+    """A copied Chocolatey shim must not become the managed uv binary."""
+    body = _install_uv_body(source)
+    assert "function Get-UsableUvVersion" in body
+    assert body.count("Get-UsableUvVersion") >= 4, (
+        "initial, salvaged, and final managed candidates must all be "
+        "validated through the same exit-code-aware check"
+    )
+    assert "$exitCode -eq 0" in body
+    assert "Existing managed uv" in body and "Remove-Item $managedUv" in body
+
+
+def test_no_unvalidated_managed_uv_version_invocations_remain(source: str):
+    body = _install_uv_body(source)
+    assert not re.search(r"\$version\s*=\s*&\s*\$managedUv\s+--version", body)
+
+
+def test_unusable_installer_output_falls_through_to_mirror(source: str):
+    body = _install_uv_body(source)
+    assert "astral.sh produced an unusable uv" in body
+    assert "GitHub uv installer produced an unusable binary" in body
+    assert body.count("Get-UsableUvVersion $managedUv") >= 3
+
+
+def test_broken_path_candidate_does_not_hide_default_uv_candidate(source: str):
+    body = _install_uv_body(source)
+    assert "$salvageCandidates" in body
+    assert "Select-Object -Unique" in body
+    assert '".local\\bin\\uv.exe"' in body
+
+
 def test_failure_path_keeps_manual_install_pointer_and_shows_output(source: str):
     body = _install_uv_body(source)
     assert "https://docs.astral.sh/uv/getting-started/installation/" in body, (
@@ -128,3 +162,233 @@ def test_failure_path_keeps_manual_install_pointer_and_shows_output(source: str)
         "the failure path must print the tail of the captured installer "
         "output so the real error reaches the user"
     )
+
+
+def test_resolve_executable_target_resolves_package_manager_shims(source: str):
+    """Chocolatey and Scoop shims must resolve to the real underlying binary."""
+    body = _install_uv_body(source)
+    assert "function Resolve-ExecutableTarget" in body
+    assert 'lib\\$name\\tools\\$name.exe' in body, (
+        "Resolve-ExecutableTarget must inspect Chocolatey lib directory for the real tool"
+    )
+    assert ".shim" in body and 'path\\s*=\\s*' in body, (
+        "Resolve-ExecutableTarget must inspect Scoop .shim files for the target path"
+    )
+    assert "LinkType" in body and "Target" in body, (
+        "Resolve-ExecutableTarget must resolve symlinks and reparse points"
+    )
+
+
+def test_salvage_rung_prioritizes_resolved_shim_target(source: str):
+    """The salvage candidates list must place the resolved real target before raw candidate."""
+    body = _install_uv_body(source)
+    assert "Resolve-ExecutableTarget $uvOnPath.Source" in body
+    assert "$salvageCandidates += $resolved" in body
+    assert "$salvageCandidates += $uvOnPath.Source" in body
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell required")
+def test_windows_rerun_self_heals_when_managed_uv_is_broken(tmp_path: Path):
+    """When $HermesHome/bin/uv.exe is already a broken shim, Install-Uv must purge it and self-heal."""
+    powershell = shutil.which("powershell")
+    if not powershell:
+        pytest.skip("powershell not found on PATH")
+
+    hermes_home = tmp_path / "hermes_home"
+    bin_dir = hermes_home / "bin"
+    bin_dir.mkdir(parents=True)
+    broken_managed_uv = bin_dir / "uv.exe"
+
+    # Create a broken executable that fails uv --version (exit code 1)
+    source_cs = tmp_path / "BrokenUv.cs"
+    source_cs.write_text(
+        "using System;\n"
+        "public class BrokenUv {\n"
+        "  public static int Main(string[] args) {\n"
+        "    Console.Error.WriteLine(\"Cannot find file at '..\\\\lib\\\\uv\\\\tools\\\\uv.exe'\");\n"
+        "    return 1;\n"
+        "  }\n"
+        "}\n",
+        encoding="ascii",
+    )
+    compile_ps1 = tmp_path / "compile.ps1"
+    compile_ps1.write_text(
+        f"Add-Type -Path '{source_cs}' -OutputAssembly '{broken_managed_uv}' -OutputType ConsoleApplication\n",
+        encoding="ascii",
+    )
+    subprocess.run([powershell, "-ExecutionPolicy", "Bypass", "-File", str(compile_ps1)], check=True)
+    assert broken_managed_uv.exists()
+
+    # Also compile a valid uv that exits 0 with "uv 0.5.0"
+    valid_uv = tmp_path / "valid_uv.exe"
+    valid_cs = tmp_path / "ValidUv.cs"
+    valid_cs.write_text(
+        "using System;\n"
+        "public class ValidUv {\n"
+        "  public static int Main(string[] args) {\n"
+        "    Console.WriteLine(\"uv 0.5.0\");\n"
+        "    return 0;\n"
+        "  }\n"
+        "}\n",
+        encoding="ascii",
+    )
+    compile_valid_ps1 = tmp_path / "compile_valid.ps1"
+    compile_valid_ps1.write_text(
+        f"Add-Type -Path '{valid_cs}' -OutputAssembly '{valid_uv}' -OutputType ConsoleApplication\n",
+        encoding="ascii",
+    )
+    subprocess.run([powershell, "-ExecutionPolicy", "Bypass", "-File", str(compile_valid_ps1)], check=True)
+    assert valid_uv.exists()
+
+    # Run a test script that dot-sources install.ps1, mocks network installers to fail,
+    # mocks Get-Command uv to return the valid uv, and verifies Install-Uv purges the broken managed uv
+    # and replaces it with the valid candidate.
+    test_harness = tmp_path / "test_harness.ps1"
+    test_harness.write_text(
+        r'''param([string]$InstallPs1, [string]$HomeDir, [string]$ValidCandidate)
+$env:HERMES_HOME = $HomeDir
+. $InstallPs1 -HermesHome $HomeDir -InstallDir (Join-Path $HomeDir 'install')
+
+# Mock network installers by redefining Get-PowerShellHostExe to return a non-existent exe or dummy
+function Get-PowerShellHostExe { return "cmd.exe" }
+function Get-Command {
+    [CmdletBinding()]
+    param([Parameter(Position=0)][string]$Name, [Parameter(ValueFromRemainingArguments=$true)][object[]]$Rest)
+    if ($Name -eq 'uv') {
+        return [pscustomobject]@{ Source = $ValidCandidate }
+    }
+    return $null
+}
+
+$res = Install-Uv
+if ($res) { exit 0 } else { exit 1 }
+''',
+        encoding="ascii",
+    )
+
+    proc = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(test_harness),
+            "-InstallPs1",
+            str(_INSTALL_PS1),
+            "-HomeDir",
+            str(hermes_home),
+            "-ValidCandidate",
+            str(valid_uv),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, f"STDOUT: {proc.stdout}\nSTDERR: {proc.stderr}"
+    # Verify managed uv now runs and is valid
+    managed_version = subprocess.run([str(broken_managed_uv), "--version"], capture_output=True, text=True)
+    assert managed_version.returncode == 0
+    assert "uv 0.5.0" in managed_version.stdout
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell required")
+def test_windows_salvage_resolves_chocolatey_shim_to_real_executable(tmp_path: Path):
+    """Chocolatey PATH shims (bin/uv.exe) must be resolved to the real binary under lib/uv/tools/uv.exe."""
+    powershell = shutil.which("powershell")
+    if not powershell:
+        pytest.skip("powershell not found on PATH")
+
+    choco_bin = tmp_path / "chocolatey" / "bin"
+    choco_tools = tmp_path / "chocolatey" / "lib" / "uv" / "tools"
+    choco_bin.mkdir(parents=True)
+    choco_tools.mkdir(parents=True)
+
+    choco_shim = choco_bin / "uv.exe"
+    real_uv = choco_tools / "uv.exe"
+
+    # Chocolatey shim stub fails outside of its directory
+    shim_cs = tmp_path / "ChocoShim.cs"
+    shim_cs.write_text(
+        "using System;\n"
+        "public class ChocoShim {\n"
+        "  public static int Main(string[] args) {\n"
+        "    Console.Error.WriteLine(\"Cannot find file at '..\\\\lib\\\\uv\\\\tools\\\\uv.exe'\");\n"
+        "    return 1;\n"
+        "  }\n"
+        "}\n",
+        encoding="ascii",
+    )
+    compile_shim = tmp_path / "compile_shim.ps1"
+    compile_shim.write_text(
+        f"Add-Type -Path '{shim_cs}' -OutputAssembly '{choco_shim}' -OutputType ConsoleApplication\n",
+        encoding="ascii",
+    )
+    subprocess.run([powershell, "-ExecutionPolicy", "Bypass", "-File", str(compile_shim)], check=True)
+
+    # Real uv binary in lib/uv/tools/uv.exe works
+    real_cs = tmp_path / "RealUv.cs"
+    real_cs.write_text(
+        "using System;\n"
+        "public class RealUv {\n"
+        "  public static int Main(string[] args) {\n"
+        "    Console.WriteLine(\"uv 0.11.7\");\n"
+        "    return 0;\n"
+        "  }\n"
+        "}\n",
+        encoding="ascii",
+    )
+    compile_real = tmp_path / "compile_real.ps1"
+    compile_real.write_text(
+        f"Add-Type -Path '{real_cs}' -OutputAssembly '{real_uv}' -OutputType ConsoleApplication\n",
+        encoding="ascii",
+    )
+    subprocess.run([powershell, "-ExecutionPolicy", "Bypass", "-File", str(compile_real)], check=True)
+
+    hermes_home = tmp_path / "hermes_home"
+    test_harness = tmp_path / "test_choco_harness.ps1"
+    test_harness.write_text(
+        r'''param([string]$InstallPs1, [string]$HomeDir, [string]$ChocoShim)
+$env:HERMES_HOME = $HomeDir
+. $InstallPs1 -HermesHome $HomeDir -InstallDir (Join-Path $HomeDir 'install')
+
+# Mock network installers
+function Get-PowerShellHostExe { return "cmd.exe" }
+function Get-Command {
+    [CmdletBinding()]
+    param([Parameter(Position=0)][string]$Name, [Parameter(ValueFromRemainingArguments=$true)][object[]]$Rest)
+    if ($Name -eq 'uv') {
+        return [pscustomobject]@{ Source = $ChocoShim }
+    }
+    return $null
+}
+
+$res = Install-Uv
+if ($res) { exit 0 } else { exit 1 }
+''',
+        encoding="ascii",
+    )
+
+    proc = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(test_harness),
+            "-InstallPs1",
+            str(_INSTALL_PS1),
+            "-HomeDir",
+            str(hermes_home),
+            "-ChocoShim",
+            str(choco_shim),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, f"STDOUT: {proc.stdout}\nSTDERR: {proc.stderr}"
+    managed_uv = hermes_home / "bin" / "uv.exe"
+    assert managed_uv.exists()
+    managed_version = subprocess.run([str(managed_uv), "--version"], capture_output=True, text=True)
+    assert managed_version.returncode == 0
+    assert "uv 0.11.7" in managed_version.stdout

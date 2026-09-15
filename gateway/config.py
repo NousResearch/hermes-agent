@@ -385,17 +385,34 @@ class SessionResetPolicy:
 
 @dataclass
 class ChannelOverride:
-    """Per-channel model/provider/system_prompt override (``platforms.<name>.channel_overrides[channel_id]``)."""
+    """Per-channel runtime override (``platforms.<name>.channel_overrides[channel_id]``)."""
     model: Optional[str] = None
     provider: Optional[str] = None
     system_prompt: Optional[str] = None
+    # None inherits platform defaults; [] deliberately exposes no tools; non-empty replaces the defaults.
+    enabled_toolsets: Optional[List[str]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ChannelOverride":
-        return cls(**{f.name: data.get(f.name) for f in fields(cls)}) if data else cls()
+        if not data:
+            return cls()
+        values = {f.name: data.get(f.name) for f in fields(cls)}
+        if "enabled_toolsets" in data:
+            raw = data.get("enabled_toolsets")
+            if raw is None:
+                values["enabled_toolsets"] = None
+            elif isinstance(raw, str):
+                raw = [part.strip() for part in raw.split(",")]
+                values["enabled_toolsets"] = [part for part in raw if part]
+            else:
+                values["enabled_toolsets"] = (
+                    [str(item).strip() for item in raw if str(item).strip()]
+                    if isinstance(raw, list) else []
+                )
+        return cls(**values)
 
 
 # Platforms whose primary credential is ``PlatformConfig.token`` → its env var (empty-token

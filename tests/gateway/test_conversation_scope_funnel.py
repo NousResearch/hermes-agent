@@ -53,3 +53,21 @@ def test_funnel_also_clears_boundary_security_state():
     assert OTHER in runner._pending_approvals
     assert KEY not in runner._update_prompt_pending
     assert KEY not in runner._pending_skills_reload_notes
+
+
+def test_funnel_clears_module_level_session_cwd_record(monkeypatch):
+    """The per-session cwd record lives module-level in tools.terminal_tool, not
+    on the runner, so the getattr loop can't reach it. The boundary must still
+    drop it, or a stale record outlives the conversation and a fresh session in
+    the same chat inherits it and bricks on its first command (#107156)."""
+    import tools.terminal_tool as tt
+
+    monkeypatch.setattr(tt, "_session_cwd", {})
+    tt.record_session_cwd(KEY, "/tmp/dead-workspace")
+    tt.record_session_cwd(OTHER, "/tmp/other-workspace")
+
+    runner = _bare_runner()
+    runner._clear_conversation_scope(KEY, reason="test")
+
+    assert tt.get_session_cwd(KEY) is None       # this chat's record dropped
+    assert tt.get_session_cwd(OTHER) == "/tmp/other-workspace"  # others untouched

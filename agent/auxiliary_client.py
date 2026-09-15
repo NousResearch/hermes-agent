@@ -1726,6 +1726,7 @@ class AnthropicAuxiliaryClient:
 
     def __init__(self, real_client: Any, model: str, api_key: str, base_url: str, is_oauth: bool = False):
         self._real_client = real_client
+        self.capabilities = {"anthropic_oauth_proxy": is_oauth}
         self.chat = _ChatShim(_AnthropicCompletionsAdapter(real_client, model, is_oauth=is_oauth, base_url=base_url))
         self.api_key = api_key
         self.base_url = base_url
@@ -1815,7 +1816,8 @@ def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
 
 
 def _maybe_wrap_anthropic(
-    client_obj: Any, model: str, api_key: str, base_url: str, api_mode: Optional[str] = None
+    client_obj: Any, model: str, api_key: str, base_url: str, api_mode: Optional[str] = None,
+    *, force_oauth: bool = False,
 ) -> Any:
     """Rewrap a plain OpenAI client in ``AnthropicAuxiliaryClient`` when the endpoint speaks Anthropic Messages.
 
@@ -1845,7 +1847,8 @@ def _maybe_wrap_anthropic(
         )
         return client_obj
     try:
-        real_client = build_anthropic_client(api_key, base_url)
+        client_kwargs = {"force_oauth": True} if force_oauth else {}
+        real_client = build_anthropic_client(api_key, base_url, **client_kwargs)
     except Exception as exc:
         logger.warning(
             "Failed to build Anthropic client for %s (%s) — falling back to "
@@ -1857,7 +1860,7 @@ def _maybe_wrap_anthropic(
         "(model=%s, base_url=%s, api_mode=%s)",
         model, base_url[:60] if base_url else "", api_mode or "auto-detected",
     )
-    return AnthropicAuxiliaryClient(real_client, model, api_key, base_url, is_oauth=False)
+    return AnthropicAuxiliaryClient(real_client, model, api_key, base_url, is_oauth=force_oauth)
 
 
 def _read_nous_auth() -> Optional[dict]:
@@ -2587,7 +2590,7 @@ def _runtime_main_value(field: str) -> Any:
 def set_runtime_main(
     provider: str, model: str, *, requested_provider: str = "", base_url: str = "",
     api_key: Any = "", api_mode: str = "", auth_mode: str = "", session_id: str = "",
-    cache_scope: str = "",
+    cache_scope: str = "", capabilities: Optional[Dict[str, bool]] = None,
 ) -> contextvars.Token:
     """Record the current context's live main runtime for auxiliary routing.
 
@@ -2609,6 +2612,10 @@ def set_runtime_main(
         "auth_mode": (auth_mode or "").strip().lower(),
         "session_id": (session_id or "").strip(),
         "cache_scope": (cache_scope or "").strip(),
+        "capabilities": {
+            key: enabled for key, enabled in (capabilities or {}).items()
+            if isinstance(key, str) and isinstance(enabled, bool)
+        },
     }
     # Publish authoritative context before updating the locked mirrors.
     token = _RUNTIME_MAIN_CONTEXT.set(runtime)
@@ -2909,7 +2916,7 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
 
 
 _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
-_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + ("requested_provider",)
+_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + ("requested_provider", "capabilities")
 
 
 def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -2928,7 +2935,14 @@ def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str,
     normalized: Dict[str, Any] = {}
     for field in _MAIN_RUNTIME_CONTEXT_FIELDS:
         value = main_runtime.get(field)
-        if field == "api_key" and callable(value) and not isinstance(value, str):
+        if field == "capabilities":
+            capabilities = {
+                key: enabled for key, enabled in (value.items() if isinstance(value, dict) else ())
+                if isinstance(key, str) and isinstance(enabled, bool)
+            }
+            if capabilities:
+                normalized[field] = capabilities
+        elif field == "api_key" and callable(value) and not isinstance(value, str):
             normalized[field] = value
         elif isinstance(value, str) and value.strip():
             normalized[field] = value.strip()
@@ -3473,8 +3487,10 @@ def _prepare_same_provider_retry(
         # Copilot's ``x-initiator: user``) across the rebuilt-client retry — dropping them here would let a
         # recovery retry silently lose capability gating (#60293).
         # Preserve per-request attribution headers across the rebuilt-client retry — see the sync variant
-        # above (#60293).
-        retry_kwargs["extra_headers"] = dict(extra_headers)
+        # above (#60293). Merged, not assigned: _build_call_kwargs already put the conversation's
+        # affinity headers there, and overwriting would drop them on exactly the calls that pass
+        # attribution headers.
+        retry_kwargs["extra_headers"] = {**(retry_kwargs.get("extra_headers") or {}), **extra_headers}
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
     return retry_client, retry_kwargs
@@ -4217,6 +4233,7 @@ def _main_route_target(runtime: Dict[str, Any], task: Optional[str]) -> Tuple[st
 
 def _try_main_provider_route(
     main_provider: str, main_model: str, runtime_base_url: str, runtime_api_key: Any, runtime_api_mode: str,
+    main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Optional[Tuple[Any, str, str]]:
     """Step 1: route aux onto the main provider + main model; None if unusable."""
     if not (main_provider and main_model and main_provider not in {"auto", ""}):
@@ -4256,6 +4273,7 @@ def _try_main_provider_route(
     client, resolved = resolve_provider_client(
         resolved_provider, main_model, explicit_base_url=explicit_base_url,
         explicit_api_key=explicit_api_key, api_mode=runtime_api_mode or None,
+        main_runtime=main_runtime,
     )
     if client is None:
         return None
@@ -4315,7 +4333,9 @@ def _resolve_auto_route(
     runtime = _normalize_main_runtime(main_runtime)
     _warn_stale_openai_base_url(runtime.get("provider", ""))
     main_provider, main_model, base_url, api_key, api_mode = _main_route_target(runtime, task)
-    routed = _try_main_provider_route(main_provider, main_model, base_url, api_key, api_mode)
+    routed = _try_main_provider_route(
+        main_provider, main_model, base_url, api_key, api_mode, main_runtime=runtime
+    )
     if routed is not None:
         return routed
     if task:
@@ -4584,7 +4604,12 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
     # A profile that declares the Messages wire (commandcode-anthropic) is on it whatever the URL
     # looks like; the same declaration gates ``_reasoning_config`` in _build_call_kwargs.
     api_mode = req.api_mode or _profile_declared_messages_wire(req.provider)
-    return _maybe_wrap_anthropic(client_obj, final_model_str, api_key_str, base_url_str, api_mode)
+    from agent.auxiliary_oauth import runtime_oauth_proxy
+    force_oauth = bool(runtime_oauth_proxy(req.main_runtime, req.provider, base_url_str))
+    return _maybe_wrap_anthropic(
+        client_obj, final_model_str, api_key_str, base_url_str, api_mode,
+        force_oauth=force_oauth,
+    )
 
 
 def _profile_declared_messages_wire(provider: str) -> Optional[str]:
@@ -4811,15 +4836,25 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     # the Anthropic SDK sees the original (un-rewritten) URL.
     # Mirrors the anonymous-custom branch in _try_custom_endpoint(). See #15033.
     if entry_api_mode == "anthropic_messages":
+        entry_capabilities = custom_entry.get("capabilities")
+        from agent.auxiliary_oauth import runtime_oauth_proxy
+        runtime_oauth = runtime_oauth_proxy(req.main_runtime, req.provider, custom_base)
+        force_oauth = runtime_oauth if runtime_oauth is not None else bool(
+            isinstance(entry_capabilities, dict)
+            and entry_capabilities.get("anthropic_oauth_proxy") is True
+        )
         try:
             from agent.anthropic_adapter import build_anthropic_client
-            real_client = build_anthropic_client(custom_key, custom_base)
+            client_kwargs = {"force_oauth": True} if force_oauth else {}
+            real_client = build_anthropic_client(custom_key, custom_base, **client_kwargs)
         except ImportError:
             logger.warning("Named custom provider %r declares api_mode=anthropic_messages but the anthropic SDK "
                            "is not installed — falling back to OpenAI-wire.", provider)
             return _route_client(req, _named_custom_openai_wire_client(custom_base, custom_key), final_model)
         return _route_client(
-            req, AnthropicAuxiliaryClient(real_client, final_model, custom_key, custom_base, is_oauth=False), final_model)
+            req, AnthropicAuxiliaryClient(
+                real_client, final_model, custom_key, custom_base, is_oauth=force_oauth
+            ), final_model)
     client = _named_custom_openai_wire_client(custom_base, custom_key)
     # codex_responses, or auto-detect via _wrap_transport (which reads the task-level api_mode).
     if entry_api_mode == "codex_responses":
@@ -5351,6 +5386,8 @@ def _runtime_cache_discriminator(field: str, value: Any) -> Any:
         return _CallableCacheDiscriminator(value)
     if field == "api_key" and isinstance(value, str) and value:
         return ("api-key-digest", hashlib.blake2b(value.encode("utf-8"), digest_size=16).digest())
+    if field == "capabilities" and isinstance(value, dict):
+        return tuple(sorted(value.items()))
     return value
 
 
@@ -5361,8 +5398,12 @@ def _client_cache_key(
     task: Optional[str] = None, model: Optional[str] = None,
 ) -> tuple:
     runtime = _normalize_main_runtime(main_runtime)
-    # `auto` resolves through the main runtime and task-specific policy, so both join the key.
-    runtime_key = tuple(_runtime_cache_discriminator(f, runtime.get(f, "")) for f in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
+    # Every route may inherit the matching main runtime's OAuth policy. Include
+    # identity as well as capabilities so a cached explicit route cannot cross sessions.
+    runtime_key = tuple(
+        _runtime_cache_discriminator(f, runtime.get(f, ""))
+        for f in (*_MAIN_RUNTIME_FIELDS, "requested_provider", "capabilities")
+    )
     task_key = (task or "", _task_prefers_fast_model(task)) if provider == "auto" else ""
     pool_hint = _pool_cache_hint(provider, main_runtime=main_runtime)
     # Model MUST be in the key: concurrent calls to the same endpoint with different models would
@@ -6216,7 +6257,18 @@ def _build_call_kwargs(
     # OpenCode relay session affinity — same key as the main turn so compression/title/vision
     # calls stay on the conversation's warm backend.
     from agent.opencode_affinity import merge_opencode_session_headers
-    return merge_opencode_session_headers(kwargs, provider, base_url, _runtime_main_value("session_id") or None)
+    merge_opencode_session_headers(kwargs, provider, base_url, _runtime_main_value("session_id") or None)
+    # An OAuth-proxy relay spreads conversations across accounts by
+    # ``x-claude-code-session-id``; aux calls carry the main turn's id so they
+    # are recognised as the same conversation instead of pinning a second
+    # account. Scoped by runtime_oauth_proxy: same endpoint, same provider.
+    from agent.auxiliary_oauth import runtime_oauth_proxy
+    from agent.claude_code_session import merge_claude_code_session_headers
+    if runtime_oauth_proxy(_normalize_main_runtime(None), provider, str(base_url or "")):
+        merge_claude_code_session_headers(
+            kwargs, {"anthropic_oauth_proxy": True}, _runtime_main_value("session_id") or None
+        )
+    return kwargs
 
 
 def _validate_llm_response(
@@ -6858,7 +6910,9 @@ def _prepare_aux_request(
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         reasoning_config=reasoning_config, base_url=base_info or resolved_base_url, task=task)
     if extra_headers:
-        kwargs["extra_headers"] = dict(extra_headers)
+        # Merged, not assigned: _build_call_kwargs already put the conversation's affinity
+        # headers there (OpenCode / OAuth-proxy session id); a caller-supplied header wins.
+        kwargs["extra_headers"] = {**(kwargs.get("extra_headers") or {}), **extra_headers}
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     client_base = str(getattr(client, "base_url", "") or "")
     if _is_anthropic_compat_endpoint(request_provider, client_base):

@@ -1030,6 +1030,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         review_agent = AIAgent(
             model=model_name, provider=provider, api_key=rp.get("api_key"), base_url=rp.get("base_url"),
             api_mode=rp.get("api_mode"), credential_pool=rp.get("credential_pool"),
+            capabilities=rp.get("capabilities"),
             request_overrides=request_overrides, **agent_kwargs,
             # No ``terminal``: a shell mv/cp/rm under the skills tree writes bytes
             # with NO ledger entry, so rollback would restore a hollow skill. Every

@@ -164,6 +164,18 @@ model:
 #     # endpoint.
 
 
+# Trusted relay forwarding native Anthropic OAuth requests (opt-in only).
+# The relay key may be opaque; unrelated Anthropic-compatible providers must
+# leave this capability disabled. Native Anthropic credentials are never used
+# as a fallback for a custom relay.
+# providers:
+#   trusted-anthropic-relay:
+#     api: https://claude-relay.internal.example.com
+#     transport: anthropic_messages
+#     key_env: TRUSTED_ANTHROPIC_RELAY_TOKEN
+#     capabilities:
+#       anthropic_oauth_proxy: true
+
 # Command-minted credentials (optional): key_cmd
 # ------------------------------------------------------------------
 # Enterprise gateways often issue SHORT-LIVED bearers (SSO/OIDC brokers, cloud

@@ -2164,6 +2164,7 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         provider=runtime.get("provider"),
         requested_provider=runtime.get("requested_provider"),
         api_mode=runtime.get("api_mode"),
+        capabilities=runtime.get("capabilities"),
         request_overrides=runtime.get("request_overrides"),
         acp_command=runtime.get("command"),
         acp_args=runtime.get("args"),

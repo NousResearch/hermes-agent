@@ -2356,6 +2356,7 @@ def _make_agent(
     agent = AIAgent(
         model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
         base_url=runtime.get("base_url"), api_key=runtime.get("api_key"), api_mode=runtime.get("api_mode"),
+        capabilities=runtime.get("capabilities"),
         acp_command=runtime.get("command"), acp_args=runtime.get("args"),
         credential_pool=runtime.get("credential_pool"), quiet_mode=True,
         verbose_logging=False,  # DEBUG agent logging; independent of tool_progress_mode
@@ -2812,9 +2813,13 @@ def _main_runtime_from_agent(agent) -> dict | None:
     if agent is None:
         return None
     runtime: dict = {}
-    for field in ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode"):
+    for field in (
+        "provider", "model", "base_url", "api_key", "api_mode", "auth_mode", "capabilities"
+    ):
         value = getattr(agent, field, None)
-        if isinstance(value, str) and value.strip():
+        if field == "capabilities" and isinstance(value, dict):
+            runtime[field] = dict(value)
+        elif isinstance(value, str) and value.strip():
             runtime[field] = value.strip()
         elif field == "api_key" and callable(value):
             runtime[field] = value

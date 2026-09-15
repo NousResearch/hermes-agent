@@ -406,34 +406,37 @@ class CLIModelSwitchMixin:
                 self.base_url = stored_base_url
             if stored_api_mode:
                 self.api_mode = stored_api_mode
+        # Capabilities are model-specific even when the provider stays the same.
+        resolved = {}
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+            resolved = resolve_runtime_provider(
+                requested=self.provider, target_model=stored_model,
+                explicit_base_url=stored_base_url or None,
+            )
+        except Exception:
+            logger.debug("Runtime re-resolution for resumed session failed", exc_info=True)
+        restored_capabilities = dict(resolved.get("capabilities") or {})
+        self._provider_capabilities = restored_capabilities
         if provider_changed:
-            # Launch-time explicit overrides belong to the AMBIENT provider and would poison
-            # _ensure_runtime_credentials for the restored one. api_key is never persisted to
-            # the session DB — runtime provider resolution owns credentials.
+            # Launch-time explicit overrides belong to the ambient provider.
             self._explicit_api_key = None
             self._explicit_base_url = stored_base_url
-            try:
-                from hermes_cli.runtime_provider import resolve_runtime_provider
-                resolved = resolve_runtime_provider(requested=stored_provider)
-                if resolved.get("api_key"):
-                    self.api_key = resolved["api_key"]
-                    self._credential_pool = resolved.get("credential_pool")
-                if not stored_base_url and resolved.get("base_url"):
-                    self.base_url = resolved["base_url"]
-                if not stored_api_mode and resolved.get("api_mode"):
-                    self.api_mode = resolved["api_mode"]
-            except Exception:
-                logger.debug(
-                    "Credential re-resolution for resumed session provider "
-                    "%s failed; keeping ambient credentials",
-                    stored_provider, exc_info=True)
+            if resolved.get("api_key"):
+                self.api_key = resolved["api_key"]
+                self._credential_pool = resolved.get("credential_pool")
+            if not stored_base_url and resolved.get("base_url"):
+                self.base_url = resolved["base_url"]
+            if not stored_api_mode and resolved.get("api_mode"):
+                self.api_mode = resolved["api_mode"]
         # Mid-chat /resume swaps the live agent; on startup --resume _init_agent picks up
         # self.model / self.provider.
         if self.agent is not None:
             try:
                 self.agent.switch_model(
                     new_model=self.model, new_provider=self.provider, api_key=self.api_key or "",
-                    base_url=self.base_url or "", api_mode=self.api_mode or "")
+                    base_url=self.base_url or "", api_mode=self.api_mode or "",
+                    capabilities=restored_capabilities)
             except Exception:
                 logger.debug("In-place agent model swap on resume failed", exc_info=True)
         msg = f"Model restored from session: {stored_model}"

@@ -404,6 +404,7 @@ class SessionManager:
                 "provider": runtime.get("provider"), "api_mode": api_mode or runtime.get("api_mode"),
                 "base_url": base_url or runtime.get("base_url"), "api_key": runtime.get("api_key"),
                 "command": runtime.get("command"), "args": list(runtime.get("args") or []),
+                "capabilities": runtime.get("capabilities"),
             })
         except Exception:
             logger.debug("ACP session falling back to default provider resolution", exc_info=True)

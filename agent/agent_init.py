@@ -743,15 +743,21 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
 
     agent.api_key = effective_key
     agent._anthropic_api_key = effective_key
-    # OAuth only for native Anthropic: third-party anthropic_messages providers must never
-    # trip OAuth paths — those inject Claude-Code identity headers → 401/403.
-    # Only mark the session as OAuth-authenticated when the token genuinely belongs to native Anthropic.
-    # Third-party providers (MiniMax, Kimi, GLM, LiteLLM proxies) that accept the Anthropic protocol must
-    # never trip OAuth code paths — doing so injects Claude-Code identity headers and system prompts that
-    # cause 401/403 on their endpoints. See #1739.
+    # OAuth defaults to native Anthropic. A custom relay may opt in explicitly when it forwards
+    # OAuth credentials and native Anthropic payloads; OAuth-shaped keys alone remain insufficient.
     from agent.anthropic_credentials import _is_oauth_token as _is_oat
-    agent._is_anthropic_oauth = _is_oat(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
-    agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+    from agent.anthropic_endpoints import _is_third_party_anthropic_endpoint
+    _oauth_proxy = bool(agent.capabilities.get("anthropic_oauth_proxy", False))
+    agent._is_anthropic_oauth = bool(
+        isinstance(effective_key, str)
+        and effective_key
+        and (_oauth_proxy or (_is_native_anthropic and _is_oat(effective_key)
+                          and not _is_third_party_anthropic_endpoint(base_url)))
+    )
+    agent._anthropic_client = build_anthropic_client(
+        effective_key, base_url, timeout=_provider_timeout,
+        force_oauth=agent._is_anthropic_oauth,
+    )
     if not agent.quiet_mode:
         print(f"🤖 AI Agent initialized with model: {agent.model} (Anthropic native)")
         _print_key_banner(effective_key, "token")
@@ -2089,6 +2095,7 @@ def _snapshot_primary_runtime(agent):
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
+        "capabilities": dict(getattr(agent, "capabilities", {}) or {}),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,

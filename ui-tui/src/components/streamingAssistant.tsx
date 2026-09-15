@@ -38,11 +38,7 @@ export const StreamingAssistant = memo(function StreamingAssistant({
   const activeTools = useTurnSelector(state => state.tools)
   const showStreamingArea = Boolean(streaming)
 
-  // The streaming block isn't in the transcript yet, so it carries no
-  // persisted `createdAt` — capture the wall clock when the streaming burst
-  // starts so the [HH:MM] label renders (and stays put) instead of popping in
-  // when the message settles. Reset when the burst ends so the next one
-  // re-stamps.
+  // No persisted `createdAt` on the streaming block yet — stamp the wall clock at burst start so the [HH:MM] label renders immediately; reset at burst end.
   const streamStartedAt = useRef<number | undefined>(undefined)
 
   if (showStreamingArea) {

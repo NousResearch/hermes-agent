@@ -189,12 +189,14 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         "FEISHU_APP_ID": "cli_app",
         "FEISHU_APP_SECRET": "secret_app",
     }, clear=True)
-    def test_connect_websocket_sets_channel_ua_tag(self):
-        """Verify that FeishuWSClient receives extra_ua_tags=["channel"].
+    def test_connect_websocket_has_no_channel_ua_tag(self):
+        """The gateway must NOT pass extra_ua_tags=["channel"] to the WS client.
 
-        Without this UA tag the Feishu server does not push group @mention
-        events over the WebSocket transport.  See
-        https://github.com/NousResearch/hermes-agent/issues/50656
+        Feishu classifies UA-tagged connections as channel connections and
+        stops pushing regular group messages to them (DMs still arrive) — so
+        the historical fix for #50656 now causes group messages to be lost.
+        Untagged connections receive group @mentions fine (A/B-verified
+        2026-09-15, see #111420).
         """
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
@@ -235,14 +237,13 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
                 loop.close()
 
         self.assertTrue(connected)
-        # Verify the Channel SDK UA tag is present — this is the fix for
-        # group @mention message delivery over WebSocket.
+        # The connection must stay untagged: a "channel" UA tag makes Feishu
+        # withhold regular group messages from this connection (#111420).
         mock_ws_client.assert_called_once()
         call_kwargs = mock_ws_client.call_args.kwargs
-        self.assertIn("extra_ua_tags", call_kwargs,
-                      "FeishuWSClient must receive extra_ua_tags for group @mention delivery")
-        self.assertEqual(call_kwargs["extra_ua_tags"], ["channel"],
-                         "extra_ua_tags must be ['channel'] to enable group event routing")
+        self.assertNotEqual(call_kwargs.get("extra_ua_tags"), ["channel"],
+                            "extra_ua_tags=['channel'] misclassifies the connection; "
+                            "group messages stop arriving")
 
 
     @patch.dict(os.environ, {}, clear=True)

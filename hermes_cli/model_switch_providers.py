@@ -237,8 +237,14 @@ def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
         list(executor.map(_fetch_one, stale_slugs))
 
 
-def _any_env(env_vars, read_env=os.environ.get) -> bool:
-    return any(read_env(ev) for ev in env_vars)
+def _any_env(env_vars, read_env=None, *, provider: str = "") -> bool:
+    from hermes_cli.auth import has_usable_secret, is_source_suppressed
+    from hermes_cli.model_switch import _scoped_key_env
+
+    read_env = read_env or _scoped_key_env
+    return any(
+        not is_source_suppressed(provider, f"env:{ev}") and has_usable_secret(read_env(ev))
+        for ev in env_vars)
 
 
 def _skip(seen: set, excluded: set, *keys: str) -> bool:
@@ -285,12 +291,12 @@ def _iter_builtin_candidates(models_dev_data: dict, excluded: set, seen: set):
 
 
 def _auth_store_has_provider(*keys: str) -> bool:
-    """True when ``auth.json`` has a ``providers`` entry under any of *keys*."""
+    """Only credential-bearing auth state counts; endpoint metadata is not a login."""
     try:
         from hermes_cli.auth import _load_auth_store
         store = _load_auth_store()
         providers_store = store.get("providers", {})
-        return bool(store and any(k in providers_store for k in keys))
+        return any(k in providers_store and _pool_usable(k) for k in keys)
     except Exception as exc:
         logger.debug("Auth store check failed for %s: %s", keys[0] if keys else "", exc)
         return False
@@ -330,11 +336,11 @@ def _overlay_has_env_creds(pid: str, hermes_slug: str, overlay, read_env) -> boo
         except Exception as exc:
             logger.debug("Vertex credential check failed: %s", exc)
     elif overlay.extra_env_vars:
-        has_creds = _any_env(overlay.extra_env_vars, read_env)
+        has_creds = _any_env(overlay.extra_env_vars, read_env, provider=hermes_slug)
     if not has_creds and overlay.auth_type == "api_key":
         for key in (pid, hermes_slug):
             pcfg = PROVIDER_REGISTRY.get(key)
-            if pcfg and pcfg.api_key_env_vars and _any_env(pcfg.api_key_env_vars, read_env):
+            if pcfg and pcfg.api_key_env_vars and _any_env(pcfg.api_key_env_vars, read_env, provider=hermes_slug):
                 return True
     return has_creds
 
@@ -601,7 +607,7 @@ def _collect_authed_provider_slugs(
         seen.update(k.lower() for k in keys)
 
     for hermes_id, _mdev_id, _pconfig, env_vars in _iter_builtin_candidates(models_dev_data, excluded_set, seen):
-        if _any_env(env_vars, _scoped_key_env) or _raw_pool_usable(hermes_id):
+        if _any_env(env_vars, _scoped_key_env, provider=hermes_id) or _raw_pool_usable(hermes_id):
             _emit(hermes_id, hermes_id)
 
     mdev_to_hermes = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
@@ -619,7 +625,7 @@ def _collect_authed_provider_slugs(
             continue
         cp_config = PROVIDER_REGISTRY.get(cp.slug)
         has_creds = bool(
-            cp_config and cp_config.api_key_env_vars and _any_env(cp_config.api_key_env_vars, _scoped_key_env))
+            cp_config and cp_config.api_key_env_vars and _any_env(cp_config.api_key_env_vars, _scoped_key_env, provider=cp.slug))
         if has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug):
             _emit(cp.slug, cp.slug)
 
@@ -742,7 +748,7 @@ def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
     from hermes_cli.model_switch import _declared_model_ids
     from agent.models_dev import get_provider_info
     for hermes_id, mdev_id, pconfig, env_vars in _iter_builtin_candidates(data, b.excluded, b.seen_slugs):
-        if not (_any_env(env_vars) or _raw_pool_usable(hermes_id)):
+        if not (_any_env(env_vars, provider=hermes_id) or _raw_pool_usable(hermes_id)):
             continue
         model_ids = _live_or_curated_ids(hermes_id, b.curated)
         # A providers.<built-in>.models block extends the discovered catalog; section 3 cannot
@@ -764,7 +770,7 @@ def _overlay_has_creds(b: _PickerBuild, pid: str, hermes_slug: str, overlay) -> 
     if overlay.auth_type == "aws_sdk":
         has_creds = _has_aws_sdk_creds_for_listing(hermes_slug, b.current_provider)
     else:
-        has_creds = _overlay_has_env_creds(pid, hermes_slug, overlay, os.environ.get)
+        has_creds = _overlay_has_env_creds(pid, hermes_slug, overlay, None)
     # External-process providers (copilot-acp) hold no key/token/pool entry by design — the
     # spawned ACP subprocess brings its own auth. "Configured" means the executable resolves.
     # "Configured" means the executable resolves, which is exactly what get_auth_status() reports for them;
@@ -854,7 +860,7 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
         cp_config = PROVIDER_REGISTRY.get(cp.slug)
         has_creds = False
         if cp_config and cp_config.api_key_env_vars:
-            lit = {ev for ev in cp_config.api_key_env_vars if os.environ.get(ev)}
+            lit = {ev for ev in cp_config.api_key_env_vars if _any_env([ev], provider=cp.slug)}
             has_creds = bool(lit)
             # A regional "-cn" twin lit only by key vars shared with its non-CN sibling is a
             # phantom row: hide it unless it is the current provider, and only when it has a
@@ -889,6 +895,10 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
         display_name = coerce_provider_id(ep_cfg.get("name")) or ep_name
         api_url = _entry_base_url(ep_cfg, ("base_url", "api", "url"))
         inline_api_key, key_env, cred_identity = _entry_credentials(ep_cfg, "key_env", "api_key_env")
+        # Built-in model/timeout overrides are not standalone endpoints. If the
+        # credential-backed row was omitted above, metadata must not resurrect it.
+        if not api_url and not (inline_api_key or _scoped_key_env(key_env)):
+            continue
         headers = _extra_headers_from_config(ep_cfg)
         group_key = (_norm_url(api_url), cred_identity, _entry_api_mode(ep_cfg), tuple(sorted(headers.items())))
 

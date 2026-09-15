@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tui_gateway.server as server
+from hermes_state import SessionDB
 
 
 class _ImmediateThread:
@@ -70,3 +71,37 @@ def test_missing_db_claim_never_starts_git_probe(monkeypatch):
 
     assert generation is None
     assert probed == []
+
+
+def test_first_desktop_submit_enriches_explicit_cwd_git_metadata(monkeypatch, tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda _sid: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server.git_probe, "branch", lambda _cwd: "feature/session-metadata")
+    monkeypatch.setattr(server.git_probe, "common_repo_root", lambda _cwd: str(repo))
+
+    response = server.handle_request({
+        "id": "create",
+        "method": "session.create",
+        "params": {"source": "desktop", "cwd": str(repo)},
+    })
+    sid = response["result"]["session_id"]
+    key = response["result"]["stored_session_id"]
+    try:
+        assert db.get_session(key) is None
+
+        assert server._persist_session_row_for_submit("submit", server._sessions[sid]) is None
+
+        row = db.get_session(key)
+        assert row["cwd"] == str(repo)
+        assert row["git_branch"] == "feature/session-metadata"
+        assert row["git_repo_root"] == str(repo)
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()

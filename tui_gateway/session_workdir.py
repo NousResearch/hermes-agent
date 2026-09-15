@@ -265,10 +265,11 @@ def _ensure_session_db_row(session: dict) -> bool:
             # deliberately absent) — that keeps the pinned best-effort contract and stays True. See #98924.
             return _db_error is None
         row_model, model_config = _workdir_row_model_config(session)
+        persisted_cwd = _persisted_session_cwd(session)
         try:
             db.create_session(
                 key, source=_session_source(session), model=row_model, model_config=model_config or None,
-                parent_session_id=session.get("parent_session_id") or None, cwd=_persisted_session_cwd(session),
+                parent_session_id=session.get("parent_session_id") or None, cwd=persisted_cwd,
                 # Self-describing rows: aggregators merging several profile DBs can't rely on which file a row came
                 # from; a NULL is only repaired by the one-shot backfill.
                 # Stamp the launch profile explicitly instead of leaving NULL — NULL is exactly what the
@@ -276,6 +277,11 @@ def _ensure_session_db_row(session: dict) -> bool:
                 # backfill ran stayed NULL forever: profile-keyed matching then drops them from the sidebar
                 # and deep links can't resolve them (#99222).
                 profile_name=profile_name_for_home(profile_home) or _current_profile_name())
+            row = db.get_session(key) if persisted_cwd and hasattr(db, "get_session") else None
+            if row and (not row.get("git_branch") or not row.get("git_repo_root")) and hasattr(
+                db, "update_session_cwd"
+            ):
+                _persist_session_cwd_and_schedule_git_meta(session, persisted_cwd, db=db)
             # Born hidden (session.create hidden=true, or set_hidden before the row existed): apply the deferred intent.
             if session.get("pending_hidden"):
                 try:

@@ -1,9 +1,10 @@
 """Unattended approval contexts never resolve as interactive (#110932).
 
 A gateway sets HERMES_EXEC_ASK=1 at startup and hands its environ to every external cron
-worker; interactive launches export HERMES_INTERACTIVE=1. Inside cron (or a programmatic
-platform session) nobody can answer the card, so ``_presence()`` must clear the trio and let
-the gate resolve from ``approvals.cron_mode`` / ``approvals.unattended_mode``.
+worker; interactive launches export HERMES_INTERACTIVE=1. Inside cron nobody can answer the
+card, so ``_presence()`` must clear the trio and let the gate resolve from
+``approvals.cron_mode``. Unattended platforms are NOT cleared: api_server answers via the
+``/v1/runs`` approval bridge, which needs ``is_ask`` intact.
 """
 
 import pytest
@@ -21,14 +22,8 @@ def leaked_presence(monkeypatch):
     monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
 
 
-@pytest.mark.parametrize(
-    "unattended_env",
-    [{"HERMES_CRON_SESSION": "1"}, {"HERMES_SESSION_PLATFORM": "webhook"}],
-    ids=["cron", "webhook"],
-)
-def test_unattended_context_clears_leaked_presence(monkeypatch, leaked_presence, unattended_env):
-    for key, value in unattended_env.items():
-        monkeypatch.setenv(key, value)
+def test_cron_context_clears_leaked_presence(monkeypatch, leaked_presence):
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
     _, is_cli, is_gateway, is_ask = approval_mod._presence()
     assert (is_cli, is_gateway, is_ask) == (False, False, False)
 
@@ -36,3 +31,11 @@ def test_unattended_context_clears_leaked_presence(monkeypatch, leaked_presence,
 def test_interactive_session_keeps_presence(monkeypatch, leaked_presence):
     _, is_cli, is_gateway, is_ask = approval_mod._presence()
     assert (is_cli, is_gateway, is_ask) == (True, True, True)
+
+
+def test_api_server_platform_keeps_exec_ask_for_runs_approval_bridge(monkeypatch, leaked_presence):
+    """api_server resolves approvals via ``approval.request`` → ``POST /v1/runs/{id}/approval``;
+    clearing ``is_ask`` there would turn every dangerous command into an instant BLOCK."""
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "api_server")
+    _, _, _, is_ask = approval_mod._presence()
+    assert is_ask is True

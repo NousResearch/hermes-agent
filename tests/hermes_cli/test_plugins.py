@@ -1120,6 +1120,42 @@ class TestForceReloadSymmetry:
         mgr._hooks["post_tool_call"] = [boom, lambda **_kw: "survived"]
         assert mgr.invoke_hook("post_tool_call") == ["survived"]
 
+    def test_pre_tool_call_direct_callback_exception_fails_closed(self, monkeypatch):
+        """A synchronous policy callback error must block rather than allow the tool."""
+        from hermes_cli.plugins import _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.0
+        )
+
+        def boom(**_kwargs):
+            raise RuntimeError("policy plugin blew up")
+
+        mgr = PluginManager()
+        mgr._hooks["pre_tool_call"] = [boom]
+
+        assert mgr.invoke_hook("pre_tool_call", tool_name="terminal", args={}) == [
+            {"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE}
+        ]
+
+    def test_pre_tool_call_timeout_worker_exception_fails_closed(self, monkeypatch):
+        """A bounded policy callback error must use the same fail-closed directive."""
+        from hermes_cli.plugins import _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 1.0
+        )
+
+        def boom(**_kwargs):
+            raise RuntimeError("policy plugin blew up")
+
+        mgr = PluginManager()
+        mgr._hooks["pre_tool_call"] = [boom]
+
+        assert mgr.invoke_hook("pre_tool_call", tool_name="terminal", args={}) == [
+            {"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE}
+        ]
+
     def test_hook_callback_timeout_reads_config(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes_test"
         hermes_home.mkdir(parents=True, exist_ok=True)

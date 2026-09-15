@@ -467,7 +467,11 @@ hermes cron doctor
 
 Checks per active job:
 
-- last run failed (`last_status` not ok, with the recorded error),
+- last run failed (`last_status` not ok, with the recorded error). An
+  interrupted run - the gateway shut down and killed the run's tool subprocess
+  mid-flight - is reported separately as `interrupted (outcome unrecorded)`:
+  nothing is known about how that run ended, so it is not counted as a failure
+  and it does not feed the repeated-failure streak,
 - last delivery failed (the output was produced but never reached you),
 - `next_run_at` missing, or parked in the past beyond a 15-minute ticker
   grace window — the "job is silently not firing" signal (scheduler dead,

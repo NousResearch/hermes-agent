@@ -865,7 +865,9 @@ def mark_running_jobs_interrupted(
     """Best-effort: mark every in-flight cron job interrupted; returns the job IDs marked.
 
     Called by gateway shutdown right after ``process_registry.kill_all()``: a job whose tool was
-    killed must never report success. ``only_owners`` (``(job_id, fire_owner)`` pairs) restricts
+    killed must never report success. The persisted outcome is ``last_status = "interrupted"``
+    (never ``"error"``) — the run's own outcome is unknown, and an interruption is not evidence
+    that the agent failed. ``only_owners`` (``(job_id, fire_owner)`` pairs) restricts
     marking. Tokens go into ``_interrupted_job_ids`` BEFORE ``last_status`` is written so
     ``run_one_job`` sees them.
     """
@@ -905,8 +907,13 @@ def mark_running_jobs_interrupted(
             continue
         try:
             with use_cron_store(profile_home):
+                # status="interrupted": this run's own outcome is unknown (its tool subprocess was
+                # killed mid-flight), so it must not read as "error" — nothing here is evidence the
+                # agent failed, and a consumer keyed on the cron record would report an interrupted
+                # run as a failed one. See tests/cron/test_interrupted_status.py.
                 if mark_job_run(
-                    job_id, False, reason, expected_fire_owner=fire_owner):
+                    job_id, False, reason, status="interrupted",
+                    expected_fire_owner=fire_owner):
                     marked.append(job_id)
         except Exception as e:
             logger.warning("Failed to mark job %s interrupted: %s", job_id, e)

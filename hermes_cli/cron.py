@@ -167,6 +167,12 @@ def _last_run_display(job: Dict[str, Any]) -> str:
     last_status = job["last_status"]
     if last_status == "ok":
         return color("ok", Colors.GREEN)
+    if last_status == "interrupted":
+        # Shutdown killed the tool subprocess mid-flight: the run's own outcome was never
+        # recorded, so this is not a failure the job produced (it is deliberately
+        # streak-neutral - see cron.jobs._record_run_outcome).
+        return color(
+            f"interrupted: {job.get('last_error') or 'outcome unrecorded'}", Colors.YELLOW)
     if last_status == "delivery_queued":
         return color("delivery_queued: completion unverified; do not resend", Colors.YELLOW)
     if last_status == "delivery_failed":
@@ -503,7 +509,14 @@ def _cron_doctor_issues_for_job(job: Dict[str, Any]) -> List[str]:
     last_status = str(job.get("last_status") or "").strip().lower()
     # "delivery_failed" = the agent run succeeded; the delivery issue below reports it.
     if last_status and last_status not in {"ok", "delivery_failed", "delivery_queued"}:
-        issues.append(f"last run failed: {str(job.get('last_error') or 'unknown error').strip()}")
+        if last_status == "interrupted":
+            # Not "last run failed": nothing is known about this run's outcome — shutdown killed
+            # its tool subprocess mid-flight and the run never recorded a terminal state.
+            issues.append(
+                "last run interrupted (outcome unrecorded): "
+                f"{str(job.get('last_error') or 'unknown cause').strip()}")
+        else:
+            issues.append(f"last run failed: {str(job.get('last_error') or 'unknown error').strip()}")
     if delivery_err := str(job.get("last_delivery_error") or "").strip():
         issues.append(f"last delivery failed: {delivery_err}")
     if unverified := job.get("last_delivery_unverified"):

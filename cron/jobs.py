@@ -2367,6 +2367,12 @@ def _record_run_outcome(
         job.pop("preflight_alerted", None)
         job.pop("last_fire_error", None)
         job["failure_streak"] = 0
+    elif status == "interrupted":
+        # An interruption says nothing about whether the agent failed: shutdown killed the tool
+        # subprocess mid-flight, so this run's own outcome is unknown. Counting it as a
+        # consecutive agent failure would inflate the streak that drives the repeated-failure
+        # nudge, and nothing here is evidence of a broken job. Leave the streak as it was.
+        pass
     else:
         # Consecutive agent-failure streak; delivery failures do NOT count
         # (scheduler._failure_streak_nudge).

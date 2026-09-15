@@ -154,3 +154,105 @@ def test_redirect_falls_back_when_sleep_missing(
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# Lazy slot registration — a profile dir that exists but was never registered
+# ---------------------------------------------------------------------------
+
+
+class _UnregisteredRecorder(_CallRecorder):
+    """Recorder whose slot is missing until ``register_profile_gateway`` runs."""
+
+    def __init__(self, *, register_error: Exception | None = None) -> None:
+        super().__init__()
+        self.registered: list[tuple[str, bool]] = []
+        self._register_error = register_error
+        self._slots: set[str] = set()
+
+    def start(self, name: str) -> None:
+        from hermes_cli.service_manager import GatewayNotRegisteredError
+        if name not in self._slots:
+            raise GatewayNotRegisteredError(name.removeprefix("gateway-"))
+        self.calls.append(("start", name))
+
+    def register_profile_gateway(self, profile: str, *, start_now: bool = True) -> None:
+        if self._register_error is not None:
+            raise self._register_error
+        self.registered.append((profile, start_now))
+        self._slots.add(f"gateway-{profile}")
+
+
+def _arrange(monkeypatch, tmp_path, mgr, *, seed_soul: bool):
+    """Point the helper at ``tmp_path`` as the profile dir and force the s6 branch."""
+    from hermes_cli import gateway as gw
+    from hermes_cli import service_manager as sm
+
+    monkeypatch.setattr(sm, "detect_service_manager", lambda: "s6")
+    monkeypatch.setattr(sm, "get_service_manager", lambda: mgr)
+    monkeypatch.setattr(sm, "_profile_dir_for_gateway_service", lambda name: tmp_path)
+    if seed_soul:
+        (tmp_path / "SOUL.md").write_text("# soul\n", encoding="utf-8")
+    return gw
+
+
+def test_start_registers_a_missing_slot_for_a_real_profile(monkeypatch, tmp_path, capsys):
+    """The bind-mounted-host-create shape: the directory exists (SOUL.md present) but no s6
+    slot does. Starting must register and come up, not demand a container restart."""
+    mgr = _UnregisteredRecorder()
+    gw = _arrange(monkeypatch, tmp_path, mgr, seed_soul=True)
+
+    assert gw._dispatch_via_service_manager_if_s6("start", "coder") is True
+
+    # start_now=False + the ordinary start path keeps ONE owner for the desired-state write.
+    assert mgr.registered == [("coder", False)]
+    assert mgr.calls == [("start", "gateway-coder")]
+    assert "registered the s6 gateway slot" in capsys.readouterr().out
+
+
+def test_start_refuses_to_mint_a_slot_without_the_real_profile_marker(monkeypatch, tmp_path, capsys):
+    """A mistyped ``-p`` name or a stray directory must keep the original error: SOUL.md is
+    the boot reconciler's own marker for "this is a real profile"."""
+    mgr = _UnregisteredRecorder()
+    gw = _arrange(monkeypatch, tmp_path, mgr, seed_soul=False)
+
+    with pytest.raises(SystemExit) as excinfo:
+        gw._dispatch_via_service_manager_if_s6("start", "codr")
+
+    assert excinfo.value.code == 1
+    assert mgr.registered == []
+    assert "✗" in capsys.readouterr().out
+
+
+def test_stop_never_registers_a_slot(monkeypatch, tmp_path, capsys):
+    """Only ``start`` self-heals. Stopping a profile that has no slot is still an error —
+    registering one just to stop it would be absurd."""
+    mgr = _UnregisteredRecorder()
+
+    def _stop(name: str) -> None:
+        from hermes_cli.service_manager import GatewayNotRegisteredError
+        raise GatewayNotRegisteredError(name.removeprefix("gateway-"))
+
+    mgr.stop = _stop  # type: ignore[method-assign]
+    gw = _arrange(monkeypatch, tmp_path, mgr, seed_soul=True)
+
+    with pytest.raises(SystemExit) as excinfo:
+        gw._dispatch_via_service_manager_if_s6("stop", "coder")
+
+    assert excinfo.value.code == 1
+    assert mgr.registered == []
+
+
+def test_registration_failure_is_an_actionable_error_not_a_traceback(monkeypatch, tmp_path, capsys):
+    """``register_profile_gateway`` raises RuntimeError when s6-svscanctl fails and ValueError
+    on a slot that appeared underneath us. Both must surface as ✗ + exit 1."""
+    mgr = _UnregisteredRecorder(register_error=RuntimeError("s6-svscanctl failed: no scandir"))
+    gw = _arrange(monkeypatch, tmp_path, mgr, seed_soul=True)
+
+    with pytest.raises(SystemExit) as excinfo:
+        gw._dispatch_via_service_manager_if_s6("start", "coder")
+
+    assert excinfo.value.code == 1
+    out = capsys.readouterr().out
+    assert "could not register the gateway slot" in out
+    assert "s6-svscanctl failed" in out

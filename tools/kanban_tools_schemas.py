@@ -123,6 +123,21 @@ KANBAN_COMPLETE_SCHEMA = _schema(
                 "possible; this exists for compatibility with "
                 "callers that still set --result on the CLI."
         )),
+        "published_pr": _prop("string", (
+                "Optional URL of the GitHub pull request this run "
+                "published (https://github.com/OWNER/REPO/pull/N). "
+                "Declare it whenever you opened or updated a PR: "
+                "kanban_complete is a terminal transition and the "
+                "kernel enforces an exact-head PR-CI gate (Issue "
+                "#104595) — done requires every reported check to "
+                "conclude ``success`` at the PR's current head SHA. "
+                "If CI is failing, fix it, push, and call this tool "
+                "again; if checks are still running, wait or use "
+                "kanban_block. Omitting the URL when your handoff "
+                "otherwise mentions the PR does not bypass the gate "
+                "(the URL is also detected in summary/result); tasks "
+                "that publish no PR are local-only and are not gated."
+        )),
         "created_cards": {
             "type": "array",
             "items": {"type": "string"},

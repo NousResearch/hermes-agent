@@ -266,7 +266,9 @@ def _run_heartbeat(job_name: str):
             thread.join(timeout=_CRON_RUN_HEARTBEAT_INTERVAL + 1)
 
 
-def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) -> Dict[str, Any]:
+def _run_claimed_job(
+    job: Dict[str, Any], extra_prompt: Optional[str] = None, *, owning_future=None,
+) -> Dict[str, Any]:
     """Fire an already-claimed job through the shared ``run_one_job`` body (split from
     ``_execute_job_now`` so the background path can claim synchronously and hand the run
     to a worker). Returns {"claimed": True, "success": bool, "error": ...}."""
@@ -282,7 +284,7 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         # In-flight dedupe (idea from #53395 by @izumi0uu): the fire claim's TTL (300s) is routinely
         # outlived by real jobs, so it alone cannot stop a manual run from double-firing a job the ticker
         # (or another manual run) is still executing.
-        if not try_register_running_job(job_id):
+        if not try_register_running_job(job_id, owning_future=owning_future):
             return {"claimed": True, "success": False, "error": _ALREADY_RUNNING_ERROR}
         _registered = True
 
@@ -492,6 +494,8 @@ def _try_dispatch_background_run(
             err["dispatched"] = False
         return err
 
+    assert claimed_job is not None
+
     origin_ui_session_id = ""
     try:
         from gateway.session_context import get_session_env
@@ -520,8 +524,26 @@ def _try_dispatch_background_run(
     from cron.scheduler import _normalize_deliver_value
     deliver = _normalize_deliver_value(claimed_job.get("deliver", "local"))
 
+    future_ready = threading.Event()
+    future_holder = {}
+
+    def _capture_future(future) -> None:
+        future_holder["future"] = future
+        future_ready.set()
+
     def _runner() -> Dict[str, Any]:
-        res = _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
+        if not future_ready.wait(timeout=5.0):
+            claim = claimed_job.get("fire_claim")
+            fire_owner = str(claim.get("by") or "") if isinstance(claim, dict) else None
+            error = "Background run future was not bound."
+            with contextlib.suppress(Exception):
+                mark_job_run(job_id, False, error, expected_fire_owner=fire_owner)
+            return _manual_run_completion(
+                {"success": False, "error": error},
+                job_id, job_name, deliver, started_at)
+        res = _run_claimed_job(
+            claimed_job, extra_prompt=extra_prompt,
+            owning_future=future_holder["future"])
         return _manual_run_completion(res, job_id, job_name, deliver, started_at)
 
     dispatch = dispatch_async_delegation(
@@ -531,7 +553,7 @@ def _try_dispatch_background_run(
         toolsets=None, role="cron_run", model=job.get("model"), session_key=session_key,
         parent_session_id=str(session_id) if session_id else None, runner=_runner,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
-        max_async_children=max_async)
+        max_async_children=max_async, on_future=_capture_future)
     if dispatch.get("status") == "dispatched":
         return {"claimed": True, "dispatched": True, "delegation_id": dispatch.get("delegation_id")}
 
@@ -539,7 +561,7 @@ def _try_dispatch_background_run(
     logger.info(
         "cronjob run: background pool unavailable (%s); running job '%s' inline.",
         dispatch.get("error", "rejected"), job_name)
-    result = _run_claimed_job(job, extra_prompt=extra_prompt)
+    result = _run_claimed_job(claimed_job, extra_prompt=extra_prompt)
     result["dispatched"] = False
     return result
 

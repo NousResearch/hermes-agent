@@ -1478,7 +1478,7 @@ export function useSessionActions({
                       acceptedPersistedDisplayTranscript || hasValidProvenance
                         ? (expectedProvenance ?? undefined)
                         : undefined,
-                    ...(livePromptStreamId(pendingConnectionProjection, pendingClarifyProjection)),
+                    ...livePromptStreamId(pendingConnectionProjection, pendingClarifyProjection),
                     ...(clearedClarifyProjection
                       ? {
                           streamId: state.busy ? (clearedClarifyProjection.streamId ?? state.streamId) : null
@@ -1828,7 +1828,11 @@ export function useSessionActions({
         const pendingApproval = restorePendingApproval(resumed, resumed.session_id)
         const pendingClarifyState = restorePendingClarifyFromSnapshot(resumed, resumed.session_id, resumeStartedAt)
         const pendingClarify = pendingClarifyState.request
-        const pendingConnection = restorePendingConnectionFromSnapshot(resumed, resumed.session_id, resumeStartedAt).request
+        const pendingConnection = restorePendingConnectionFromSnapshot(
+          resumed,
+          resumed.session_id,
+          resumeStartedAt
+        ).request
 
         const clarifyAuthoritativelyAbsent =
           pendingClarifyState.authoritativeAbsent && !$clarifyRequests.get()[resumed.session_id]
@@ -1908,7 +1912,7 @@ export function useSessionActions({
               : {
                   turnStartedAt: resumedRunning && resumedTurnStartedAt !== null ? resumedTurnStartedAt : null
                 }),
-            ...(livePromptStreamId(pendingConnectionProjection, pendingClarifyProjection)),
+            ...livePromptStreamId(pendingConnectionProjection, pendingClarifyProjection),
             ...(clearedClarifyProjection
               ? {
                   streamId: resumedRunning ? (clearedClarifyProjection.streamId ?? state.streamId) : null

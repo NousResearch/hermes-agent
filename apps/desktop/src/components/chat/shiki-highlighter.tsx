@@ -22,6 +22,17 @@ export { SHIKI_COLOR_REPLACEMENTS, SHIKI_THEME } from '@/components/chat/shiki-c
  * background-only — no header row, no language label — so a fence reads as a
  * tinted slab of the reply; copy is a hover-reveal control in the corner.
  *
+ * That control is inset 16px rather than hugging the corner: the card's
+ * scroller spans its full width, so the card's right edge IS the scrollbar's
+ * lane, and `.scrollbar-overlay` on that scroller hands the lane back to the
+ * platform (~15px macOS classic with a mouse attached, ~17px Windows) rather
+ * than the app's themed 4px gutter. The old 6px inset sat on the bar it
+ * floats over, at the height the thumb occupies when scrolled to the top.
+ * 16px clears macOS's ~15px lane with the control's outer box and puts the
+ * 12px icon 20px out (via `px-1`), clearing Windows's ~17px lane. Same
+ * treatment as the tool-block copy button (tool/fallback.tsx), which floats
+ * over the same kind of scroller.
+ *
  * The heavy lifting lives in the lazy `shiki-block` chunk (full bundle so all
  * `bundledLanguages` work; theme switches follow the document `color-scheme`
  * via `defaultColor="light-dark()"`), and its output is cached by content so
@@ -142,8 +153,8 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
     <CodeCard data-streaming={defer ? 'true' : undefined}>
       <CopyButton
         appearance="inline"
-        className="absolute right-1.5 top-1.5 z-10 h-5 gap-0 rounded-md px-1 opacity-0 transition-opacity group-hover/code:opacity-100 focus-visible:opacity-100"
-        iconClassName="size-2.5"
+        className="absolute right-4 top-1.5 z-10 h-5 gap-0 rounded-md px-1 opacity-0 transition-opacity group-hover/code:opacity-100 focus-visible:opacity-100"
+        iconClassName="size-3"
         label={t.assistant.tool.copyCode}
         showLabel={false}
         text={content}

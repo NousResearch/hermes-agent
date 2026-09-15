@@ -221,3 +221,4 @@ class TestOpencodeFreeFollowUps:
         assert "x-preview-f-free" not in _PROVIDER_MODELS["opencode-free"]
         assert "hy3-free" not in _PROVIDER_MODELS["opencode-free"]
         assert "laguna-s-2.1-free" not in _PROVIDER_MODELS["opencode-free"]
+        assert "deepseek-v4-flash-free" not in _PROVIDER_MODELS["opencode-free"]

@@ -651,7 +651,8 @@ def _emit(event: str, sid: str, payload: "Payload | None" = None) -> bool:
 
 from tui_gateway import server_requests as _server_requests  # noqa: E402
 
-_server_requests.bind_sinks(write_json, _emit)
+# Late-bound on purpose: tests (and transports) swap write_json / _emit on this module after import.
+_server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload))
 
 
 # Live WS peer transports (maintained by tui_gateway.ws): the only route for session-less background

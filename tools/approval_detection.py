@@ -827,8 +827,10 @@ def _normalize_command_for_detection(command: str) -> str:
     # later. MUST run before the backslash strip (which would dissolve C:\Users\alice to C:Usersalice). Hermes home
     # first: on Windows it nests under the user home, and folding the user home first would eat the prefix it needs.
     command = _rewrite_resolved_hermes_home(command)
-    command = _rewrite_resolved_user_home(command)
+    # Relocated rc dirs can sit under $HOME (pytest tmp, XDG). Fold them
+    # before the user-home rewrite or the absolute ZDOTDIR prefix disappears.
     command = _rewrite_resolved_shell_rc_env_dirs(command)
+    command = _rewrite_resolved_user_home(command)
     command = _rewrite_resolved_shell_rc_paths(command)
     # Strip backslash-escapes (r\m -> rm) and empty-string literals (r''m -> rm).
     command = re.sub(r'\\([^\n])', r'\1', command)

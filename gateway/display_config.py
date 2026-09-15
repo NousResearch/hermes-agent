@@ -156,7 +156,7 @@ def _norm_cleanup_progress(value: Any) -> bool:
 
 def _norm_choice(choices: tuple[str, ...]) -> Any:
     def norm(value: Any) -> str:
-        val = str(value).lower()
+        val = str(value).strip().lower()
         return val if val in choices else choices[0]
 
     return norm

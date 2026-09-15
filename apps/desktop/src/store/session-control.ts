@@ -628,8 +628,6 @@ export function clearAllSessionControl(): void {
   }
 
   $sessionControlBySession.set({})
-  versions.clear()
-  eventVersions.clear()
 }
 
 function beginRead(sessionId: string, background: boolean): number {

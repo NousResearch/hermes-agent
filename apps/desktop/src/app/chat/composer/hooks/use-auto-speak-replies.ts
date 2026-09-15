@@ -15,6 +15,34 @@ interface AutoSpeakReply {
   text: string
 }
 
+/**
+ * A transcript rewrite (compaction, session resume, re-hydration) reissues an
+ * already-spoken reply under a fresh DURABLE id. `spoken-reply.ts` migrates its
+ * ordinal anchor only for live-tail ids (`assistant-stream-*`), so the rewritten
+ * row looks brand new, `pendingReply()` hands it back at the playback-idle edge,
+ * and the same clip plays a second time. Remember the text we spoke and refuse
+ * to repeat it inside the window — a swallowed repeat read is far cheaper than
+ * a double read of every reply.
+ */
+const REPEAT_READ_WINDOW_MS = 5 * 60_000
+const spokenTexts = new Map<string, number>()
+
+function isRepeatRead(text: string): boolean {
+  const now = Date.now()
+
+  for (const [key, at] of spokenTexts) {
+    if (now - at > REPEAT_READ_WINDOW_MS) {
+      spokenTexts.delete(key)
+    }
+  }
+
+  const seen = spokenTexts.has(text)
+
+  spokenTexts.set(text, now)
+
+  return seen
+}
+
 interface UseAutoSpeakReplies {
   conversationActive: boolean
   failureLabel: string
@@ -66,6 +94,13 @@ export function useAutoSpeakReplies({
       const reply = pendingReply()
 
       if (!reply || reply.pending) {
+        return
+      }
+
+      if (isRepeatRead(reply.text)) {
+        // Same reply text inside the window: the row was rewritten, not re-asked.
+        markSpoken()
+
         return
       }
 

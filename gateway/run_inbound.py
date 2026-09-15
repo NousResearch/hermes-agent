@@ -460,6 +460,8 @@ class GatewayInboundMixin:
                 "(age: %.0fs, idle: %.0fs, timeout: %.0fs)%s",
                 _quick_key, _stale_age, _stale_idle, _raw_stale_timeout, _stale_detail,
             )
+            from gateway.run import _INTERRUPT_REASON_TIMEOUT, request_hard_interrupt
+            request_hard_interrupt(_stale_agent, _INTERRUPT_REASON_TIMEOUT)
             self._hm_evict_running_agent(_quick_key, "stale_running_agent_eviction")
 
     def _hm_evict_reaped_agent(self, _quick_key: str) -> None:

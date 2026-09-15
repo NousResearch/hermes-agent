@@ -159,3 +159,59 @@ class TestOutageCopy:
         from agent.turn_recovery import _welcome_outage_copy
         assert _welcome_outage_copy(PAID, SimpleNamespace(reason=FailoverReason.timeout)) == ""
         assert _welcome_outage_copy(WELCOME, SimpleNamespace(reason=FailoverReason.rate_limit)) == ""
+
+
+class TestTerminalResultsCarryTheFreeTierBlock:
+    """The terminal results stamp ``free_tier`` so a client renders the free tier's own card
+    (agent/error_surface.py) instead of an OAuth re-login."""
+
+    @staticmethod
+    def _terminal_agent():
+        agent = _agent(_dump_api_request_debug=lambda *a, **k: None, _flush_status_buffer=lambda: None,
+                       _summarize_api_error=lambda e: "HTTP 403: no permissions", _emit_status=lambda *a: None,
+                       _persist_session=lambda *a: None, _plines=lambda *a: None, _buffer_status=lambda *a: None,
+                       _rate_limit_state=None, _has_pending_fallback=lambda: False)
+        return agent
+
+    def test_a_dark_tier_403_is_stamped_disabled_with_the_chat_sentence(self):
+        from agent.turn_recovery import nonretryable_client_error_result
+        err = _generic_403()
+        classified = _classify(err)
+        result = nonretryable_client_error_result(
+            self._terminal_agent(), err, classified, status_code=403, api_kwargs=None, api_messages=[],
+            messages=[], conversation_history=[], api_call_count=1, approx_tokens=10,
+            provider="nous", base_url=WELCOME, model="nous/welcome")
+        assert result["free_tier"] == {"kind": "disabled", "message": result["final_response"]}
+        assert "switched off" in result["final_response"] and "/login" in result["final_response"]
+        assert result["error"] == "HTTP 403: no permissions"      # the technical detail stays in the log line
+
+    def test_an_exhausted_capacity_refusal_is_stamped_at_capacity(self):
+        from agent.turn_recovery import max_retries_exhausted_result
+        err = _refusal("at_capacity", retry_after=30)
+        classified = _classify(err)
+        result = max_retries_exhausted_result(
+            self._terminal_agent(), err, classified, max_retries=3, is_rate_limited=True, error_msg="429",
+            api_kwargs=None, api_messages=[], messages=[], conversation_history=[], api_call_count=3,
+            approx_tokens=10, provider="nous", base_url=WELCOME, model="nous/welcome")
+        assert result["free_tier"]["kind"] == "at_capacity"
+        assert result["free_tier"]["message"] == result["final_response"]
+        assert "really busy" in result["final_response"]
+
+    def test_a_spent_outage_on_the_welcome_host_is_stamped_outage(self):
+        from agent.turn_recovery import max_retries_exhausted_result
+        err = _gateway_error(503, {"status": 503, "message": "The requested model is currently unavailable."})
+        classified = _classify(err)
+        result = max_retries_exhausted_result(
+            self._terminal_agent(), err, classified, max_retries=3, is_rate_limited=False, error_msg="503",
+            api_kwargs=None, api_messages=[], messages=[], conversation_history=[], api_call_count=3,
+            approx_tokens=10, provider="nous", base_url=WELCOME, model="nous/welcome")
+        assert result["free_tier"]["kind"] == "outage"
+
+    def test_the_same_outage_on_the_paid_host_is_not_stamped(self):
+        from agent.turn_recovery import max_retries_exhausted_result
+        err = _gateway_error(503, {"status": 503, "message": "The requested model is currently unavailable."})
+        result = max_retries_exhausted_result(
+            self._terminal_agent(), err, _classify(err, base_url=PAID), max_retries=3, is_rate_limited=False,
+            error_msg="503", api_kwargs=None, api_messages=[], messages=[], conversation_history=[],
+            api_call_count=3, approx_tokens=10, provider="nous", base_url=PAID, model="hermes-4")
+        assert "free_tier" not in result

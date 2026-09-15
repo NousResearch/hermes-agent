@@ -263,6 +263,8 @@ def nous_rate_limit_guard(
                     "completed": False,
                     "failed": True,
                     "error": _nous_msg,
+                    # The free tier's card body and its sign-in door (agent/error_surface.py).
+                    **({"free_tier": {"kind": "rate_limited", "message": _nous_msg}} if _welcome else {}),
                 }, FailoverReason.rate_limit.value, True))
         except Exception:
             pass  # Never let rate guard break the agent loop

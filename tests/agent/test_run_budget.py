@@ -39,6 +39,8 @@ def _make_agent(tmp_path, monkeypatch, config_body: str = "", **overrides):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / ".env").write_text("", encoding="utf-8")
     monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+    monkeypatch.delenv("HERMES_STREAM_STALE_TIMEOUT", raising=False)
+    monkeypatch.delenv("HERMES_LOCAL_STREAM_STALE_TIMEOUT", raising=False)
     _write_config(tmp_path, config_body)
 
     from run_agent import AIAgent
@@ -195,6 +197,67 @@ def test_budget_without_started_clock_is_inert(monkeypatch, tmp_path):
     )
     agent._run_budget_started_at = None
     assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 600.0
+
+
+# ── streaming stale-timeout deadline scaling ────────────────────────────────
+
+
+def _resolve_cloud_stream_stale_timeout(agent, api_kwargs: dict) -> float:
+    """Resolve through the current streaming owner without starting a provider request."""
+    from agent.chat_completion_helpers import _StreamingCall
+
+    stream_call = object.__new__(_StreamingCall)
+    stream_call.agent = agent
+    stream_call.api_kwargs = api_kwargs
+    stream_call._resolve_stale_timeout()
+    return stream_call._stream_stale_timeout
+
+
+def test_active_budget_caps_implicit_cloud_stream_timeout(monkeypatch, tmp_path):
+    """The production StreamingCall owner limits the implicit DeepSeek floor."""
+    from agent import chat_completion_helpers as helpers
+
+    monkeypatch.setattr(helpers, "get_provider_stale_timeout", lambda *args: None)
+    agent = _make_agent(
+        tmp_path, monkeypatch,
+        model="deepseek/deepseek-v4-pro",
+        run_budget_seconds=900,
+    )
+    agent._run_budget_started_at = time.time() - 800
+
+    assert _resolve_cloud_stream_stale_timeout(
+        agent, {"model": agent.model, "messages": [{"role": "user", "content": "hi"}]}
+    ) == 60.0
+
+
+def test_explicit_cloud_stream_timeout_is_not_budget_capped(monkeypatch, tmp_path):
+    """An explicit provider timeout retains its current precedence over the budget cap."""
+    from agent import chat_completion_helpers as helpers
+
+    monkeypatch.setattr(helpers, "get_provider_stale_timeout", lambda *args: 1200.0)
+    agent = _make_agent(tmp_path, monkeypatch, run_budget_seconds=900)
+    agent._run_budget_started_at = time.time() - 800
+
+    assert _resolve_cloud_stream_stale_timeout(
+        agent, {"model": agent.model, "messages": [{"role": "user", "content": "hi"}]}
+    ) == 1200.0
+
+
+def test_local_stream_timeout_is_not_budget_capped(monkeypatch, tmp_path):
+    """The dedicated local-provider timeout remains outside the cloud budget rule."""
+    from agent import chat_completion_helpers as helpers
+
+    monkeypatch.setattr(helpers, "get_provider_stale_timeout", lambda *args: None)
+    agent = _make_agent(
+        tmp_path, monkeypatch,
+        base_url="http://127.0.0.1:11434/v1",
+        run_budget_seconds=900,
+    )
+    agent._run_budget_started_at = time.time() - 800
+
+    assert _resolve_cloud_stream_stale_timeout(
+        agent, {"model": agent.model, "messages": [{"role": "user", "content": "hi"}]}
+    ) == 900.0
 
 
 # ── wrap-up injection one-time-ness ────────────────────────────────────────

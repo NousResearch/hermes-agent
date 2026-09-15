@@ -196,20 +196,95 @@ class TestMCPConfigWatch:
 
 
 def test_pinned_mtime_same_size_replacement_triggers_reload(tmp_path):
-    """#111105: cp -p / rsync -t style replacement (same mtime, same size) must still reload."""
+    """#111105: cp -p / rsync -t style replacement (same mtime, same size) must still reload.
+
+    The replacement is an ATOMIC rename: that is what changes ``st_ino`` deterministically.
+    Rewriting in place and pinning mtime back (``copy2`` + ``utime``) leaves the 4-tuple
+    identical whenever the whole sequence lands inside one clock tick — ``st_ctime_ns``
+    only moves on a tick boundary — so it asserted nothing on a fast runner.
+    """
     import os
-    import shutil
 
     obj, cfg_file = _make_cli(tmp_path, mcp_servers={"bb": {"command": "b"}})
     cfg_file.write_text("mcp_servers:\n  bb: {command: b}\n")
     obj._config_sig = file_signature(cfg_file.stat())
     other = tmp_path / "other.yaml"
     other.write_text("mcp_servers:\n  aa: {command: a}\n")
-    shutil.copy2(other, cfg_file)
+    os.replace(other, cfg_file)
     os.utime(cfg_file, ns=(obj._config_sig[0], obj._config_sig[0]))
 
     with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
         obj._check_config_mcp_changes()
+
+    obj._reload_mcp.assert_called_once()
+    assert obj._config_mcp_servers == {"aa": {"command": "a"}}
+
+
+def _make_run_state_cli(tmp_path, monkeypatch, servers_yaml: str, config_servers: dict):
+    """Build a bare HermesCLI and seed its run state through the real seed method.
+
+    ``HERMES_DEFER_AGENT_STARTUP=1`` is the CLI's own switch for the two startup steps
+    after the seed (tool callbacks, tirith), so the seed runs unmodified without stubs.
+    """
+    import cli as cli_mod
+
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(servers_yaml)
+    monkeypatch.setattr("hermes_cli.config.get_config_path", lambda: cfg_file)
+    monkeypatch.setenv("HERMES_DEFER_AGENT_STARTUP", "1")
+
+    obj = object.__new__(cli_mod.HermesCLI)
+    obj.config = {"mcp_servers": config_servers}
+    obj._tui_init_run_state()
+    return obj, cfg_file
+
+
+def test_run_state_seed_uses_file_signature(tmp_path, monkeypatch):
+    """The config-watch seed must be ``utils.file_signature(...)``, not a private clone.
+
+    Regression for 182ec5c28d: the seed called ``file_signature`` without importing it,
+    so every CLI TUI start died with ``NameError: name 'file_signature' is not defined``
+    inside ``_tui_init_run_state``.  Asserting equality with the shared helper (rather
+    than just "does not raise") also rejects a local re-implementation: the watcher
+    compares ``file_signature(...)`` against this seed, so a 2-tuple ``(st_mtime,
+    st_size)`` seed silently defeats the fast path and the pinned-mtime detection the
+    shared 4-tuple exists for.
+    """
+    obj, cfg_file = _make_run_state_cli(
+        tmp_path, monkeypatch, "mcp_servers: {}\n", {})
+
+    assert obj._config_sig == file_signature(cfg_file.stat())
+
+
+def test_seeded_sig_lets_watcher_see_pinned_mtime_replacement(tmp_path, monkeypatch):
+    """Seed -> watcher end to end: a cp -p / rsync -t style replacement still reloads.
+
+    The watcher's fast path is ``if sig == self._config_sig: return``, so the seed and
+    the watcher must produce the same tuple shape.  Same mtime, same size, new content —
+    with the replacement done as an atomic rename so ``st_ino`` moves deterministically
+    (mtime+size alone would call this file unchanged).
+    """
+    import os
+    from unittest.mock import MagicMock
+
+    obj, cfg_file = _make_run_state_cli(
+        tmp_path,
+        monkeypatch,
+        "mcp_servers:\n  bb: {command: b}\n",
+        {"bb": {"command": "b"}},
+    )
+    obj._reload_mcp = MagicMock()
+    obj._busy_command = MagicMock()
+    obj._busy_command.return_value.__enter__ = MagicMock(return_value=None)
+    obj._busy_command.return_value.__exit__ = MagicMock(return_value=False)
+    obj._slow_command_status = MagicMock(return_value="reloading...")
+
+    other = tmp_path / "other.yaml"
+    other.write_text("mcp_servers:\n  aa: {command: a}\n")
+    os.replace(other, cfg_file)
+    os.utime(cfg_file, ns=(obj._config_sig[0], obj._config_sig[0]))
+
+    obj._check_config_mcp_changes()
 
     obj._reload_mcp.assert_called_once()
     assert obj._config_mcp_servers == {"aa": {"command": "a"}}

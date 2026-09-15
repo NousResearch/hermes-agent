@@ -132,16 +132,27 @@ def _classify_tree(_ops, repo_root: str, entry: Path, merge_cache, remote_heads)
     if tracked_dirty:
         return "keep", "uncommitted tracked changes (real work)", []
     archive_note = f"{len(untracked)} untracked file(s) will be archived"
-    if _ops._worktree_has_unpushed_commits(path, timeout=5) and not _ops._worktree_commits_all_merged_upstream(
-        path, timeout=30, cache=merge_cache, max_ahead=_MAX_CHERRY_AHEAD):
+    merged_upstream = _ops._worktree_commits_all_merged_upstream(
+        path, timeout=30, cache=merge_cache, max_ahead=_MAX_CHERRY_AHEAD)
+    if _ops._worktree_has_unpushed_commits(path, timeout=5) and not merged_upstream:
         # Pushed-branch tier: single-branch fetch refspecs (managed-install default) leave pushed
         # PR branches with no refs/remotes/* entry, so `git log HEAD --not --remotes` reads them
         # as unpushed forever. A head EXACTLY matching the remote branch has nothing origin lacks.
         if not _ops._worktree_branch_pushed_exact(path, remote_heads, timeout=10):
-            return "keep", "unpushed commits not found upstream", []
-        if untracked:
-            return "reap-keep-branch", f"pushed to origin (open-PR lane); branch kept; {archive_note}", untracked
-        return "reap-keep-branch", "pushed to origin (open-PR lane); branch kept", []
+            if not _ops._worktree_commits_all_merged_locally(
+                path, timeout=30, cache=merge_cache, max_ahead=_MAX_CHERRY_AHEAD):
+                return "keep", "unpushed commits not found upstream", []
+        else:
+            if untracked:
+                return "reap-keep-branch", f"pushed to origin (open-PR lane); branch kept; {archive_note}", untracked
+            return "reap-keep-branch", "pushed to origin (open-PR lane); branch kept", []
+    elif not merged_upstream and not _ops._has_remote_tracking_refs(path, timeout=5):
+        # Empty refs/remotes makes the unpushed check fail OPEN (False). Require a local-primary
+        # proof before calling unique work "fully merged/pushed". Complements, does not replace,
+        # the remote-ref fail-safe in _worktree_has_unpushed_commits.
+        if not _ops._worktree_commits_all_merged_locally(
+            path, timeout=30, cache=merge_cache, max_ahead=_MAX_CHERRY_AHEAD):
+            return "keep", "unique commits not on local primary branch", []
     if untracked:
         return "reap-archive", f"merged/pushed; {archive_note}", untracked
     return "reap", "clean and fully merged/pushed", []
@@ -333,6 +344,8 @@ def audit_branches(repo_root: str) -> List[BranchRecord]:
         (c for c in ("origin/HEAD", "origin/main", "origin/master")
          if _git(["rev-parse", "--verify", "--quiet", c], cwd=repo_root, timeout=5).returncode == 0),
         None)
+    if upstream is None:
+        upstream = _ops._local_primary_ref(repo_root, timeout=5)
     if upstream is None:
         return []
 

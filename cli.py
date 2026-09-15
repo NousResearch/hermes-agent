@@ -1039,6 +1039,7 @@ from hermes_cli.worktree_ops import (
     _repo_is_shallow,
     _setup_worktree,
     _worktree_has_unpushed_commits,
+    _worktree_must_preserve_commits,
 )
 
 # ============================================================================= Git Worktree Isolation
@@ -1057,7 +1058,7 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
     if not Path(wt_path).exists():
         return
 
-    if _worktree_has_unpushed_commits(wt_path, timeout=10):
+    if _worktree_must_preserve_commits(wt_path, timeout=10):
         if _repo_is_shallow(repo_root):
             # Shallow boundary makes the unpushed verdict unreliable; the startup pruner reaps later.
             _cprint(f"\n\033[33m⚠ Shallow clone — cannot verify push state, keeping: {wt_path}\033[0m")

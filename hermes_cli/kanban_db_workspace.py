@@ -180,7 +180,10 @@ def _cleanup_worktree_workspace(
     it. The auto-generated ``wt/<task-id>`` branch is deleted with it; custom
     branches are kept. Best-effort."""
     try:
-        from hermes_cli.worktree_ops import _worktree_has_unpushed_commits, _worktree_is_dirty
+        from hermes_cli.worktree_ops import (
+            _worktree_is_dirty,
+            _worktree_must_preserve_commits,
+        )
     except Exception:
         return  # CLI safety predicates unavailable — preserve
     try:
@@ -193,7 +196,7 @@ def _cleanup_worktree_workspace(
         repo_root = common.parent
         if wp.resolve(strict=False) == repo_root.resolve(strict=False):
             return  # never remove the main checkout
-        if _worktree_is_dirty(str(wp)) or _worktree_has_unpushed_commits(str(wp)):
+        if _worktree_is_dirty(str(wp)) or _worktree_must_preserve_commits(str(wp)):
             _kb._log.info(
                 "Preserving worktree for task %s: dirty or unpushed work at %s",
                 task_id, wp,

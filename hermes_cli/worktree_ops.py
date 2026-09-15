@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
@@ -39,6 +39,29 @@ def _git_out(args, cwd, timeout: float = 10, **kwargs) -> Optional[str]:
     """``_git`` returning stripped stdout, or None on a non-zero exit. Raises like ``_git``."""
     result = _git(args, cwd, timeout=timeout, **kwargs)
     return result.stdout.strip() if result.returncode == 0 else None
+
+
+_REMOTE_UPSTREAM_REFS = ("origin/HEAD", "origin/main", "origin/master")
+_LOCAL_PRIMARY_REFS = ("refs/heads/main", "refs/heads/master")
+
+
+def _has_remote_tracking_refs(path: str, timeout: int = 10) -> bool:
+    """Whether any ``refs/remotes/*`` exist. Git failure → False (callers fail closed)."""
+    try:
+        return bool(_git_out(["for-each-ref", "--format=%(refname)", "refs/remotes"], path, timeout=timeout))
+    except Exception:
+        return False
+
+
+def _local_primary_ref(path: str, timeout: int = 10) -> Optional[str]:
+    """Local integration branch (``main`` then ``master``). Never the current worktree ``HEAD``."""
+    try:
+        for ref in _LOCAL_PRIMARY_REFS:
+            if _git_out(["rev-parse", "--verify", "--quiet", ref], path, timeout=timeout):
+                return ref
+    except Exception:
+        return None
+    return None
 
 
 def _git_quiet(args, cwd, timeout: float = 10, log: str | None = None, **kwargs) -> None:
@@ -468,15 +491,19 @@ def _save_worktree_merge_cache(verdicts: Dict[str, bool]) -> None:
 
 def _worktree_commits_all_merged_upstream(
     worktree_path: str, timeout: int = 30, max_ahead: int = 20, cache: Optional[Dict[str, bool]] = None,
+    bases: Optional[Sequence[str]] = None,
 ) -> bool:
     """Whether every local-only commit is patch-equivalent (``git cherry``) to upstream. Fails SAFE -> False.
 
     Catches squash-merged/cherry-picked PRs whose remote branch was deleted (commits unreachable
     from ``refs/remotes/*`` forever). More than *max_ahead* ahead = stale-base tree -> False.
     *cache* memoizes on ``(base_sha, head_sha, max_ahead)``, exactly what ``git cherry`` consumes.
+    Default *bases* are remote-only; local primary is a separate caller via
+    ``_worktree_commits_all_merged_locally``.
     """
     try:
-        base = next((c for c in ("origin/HEAD", "origin/main", "origin/master")
+        candidates = _REMOTE_UPSTREAM_REFS if bases is None else bases
+        base = next((c for c in candidates
                      if _git_out(["rev-parse", "--verify", "--quiet", c], worktree_path, timeout=timeout)),
                     None)
         if base is None:
@@ -514,6 +541,38 @@ def _worktree_commits_all_merged_upstream(
         return _memo(bool(lines) and all(ln.startswith("-") for ln in lines))
     except Exception:
         return False
+
+
+def _worktree_commits_all_merged_locally(
+    worktree_path: str, timeout: int = 30, max_ahead: int = 20, cache: Optional[Dict[str, bool]] = None,
+) -> bool:
+    """Whether every commit is on or patch-equivalent to the local primary branch. Fails SAFE -> False.
+
+    Used when there is no remote-tracking baseline: unique work vs ``main``/``master`` is kept;
+    trees whose commits are already on that branch are reclaimable. Shallow clones
+    can make HEAD look like an ancestor of local main while history is truncated,
+    so this returns False until the repo is deepened.
+    """
+    if _repo_is_shallow(worktree_path):
+        return False
+    primary = _local_primary_ref(worktree_path, timeout=timeout)
+    if primary is None:
+        return False
+    return _worktree_commits_all_merged_upstream(
+        worktree_path, timeout=timeout, max_ahead=max_ahead, cache=cache, bases=(primary,),
+    )
+
+
+def _worktree_must_preserve_commits(path: str, timeout: int = 10) -> bool:
+    """True when unique or unverifiable commits must not be deleted. Fails SAFE -> True."""
+    try:
+        if _worktree_commits_all_merged_locally(path, timeout=max(timeout, 30)):
+            return False
+        if _worktree_has_unpushed_commits(path, timeout=timeout):
+            return True
+        return not _has_remote_tracking_refs(path, timeout=timeout)
+    except Exception:
+        return True
 
 
 def _worktree_current_branch(worktree_path: str, timeout: int) -> Optional[str]:
@@ -691,6 +750,8 @@ def _classify_prune_candidates(repo_root: str, candidates: list) -> list:
             if not merged:
                 # Rebase-merge escape hatch: cherry misses changed patch-ids, GitHub knows.
                 merged = _worktree_branch_pr_merged(str(entry), timeout=15, cache=snapshot)
+            if not merged:
+                merged = _worktree_commits_all_merged_locally(str(entry), timeout=30, cache=snapshot)
             with cache_lock:
                 merge_cache.update(snapshot)
             # Pushed tier: head EXACTLY matches origin -> reap the tree, keep the branch (open-PR anchor).
@@ -698,6 +759,14 @@ def _classify_prune_candidates(repo_root: str, candidates: list) -> list:
                                                                  timeout=10):
                 return (entry, mtime, force, "unpushed", None)
             keep_branch = not merged
+        elif not _has_remote_tracking_refs(str(entry), timeout=5):
+            with cache_lock:
+                snapshot = dict(merge_cache)
+            local_merged = _worktree_commits_all_merged_locally(str(entry), timeout=30, cache=snapshot)
+            with cache_lock:
+                merge_cache.update(snapshot)
+            if not local_merged:
+                return (entry, mtime, force, "unpushed", None)
 
         # Live lock = running hermes; a dead lock is unlocked in phase 3.
         lock_state = _worktree_lock_is_live(repo_root, str(entry), timeout=5)

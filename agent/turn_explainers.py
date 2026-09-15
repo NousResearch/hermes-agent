@@ -116,8 +116,9 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
         "`hermes doctor --fix` or in-place FTS repair — stop "
         "the process, restore the intended state.db, then "
         "restart. Unwritten messages were diverted to "
-        "sessions/<session_id>.jsonl and, on the gateway, "
-        "pending_messages/pending-*.json."
+        "{diverted_path} and, on the gateway, "
+        "pending_messages/pending-*.json. Replay with "
+        "`hermes sessions import --from diverted`."
     ),
     "deleted_wal": (
         "the turn was stopped because a live Hermes process held a retired "
@@ -131,8 +132,9 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
         "--inspect-only` before deciding whether its committed frames belong "
         "on the current database. A `header_only` artifact is forensic and "
         "does not contain a copied state.db to inspect. Unwritten messages "
-        "were diverted to sessions/<session_id>.jsonl and, on the gateway, "
-        "pending_messages/pending-*.json."
+        "were diverted to {diverted_path} and, on the gateway, "
+        "pending_messages/pending-*.json. Replay with "
+        "`hermes sessions import --from diverted`."
     ),
     "corrupt": (
         "the turn was stopped because the state database "
@@ -306,7 +308,8 @@ class TurnExplainersMixin:
 
     @staticmethod
     def _format_turn_completion_explanation(
-        turn_exit_reason: str, persistence_cause: Optional[str] = None, db_path=None
+        turn_exit_reason: str, persistence_cause: Optional[str] = None, db_path=None,
+        diverted_path=None,
     ) -> str:
         """User-facing explanation for an abnormal turn ending, or "" for normal / unknown reasons.
 
@@ -339,5 +342,10 @@ class TurnExplainersMixin:
                 body = body.replace("{db_path}", str(db_path or _default_db_path()))
                 body = body.replace(
                     "{backups_dir}", str(get_default_hermes_root() / "backups")
+                )
+            if persistence_cause in ("replaced", "deleted_wal"):
+                body = body.replace(
+                    "{diverted_path}",
+                    str(diverted_path) if diverted_path else "sessions/<session_id>.jsonl",
                 )
         return _NO_REPLY + body if body else ""

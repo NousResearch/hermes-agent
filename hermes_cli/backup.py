@@ -838,11 +838,20 @@ def _import_db_member(
     other process will see, and a sidecar WAL beside the new file describes the old database —
     nothing fails, the sessions are simply gone (#100960). Route the member through the same
     ``_safe_restore_db`` page copy ``/snapshot restore`` uses, so the live inode is preserved and
-    every open connection converges. A target that does not exist yet has no holders, so it takes
-    the ordinary atomic publish. Raises ``OSError`` when the database could not be replaced
-    safely, so the caller reports a skipped file instead of a silent success.
+    every open connection converges. A missing pathname is not proof of no holders: an unlinked
+    WAL/SHM/main can still be open. On Linux, refuse atomic publish when the holder scan returns
+    any PID. Off-Linux (scan unavailable) keep the ordinary atomic publish. Raises ``OSError``
+    when the database could not be replaced safely, so the caller reports a skipped file instead
+    of a silent success.
     """
     if not target.exists():
+        holders = _foreign_db_holder_pids(target)
+        if holders:
+            raise OSError(
+                "live-safe restore refused: a missing database path still has holders "
+                f"{holders}; atomic publish would orphan that generation. Stop the "
+                "gateway/dashboard processes holding it open and re-run the import."
+            )
         _extract_member_atomically(zf, member, target, new_file_mode)
         return
     # The database keeps its own mode/ownership: the bytes come from the archive, the file does not.

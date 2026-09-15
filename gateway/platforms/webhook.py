@@ -662,7 +662,7 @@ class WebhookAdapter(BasePlatformAdapter):
         if profile and isinstance(profile, str):
             source.profile = profile
         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
-                             message_id=delivery_id)
+                             message_id=delivery_id, internal=True)
         # The per-delivery session is closed by ``on_processing_complete`` once the run finishes
         # (``handle_message`` is fire-and-forget, so nothing can be closed here).
         task = asyncio.create_task(self.handle_message(event))

@@ -22,6 +22,9 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # Gateway-only assistant/status chatter; mobile platforms opt down to final-answer-first.
     "interim_assistant_messages": True,
     "long_running_notifications": True,
+    # Per-turn subagent observability: one edit-in-place "🔀 Subagents · N/M done" board
+    # (Telegram); elapsed/phase/tool-count state only, never child goals, arguments, or output.
+    "subagent_activity_board": False,
     "busy_ack_detail": True,
     "busy_steer_ack_enabled": True,  # busy_input_mode=steer echo; the text still lands in the run
     # Delete tool-progress / "⏳ Working" bubbles after a SUCCESSFUL final response where deletion is
@@ -49,7 +52,12 @@ _TIER_MINIMAL = {**_TIER_LOW, "tool_preview_length": 0}
 _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # Mobile inbox: quiet tool_progress / busy-ack, but keep interim commentary and heartbeats so it
     # doesn't look like "typing..." for 30 minutes.
-    "telegram": {**_TIER_HIGH, "tool_progress": "off", "busy_ack_detail": False},
+    "telegram": {
+        **_TIER_HIGH,
+        "tool_progress": "off",
+        "subagent_activity_board": True,
+        "busy_ack_detail": False,
+    },
     "discord": {**_TIER_HIGH, "reasoning_style": "subtext"},  # "-# " subtext reads as metadata
     # Slack: Bolt posts cannot be edited like CLI; "new"/"all" spam permanent lines.
     "slack": {**_TIER_MEDIUM, "tool_progress": "off", "long_running_notifications": False, "busy_ack_detail": False},
@@ -175,6 +183,7 @@ _NORMALISERS: dict[str, Any] = {
     "streaming": _norm_bool,
     "interim_assistant_messages": _norm_bool,
     "long_running_notifications": _norm_long_running,
+    "subagent_activity_board": _norm_bool,
     "busy_ack_detail": _norm_bool,
     "busy_steer_ack_enabled": _norm_bool,
     "thinking_progress": _norm_bool,

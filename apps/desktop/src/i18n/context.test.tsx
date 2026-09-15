@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { HermesConfigRecord } from '@/hermes'
 
 import { type I18nConfigClient, I18nProvider, useI18n } from './context'
-import type { Locale } from './types'
+import type { Locale } from './languages'
 
 function LanguageProbe({ target = 'zh' }: { target?: Locale }) {
   const { isLoadingConfig, isSavingLocale, locale, saveError, setLocale, t } = useI18n()

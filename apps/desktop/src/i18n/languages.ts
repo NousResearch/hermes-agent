@@ -2,7 +2,9 @@ import { LOCALE_ENDONYMS } from '@hermes/shared/i18n'
 
 import { normalize } from '@/lib/text'
 
-import type { Locale } from './types'
+/** Every locale id the desktop ships: the picker, the catalog, and the saved
+ *  config value all key off this union. */
+export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru'
 
 export const DEFAULT_LOCALE: Locale = 'en'
 

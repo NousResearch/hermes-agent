@@ -8,10 +8,12 @@ export {
   useI18n,
   withConfigDisplayLanguage
 } from './context'
+export type { ToolTitleKey, Translations } from './en'
 export {
   DEFAULT_LOCALE,
   isLocale,
   isSupportedLocaleValue,
+  type Locale,
   LOCALE_OPTIONS,
   localeConfigValue,
   normalizeLocale
@@ -28,4 +30,3 @@ export {
   usePluginI18n
 } from './plugin-i18n'
 export { setRuntimeI18nLocale, translateNow } from './runtime'
-export type { Locale, ToolTitleKey, Translations } from './types'

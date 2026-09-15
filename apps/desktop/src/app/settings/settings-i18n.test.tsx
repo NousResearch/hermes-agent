@@ -1,9 +1,8 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { I18nProvider } from '@/i18n'
+import { I18nProvider, type Locale } from '@/i18n'
 import { TRANSLATIONS } from '@/i18n/catalog'
-import type { Locale } from '@/i18n/types'
 
 import { ComboboxInput } from './combobox-input'
 

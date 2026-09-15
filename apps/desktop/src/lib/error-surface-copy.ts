@@ -1,12 +1,19 @@
 // Resolves the error card's title/body for a failed turn from the i18n tables
 // (`assistant.thread.errorCodes` / `errorAuthKinds` / `errorLayers`), so the
 // inline card and the global gateway-error toast read the same words for the
-// same failure. Sibling of error-surface.ts because i18n/types.ts imports the
-// code list from there — importing Translations back would be a cycle.
+// same failure. The message schema is derived from `i18n/en.ts` and the error
+// code list lives in error-surface.ts — hence the sibling module.
 
-import type { ErrorCardCopy, Translations } from '@/i18n/types'
+import type { Translations } from '@/i18n'
 
 import { errorCardKey, type ErrorSurface } from './error-surface'
+
+/** One error-card entry: a short title and one plain sentence. Either may
+ *  take the failing provider's display name (falls back to "the AI service"). */
+export interface ErrorCardCopy {
+  title: string | ((provider: string) => string)
+  body: string | ((provider: string) => string)
+}
 
 export interface ErrorCardText {
   title: string

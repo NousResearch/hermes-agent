@@ -12,6 +12,12 @@ Quick answers and fixes for the most common questions and issues.
 
 ## Frequently Asked Questions
 
+### What is the official Hermes Agent website?
+
+The official Hermes Agent website and documentation are at **https://hermes-agent.nousresearch.com**. Installers (`install.sh` / `install.ps1`) are served from the official install host `hermes-agent.nousresearch.com`.
+
+Similarly named domains — including lookalike names on other TLDs such as `.ai` — are **not** operated by Nous Research. Download Hermes only from that official host or from the official source repository: [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).
+
 ### What LLM providers work with Hermes?
 
 Hermes Agent works with any OpenAI-compatible API. Supported providers include:

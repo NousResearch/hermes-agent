@@ -4,6 +4,7 @@ dispatched, and a command whose run crossed a takeover loses its result."""
 from __future__ import annotations
 
 import json
+import subprocess
 
 import pytest
 
@@ -36,6 +37,57 @@ def _wire(monkeypatch, commands):
 
     monkeypatch.setattr(session, "_spawn_and_collect", spawn)
     return browser, session
+
+
+def _wire_browser_exec(monkeypatch, run_cli):
+    """Route browser_exec through local Chromium without starting a real browser."""
+    from tools import browser_tool_cloud as cloud
+    from tools import browser_tool_session as session
+    from tools import browser_use_cli as browser_use
+
+    monkeypatch.setattr(browser_use, "_find_cli", lambda: ["browser-use"])
+    monkeypatch.setattr(browser_use, "_base_subprocess_env", lambda: {})
+    monkeypatch.setattr(browser_use, "_real_profile_consented", lambda: False)
+    monkeypatch.setattr(browser_use, "_resolve_lightpanda_cdp", lambda *a: None)
+    monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+    monkeypatch.setattr("tools.browser_tool._get_open_command_timeout", lambda **_kw: 5)
+    monkeypatch.setattr(cloud, "_get_cloud_provider", lambda: None)
+    monkeypatch.setattr(session, "_run_browser_command", lambda *_a, **_kw: {
+        "success": True, "data": {"cdpUrl": "http://127.0.0.1:9222"}})
+    monkeypatch.setattr(browser_use, "_attach_vault_supervisor", lambda *a: None)
+    monkeypatch.setattr(browser_use, "_run_cli_killing_process_group", run_cli)
+    return browser_use
+
+
+def test_browser_exec_is_fenced_while_human_controls_shared_browser(monkeypatch):
+    dispatched: list[str] = []
+
+    def run_cli(*_args):
+        dispatched.append("browser-use")
+        return subprocess.CompletedProcess([], 0, "WHAT-THE-HUMAN-TYPED", "")
+
+    browser_use = _wire_browser_exec(monkeypatch, run_cli)
+    lease.acquire("human-viewer")
+    raw = browser_use.browser_exec("print(page_info())", task_id="review")
+    assert isinstance(raw, str)
+    result = json.loads(raw)
+    assert dispatched == [], "human holds the lease, yet browser_exec was dispatched"
+    assert "WHAT-THE-HUMAN-TYPED" not in raw
+    assert result.get("code") == "human_has_control"
+
+
+def test_browser_exec_result_crossing_a_takeover_is_discarded(monkeypatch):
+    def run_cli(*_args):
+        lease.acquire("human-viewer")
+        lease.release("human-viewer")
+        return subprocess.CompletedProcess([], 0, "WHAT-THE-HUMAN-TYPED", "")
+
+    browser_use = _wire_browser_exec(monkeypatch, run_cli)
+    raw = browser_use.browser_exec("print(page_info())", task_id="review")
+    assert isinstance(raw, str)
+    result = json.loads(raw)
+    assert "WHAT-THE-HUMAN-TYPED" not in raw
+    assert result.get("code") == "human_has_control"
 
 
 def test_browser_click_is_fenced_while_human_controls_shared_browser(monkeypatch):

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v4"
+SCANNER_VERSION = "skills-guard-v5"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills"}
@@ -229,7 +229,10 @@ THREAT_PATTERNS = [
     (r'/etc/sudoers|visudo', "sudoers_mod", "critical", "persistence", "modifies sudoers (privilege escalation)"),
     (r'git\s+config\s+--global\s+', "git_config_global", "medium", "persistence", "modifies global git configuration"),
     # ── Network: reverse shells and tunnels ──
-    (r'\bnc\s+-[lp]|ncat\s+-[lp]|\bsocat\b', "reverse_shell", "critical", "network", "potential reverse shell listener"),
+    # socat needs an address spec (TCP:/EXEC:/…): a bare word match hit "SOCAT", the
+    # oceanographic CO2 atlas, across dozens of science skills (all patterns are IGNORECASE).
+    (r'\bnc\s+-[lp]|ncat\s+-[lp]|\bsocat\b[^\n]*\b(?:tcp|udp|openssl|ssl|exec|system|pty|unix)[\w-]*:',
+     "reverse_shell", "critical", "network", "potential reverse shell listener"),
     (r'\bngrok\b|\blocaltunnel\b|\bserveo\b|\bcloudflared\b',
      "tunnel_service", "high", "network", "uses tunneling service for external access"),
     (r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{2,5}', "hardcoded_ip_port", "medium", "network", "hardcoded IP address with port"),

@@ -107,10 +107,7 @@ def aux_probe_mode():
 
 
 from agent.credential_pool import load_pool
-from agent.model_metadata import (
-    MINIMUM_CONTEXT_LENGTH, get_model_context_length,
-    strip_codex_context_variant_suffix as _strip_codex_ctx_variant,
-)
+from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from hermes_cli.config import get_hermes_home
 from agent.auxiliary_health import _custom_health_base_url, _unhealthy_cache_key
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key
@@ -1330,7 +1327,6 @@ class _CodexCompletionsAdapter:
 
     def _build_responses_kwargs(self, kwargs: Dict[str, Any]) -> Tuple[Dict[str, Any], str, Any]:
         """chat.completions kwargs → Responses API kwargs, ``(resp_kwargs, model, timeout)``; mirrors codex.py::build_kwargs."""
-        from utils import base_url_host_matches
         # Separate system/instructions from replayable conversation messages, then route the rest through
         # the SINGLE shared chat->Responses converter used by the main agent transport
         # (agent/transports/codex.py). Maintaining a private conversion loop here let chat-style messages
@@ -1340,12 +1336,20 @@ class _CodexCompletionsAdapter:
         # includes assistant tool_calls + role="tool" results). The shared converter encodes assistant tool
         # calls as `function_call` items and tool results as `function_call_output` items with a valid
         # call_id, so every Responses path normalizes tool history identically and cannot drift.
-        from agent.codex_responses_adapter import _chat_messages_to_responses_input
+        from agent.codex_responses_adapter import (
+            _chat_messages_to_responses_input,
+            _classify_responses_issuer,
+            _wire_model_identity,
+            classify_responses_route,
+        )
         model = kwargs.get("model", self._model)
+        wire_model = _wire_model_identity(model)
         host = str(getattr(self._client, "base_url", "") or "")
-        is_xai = base_url_host_matches(host, "x.ai") or base_url_host_matches(host, "api.x.ai")
         is_copilot = base_url_host_matches(host, "githubcopilot.com")
-        is_github = is_copilot or base_url_host_matches(host, "models.github.ai")
+        # Same route classifier as the main transport, so the issuer stamp matches what it minted.
+        route = classify_responses_route(SimpleNamespace(provider=None, base_url=host))
+        is_xai = route.is_xai_responses
+        is_github = route.is_github_responses
         # System → ``instructions``; the rest goes through the SINGLE shared chat→Responses
         # converter (a private loop here once let role="tool" leak into input[]; the shared one
         # encodes tool history as function_call/function_call_output).
@@ -1363,12 +1367,15 @@ class _CodexCompletionsAdapter:
         # Auxiliary calls (context compression, flush_memories, MoA aggregation) go through this adapter
         # instead of agent/transports/codex.py's build_kwargs, so they need the same guard applied
         # independently. See #32716.
+        # Aux requests run their own model; stamp/filter reasoning provenance against it, not the main agent's.
         input_items = _chat_messages_to_responses_input(
-            replay_messages, is_github_responses=is_copilot, native_compaction_eligible=False
+            replay_messages, is_github_responses=is_copilot,
+            current_issuer_kind=_classify_responses_issuer(base_url=host, **route._asdict()),
+            current_issuer_model=wire_model, native_compaction_eligible=False,
         )
         resp_kwargs: Dict[str, Any] = {
             # Codex only knows the base slug; strip the Hermes ``-900k`` picker suffix.
-            "model": _strip_codex_ctx_variant(model), "instructions": instructions,
+            "model": wire_model, "instructions": instructions,
             "input": input_items or [{"role": "user", "content": ""}], "store": False,
         }
         # Forward the chat.completions timeout; otherwise a Codex stream can sit behind a
@@ -1392,13 +1399,11 @@ class _CodexCompletionsAdapter:
             if isinstance(reasoning_cfg, dict) and reasoning_cfg.get("enabled") is not False:
                 # Truthy-only: Codex 400s on e.g. {"effort": null}, so falsy → default. Shared
                 # per-model clamp with the main transport ("max" is gpt-5.6-only; "minimal"/"ultra" rejected).
-                from agent.codex_responses_adapter import classify_responses_route
                 from agent.reasoning_effort import clamp_effort
                 from agent.transports.codex import _codex_efforts_for_route
-                is_codex_backend = classify_responses_route(SimpleNamespace(base_url=host)).is_codex_backend
                 effort = clamp_effort(
                     reasoning_cfg.get("effort") or "medium",
-                    _codex_efforts_for_route(model, host, is_codex_backend=is_codex_backend),
+                    _codex_efforts_for_route(model, host, is_codex_backend=route.is_codex_backend),
                 )
                 resp_kwargs["reasoning"] = {"effort": effort, "summary": "auto"}
                 resp_kwargs["include"] = ["reasoning.encrypted_content"]

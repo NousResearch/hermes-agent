@@ -10,6 +10,7 @@ token, generous budget, reasoning_content scanned); always dial 127.0.0.1 — re
 from __future__ import annotations
 
 from contextlib import suppress
+from functools import lru_cache
 import json
 import logging
 import secrets
@@ -92,6 +93,18 @@ def _stable_api_key() -> str:
     return key
 
 
+@lru_cache(maxsize=16)
+def _direct_io_args(executable: Path) -> tuple[str, ...]:
+    """Select the loading option supported by this engine, including older pinned builds."""
+    result = subprocess.run([str(executable), "--help"], capture_output=True,
+                            text=True, encoding="utf-8", errors="replace", check=True,
+                            timeout=15, cwd=str(executable.parent))
+    help_text = result.stdout + result.stderr
+    if "--load-mode" in help_text:
+        return ("--load-mode", "dio")
+    return ("-dio",) if "--direct-io" in help_text else ()
+
+
 class LlamaServerSupervisor:
     """Own one llama-server router process for the life of a Hermes session."""
 
@@ -168,7 +181,7 @@ class LlamaServerSupervisor:
             "--jinja",
             # Direct I/O on model load bypasses the page cache so a multi-GB load doesn't evict
             # half the OS cache — measured faster on NVMe, and our router bounces reload often.
-            "-dio",
+            *_direct_io_args(exe),
         ]
         if self.preset_path and self.preset_path.exists():
             cmd += ["--models-preset", str(self.preset_path)]

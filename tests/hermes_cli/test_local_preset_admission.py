@@ -76,6 +76,8 @@ def test_supervisor_with_presets_does_not_scan_unadmitted_files(tmp_path, monkey
     ini.write_text("[allowed]\nmodel = allowed.gguf\nctx-size = 65536\n")
     calls = []
     monkeypatch.setattr(supervisor, "server_binary", lambda p: Path("llama-server"))
+    monkeypatch.setattr(supervisor.subprocess, "run", lambda *a, **kw:
+                        SimpleNamespace(stdout="--load-mode MODE", stderr=""))
     monkeypatch.setattr(supervisor, "spawn_server", lambda cmd, **kw: (calls.append(cmd) or SimpleNamespace(pid=123), None))
     monkeypatch.setattr(supervisor.LlamaServerSupervisor, "_write_state", lambda self: None)
     sup = supervisor.LlamaServerSupervisor(tmp_path, tmp_path, port=1234, preset_path=ini)

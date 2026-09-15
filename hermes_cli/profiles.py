@@ -72,6 +72,27 @@ _PLACEHOLDER_ENV = (
 )
 
 
+def _non_exportable_entries(directory: str, contents: list) -> set:
+    """Entries under *directory* that must never be copied out of a profile: bytecode caches,
+    ``*.sock``/``*.tmp`` names, and anything that is not a regular file, directory, or symlink.
+    :func:`shutil.copytree` cannot copy special files, so a single live Unix socket without a
+    ``.sock`` name (or a FIFO, or a device node) would abort the whole export or clone with
+    ``[Errno 6] No such device or address``. Symlinks survive — copytree recreates them."""
+    ignored: set = set()
+    for entry in contents:
+        if entry == "__pycache__" or entry.endswith((".sock", ".tmp", ".pyc", ".pyo")):
+            ignored.add(entry)
+            continue
+        try:
+            mode = os.lstat(os.path.join(directory, entry)).st_mode
+        except OSError:
+            ignored.add(entry)  # vanished mid-walk — copytree would fail on it anyway
+            continue
+        if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode)):
+            ignored.add(entry)
+    return ignored
+
+
 def _clone_all_copytree_ignore(source_dir: Path):
     """copytree ignore for --clone-all: history artifacts for any source, infrastructure
     only when the source is the default profile (see the two exclude sets above)."""
@@ -80,19 +101,17 @@ def _clone_all_copytree_ignore(source_dir: Path):
     if source_resolved == _get_default_hermes_home().resolve():
         root_exclude |= _CLONE_ALL_DEFAULT_EXCLUDE_ROOT
 
-    def _ignore(directory: str, names: List[str]) -> List[str]:
+    def _ignore(directory: str, names: List[str]) -> set:
         try:
             at_root = Path(directory).resolve() == source_resolved
         except (OSError, ValueError):
             # resolve() can fail on odd FS layouts (broken symlinks, missing parents).
             # Fail open — better to over-copy than silently drop user data.
             at_root = False
-        return [
-            entry for entry in names
-            if entry == "__pycache__"
-            or entry.endswith((".pyc", ".pyo", ".sock", ".tmp"))
-            or (at_root and entry in root_exclude)
-        ]
+        ignored = _non_exportable_entries(directory, names)
+        if at_root:
+            ignored.update(root_exclude & set(names))
+        return ignored
 
     return _ignore
 
@@ -822,7 +841,10 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path]) -> Non
         _clone_file(source_dir, profile_dir, relpath)
     source_skills = source_dir / "skills"
     if source_skills.is_dir():
-        shutil.copytree(source_skills, profile_dir / "skills", symlinks=True, dirs_exist_ok=True)
+        shutil.copytree(
+            source_skills, profile_dir / "skills", symlinks=True, dirs_exist_ok=True,
+            ignore=_non_exportable_entries,
+        )
     for relpath in _CLONE_SUBDIR_FILES:
         _clone_file(source_dir, profile_dir, relpath)
 
@@ -1527,17 +1549,14 @@ def _default_export_ignore(root_dir: Path):
     survive. Everything else (such as an unrelated ``x11-dev/`` directory in a Docker deployment where
     HERMES_HOME equals the cwd) is excluded. Blacklisting was tried first and proved unable to anticipate
     every non-Hermes file the user may have lying alongside HERMES_HOME (#58394). * **Universal exclusions
-    at any depth** — ``__pycache__``, sockets, temp files; plus npm lockfiles, which may appear at the root.
+    at any depth** — ``__pycache__``, sockets and other special files, temp files
+    (:func:`_non_exportable_entries`); plus npm lockfiles, which may appear at the root.
     """
 
     def _ignore(directory: str, contents: list) -> set:
         # Universal exclusions (any depth) plus npm lockfiles that can appear at root.
-        ignored: set = {
-            entry for entry in contents
-            if entry == "__pycache__"
-            or entry.endswith((".sock", ".tmp"))
-            or entry in {"package.json", "package-lock.json"}
-        }
+        ignored = _non_exportable_entries(directory, contents)
+        ignored.update({"package.json", "package-lock.json"} & set(contents))
         if Path(directory) == root_dir:
             ignored.update(entry for entry in contents if entry not in _DEFAULT_EXPORT_INCLUDE_ROOT)
         return ignored
@@ -1604,7 +1623,9 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
     # copy under a temp dir named after the canonical id: root allow-list for default,
     # credential exclusion for named profiles.
     def _ignore_credentials(directory: str, contents: list) -> set:
-        return _EXPORT_CREDENTIAL_FILES & set(contents)
+        ignored = _non_exportable_entries(directory, contents)
+        ignored.update(_EXPORT_CREDENTIAL_FILES & set(contents))
+        return ignored
 
     ignore = _default_export_ignore(profile_dir) if canon == "default" else _ignore_credentials
     with tempfile.TemporaryDirectory() as tmpdir:

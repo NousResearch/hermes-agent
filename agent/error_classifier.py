@@ -790,6 +790,9 @@ def _classify_400(c: _Ctx) -> Verdict:
     if code == "invalid_encrypted_content" or "invalid_encrypted_content" in msg or (
         "encrypted content for item" in msg and "could not be verified" in msg
     ) or "could not decrypt the provided encrypted_content" in msg or (
+        # Custom Responses endpoints wrap a replay rejection in a generic bad_request (#95834).
+        "encrypted content could not be decrypted or parsed" in msg
+    ) or (
         # Azure Foundry (gpt-6-astra) rejects replayed reasoning from several prior responses this way (#105369).
         "conflicting authenticated continuation identities" in msg
     ):

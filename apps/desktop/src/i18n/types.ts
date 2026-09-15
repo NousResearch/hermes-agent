@@ -1212,7 +1212,6 @@ export interface Translations {
       updating: string
       upToDateTitle: string
       upToDateDetail: (tag: string, backend: string) => string
-      updateToast: (next: string) => string
       activeDetail: string
       activeNotLoaded: string
       loadedPill: string
@@ -3552,6 +3551,7 @@ export interface Translations {
     secretSendFailed: string
     sudoTitle: string
     sudoDesc: string
+    sudoCommandUnavailable: string
     sudoPlaceholder: string
     secretTitle: string
     secretDesc: string
@@ -3665,6 +3665,7 @@ export interface Translations {
      *  campaign tips, which live outside the rotation's catalog: they carry
      *  a button, and `action` is its label. */
     items: Record<TipId, { title: string; text: string }> & {
+      'local-runtime-update': { title: string; text: string; action: string }
       'local-setup': { title: string; text: string; action: string }
     }
   }

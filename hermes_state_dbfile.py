@@ -10,6 +10,7 @@ call time, so tests that monkeypatch ``hermes_state.<name>`` keep intercepting.
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import json
 import logging
@@ -23,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from hermes_state_holders import canonical_sqlite_path
+from hermes_state_holders import canonical_sqlite_path, read_only_db_uri
 from hermes_state_common import (
     FTS_REBUILD_DEFERRAL_KEY, stat_db_file_identity as _stat_db_file_identity
 )
@@ -165,7 +166,12 @@ def _fd_is_truly_unlinked(fd_path: str, watched_path: str) -> bool:
     names — the guard keeps failing closed."""
     try:
         fd_stat = os.stat(fd_path)
-    except OSError:
+    except OSError as exc:
+        # ENOENT: the descriptor was closed after /proc was read. ESRCH: the whole
+        # process exited mid-scan. Neither can keep a retired generation alive, so
+        # do not turn this scan race into a refusal (mirrors hermes_state_holders).
+        if exc.errno in (errno.ENOENT, errno.ESRCH):
+            return False
         return True
     return _identity_is_truly_unlinked((fd_stat.st_dev, fd_stat.st_ino), watched_path)
 
@@ -710,7 +716,7 @@ def collect_state_db_stats(db_path: Path) -> Dict[str, Any]:
     try:
         # A short timeout keeps doctor snappy when a writer holds the lock.  The tracked connect
         # lets byte-probe helpers see this connection and refuse raw opens that would cancel locks.
-        conn = _connect_tracked_db(f"file:{Path(db_path)}?mode=ro", tracking_path=Path(db_path),
+        conn = _connect_tracked_db(read_only_db_uri(db_path), tracking_path=Path(db_path),
                                    uri=True, timeout=2.0)
     except Exception as exc:
         logger.debug("collect_state_db_stats: cannot open %s read-only: %s", db_path, exc)

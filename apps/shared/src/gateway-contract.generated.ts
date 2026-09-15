@@ -3610,6 +3610,7 @@ export interface McpOauthCallbackParams {
   code?: string | null
   state?: string | null
   error?: string | null
+  iss?: string | null
 }
 export interface McpOauthCallbackResult {
   ok: boolean
@@ -3711,8 +3712,10 @@ export interface ApprovalResult {
   choice: ApprovalChoice
   all?: boolean | null
 }
-export interface EmptyRequestParams {
+/** Original command, redacted server-side before any password-injection rewrite. */
+export interface SudoRequestParams {
   session_id: string
+  command?: string
 }
 /** The answer to any one-string prompt (sudo, secret, vault prompts, desktop bridges): ``''`` means skipped / declined. */
 export interface ValueResult {
@@ -3743,6 +3746,9 @@ export interface ReadRangeRequestParams {
   session_id: string
   start?: number | null
   count?: number | null
+}
+export interface EmptyRequestParams {
+  session_id: string
 }
 /** ``tools/drive_preview_tool.py`` and ``tools/annotate_preview_tool.py`` field sets. */
 export interface PreviewActRequestParams {
@@ -4823,7 +4829,7 @@ export interface ServerRequestMap {
   /** Masked value for a named env var (skills / setup flows). */
   secret: { params: SecretRequestParams; result: ValueResult }
   /** Masked sudo password for the terminal tool. */
-  sudo: { params: EmptyRequestParams; result: ValueResult }
+  sudo: { params: SudoRequestParams; result: ValueResult }
   /** Read the visible in-app terminal buffer (JSON text answer). */
   'terminal.read': { params: ReadRangeRequestParams; result: ValueResult }
   /** Drive a guided tour highlight in the desktop renderer. */

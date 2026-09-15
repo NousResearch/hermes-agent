@@ -1604,8 +1604,7 @@ export const zh = defineLocale({
       updateAction: '更新引擎',
       updating: '正在更新引擎…',
       upToDateTitle: '引擎已是最新',
-      upToDateDetail: (tag, backend) => `正在运行 llama.cpp ${tag}（${backend}）——Hermes 提供的最新构建。`,
-      updateToast: next => `本地引擎有新构建（${next}）。可在 设置 → 本地模型 中更新。`,
+      upToDateDetail: (tag, backend) => `正在运行 llama.cpp ${tag}（${backend}）——已配置的构建。`,
       activeDetail: '新对话使用此模型——发送首条消息时加载',
       activeNotLoaded: '首条消息时加载',
       loadedPill: '已加载',
@@ -4203,7 +4202,8 @@ export const zh = defineLocale({
     sudoSendFailed: '无法发送 sudo 密码',
     secretSendFailed: '无法发送密钥',
     sudoTitle: '管理员密码',
-    sudoDesc: 'Hermes 需要你的 sudo 密码来运行特权命令。它只会发送给你的本地 agent。',
+    sudoDesc: '输入 sudo 密码前，请先检查命令。密码会发送给执行命令的 agent，并在本次会话中缓存。',
+    sudoCommandUnavailable: '此 agent 未提供命令。如果无法在对话中确认，请取消。',
     sudoPlaceholder: 'sudo 密码',
     secretTitle: '需要密钥',
     secretDesc: 'Hermes 需要一个凭据才能继续。',
@@ -4350,6 +4350,11 @@ export const zh = defineLocale({
       'composer-mentions': {
         title: '附件与命令',
         text: '输入 @ 把文件带入对话，输入 / 运行命令。'
+      },
+      'local-runtime-update': {
+        title: '本地引擎有可用更新',
+        text: '更新运行本地模型的引擎。正在进行的本地请求可能会中断。',
+        action: '立即更新'
       },
       'local-setup': {
         title: '这台电脑可以本地运行模型',

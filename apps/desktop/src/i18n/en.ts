@@ -1395,8 +1395,7 @@ export const en: Translations = {
       updateAction: 'Update engine',
       updating: 'Updating engine…',
       upToDateTitle: 'Engine up to date',
-      upToDateDetail: (tag, backend) => `Running llama.cpp ${tag} (${backend}) — the latest build Hermes ships.`,
-      updateToast: next => `A newer local engine build (${next}) is available. Update from Settings → Local Models.`,
+      upToDateDetail: (tag, backend) => `Running llama.cpp ${tag} (${backend}) — the configured build.`,
       activeDetail: 'New chats use this model — it loads when you send your first message',
       activeNotLoaded: 'Loads on your first message',
       loadedPill: 'In memory',
@@ -4061,7 +4060,8 @@ export const en: Translations = {
     sudoSendFailed: 'Could not send sudo password',
     secretSendFailed: 'Could not send secret',
     sudoTitle: 'Administrator password',
-    sudoDesc: 'Hermes needs your sudo password to run a privileged command. It is sent only to your local agent.',
+    sudoDesc: 'Review the command before entering your sudo password. Your password is sent to the agent running it and cached for this session.',
+    sudoCommandUnavailable: 'This agent did not provide the command. Cancel if you cannot verify it in the conversation.',
     sudoPlaceholder: 'sudo password',
     secretTitle: 'Secret required',
     secretDesc: 'Hermes needs a credential to continue.',
@@ -4211,6 +4211,11 @@ export const en: Translations = {
       'composer-mentions': {
         title: 'Attach and command',
         text: 'Type @ to bring a file into the conversation, / to run a command.'
+      },
+      'local-runtime-update': {
+        title: 'A local engine update is available',
+        text: 'Update the engine that runs your local models. Active local requests may be interrupted.',
+        action: 'Update now'
       },
       'local-setup': {
         title: 'This machine can run models locally',

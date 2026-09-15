@@ -3096,7 +3096,9 @@ class _StreamingCall(StreamingWaitMonitor):
             logger.debug("Streaming worker caught %s after request cancellation — exiting without retry.", type(e).__name__)
             return False
         _is_timeout = isinstance(e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout))
-        _is_conn_err = isinstance(e, (_httpx.ConnectError, _httpx.RemoteProtocolError, ConnectionError))
+        # ReadError: abort/reset mid-body (stale-kill shutdown under a parked reader,
+        # ECONNRESET) — the retry loop owns recovery.
+        _is_conn_err = isinstance(e, (_httpx.ConnectError, _httpx.ReadError, _httpx.RemoteProtocolError, ConnectionError))
         _is_stream_parse_err = self.agent._is_provider_stream_parse_error(e)
         _is_empty_stream = isinstance(e, EmptyStreamError)
         _is_sse_conn_err = not _is_timeout and not _is_conn_err and _is_sse_connection_error(e)
@@ -3202,6 +3204,42 @@ class _StreamingCall(StreamingWaitMonitor):
         finally:
             self._call_done.set()
 
+    def _shutdown_stale_attempt_socket(self, response: Any) -> None:
+        """Best-effort ``shutdown()`` on the killed attempt's socket (monitor thread).
+
+        The pool sweep in ``close_once`` can miss a connection that is checked
+        out for the in-flight body read. ``shutdown(SHUT_RDWR)`` is FD-safe
+        from any thread — it wakes the owner's ``recv`` without releasing the
+        descriptor — so the worker unwinds and releases its own response on
+        the owner thread (``_call``'s ``except``/``finally``). Never
+        ``close()`` here: releasing a live TLS descriptor from a stranger
+        thread lets the kernel recycle it under the owner's SSL BIO, which is
+        exactly what the shutdown-only rule in ``_abort_request_slot_client``
+        forbids (it covers request-local clients too, #30858).
+        """
+        if response is None or response is not self._attempt_stream_response:
+            return
+        try:
+            from agent.agent_runtime_helpers import (
+                _connection_candidates, _shutdown_socket, _socket_from_candidate,
+            )
+            exts = getattr(response, "extensions", None) or {}
+            direct = exts.get("network_stream") if isinstance(exts, dict) else None
+            for start in (direct, getattr(response, "stream", None)):
+                if start is None:
+                    continue
+                for candidate in _connection_candidates(start):
+                    sock = _socket_from_candidate(candidate)
+                    if sock is None:
+                        continue
+                    _shutdown_socket(sock)
+                    logger.info("Shut down the stale stream's socket to unblock the reader "
+                                "(attempt superseded; model=%s).", self.api_kwargs.get("model", "unknown"))
+                    return
+            logger.debug("Stale stream socket shutdown found no socket; pool sweep is the only abort")
+        except Exception:
+            logger.debug("Stale stream socket shutdown failed", exc_info=True)
+
     def _kill_stale_stream(self, elapsed: float) -> None:
         """SSE pings but no chunks: cancel the attempt and abort the request-local
         client so the retry loop opens a fresh one. The shared client is never
@@ -3216,9 +3254,14 @@ class _StreamingCall(StreamingWaitMonitor):
         self.agent._buffer_status(
             f"⚠️ No response from provider for {int(elapsed)}s (model: {self.api_kwargs.get('model', 'unknown')}, "
             f"context: ~{_est_ctx:,} tokens). Reconnecting...")
+        # Captured BEFORE the cancel/abort: the pool sweep can miss a checked-out
+        # connection, so shut down the killed attempt's own socket too — still
+        # shutdown-only, never close (see the helper).
+        _killed_response = self._attempt_stream_response
         with contextlib.suppress(Exception):
             self._cancel_current_stream_attempt("stale_stream_kill")
             self.clients.close_once("stale_stream_kill")
+        self._shutdown_stale_attempt_socket(_killed_response)
         _bump_stale_streak(self.agent)  # circuit breaker, see ``_stale_streak()``
         # Reset the timer so we don't kill repeatedly while the worker unwinds.
         self.last_chunk_time["t"] = time.time()

@@ -1454,6 +1454,9 @@ DEFAULT_CONFIG = {
         "websocket_liveness_failure_threshold": 2,
         "websocket_heartbeat_ack_max_age_seconds": 60,
         "websocket_max_latency_seconds": 30,
+        # Dispatch-side dimension: a socket that ACKs heartbeats but delivers no events for this
+        # long is treated as deaf. 4 h absorbs a quiet server overnight; 0 disables it.
+        "websocket_event_max_silence_seconds": 14400,
         # per-channel ephemeral system prompts (forum parents apply to child threads)
         "channel_prompts": {},
         # Opt-in DM role auth: DISCORD_ALLOWED_ROLES normally authorizes guild messages only (DMs
@@ -2410,7 +2413,7 @@ DEFAULT_CONFIG = {
         # Off = detection-only (Hermes still finds an external llama-server you run).
         "enabled": False,
         # Pinned llama.cpp release tag; bumped by Hermes releases after validation.
-        "tag": "b10679",
+        "tag": "b10964",
         # auto = CUDA on NVIDIA, Metal on macOS, Vulkan on other GPUs, else CPU. Explicit:
         # cuda|metal|vulkan|hip|cpu.
         "backend": "auto",

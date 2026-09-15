@@ -1,0 +1,17 @@
+name: hermes-newswire
+repo: https://github.com/tony-simons-aiowa/hermes-newswire
+sha: deccdc4575ff45461fbf3f3c61e0945f188ef620
+description: 'Breaking-news ticker for Hermes Desktop: a scrolling RSS/Atom/JSON-Feed strip above the
+  statusbar with per-source favicons, feed search + discovery, grouping modes, offline cache, and
+  in-app reading. Zero API keys, zero model tokens.'
+maintainer: tony-simons-aiowa
+tier: community
+category: desktop
+requires_hermes: '>=0.19'
+docs_url: https://github.com/tony-simons-aiowa/hermes-newswire
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

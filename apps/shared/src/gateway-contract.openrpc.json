@@ -13814,6 +13814,18 @@
             ],
             "default": null,
             "title": "Error"
+          },
+          "iss": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Iss"
           }
         },
         "required": [
@@ -29975,6 +29987,26 @@
         "title": "SubscriptionUpgradeResult",
         "type": "object"
       },
+      "SudoRequestParams": {
+        "additionalProperties": false,
+        "description": "Original command, redacted server-side before any password-injection rewrite.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "command": {
+            "default": "",
+            "title": "Command",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SudoRequestParams",
+        "type": "object"
+      },
       "SystemBatteryParams": {
         "additionalProperties": false,
         "properties": {
@@ -33458,7 +33490,7 @@
         {
           "name": "params",
           "schema": {
-            "$ref": "#/components/schemas/EmptyRequestParams"
+            "$ref": "#/components/schemas/SudoRequestParams"
           }
         }
       ],

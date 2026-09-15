@@ -1438,8 +1438,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
             timeout = self._oneshot_completion_wait_seconds()
         result: dict = {"waited": [], "completed": [], "timed_out": []}
         with self._lock:
+            # `_finished` too: `_move_to_finished` pops a session from `_running` and enqueues its completion
+            # only after releasing handles and writing the checkpoint. A parent whose turn ends inside that
+            # window would otherwise see nothing pending, drain nothing and exit without the follow-up turn.
             pending = [
-                s for s in self._running.values()
+                s for store in (self._running, self._finished) for s in store.values()
                 if s.notify_on_complete and not s._completion_event.is_set() and (task_id is None or s.task_id == task_id)
             ]
         if not pending or timeout <= 0:

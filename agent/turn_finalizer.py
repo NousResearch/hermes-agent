@@ -412,6 +412,7 @@ def _apply_output_hooks(
         session_id=agent.session_id or "",
         model=agent.model,
         platform=platform,
+        turn_id=turn_id,  # per-turn identity for the hook callback gate
     ):
         if isinstance(_hook_result, str) and _hook_result:
             pre_transform, final_response, transformed = final_response, _hook_result, True

@@ -1217,9 +1217,7 @@ export const ja = defineLocale({
       updateAction: 'エンジンを更新',
       updating: 'エンジンを更新中…',
       upToDateTitle: 'エンジンは最新です',
-      upToDateDetail: (tag, backend) => `llama.cpp ${tag}（${backend}）で動作中——Hermes が提供する最新ビルドです。`,
-      updateToast: next =>
-        `ローカルエンジンの新しいビルド（${next}）があります。設定 → ローカルモデル から更新できます。`,
+      upToDateDetail: (tag, backend) => `llama.cpp ${tag}（${backend}）で動作中——設定されたビルドです。`,
       activeDetail: '新しいチャットはこのモデルを使用——最初のメッセージ送信時に読み込みます',
       activeNotLoaded: '最初のメッセージで読み込みます',
       loadedPill: '読み込み済み',
@@ -3483,7 +3481,8 @@ export const ja = defineLocale({
     secretSendFailed: 'シークレットを送信できませんでした',
     sudoTitle: '管理者パスワード',
     sudoDesc:
-      'Hermes は特権コマンドを実行するために sudo パスワードが必要です。ローカルエージェントにのみ送信されます。',
+      'sudo パスワードを入力する前にコマンドを確認してください。パスワードは実行するエージェントに送信され、このセッション中キャッシュされます。',
+    sudoCommandUnavailable: 'エージェントからコマンドが提供されていません。会話で確認できない場合はキャンセルしてください。',
     sudoPlaceholder: 'sudo パスワード',
     secretTitle: 'シークレットが必要です',
     secretDesc: 'Hermes は続行するための認証情報が必要です。',
@@ -3634,6 +3633,11 @@ export const ja = defineLocale({
       'composer-mentions': {
         title: 'ファイルとコマンド',
         text: '@ でファイルを会話に取り込み、/ でコマンドを実行できます。'
+      },
+      'local-runtime-update': {
+        title: 'ローカルエンジンの更新があります',
+        text: 'ローカルモデルを実行するエンジンを更新します。実行中のローカルリクエストが中断される場合があります。',
+        action: '今すぐ更新'
       },
       'local-setup': {
         title: 'このマシンはローカルでモデルを実行できます',

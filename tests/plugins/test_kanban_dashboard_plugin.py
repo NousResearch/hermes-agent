@@ -85,6 +85,35 @@ def test_board_empty(client):
     assert data["latest_event_id"] == 0
 
 
+def test_hybrid_checklist_crud_and_stale_revision(client):
+    board = client.post("/api/plugins/kanban/hybrid/boards", json={"name": "Product"}).json()["board"]
+    column = client.post(
+        f"/api/plugins/kanban/hybrid/boards/{board['id']}/columns", json={"name": "Doing"}
+    ).json()["column"]
+    card = client.post(
+        f"/api/plugins/kanban/hybrid/boards/{board['id']}/cards",
+        json={"column_id": column["id"], "title": "Launch"},
+    ).json()["card"]
+    checklist = client.post(
+        f"/api/plugins/kanban/hybrid/cards/{card['id']}/checklists", json={"title": "QA"}
+    ).json()["checklist"]
+    item = client.post(
+        f"/api/plugins/kanban/hybrid/checklists/{checklist['id']}/items", json={"body": "Smoke test"}
+    ).json()["item"]
+    updated = client.patch(
+        f"/api/plugins/kanban/hybrid/checklist-items/{item['id']}",
+        json={"completed": True, "expected_revision": item["revision"]},
+    )
+    assert updated.status_code == 200
+    stale = client.patch(
+        f"/api/plugins/kanban/hybrid/checklist-items/{item['id']}",
+        json={"completed": False, "expected_revision": item["revision"]},
+    )
+    assert stale.status_code == 409
+    detail = client.get(f"/api/plugins/kanban/hybrid/cards/{card['id']}").json()["card"]
+    assert detail["checklists"][0]["items"][0]["completed"] == 1
+
+
 # ---------------------------------------------------------------------------
 # POST /tasks then GET /board sees it
 # ---------------------------------------------------------------------------

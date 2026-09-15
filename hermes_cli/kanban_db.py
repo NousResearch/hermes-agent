@@ -1581,10 +1581,35 @@ CREATE TABLE IF NOT EXISTS hybrid_activity (
     created_at  INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS hybrid_checklists (
+    id          TEXT PRIMARY KEY,
+    card_id     TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    position    INTEGER NOT NULL,
+    revision    INTEGER NOT NULL DEFAULT 1,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    UNIQUE(card_id, position)
+);
+
+CREATE TABLE IF NOT EXISTS hybrid_checklist_items (
+    id           TEXT PRIMARY KEY,
+    checklist_id TEXT NOT NULL,
+    body         TEXT NOT NULL,
+    position     INTEGER NOT NULL,
+    completed    INTEGER NOT NULL DEFAULT 0,
+    revision     INTEGER NOT NULL DEFAULT 1,
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL,
+    UNIQUE(checklist_id, position)
+);
+
 CREATE INDEX IF NOT EXISTS idx_hybrid_columns_board_position ON hybrid_columns(board_id, position);
 CREATE INDEX IF NOT EXISTS idx_hybrid_cards_column_position ON hybrid_cards(column_id, position);
 CREATE INDEX IF NOT EXISTS idx_hybrid_cards_board ON hybrid_cards(board_id);
 CREATE INDEX IF NOT EXISTS idx_hybrid_activity_board ON hybrid_activity(board_id, id);
+CREATE INDEX IF NOT EXISTS idx_hybrid_checklists_card ON hybrid_checklists(card_id, position);
+CREATE INDEX IF NOT EXISTS idx_hybrid_checklist_items_list ON hybrid_checklist_items(checklist_id, position);
 
 -- Explicit bridge between human-owned Hybrid cards and canonical agent tasks.
 -- This is a link/projection table, not a second task store: execution state,

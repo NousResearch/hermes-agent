@@ -7,6 +7,8 @@ import {
   archiveHybridCard,
   archiveHybridColumn,
   cancelHybridCardDelegation,
+  createHybridChecklist,
+  createHybridChecklistItem,
   createHybridBoard,
   createHybridCard,
   createHybridColumn,
@@ -14,9 +16,12 @@ import {
   fetchHybridBoard,
   fetchHybridBoards,
   fetchHybridCard,
+  deleteHybridChecklist,
+  deleteHybridChecklistItem,
   moveHybridCard,
   moveHybridColumn,
   retryHybridCardDelegation,
+  updateHybridChecklistItem,
   updateHybridCard
 } from './api'
 import type { HybridActivityItem, HybridBoard, HybridCard, HybridColumn } from './types'
@@ -201,6 +206,8 @@ function CardActivityDrawer({
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [delegating, setDelegating] = useState(false)
+  const [checklistTitle, setChecklistTitle] = useState('')
+  const [itemDrafts, setItemDrafts] = useState<Record<string, string>>({})
 
   useEffect(() => {
     if (card) {
@@ -336,7 +343,7 @@ function CardActivityDrawer({
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
         <div className="flex flex-col gap-2">
           <div>
             <label className="mb-1 block text-[0.7rem] font-medium text-(--ui-text-secondary)">Title</label>
@@ -367,6 +374,55 @@ function CardActivityDrawer({
               onChange={e => setDescription(e.target.value)}
               value={description}
             />
+          </div>
+        </div>
+
+        <div className="flex min-w-0 flex-col gap-2 border-l border-(--ui-stroke-secondary) pl-4">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-(--ui-text-secondary)">
+            <Codicon name="checklist" size="0.85rem" />
+            <span>Checklists</span>
+          </div>
+          {(card.checklists ?? []).map(checklist => (
+            <section className="rounded border border-(--ui-stroke-secondary) p-2" key={checklist.id}>
+              <div className="mb-1 flex items-center justify-between text-xs font-medium">
+                <span>{checklist.title}</span>
+                <Button aria-label={`Delete ${checklist.title}`} onClick={() => void deleteHybridChecklist(checklist.id, checklist.revision).then(onRefresh)} size="xs" variant="ghost">
+                  <Codicon name="trash" size="0.7rem" />
+                </Button>
+              </div>
+              <ul className="flex flex-col gap-1">
+                {checklist.items.map(item => (
+                  <li className="flex items-center gap-1 text-xs" key={item.id}>
+                    <input
+                      aria-label={item.body}
+                      checked={Boolean(item.completed)}
+                      onChange={event => void updateHybridChecklistItem(item.id, {
+                        completed: event.target.checked, expected_revision: item.revision
+                      }).then(onRefresh)}
+                      type="checkbox"
+                    />
+                    <span className={`min-w-0 flex-1 truncate ${item.completed ? 'line-through text-(--ui-text-tertiary)' : ''}`}>{item.body}</span>
+                    <Button aria-label={`Delete ${item.body}`} onClick={() => void deleteHybridChecklistItem(item.id, item.revision).then(onRefresh)} size="xs" variant="ghost">
+                      <Codicon name="close" size="0.65rem" />
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-2 flex gap-1">
+                <Input aria-label={`Add item to ${checklist.title}`} onChange={event => setItemDrafts(current => ({ ...current, [checklist.id]: event.target.value }))} value={itemDrafts[checklist.id] ?? ''} />
+                <Button disabled={!itemDrafts[checklist.id]?.trim()} onClick={() => void createHybridChecklistItem(checklist.id, itemDrafts[checklist.id]!.trim()).then(() => {
+                  setItemDrafts(current => ({ ...current, [checklist.id]: '' }))
+                  onRefresh()
+                })} size="xs">Add</Button>
+              </div>
+            </section>
+          ))}
+          <div className="flex gap-1">
+            <Input aria-label="New checklist title" onChange={event => setChecklistTitle(event.target.value)} value={checklistTitle} />
+            <Button disabled={!checklistTitle.trim()} onClick={() => void createHybridChecklist(card.id, checklistTitle.trim()).then(() => {
+              setChecklistTitle('')
+              onRefresh()
+            })} size="xs">Add list</Button>
           </div>
         </div>
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -68,6 +69,46 @@ def test_hybrid_moves_reject_stale_revision_and_invalid_destination(conn):
         hybrid.move_card(conn, card_id=card["id"], target_column_id=second["id"], expected_revision=card["revision"])
     with pytest.raises(hybrid.HybridKanbanError):
         hybrid.move_card(conn, card_id=card["id"], target_column_id="missing")
+
+
+def test_hybrid_checklists_persist_reorder_and_enforce_revisions(conn, tmp_path):
+    board = hybrid.create_board(conn, name="Delivery")
+    column = hybrid.create_column(conn, board_id=board["id"], name="Doing")
+    card = hybrid.create_card(conn, board_id=board["id"], column_id=column["id"], title="Ship")
+    acceptance = hybrid.create_checklist(conn, card_id=card["id"], title="Acceptance", actor_id="kevyn")
+    release = hybrid.create_checklist(conn, card_id=card["id"], title="Release")
+    first = hybrid.add_checklist_item(conn, checklist_id=acceptance["id"], body="Run tests")
+    second = hybrid.add_checklist_item(conn, checklist_id=acceptance["id"], body="Publish notes")
+
+    completed = hybrid.update_checklist_item(
+        conn, item_id=first["id"], completed=True, expected_revision=first["revision"]
+    )
+    assert completed["completed"] == 1
+    with pytest.raises(hybrid.HybridKanbanConflict):
+        hybrid.update_checklist_item(
+            conn, item_id=first["id"], completed=False, expected_revision=first["revision"]
+        )
+
+    moved = hybrid.move_checklist_item(
+        conn, item_id=second["id"], before_id=first["id"], expected_revision=second["revision"]
+    )
+    assert moved["position"] == 0
+    detail = hybrid.get_card(conn, card["id"])
+    assert [item["title"] for item in detail["checklists"]] == ["Acceptance", "Release"]
+    assert [item["body"] for item in detail["checklists"][0]["items"]] == ["Publish notes", "Run tests"]
+    assert any(event["kind"] == "checklist_item_updated" for event in detail["activity"])
+
+    db_path = conn.execute("PRAGMA database_list").fetchone()[2]
+    reopened = kb.connect(db_path=Path(db_path))
+    try:
+        assert hybrid.get_card(reopened, card["id"])["checklists"][0]["items"][1]["completed"] == 1
+    finally:
+        reopened.close()
+
+    assert hybrid.delete_checklist(conn, checklist_id=release["id"], expected_revision=release["revision"])
+    assert hybrid.delete_card(conn, card_id=card["id"])
+    assert conn.execute("SELECT COUNT(*) FROM hybrid_checklists WHERE card_id = ?", (card["id"],)).fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM hybrid_checklist_items").fetchone()[0] == 0
 
 
 def test_hybrid_column_reorder_repairs_dense_positions(conn):

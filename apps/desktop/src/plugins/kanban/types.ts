@@ -193,6 +193,29 @@ export interface HybridCard {
   archived?: boolean
   delegation?: HybridDelegation | null
   delegations?: HybridDelegation[]
+  checklists?: HybridChecklist[]
+}
+
+export interface HybridChecklistItem {
+  id: string
+  checklist_id: string
+  body: string
+  position: number
+  completed: number
+  revision: number
+  created_at: number
+  updated_at: number
+}
+
+export interface HybridChecklist {
+  id: string
+  card_id: string
+  title: string
+  position: number
+  revision: number
+  created_at: number
+  updated_at: number
+  items: HybridChecklistItem[]
 }
 
 export interface HybridDelegation {

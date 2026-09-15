@@ -102,6 +102,24 @@ class HybridDelegationBody(BaseModel):
     new_attempt: bool = False
 
 
+class HybridChecklistBody(BaseModel):
+    title: str = Field(min_length=1, max_length=300)
+
+
+class HybridChecklistItemBody(BaseModel):
+    body: str = Field(min_length=1, max_length=10_000)
+
+
+class HybridChecklistItemPatch(BaseModel):
+    body: Optional[str] = Field(default=None, min_length=1, max_length=10_000)
+    completed: Optional[bool] = None
+    expected_revision: Optional[int] = Field(default=None, ge=1)
+
+
+class HybridChecklistItemMove(HybridMoveBody):
+    pass
+
+
 # ---------------------------------------------------------------------------
 # Auth helper — WebSocket only (HTTP routes live behind the dashboard's
 # existing plugin-bypass; this is documented above).
@@ -559,6 +577,94 @@ def hybrid_get_card(card_id: str, board: Optional[str] = Query(None)):
     conn = _conn(board=resolved)
     try:
         return {"card": hybrid_kanban.get_card(conn, card_id)}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
+@router.post("/hybrid/cards/{card_id}/checklists")
+def hybrid_create_checklist(card_id: str, payload: HybridChecklistBody, board: Optional[str] = Query(None)):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        return {"checklist": hybrid_kanban.create_checklist(
+            conn, card_id=card_id, title=payload.title, source="dashboard", actor_id="dashboard"
+        )}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
+@router.delete("/hybrid/checklists/{checklist_id}")
+def hybrid_delete_checklist(checklist_id: str, expected_revision: Optional[int] = Query(None, ge=1), board: Optional[str] = Query(None)):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        return {"ok": hybrid_kanban.delete_checklist(
+            conn, checklist_id=checklist_id, expected_revision=expected_revision,
+            source="dashboard", actor_id="dashboard"
+        )}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
+@router.post("/hybrid/checklists/{checklist_id}/items")
+def hybrid_create_checklist_item(checklist_id: str, payload: HybridChecklistItemBody, board: Optional[str] = Query(None)):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        return {"item": hybrid_kanban.add_checklist_item(
+            conn, checklist_id=checklist_id, body=payload.body, source="dashboard", actor_id="dashboard"
+        )}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
+@router.patch("/hybrid/checklist-items/{item_id}")
+def hybrid_update_checklist_item(item_id: str, payload: HybridChecklistItemPatch, board: Optional[str] = Query(None)):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        return {"item": hybrid_kanban.update_checklist_item(
+            conn, item_id=item_id, body=payload.body, completed=payload.completed,
+            expected_revision=payload.expected_revision, source="dashboard", actor_id="dashboard"
+        )}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
+@router.post("/hybrid/checklist-items/{item_id}/move")
+def hybrid_move_checklist_item(item_id: str, payload: HybridChecklistItemMove, board: Optional[str] = Query(None)):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        return {"item": hybrid_kanban.move_checklist_item(
+            conn, item_id=item_id, before_id=payload.before_id, after_id=payload.after_id,
+            expected_revision=payload.expected_revision, source="dashboard", actor_id="dashboard"
+        )}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
+@router.delete("/hybrid/checklist-items/{item_id}")
+def hybrid_delete_checklist_item(item_id: str, expected_revision: Optional[int] = Query(None, ge=1), board: Optional[str] = Query(None)):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        return {"ok": hybrid_kanban.delete_checklist_item(
+            conn, item_id=item_id, expected_revision=expected_revision,
+            source="dashboard", actor_id="dashboard"
+        )}
     except hybrid_kanban.HybridKanbanError as exc:
         raise _hybrid_error(exc)
     finally:

@@ -113,6 +113,21 @@ def _require_card(conn: sqlite3.Connection, card_id: str, *, include_archived: b
     return row
 
 
+def _require_checklist(conn: sqlite3.Connection, checklist_id: str) -> sqlite3.Row:
+    row = conn.execute("SELECT * FROM hybrid_checklists WHERE id = ?", (checklist_id,)).fetchone()
+    if row is None:
+        raise HybridKanbanError("Hybrid checklist not found")
+    _require_card(conn, row["card_id"])
+    return row
+
+
+def _require_checklist_item(conn: sqlite3.Connection, item_id: str) -> tuple[sqlite3.Row, sqlite3.Row]:
+    item = conn.execute("SELECT * FROM hybrid_checklist_items WHERE id = ?", (item_id,)).fetchone()
+    if item is None:
+        raise HybridKanbanError("Hybrid checklist item not found")
+    return item, _require_checklist(conn, item["checklist_id"])
+
+
 def _reindex(conn: sqlite3.Connection, table: str, scope_column: str, scope_id: str, ordered_ids: Iterable[str]) -> None:
     # Dense positions make reconstruction deterministic and permit a simple,
     # atomic repair whenever two old clients submit stale order intent.
@@ -679,10 +694,168 @@ def get_card(conn: sqlite3.Connection, card_id: str, *, include_archived: bool =
     delegations = _delegation_payloads(conn, card_id)
     card["delegation"] = delegations[-1] if delegations else None
     card["delegations"] = delegations
+    card["checklists"] = list_checklists(conn, card_id=card_id, include_archived_card=include_archived)
     card["activity"] = [_row(r) for r in conn.execute("SELECT * FROM hybrid_activity WHERE board_id = ? AND (card_id = ? OR card_id IS NULL) ORDER BY id DESC", (card["board_id"], card_id))]
     for item in card["activity"]:
         item["payload"] = _decode(item.get("payload"))
     return card
+
+
+def list_checklists(conn: sqlite3.Connection, *, card_id: str, include_archived_card: bool = False) -> list[dict[str, Any]]:
+    _require_card(conn, card_id, include_archived=include_archived_card)
+    checklists = [_row(row) for row in conn.execute(
+        "SELECT * FROM hybrid_checklists WHERE card_id = ? ORDER BY position, created_at, id",
+        (card_id,),
+    )]
+    for checklist in checklists:
+        checklist["items"] = [_row(row) for row in conn.execute(
+            "SELECT * FROM hybrid_checklist_items WHERE checklist_id = ? ORDER BY position, created_at, id",
+            (checklist["id"],),
+        )]
+    return checklists
+
+
+def create_checklist(conn: sqlite3.Connection, *, card_id: str, title: str,
+                     actor_type: str = "human", actor_id: Optional[str] = None,
+                     session_id: Optional[str] = None, source: Optional[str] = None) -> dict[str, Any]:
+    actor_type = _require_actor(actor_type)
+    if not title or not title.strip():
+        raise HybridKanbanError("Checklist title is required")
+    with kanban_db.write_txn(conn):
+        card = _require_card(conn, card_id)
+        position = conn.execute(
+            "SELECT COALESCE(MAX(position), -1) + 1 FROM hybrid_checklists WHERE card_id = ?", (card_id,)
+        ).fetchone()[0]
+        checklist_id, now = _id("hcl"), _now()
+        conn.execute(
+            "INSERT INTO hybrid_checklists (id, card_id, title, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (checklist_id, card_id, title.strip(), position, now, now),
+        )
+        _activity(conn, board_id=card["board_id"], card_id=card_id, column_id=card["column_id"],
+                  kind="checklist_created", actor_type=actor_type, actor_id=actor_id,
+                  session_id=session_id, source=source, payload={"checklist_id": checklist_id, "title": title.strip()})
+    return next(item for item in list_checklists(conn, card_id=card_id) if item["id"] == checklist_id)
+
+
+def add_checklist_item(conn: sqlite3.Connection, *, checklist_id: str, body: str,
+                       actor_type: str = "human", actor_id: Optional[str] = None,
+                       session_id: Optional[str] = None, source: Optional[str] = None) -> dict[str, Any]:
+    actor_type = _require_actor(actor_type)
+    if not body or not body.strip():
+        raise HybridKanbanError("Checklist item body is required")
+    with kanban_db.write_txn(conn):
+        checklist = _require_checklist(conn, checklist_id)
+        card = _require_card(conn, checklist["card_id"])
+        position = conn.execute(
+            "SELECT COALESCE(MAX(position), -1) + 1 FROM hybrid_checklist_items WHERE checklist_id = ?", (checklist_id,)
+        ).fetchone()[0]
+        item_id, now = _id("hci"), _now()
+        conn.execute(
+            "INSERT INTO hybrid_checklist_items (id, checklist_id, body, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (item_id, checklist_id, body.strip(), position, now, now),
+        )
+        _activity(conn, board_id=card["board_id"], card_id=card["id"], column_id=card["column_id"],
+                  kind="checklist_item_created", actor_type=actor_type, actor_id=actor_id,
+                  session_id=session_id, source=source, payload={"checklist_id": checklist_id, "item_id": item_id})
+    return _row(conn.execute("SELECT * FROM hybrid_checklist_items WHERE id = ?", (item_id,)).fetchone())
+
+
+def update_checklist_item(conn: sqlite3.Connection, *, item_id: str, body: Optional[str] = None,
+                          completed: Optional[bool] = None, expected_revision: Optional[int] = None,
+                          actor_type: str = "human", actor_id: Optional[str] = None,
+                          session_id: Optional[str] = None, source: Optional[str] = None) -> dict[str, Any]:
+    actor_type = _require_actor(actor_type)
+    if body is not None and not body.strip():
+        raise HybridKanbanError("Checklist item body is required")
+    with kanban_db.write_txn(conn):
+        item, checklist = _require_checklist_item(conn, item_id)
+        if expected_revision is not None and item["revision"] != expected_revision:
+            raise HybridKanbanConflict("Hybrid checklist item changed; refetch before editing")
+        fields, values = [], []
+        if body is not None:
+            fields.append("body = ?")
+            values.append(body.strip())
+        if completed is not None:
+            fields.append("completed = ?")
+            values.append(int(completed))
+        if fields:
+            fields.extend(["revision = revision + 1", "updated_at = ?"])
+            values.extend([_now(), item_id])
+            conn.execute(f"UPDATE hybrid_checklist_items SET {', '.join(fields)} WHERE id = ?", values)
+            card = _require_card(conn, checklist["card_id"])
+            _activity(conn, board_id=card["board_id"], card_id=card["id"], column_id=card["column_id"],
+                      kind="checklist_item_updated", actor_type=actor_type, actor_id=actor_id,
+                      session_id=session_id, source=source,
+                      payload={"checklist_id": checklist["id"], "item_id": item_id, "completed": completed})
+    return _row(conn.execute("SELECT * FROM hybrid_checklist_items WHERE id = ?", (item_id,)).fetchone())
+
+
+def move_checklist_item(conn: sqlite3.Connection, *, item_id: str, before_id: Optional[str] = None,
+                        after_id: Optional[str] = None, expected_revision: Optional[int] = None,
+                        actor_type: str = "human", actor_id: Optional[str] = None,
+                        session_id: Optional[str] = None, source: Optional[str] = None) -> dict[str, Any]:
+    actor_type = _require_actor(actor_type)
+    with kanban_db.write_txn(conn):
+        item, checklist = _require_checklist_item(conn, item_id)
+        if expected_revision is not None and item["revision"] != expected_revision:
+            raise HybridKanbanConflict("Hybrid checklist item changed; refetch before moving")
+        ordered = [row["id"] for row in conn.execute(
+            "SELECT id FROM hybrid_checklist_items WHERE checklist_id = ? ORDER BY position, created_at, id", (checklist["id"],)
+        )]
+        ordered = _place(ordered, item_id, before_id, after_id)
+        for temporary, current_id in enumerate(ordered, start=1):
+            conn.execute("UPDATE hybrid_checklist_items SET position = ? WHERE id = ?", (-1_000_000_000 - temporary, current_id))
+        for position, current_id in enumerate(ordered):
+            conn.execute("UPDATE hybrid_checklist_items SET position = ? WHERE id = ?", (position, current_id))
+        conn.execute("UPDATE hybrid_checklist_items SET revision = revision + 1, updated_at = ? WHERE id = ?", (_now(), item_id))
+        card = _require_card(conn, checklist["card_id"])
+        _activity(conn, board_id=card["board_id"], card_id=card["id"], column_id=card["column_id"],
+                  kind="checklist_item_moved", actor_type=actor_type, actor_id=actor_id,
+                  session_id=session_id, source=source, payload={"checklist_id": checklist["id"], "item_id": item_id})
+    return _row(conn.execute("SELECT * FROM hybrid_checklist_items WHERE id = ?", (item_id,)).fetchone())
+
+
+def delete_checklist_item(conn: sqlite3.Connection, *, item_id: str, expected_revision: Optional[int] = None,
+                          actor_type: str = "human", actor_id: Optional[str] = None,
+                          session_id: Optional[str] = None, source: Optional[str] = None) -> bool:
+    actor_type = _require_actor(actor_type)
+    with kanban_db.write_txn(conn):
+        item, checklist = _require_checklist_item(conn, item_id)
+        if expected_revision is not None and item["revision"] != expected_revision:
+            raise HybridKanbanConflict("Hybrid checklist item changed; refetch before deleting")
+        card = _require_card(conn, checklist["card_id"])
+        conn.execute("DELETE FROM hybrid_checklist_items WHERE id = ?", (item_id,))
+        remaining = [row["id"] for row in conn.execute(
+            "SELECT id FROM hybrid_checklist_items WHERE checklist_id = ? ORDER BY position, created_at, id", (checklist["id"],)
+        )]
+        for position, current_id in enumerate(remaining):
+            conn.execute("UPDATE hybrid_checklist_items SET position = ? WHERE id = ?", (position, current_id))
+        _activity(conn, board_id=card["board_id"], card_id=card["id"], column_id=card["column_id"],
+                  kind="checklist_item_deleted", actor_type=actor_type, actor_id=actor_id,
+                  session_id=session_id, source=source, payload={"checklist_id": checklist["id"], "item_id": item_id})
+    return True
+
+
+def delete_checklist(conn: sqlite3.Connection, *, checklist_id: str, expected_revision: Optional[int] = None,
+                     actor_type: str = "human", actor_id: Optional[str] = None,
+                     session_id: Optional[str] = None, source: Optional[str] = None) -> bool:
+    actor_type = _require_actor(actor_type)
+    with kanban_db.write_txn(conn):
+        checklist = _require_checklist(conn, checklist_id)
+        if expected_revision is not None and checklist["revision"] != expected_revision:
+            raise HybridKanbanConflict("Hybrid checklist changed; refetch before deleting")
+        card = _require_card(conn, checklist["card_id"])
+        conn.execute("DELETE FROM hybrid_checklist_items WHERE checklist_id = ?", (checklist_id,))
+        conn.execute("DELETE FROM hybrid_checklists WHERE id = ?", (checklist_id,))
+        remaining = [row["id"] for row in conn.execute(
+            "SELECT id FROM hybrid_checklists WHERE card_id = ? ORDER BY position, created_at, id", (card["id"],)
+        )]
+        for position, current_id in enumerate(remaining):
+            conn.execute("UPDATE hybrid_checklists SET position = ? WHERE id = ?", (position, current_id))
+        _activity(conn, board_id=card["board_id"], card_id=card["id"], column_id=card["column_id"],
+                  kind="checklist_deleted", actor_type=actor_type, actor_id=actor_id,
+                  session_id=session_id, source=source, payload={"checklist_id": checklist_id})
+    return True
 
 
 def update_card(conn: sqlite3.Connection, *, card_id: str, title: Optional[str] = None, description: Optional[str] = None, expected_revision: Optional[int] = None, actor_type: str = "human", actor_id: Optional[str] = None, session_id: Optional[str] = None, source: Optional[str] = None) -> dict[str, Any]:
@@ -749,6 +922,12 @@ def delete_card(
         card = _require_card(conn, card_id, include_archived=True)
         column_id = card["column_id"]
         board_id = card["board_id"]
+        checklist_ids = [row["id"] for row in conn.execute(
+            "SELECT id FROM hybrid_checklists WHERE card_id = ?", (card_id,)
+        )]
+        for checklist_id in checklist_ids:
+            conn.execute("DELETE FROM hybrid_checklist_items WHERE checklist_id = ?", (checklist_id,))
+        conn.execute("DELETE FROM hybrid_checklists WHERE card_id = ?", (card_id,))
         conn.execute("DELETE FROM hybrid_card_delegations WHERE human_card_id = ?", (card_id,))
         conn.execute("DELETE FROM hybrid_cards WHERE id = ?", (card_id,))
         remaining = _ordered_ids(conn, "hybrid_cards", "column_id", column_id)

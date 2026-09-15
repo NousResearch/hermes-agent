@@ -345,3 +345,26 @@ export const restoreHybridBoard = (boardId: string) =>
 export const fetchHybridCard = (cardId: string) => call<{ card: HybridCard }>(withBoard(`/hybrid/cards/${cardId}`))
 export const fetchHybridBoardActivity = (boardId: string) =>
   call<{ activity: Array<Record<string, unknown>> }>(withBoard(`/hybrid/boards/${boardId}/activity`))
+export const createHybridChecklist = (cardId: string, title: string) =>
+  call<{ checklist: import('./types').HybridChecklist }>(withBoard(`/hybrid/cards/${cardId}/checklists`), {
+    method: 'POST', body: { title }
+  })
+export const deleteHybridChecklist = (checklistId: string, revision: number) =>
+  call<{ ok: boolean }>(withBoard(`/hybrid/checklists/${checklistId}`, { expected_revision: String(revision) }), { method: 'DELETE' })
+export const createHybridChecklistItem = (checklistId: string, body: string) =>
+  call<{ item: import('./types').HybridChecklistItem }>(withBoard(`/hybrid/checklists/${checklistId}/items`), {
+    method: 'POST', body: { body }
+  })
+export const updateHybridChecklistItem = (
+  itemId: string,
+  patch: { body?: string; completed?: boolean; expected_revision: number }
+) => call<{ item: import('./types').HybridChecklistItem }>(withBoard(`/hybrid/checklist-items/${itemId}`), {
+  method: 'PATCH', body: patch
+})
+export const moveHybridChecklistItem = (
+  itemId: string, expectedRevision: number, beforeId?: string, afterId?: string
+) => call<{ item: import('./types').HybridChecklistItem }>(withBoard(`/hybrid/checklist-items/${itemId}/move`), {
+  method: 'POST', body: { expected_revision: expectedRevision, before_id: beforeId, after_id: afterId }
+})
+export const deleteHybridChecklistItem = (itemId: string, revision: number) =>
+  call<{ ok: boolean }>(withBoard(`/hybrid/checklist-items/${itemId}`, { expected_revision: String(revision) }), { method: 'DELETE' })

@@ -661,3 +661,37 @@ def test_startup_warn_kept_without_positive_evidence(monkeypatch, capsys, disk_s
 
     assert "did not restart running gateways" in capsys.readouterr().err
     assert update_cmd._fleet_restart_pending_marker_path().exists()
+
+
+def test_startup_warn_kept_when_receipt_owed_gateway_is_down(monkeypatch, capsys):
+    """A sibling the restart phase killed yields NO startup row; the receipt still owes it."""
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha)
+    _patch_marker_sha(monkeypatch, disk_sha)
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "outcome": "partial",
+                "exit_code": 1,
+                "plan": {"runtimes": [{"kind": "gateway", "profile": p, "code_sha": "o" * 40, "pid": 1} for p in ("alpha", "beta")]},
+                "fleet": [
+                    {"profile": "alpha", "pid": 42, "code_sha": disk_sha, "state": "current"},
+                    {"profile": "beta", "pid": 43, "code_sha": None, "state": "down"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "alpha", "pid": 42, "code_sha": disk_sha, "code_version": "0.21.0", "state": "current"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert "did not restart running gateways" in capsys.readouterr().err
+    assert update_cmd._fleet_restart_pending_marker_path().exists()

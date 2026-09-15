@@ -142,6 +142,30 @@ def _receipt_reports_stale_runtime(expected_sha: str | None = None) -> bool:
     )
 
 
+def _receipt_owed_gateways() -> set[tuple[str, str]] | None:
+    """``(kind, profile)`` identities ``latest.json`` owes a current successor.
+
+    Empty when the receipt records no runtimes; ``None`` when any recorded runtime is one
+    the gateway matrix cannot vouch for (serve/dashboard, unknown profile).
+    """
+    from hermes_cli.update_receipt import read_latest_receipt
+
+    receipt = read_latest_receipt() or {}
+    plan = receipt.get("plan") or {}
+    entries: list[tuple[object, str | None]] = [(entry, None) for entry in plan.get("runtimes") or []]
+    entries.extend((entry, "gateway") for entry in receipt.get("fleet") or [])
+    owed: set[tuple[str, str]] = set()
+    for entry, default_kind in entries:
+        if not isinstance(entry, dict):
+            return None
+        kind = entry.get("kind", default_kind)
+        profile = entry.get("profile")
+        if kind != "gateway" or not profile or profile == "unknown":
+            return None
+        owed.add((kind, profile))
+    return owed
+
+
 def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
     """Require current successors for every recorded runtime, not just any live row.
 
@@ -151,24 +175,10 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
     """
     if not expected_sha:
         return False
-    from hermes_cli.update_receipt import collect_fleet_versions, read_latest_receipt
+    from hermes_cli.update_receipt import collect_fleet_versions
 
     try:
-        receipt = read_latest_receipt() or {}
-        plan = receipt.get("plan") or {}
-        runtimes = plan.get("runtimes") or []
-        recorded_fleet = receipt.get("fleet") or []
-        owed = set()
-        entries: list[tuple[object, str | None]] = [(entry, None) for entry in runtimes]
-        entries.extend((entry, "gateway") for entry in recorded_fleet)
-        for entry, default_kind in entries:
-            if not isinstance(entry, dict):
-                return False
-            kind = entry.get("kind", default_kind)
-            profile = entry.get("profile")
-            if kind != "gateway" or not profile or profile == "unknown":
-                return False
-            owed.add((kind, profile))
+        owed = _receipt_owed_gateways()
         if not owed:
             return False
         fleet = collect_fleet_versions()
@@ -210,6 +220,12 @@ def _marker_only_restart_obsolete() -> bool:
     gateways cannot prove currency — same conservatism as the silent-failure class
     #88848/#74973), on a marker with no ``expected_sha``, when a newer pull moved the
     checkout, and when the probe fails or answers empty.
+
+    A gateway the restart phase stopped and never brought back yields NO row at startup
+    (no ``pre_restart_pids`` → no ``down`` classification), so rows alone cannot prove the
+    whole fleet is back. When ``latest.json`` names the gateways the update owed, every one
+    of them must also be covered by a current row; the rows-only rule applies only when the
+    receipt names none.
     """
     expected_sha = _read_fleet_marker_expected_sha()
     if not expected_sha:
@@ -220,6 +236,7 @@ def _marker_only_restart_obsolete() -> bool:
     try:
         from hermes_cli.update_receipt import collect_fleet_versions
         fleet = collect_fleet_versions()
+        owed = _receipt_owed_gateways()
     except Exception as exc:
         logger.debug("Fleet probe failed; keeping fleet-restart-pending marker: %s", exc)
         return False
@@ -233,6 +250,8 @@ def _marker_only_restart_obsolete() -> bool:
             return False  # unidentified runtime: the matrix cannot vouch for it
         if row.get("state") != "current" or str(row.get("code_sha")) != expected_sha:
             return False  # stale / down / unknown-identity row still owes the restart
+    if owed is None or not owed <= {("gateway", row.get("profile")) for row in fleet}:
+        return False  # a gateway the receipt owes is absent (down) or unidentifiable
     _clear_fleet_restart_pending_marker()
     logger.debug(
         "Fleet-restart-pending marker discharged: %d gateway(s) already serve %s",

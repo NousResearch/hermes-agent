@@ -79,3 +79,20 @@ def test_export_all_includes_timing_evidence(tmp_path):
 
     assert exported[0]["timings"]["wall_clock_ms"] == 1000
     assert exported[0]["timings"]["intervals"][0]["gap_ms"] == 1000
+
+
+def test_corrupt_timestamp_rows_count_as_missing_instead_of_aborting_export(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session(session_id="s1", source="cli", model="test-model")
+        db.append_message("s1", "user", "hello", timestamp=10.0)
+        db.append_message("s1", "assistant", "hi", timestamp=11.0)
+        # Writers refuse bad stamps; emulate a pre-existing corrupt row directly.
+        db._conn.execute("UPDATE messages SET timestamp = 8.4e252 WHERE id = 2")
+        db._conn.commit()
+        timings = db.export_session("s1")["timings"]
+    finally:
+        db.close()
+
+    assert timings["message_timestamps"] == {"available": 1, "missing": 1}
+    assert timings["wall_clock_ms"] == 0 and timings["intervals"] == []

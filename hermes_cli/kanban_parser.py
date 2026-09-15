@@ -213,6 +213,15 @@ _SPECS = [
         _PRIORITY,
         _arg("--created-by", help="Creator/anchor profile"),
         _arg("--idempotency-key", help="Dedup key for the root card"),
+        _arg("--worker-goal", action="store_true", dest="worker_goal",
+             help="Run every worker card in a goal loop: after each turn a judge "
+                  "checks the response against the card title/body and, if not done, "
+                  "the worker keeps going in the same session until the judge agrees "
+                  "it's complete (or the turn budget runs out, which blocks the card "
+                  "for review). Does not apply to the verifier or synthesizer."),
+        _arg("--worker-goal-max-turns", type=int, metavar="N", dest="worker_goal_max_turns",
+             help="Turn budget for --worker-goal workers (default 20). "
+                  "Ignored without --worker-goal."),
         _json_flag(help="Emit JSON output"),
     ], help="Create a Kanban Swarm v1 graph (parallel workers → verifier → synthesizer)"),
     _cmd("list", [

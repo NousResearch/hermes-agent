@@ -2742,6 +2742,7 @@ export const en: Translations = {
       back: 'All projects'
     },
     newSessionIn: label => `New session in ${label}`,
+    landingDetached: 'Detached — no project',
     showMoreIn: (count, label) => `Show ${count} more in ${label}`,
     loading: 'Loading…',
     loadMore: 'Load more',

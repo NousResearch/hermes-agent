@@ -2360,6 +2360,7 @@ export interface Translations {
       back: string
     }
     newSessionIn: (label: string) => string
+    landingDetached: string
     showMoreIn: (count: number, label: string) => string
     loading: string
     loadMore: string

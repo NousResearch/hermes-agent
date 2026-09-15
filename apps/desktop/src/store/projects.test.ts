@@ -4,7 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import { $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
 import { $activeGatewayProfile, $profileScope, ALL_PROFILES, setShowAllProfiles } from '@/store/profile'
-import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
+import {
+  $currentCwd,
+  $newChatWorkspaceTarget,
+  $selectedStoredSessionId,
+  $sessions,
+  applyConfiguredDefaultProjectDir
+} from '@/store/session'
 
 import {
   $activeProjectId,
@@ -18,6 +24,7 @@ import {
   enterProject,
   exitProjectScope,
   fetchProjectSessions,
+  newSessionLanding,
   openProjectCreate,
   pickProjectFolder,
   projectIdForCwd,
@@ -27,7 +34,8 @@ import {
   refreshWorktrees,
   resolveNewSessionCwd,
   scanAndRecordRepos,
-  startWorkInRepo
+  startWorkInRepo,
+  workspaceChipLabel
 } from './projects'
 import {
   $removedSessionIds,
@@ -265,6 +273,206 @@ describe('resolveNewSessionCwd', () => {
     // Focused session has no workspace → fall through to configured default,
     // not the stale $currentCwd from an earlier chat.
     expect(resolveNewSessionCwd()).toBe('/home/user/configured')
+  })
+})
+
+describe('newSessionLanding', () => {
+  const treeNode = (
+    over: Partial<SidebarProjectTree> & Pick<SidebarProjectTree, 'id' | 'label'>
+  ): SidebarProjectTree => ({
+    path: null,
+    repos: [],
+    sessionCount: 0,
+    ...over
+  })
+
+  beforeEach(() => {
+    $projectScope.set(ALL_PROJECTS)
+    applyConfiguredDefaultProjectDir(null)
+    $projectTree.set([])
+    $newChatWorkspaceTarget.set(undefined)
+    $activeProjectId.set(null)
+  })
+
+  afterEach(() => {
+    applyConfiguredDefaultProjectDir(null)
+    $projectScope.set(ALL_PROJECTS)
+    $projectTree.set([])
+    $newChatWorkspaceTarget.set(undefined)
+    $activeProjectId.set(null)
+  })
+
+  it('names an entered project from its root cwd', () => {
+    $projectTree.set([treeNode({ id: 'p_ws', label: 'Warsongs', path: '/repos/warsongs' })])
+    enterProject('p_ws')
+    expect(newSessionLanding()).toEqual({
+      cwd: '/repos/warsongs',
+      id: 'p_ws',
+      kind: 'project',
+      name: 'Warsongs'
+    })
+  })
+
+  it('names Home when scoped to the no-folder bucket', () => {
+    enterProject(NO_PROJECT_ID)
+    expect(newSessionLanding()).toEqual({
+      cwd: '',
+      id: NO_PROJECT_ID,
+      kind: 'home',
+      name: null
+    })
+  })
+
+  it('is detached in All projects with no default dir', () => {
+    expect(newSessionLanding()).toEqual({
+      cwd: '',
+      id: null,
+      kind: 'detached',
+      name: null
+    })
+  })
+
+  it('names the project that owns the configured default dir', () => {
+    $projectTree.set([treeNode({ id: 'p_hermes', label: 'Hermes', path: '/repos/hermes' })])
+    applyConfiguredDefaultProjectDir('/repos/hermes')
+    expect(newSessionLanding()).toEqual({
+      cwd: '/repos/hermes',
+      id: 'p_hermes',
+      kind: 'project',
+      name: 'Hermes'
+    })
+  })
+
+  it('does not use $activeProjectId when overview cwd is empty', () => {
+    $activeProjectId.set('p_hermes')
+    $projectTree.set([treeNode({ id: 'p_hermes', label: 'Hermes', path: '/repos/hermes' })])
+    expect(newSessionLanding().kind).toBe('detached')
+  })
+
+  it('treats an explicit null workspace target as Home', () => {
+    $newChatWorkspaceTarget.set(null)
+    expect(newSessionLanding().kind).toBe('home')
+  })
+
+  it('keeps an explicit string target even inside Home scope', () => {
+    enterProject(NO_PROJECT_ID)
+    $newChatWorkspaceTarget.set('/repos/hermes')
+    $projectTree.set([treeNode({ id: 'p_hermes', label: 'Hermes', path: '/repos/hermes' })])
+    expect(newSessionLanding()).toEqual({
+      cwd: '/repos/hermes',
+      id: 'p_hermes',
+      kind: 'project',
+      name: 'Hermes'
+    })
+  })
+})
+
+describe('workspaceChipLabel', () => {
+  const copy = { detached: 'Detached — no project', home: 'Home' }
+
+  const detached = {
+    cwd: '',
+    id: null,
+    kind: 'detached' as const,
+    name: null
+  }
+
+  const home = {
+    cwd: '',
+    id: NO_PROJECT_ID,
+    kind: 'home' as const,
+    name: null
+  }
+
+  const project = {
+    cwd: '/repos/hermes',
+    id: 'p_hermes',
+    kind: 'project' as const,
+    name: 'Hermes'
+  }
+
+  it('uses the named project when cwd is set', () => {
+    expect(
+      workspaceChipLabel({
+        copy,
+        currentCwd: '/repos/hermes',
+        cwdLeaf: 'hermes',
+        freshDraft: false,
+        landing: detached,
+        primaryFocused: true,
+        projectName: 'Hermes'
+      })
+    ).toBe('Hermes')
+  })
+
+  it('hides an empty-cwd tile so it does not inherit the primary draft', () => {
+    expect(
+      workspaceChipLabel({
+        copy,
+        currentCwd: '',
+        cwdLeaf: '',
+        freshDraft: true,
+        landing: home,
+        primaryFocused: false,
+        projectName: null
+      })
+    ).toBeNull()
+  })
+
+  it('hides empty cwd when the primary is not a fresh draft', () => {
+    expect(
+      workspaceChipLabel({
+        copy,
+        currentCwd: '',
+        cwdLeaf: '',
+        freshDraft: false,
+        landing: detached,
+        primaryFocused: true,
+        projectName: null
+      })
+    ).toBeNull()
+  })
+
+  it('names Home on a fresh primary draft', () => {
+    expect(
+      workspaceChipLabel({
+        copy,
+        currentCwd: '',
+        cwdLeaf: '',
+        freshDraft: true,
+        landing: home,
+        primaryFocused: true,
+        projectName: null
+      })
+    ).toBe('Home')
+  })
+
+  it('names Detached on a fresh primary draft', () => {
+    expect(
+      workspaceChipLabel({
+        copy,
+        currentCwd: '',
+        cwdLeaf: '',
+        freshDraft: true,
+        landing: detached,
+        primaryFocused: true,
+        projectName: null
+      })
+    ).toBe('Detached — no project')
+  })
+
+  it('names the project when the draft landing is a project with empty cwd', () => {
+    expect(
+      workspaceChipLabel({
+        copy,
+        currentCwd: '',
+        cwdLeaf: '',
+        freshDraft: true,
+        landing: project,
+        primaryFocused: true,
+        projectName: null
+      })
+    ).toBe('Hermes')
   })
 })
 

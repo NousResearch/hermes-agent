@@ -2562,6 +2562,7 @@ export const ru = defineLocale({
       back: 'Все проекты'
     },
     newSessionIn: label => `Новый сеанс в ${label}`,
+    landingDetached: 'Без проекта',
     showMoreIn: (count, label) => `Показать ещё ${count} в ${label}`,
     loading: 'Загрузка…',
     loadMore: 'Загрузить ещё',

@@ -39,13 +39,14 @@ import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { revealFileInTree } from '@/store/layout'
 import { $onboardingGate, guidedOnboardingActive } from '@/store/onboarding-gate'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $projectTree, projectNameForCwd } from '@/store/projects'
+import { $projectScope, $projectTree, newSessionLanding, projectNameForCwd, workspaceChipLabel } from '@/store/projects'
 import {
   $activeSessionId,
   $busy,
   $connection,
   $currentCwd,
   $currentUsage,
+  $newChatWorkspaceTarget,
   $selectedStoredSessionId,
   $sessions,
   $sessionStartedAt,
@@ -94,6 +95,7 @@ export function useStatusbarItems({
   commandCenterOpen,
   extraLeftItems,
   extraRightItems,
+  freshDraftReady,
   gatewayState,
   inferenceStatus,
   openAgents,
@@ -247,7 +249,20 @@ export function useStatusbarItems({
   // a second per-session copy of the same fact. Re-derives whenever the cwd or
   // the tree changes; null (no named project) falls back to the cwd leaf below.
   const projectTree = useStore($projectTree)
+  useStore($projectScope)
+  useStore($newChatWorkspaceTarget)
+  const landing = newSessionLanding()
   const projectName = useMemo(() => projectNameForCwd(currentCwd), [currentCwd, projectTree])
+
+  const workspaceLabel = workspaceChipLabel({
+    copy: { detached: t.sidebar.landingDetached, home: t.sidebar.projects.home },
+    currentCwd,
+    cwdLeaf: pathLeaf(currentCwd),
+    freshDraft: freshDraftReady,
+    landing,
+    primaryFocused,
+    projectName
+  })
 
   const sessionStartedAt = primaryFocused
     ? primarySessionStartedAt
@@ -495,13 +510,13 @@ export function useStatusbarItems({
         variant: 'action'
       },
       {
-        hidden: !currentCwd,
+        hidden: !workspaceLabel,
         icon: <FolderOpen className="size-3" />,
         id: 'workspace-cwd',
-        // Prefer the named project; fall back to the cwd leaf. Hover tip uses
-        // the shared display formatter (home → ~) so statusbar and branch bar
-        // agree on how a path looks.
-        label: projectName || (currentCwd ? pathLeaf(currentCwd) : undefined),
+        // Prefer the named project; fall back to the cwd leaf. Empty cwd on a
+        // fresh primary draft names Home / Detached / the landing project.
+        // Tiles and non-drafts with no cwd stay hidden (do not inherit).
+        label: workspaceLabel ?? undefined,
         menuItems: currentCwd
           ? [
               {
@@ -591,11 +606,11 @@ export function useStatusbarItems({
       inferenceReady,
       inferenceStatus?.reason,
       openAgents,
-      projectName,
       sessionsShowing,
       subagentsFailed,
       subagentsRunning,
-      toggleCommandCenter
+      toggleCommandCenter,
+      workspaceLabel
     ]
   )
 

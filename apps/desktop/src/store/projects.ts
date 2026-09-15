@@ -25,6 +25,7 @@ import {
   requestFreshSession
 } from '@/store/profile'
 import {
+  $newChatWorkspaceTarget,
   $selectedStoredSessionId,
   $sessions,
   sessionMatchesStoredId,
@@ -166,6 +167,85 @@ export function resolveNewSessionCwd(): string {
   }
 
   return workspaceCwdForNewSession()
+}
+
+export type NewSessionLanding = {
+  cwd: string
+  id: null | string
+  kind: 'detached' | 'home' | 'project'
+  name: null | string
+}
+
+/** What a fresh draft will send into — same cwd as session.create, named for UI. */
+export function newSessionLanding(): NewSessionLanding {
+  const explicit = $newChatWorkspaceTarget.get()
+
+  if (typeof explicit === 'string') {
+    const cwd = explicit.trim()
+
+    if (!cwd) {
+      return { cwd: '', id: null, kind: 'detached', name: null }
+    }
+
+    const id = projectIdForCwd(cwd)
+    const name = projectNameForCwd(cwd)
+
+    if (id && name) {
+      return { cwd, id, kind: 'project', name }
+    }
+
+    return { cwd, id: id ?? null, kind: 'detached', name: null }
+  }
+
+  if (explicit === null || $projectScope.get() === NO_PROJECT_ID) {
+    return { cwd: '', id: NO_PROJECT_ID, kind: 'home', name: null }
+  }
+
+  const cwd = resolveNewSessionCwd().trim()
+
+  if (!cwd) {
+    return { cwd: '', id: null, kind: 'detached', name: null }
+  }
+
+  const id = projectIdForCwd(cwd)
+  const name = projectNameForCwd(cwd)
+
+  if (id && name) {
+    return { cwd, id, kind: 'project', name }
+  }
+
+  return { cwd, id: id ?? null, kind: 'detached', name: null }
+}
+
+export function workspaceChipLabel(input: {
+  copy: { detached: string; home: string }
+  currentCwd: string
+  cwdLeaf: string
+  freshDraft: boolean
+  landing: NewSessionLanding
+  primaryFocused: boolean
+  projectName: null | string
+}): null | string {
+  const cwd = input.currentCwd.trim()
+
+  if (cwd) {
+    return input.projectName || input.cwdLeaf
+  }
+
+  // A focused tile with no cwd must not inherit the primary draft's landing.
+  if (!input.primaryFocused || !input.freshDraft) {
+    return null
+  }
+
+  if (input.landing.kind === 'project' && input.landing.name) {
+    return input.landing.name
+  }
+
+  if (input.landing.kind === 'home') {
+    return input.copy.home
+  }
+
+  return input.copy.detached
 }
 
 // The project (explicit or auto) that owns `cwd`, by longest path match across

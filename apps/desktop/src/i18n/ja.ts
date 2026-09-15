@@ -2295,6 +2295,7 @@ export const ja = defineLocale({
       enter: label => `${label} を開く`
     },
     newSessionIn: label => `${label} で新しいセッション`,
+    landingDetached: 'プロジェクトなし',
     showMoreIn: (count, label) => `${label} でさらに ${count} 件を表示`,
     loading: '読み込み中…',
     loadMore: 'さらに読み込む',

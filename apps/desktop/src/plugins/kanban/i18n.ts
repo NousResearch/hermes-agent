@@ -168,6 +168,7 @@ type KanbanMessages = {
   headerDispatch: string
   headerDecompose: string
   headerReview: string
+  headerEnforcementPendingHint: string
   // Menu labels are bare verbs — the board they act on is the one named in the
   // switcher's trigger. The nouns come back for the native file-dialog and
   // in-app dialog titles, which stand alone.
@@ -388,6 +389,7 @@ export const en: KanbanMessages = {
   headerDispatch: 'Dispatch',
   headerDecompose: 'Decompose',
   headerReview: 'Review',
+  headerEnforcementPendingHint: 'Not yet enforced — toggling this has no effect on dispatch/decompose/review yet.',
   exportDots: 'Export…',
   importDots: 'Import…',
   renameDots: 'Rename…',
@@ -603,6 +605,7 @@ const ja: KanbanMessages = {
   headerDispatch: 'ディスパッチ',
   headerDecompose: '分解',
   headerReview: 'レビュー',
+  headerEnforcementPendingHint: 'Not yet enforced.',
   exportDots: 'エクスポート…',
   importDots: 'インポート…',
   renameDots: '名前を変更…',
@@ -816,6 +819,7 @@ const zh: KanbanMessages = {
   headerDispatch: '调度',
   headerDecompose: '分解',
   headerReview: '审查',
+  headerEnforcementPendingHint: 'Not yet enforced.',
   exportDots: '导出…',
   importDots: '导入…',
   renameDots: '重命名…',
@@ -1028,6 +1032,7 @@ const zhHant: KanbanMessages = {
   headerDispatch: '調度',
   headerDecompose: '分解',
   headerReview: '審查',
+  headerEnforcementPendingHint: 'Not yet enforced.',
   exportDots: '匯出…',
   importDots: '匯入…',
   renameDots: '重新命名…',

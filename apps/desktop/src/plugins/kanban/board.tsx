@@ -985,7 +985,10 @@ export function BoardHeaderToggles({ board }: { board: BoardMeta }) {
     label: string
     mut: ReturnType<typeof useToggle>
   }) => (
-    <label className="flex cursor-pointer items-center gap-1.5 text-[0.75rem] text-(--ui-text-secondary)">
+    <label
+      className="flex cursor-pointer items-center gap-1.5 text-[0.75rem] text-(--ui-text-secondary)"
+      title={k.headerEnforcementPendingHint}
+    >
       <Switch
         aria-label={label}
         checked={checked}

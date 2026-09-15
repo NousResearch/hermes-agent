@@ -96,3 +96,21 @@ describe('BoardHeaderToggles click behavior', () => {
     expect(options?.body).toEqual({ auto_decompose_enabled: false })
   })
 })
+
+describe('BoardHeaderToggles enforcement-pending disclosure', () => {
+  it('surfaces the not-yet-enforced hint as a title tooltip on every switch label', () => {
+    renderToggles()
+
+    const dispatchSwitch = screen.getByRole('switch', { name: en.headerDispatch })
+    const dispatchLabel = dispatchSwitch.closest('label')
+
+    expect(dispatchLabel).not.toBeNull()
+    expect(dispatchLabel?.getAttribute('title')).toBe(en.headerEnforcementPendingHint)
+
+    const decomposeLabel = screen.getByRole('switch', { name: en.headerDecompose }).closest('label')
+    const reviewLabel = screen.getByRole('switch', { name: en.headerReview }).closest('label')
+
+    expect(decomposeLabel?.getAttribute('title')).toBe(en.headerEnforcementPendingHint)
+    expect(reviewLabel?.getAttribute('title')).toBe(en.headerEnforcementPendingHint)
+  })
+})

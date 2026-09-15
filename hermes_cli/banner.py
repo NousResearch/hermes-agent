@@ -908,7 +908,7 @@ def _banner_skill_lines(skills_by_category: Dict[str, List[str]], skills_enabled
     if not skills_enabled:
         return [f"[dim {dim}]Skills toolset disabled[/]"]
     if not skills_by_category:
-        return [f"[dim {dim}]No skills installed[/]"]
+        return [f"[dim {dim}]No skills installed yet — run 'hermes skills browse' to find some[/]"]
     right_col_width = max(int(shutil.get_terminal_size().columns * 0.6) - 10, 30)
     lines = []
     for category in sorted(skills_by_category.keys()):

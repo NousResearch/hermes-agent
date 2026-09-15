@@ -184,12 +184,21 @@ def _argv_scoped_to_other_home(argv: Sequence[str], db_path: Path) -> bool:
     return other_home_seen
 
 
-def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
+def foreign_state_db_holders(db_path: Path, *, include_scan_gaps: bool = False) -> List[Tuple[int, str]]:
     """Return foreign holders of the DB or one of its WAL sidecars.
 
     A scan failure is represented as an unknown holder. Structural maintenance
     must not assume quiescence when an old, unlinked SQLite generation may
     still be open by another process.
+
+    ``include_scan_gaps``: also emit ONE ``(-1, "open-file scan incomplete: ...")`` row when some
+    processes could not be inspected at all, so a caller whose only evidence is this list can tell
+    "nothing holds it" from "nothing I am allowed to see holds it". Off by default, deliberately:
+    on macOS a third of the process table is uninspectable in normal operation, so every scan would
+    carry the row and :func:`live_writer_holds_db` — which fails closed on any ``pid < 0`` — would
+    refuse structural maintenance forever. The repair paths can afford that default because they
+    have a SECOND gate, the ``PRAGMA locking_mode=EXCLUSIVE`` probe below, which catches a holder
+    the scan never saw. ``hermes doctor``'s journal-mode report has no second gate, so it opts in.
     """
     if _IS_WINDOWS:
         return []
@@ -203,6 +212,7 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
         canonical_sqlite_path(db_path_str + "-shm"),
     }
     holders: List[Tuple[int, str]] = []
+    uninspectable = 0  # processes we could not rule in or out; reported only when asked
     watched_ids: Set[Tuple[int, int]] = set()
     db_dev: Optional[int] = None
     for candidate in (db_path_str, db_path_str + "-wal", db_path_str + "-shm"):
@@ -218,6 +228,30 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
         if candidate == db_path_str:
             db_dev = stat_result.st_dev
 
+    def _rule_from_argv(pid: int) -> Optional[List[str]]:
+        """Classify a process whose descriptors could not be read, by its argv: the argv when it
+        is a Hermes command not provably another home's (a holder, fail closed); ``None``
+        otherwise — after counting a scan gap unless the argv proves the process works on
+        another home's database. A readable argv that is not Hermes-shaped, such as
+        ``sqlite3 state.db ".backup"``, says nothing about what the process has open, so it is
+        a gap and never an all-clear (#104714 review: dropping it let doctor print "no other
+        process holds this database" over a holder it never inspected)."""
+        nonlocal uninspectable
+        argv = _read_proc_argv(pid)
+        # The other-home exemption is ONLY for a second HERMES instance, so it is applied
+        # inside the Hermes branch. Applied to any argv it silently drops an external process
+        # that merely MENTIONS another home -- and mentioning one is ordinary for the exact
+        # tools that hold this database: `sqlite3 /home/demo/.hermes/state.db "ATTACH DATABASE
+        # '<ours>' AS current_profile"` names both homes, and only tokens starting with "/" are
+        # read as paths, so the reference to ours inside the SQL string never registers. That
+        # process had its descriptors go unread, so it must stay a scan gap; dropping it let
+        # doctor report "no other process holds this database" and send the operator into the
+        # offline PRAGMA while it still had ours attached (#104714 review, round 5).
+        if argv is not None and _looks_like_hermes(argv):
+            return None if _argv_scoped_to_other_home(argv, db_path) else argv
+        uninspectable += 1
+        return None
+
     if sys.platform.startswith("linux"):
         try:
             own_pid = os.getpid()
@@ -231,14 +265,9 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
                 try:
                     fds = os.listdir(fd_dir)
                 except OSError:
-                    argv = _read_proc_argv(pid)
-                    if (
-                        argv is not None
-                        and _looks_like_hermes(argv)
-                        and not _argv_scoped_to_other_home(argv, db_path)
-                    ):
-                        cmdline = " ".join(argv)
-                        holders.append((pid, f"uninspectable holder: {cmdline[:80]}"))
+                    argv = _rule_from_argv(pid)
+                    if argv is not None:
+                        holders.append((pid, f"uninspectable holder: {' '.join(argv)[:80]}"))
                     continue
                 for fd in fds:
                     fd_path = f"{fd_dir}/{fd}"
@@ -247,18 +276,8 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
                     except OSError as exc:
                         if exc.errno in (errno.ENOENT, errno.ESRCH):
                             continue
-                        argv = _read_proc_argv(pid)
-                        if (
-                            argv is not None
-                            and _looks_like_hermes(argv)
-                            and not _argv_scoped_to_other_home(argv, db_path)
-                        ):
-                            holders.append(
-                                (
-                                    pid,
-                                    f"uninspectable descriptor: {fd_path}: {exc}",
-                                )
-                            )
+                        if _rule_from_argv(pid) is not None:
+                            holders.append((pid, f"uninspectable descriptor: {fd_path}: {exc}"))
                         continue
                     target_is_watched = canonical_sqlite_path(target) in watched
                     try:
@@ -270,20 +289,8 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
                             holders.append(
                                 (pid, f"uninspectable descriptor: {target}: {exc}")
                             )
-                        else:
-                            argv = _read_proc_argv(pid)
-                            if (
-                                argv is not None
-                                and _looks_like_hermes(argv)
-                                and not _argv_scoped_to_other_home(argv, db_path)
-                            ):
-                                holders.append(
-                                    (
-                                        pid,
-                                        "uninspectable descriptor: "
-                                        f"{target}: {exc}",
-                                    )
-                                )
+                        elif _rule_from_argv(pid) is not None:
+                            holders.append((pid, f"uninspectable descriptor: {target}: {exc}"))
                         continue
                     if (fd_stat.st_dev, fd_stat.st_ino) in watched_ids or (
                         target_is_watched
@@ -299,6 +306,8 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
                 exc,
             )
             holders.append((-1, f"open-file scan failed: {exc}"))
+        if include_scan_gaps and uninspectable:
+            holders.append((-1, f"open-file scan incomplete: {uninspectable} process(es) could not be inspected"))
         return holders
 
     if psutil is None:
@@ -309,7 +318,15 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
             pid = int(info["pid"])
             if pid == os.getpid():
                 continue
-            for opened in info.get("open_files") or ():
+            opened_files = info.get("open_files")
+            if opened_files is None:
+                # psutil's ``ad_value`` default: AccessDenied / ZombieProcess yields None, which is
+                # NOT an empty list. A system-owned gateway or dashboard the current user cannot
+                # inspect lands here, and ``or ()`` silently counted it as a process with zero open
+                # files — turning an unprovable scan into a confident "quiet".
+                uninspectable += 1
+                continue
+            for opened in opened_files:
                 path = getattr(opened, "path", "")
                 if path and canonical_sqlite_path(os.path.realpath(path)) in watched:
                     holders.append((pid, path))
@@ -320,6 +337,8 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
             exc,
         )
         holders.append((-1, f"open-file scan failed: {exc}"))
+    if include_scan_gaps and uninspectable:
+        holders.append((-1, f"open-file scan incomplete: {uninspectable} process(es) could not be inspected"))
     return holders
 
 

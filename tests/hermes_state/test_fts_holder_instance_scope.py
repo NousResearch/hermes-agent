@@ -137,3 +137,95 @@ class TestUninspectableHolderInstanceScope:
             holders = hermes_state_holders.foreign_state_db_holders(db_path)
             assert [pid for pid, _ in holders] == [222], argv
             assert holders[0][1].startswith("uninspectable holder:"), argv
+
+
+@pytest.mark.linux_only
+class TestUnreadableDescriptorsWithReadableArgv:
+    """#104714 review: with ``/proc/<pid>/fd`` unreadable, a READABLE argv that was not Hermes-shaped
+    was dropped — neither a holder nor a scan gap — so doctor printed "no other process holds this
+    database" over a ``sqlite3 state.db ".backup"`` it never inspected."""
+
+    SQLITE_BACKUP = ["/usr/bin/sqlite3", "{db}", ".backup /tmp/state.bak"]
+
+    @staticmethod
+    def _gaps(db_path):
+        return hermes_state_holders.foreign_state_db_holders(db_path, include_scan_gaps=True)
+
+    def test_non_hermes_argv_naming_our_db_is_a_scan_gap(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "state.db"
+        db_path.write_bytes(b"")
+        _install_fake_proc(monkeypatch, tmp_path, unreadable_pids=(222,))
+        _install_fake_argv(monkeypatch, {222: [t.format(db=db_path) for t in self.SQLITE_BACKUP]})
+
+        # Not a positive holder (the argv is not a Hermes command) — but never an all-clear either.
+        assert hermes_state_holders.foreign_state_db_holders(db_path) == []
+        assert self._gaps(db_path) == [(-1, "open-file scan incomplete: 1 process(es) could not be inspected")]
+
+    def test_unrelated_readable_argv_is_a_scan_gap(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "state.db"
+        db_path.write_bytes(b"")
+        _install_fake_proc(monkeypatch, tmp_path, unreadable_pids=(222,))
+        _install_fake_argv(monkeypatch, {222: ["/usr/lib/systemd/systemd", "--user"]})
+
+        assert self._gaps(db_path) == [(-1, "open-file scan incomplete: 1 process(es) could not be inspected")]
+
+    def test_hermes_argv_on_another_homes_db_is_proven_quiet(self, tmp_path, monkeypatch):
+        """The exemption this rule exists for (#92401): a SECOND HERMES instance, positively placed
+        on another home's database, is neither a holder nor a gap."""
+        db_path = tmp_path / "state.db"
+        db_path.write_bytes(b"")
+        _install_fake_proc(monkeypatch, tmp_path, unreadable_pids=(222,))
+        _install_fake_argv(monkeypatch, {222: ["hermes", "--db=/home/demo/.hermes/state.db", "gateway"]})
+
+        assert self._gaps(db_path) == []
+
+    def test_non_hermes_argv_on_another_homes_db_is_still_a_scan_gap(self, tmp_path, monkeypatch):
+        """#104714 review round 5: the other-home exemption is for a second Hermes instance, and
+        applying it to ANY argv silently dropped an external process whose descriptors were never
+        read. Naming another home does not tell us what this process has open."""
+        db_path = tmp_path / "state.db"
+        db_path.write_bytes(b"")
+        _install_fake_proc(monkeypatch, tmp_path, unreadable_pids=(222,))
+        _install_fake_argv(monkeypatch, {222: [t.format(db="/home/demo/.hermes/state.db") for t in self.SQLITE_BACKUP]})
+
+        assert self._gaps(db_path) == [(-1, "open-file scan incomplete: 1 process(es) could not be inspected")]
+
+    def test_external_process_attached_to_both_homes_is_a_scan_gap(self, tmp_path, monkeypatch):
+        """The reported repro: one sqlite3 naming ANOTHER home's database on argv while ATTACHing
+        OURS inside the SQL string. Only tokens starting with "/" are read as paths, so the
+        reference to ours never registers and the other-home token used to exempt the whole
+        process — doctor then reported nothing held this database and sent the operator into the
+        offline PRAGMA while it was still attached."""
+        db_path = tmp_path / "state.db"
+        db_path.write_bytes(b"")
+        _install_fake_proc(monkeypatch, tmp_path, unreadable_pids=(222,))
+        _install_fake_argv(monkeypatch, {222: [
+            "/usr/bin/sqlite3",
+            "/home/demo/.hermes/state.db",
+            f"ATTACH DATABASE '{db_path}' AS current_profile",
+        ]})
+
+        assert hermes_state_holders.foreign_state_db_holders(db_path) == []
+        assert self._gaps(db_path) == [(-1, "open-file scan incomplete: 1 process(es) could not be inspected")]
+
+    def test_hermes_argv_on_our_home_is_still_a_holder_not_a_gap(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "state.db"
+        db_path.write_bytes(b"")
+        _install_fake_proc(monkeypatch, tmp_path, unreadable_pids=(222,))
+        _install_fake_argv(monkeypatch, {222: ["hermes", f"--db={db_path}", "gateway"]})
+
+        holders = self._gaps(db_path)
+        assert [pid for pid, _ in holders] == [222]
+        assert holders[0][1].startswith("uninspectable holder:")
+
+    def test_uninspectable_descriptor_with_non_hermes_or_no_argv_is_a_scan_gap(self, tmp_path, monkeypatch):
+        """Same rule one level down: a listable fd dir whose descriptor cannot be read."""
+        db_path = tmp_path / "state.db"
+        db_path.write_bytes(b"")
+        _install_fake_proc(monkeypatch, tmp_path, fd_pids=(222,))
+
+        _install_fake_argv(monkeypatch, {222: [t.format(db=db_path) for t in self.SQLITE_BACKUP]})
+        assert self._gaps(db_path) == [(-1, "open-file scan incomplete: 1 process(es) could not be inspected")]
+
+        _install_fake_argv(monkeypatch, {})  # argv unreadable too
+        assert self._gaps(db_path) == [(-1, "open-file scan incomplete: 1 process(es) could not be inspected")]

@@ -89,22 +89,118 @@ def _format_db_size(db_path: Path) -> str:
         return "size unknown"
 
 
+def _report_conversion_holders(unapplied: "list[tuple[str, Path]]") -> None:
+    """Name the processes actually holding each unconverted database, per #110054.
+
+    Applying ``journal_mode=DELETE`` needs the file quiet, and this hint used to list the commands
+    that stop every owner. That list cannot stay complete: systemd (user AND system scope), launchd,
+    s6 inside the all-in-one image, a separate ``restart: unless-stopped`` Compose container, the
+    NixOS and Home Manager modules' own ``hermes-agent`` / ``hermes-backend`` units, a Windows
+    scheduled task or a real SCM service, ``hermes-serve`` in either scope, and Hermes Desktop are all
+    supported owners, and successive review rounds kept finding more. Report what holds the file HERE
+    — the scan is ``os.stat`` plus ``/proc`` or ``lsof`` and never opens the database — and let the
+    operator stop it through whatever supervises it. Signalling a pid is never enough on its own: a
+    supervised process respawns and reopens the database before the PRAGMA runs.
+    """
+    from hermes_state_holders import foreign_state_db_holders
+    from tools.ansi_strip import sanitize_display_text
+
+    def _shown(detail: object) -> str:
+        # ``detail`` is a process command line, a descriptor path or an exception message — untrusted
+        # bytes. Rendered raw, a newline plus a terminal-clear sequence in a process argument can forge
+        # a "no other process holds this database" line into the very diagnostic that gates an offline
+        # database operation. Strip escapes and controls, fold the remaining line breaks, cap the width.
+        text = " ".join(sanitize_display_text(str(detail)).split())
+        return text[:160] + ("…" if len(text) > 160 else "")
+
+    scan_unavailable = sys.platform == "win32"  # foreign_state_db_holders short-circuits to [] there
+    for name, path in unapplied:
+        try:
+            holders = foreign_state_db_holders(path, include_scan_gaps=True)
+        except Exception as exc:  # a diagnostic must never take doctor down
+            holders = [(-1, f"holder scan failed: {exc}")]
+        # ``pid < 0`` rows are scan failures, not holders: "cannot prove quiet" is not "quiet".
+        unprovable = [_shown(detail) for pid, detail in holders if pid < 0]
+        # A POSITIVE pid can still be uncertainty rather than a confirmed holder: the scanner uses
+        # these exact markers when it could not inspect a process or a descriptor, and
+        # ``live_writer_holds_db`` already fails closed on them. Show the pid, but do not let it
+        # read as proof — the same three prefixes, kept in sync with that function.
+        def _uncertain(detail: str) -> bool:
+            return (detail.startswith("uninspectable holder:")
+                    or detail.startswith("uninspectable descriptor:")
+                    or detail.endswith(" (deleted)"))
+
+        # One row per matching DESCRIPTOR, so a single SQLite child holding .db/-wal/-shm is three
+        # rows for one process. Group by pid before counting or capping, or the count is wrong and
+        # five descriptors from one pid can hide a second pid the operator still has to stop.
+        by_pid: "dict[int, list[str]]" = {}
+        for pid, detail in holders:
+            if pid >= 0:
+                by_pid.setdefault(pid, []).append(_shown(detail))
+        named = sorted(by_pid.items())
+        cannot_prove = (bool(unprovable) or scan_unavailable
+                        or any(_uncertain(d) for details in by_pid.values() for d in details))
+
+        listed = ""
+        if named:
+            listed = ", ".join(f"pid {pid} ({details[0]})" for pid, details in named[:5])
+            if len(named) > 5:
+                listed += f", and {len(named) - 5} more"
+
+        if cannot_prove:
+            # A partial scan — some pids found, then a failure row — is still an INCOMPLETE scan: the
+            # holder that matters may be the one it could not see. Name what it did find, but never
+            # let a partial result read as permission to convert.
+            why = unprovable[0] if unprovable else "holder enumeration is unavailable on this platform"
+            seen = f" It did find {len(named)} holder(s) — {listed} — but the scan was incomplete." if named else ""
+            check_info(f"{name}: cannot prove this database is quiet ({why}).{seen} Stop every Hermes process "
+                       f"for this profile through its owner, confirm nothing holds the file, then run a "
+                       f"one-time offline `PRAGMA journal_mode=DELETE` on it.")
+        elif named:
+            check_info(f"{name}: {len(named)} process(es) hold this database or its WAL right now — "
+                       f"{listed}. Stop each through whatever supervises it (its systemd or launchd unit, "
+                       f"s6 or Compose service, Windows task or service, or Hermes Desktop) — signalling "
+                       f"the pid alone lets the supervisor respawn it — then run a one-time offline "
+                       f"`PRAGMA journal_mode=DELETE` on the file.")
+        else:
+            check_info(f"{name}: no other process holds this database right now — run a one-time offline "
+                       f"`PRAGMA journal_mode=DELETE` on it. A gateway, dashboard, cron fire or Desktop "
+                       f"backend starting in between reopens it, so convert before anything restarts.")
+
+
 def _report_database_journal_modes(hermes_home: Path | None = None, version_info: tuple[int, ...] | None = None) -> None:
-    """List each database's journal mode; warn on WAL under a vulnerable SQLite."""
+    """List each database's journal mode; warn on WAL under a vulnerable SQLite, and on a
+    configured ``delete`` that never took effect."""
     from hermes_cli.doctor import HERMES_HOME
     from hermes_state_wal import _path_on_cross_vm_fs, _wal_reset_repair_hint, is_sqlite_wal_reset_vulnerable
     vulnerable = is_sqlite_wal_reset_vulnerable(version_info)
+    from hermes_state_wal import resolve_journal_mode
+    configured = resolve_journal_mode()
     try:
         databases = _hermes_database_paths(hermes_home if hermes_home is not None else HERMES_HOME)
     except Exception as exc:
         check_warn(f"Could not list Hermes databases: {exc}")
         return
-    exposed = []
+    exposed, unapplied = [], []
     for name, path in databases:
         if not path.is_file():
             continue
         mode, error = _read_journal_mode(path)
         size = _format_db_size(path)
+        if error is None and mode == "wal" and configured == "delete":
+            # An operator who set journal_mode=delete did so BECAUSE this store is on a filesystem
+            # where WAL is unsafe, and the runtime never downgrades a database that is already WAL
+            # (a live downgrade under open connections can corrupt it). That refusal is only logged
+            # once per process, so without this check the operator believes they are protected.
+            # Decided ahead of the mode chain below, so it composes with sibling WAL warnings
+            # instead of competing with them for a branch: whatever else is true of a database the
+            # operator already configured away from WAL, this report (and its holders) is the one
+            # that names the actual state.
+            unapplied.append((name, path))
+            check_warn(f"{name} is in WAL mode ({size}) despite database.journal_mode=delete",
+                       "(the setting never applied; an existing WAL database is never live-downgraded"
+                       + (", and it is also exposed to the WAL-reset bug)" if vulnerable else ")"))
+            continue
         if error is not None:
             if vulnerable:
                 check_warn(f"{name}: journal mode could not be read", f"({error}; cannot rule out WAL exposure)")
@@ -127,6 +223,8 @@ def _report_database_journal_modes(hermes_home: Path | None = None, version_info
             check_info(f"{name}: WAL journal mode ({size})")
         else:
             check_info(f"{name}: rollback journal mode ({size}{', not exposed' if vulnerable else ''})")
+    if unapplied:
+        _report_conversion_holders(unapplied)
     if exposed:
         check_info(f"To clear the exposure: {_wal_reset_repair_hint()}")
 

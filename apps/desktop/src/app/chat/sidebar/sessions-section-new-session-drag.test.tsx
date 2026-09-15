@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
-import { $dismissedWorktreeIds, dismissWorktree, restoreWorktree } from '@/store/layout'
+import { $dismissedWorktreeIds, $sidebarShowAllSessions, dismissWorktree, restoreWorktree } from '@/store/layout'
 import { removeWorktreePath, switchBranchInRepo } from '@/store/projects'
 
 import {
@@ -16,6 +16,7 @@ import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section
 import type { VirtualSessionListProps } from './virtual-session-list'
 
 const startNewSessionDrag = vi.hoisted(() => vi.fn())
+const workspaceOpen = vi.hoisted(() => ({ value: false }))
 
 vi.mock('../new-session-drag', () => ({ startNewSessionDrag }))
 
@@ -83,9 +84,9 @@ vi.mock('@/i18n', () => ({
 
 vi.mock('./projects/model', () => ({
   PROJECT_PREVIEW_COUNT: 3,
-  SIDEBAR_GROUP_PAGE: 20,
+  SIDEBAR_GROUP_PAGE: 5,
   latestProjectSessions: () => [],
-  useWorkspaceNodeOpen: () => [false, vi.fn()]
+  useWorkspaceNodeOpen: () => [workspaceOpen.value, vi.fn()]
 }))
 
 vi.mock('./projects/project-menu', () => ({
@@ -167,10 +168,63 @@ afterEach(cleanup)
 
 beforeEach(() => {
   $dismissedWorktreeIds.set([])
+  $sidebarShowAllSessions.set(false)
+  workspaceOpen.value = false
   vi.mocked(removeWorktreePath).mockReset()
   noop.mockClear()
   startNewSessionDrag.mockReset()
   vi.mocked(switchBranchInRepo).mockReset()
+})
+
+describe('Show all sessions', () => {
+  const sessions = Array.from({ length: 6 }, (_, index) => ({ id: `session-${index + 1}` }) as SessionInfo)
+  const renderRows = (items: SessionInfo[]) => (
+    <>
+      {items.map(item => (
+        <div key={item.id}>{item.id}</div>
+      ))}
+    </>
+  )
+
+  it('keeps the five-session page by default and renders every loaded workspace session when enabled', () => {
+    workspaceOpen.value = true
+
+    const { rerender } = render(
+      <SidebarWorkspaceGroup group={group({ sessions })} renderRows={renderRows} showAllSessions={false} />
+    )
+
+    expect(screen.getByText('session-5')).toBeTruthy()
+    expect(screen.queryByText('session-6')).toBeNull()
+
+    rerender(<SidebarWorkspaceGroup group={group({ sessions })} renderRows={renderRows} showAllSessions />)
+
+    expect(screen.getByText('session-6')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Show .* more in feature/ })).toBeNull()
+  })
+
+  it('does not cap expanded project previews at two date groups', () => {
+    workspaceOpen.value = true
+    $sidebarShowAllSessions.set(true)
+    const now = Math.floor(Date.now() / 1000)
+    const previewSessions = [0, 2, 10, 40].map(
+      days =>
+        ({
+          id: `day-${days}`,
+          last_active: now - days * 24 * 60 * 60,
+          started_at: now - days * 24 * 60 * 60
+        }) as SessionInfo
+    )
+
+    render(
+      <SidebarSessionsSection
+        {...baseProps()}
+        projectOverview={[project()]}
+        projectOverviewPreviews={{ 'project-1': previewSessions }}
+      />
+    )
+
+    expect(screen.getByText('day-40')).toBeTruthy()
+  })
 })
 
 describe('project-associated new-session drag sources', () => {

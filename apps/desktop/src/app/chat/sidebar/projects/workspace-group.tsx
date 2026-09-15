@@ -37,6 +37,8 @@ interface SidebarWorkspaceGroupProps {
   // When set (linked worktree rows), shows a remove affordance that runs a real
   // `git worktree remove`.
   onRemove?: () => void
+  /** Render all loaded workspace sessions instead of the ordinary page. */
+  showAllSessions?: boolean
 }
 
 export function SidebarWorkspaceGroup({
@@ -44,7 +46,8 @@ export function SidebarWorkspaceGroup({
   renderRows,
   onNewSession,
   onNewSessionSplit,
-  onRemove
+  onRemove,
+  showAllSessions = false
 }: SidebarWorkspaceGroupProps) {
   const { t } = useI18n()
   const s = t.sidebar
@@ -65,7 +68,10 @@ export function SidebarWorkspaceGroup({
   const sessions = rankSessions(group.sessions, rankIds)
   // A profile previews the same handful a project does, and clicking its label
   // is how you see the rest. Workspace groups page within what's loaded.
-  const visibleSessions = sessions.slice(0, isProfileGroup ? PROJECT_PREVIEW_COUNT : visibleCount)
+  const visibleSessions = sessions.slice(
+    0,
+    isProfileGroup ? PROJECT_PREVIEW_COUNT : showAllSessions ? undefined : visibleCount
+  )
   const hiddenCount = isProfileGroup ? 0 : sessions.length - visibleSessions.length
   const nextCount = Math.min(SIDEBAR_GROUP_PAGE, hiddenCount)
 

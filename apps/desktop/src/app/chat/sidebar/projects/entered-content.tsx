@@ -37,7 +37,8 @@ export function EnteredProjectContent({
   onNewSessionSplit,
   repoWorktrees,
   liveSessions,
-  removedSessionIds
+  removedSessionIds,
+  showAllSessions = false
 }: {
   project: SidebarProjectTree
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
@@ -46,6 +47,8 @@ export function EnteredProjectContent({
   repoWorktrees?: Record<string, HermesGitWorktree[]>
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
+  /** Bypass the lane's ordinary five-session page when the sidebar preference is enabled. */
+  showAllSessions?: boolean
 }) {
   if (!project.repos.length) {
     return null
@@ -72,6 +75,7 @@ export function EnteredProjectContent({
           renderRows={renderRows}
           repo={repo}
           showHeader={!single}
+          showAllSessions={showAllSessions}
         />
       ))}
     </>
@@ -86,7 +90,8 @@ function RepoFlatSection({
   onNewSessionSplit,
   discoveredWorktrees,
   liveSessions,
-  removedSessionIds
+  removedSessionIds,
+  showAllSessions
 }: {
   repo: SidebarWorkspaceTree
   showHeader: boolean
@@ -96,6 +101,7 @@ function RepoFlatSection({
   discoveredWorktrees?: HermesGitWorktree[]
   liveSessions?: SessionInfo[]
   removedSessionIds?: ReadonlySet<string>
+  showAllSessions: boolean
 }) {
   const { t } = useI18n()
   const s = t.sidebar
@@ -177,6 +183,7 @@ function RepoFlatSection({
           onNewSessionSplit={group.isKanban ? undefined : onNewSessionSplit}
           onRemove={group.isMain || group.isKanban ? undefined : () => setRemoveTarget(group)}
           renderRows={renderRows}
+          showAllSessions={showAllSessions}
         />
       ))}
     </>

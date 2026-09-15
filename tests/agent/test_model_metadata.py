@@ -303,6 +303,26 @@ class TestDefaultContextLengths:
                         model, provider="kimi-coding", base_url=base_url
                     ) == 1_048_576
 
+    def test_k2_8_preview_context_is_1m_on_coding_endpoint(self):
+        """kimi-k2.8-preview resolves to 1 Mi on the Kimi Coding endpoint.
+
+        Like kimi-k3, the K2.8 Preview slug has a global DEFAULT_CONTEXT_LENGTHS
+        entry so it resolves to 1M everywhere, plus an endpoint-scoped entry for
+        api.kimi.com/coding.
+        """
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=None):
+            for base_url in (
+                "https://api.kimi.com/coding",
+                "https://api.kimi.com/coding/v1",
+            ):
+                assert get_model_context_length(
+                    "kimi-k2.8-preview", provider="kimi-coding", base_url=base_url
+                ) == 1_048_576
+
     @pytest.mark.parametrize("model, provider, base_url", [
         ("muse-spark-1.3-contributor-free", "opencode-free", "https://opencode.ai/zen/v1"),
         ("muse-spark-1.3-contributor", "opencode-go", "https://opencode.ai/zen/go/v1"),

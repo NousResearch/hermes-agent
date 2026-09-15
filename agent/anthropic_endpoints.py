@@ -50,7 +50,7 @@ _KIMI_FAMILY_MODEL_PREFIXES = (
 )
 # Bare release slugs with no separator suffix (Kimi Coding Plan serves K3 as exactly ``k3``);
 # exact-match so unrelated names sharing the prefix don't match.
-_KIMI_FAMILY_EXACT_SLUGS = frozenset({"k3"})
+_KIMI_FAMILY_EXACT_SLUGS = frozenset({"k3", "kimi-for-coding"})
 
 
 def _model_name_is_kimi_family(model: str | None) -> bool:

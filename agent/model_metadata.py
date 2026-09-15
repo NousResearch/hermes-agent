@@ -374,8 +374,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     "grok-2-vision": 8192, "grok-4-fast": 2000000, "grok-4.20": 2000000,
     "grok-4.6": 500000, "grok-4.5": 500000, "grok-4.3": 1000000, "grok-4": 256000,
     "grok-3": 131072, "grok-2": 131072, "grok": 131072,
-    # Kimi — K3 is 1 Mi (matches the endpoint-scoped override); older Kimi 256K.
-    "kimi-k3": 1_048_576, "kimi": 262144,
+    # Kimi — K3 and K2.8 Preview are 1 Mi (matches the endpoint-scoped override); older Kimi 256K.
+    "kimi-k3": 1_048_576, "kimi-k2.8-preview": 1_048_576, "kimi": 262144,
     # Upstage Solar — /v1/models returns no context_length; dated variants resolve via prefix.
     "solar-open2": 262144, "solar-pro3": 131072, "solar-pro2": 65536, "solar-mini": 32768,
     # Tencent Hunyuan (262144 = 256 × 1024, aligned with OpenRouter live metadata)
@@ -576,7 +576,7 @@ def _ollama_show_context(data: Dict[str, Any], *, gguf_first: bool, minimum: Opt
 
 # (host, canonical paths, model ids, context) — see _endpoint_scoped_context_length.
 _ENDPOINT_SCOPED_CONTEXT = (
-    ("api.kimi.com", {"/coding", "/coding/v1"}, {"k3", "kimi-k3", "kimi-k3-cot"}, 1_048_576),
+    ("api.kimi.com", {"/coding", "/coding/v1"}, {"k3", "kimi-k3", "kimi-k3-cot", "kimi-k2.8-preview"}, 1_048_576),
     ("integrate.api.nvidia.com", {"/v1"}, {"deepseek-ai/deepseek-v4-pro"}, 262_144),
 )
 

@@ -16,6 +16,9 @@ class TestModelAliasCanonical:
         assert model_alias_canonical("k3") == "kimi-k3"
         assert model_alias_canonical("K3") == "kimi-k3"
 
+    def test_kimi_for_coding_folds_to_k2_8_preview(self):
+        assert model_alias_canonical("kimi-for-coding") == "kimi-k2.8-preview"
+
 
 class TestPickerMergeAliasDedup:
     def test_live_bare_k3_not_duplicated_against_curated_kimi_k3(self):
@@ -38,6 +41,7 @@ class TestPickerMergeAliasDedup:
 
         k3_rows = [m for m in out if model_alias_canonical(m) == "kimi-k3"]
         assert k3_rows == ["kimi-k3"], out
-        # Live-only entries with no curated twin still surface.
-        assert "kimi-for-coding" in out
+        # Live wire-id kimi-for-coding folds into curated kimi-k2.8-preview.
+        k28_rows = [m for m in out if model_alias_canonical(m) == "kimi-k2.8-preview"]
+        assert k28_rows == ["kimi-k2.8-preview"], out
 

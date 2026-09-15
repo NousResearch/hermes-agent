@@ -175,7 +175,8 @@ async def test_native_preparation_transfers_branch_custody_before_terminal_relea
 
 
 @pytest.mark.asyncio
-async def test_known_v2_native_hardlink_pair_drains_without_unknown_owners(tmp_path, monkeypatch):
+@pytest.mark.parametrize('missing_alias', [False, True])
+async def test_known_v2_native_hardlink_pair_drains_without_unknown_owners(tmp_path, monkeypatch, missing_alias):
     from gateway.hosted_room_attachments import default_attachment_root
     db, owner = owned(tmp_path, monkeypatch, initialize=False)
     try:
@@ -188,8 +189,17 @@ async def test_known_v2_native_hardlink_pair_drains_without_unknown_owners(tmp_p
         alias.parent.mkdir(parents=True)
         os.link(backing, alias)
         initialize_working_copies(db, epoch=owner.epoch)
+        if missing_alias:
+            from hermes_state_runtime import admit_session_input
+            held = alias.with_name('live-holder.txt')
+            os.link(backing, held)
+            alias.unlink()
+            admit_session_input(db, epoch=owner.epoch, principal_id='live', session_id='s', request_id='live',
+                payload={'text': 'live', 'attachments_v1': {'media': [
+                    {'path': str(held), 'sha256': digest, 'size': len(data)}], 'media_types': ['image/png']}})
         collect_working_copies(db, epoch=owner.epoch)
         collect_legacy_input_aliases(db, epoch=owner.epoch)
-        assert not backing.exists() and not alias.exists()
+        assert backing.exists() is missing_alias
+        assert not alias.exists()
     finally:
         close(db, tmp_path)

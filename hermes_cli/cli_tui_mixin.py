@@ -1125,7 +1125,21 @@ class CLITuiMixin:
                 return
             buf.apply_completion(completion)
         elif buf.suggestion and buf.suggestion.text:
-            buf.insert_text(buf.suggestion.text)
+            # No completion menu, but there's a ghost text auto-suggestion —
+            # accept it. Skill-intent suggestions carry the FULL replacement
+            # draft ("/learn 我要学习无人机"): the suggestion starts with "/"
+            # while the current draft does not, so we replace the whole
+            # buffer. A plain /-prefix completion keeps its append behavior.
+            suggestion_text = buf.suggestion.text
+            if suggestion_text.startswith("/") and not buf.text.lstrip().startswith("/"):
+                # Full replacement via the buffer's normal edit pipeline so
+                # undo history and cursor validation stay intact — assigning
+                # buf.text directly would bypass delete_before_cursor and
+                # clobber the undo stack.
+                buf.delete_before_cursor(len(buf.text))
+                buf.insert_text(suggestion_text)
+            else:
+                buf.insert_text(suggestion_text)
         else:
             buf.start_completion()
 
@@ -2384,6 +2398,7 @@ class CLITuiMixin:
             # in both light and dark schemes (a hardcoded near-white was invisible on light).
             'input-area': '',
             'placeholder': '#888888 italic',
+            'auto-suggestion': '#888888 italic',
             'prompt': '',
             'prompt-working': '#888888 italic',
             'hint': '#888888 italic',

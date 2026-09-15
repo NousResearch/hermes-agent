@@ -1,8 +1,14 @@
-"""Bridge into the standalone decision-hud plugin's db.py — the Rule-1
-dispatch-side batch-approval gate (F1). Minimal cut: only
-check_batch_approval(). See decision-hub-first-work/plans/02-... for the
-follow-up functions (push_task_missing_constraint, check_constraint_resolved,
-push_problem_report) intentionally deferred to their own PRs.
+"""Bridge into the standalone decision-hud plugin's db.py.
+
+Two independent gates live here:
+  - ``check_batch_approval`` — Rule-1 dispatch-side batch-approval gate (F1).
+  - ``push_problem_report`` — Rule 6 EARS-ification-gate refusal path (files
+    a raw problem report instead of inventing a plausible-looking answer).
+
+Minimal cut note: this module intentionally does NOT yet implement
+``push_task_missing_constraint`` / ``check_constraint_resolved`` — see
+decision-hub-first-work/plans/02-... for those follow-ups, deferred to their
+own PRs/branches.
 """
 from __future__ import annotations
 
@@ -98,6 +104,36 @@ def check_batch_approval(*, project: str, batch_id: str) -> tuple[bool, str]:
         if not_approved_cls and isinstance(exc, not_approved_cls):
             return False, str(exc)
         return False, f"batch approval check errored: {exc}"
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def push_problem_report(
+    *, project: str, problem: str, context: Optional[str] = None, reporter: Optional[str] = None,
+) -> tuple[bool, str]:
+    """File a raw problem report in decision-hud (Rule 6 EARS-gate refusal
+    path). ``(True, report_id)`` on success, ``(False, reason)`` on any
+    failure — mirrors :func:`check_batch_approval`'s never-raises contract
+    so a decision-hud outage never crashes the caller (the decomposer
+    proceeds with ``ears_sentence=None`` regardless; see
+    ``kanban_decompose.py``'s EARS-gate docstring for the fail-open
+    rationale).
+    """
+    try:
+        db = _load_decision_hud_db()
+    except Exception as exc:
+        return False, f"decision-hud unavailable: {exc}"
+    conn: Optional[sqlite3.Connection] = None
+    try:
+        conn = db.connect()
+        row = db.push_problem_report(conn, project_id=project, problem=problem, context=context, reporter=reporter)
+        return True, str(row.get("id", ""))
+    except Exception as exc:
+        return False, f"problem report push failed: {exc}"
     finally:
         if conn is not None:
             try:

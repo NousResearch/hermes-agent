@@ -1,0 +1,40 @@
+{
+  "name": "blobatar",
+  "version": "2.0.0",
+  "description": "Deterministic geometric blobatars from any string. No dependencies.",
+  "type": "module",
+  "//sideEffects": "Not `false`. That would license bundlers to drop `import \"blobatar/motion.css\"` as dead weight, and animated blobatars would silently render static for everyone shipping through a bundler.",
+  "sideEffects": ["*.css"],
+  "files": ["dist", "src", "README.md", "CHANGELOG.md", "LICENSE"],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "//exports": "Built JS for everyone. What the workspace apps use in development is not this map — they alias `blobatar/*` back to `src` through tsconfig paths, so editing a curve shows up in the tuning grid on save. Keeping one resolution here means the published package resolves identically under every runtime and bundler.",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./blob": { "types": "./dist/blob.d.ts", "default": "./dist/blob.js" },
+    "./uri": { "types": "./dist/uri.d.ts", "default": "./dist/uri.js" },
+    "./expression": { "types": "./dist/expression.d.ts", "default": "./dist/expression.js" },
+    "./react": { "types": "./dist/react.d.ts", "default": "./dist/react.js" },
+    "./motion.css": "./dist/motion.css",
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": { "optional": true }
+  },
+  "keywords": ["blobatar", "avatar", "identicon", "svg", "deterministic", "no-dependencies"],
+  "license": "MIT",
+  "author": "Alain",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Alain00/blobatar.git",
+    "directory": "packages/blobatar"
+  },
+  "homepage": "https://github.com/Alain00/blobatar#readme",
+  "bugs": "https://github.com/Alain00/blobatar/issues"
+}

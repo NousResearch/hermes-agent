@@ -93,6 +93,8 @@ def bind_module(module_globals: dict, server) -> None:
             publish_imported_class(server, mod_name, name, obj)
             continue
         prev = vars(server).get(name)
+        if prev is obj:
+            continue  # already published (a re-register, or an alias of the same object)
         if isinstance(obj, types.FunctionType):
             owner = getattr(prev, "_hermes_split_module", None) if isinstance(prev, types.FunctionType) else None
             if owner and owner != mod_name:

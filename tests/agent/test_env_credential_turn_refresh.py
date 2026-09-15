@@ -32,11 +32,17 @@ def _make_agent(*, provider="openai-api", base_url=DEFAULT_BASE, api_key="sk-old
     agent = object.__new__(AIAgent)
     agent.provider = provider
     agent.requested_provider = provider
+    agent.model = "gpt-test"
     agent.api_mode = "chat_completions"
     agent.base_url = base_url
     agent.api_key = api_key
     agent._client_kwargs = {"base_url": base_url, "api_key": api_key}
     agent._fallback_activated = False
+    agent._use_prompt_caching = True
+    agent._use_native_cache_layout = False
+    agent.log_prefix = "[test] "
+    agent._print_fn = None
+    agent.suppress_status_output = True
     agent._replace_primary_openai_client = MagicMock(return_value=True)
     agent._reapply_route_client_config = MagicMock()
     return agent
@@ -297,3 +303,82 @@ class TestNamedCustomProviders:
         env["LONGCAT_API_KEY"] = "lc-fresh"
 
         assert agent._try_refresh_env_client_credentials() is False
+
+
+class TestPrimaryRuntimeSnapshotFollowsAdoption:
+    """Adopting an env credential edit must refresh ``_primary_runtime``, or the
+    next transport recovery / turn-start restore resurrects the pre-adoption
+    endpoint from the init snapshot (#75091 resurrection class, via the env
+    refresh path). Observed live: a session adopted a coding-plan endpoint at
+    the turn boundary; a transient stream error 90 minutes later ran
+    ``primary_recovery`` off the stale init snapshot and moved the session back
+    to the dead pay-as-you-go endpoint → HTTP 429 code 1113 for the rest of the
+    day until process restart."""
+
+    def test_env_adoption_updates_primary_runtime_snapshot(self, env):
+        from agent.agent_runtime_helpers import _build_primary_runtime_snapshot
+
+        agent = _make_agent()
+        agent._primary_runtime = _build_primary_runtime_snapshot(agent, agent.api_mode)
+        env["OPENAI_API_KEY"] = "sk-old"
+        env["OPENAI_BASE_URL"] = LOCAL_BASE
+
+        assert agent._try_refresh_env_client_credentials() is True
+        # The snapshot must carry the adopted endpoint/key, not the init one:
+        assert agent._primary_runtime["base_url"] == LOCAL_BASE
+        assert agent._primary_runtime["api_key"] == "sk-old"
+        assert agent._primary_runtime["client_kwargs"]["base_url"] == LOCAL_BASE
+
+    def test_recovery_after_env_adoption_lands_on_adopted_endpoint(self, env, monkeypatch):
+        """End-to-end invariant: primary transport recovery after an env
+        adoption must rebuild the client on the adopted endpoint, never on the
+        init-time one."""
+        from agent import agent_runtime_helpers as arh
+
+        agent = _make_agent()
+        agent._primary_runtime = arh._build_primary_runtime_snapshot(agent, agent.api_mode)
+        env["OPENAI_API_KEY"] = "sk-old"
+        env["OPENAI_BASE_URL"] = LOCAL_BASE
+        assert agent._try_refresh_env_client_credentials() is True
+
+        created = {}
+
+        def fake_create(agent_self, kwargs, *, reason, shared):
+            created["base_url"] = kwargs.get("base_url")
+            created["reason"] = reason
+            return object()
+
+        # Patch where production reads it: try_recover_primary_transport calls the
+        # module-level create_openai_client (client_lifecycle forwards to it).
+        monkeypatch.setattr(arh, "create_openai_client", fake_create)
+        agent.client = object()
+        import httpx
+        recovered = arh.try_recover_primary_transport(
+            agent,
+            httpx.RemoteProtocolError("stream reset mid-turn"),
+            retry_count=3,
+            max_retries=3,
+        )
+        assert recovered is True
+        assert created["reason"] == "primary_recovery"
+        assert created["base_url"] == LOCAL_BASE
+
+    def test_adoption_during_fallback_keeps_primary_snapshot(self, env):
+        """Mid-fallback token re-mints must NOT sync the snapshot: the fallback's
+        identity lives on the agent, the snapshot preserves the primary. Syncing
+        here would let the next restore_primary_runtime promote the fallback to
+        primary permanently."""
+        from agent.agent_runtime_helpers import _build_primary_runtime_snapshot, sync_primary_runtime_credentials
+
+        agent = _make_agent()
+        agent._primary_runtime = _build_primary_runtime_snapshot(agent, agent.api_mode)
+        primary_endpoint = agent._primary_runtime["base_url"]
+        agent._fallback_activated = True  # fallback swapped identity in place:
+        agent.provider = agent.requested_provider = "nous-fallback"
+        agent.api_key, agent.base_url = "fb-key", "https://fallback.example/v1"
+        agent._client_kwargs = {"base_url": agent.base_url, "api_key": agent.api_key}
+
+        sync_primary_runtime_credentials(agent)
+
+        assert agent._primary_runtime["base_url"] == primary_endpoint
+        assert agent._primary_runtime["provider"] == "openai-api"

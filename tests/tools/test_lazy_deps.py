@@ -469,6 +469,52 @@ class TestInstallSpecs:
         assert result.blocked is True
 
 
+    def test_upgrade_moves_an_installed_but_stale_package_forward(self, monkeypatch):
+        # ``hermes update`` re-applies a plugin's declared dependency (#108711). Without
+        # --upgrade the resolver treats a satisfied range as done, so a package installed
+        # at the stale end of its range would never move.
+        import subprocess
+
+        monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {}, raising=False)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        monkeypatch.setattr(ld, "_uv_binary", lambda: "uv")
+        monkeypatch.setattr(ld, "_warm_installed_bytecode", lambda *a, **kw: None)
+        commands: list[list[str]] = []
+
+        def fake_run(cmd, **kw):
+            commands.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(ld, "_run_installer", fake_run)
+
+        result = ld.install_specs(["ddgs>=9,<10"], upgrade=True)
+
+        assert result.ok is True
+        assert commands and "--upgrade" in commands[0]
+        assert "ddgs>=9,<10" in commands[0]
+
+    def test_default_install_does_not_upgrade_satisfied_packages(self, monkeypatch):
+        # The upgrade flag is opt-in: existing callers must keep resolving as installed.
+        import subprocess
+
+        monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {}, raising=False)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        monkeypatch.setattr(ld, "_uv_binary", lambda: "uv")
+        monkeypatch.setattr(ld, "_warm_installed_bytecode", lambda *a, **kw: None)
+        commands: list[list[str]] = []
+
+        monkeypatch.setattr(
+            ld, "_run_installer",
+            lambda cmd, **kw: (commands.append(list(cmd)), subprocess.CompletedProcess(cmd, 0, "", ""))[1],
+        )
+
+        ld.install_specs(["ddgs>=9,<10"])
+
+        assert commands and "--upgrade" not in commands[0]
+
+
     def test_never_raises_on_unexpected_error(self, monkeypatch):
         monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
         monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)

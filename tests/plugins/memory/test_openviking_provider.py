@@ -12,6 +12,7 @@ from hermes_cli import __version__ as _HERMES_VERSION
 from plugins.memory.openviking import (
     OpenVikingMemoryProvider,
     _VikingClient,
+    _validate_forget_memory_uri,
 )
 
 _EXPECTED_USER_AGENT = f"openviking-memory-hermes/{_HERMES_VERSION}"
@@ -728,6 +729,88 @@ def test_get_tool_schemas_omits_profile_and_keeps_narrow_forget_tools():
     assert "viking_forget" in names
 
 
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "viking://user/zayn/memories/profile.md",
+        "viking://user/zayn/memories/preferences/mem_abc123.md",
+        "viking://user/zayn/peers/hermes/memories/preferences/mem_abc123.md",
+        # Self alias.
+        "viking://~/memories/profile.md",
+        "viking://~/memories/preferences/mem_abc123.md",
+        "viking://~/peers/hermes/memories/preferences/mem_abc123.md",
+    ],
+)
+def test_validate_forget_memory_uri_accepts_canonical(uri):
+    user_space = "zayn" if uri.startswith("viking://user/") else None
+    assert _validate_forget_memory_uri(uri, user_space=user_space) == (uri, None)
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        # Deprecated uid-less shorthands.
+        "viking://user/memories/preferences/mem_abc123.md",
+        "viking://user/peers/hermes/memories/preferences/mem_abc123.md",
+        # Non-memory scopes and generated summaries.
+        "viking://user/zayn/sessions/s1/mem_abc123.md",
+        "viking://resources/docs/note.md",
+        "viking://user/zayn/memories/preferences/.abstract.md",
+        # Directories, non-markdown, query/fragment.
+        "viking://user/zayn/memories/preferences/",
+        "viking://user/zayn/memories/preferences/mem_abc123.txt",
+        "viking://user/zayn/memories/preferences/mem_abc123.md?force=1",
+    ],
+)
+def test_validate_forget_memory_uri_rejects_non_canonical(uri):
+    resolved, error = _validate_forget_memory_uri(uri)
+    assert resolved is None and error
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "viking://user/alice/memories/./x.md",
+        "viking://user/alice/memories/../../user/bob/memories/x.md",
+        "viking://user/alice/memories/%2e/x.md",
+        "viking://user/alice/memories/%2e%2e/x.md",
+        "viking://~/memories/../x.md",
+    ],
+)
+def test_validate_forget_memory_uri_rejects_dot_segments(uri):
+    resolved, error = _validate_forget_memory_uri(uri, user_space="alice")
+
+    assert resolved is None
+    assert "dot path segments" in error
+
+
+def test_validate_forget_memory_uri_rejects_other_user_space():
+    mine = "viking://user/zayn/memories/preferences/mem_abc123.md"
+    theirs = "viking://user/someone-else/memories/preferences/mem_abc123.md"
+
+    assert _validate_forget_memory_uri(mine, user_space="zayn") == (mine, None)
+    assert _validate_forget_memory_uri("viking://~/memories/preferences/mem_abc123.md", user_space="zayn")[1] is None
+
+    resolved, error = _validate_forget_memory_uri(theirs, user_space="zayn")
+    assert resolved is None and "your own memories" in error
+    resolved, error = _validate_forget_memory_uri(theirs, user_space=None)
+    assert resolved is None and "verify the current OpenViking user" in error
+
+
+def test_tool_forget_rejects_explicit_user_when_identity_unavailable():
+    provider = OpenVikingMemoryProvider()
+    provider._client = MagicMock()
+    provider._client.get.side_effect = RuntimeError("identity probe unavailable")
+
+    result = json.loads(provider._tool_forget({
+        "uri": "viking://user/alice/memories/preferences/mem_abc123.md",
+    }))
+
+    assert "error" in result
+    assert "identity" in result["error"].lower()
+    provider._client.delete.assert_not_called()
+
+
 def test_viking_client_delete_uses_identity_headers(monkeypatch):
     client = _VikingClient(
         "https://example.com",
@@ -744,18 +827,18 @@ def test_viking_client_delete_uses_identity_headers(monkeypatch):
         return SimpleNamespace(
             status_code=200,
             text="",
-            json=lambda: {"status": "ok", "result": {"uri": "viking://~/memories/x.md"}},
+            json=lambda: {"status": "ok", "result": {"uri": "viking://user/zayn/memories/x.md"}},
             raise_for_status=lambda: None,
         )
 
     monkeypatch.setattr(client._httpx, "delete", capture_delete)
 
-    assert client.delete("/api/v1/fs", params={"uri": "viking://~/memories/x.md"}) == {
+    assert client.delete("/api/v1/fs", params={"uri": "viking://user/zayn/memories/x.md"}) == {
         "status": "ok",
-        "result": {"uri": "viking://~/memories/x.md"},
+        "result": {"uri": "viking://user/zayn/memories/x.md"},
     }
     assert captured["url"] == "https://example.com/api/v1/fs"
-    assert captured["kwargs"]["params"] == {"uri": "viking://~/memories/x.md"}
+    assert captured["kwargs"]["params"] == {"uri": "viking://user/zayn/memories/x.md"}
     assert captured["kwargs"]["headers"]["Authorization"] == "Bearer test-key"
     assert captured["kwargs"]["headers"]["X-OpenViking-Actor-Peer"] == "hermes"
     assert captured["kwargs"]["headers"]["User-Agent"] == _EXPECTED_USER_AGENT
@@ -1009,7 +1092,7 @@ def test_legacy_health_requires_openviking_openapi_identity_before_auth(monkeypa
     assert valid is False
     assert role is None
     assert "0.2.6 or earlier" in message
-    assert "0.2.10 or newer" in message
+    assert "0.2.14 or newer" in message
     assert events == ["health", "openapi"]
 
 

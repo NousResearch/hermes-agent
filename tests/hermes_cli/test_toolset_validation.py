@@ -197,3 +197,72 @@ def test_populated_platforms_produce_no_empty_list_warning():
     cfg = {"cli": ["hermes-cli"], "telegram": ["hermes-telegram"]}
     warnings = validate_platform_toolsets(cfg, _is_valid)
     assert warnings == []
+
+
+def test_explicit_plugin_platform_bundle_entry_is_valid():
+    # The shipped cli-config.yaml.example documents teams: [hermes-teams];
+    # the synthesized bundle is not in TOOLSETS, but default_valid consulted
+    # the platform registry, so the explicit entry must count as valid.
+    from gateway.platform_registry import PlatformEntry, platform_registry
+    from toolsets import resolve_toolset
+
+    platform = "toolset_validation_bundle"
+    platform_registry.register(
+        PlatformEntry(
+            name=platform,
+            label="Toolset Validation Bundle",
+            adapter_factory=lambda _config: object(),
+            check_fn=lambda: True,
+        )
+    )
+    try:
+        cfg = {platform: [f"hermes-{platform}"], "telegram": ["hermes-telegram"]}
+        warnings = validate_platform_toolsets(cfg, _is_valid)
+
+        assert resolve_toolset(f"hermes-{platform}")
+        assert warnings == []
+    finally:
+        platform_registry.unregister(platform)
+
+
+def test_plugin_platform_bundle_alongside_unknown_name_still_warns():
+    # Only the bundle entry is exempt; genuinely unknown names on the same
+    # list keep their warning, with the bundle as the suggestion.
+    from gateway.platform_registry import PlatformEntry, platform_registry
+
+    platform = "toolset_validation_bundle"
+    platform_registry.register(
+        PlatformEntry(
+            name=platform,
+            label="Toolset Validation Bundle",
+            adapter_factory=lambda _config: object(),
+            check_fn=lambda: True,
+        )
+    )
+    try:
+        cfg = {platform: [f"hermes-{platform}", "bogus"]}
+        warnings = validate_platform_toolsets(cfg, _is_valid)
+
+        assert any(
+            f"platform '{platform}'" in w
+            and "unknown toolset 'bogus'" in w
+            and f"did you mean 'hermes-{platform}'?" in w
+            for w in warnings
+        )
+        assert not any("no valid toolsets" in w for w in warnings)
+        assert not any("zero valid toolsets" in w for w in warnings)
+    finally:
+        platform_registry.unregister(platform)
+
+
+def test_unregistered_platform_bundle_entry_still_warns():
+    # Registry unaware of the platform: the bundle entry is treated exactly
+    # as before, so a typo like hermes-teams on a non-plugin platform keeps
+    # the unknown-toolset warning and the zero-valid safety net.
+    cfg = {"teams": ["hermes-teams"]}
+    warnings = validate_platform_toolsets(cfg, _is_valid)
+
+    assert any("unknown toolset 'hermes-teams'" in w for w in warnings)
+    assert not any("did you mean 'hermes-teams'?" in w for w in warnings)
+    assert any("platform 'teams'" in w and "no valid toolsets" in w for w in warnings)
+    assert any("zero valid toolsets" in w for w in warnings)

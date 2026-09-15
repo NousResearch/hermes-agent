@@ -121,7 +121,8 @@ from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.base import (
-    MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, is_network_accessible, validate_media_delivery_path)
+    MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, _terminal_sentinel_start, is_network_accessible,
+    validate_media_delivery_path)
 from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
 from agent.redact import redact_sensitive_text
 from agent.interrupt_compat import request_hard_interrupt
@@ -870,7 +871,12 @@ def _resolve_media_to_data_urls(text: str) -> str:
     def _repl(m: "re.Match[str]") -> str:
         return _to_data_url(m.group("path")) or m.group(0)
     try:
-        return MEDIA_TAG_CLEANUP_RE.sub(_repl, text)
+        # A leaked terminal <|eos|> glued to the last tag is not a path terminator (#111046):
+        # scan without it, and drop it (control token, never content) only when a tag resolved.
+        sentinel_start = _terminal_sentinel_start(text)
+        scan = text[:sentinel_start] if sentinel_start >= 0 else text
+        resolved = MEDIA_TAG_CLEANUP_RE.sub(_repl, scan)
+        return text if resolved == scan else resolved
     except Exception:
         return text
 

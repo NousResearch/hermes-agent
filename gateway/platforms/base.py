@@ -1311,10 +1311,12 @@ _TERMINAL_SENTINEL = "<|eos|>"
 
 
 def _terminal_sentinel_start(text: str) -> int:
-    """Offset of an exact ``<|eos|>`` closing ``text`` (trailing whitespace ignored), else -1."""
-    end = len(text.rstrip())
-    start = end - len(_TERMINAL_SENTINEL)
-    return start if start >= 0 and text[start:end] == _TERMINAL_SENTINEL else -1
+    """Offset where the run of exact ``<|eos|>`` tokens closing ``text`` (trailing whitespace
+    ignored) begins, else -1; the run ends at ``len(text.rstrip())``."""
+    end = start = len(text.rstrip())
+    while start >= len(_TERMINAL_SENTINEL) and text[start - len(_TERMINAL_SENTINEL):start] == _TERMINAL_SENTINEL:
+        start -= len(_TERMINAL_SENTINEL)
+    return start if start < end else -1
 
 
 def _mask_media_scan_text(text: str) -> str:
@@ -1325,7 +1327,7 @@ def _mask_media_scan_text(text: str) -> str:
     masked = A._mask_json_string_media(A._mask_protected_spans(text))
     start = _terminal_sentinel_start(text)
     if start >= 0:
-        masked = _blank_spans(masked, [(start, start + len(_TERMINAL_SENTINEL))])
+        masked = _blank_spans(masked, [(start, len(text.rstrip()))])
     return masked
 
 
@@ -1335,7 +1337,7 @@ def _deliverable_tag_spans(text: str) -> list:
     spans = _real_media_tag_spans(_mask_media_scan_text(text))
     start = _terminal_sentinel_start(text)
     if spans and start >= 0:
-        spans.append((start, start + len(_TERMINAL_SENTINEL)))
+        spans.append((start, len(text.rstrip())))
     return spans
 
 

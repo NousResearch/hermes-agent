@@ -5,10 +5,11 @@ import pytest
 from gateway.platforms.base import BasePlatformAdapter
 
 
+@pytest.mark.parametrize("sentinel", ["<|eos|>", "<|eos|><|eos|>"])
 @pytest.mark.parametrize("filename", ["chart.png", "payload.weirdext", "Caddyfile"])
-def test_terminal_eos_sentinel_leaves_extraction_and_cleanup_unchanged(tmp_path, monkeypatch, filename):
-    """Known-extension, unknown-extension and extension-less tags glued to ``<|eos|>`` extract
-    and clean exactly like the same response without the sentinel."""
+def test_terminal_eos_sentinel_leaves_extraction_and_cleanup_unchanged(tmp_path, monkeypatch, filename, sentinel):
+    """Known-extension, unknown-extension and extension-less tags glued to a (possibly repeated)
+    ``<|eos|>`` extract and clean exactly like the same response without the sentinel."""
     root = tmp_path / "media-cache"
     root.mkdir()
     media_file = root / filename
@@ -16,8 +17,8 @@ def test_terminal_eos_sentinel_leaves_extraction_and_cleanup_unchanged(tmp_path,
     monkeypatch.setattr("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", (root,))
     clean = f"Here is the file.\nMEDIA:{media_file}"
 
-    assert BasePlatformAdapter.extract_media(clean + "<|eos|>") == BasePlatformAdapter.extract_media(clean)
-    assert BasePlatformAdapter.strip_media_directives_for_display(clean + "<|eos|>") == "Here is the file."
+    assert BasePlatformAdapter.extract_media(clean + sentinel) == BasePlatformAdapter.extract_media(clean)
+    assert BasePlatformAdapter.strip_media_directives_for_display(clean + sentinel) == "Here is the file."
 
 
 @pytest.mark.parametrize(

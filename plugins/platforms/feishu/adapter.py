@@ -1199,6 +1199,76 @@ def _sdk_build(request_cls: Any, **fields: Any) -> Any:
     return builder.build()
 
 
+# ---------------------------------------------------------------------------
+# Per-chat outbound suppression of "notification dump" replies.
+# Incident: an agent woken from context pasted ~11K chars of supervisor
+# notification history into a group chat, delivered as streaming edits. For
+# chats on the list, outbound text judged by
+# gateway.response_filters.is_notification_dump is not delivered verbatim:
+# the original is appended to <hermes_home>/logs/notify_dump_suppressed.log
+# and a one-line suppression notice is sent instead. List sources: env
+# HERMES_NOTIFY_DUMP_SUPPRESS_CHATS (comma-separated) or config.yaml
+# display.notification_dump_suppress_chats (list). Chats outside the list
+# are unaffected. Requires a gateway restart to take effect.
+# ---------------------------------------------------------------------------
+
+_NOTIFY_DUMP_SUPPRESS_NOTICE = "🗑️ Suppressed a notification-dump reply (original in logs/notify_dump_suppressed.log)"
+_notify_dump_chats_cache: Optional[frozenset] = None
+
+
+def _notification_dump_suppress_chats() -> frozenset:
+    global _notify_dump_chats_cache
+    if _notify_dump_chats_cache is not None:
+        return _notify_dump_chats_cache
+    raw_env = os.getenv("HERMES_NOTIFY_DUMP_SUPPRESS_CHATS", "")
+    if raw_env:
+        _notify_dump_chats_cache = frozenset(
+            c.strip() for c in raw_env.split(",") if c.strip()
+        )
+        return _notify_dump_chats_cache
+    chats: frozenset = frozenset()
+    try:
+        import yaml
+
+        cfg = yaml.safe_load((get_hermes_home() / "config.yaml").read_text())
+        raw = (cfg or {}).get("display", {}).get("notification_dump_suppress_chats")
+        if isinstance(raw, (list, tuple, set)):
+            chats = frozenset(str(c) for c in raw)
+    except Exception:
+        pass
+    _notify_dump_chats_cache = chats
+    return chats
+
+
+def _apply_notification_dump_suppression(chat_id: Any, content: Any) -> Any:
+    """Replace ``content`` with a one-line notice when it is a notification dump."""
+    if not isinstance(content, str) or not content:
+        return content
+    if str(chat_id) not in _notification_dump_suppress_chats():
+        return content
+    try:
+        from gateway.response_filters import is_notification_dump
+    except Exception:
+        return content
+    if not is_notification_dump(content):
+        return content
+    try:
+        log_path = get_hermes_home() / "logs" / "notify_dump_suppressed.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(
+                f"[{time.strftime('%Y-%m-%dT%H:%M:%S')}] chat={chat_id} "
+                f"len={len(content)}\n{content}\n{'-' * 60}\n"
+            )
+    except Exception:
+        pass
+    logger.warning(
+        "[Feishu] Suppressed notification-dump outbound to chat=%s (%d chars)",
+        chat_id, len(content),
+    )
+    return _NOTIFY_DUMP_SUPPRESS_NOTICE
+
+
 class FeishuAdapter(BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
@@ -1568,6 +1638,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        content = _apply_notification_dump_suppression(chat_id, content)
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         # Decide markdown-vs-text once for the whole message: a chunk of a long
@@ -1618,6 +1689,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        content = _apply_notification_dump_suppression(chat_id, content)
         content = self.format_message(content)
 
         async def _update(msg_type: str, payload: str) -> SendResult:

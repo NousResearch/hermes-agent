@@ -9,6 +9,8 @@ import pytest
 
 from plugins.memory.supermemory import (
     SupermemoryMemoryProvider,
+    _MAX_PENDING_BYTES,
+    _MAX_PENDING_TURNS,
     _capture_custom_id,
     _clean_text_for_capture,
     _format_connection_summary,
@@ -141,7 +143,6 @@ def test_prefetch_includes_profile_on_first_turn(provider):
 
 
 def test_capture_custom_id_buckets_by_four_hours():
-    from datetime import datetime, timezone
     a = _capture_custom_id("session-1", datetime(2026, 9, 12, 3, 59, tzinfo=timezone.utc))
     b = _capture_custom_id("session-1", datetime(2026, 9, 12, 4, 0, tzinfo=timezone.utc))
     assert a == "session_1_2026-09-12_b0"
@@ -159,6 +160,41 @@ def test_sync_turn_writes_turn_to_session_document(provider, frozen_capture_cloc
     assert call["metadata"]["type"] == "conversation"
     assert call["metadata"]["session_id"] == "session-1"
     assert call["entity_context"]
+    assert provider._pending_turns == []
+
+
+def test_pending_turns_drops_oldest_past_turn_cap(provider):
+    # A persistently failing service must not grow the retry buffer without bound.
+    provider._client.fail_add = True
+    for i in range(_MAX_PENDING_TURNS + 5):
+        provider.sync_turn(f"turn {i:03d}", f"reply {i:03d}", session_id="session-1")
+    assert len(provider._pending_turns) == _MAX_PENDING_TURNS
+    assert provider._pending_turns[0]["user"] == "turn 005"  # oldest dropped, newest kept
+    assert provider._pending_turns[-1]["user"] == f"turn {_MAX_PENDING_TURNS + 4:03d}"
+
+
+def test_pending_turns_drops_oldest_past_byte_cap(provider):
+    provider._client.fail_add = True
+    big = "x" * 20000  # 20 KB sides; 13 pending turns exceed the 256 KiB cap
+    for i in range(13):
+        provider.sync_turn(big, big, session_id="session-1")
+    total = sum(len(t["user"]) + len(t["assistant"]) for t in provider._pending_turns)
+    assert total <= _MAX_PENDING_BYTES
+    assert len(provider._pending_turns) < 13  # oldest dropped
+
+
+def test_write_treats_none_client_result_as_success(provider, monkeypatch):
+    # A stub returning None (the most common mock idiom) must not be read as failure —
+    # only a raised exception re-queues the batch.
+    calls = []
+
+    def none_returning_add(content, metadata=None, **kwargs):
+        calls.append(content)
+        return None
+
+    monkeypatch.setattr(provider._client, "add_memory", none_returning_add)
+    provider.sync_turn("hello", "hi there", session_id="session-1")
+    assert len(calls) == 1
     assert provider._pending_turns == []
 
 
@@ -260,10 +296,16 @@ def test_failed_switch_flush_is_retried_at_shutdown(provider, frozen_capture_clo
 
 
 def test_shutdown_waits_for_inflight_write_and_does_not_resend(provider, monkeypatch):
-    """A hung remote write bounds the shutdown flush: it waits for the in-flight owner (the SDK call
-    is timeout-bounded, never an unconditioned wait) and never re-sends a batch another thread owns.
-    Regression for the review ask on #109359: without the lock, a concurrent flush re-snapshots the
-    same pending batch and duplicates the remote append."""
+    """While a worker thread owns an in-flight write, shutdown's flush blocks on the capture lock
+    (in production the wait is bounded by the SDK timeout; this test gates it with an Event), and
+    the pending batch is never re-sent by a second owner. Without the lock, the flusher snapshots
+    the pending [P] alongside the in-flight A and sends it twice."""
+    # Pre-seed one FAILED turn so the buffer actually holds a resend candidate.
+    provider._client.fail_add = True
+    provider.sync_turn("P", "p", session_id="session-1")
+    provider._client.fail_add = False
+    assert len(provider._pending_turns) == 1
+
     entered, release = threading.Event(), threading.Event()
     real_add = provider._client.add_memory
 
@@ -286,7 +328,9 @@ def test_shutdown_waits_for_inflight_write_and_does_not_resend(provider, monkeyp
     worker.join(timeout=2)
     flusher.join(timeout=2)
     assert not worker.is_alive() and not flusher.is_alive()
-    assert len(provider._client.add_calls) == 1  # A went out exactly once despite the concurrent shutdown
+    # The in-flight A and the previously pending P are sent in ONE batch, exactly once each.
+    assert len(provider._client.add_calls) == 1
+    assert provider._client.add_calls[0]["content"].count("[role: user]") == 2
     assert provider._pending_turns == []
 
 

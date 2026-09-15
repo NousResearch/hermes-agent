@@ -49,6 +49,11 @@ _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
     # gates real availability by ChatGPT Pro entitlement.
     ("gpt-5.3-codex-spark", ("gpt-5.3-codex",))]
 
+# Luna Reserve: separate metered model on the same Codex OAuth credential, served when the
+# regular allowance is exhausted. Backend lists it visibility:hidden (never in the picker)
+# but accepts it on the wire; the fallback chain prepends it for Codex primaries.
+CODEX_RESERVE_MODEL = "gpt-reserve"
+
 
 def _dedupe(model_ids) -> List[str]:
     """Order-preserving dedupe."""

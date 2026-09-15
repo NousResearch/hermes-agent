@@ -1207,6 +1207,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         !isActiveRef.current ||
         (typeof document !== "undefined" && document.visibilityState === "hidden")
       ) {
+        // Clear any stale banner (e.g. a failed image upload): the resume
+        // listener refuses to reconnect while a banner sits on a closed PTY.
+        setBanner(null);
+        setBannerAction(null);
         setPtyState("closed");
         return;
       }

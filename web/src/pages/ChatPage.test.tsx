@@ -86,6 +86,14 @@ const maybeReloadForLoopbackWsAuthFailure = vi.fn(() => false);
 const apiMocks = vi.hoisted(() => ({
   buildWsUrl: vi.fn(async () => "ws://localhost/api/pty?channel=chat-1"),
 }));
+const uploadChatImage = vi.hoisted(() =>
+  vi.fn(async () => ({ path: "/tmp/pasted.png" })),
+);
+
+vi.mock("@/lib/chatImagePaste", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/chatImagePaste")>()),
+  uploadChatImage,
+}));
 
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: FakeFitAddon }));
 vi.mock("@xterm/addon-unicode11", () => ({ Unicode11Addon: class {} }));
@@ -315,6 +323,57 @@ describe("ChatPage", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("reconnects on tab return after a hidden-tab close even when a stale upload banner is showing", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    await act(async () => socket.onopen?.());
+
+    // A failed image paste leaves a non-rejection banner behind.
+    uploadChatImage.mockRejectedValueOnce(new Error("disk full"));
+    const host = container.querySelector(".hermes-chat-xterm-host");
+    expect(host).not.toBeNull();
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    const file = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
+    Object.defineProperty(paste, "clipboardData", {
+      value: {
+        files: [file],
+        items: [{ getAsFile: () => file, kind: "file", type: "image/png" }],
+      },
+    });
+    await act(async () => {
+      host!.dispatchEvent(paste);
+    });
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Image upload failed"),
+    );
+
+    // The socket dies while the tab is hidden: the reconnect is deferred.
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "hidden",
+    });
+    await act(async () => {
+      socket.onclose?.({ code: 1001, reason: "", wasClean: true });
+    });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    // Coming back must start the deferred reconnect despite the old banner.
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    });
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
   });
 
   it("treats loopback 4401 closes as stale-token reload candidates", async () => {

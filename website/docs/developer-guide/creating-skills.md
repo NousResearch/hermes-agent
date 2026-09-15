@@ -381,7 +381,7 @@ Hermes can *propose* automations and let you accept them with one tap, instead o
 
 | Source | Trigger |
 |--------|---------|
-| `catalog` | Curated starter automations (`/suggestions catalog`) — daily briefing, important-mail monitor, weekly review, workday-start reminder |
+| `catalog` | Curated starter automations (`/suggestions catalog`) — daily briefing, loose-threads report, important-mail monitor, weekly review, workday-start reminder |
 | `blueprint` | You installed a skill carrying a `blueprint:` block |
 | `usage` | The background review noticed a recurring ask a schedule would serve |
 | `integration` | You connected an account (Gmail, GitHub, ...) and the obvious automations are offered |
@@ -396,6 +396,8 @@ Hermes can *propose* automations and let you accept them with one tap, instead o
 Accepting a suggestion calls the same `cron.jobs.create_job` the `cronjob` tool uses — there is no second job engine. Suggestions **never** auto-create jobs; acceptance is always explicit. Dismissed suggestions latch by a stable key so the same proposal is never re-offered. The pending list is capped so it never becomes a nag wall.
 
 The **important-mail monitor** catalog entry is the poll→classify→surface pattern: it scores inbox items with a cheap classifier model (`auxiliary.monitor` in `config.yaml`) and delivers only the ones above an urgency threshold, staying silent otherwise.
+
+The **loose-threads report** catalog entry runs each morning and surfaces unresolved questions, suggestions, decisions, concerns, and ideas from the previous day. It ranks the most relevant open threads and stays silent when there are no meaningful unresolved items.
 
 ## Publishing Skills
 

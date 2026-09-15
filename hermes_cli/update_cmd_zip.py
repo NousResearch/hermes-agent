@@ -188,6 +188,19 @@ def _abort_zip_update_if_dirty_tree() -> None:
     _m().sys.exit(1)
 
 
+def _is_git_checkout(root: Path) -> bool:
+    """Whether ``root`` has Git checkout metadata, not just a placeholder ``.git`` path."""
+    git_path = root / ".git"
+    if git_path.is_dir():
+        return (git_path / "HEAD").is_file()
+    if not git_path.is_file():
+        return False
+    try:
+        return git_path.read_text(encoding="utf-8", errors="replace").lstrip().startswith("gitdir:")
+    except OSError:
+        return False
+
+
 def _extract_zip_safely(zip_path: str, tmp_dir: str) -> None:
     """Extract, rejecting zip-slip AND symlink members: a source ZIP never legitimately contains
     symlinks, and a compromised mirror could use them to plant files anywhere."""
@@ -377,6 +390,15 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
             "or NTFS filter holding files open) and rerun `hermes update "
             f"--branch {branch}`, or update against main with `hermes update`."
         )
+        _m().sys.exit(1)
+    # A ZIP overlay preserves .git while replacing source files, leaving the
+    # checkout history behind origin/main and potentially overwriting local work.
+    # Source checkouts must be repaired through Git; non-Git installs retain the
+    # fallback path.
+    if _is_git_checkout(_m().PROJECT_ROOT):
+        print("✗ ZIP fallback cannot safely update a Git checkout.")
+        print("  It would replace source files while leaving the checkout's Git history behind origin/main.")
+        print("  The ZIP fallback did not modify source files. Resolve the Git error and rerun `hermes update`.")
         _m().sys.exit(1)
     _abort_zip_update_if_dirty_tree()
     _download_and_swap_zip(branch, f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip")

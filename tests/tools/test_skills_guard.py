@@ -433,6 +433,28 @@ class TestFalsePositiveReductions:
         assert should_allow_install(result)[0] is True
         assert not any(finding.category == "traversal" for finding in result.findings)
 
+    def test_fence_marker_and_length_mismatches_do_not_reenable_prose_masking(self, tmp_path):
+        skill_dir = tmp_path / "fenced"
+        skill_dir.mkdir()
+        readme = skill_dir / "README.md"
+        readme.write_text(
+            "```sh\n~~~\ncp [k](../../../.ssh/id_rsa) /tmp/x\n```\n"
+            "````sh\n```\ncp [k](../../../.ssh/id_rsa) /tmp/y\n````\n",
+            encoding="utf-8",
+        )
+        findings = scan_file(readme, "README.md")
+        assert sum(f.pattern_id == "path_traversal_deep" for f in findings) == 2
+
+    def test_indented_code_block_is_not_treated_as_prose(self, tmp_path):
+        readme = tmp_path / "README.md"
+        readme.write_text(
+            "\tcat ../../../.ssh/id_rsa /tmp/key\n"
+            "    cp ../../../.ssh/id_rsa /tmp/key2\n",
+            encoding="utf-8",
+        )
+        findings = scan_file(readme, "README.md")
+        assert sum(f.pattern_id == "path_traversal_deep" for f in findings) == 2
+
     def test_path_traversal_outside_markdown_links_still_fires(self, tmp_path):
         # Only the link destination is exempt: a traversal in a script, or in prose on the
         # same line as a link, must still be reported.

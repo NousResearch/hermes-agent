@@ -145,3 +145,12 @@ test('root lockfile has no agent-browser entry (#43564)', () => {
       '--ignore-scripts --no-fund --no-audit`.'
   )
 })
+
+
+test('install:tui includes the nested Ink workspace without desktop', () => {
+  const scripts = (rootPackageJson().scripts ?? {}) as Record<string, string>
+  const command = scripts['install:tui'] ?? ''
+  assert.match(command, /--workspace\s+ui-tui(?:\s|$)/)
+  assert.match(command, /--workspace\s+ui-tui\/packages\/hermes-ink(?:\s|$)/)
+  assert.doesNotMatch(command, /apps\/desktop/)
+})

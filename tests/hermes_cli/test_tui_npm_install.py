@@ -254,7 +254,7 @@ def test_termux_install_catches_missing_child_workspace_dev_dep(
 ) -> None:
     """On Termux the launch install selects ui-tui/packages/* too, installing
     each child's devDependencies.  A child dev dep missing from the hidden lock
-    must trigger a reinstall — off Termux (child not selected) it must not."""
+    must trigger a reinstall on both Termux and ordinary workspace installs."""
     ws_lock = (
         '{"packages":{'
         '"ui-tui":{"dependencies":{"@hermes/ink":"*"}},'
@@ -276,7 +276,7 @@ def test_termux_install_catches_missing_child_workspace_dev_dep(
     (child / "package.json").write_text('{"name":"@hermes/ink"}')
 
     monkeypatch.setattr(main_mod, "_is_termux_startup_environment", lambda: False)
-    assert main_tui_launch._tui_need_npm_install(tui_dir) is False
+    assert main_tui_launch._tui_need_npm_install(tui_dir) is True
 
     monkeypatch.setattr(main_mod, "_is_termux_startup_environment", lambda: True)
     assert main_tui_launch._tui_need_npm_install(tui_dir) is True

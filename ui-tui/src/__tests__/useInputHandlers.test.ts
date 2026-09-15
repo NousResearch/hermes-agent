@@ -190,4 +190,18 @@ describe('dismissSensitivePrompt', () => {
     expect(getOverlayState().secret).toBeNull()
     expect(sys).toHaveBeenCalledWith('secret entry cancelled')
   })
+
+  it('declines a vault save-login overlay with an empty value so the blocked wait resolves', () => {
+    resetOverlayState()
+    resetServerRequestsForTests()
+    patchOverlayState({ vaultSaveLogin: { origin: 'https://example.com', requestId: 'save-1', site: 'example.com' } })
+    const respond = openRequest('save-1', 'vault.save_login')
+    const sys = vi.fn()
+
+    dismissSensitivePrompt(getOverlayState(), vi.fn(), sys)
+
+    expect(getOverlayState().vaultSaveLogin).toBeNull()
+    expect(sys).toHaveBeenCalledWith('login for example.com not saved')
+    expect(respond).toHaveBeenCalledWith({ value: '' })
+  })
 })

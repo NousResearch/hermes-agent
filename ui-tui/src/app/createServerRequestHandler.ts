@@ -20,8 +20,8 @@ const strList = (v: unknown): null | string[] =>
  * (`tui_gateway/server_requests.py`). Each method opens its overlay card;
  * the card's answer path resolves the request through `serverRequestStore`.
  * Methods the terminal cannot answer (desktop GUI bridges: `preview.*`,
- * `window.read`, `tour`, `mcp.setup`, `terminal.read`, the vault card
- * prompts) return `false` so the channel answers `-32601` and the tool
+ * `window.read`, `tour`, `mcp.setup`, `terminal.read`, the vault code
+ * prompt) return `false` so the channel answers `-32601` and the tool
  * fails fast instead of waiting out its deadline.
  */
 export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (request: ServerRequest) => boolean {
@@ -104,6 +104,14 @@ export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (r
           vaultUnlock: { backend: str(p.backend), displayName: str(p.display_name), requestId: request.id }
         })
         open(request, `unlock ${str(p.display_name)}`)
+
+        return true
+
+      case 'vault.save_login':
+        patchOverlayState({
+          vaultSaveLogin: { origin: str(p.origin), requestId: request.id, site: str(p.site) }
+        })
+        open(request, `save login for ${str(p.site)}`)
 
         return true
 

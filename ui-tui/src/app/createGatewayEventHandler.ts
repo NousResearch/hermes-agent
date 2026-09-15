@@ -1272,7 +1272,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           const next = { ...prev }
           let changed = false
 
-          for (const key of ['approval', 'clarify', 'secret', 'sudo', 'vaultUnlock'] as const) {
+          for (const key of ['approval', 'clarify', 'secret', 'sudo', 'vaultSaveLogin', 'vaultUnlock'] as const) {
             if (prev[key]?.requestId === id) {
               next[key] = null
               changed = true

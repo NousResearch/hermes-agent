@@ -89,7 +89,7 @@ These have sensible defaults in the ABC. Override as needed:
 
 | Method | Default | Override when |
 |--------|---------|--------------|
-| `on_session_start(session_id, **kwargs)` | No-op | You need to load persisted state (DAG, DB) |
+| `on_session_start(session_id, **kwargs)` | No-op | You need to load persisted state (DAG, DB). The host supplies `session_db` when a SessionDB is active; treat it as borrowed and never close it. |
 | `on_session_end(session_id, messages)` | No-op | You need to flush state, close connections |
 | `on_session_reset()` | Resets token counters | You have per-session state to clear |
 | `update_model(model, context_length, ...)` | Updates context_length + threshold | You need to recalculate budgets on model switch |
@@ -126,6 +126,15 @@ def on_turn_complete(self, messages, usage=None, **kwargs):
     value is ignored.
     """
 ```
+
+### Durable session access
+
+For engines that need the canonical persisted conversation rather than a request-only
+projection, `on_session_start(..., session_db=...)` receives the host's active
+`SessionDB` handle when one exists. The same handle is supplied again when Hermes
+rebinds the engine to a native compression child. Keep only a borrowed reference:
+do not close it, replace it, or assume a database exists for ephemeral sessions.
+This avoids opening a second writer handle merely to inspect durable session state.
 
 Contract:
 

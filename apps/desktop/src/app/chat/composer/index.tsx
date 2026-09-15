@@ -37,6 +37,7 @@ import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
   implicitSlashAcceptIndex,
+  liveComposerDraft,
   type QueueEditState,
   shouldDisableComposerInput,
   slashArgStage
@@ -846,7 +847,9 @@ export function ChatBar({
     // place) then sent-message history. The history ring is derived from live
     // session messages each press — single source of truth, no mirror.
     if (event.key === 'ArrowUp') {
-      const currentDraft = draftRef.current
+      // Decide from the live editor: the mirror is a frame behind typing or a
+      // paste, and this branch can replace what the user just wrote.
+      const currentDraft = liveComposerDraft(editorRef.current, draftRef.current)
 
       // Editing a queued turn → walk to the older entry.
       if (queueEdit && stepQueuedEdit(-1)) {
@@ -920,7 +923,7 @@ export function ChatBar({
       if (busy && !disabled) {
         // As with plain Enter, source the just-typed content from the DOM so a
         // fast keypress cannot queue a stale draft.
-        const editorText = editorRef.current ? composerPlainText(editorRef.current) : draftRef.current
+        const editorText = liveComposerDraft(editorRef.current, draftRef.current)
 
         if (editorText !== draftRef.current) {
           draftRef.current = editorText
@@ -942,7 +945,7 @@ export function ChatBar({
       // Without the live read, a real message typed while prompts are queued
       // would drain the queue instead of sending. submitDraft() re-syncs and
       // sends the live editor text.
-      const editorText = editorRef.current ? composerPlainText(editorRef.current) : draftRef.current
+      const editorText = liveComposerDraft(editorRef.current, draftRef.current)
       const hasLivePayload = editorText.trim().length > 0 || attachments.length > 0
 
       if (disabled) {

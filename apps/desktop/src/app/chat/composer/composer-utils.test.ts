@@ -1,10 +1,11 @@
 import type { Unstable_TriggerItem } from '@assistant-ui/core'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   acceptsTriggerCompletion,
   implicitSlashAcceptIndex,
   isPendingDraftPersistCurrent,
+  liveComposerDraft,
   type PendingDraftPersist,
   pickPlaceholder,
   shouldDisableComposerInput,
@@ -13,6 +14,7 @@ import {
   slashCommandToken,
   type TriggerAcceptInput
 } from './composer-utils'
+import { normalizeComposerEditorDom, RICH_INPUT_SLOT } from './rich-editor'
 
 const item = (group: string): Unstable_TriggerItem =>
   ({ id: 'x', type: 'slash', label: 'x', metadata: { group } }) as unknown as Unstable_TriggerItem
@@ -175,5 +177,63 @@ describe('isPendingDraftPersistCurrent (#54527 integrity guard)', () => {
 
   it('rejects when nothing was ever captured', () => {
     expect(isPendingDraftPersistCurrent(null, null)).toBe(false)
+  })
+})
+
+/** Real contentEditable, built the way `empty-composer.test.ts` builds one. */
+function editorWith(text: string): HTMLDivElement {
+  const el = document.createElement('div')
+
+  el.dataset.slot = RICH_INPUT_SLOT
+  el.contentEditable = 'true'
+  el.append(document.createTextNode(text))
+  normalizeComposerEditorDom(el)
+  document.body.append(el)
+
+  return el
+}
+
+// editorWith appends to the shared JSDOM body; empty it so the element does not
+// leak into other cases in this file.
+afterEach(() => {
+  document.body.replaceChildren()
+})
+
+describe('liveComposerDraft (stale-mirror guard for the ArrowUp recall)', () => {
+  it('reads the live editor text even when the mirror is still empty', () => {
+    // The race this exists for: a keystroke or paste flushed only by the
+    // coalesced rAF, so `draftRef.current` holds the pre-keystroke text while
+    // the editor already holds what the user typed. The recall guard must see
+    // the typed text, not the stale empty mirror.
+    const editor = editorWith('just typed this')
+
+    expect(liveComposerDraft(editor, '')).toBe('just typed this')
+  })
+
+  it('prefers the editor over a stale non-empty mirror', () => {
+    const editor = editorWith('continued the draft')
+
+    expect(liveComposerDraft(editor, 'the draft before the keystroke')).toBe('continued the draft')
+  })
+
+  it('returns whitespace as-is so the recall guard trim() still sees it as blank', () => {
+    const editor = editorWith('   ')
+
+    // Not trimmed by the helper: the guard's own `currentDraft.trim()` decides
+    // blankness, and a whitespace-only editor must keep reading as blank.
+    expect(liveComposerDraft(editor, '')).toBe('   ')
+    expect(liveComposerDraft(editor, '').trim()).toBe('')
+  })
+
+  it.each([null, undefined])('falls back to the mirror when the editor is %s (pre-mount)', missing => {
+    expect(liveComposerDraft(missing, 'mirrored draft')).toBe('mirrored draft')
+  })
+
+  it('an empty editor reads as empty even against a stale non-empty mirror', () => {
+    // The cleared-draft race: select-all + delete is flushed by the same
+    // coalesced rAF, so the mirror can still hold the text the user deleted.
+    const editor = editorWith('')
+
+    expect(liveComposerDraft(editor, 'stale draft before delete')).toBe('')
   })
 })

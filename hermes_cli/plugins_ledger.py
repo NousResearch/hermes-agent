@@ -297,5 +297,6 @@ class PluginLedgerMixin:
         self._context_engine = None
         with self._hook_timeout_lock:
             self._hook_running_callbacks.clear()
+            self._hook_abandoned.clear()
             self._hook_timeout_suppressed_until.clear()
         self._discovered = False

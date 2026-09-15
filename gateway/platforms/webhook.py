@@ -34,6 +34,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.webhook_coalesce import WebhookCoalescer, validate_coalesce_config
 from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, WebhookRouteProcessor
 from gateway.response_filters import is_autonomous_silence_response
 
@@ -188,6 +189,8 @@ class WebhookAdapter(BasePlatformAdapter):
         self._max_body_bytes: int = int(extra.get("max_body_bytes", 1_048_576))  # 1MB
         self._script_timeout_seconds: int = int(extra.get("script_timeout_seconds", DEFAULT_SCRIPT_TIMEOUT_SECONDS))
         self._route_processor = WebhookRouteProcessor(script_timeout_seconds=self._script_timeout_seconds)
+        # Opt-in per-route debounce of rapid same-entity events (route ``coalesce`` block). #92066
+        self._coalescer = WebhookCoalescer(dispatch=self._spawn_agent_run, render=self._render_prompt)
 
     # --- Lifecycle ---
 
@@ -210,6 +213,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 raise ValueError(f"[webhook] Route '{name}' sets both deliver_only and cron_job. They are mutually "
                                  f"exclusive: deliver_only pushes the rendered template as a message, cron_job fires "
                                  f"an existing cron job (which handles its own delivery).")
+        validate_coalesce_config(name, route)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         self._reload_dynamic_routes()
@@ -248,6 +252,7 @@ class WebhookAdapter(BasePlatformAdapter):
         return True
 
     async def disconnect(self) -> None:
+        await self._coalescer.flush()  # buffered events are dispatched, not dropped, on shutdown/reconnect
         if self._runner:
             await self._runner.cleanup()
             self._runner = None
@@ -355,6 +360,12 @@ class WebhookAdapter(BasePlatformAdapter):
         if effective_secret == _INSECURE_NO_AUTH and not _is_loopback_host(self._host):
             logger.warning("[webhook] Dynamic route '%s' skipped: INSECURE_NO_AUTH is only allowed on loopback "
                            "hosts. Current host: '%s'.", name, self._host)
+            return False
+        try:
+            # Hot-reloaded from the request handler: a malformed block must skip the route, not 500 the request.
+            validate_coalesce_config(name, route)
+        except ValueError as e:
+            logger.warning("[webhook] Dynamic route '%s' skipped: %s", name, e)
             return False
         return True
 
@@ -614,12 +625,28 @@ class WebhookAdapter(BasePlatformAdapter):
         if route_config.get("deliver_only"):
             return await self._handle_deliver_only(prompt, payload, route_config, route_name, event_type, delivery_id,
                                                    profile)
+        coalesce = route_config.get("coalesce")
+        if isinstance(coalesce, dict) and self._coalescer.enqueue(
+                route_name=route_name, coalesce=coalesce, payload=payload, event_type=event_type, prompt=prompt,
+                delivery_id=delivery_id, now=now, route_config=route_config, profile=profile):
+            return web.json_response({"status": "coalesced", "route": route_name, "event": event_type,
+                                      "delivery_id": delivery_id}, status=202)
         return self._dispatch_agent_run(request, route_config, route_name, profile, payload, prompt, event_type,
                                         delivery_id, now)
 
     def _dispatch_agent_run(self, request, route_config: dict, route_name: str, profile, payload: Any, prompt: str,
                             event_type: str, delivery_id: str, now: float) -> "web.Response":
-        """Record delivery info, spawn the agent run, and return 202 immediately."""
+        """Spawn the agent run for one POST and return 202 immediately."""
+        logger.info("[webhook] %s event=%s route=%s prompt_len=%d delivery=%s", request.method, event_type, route_name,
+                    len(prompt), delivery_id)
+        self._spawn_agent_run(payload, prompt, delivery_id, now, route_config=route_config, route_name=route_name,
+                              profile=profile, event_type=event_type)
+        return web.json_response({"status": "accepted", "route": route_name, "event": event_type,
+                                  "delivery_id": delivery_id}, status=202)
+
+    def _spawn_agent_run(self, payload: Any, prompt: str, delivery_id: str, now: float, *, route_config: dict,
+                         route_name: str, profile, event_type: str) -> "asyncio.Task":
+        """Record delivery info and fire the agent run (shared by the immediate and coalesced paths)."""
         # delivery_id in the session key → concurrent webhooks on one route get independent runs.
         session_chat_id = f"webhook:{route_name}:{delivery_id}"
         # ``profile`` rides along so the reply leg (``send`` → ``_deliver_cross_platform``) egresses through
@@ -636,15 +663,12 @@ class WebhookAdapter(BasePlatformAdapter):
             source.profile = profile
         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
                              message_id=delivery_id)
-        logger.info("[webhook] %s event=%s route=%s prompt_len=%d delivery=%s", request.method, event_type, route_name,
-                    len(prompt), delivery_id)
         # The per-delivery session is closed by ``on_processing_complete`` once the run finishes
         # (``handle_message`` is fire-and-forget, so nothing can be closed here).
         task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
-        return web.json_response({"status": "accepted", "route": route_name, "event": event_type,
-                                  "delivery_id": delivery_id}, status=202)
+        return task
 
     async def on_processing_complete(self, event: "MessageEvent", outcome: Any) -> None:
         """Close the one-shot per-delivery session: ``prune_sessions`` only reaps rows with ``ended_at`` set, so

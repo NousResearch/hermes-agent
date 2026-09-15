@@ -470,6 +470,11 @@ def resolve_codex_runtime_credentials(
                 data = {"tokens": imported, "last_refresh": imported.get("last_refresh")}
     if data is None:
         pool_token = _pool_codex_access_token()
+        if pool_token and force_refresh:
+            # Pool-only setup: a forced refresh must rotate the pool entry, not resend its token.
+            from agent.credential_pool import load_pool
+            refreshed = load_pool("openai-codex").try_refresh_matching(api_key_hint=pool_token)
+            pool_token = refreshed.runtime_api_key if refreshed is not None else ""
         if pool_token:
             return _codex_runtime_result(pool_token, source="credential_pool", last_refresh=None)
         pool_rate_limit = _codex_pool_rate_limit_status()

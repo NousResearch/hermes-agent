@@ -488,10 +488,15 @@ def bump_patch(skill_name: str, *, action: str = "patch", task_id: Optional[str]
 
 def record_created(skill_name: str, *, agent_created: bool, task_id: Optional[str] = None,
                    session_id: Optional[str] = None) -> None:
-    """Persist creation provenance and emit a create fact; the record is reset (a create is a new logical skill)."""
+    """Persist creation provenance and emit a create fact; the record is reset (a create is a new logical skill).
+
+    Foreground creates (``agent_created=False`` — e.g. ``/learn`` at the user's request) are stamped
+    ``created_by="learn"``: a learning-signal marker, NOT the curator-management opt-in (``"agent"``),
+    so /journey can show user-taught skills without handing them to autonomous curation.
+    """
     def _apply(rec: Dict[str, Any]) -> Dict[str, Any]:
         rec.clear()
-        rec.update(_empty_record(), created_by="agent" if agent_created else None)
+        rec.update(_empty_record(), created_by="agent" if agent_created else "learn")
         return {"created_by": rec["created_by"]}
     _mutate_and_emit(skill_name, "created", _apply, task_id=task_id, session_id=session_id)
 

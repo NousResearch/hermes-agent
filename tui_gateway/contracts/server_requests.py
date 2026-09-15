@@ -20,8 +20,8 @@ class ServerRequestParams(Params):
 
 
 class ValueResult(Result):
-    """The answer to any one-string prompt (sudo, secret, vault prompts, desktop bridges,
-    mcp.setup): ``''`` means skipped / declined."""
+    """The answer to any one-string prompt (sudo, secret, vault prompts, desktop bridges):
+    ``''`` means skipped / declined."""
 
     value: str
 
@@ -102,7 +102,13 @@ class EmptyRequestParams(ServerRequestParams):
     pass
 
 
-server_request("sudo", params=EmptyRequestParams, result=ValueResult,
+class SudoRequestParams(ServerRequestParams):
+    """Original command, redacted server-side before any password-injection rewrite."""
+
+    command: str = ""
+
+
+server_request("sudo", params=SudoRequestParams, result=ValueResult,
                doc="Masked sudo password for the terminal tool.")
 
 
@@ -141,16 +147,6 @@ class VaultCodeRequestParams(ServerRequestParams):
 
 server_request("vault.code", params=VaultCodeRequestParams, result=ValueResult,
                doc="A one-time / 2FA code the user reads from their device.")
-
-
-class McpSetupRequestParams(ServerRequestParams):
-    server: str | None = None
-    action: str | None = None
-    reason: str | None = None
-
-
-server_request("mcp.setup", params=McpSetupRequestParams, result=ValueResult,
-               doc="Consent card for installing / enabling / authorising an MCP server.")
 
 
 # ── desktop GUI bridges ───────────────────────────────────────────────────────────────────────

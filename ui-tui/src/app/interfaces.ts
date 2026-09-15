@@ -385,7 +385,7 @@ export interface ComposerActions {
   dequeue: () => string | undefined
   enqueue: (text: string, display?: string) => void
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
-  openEditor: () => Promise<void>
+  openEditor: (seed?: string) => Promise<void>
   prependQueue: (item: QueueItem) => void
   pushHistory: (text: string) => void
   removeQueue: (index: number) => void
@@ -523,7 +523,7 @@ export interface SlashHandlerContext {
     attachImagePath: (path: string) => void
     enqueue: (text: string, display?: string) => void
     hasSelection: boolean
-    openEditor: () => Promise<void>
+    openEditor: (seed?: string) => Promise<void>
     queueRef: MutableRefObject<QueueItem[]>
     selection: SelectionApi
     setInput: StateSetter<string>

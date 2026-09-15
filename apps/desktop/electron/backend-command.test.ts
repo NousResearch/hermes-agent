@@ -8,8 +8,16 @@ test('serveBackendArgs builds a headless serve invocation', () => {
   assert.deepEqual(serveBackendArgs(), ['serve', '--host', '127.0.0.1', '--port', '0'])
 })
 
-test('serveBackendArgs pins a profile when provided', () => {
-  assert.deepEqual(serveBackendArgs('worker'), ['--profile', 'worker', 'serve', '--host', '127.0.0.1', '--port', '0'])
+test('serveBackendArgs pins the canonical profile name, not its display name', () => {
+  assert.deepEqual(serveBackendArgs({ name: 'smarthome', display_name: 'SmartHome' }), [
+    '--profile',
+    'smarthome',
+    'serve',
+    '--host',
+    '127.0.0.1',
+    '--port',
+    '0'
+  ])
 })
 
 test('dashboardFallbackArgs rewrites serve -> dashboard --no-open, keeping the -m prefix', () => {

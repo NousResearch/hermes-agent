@@ -13,10 +13,12 @@
 
 /**
  * Build the canonical headless backend argv (always `serve`).
- * @param {string} [profile] optional Hermes profile to pin via `--profile`.
+ * @param {{ name: string, display_name?: string }} [profile] optional Hermes profile to pin via
+ * `--profile`. `display_name` is presentation-only and must not route the
+ * backend.
  */
-export function serveBackendArgs(profile?: string) {
-  const head = profile ? ['--profile', profile] : []
+export function serveBackendArgs(profile?: { name: string; display_name?: string }) {
+  const head = profile?.name ? ['--profile', profile.name] : []
 
   return [...head, 'serve', '--host', '127.0.0.1', '--port', '0']
 }

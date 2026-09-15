@@ -1,9 +1,12 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { resetBrowseState } from '@/store/composer-input-history'
+import { $composerSendPrefs } from '@/store/composer-send'
 
 import { pickPlaceholder } from '../composer-utils'
+import { composerSendModeHint } from '../send-mode-hint'
 
 interface UseComposerPlaceholderOptions {
   disabled: boolean
@@ -17,11 +20,30 @@ interface UseComposerPlaceholderOptions {
  * a *different* conversation — the null→id persist of a freshly-started session
  * keeps its starter so the text doesn't flip mid-stream. While the transport is
  * down, it swaps to a reconnecting / starting message instead.
+ *
+ * When the send mode isn't the default, the resting text names the live gesture
+ * (`Enter starts a new line · tap Enter twice to send`). An empty composer is
+ * where a misfire is impossible and the gesture is easiest to misremember, and
+ * the hint doubles as "your custom mode is on" — which a user otherwise has no
+ * ambient way to see. The default mode appends nothing: telling everyone what
+ * Enter already does is noise.
  */
 export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: UseComposerPlaceholderOptions): string {
   const { t } = useI18n()
   const newSessionPlaceholders = t.composer.newSessionPlaceholders
   const followUpPlaceholders = t.composer.followUpPlaceholders
+  const { mode } = useStore($composerSendPrefs)
+
+  const sendHint =
+    mode === 'enter'
+      ? null
+      : composerSendModeHint(mode, {
+          chord: t.composer.placeholderSendChord,
+          doubleTap: t.composer.placeholderSendDoubleTap,
+          enterSends: t.composer.placeholderSendEnterSends,
+          newline: t.composer.placeholderSendNewline,
+          pause: t.composer.placeholderSendPause
+        })
 
   const [restingPlaceholder, setRestingPlaceholder] = useState(() =>
     pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders)
@@ -53,9 +75,9 @@ export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: Us
   // we're trying to restore. During reconnect, keep the textbox editable so a
   // flaky network doesn't block drafting; only submit/backend actions stay
   // disabled until the gateway is open again.
-  return disabled
-    ? reconnecting
-      ? t.composer.placeholderReconnecting
-      : t.composer.placeholderStarting
-    : restingPlaceholder
+  if (disabled) {
+    return reconnecting ? t.composer.placeholderReconnecting : t.composer.placeholderStarting
+  }
+
+  return sendHint ? `${restingPlaceholder} · ${sendHint}` : restingPlaceholder
 }

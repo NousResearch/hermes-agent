@@ -13,13 +13,14 @@ import {
   allKeybindActions,
   KEYBIND_CATEGORIES,
   KEYBIND_PANEL_ACTION,
-  KEYBIND_READONLY,
   type KeybindActionMeta,
   type KeybindReadonly,
-  KEYBINDS_AREA
+  KEYBINDS_AREA,
+  readonlyShortcuts
 } from '@/lib/keybinds/actions'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { arraysEqual } from '@/lib/storage'
+import { $composerSendMode } from '@/store/composer-send'
 import {
   $bindings,
   $capture,
@@ -32,6 +33,7 @@ import {
   resetBinding
 } from '@/store/keybinds'
 
+import { ComposerSendSettings } from './composer-send-settings'
 import { HudModifierSettings } from './hud-modifier-settings'
 import { SettingsBreadcrumbContext, SettingsContent } from './primitives'
 import { ScreenshotSettings } from './screenshot-settings'
@@ -75,6 +77,10 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
   const contributions = useContributions(KEYBINDS_AREA)
   const actionList = allKeybindActions(contributions)
   const [query, setQuery] = useState('')
+  // The composer rows print different keys per send mode, so the map has to
+  // follow Settings → Keyboards → Send with.
+  const sendMode = useStore($composerSendMode)
+  const readonlyRows = useMemo(() => readonlyShortcuts(sendMode), [sendMode])
 
   const openCombo = bindings[KEYBIND_PANEL_ACTION]?.[0]
 
@@ -120,12 +126,12 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
 
     const lower = query.toLowerCase()
 
-    return KEYBIND_READONLY.filter(shortcut => {
-      const label = k.actions[shortcut.id] ?? shortcut.id
+    return readonlyRows.filter(shortcut => {
+      const label = k.actions[shortcut.labelKey ?? shortcut.id] ?? shortcut.id
 
       return label.toLowerCase().includes(lower) || shortcut.id.includes(lower)
     })
-  }, [isSearching, query, k.actions])
+  }, [isSearching, query, k.actions, readonlyRows])
 
   return (
     <SettingsContent>
@@ -178,12 +184,13 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
         </div>
       ) : (
         <div className="px-2 py-1.5">
+          <ComposerSendSettings />
           {KEYBIND_CATEGORIES.map(category => {
             const actions = actionList.filter(
               action => action.category === category && action.id !== KEYBIND_PANEL_ACTION
             )
 
-            const readonly = KEYBIND_READONLY.filter(shortcut => shortcut.category === category)
+            const readonly = readonlyRows.filter(shortcut => shortcut.category === category)
 
             if (actions.length === 0 && readonly.length === 0) {
               return null
@@ -314,7 +321,7 @@ function KeybindRow({ action }: { action: KeybindActionMeta }) {
 function ReadonlyRow({ shortcut }: { shortcut: KeybindReadonly }) {
   const { t } = useI18n()
   const k = t.keybinds
-  const label = k.actions[shortcut.id] ?? shortcut.id
+  const label = k.actions[shortcut.labelKey ?? shortcut.id] ?? shortcut.id
 
   return (
     <div className="flex items-center gap-2.5 rounded-lg px-2.5 py-1">

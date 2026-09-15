@@ -74,6 +74,8 @@ class StreamConsumerConfig:
     # (progressive editMessageText).  "off" is handled by the gateway.
     transport: str = "edit"
     chat_type: str = ""  # originating chat type; gates platform-specific drafts
+    # Runtime-only bound: finalization may wait inline, but must not stall for minutes.
+    flood_pause_cap_seconds: float = 30.0
 
 
 @dataclass
@@ -150,6 +152,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._last_edit_time = 0.0
         self._last_edit_overflowed = False  # last _send_or_edit split into continuations
         self._flood_strikes = 0
+        self._flood_pause_until = 0.0
         self._current_edit_interval = self.cfg.edit_interval  # adaptive backoff
         self._delivered_commentary_texts: list[str] = []
         self._delivered_segment_texts: list[str] = []  # finalized text per past segment
@@ -265,6 +268,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     final_response_sent = property(lambda self: self._final_response_sent)
     message_id = property(lambda self: self._message_id)
     final_content_delivered = property(lambda self: self._final_content_delivered)
+    # Seconds this turn must still sit out a platform flood penalty before its final edit can
+    # land; 0.0 when none. The gateway adds it to the join budget it gives run(), so waiting
+    # out a bounded ban never has to outlive a cancel.
+    flood_pause_remaining = property(
+        lambda self: max(0.0, self._flood_pause_until - time.monotonic()))
 
     async def _notify_before_finalize(self) -> None:
         """Run the pre-finalize hook exactly once, swallowing hook errors."""
@@ -701,7 +709,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         """Decide whether this tick flushes an edit/frame."""
         if not tick.is_interim:
             return True
-        if self.cfg.buffer_only:
+        if self.cfg.buffer_only or time.monotonic() < self._flood_pause_until:
             return False
         if self._use_native_streaming:
             # No platform edit-rate limit: push every delta immediately.
@@ -901,7 +909,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # _accumulated holds unseen pre-boundary text — flush it before the reset.
         if (self._accumulated and not tick.update_visible and self._message_id
                 and self._message_id != "__no_edit__"):
-            await self._flush_segment_tail_on_edit_failure()
+            # A refused segment-final edit may have started a new pause. The tail
+            # send and cosmetic cursor edit share the same platform flood budget.
+            if await self._wait_for_flood_pause():
+                await self._flush_segment_tail_on_edit_failure()
         self._reset_segment_state(preserve_no_edit=True)
 
     async def _on_cancelled(self) -> None:
@@ -913,7 +924,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if self._accumulated and self._message_id:
             with contextlib.suppress(Exception):
                 best_effort_ok = bool(await self._send_or_edit(
-                    self._accumulated, finalize=True, is_turn_final=False))
+                    self._accumulated, finalize=True, is_turn_final=False, wait_for_flood=False))
         elif self._message_id is None:
             # Draft path keeps _message_id=None; seal in place (else the stream stays
             # visibly live and the adapter keeps armed interception state).

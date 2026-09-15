@@ -94,4 +94,28 @@ describe('persisted preview migration', () => {
 
     expect(restored?.target.previewKind).toBe('text')
   })
+
+  it('upgrades a persisted OOXML workbook from binary to spreadsheet', () => {
+    const source = '/work/model.xlsx'
+
+    const [restored] = decodePreviewTabs(
+      JSON.stringify([
+        {
+          id: `file:file://${source}`,
+          target: {
+            binary: true,
+            kind: 'file',
+            label: 'model.xlsx',
+            path: source,
+            previewKind: 'binary',
+            source,
+            url: `file://${source}`
+          }
+        }
+      ])
+    )
+
+    expect(restored?.target.previewKind).toBe('spreadsheet')
+    expect(restored?.target.binary).toBe(false)
+  })
 })

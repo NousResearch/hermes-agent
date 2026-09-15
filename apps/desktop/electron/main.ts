@@ -26,7 +26,8 @@ import {
   screen,
   session,
   shell,
-  systemPreferences
+  systemPreferences,
+  Tray
 } from 'electron'
 
 import { classifyActiveRuntime } from './active-runtime-state'
@@ -92,6 +93,7 @@ import {
 import { detectBundleSkew } from './bundle-skew'
 import { detectBundleSwap } from './bundle-swap'
 import { registerChatOnboardingWindow } from './chat-onboarding-window'
+import { installCloseToTray, QUIT_LATCH_MS, type TrayHandle } from './close-to-tray'
 import { writeComposerPaste } from './composer-paste'
 import { applyConnectionChange, teardownSshState } from './connection-apply'
 import {
@@ -858,6 +860,10 @@ const DESKTOP_INSTALLATION_PATH = path.join(app.getPath('userData'), 'desktop-in
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
 const DESKTOP_UPDATE_CHECK_CACHE_PATH = path.join(app.getPath('userData'), 'update-check-cache.json')
 const DESKTOP_WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-state.json')
+// Close-to-tray preference ("closing the window hides Hermes"). Device-local,
+// like the window geometry beside it: it describes this machine's windowing,
+// not the agent's configuration.
+const DESKTOP_CLOSE_TO_TRAY_PATH = path.join(app.getPath('userData'), 'close-to-tray.json')
 const DESKTOP_BACKEND_OWNERSHIP_PATH = path.join(app.getPath('userData'), 'backend-ownership.json')
 const DESKTOP_MANAGED_SSH_RECOVERY_PATH = path.join(app.getPath('userData'), 'managed-ssh-update-recovery.json')
 // active-profile.json records which Hermes profile the desktop launches its
@@ -14681,6 +14687,18 @@ function createWindow() {
   mainWindow.on('unmaximize', schedulePersistWindowState)
   mainWindow.on('close', () => schedulePersistWindowState.flush())
 
+  // Close to tray: the window hides behind the tray icon instead of the process
+  // going away mid-turn (the backend and every running turn die with it). The
+  // tray menu is the way back and the only toggle — see electron/close-to-tray.ts.
+  mainWindow.on('close', event => {
+    if (closeToTray.decideClose() === 'close') {
+      return
+    }
+
+    event.preventDefault()
+    closeToTray.hideMainWindow()
+  })
+
   // the closed wrapper remains truthy, so clear only the window this callback owns.
   mainWindow.on('closed', () => {
     closePetOverlay()
@@ -18330,7 +18348,52 @@ app.on('before-quit', event => {
   void backendShutdown.run()
 })
 
+// ─── Close to tray ──────────────────────────────────────────────────────────
+// Closing the window hides Hermes behind a tray icon instead of ending the
+// process, so a running turn survives the user tidying their desktop. The
+// policy, the preference and the menu contents live in ./close-to-tray (pure,
+// unit-tested); this is the Electron wiring. The preference is on by default
+// and the tray menu is its toggle, so no renderer surface needs to know.
+
+// A close that belongs to a real quit must never be turned into a hide.
+// `before-quit` is the only synchronous signal it carries. Registered LAST
+// among the `before-quit` handlers (the active-work prompt above preventDefaults
+// when it wants to ask first), so `defaultPrevented` here already reflects them
+// all — and the QUIT_LATCH_MS window means a quit some later handler abandons
+// cannot leave the latch stuck on and make the next close quit for real.
+let quitLatchedAt: number | null = null
+
+app.on('before-quit', event => {
+  if (!event.defaultPrevented) {
+    quitLatchedAt = Date.now()
+  }
+})
+
+const closeToTray = installCloseToTray({
+  buildMenu: template => Menu.buildFromTemplate(template),
+  createTray: iconPath => new Tray(iconPath) as unknown as TrayHandle,
+  getMainWindow: () => mainWindow,
+  // Both read lazily: `app.getLocale()` and decoding the app icon are only
+  // sound after `ready`, and the tray is built on the first close.
+  getLocale: () => app.getLocale(),
+  isQuitting: () => quitLatchedAt !== null && Date.now() - quitLatchedAt < QUIT_LATCH_MS,
+  log: rememberLog,
+  prefsPath: DESKTOP_CLOSE_TO_TRAY_PATH,
+  // app.quit(), not app.exit(): the active-work prompt still gets to ask.
+  requestQuit: () => app.quit(),
+  resolveIconPath: getAppIconPath,
+  showMainWindow: () => {
+    // Hidden windows are still alive; a window that crashed away is recreated.
+    ensureMainWindow(mainWindow, { createWindow, focusWindow, isReady: app.isReady() })
+  }
+})
+
 app.on('window-all-closed', () => {
+  // Close to tray keeps the process alive: the window is hidden behind the tray
+  // icon, not gone, and the backend is still working.
+  if (closeToTray.keepsProcessAlive()) {
+    return
+  }
   // macOS convention: keep the process alive in the Dock when the user closes
   // the last window. But when we're handing off to a detached updater / swap /
   // uninstall script, the process MUST exit so the script can replace or remove

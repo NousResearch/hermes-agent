@@ -120,6 +120,16 @@ The app is built for working on several things at once:
 - **Multiple windows** — **Cmd/Ctrl+Shift+N** opens a new window, and any session can be popped out via its context menu (**New window**) or from the command palette. A popped-out window renders that single chat without the global sidebar — handy for parking a long-running session on another monitor. Live agent output streams into every window showing the session.
 - **Panes** — **Cmd/Ctrl+B** toggles the left sidebar, **Cmd/Ctrl+J** the right one, and **Cmd/Ctrl+\\** swaps which side the sidebars sit on.
 
+### Closing the window
+
+Closing the primary window hides the app in the system tray rather than ending it, so a turn that is still running keeps going. A tray icon appears the first time this happens, with three rows:
+
+- **Show Hermes** — bring the window back (clicking the tray icon does the same; so does launching Hermes again).
+- **Hide to tray on close** — uncheck to go back to the original behaviour, where closing the window quits. The choice is remembered per machine.
+- **Quit Hermes** — actually quit, still behind the "Hermes is still working on N chats" confirmation. Every other quit path (Cmd/Ctrl+Q, the app menu, a system shutdown, an update or uninstall) closes the app instead of hiding it.
+
+If the app icon cannot be resolved for the tray — a broken install — closing falls back to quitting. Hermes never hides a window it has no way to bring back.
+
 ### Terminal
 
 A real terminal lives in the right sidebar, next to the file browser:

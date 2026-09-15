@@ -1,6 +1,7 @@
 import { createContext, memo, useCallback, useContext, useMemo, useRef, useState } from 'react'
 
 import { ChatEmptySlot } from '@/components/assistant-ui/chat-empty-slot'
+import { ChatWelcomeSlot } from '@/components/assistant-ui/chat-welcome-slot'
 import { AssistantMessage } from '@/components/assistant-ui/thread/assistant-message'
 import { ThreadMessageList } from '@/components/assistant-ui/thread/list'
 import { BackgroundResumeNotice, CenteredThreadSpinner } from '@/components/assistant-ui/thread/status'
@@ -43,6 +44,7 @@ interface ThreadProps {
   onCancel?: () => Promise<void> | void
   onDismissError?: (messageId: string) => void
   onRestoreToMessage?: (messageId: string, target?: RestoreMessageTarget) => Promise<void> | void
+  profile?: string
   sessionId?: string | null
   sessionKey?: string | null
 }
@@ -64,6 +66,7 @@ export const Thread = memo(function Thread({
   onCancel,
   onDismissError,
   onRestoreToMessage,
+  profile = 'default',
   sessionId = null,
   sessionKey
 }: ThreadProps) {
@@ -152,7 +155,11 @@ export const Thread = memo(function Thread({
   // nothing in it yet gets whichever plugin owns it. The slot often renders
   // nothing, which costs an empty container — harmless, since there is no
   // content to lay out until the first message swaps this branch out.
-  const emptyBody = intro ? <Intro {...intro} /> : sessionId ? <ChatEmptySlot sessionId={sessionId} /> : null
+  const emptyBody = intro ? (
+    <ChatWelcomeSlot cwd={cwd} fallback={<Intro {...intro} />} profile={profile} />
+  ) : sessionId ? (
+    <ChatEmptySlot sessionId={sessionId} />
+  ) : null
 
   const emptyPlaceholder = emptyBody ? (
     <div className="flex min-h-0 w-full flex-col items-center justify-center pt-[var(--composer-measured-height)]">

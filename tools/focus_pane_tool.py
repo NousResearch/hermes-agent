@@ -7,6 +7,7 @@ a background turn never moves the user's focus. URLs/files go through `desktop_p
 
 from tools import desktop_ui
 from tools.registry import registry, tool_error
+from tui_gateway.contracts.events import PaneRevealPayload
 
 PANES = ("chat", "files", "terminal", "review", "sessions")
 
@@ -17,7 +18,7 @@ def focus_pane_tool(pane: str) -> str:
     if name not in PANES:
         return tool_error(f"pane must be one of: {', '.join(PANES)}.")
     return desktop_ui.emit_or_error(
-        "pane.reveal", {"pane": name}, f"Failed to focus the {name} pane: ",
+        "pane.reveal", PaneRevealPayload(pane=name), f"Failed to focus the {name} pane: ",
         "Pane focus is only available in the Hermes desktop app.", {"success": True, "pane": name})
 
 

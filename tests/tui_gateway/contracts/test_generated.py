@@ -62,7 +62,8 @@ _BROKER_FRAME = re.compile(r"^FRAME_[A-Z_]+ = \"(browser\.controller\.[a-z_]+)\"
 _SETUP_READY = re.compile(r"^SETUP_READY_EVENT = \"([a-z_.]+)\"", re.M)
 # A dict literal where the typed helpers expect a Payload instance (the event-name string, the session
 # id, then ``{``): the exact producer-side crossing that lands as TypeError after state already changed.
-_DICT_PAYLOAD = re.compile(r"\b(?:_emit|_broadcast_global_event|_voice_emit|_pet_emit)\(\s*\"[a-z_][a-z0-9_.]*\"\s*,(?:(?:[^,()]|\([^()]*\))*,)?\s*\{")
+_DICT_PAYLOAD = re.compile(r"\b(?:_emit|_broadcast_global_event|_voice_emit|_pet_emit|desktop_ui\.emit|desktop_ui\.emit_or_error)"
+                           r"\(\s*\"[a-z_][a-z0-9_.]*\"\s*,(?:(?:[^,()]|\([^()]*\))*,)?\s*\{")
 
 
 def _read(path: Path) -> str:
@@ -110,8 +111,11 @@ def test_catalog_covers_the_whole_wire():
 
 
 def test_no_producer_hands_a_dict_to_a_typed_emit_helper():
+    """Gateway siblings and the desktop-only tools (whose ``desktop_ui`` sink is ``server._emit``)."""
+    from tools.registry import _tool_module_candidates
+
     offenders = []
-    for src in sorted((REPO / "tui_gateway").glob("*.py")):
+    for src in sorted([*(REPO / "tui_gateway").glob("*.py"), *_tool_module_candidates(REPO / "tools")]):
         for match in _DICT_PAYLOAD.finditer(_read(src)):
             line = _read(src).count("\n", 0, match.start()) + 1
             offenders.append(f"{src.relative_to(REPO)}:{line}")

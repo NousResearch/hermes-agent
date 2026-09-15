@@ -58,7 +58,7 @@ def _available_skill_files(skill_dir: Path) -> Dict[str, List[str]]:
     for f in skill_dir.rglob("*"):
         if not f.is_file() or f.name == "SKILL.md":
             continue
-        rel = str(f.relative_to(skill_dir))
+        rel = f.relative_to(skill_dir).as_posix()
         top = rel.split("/", 1)[0] if "/" in rel else None
         if top in _SUPPORT_DIRS or f.suffix in _SKILL_FILE_EXTS:
             groups.setdefault(top if top in _SUPPORT_DIRS else "other", []).append(rel)
@@ -165,7 +165,7 @@ def _plugin_skill_linked_files(skill_root: Path) -> Dict[str, List[str]] | None:
     linked: Dict[str, List[str]] = {}
     for category in _SUPPORT_DIRS:
         files = [
-            str(path.relative_to(skill_root)) for path in sorted((skill_root / category).rglob("*"))
+            path.relative_to(skill_root).as_posix() for path in sorted((skill_root / category).rglob("*"))
             if path.is_file() and validate_within_dir(path, skill_root) is None]
         if files:
             linked[category] = files

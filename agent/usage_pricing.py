@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from dataclasses import dataclass, fields
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 _ZERO = Decimal("0")
 _ONE_MILLION = Decimal("1000000")
+_USER_PRICING_SCHEMA_VERSION = 1
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 
 # Below $0.01, render at 4 dp so cheap-model costs never display as $0.00.
@@ -403,6 +405,72 @@ def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]
     return _OFFICIAL_DOCS_PRICING.get((route.provider, normalized)) if normalized != model else None
 
 
+def _pricing_rate_token(value: Optional[Decimal]) -> str:
+    """Stable decimal token so ``1.25`` and ``1.250`` hash identically."""
+    if value is None:
+        return "-"
+    token = format(value, "f")
+    if "." in token:
+        token = token.rstrip("0").rstrip(".")
+    return token or "0"
+
+
+def _user_override_pricing_version(schema_version: int, rates: dict[str, Optional[Decimal]]) -> str:
+    """Content hash of the rates in force, distinct from the schema version.
+
+    ``model_pricing.version`` is the config schema (currently 1). Historical
+    calls must still be attributable after a user changes ``input`` from
+    ``1.25`` to ``2.00`` under that same schema, so the stored stamp is
+    ``{schema}.{sha256[:12]}`` of the canonical rate tuple.
+    """
+    payload = "|".join(
+        f"{key}={_pricing_rate_token(rates.get(key))}"
+        for key in ("input", "output", "cache_read", "cache_write")
+    )
+    digest = hashlib.sha256(payload.encode("ascii")).hexdigest()[:12]
+    return f"{schema_version}.{digest}"
+
+
+def _lookup_user_pricing_override(route: BillingRoute) -> Optional[PricingEntry]:
+    """Return an exact config.yaml provider/model override, or fail open.
+
+    Schema v1 requires input/output USD-per-million rates. Cache rates are
+    optional because not every provider exposes cache billing; nonzero cache
+    usage with an omitted rate remains unknown in ``estimate_usage_cost``.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        section = load_config_readonly().get("model_pricing")
+        if not isinstance(section, dict) or type(section.get("version")) is not int:
+            return None
+        if section["version"] != _USER_PRICING_SCHEMA_VERSION:
+            return None
+        providers = section.get("providers")
+        provider_rows = providers.get(route.provider) if isinstance(providers, dict) else None
+        raw = provider_rows.get(route.model) if isinstance(provider_rows, dict) else None
+        if not isinstance(raw, dict) or "input" not in raw or "output" not in raw:
+            return None
+
+        rates: dict[str, Optional[Decimal]] = {}
+        for key in ("input", "output", "cache_read", "cache_write"):
+            value = _to_decimal(raw.get(key))
+            if key in raw and (value is None or not value.is_finite() or value < _ZERO):
+                return None
+            rates[key] = value
+        return PricingEntry(
+            input_cost_per_million=rates["input"],
+            output_cost_per_million=rates["output"],
+            cache_read_cost_per_million=rates["cache_read"],
+            cache_write_cost_per_million=rates["cache_write"],
+            source="user_override",
+            pricing_version=_user_override_pricing_version(section["version"], rates),
+        )
+    except Exception:
+        logger.debug("Ignoring invalid model_pricing configuration", exc_info=True)
+        return None
+
+
 def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
     return _pricing_entry_from_metadata(
         fetch_model_metadata(), route.model,
@@ -446,6 +514,10 @@ def get_pricing_entry(
     route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
     if route.billing_mode == "subscription_included":
         return _INCLUDED_ENTRY
+
+    user_entry = _lookup_user_pricing_override(route)
+    if user_entry:
+        return user_entry
     if route.provider == "openrouter":
         return _openrouter_pricing_entry(route)
 
@@ -545,8 +617,13 @@ def normalize_usage(
     )
 
 
-def _unknown_cost(source: CostSource, *notes: str) -> CostResult:
-    return CostResult(amount_usd=None, status="unknown", source=source, label="n/a", notes=notes)
+def _unknown_cost(
+    source: CostSource, *notes: str, pricing_version: Optional[str] = None
+) -> CostResult:
+    return CostResult(
+        amount_usd=None, status="unknown", source=source, label="n/a",
+        pricing_version=pricing_version, notes=notes,
+    )
 
 
 def estimate_usage_cost(
@@ -580,7 +657,9 @@ def estimate_usage_cost(
             rate = rate_above
         if rate is None:
             if tokens:
-                return _unknown_cost(entry.source, *note)
+                return _unknown_cost(
+                    entry.source, *note, pricing_version=entry.pricing_version
+                )
             continue
         amount += Decimal(tokens) * rate / _ONE_MILLION
     if entry.request_cost is not None and usage.request_count:

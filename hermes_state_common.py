@@ -424,6 +424,7 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     billing_base_url TEXT NOT NULL DEFAULT '',
     billing_mode TEXT NOT NULL DEFAULT '',
     task TEXT NOT NULL DEFAULT '',
+    pricing_version TEXT NOT NULL DEFAULT '',
     api_call_count INTEGER NOT NULL DEFAULT 0,
     input_tokens INTEGER NOT NULL DEFAULT 0,
     output_tokens INTEGER NOT NULL DEFAULT 0,
@@ -436,7 +437,7 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     cost_source TEXT,
     first_seen REAL,
     last_seen REAL,
-    PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)
+    PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task, pricing_version)
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (

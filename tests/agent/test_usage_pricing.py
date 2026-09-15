@@ -8,6 +8,7 @@ from agent.usage_pricing import (
     get_pricing_entry,
     normalize_usage,
     resolve_billing_route,
+    _user_override_pricing_version,
 )
 from decimal import Decimal
 
@@ -148,6 +149,363 @@ def test_bundled_pricing_skips_endpoint_metadata(monkeypatch):
 
     assert entry is not None
     assert entry.source == "official_docs_snapshot"
+
+
+def test_versioned_user_pricing_override_precedes_bundled_and_fails_open(
+    tmp_path, monkeypatch
+):
+    config_path = tmp_path / "hermes_test" / "config.yaml"
+    config_path.write_text(
+        """model_pricing:
+  version: 1
+  providers:
+    deepseek:
+      deepseek-chat:
+        input: "9"
+        output: "19"
+        cache_read: "0.9"
+        cache_write: "11"
+      deepseek-future:
+        input: "3"
+        output: "7"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("endpoint metadata should not be fetched")
+        ),
+    )
+
+    entry = get_pricing_entry("deepseek-chat", provider="deepseek")
+
+    chat_version = _user_override_pricing_version(
+        1,
+        {
+            "input": Decimal("9"),
+            "output": Decimal("19"),
+            "cache_read": Decimal("0.9"),
+            "cache_write": Decimal("11"),
+        },
+    )
+    future_version = _user_override_pricing_version(
+        1,
+        {
+            "input": Decimal("3"),
+            "output": Decimal("7"),
+            "cache_read": None,
+            "cache_write": None,
+        },
+    )
+
+    assert entry is not None
+    assert entry.source == "user_override"
+    assert entry.pricing_version == chat_version
+    assert entry.input_cost_per_million == Decimal("9")
+
+    endpoint_entry = get_pricing_entry(
+        "deepseek-future",
+        provider="deepseek",
+        base_url="https://api.deepseek.com/v1",
+    )
+    assert endpoint_entry is not None
+    assert endpoint_entry.source == "user_override"
+
+    missing_cache = estimate_usage_cost(
+        "deepseek-future",
+        CanonicalUsage(cache_read_tokens=1),
+        provider="deepseek",
+        base_url="https://api.deepseek.com/v1",
+    )
+    assert missing_cache.status == "unknown"
+    assert missing_cache.amount_usd is None
+    assert missing_cache.source == "user_override"
+    assert missing_cache.pricing_version == future_version
+
+    from hermes_cli import config as config_module
+
+    bundled = _OFFICIAL_DOCS_PRICING[("deepseek", "deepseek-chat")]
+    for invalid in (
+        {"model_pricing": {"version": 2, "providers": {"deepseek": {"deepseek-chat": {"input": "9", "output": "19"}}}}},
+        {"model_pricing": {"version": 1, "providers": {"deepseek": {"deepseek-chat": {"input": "bad", "output": "19"}}}}},
+        {"model_pricing": {"version": 1, "providers": {"openai": {"deepseek-chat": {"input": "9", "output": "19"}}}}},
+    ):
+        monkeypatch.setattr(config_module, "load_config_readonly", lambda invalid=invalid: invalid)
+        assert get_pricing_entry("deepseek-chat", provider="deepseek") == bundled
+
+
+def test_user_pricing_provenance_persists_through_response_accounting(
+    tmp_path, monkeypatch
+):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """model_pricing:
+  version: 1
+  providers:
+    deepseek:
+      deepseek-flash:
+        input: "9"
+        output: "19"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from agent import turn_usage
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+
+    session_db = SessionDB(tmp_path / "state.db")
+    agent = AIAgent(
+        api_key="test",
+        base_url="https://api.deepseek.com/v1",
+        provider="deepseek",
+        api_mode="chat_completions",
+        model="deepseek-flash",
+        session_id="pricing-override",
+        session_db=session_db,
+        platform="cli",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        save_trajectories=False,
+        enabled_toolsets=["file"],
+    )
+    try:
+        response = SimpleNamespace(
+            usage=SimpleNamespace(
+                prompt_tokens=100,
+                completion_tokens=20,
+                total_tokens=120,
+                prompt_tokens_details=None,
+                completion_tokens_details=None,
+            )
+        )
+        turn_usage.record_response_usage(
+            agent,
+            response,
+            messages=[{"role": "user", "content": "hi"}],
+            api_call_count=1,
+            api_duration=0.1,
+            compression_attempts=0,
+            max_compression_attempts=3,
+        )
+        session_db.flush_token_counts()
+        stored = agent._session_db.get_session("pricing-override")
+        ledger = [
+            dict(row)
+            for row in session_db._conn.execute(
+                "SELECT pricing_version, cost_source, input_tokens FROM session_model_usage "
+                "WHERE session_id = ? ORDER BY pricing_version",
+                ("pricing-override",),
+            ).fetchall()
+        ]
+    finally:
+        agent.close()
+        session_db.close()
+
+    expected_version = _user_override_pricing_version(
+        1,
+        {
+            "input": Decimal("9"),
+            "output": Decimal("19"),
+            "cache_read": None,
+            "cache_write": None,
+        },
+    )
+
+    assert stored["cost_source"] == "user_override"
+    assert stored["pricing_version"] == expected_version
+    assert ledger == [
+        {
+            "pricing_version": expected_version,
+            "cost_source": "user_override",
+            "input_tokens": 100,
+        }
+    ]
+
+
+def test_user_pricing_rate_change_stamps_distinct_provenance(monkeypatch):
+    from hermes_cli import config as config_module
+
+    def _override(input_rate: str) -> dict:
+        return {
+            "model_pricing": {
+                "version": 1,
+                "providers": {
+                    "deepseek": {
+                        "deepseek-chat": {"input": input_rate, "output": "5.00"},
+                    }
+                },
+            }
+        }
+
+    monkeypatch.setattr(config_module, "load_config_readonly", lambda: _override("1.25"))
+    first = get_pricing_entry("deepseek-chat", provider="deepseek")
+    monkeypatch.setattr(config_module, "load_config_readonly", lambda: _override("2.00"))
+    second = get_pricing_entry("deepseek-chat", provider="deepseek")
+
+    assert first is not None and second is not None
+    assert first.source == second.source == "user_override"
+    assert first.pricing_version != second.pricing_version
+    assert first.pricing_version == _user_override_pricing_version(
+        1,
+        {
+            "input": Decimal("1.25"),
+            "output": Decimal("5.00"),
+            "cache_read": None,
+            "cache_write": None,
+        },
+    )
+    assert second.pricing_version == _user_override_pricing_version(
+        1,
+        {
+            "input": Decimal("2.00"),
+            "output": Decimal("5.00"),
+            "cache_read": None,
+            "cache_write": None,
+        },
+    )
+
+
+def test_model_usage_ledger_keeps_pricing_revisions_distinct(tmp_path):
+    from hermes_state import SessionDB
+
+    session_db = SessionDB(tmp_path / "state.db")
+    try:
+        session_db.create_session("rev-split", "cli")
+        session_db.update_token_counts(
+            "rev-split",
+            input_tokens=10,
+            output_tokens=1,
+            model="deepseek-flash",
+            billing_provider="deepseek",
+            cost_source="user_override",
+            pricing_version="1.aaaaaaaaaaaa",
+            estimated_cost_usd=0.01,
+            api_call_count=1,
+        )
+        session_db.update_token_counts(
+            "rev-split",
+            input_tokens=20,
+            output_tokens=2,
+            model="deepseek-flash",
+            billing_provider="deepseek",
+            cost_source="user_override",
+            pricing_version="1.bbbbbbbbbbbb",
+            estimated_cost_usd=0.04,
+            api_call_count=1,
+        )
+        session_db.update_token_counts(
+            "rev-split",
+            input_tokens=5,
+            output_tokens=1,
+            model="deepseek-flash",
+            billing_provider="deepseek",
+            cost_source="user_override",
+            pricing_version="1.aaaaaaaaaaaa",
+            estimated_cost_usd=0.005,
+            api_call_count=1,
+        )
+        rows = [
+            dict(row)
+            for row in session_db._conn.execute(
+                "SELECT pricing_version, input_tokens, api_call_count FROM session_model_usage "
+                "WHERE session_id = ? ORDER BY pricing_version",
+                ("rev-split",),
+            ).fetchall()
+        ]
+    finally:
+        session_db.close()
+
+    assert rows == [
+        {"pricing_version": "1.aaaaaaaaaaaa", "input_tokens": 15, "api_call_count": 2},
+        {"pricing_version": "1.bbbbbbbbbbbb", "input_tokens": 20, "api_call_count": 1},
+    ]
+
+
+def test_codex_usage_persists_override_revision_on_model_ledger(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """model_pricing:
+  version: 1
+  providers:
+    deepseek:
+      deepseek-flash:
+        input: "9"
+        output: "19"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from agent.codex_runtime import _record_codex_app_server_usage
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+
+    session_db = SessionDB(tmp_path / "state.db")
+    agent = AIAgent(
+        api_key="test",
+        base_url="https://api.deepseek.com/v1",
+        provider="deepseek",
+        api_mode="chat_completions",
+        model="deepseek-flash",
+        session_id="codex-pricing-override",
+        session_db=session_db,
+        platform="cli",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+        save_trajectories=False,
+        enabled_toolsets=["file"],
+    )
+    try:
+        _record_codex_app_server_usage(
+            agent,
+            SimpleNamespace(
+                token_usage_last={
+                    "inputTokens": 80,
+                    "outputTokens": 20,
+                    "cachedInputTokens": 0,
+                    "reasoningOutputTokens": 0,
+                    "totalTokens": 100,
+                }
+            ),
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        session_db.flush_token_counts()
+        stored = session_db.get_session("codex-pricing-override")
+        ledger = [
+            dict(row)
+            for row in session_db._conn.execute(
+                "SELECT pricing_version, cost_source, input_tokens FROM session_model_usage "
+                "WHERE session_id = ?",
+                ("codex-pricing-override",),
+            ).fetchall()
+        ]
+    finally:
+        agent.close()
+        session_db.close()
+
+    expected_version = _user_override_pricing_version(
+        1,
+        {
+            "input": Decimal("9"),
+            "output": Decimal("19"),
+            "cache_read": None,
+            "cache_write": None,
+        },
+    )
+    assert stored["cost_source"] == "user_override"
+    assert stored["pricing_version"] == expected_version
+    assert ledger == [
+        {
+            "pricing_version": expected_version,
+            "cost_source": "user_override",
+            "input_tokens": 80,
+        }
+    ]
 
 
 def test_unknown_model_falls_back_to_endpoint_metadata(monkeypatch):

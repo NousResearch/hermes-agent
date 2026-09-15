@@ -253,6 +253,7 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
             ('+', 'cost_source', 'cost_status'),
         )),
         ('02 2026-07-16T11:23Z eb6aa03609', (('+', 'task', 'billing_mode'),)),
+        ('03 2026-09-12T13:00Z configurable-pricing', (('+', 'pricing_version', 'task'),)),
         ),
     ),
 }

@@ -52,6 +52,19 @@ def test_old_state_rows_without_gates_load_clean():
     assert state.gates == []
 
 
+def test_render_gates_accepts_gateway_translator():
+    mgr = GoalManager(session_id="gate-translated-render-sid")
+    mgr.clear()
+    calls = []
+
+    def translate(key, **kwargs):
+        calls.append((key, kwargs))
+        return f"translated:{key}"
+
+    assert mgr.render_gates(translate=translate) == "translated:gateway.goal_gate_no_active"
+    assert calls == [("gateway.goal_gate_no_active", {})]
+
+
 # ──────────────────────────────────────────────────────────────────────
 # run_gate
 # ──────────────────────────────────────────────────────────────────────

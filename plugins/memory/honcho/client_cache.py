@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 from typing import TYPE_CHECKING
 
@@ -87,11 +88,14 @@ def _client_cache_key(config: HonchoClientConfig | None) -> tuple:
     from plugins.memory.honcho.client import resolve_active_host, resolve_config_path
 
     if config is not None:
-        return ("explicit", config.host, config.workspace_id, config.base_url or "", config.environment,
+        return ("explicit", config.host, config.workspace_id, resolve_effective_base_url(config) or "", config.environment,
                 str(config.config_path) if config.config_path is not None else "",
                 str(config.hermes_home) if config.hermes_home is not None else "",
                 _resolve_timeout_from_sources(config), _credential_fingerprint(config))
-    return ("ambient", str(resolve_config_path()), resolve_active_host(),
+    from plugins.memory.honcho.client import HonchoClientConfig
+    resolved = HonchoClientConfig.from_global_config()
+    return ("ambient", str(resolve_config_path()), resolve_active_host(), resolved.workspace_id,
+            resolve_effective_base_url(resolved) or "", resolved.environment,
             _resolve_timeout_from_sources(None), _credential_fingerprint(None))
 
 
@@ -131,6 +135,24 @@ def _config_yaml_timeout() -> float | None:
     except Exception:
         pass
     return None
+
+
+def _config_yaml_base_url() -> str | None:
+    """Read honcho.base_url via the cached config loader."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        honcho_cfg = load_config_readonly().get("honcho", {})
+        raw = honcho_cfg.get("base_url") if isinstance(honcho_cfg, dict) else None
+        return raw.strip() or None if isinstance(raw, str) else None
+    except Exception:
+        return None
+
+
+def resolve_effective_base_url(config: HonchoClientConfig) -> str | None:
+    """Normalized base URL used by both the client cache key and constructor."""
+    from plugins.memory.honcho.client import _sanitize_url
+    base_url = _sanitize_url(config.base_url or _config_yaml_base_url())
+    return re.sub(r"/v\d+/*$", "", base_url).rstrip("/") if base_url else None
 
 
 def _honcho_json_timeout() -> float | None:

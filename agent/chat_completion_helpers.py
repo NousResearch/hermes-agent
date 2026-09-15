@@ -2641,14 +2641,6 @@ class _StreamingCall(StreamingWaitMonitor):
             # tolerates that, so the raw read timeout must not fire first.
             read = stale
             logger.debug("Cloud reasoning stream — read timeout raised to %.0fs to match stale-stream detector", read)
-        if stale is not None and stale != float("inf") and stale < read:
-            # The stale detector would kill this stream at ``stale`` anyway; align
-            # the worker's own read timeout so the WORKER raises first, closes its
-            # own response, and retries — descriptor release stays on the owner
-            # thread instead of needing a stranger-thread close to unwedge a
-            # parked recv (shutdown() does not unblock every platform, #110769).
-            read = stale
-            logger.debug("Stale timeout %.0fs below read timeout — read capped to match so the owner unwinds itself", read)
         return base, read, 30.0
 
     @staticmethod

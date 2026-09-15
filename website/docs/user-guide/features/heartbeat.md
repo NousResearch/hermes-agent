@@ -49,6 +49,17 @@ Rule of thumb: if the recurring prompt needs the conversation's context, use `/h
 - **Persistence and conversation boundaries.** State lives in `SessionDB.state_meta` keyed by `heartbeat:<session_id>` and follows context-compression session rotations. In the messaging gateway, leaving a conversation through reset, switch, or suspension clears its heartbeat; resuming that archived conversation does not resurrect it. Firing requires the owning process (CLI session or gateway) to be running. An already-admitted gateway tick is checked again after session resolution and before agent execution: it may follow a compression child, but cannot carry its old instruction into a reset or switched conversation.
 - **Execution accounting.** The gateway reserves a due tick at adapter admission. If that exact attempt ends before entering the agent runner (including cancellation or a routing, authorization, emergency-stop, or preparation rejection), it refunds the tick unless the schedule has since changed. Once the agent runner is entered, the fire remains counted even if execution fails or is interrupted. This count is **not** proof of a successful model response or outbound delivery; abrupt process death can prevent the refund callback.
 - **Don't-invent-work guard.** The injected prompt tells the agent to reply briefly and stop when nothing meaningful changed, so an idle heartbeat doesn't generate busywork.
+- **Active hours (optional).** Restrict firing to a daily window via `config.yaml`:
+
+  ```yaml
+  heartbeat:
+    active_hours:
+      start: "08:00"   # inclusive
+      end: "22:00"     # exclusive; use e.g. 22:00–06:00 for an overnight window
+      timezone: "Asia/Kolkata"   # optional — falls back to your top-level `timezone`, else host-local
+  ```
+
+  Outside the window, due ticks are skipped (never queued) — the first poll inside the window fires immediately. Leave `start`/`end` empty (the default) for 24/7. Bounds must be distinct `HH:MM` values; anything else is ignored with a warning rather than guessed at.
 
 ## Example
 

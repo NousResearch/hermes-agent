@@ -89,6 +89,29 @@ class TestParseMcpBody:
         with pytest.raises(keyless_mcp.KeylessMCPError):
             keyless_mcp._parse_mcp_body("<html>nope</html>")
 
+    def test_cjk_sse_body_survives_charset_less_event_stream(self):
+        """Exa answers ``text/event-stream`` without a charset; ``requests`` then decodes ``.text`` as
+        ISO-8859-1, and the U+0085 inside CJK UTF-8 sequences split the ``data:`` line under
+        ``splitlines()`` — a valid CJK result surfaced as "Unrecognized MCP response shape"."""
+        import requests
+
+        title = "光伏发电站组件清洗与性能监测规范"
+        payload = {"result": {"content": [{"type": "text", "text": f"Title: {title}\nURL: https://x.example"}]}}
+        response = requests.Response()
+        response.status_code = 200
+        response.headers["Content-Type"] = "text/event-stream"
+        response.encoding = "ISO-8859-1"  # what the adapter picks for text/* without a charset
+        response._content = f"event: message\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+        assert "\x85" in response.text  # the vendor body really does decode to mojibake via .text
+        with patch.object(requests, "post", return_value=response):
+            text = keyless_mcp.mcp_call(keyless_mcp.EXA_MCP_URL, "web_search_exa", {"query": title})
+        assert title in text
+
+    def test_parsed_envelope_without_text_names_the_condition(self):
+        body = json.dumps({"result": {"content": []}})
+        with pytest.raises(keyless_mcp.KeylessMCPError, match="no text content"):
+            keyless_mcp._parse_mcp_body(body)
+
 
 class TestExaTextParsing:
     def test_parses_blocks(self):

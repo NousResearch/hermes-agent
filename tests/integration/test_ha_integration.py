@@ -71,7 +71,7 @@ class TestGatewayWebSocket:
     async def test_event_received_and_forwarded(self):
         """Server pushes event -> adapter calls handle_message with correct MessageEvent."""
         async with FakeHAServer() as server:
-            adapter = _adapter_for(server)
+            adapter = _adapter_for(server, watch_all=True)
             adapter.handle_message = AsyncMock()
 
             await adapter.connect()
@@ -186,6 +186,71 @@ class TestToolRest:
             assert result["count"] == 2
             for e in result["entities"]:
                 assert e["entity_id"].startswith("light.")
+
+    @pytest.mark.asyncio
+    async def test_registered_tool_prefers_entity_area_over_device(self, monkeypatch):
+        import json
+        from tools.registry import registry
+        async with FakeHAServer() as server:
+            server.area_registry = [{"area_id": "kitchen", "name": "Kitchen"},
+                                    {"area_id": "bedroom", "name": "Bedroom"}]
+            server.device_registry = [{"id": "bridge", "area_id": "kitchen"}]
+            server.entity_registry = [
+                {"entity_id": "light.bedroom", "device_id": "bridge", "area_id": "bedroom"},
+                {"entity_id": "light.kitchen", "device_id": "bridge", "area_id": None},
+            ]
+            monkeypatch.setattr("tools.homeassistant_tool._get_config",
+                                lambda: (server.url, server.token))
+            result = json.loads(await asyncio.to_thread(
+                registry.dispatch, "ha_list_entities", {"area": "Kitchen"}
+            ))
+            assert {e["entity_id"] for e in result["result"]["entities"]} == {"light.kitchen"}
+
+    @pytest.mark.asyncio
+    async def test_list_entities_area_uses_registry_mapping(self, monkeypatch):
+        async with FakeHAServer() as server:
+            monkeypatch.setattr("tools.homeassistant_tool._get_config",
+                                lambda: (server.url, server.token))
+
+            result = await _async_list_entities(area="bedroom")
+
+            assert {e["entity_id"] for e in result["entities"]} == {
+                "light.bedroom",
+            }
+
+    @pytest.mark.asyncio
+    async def test_list_entities_empty_registry_uses_metadata_fallback(
+        self, monkeypatch
+    ):
+        async with FakeHAServer() as server:
+            server.area_registry = [{"area_id": "garage", "name": "Garage"}]
+            server.device_registry = []
+            server.entity_registry = []
+            monkeypatch.setattr("tools.homeassistant_tool._get_config",
+                                lambda: (server.url, server.token))
+
+            result = await _async_list_entities(area="kitchen")
+
+            assert {e["entity_id"] for e in result["entities"]} == {
+                "light.kitchen",
+                "sensor.temperature",
+            }
+
+    @pytest.mark.asyncio
+    async def test_list_entities_registry_failure_uses_metadata_fallback(
+        self, monkeypatch
+    ):
+        async with FakeHAServer() as server:
+            server.reject_auth = True
+            monkeypatch.setattr("tools.homeassistant_tool._get_config",
+                                lambda: (server.url, server.token))
+
+            result = await _async_list_entities(area="kitchen")
+
+            assert {e["entity_id"] for e in result["entities"]} == {
+                "light.kitchen",
+                "sensor.temperature",
+            }
 
     @pytest.mark.asyncio
     async def test_get_state_single_entity(self, monkeypatch):

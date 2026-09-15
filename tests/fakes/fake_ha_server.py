@@ -73,6 +73,18 @@ ENTITY_STATES: List[Dict[str, Any]] = [
     },
 ]
 
+AREA_REGISTRY: List[Dict[str, Any]] = [
+    {"area_id": "bedroom", "name": "Bedroom"},
+]
+
+DEVICE_REGISTRY: List[Dict[str, Any]] = [
+    {"id": "bedroom-device", "area_id": "bedroom"},
+]
+
+ENTITY_REGISTRY: List[Dict[str, Any]] = [
+    {"entity_id": "light.bedroom", "device_id": "bedroom-device"},
+]
+
 
 class FakeHAServer:
     """In-process fake Home Assistant for integration tests.
@@ -98,6 +110,11 @@ class FakeHAServer:
 
         # Flag to simulate server errors.
         self.force_500 = False
+
+        # Registry data returned by Home Assistant WebSocket commands.
+        self.area_registry = [dict(item) for item in AREA_REGISTRY]
+        self.device_registry = [dict(item) for item in DEVICE_REGISTRY]
+        self.entity_registry = [dict(item) for item in ENTITY_REGISTRY]
 
         # Internal bookkeeping.
         self._app: Optional[web.Application] = None
@@ -196,38 +213,72 @@ class FakeHAServer:
 
         await ws.send_json({"type": "auth_ok", "ha_version": "2025.1.0"})
 
-        # Step 4: subscribe_events
-        msg = await ws.receive()
-        if msg.type != aiohttp.WSMsgType.TEXT:
-            await ws.close()
-            return ws
-        sub_msg = json.loads(msg.data)
-        sub_id = sub_msg.get("id", 1)
+        registry_results = {
+            "config/area_registry/list": self.area_registry,
+            "config/device_registry/list": self.device_registry,
+            "config/entity_registry/list": self.entity_registry,
+        }
 
-        # Step 5: ACK
-        await ws.send_json({
-            "id": sub_id,
-            "type": "result",
-            "success": True,
-            "result": None,
-        })
+        # Step 4: serve registry commands or the gateway event subscription.
+        while not ws.closed:
+            msg = await ws.receive()
+            if msg.type != aiohttp.WSMsgType.TEXT:
+                break
+            command = json.loads(msg.data)
+            command_id = command.get("id", 1)
+            command_type = command.get("type")
 
-        # Step 6: push events from queue until closed
-        try:
-            while not ws.closed:
-                try:
-                    event_data = await asyncio.wait_for(
-                        self._event_queue.get(), timeout=0.1,
-                    )
+            if command_type in registry_results:
+                await ws.send_json({
+                    "id": command_id,
+                    "type": "result",
+                    "success": True,
+                    "result": registry_results[command_type],
+                })
+                continue
+
+            if command_type != "subscribe_events":
+                await ws.send_json({
+                    "id": command_id,
+                    "type": "result",
+                    "success": False,
+                    "error": {"code": "unknown_command"},
+                })
+                continue
+
+            await ws.send_json({
+                "id": command_id,
+                "type": "result",
+                "success": True,
+                "result": None,
+            })
+
+            # Push events from the queue until the subscription closes.
+            try:
+                while not ws.closed:
+                    try:
+                        client_msg = await ws.receive(timeout=0.1)
+                        if client_msg.type in {
+                            aiohttp.WSMsgType.CLOSE,
+                            aiohttp.WSMsgType.CLOSED,
+                            aiohttp.WSMsgType.ERROR,
+                        }:
+                            break
+                    except asyncio.TimeoutError:
+                        pass
+
+                    try:
+                        event_data = self._event_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        continue
                     await ws.send_json({
-                        "id": sub_id,
+                        "id": command_id,
                         "type": "event",
                         "event": event_data,
                     })
-                except asyncio.TimeoutError:
-                    continue
-        except (ConnectionResetError, asyncio.CancelledError):
-            pass
+            except (ConnectionResetError, asyncio.CancelledError):
+                pass
+            break
 
         return ws
 

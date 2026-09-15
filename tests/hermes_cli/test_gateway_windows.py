@@ -333,7 +333,11 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert "pythonw.exe" in content
     assert "hermes_cli.main" in content
     assert "gateway run" in content
-    assert ", 0, False" in content  # hidden window, detached/async
+    assert ", 0, True)" in content  # hidden window, supervised wait
+    assert "Dim sh, env, existing_pp, result" in content
+    assert "result = sh.Run(" in content
+    assert "WScript.Quit result" in content
+    assert ", 0, False" not in content
     for var in ("HERMES_HOME", "PYTHONIOENCODING", "HERMES_GATEWAY_DETACHED", "VIRTUAL_ENV", "PYTHONPATH"):
         assert var in content
     assert "--profile" in content and "work" in content

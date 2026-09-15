@@ -24,7 +24,7 @@ from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
     KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
-    KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
+    KANBAN_SHOW_SCHEMA, KANBAN_SPECIFY_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
 
 logger = logging.getLogger(__name__)
 
@@ -392,19 +392,107 @@ _GOAL_GATE_MESSAGES = {
             "matching the card before requesting review.")}}
 
 
-def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
+def _goal_verdict_and_reason(judge_fn, *, goal: str = "", last_response: str = ""):
+    """Collapse ``judge_goal``'s 5-tuple to ``(verdict, reason)`` for handoff gates.
+
+    ``transport_failed=True`` means the judge LLM was unreachable (PermissionDenied/403,
+    auth, DNS) and the ``continue`` verdict is a synthetic fail-open — NOT evidence the
+    work is incomplete. It maps to ``(None, "goal judge transport failure: <reason>")``
+    so callers allow the handoff honestly instead of rejecting a finished card forever
+    (a synthetic ``continue`` used to read as a real judge rejection → deadlock).
+    """
+    verdict, reason, _parse_failed, _wait_directive, transport_failed = judge_fn(
+        goal=goal, last_response=last_response)
+    if transport_failed:
+        return None, f"goal judge transport failure: {reason}"
+    return verdict, reason
+
+
+def _goal_verification_assignee() -> Optional[str]:
+    """Choose an independent profile for transport-fallback verification.
+
+    Honour ``kanban.goal_verification_assignee`` when it is not the current
+    worker. Otherwise prefer ``company`` and fall back to ``qa`` when company
+    itself produced the handoff. This keeps the child dispatchable without
+    allowing self-verification or requiring a model/pool configuration change.
+    """
+    worker = (os.environ.get("HERMES_PROFILE") or "").strip()
+    try:
+        name = cfg_get(load_config(), "kanban", "goal_verification_assignee", default=None)
+    except Exception:
+        name = None
+    configured = name.strip() if isinstance(name, str) and name.strip() else None
+    if configured and configured != worker:
+        return configured
+    for candidate in ("company", "qa"):
+        if candidate != worker:
+            return candidate
+    return None
+
+
+def _spawn_goal_verification_child(conn, parent_tid: str, reason: str) -> Optional[str]:
+    """Independent verification child for a goal-mode handoff the judge could not
+    evaluate (transport failure). The parent was allowed to hand off fail-open; this
+    card makes that visible and reviewable instead of silently waved through.
+    ``idempotency_key`` keeps a retried handoff from stacking duplicates.
+    Best-effort: returns the child id, or None (logged) if creation failed."""
+    from hermes_cli import kanban_db as kb
+    try:
+        child_id = kb.create_task(
+            conn,
+            title=f"Verify goal-mode handoff of {parent_tid} (judge transport failure)",
+            body=(
+                "task_type: review\n"
+                f"Independent verification of {parent_tid}: the goal-mode judge could not "
+                f"evaluate the worker's handoff because its transport failed, so the handoff "
+                "was allowed fail-open. Review the parent's acceptance evidence before "
+                "treating it as done.\n\n"
+                f"Judge failure reason: {reason}"),
+            assignee=_goal_verification_assignee(),
+            created_by=os.environ.get("HERMES_PROFILE") or "worker",
+            parents=(parent_tid,),
+            idempotency_key=f"goal-verify:{parent_tid}",
+        )
+        return child_id
+    except Exception:
+        logger.warning("goal judge transport failure: could not spawn verification child "
+                       "for %s", parent_tid, exc_info=True)
+        return None
+
+
+def _goal_gate(tool_name: str, task, tid: str, evidence: str, conn=None) -> None:
     """Goal-mode pre-handoff judge gate: a worker must not complete / request
     review before acceptance criteria are met. ``blocked`` gets its own
     guidance; any other non-``done`` verdict gets the ``continue`` guidance.
-    A broken judge fails open (logged) so it cannot permanently wedge work."""
+    A broken judge fails open (logged) so it cannot permanently wedge work —
+    including a judge whose transport fails: its synthetic ``continue`` is not
+    a rejection, so the handoff is allowed and an independent verification
+    child is spawned for a human instead."""
     if not task or not task.goal_mode or not _goal_judge_available():
         return
     try:
-        verdict, reason, _, _, _ = judge_goal(
-            goal=f"{task.title}\n\n{task.body or ''}".strip(), last_response=evidence.strip())
+        verdict, reason = _goal_verdict_and_reason(
+            judge_goal,
+            goal=f"{task.title}\n\n{task.body or ''}".strip(),
+            last_response=evidence.strip())
     except Exception as judge_exc:
         logger.warning(
             "goal judge check failed, allowing lifecycle handoff: %s", judge_exc, exc_info=True)
+        return
+    if verdict is None:
+        # Transport failure: fail open, but leave an auditable verification child.
+        logger.warning("goal judge transport failure on %s of %s (%s); allowing handoff "
+                       "fail-open", tool_name, tid, reason)
+        if tool_name == "kanban_complete":
+            if conn is not None:
+                _spawn_goal_verification_child(conn, tid, reason)
+            else:
+                try:
+                    with _board(None, quiet_close=True) as (_kb, own_conn):
+                        _spawn_goal_verification_child(own_conn, tid, reason)
+                except Exception:
+                    logger.debug("goal judge transport failure: board open for verification "
+                                 "child failed", exc_info=True)
         return
     if verdict == "done":
         return
@@ -582,7 +670,7 @@ def _handle_complete(args: dict, **kw) -> str:
         # judge by calling kanban_complete before acceptance criteria are met. Only enforce when a judge is
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
         task = kb.get_task(conn, tid)
-        _goal_gate("kanban_complete", task, tid, (summary or result or "").strip())
+        _goal_gate("kanban_complete", task, tid, (summary or result or "").strip(), conn=conn)
         try:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
@@ -673,7 +761,7 @@ def _handle_request_review(args: dict, **kw) -> str:
                f"reviewer profile {reviewer!r} is not installed. "
                f"Installed profiles: {', '.join(list_profile_names())}")
     with _board(args.get("board")) as (kb, conn):
-        _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
+        _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary, conn=conn)
         try:
             ok, fail_reason = kb.request_review(
                 conn, tid, summary=summary, metadata=metadata, reviewer=reviewer,
@@ -1000,10 +1088,47 @@ def _handle_link(args: dict, **kw) -> str:
         return _ok(parent_id=parent_id, child_id=child_id)
 
 
+@_kanban_handler("kanban_specify")
+def _handle_specify(args: dict, **kw) -> str:
+    """Fill out a triage task (title/body/assignee, omitted = unchanged) and
+    promote it triage → todo. LLM-free: the caller writes the spec; the DB
+    layer (``specify_triage_task``) keeps the write atomic and triage-only."""
+    _reject_delegated_child_mutation("kanban_specify")
+    _require_orchestrator_tool("kanban_specify")
+    tid = args.get("task_id")
+    _check(tid, "task_id is required")
+    tid = str(tid)
+    _enforce_worker_task_ownership(tid)
+    title, body, assignee = args.get("title"), args.get("body"), args.get("assignee")
+    reason = args.get("reason")
+    _check(any(v is not None for v in (title, body, assignee)),
+           "pass at least one of title, body, or assignee to specify the task")
+    # Author comes from the worker's runtime identity, never caller args: the
+    # audit comment is injected into future workers' system prompts, so an
+    # args override could forge a directive from an authoritative-looking name
+    # (same anti-forgery rule as kanban_comment, #19713).
+    author = os.environ.get("HERMES_PROFILE") or None
+    with _board(args.get("board")) as (kb, conn):
+        _existing_task(kb, conn, tid)
+        promoted = kb.specify_triage_task(
+            conn, tid,
+            title=None if title is None else str(title),
+            body=None if body is None else str(body),
+            assignee=None if assignee is None else str(assignee),
+            author=author,
+            reason=None if reason is None else str(reason))
+        # Fail closed: someone moved the task out of triage between the
+        # existence check and the write (stale race) — report, don't guess.
+        _check(promoted, f"task {tid} is not in triage — nothing was changed")
+        task = kb.get_task(conn, tid)
+        return _ok(task_id=tid, **_fields(task, ("status", "title", "assignee")))
+
+
 # --- Registration (order preserved: it is the order tools appear in the schema) ---
 
-# kanban_list / kanban_unblock route the board and are hidden from task workers.
-_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock"})
+# kanban_list / kanban_unblock / kanban_specify route the board and are hidden
+# from task workers.
+_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock", "kanban_specify"})
 _TOOLS = (
     ("kanban_show", KANBAN_SHOW_SCHEMA, _handle_show, "📋"),
     ("kanban_list", KANBAN_LIST_SCHEMA, _handle_list, "📋"),
@@ -1018,7 +1143,8 @@ _TOOLS = (
     ("kanban_attachments", KANBAN_ATTACHMENTS_SCHEMA, _handle_attachments, "📎"),
     ("kanban_create", KANBAN_CREATE_SCHEMA, _handle_create, "➕"),
     ("kanban_unblock", KANBAN_UNBLOCK_SCHEMA, _handle_unblock, "▶"),
-    ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"))
+    ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"),
+    ("kanban_specify", KANBAN_SPECIFY_SCHEMA, _handle_specify, "📝"))
 
 for _name, _sch, _handler, _emoji in _TOOLS:
     _gate = _check_kanban_orchestrator_mode if _name in _ORCHESTRATOR_TOOLS else _check_kanban_mode

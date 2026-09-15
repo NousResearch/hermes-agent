@@ -766,16 +766,19 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
   updateGroupChat(group, room => ({ ...room, epoch: (room.epoch || 0) + 1 }))
 
   void (async () => {
+    let currentThread = thread
+
     try {
       while (binding.isLive() && drive.pending.size) {
         const [nextThread, nextMembers] = drive.pending.entries().next().value!
+        currentThread = nextThread
         drive.pending.delete(nextThread)
         updateGroupChat(group, room => ({ ...room, running: true }))
         await runGroupChatRounds(group, nextMembers, nextThread, drive.failedMembers)
       }
     } catch {
       if (binding.isLive()) {
-        recordGroupActivity(group, { kind: 'failed', member: null, thread })
+        recordGroupActivity(group, { kind: 'failed', member: null, thread: currentThread })
         updateGroupChat(group, room => ({ ...room, running: false, turn: null }))
       }
     } finally {

@@ -264,6 +264,36 @@ describe('round lifecycle', () => {
     expect(room.gateway.calls[1].prompt).toMatch(/first[\s\S]*queued same-thread[\s\S]*explicitly retry/)
   })
 
+  it('attributes a queued drive failure to the thread whose harvest failed', async () => {
+    let finish!: (reply: string) => void
+    const held = new Promise<string>(resolve => { finish = resolve })
+    const room = await loadRoom({ turn: () => held })
+    const first = room.rounds.sendToGroupChat('Failure', MEMBERS.slice(0, 2), '@research first')!
+    await drain(() => room.gateway.calls.length < 1)
+    const queued = room.rounds.sendToGroupChat('Failure', MEMBERS.slice(0, 2), '@builder queued')!
+    const request = host.request as (...args: unknown[]) => Promise<unknown>
+
+    host.request = (...args: unknown[]) => {
+      const [method, params] = args as [string, { profile?: string }]
+
+      // JSON-shaped malformed reply text throws while harvesting, after RPC acceptance.
+      return method === 'session.resume' && params.profile === 'builder'
+        ? Promise.resolve({ messages: [{ role: 'assistant', text: { toString: 1 } }] })
+        : request(...args)
+    }
+
+    room.chat.updateGroupChat('Failure', state => ({
+      ...state, stranded: { builder: { before: 0, thread: first } }
+    }))
+    finish('(pass)')
+    await drain(() => !room.activity.currentGroupActivity('Failure').some(event => event.kind === 'failed'))
+    expect(first).not.toBe(queued)
+    expect(room.activity.currentGroupActivity('Failure').filter(event => event.kind === 'failed')).toEqual([
+      expect.objectContaining({ member: null, thread: queued })
+    ])
+    expect(room.chat.$groupChats.get().Failure.running).toBe(false)
+  })
+
   it('treats a failed member turn as a pass, not a room error', async () => {
     const room = await loadRoom({
       turn: ({ profile }) => {

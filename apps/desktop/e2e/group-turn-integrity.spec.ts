@@ -166,7 +166,7 @@ test('a rejected member turn stays visible when the room settles', async () => {
         (window as any).__rejected = ((window as any).__rejected || 0) + 1
         const reject = () => this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ jsonrpc: '2.0', id: frame.id, error: { code: 4003, message: 'Controlled member admission refusal' } }) }))
 
-        if ((window as any).__rejected === 1) { (window as any).__releaseRefusal = reject } else { queueMicrotask(reject) }
+        if ((window as any).__rejected <= 3) { (window as any).__releaseRefusal = reject } else { queueMicrotask(reject) }
       } else {
         send.call(this, data)
       }
@@ -191,6 +191,23 @@ test('a rejected member turn stays visible when the room settles', async () => {
   expect((await publicLog(page)).filter(entry => entry.from !== 'You')).toEqual([])
   await expect(page.getByRole('button', { name: /^Activity/ })).toContainText('Programmer hit an error')
   await page.screenshot({ path: '/tmp/botmode-campaign/lane-a-error-after.png' })
+
+  // One epoch: A fails, B waits, the user retries A, then B and A fail.
+  // The retry is explicit and after A's failure, unlike the prequeued sends above.
+  await groupComposer.fill('@programmer LANE_A_FAILURE recency')
+  await groupComposer.press('Enter')
+  await expect.poll(() => page.evaluate(() => (window as any).__rejected)).toBe(2)
+  await groupComposer.fill('@reviewer LANE_A_FAILURE recency')
+  await groupComposer.press('Enter')
+  await page.evaluate(() => (window as any).__releaseRefusal())
+  await expect.poll(() => page.evaluate(() => (window as any).__rejected)).toBe(3)
+  await groupComposer.fill('@programmer LANE_A_FAILURE explicit retry')
+  await groupComposer.press('Enter')
+  await page.evaluate(() => (window as any).__releaseRefusal())
+  await expect.poll(() => page.evaluate(() => (window as any).__rejected), { timeout: 30000 }).toBe(4)
+  await expect(page.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: /^Activity/ })).toContainText('Programmer hit an error')
+  console.log('CONTROLLED REFUSAL: A failed, B failed, A failed again; newest unresolved summary:', await page.getByRole('button', { name: /^Activity/ }).textContent())
 })
 
 test('Stop clears a queued follow-up and a direct mention resumes the held member', async () => {

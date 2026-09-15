@@ -718,6 +718,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     const key = event.member || ''
 
     if (event.kind === 'failed' || event.kind === 'timed-out') {
+      unresolvedFailures.delete(key)
       unresolvedFailures.set(key, event)
     } else if (event.kind === 'replied' || event.kind === 'passed' || event.kind === 'delivered') {
       unresolvedFailures.delete(key)

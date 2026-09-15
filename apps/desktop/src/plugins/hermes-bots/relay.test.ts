@@ -672,3 +672,102 @@ describe('stop halts both loops', () => {
     stopBotRelay()
   })
 })
+
+describe('the drain loop does not let one delivery hold every other gateway’s mail', () => {
+  // A long turn on b (up to RELAY_DELIVER_TIMEOUT_MS) must not stop b's own
+  // outbox from being claimed, nor a's delivery from running: the gateway
+  // checks envelope age against bot_mode.envelope_ttl_seconds at the claim,
+  // and the sender's waiter is finite.
+  const toB = { id: 'env-1', message: 'long job', target_connection: 'b', target_profile: 'ops' }
+  const toA = { id: 'env-2', message: 'quick one', target_connection: 'a', target_profile: 'default' }
+
+  it('claims every outbox first and delivers to different targets concurrently', async () => {
+    let releaseB!: (value: { reply: string }) => void
+    const pendingB = new Promise<{ reply: string }>(resolve => {
+      releaseB = resolve
+    })
+
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        return { envelopes: call.connectionId === 'a' ? [toB] : [toA] }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        return call.connectionId === 'b' ? pendingB : { reply: 'done' }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await pushAndSettle()
+
+    // b's turn is still running — yet b's outbox was claimed and its envelope delivered on a.
+    expect(calls.filter(call => call.method === 'bot_relay.outbox.drain').map(call => call.connectionId)).toEqual([
+      'a',
+      'b'
+    ])
+    expect(calls.filter(call => call.method === 'bot_relay.deliver').map(call => call.connectionId)).toEqual(['b', 'a'])
+    expect(calls.find(call => call.method === 'bot_relay.reply')).toMatchObject({
+      connectionId: 'b',
+      params: { id: 'env-2', reply: 'done' }
+    })
+
+    releaseB({ reply: 'finally' })
+    await vi.advanceTimersByTimeAsync(10)
+
+    expect(calls.filter(call => call.method === 'bot_relay.reply').map(call => call.params.id)).toEqual([
+      'env-2',
+      'env-1'
+    ])
+
+    stopBotRelay()
+  })
+
+  it('keeps envelopes for the same target profile in order, one turn at a time', async () => {
+    let releaseFirst!: (value: { reply: string }) => void
+    const first = new Promise<{ reply: string }>(resolve => {
+      releaseFirst = resolve
+    })
+    let delivered = 0
+
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        return { envelopes: call.connectionId === 'a' ? [toB, { ...toB, id: 'env-3', message: 'second' }] : [] }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        delivered += 1
+
+        return delivered === 1 ? first : { reply: 'second done' }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await pushAndSettle()
+
+    expect(calls.filter(call => call.method === 'bot_relay.deliver').map(call => call.params.message)).toEqual([
+      'long job'
+    ])
+
+    releaseFirst({ reply: 'first done' })
+    await vi.advanceTimersByTimeAsync(10)
+
+    expect(calls.filter(call => call.method === 'bot_relay.deliver').map(call => call.params.message)).toEqual([
+      'long job',
+      'second'
+    ])
+    expect(calls.filter(call => call.method === 'bot_relay.reply').map(call => call.params.reply)).toEqual([
+      'first done',
+      'second done'
+    ])
+
+    stopBotRelay()
+  })
+})

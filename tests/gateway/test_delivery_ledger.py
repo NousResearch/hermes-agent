@@ -371,6 +371,10 @@ class TestGatewayRedeliverySweep:
     @staticmethod
     def _adapter(success=True):
         adapter = MagicMock()
+        adapter.is_connected = True
+        adapter.has_fatal_error = False
+        adapter.send_path_degraded = False
+        adapter.gateway_runner = None
         adapter.send = AsyncMock(
             return_value=MagicMock(success=success, error="" if success else "nope")
         )

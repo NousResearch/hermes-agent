@@ -71,6 +71,40 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Assignees whose job is to ACT ON an already-open PR (stuck-PR repair,
+# merge/acceptance chase) rather than duplicate its implementation. The
+# ``active_pr`` rule's rationale — "re-spawning risks a duplicate PR" — does
+# not apply to these roles, so they are exempt from it while every other
+# respawn-guard rule (``recent_success``, ``blocker_auth``, rate-limit
+# cooldown) still applies unchanged. Overridable via
+# ``kanban.active_pr_recovery_assignees`` (explicit config REPLACES this
+# default rather than extending it — an operator who sets the list is opting
+# out of "closer" unless they name it too).
+_DEFAULT_ACTIVE_PR_RECOVERY_ASSIGNEES = frozenset({"closer"})
+
+
+def _active_pr_recovery_assignees() -> frozenset[str]:
+    """Assignee names exempt from the ``active_pr`` respawn guard.
+
+    Reads ``kanban.active_pr_recovery_assignees`` from config (a list of
+    profile/assignee names); falls back to
+    :data:`_DEFAULT_ACTIVE_PR_RECOVERY_ASSIGNEES` when unset. Config failures
+    fail safe to the default set rather than to "everyone exempt".
+    """
+    try:
+        from hermes_cli.config import load_config
+        raw = (load_config() or {}).get("kanban", {}).get("active_pr_recovery_assignees")
+    except Exception:
+        return _DEFAULT_ACTIVE_PR_RECOVERY_ASSIGNEES
+    if raw is None:
+        return _DEFAULT_ACTIVE_PR_RECOVERY_ASSIGNEES
+    if isinstance(raw, str):
+        raw = [raw]
+    try:
+        return frozenset(str(name).strip() for name in raw if str(name).strip())
+    except TypeError:
+        return _DEFAULT_ACTIVE_PR_RECOVERY_ASSIGNEES
+
 
 @dataclass
 class DispatchResult:
@@ -1136,11 +1170,15 @@ def check_respawn_guard(
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
     (PR URL in a recent comment; re-spawning risks a duplicate PR). The review
-    lane skips the last two: they are the *inputs* to a review handoff. Stale /
-    dead claim locks are NOT a guard reason — the reclaim passes own those.
+    lane skips the last two: they are the *inputs* to a review handoff. An
+    authorized recovery assignee (default ``"closer"``, configurable via
+    ``kanban.active_pr_recovery_assignees``) is exempt from ``active_pr`` in
+    EVERY lane — its job is to act on the existing PR, not duplicate it — but
+    remains subject to every other rule. Stale / dead claim locks are NOT a
+    guard reason — the reclaim passes own those.
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT last_failure_error, assignee FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
@@ -1204,6 +1242,11 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    An authorized recovery assignee (e.g. Closer) is exempt: its job IS
+    #    to act on that PR, so "risks a duplicate PR" does not apply.
+    assignee = (row["assignee"] or "").strip()
+    if assignee and assignee in _active_pr_recovery_assignees():
+        return None
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
@@ -1213,6 +1256,21 @@ def check_respawn_guard(
             return "active_pr"
 
     return None
+
+
+def summarize_respawn_guard_reasons(
+    respawn_guarded: "list[tuple[str, str]]",
+) -> dict[str, int]:
+    """Count ``respawn_guarded`` entries by reason, e.g. ``{"active_pr": 2}``.
+
+    Shared by the CLI/gateway "dispatcher stuck" health warnings so an
+    operator sees WHY the ready queue isn't spawning instead of a bare
+    zero-spawn count (#111910 evidence item 4/5).
+    """
+    counts: dict[str, int] = {}
+    for _task_id, reason in respawn_guarded or []:
+        counts[reason] = counts.get(reason, 0) + 1
+    return counts
 
 
 def _profile_exists_fn() -> Optional[Callable[[str], bool]]:

@@ -105,6 +105,12 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, who, current) in res.skipped_per_profile_capped
             ],
             "auto_assigned_default": res.auto_assigned_default,
+            "respawn_guarded": [
+                {"task_id": tid, "reason": reason} for (tid, reason) in res.respawn_guarded
+            ],
+            "rate_limited": res.rate_limited,
+            "skipped_locked": res.skipped_locked,
+            "memory_pressure": res.memory_pressure,
         }, ascii=True)
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
@@ -205,12 +211,18 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         if health_state["bad_ticks"] >= HEALTH_WINDOW:
             now = int(time.time())
             if now - health_state["last_warn_at"] >= 300:
+                reasons = kbd.summarize_respawn_guard_reasons(res.respawn_guarded)
+                reason_str = (
+                    " Respawn guard reasons: "
+                    + ", ".join(f"{k}={v}" for k, v in sorted(reasons.items())) + "."
+                    if reasons else ""
+                )
                 print(
                     f"[{_fmt_ts(now)}] WARN dispatcher stuck: ready queue non-empty for "
                     f"{health_state['bad_ticks']} consecutive ticks but 0 workers spawned "
-                    f"successfully. Check profile health (venv, PATH, credentials) and `hermes "
-                    f"kanban list --status ready` / `hermes kanban list --status blocked` for "
-                    f"recent spawn_failed tasks.",
+                    f"successfully.{reason_str} Check profile health (venv, PATH, credentials) "
+                    f"and `hermes kanban list --status ready` / `hermes kanban list --status "
+                    f"blocked` for recent spawn_failed tasks.",
                     file=sys.stderr, flush=True,
                 )
                 health_state["last_warn_at"] = now

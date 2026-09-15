@@ -136,3 +136,50 @@ class ActivityTrackingMixin:
             return
         with suppress(Exception):  # never let durable cleanup I/O break turn teardown
             clear(session_id)
+
+    def _finalize_activity_after_turn(self) -> None:
+        """Terminal activity stamp — called from the turn ``finally`` block.
+
+        Ensures ``last_activity_at`` is durably persisted even when all
+        intermediate heartbeats were rate-limited or dropped under lock
+        contention. This fixes the "stuck timestamp" bug where the Desktop
+        UI stops refreshing messages because ``last_activity_at`` never
+        advances past the last successful heartbeat.
+
+        Key design decisions (tri-model review 3/3 convergence):
+
+        1. **Does NOT call ``_touch_activity``** — that method runs the
+           kanban bridge (``inject_new_comments_from_env``) which can
+           trigger a spurious continuation turn on a finished turn.
+        2. **Does NOT bump in-memory ``_last_activity_ts``** — the gateway
+           stall-watchdog relies on this value being preserved across
+           interrupt-recursive turns (#15654). Bumping it at every nested
+           finally would reset the accumulated-idle clock.
+        3. **Uses elevated write patience** (``_ACTIVITY_FINALIZE_PATIENCE_S``
+           = 2.0s) — the turn is already over, so there is no
+           response-critical path to protect.
+        4. **Atomic UPDATE** — stamps ts AND clears labels in one write,
+           avoiding a transient ``turn completed`` label flash and halving
+           teardown writes vs. touch-then-clear.
+        """
+        session_id = getattr(self, "session_id", None)
+        session_db = getattr(self, "_session_db", None)
+        ts = getattr(self, "_last_activity_ts", None)
+        if not session_id or session_db is None:
+            return
+        finalize = getattr(session_db, "finalize_session_activity", None)
+        if not callable(finalize):
+            return
+        try:
+            finalize(session_id, ts)
+        except Exception:
+            logger.debug(
+                "turn-end activity finalize write failed (ignored)",
+                exc_info=True,
+            )
+        # Clear in-memory labels (mirrors _reset_activity_labels_after_turn).
+        # The DB write already clears them atomically; this ensures the
+        # in-memory snapshot is consistent for any reader that checks
+        # get_activity_summary() before the next _touch_activity.
+        self._last_activity_desc = ""
+        self._last_activity_provenance = ActivityProvenance.UNKNOWN

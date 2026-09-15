@@ -40,11 +40,7 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 const DEFAULT_EXEC_TIMEOUT_MS = 20_000
 const DEFAULT_FORWARD_TIMEOUT_MS = 15_000
 
-// Remote-side watchdog for probe commands, in seconds. runSsh SIGKILLs the
-// LOCAL ssh child on timeout, but the remote command keeps running as an
-// orphan (ppid=1) — a hung remote CLI (e.g. a wedged `hermes --version`)
-// accumulates orphans that busy-loop (#110478). Kept under
-// DEFAULT_EXEC_TIMEOUT_MS so the remote kill lands before the local timeout.
+// Remote-side watchdog for probe commands, in seconds: runSsh SIGKILLs the local ssh child on timeout, but the remote command orphans (ppid=1) and busy-loops (#110478). Kept under DEFAULT_EXEC_TIMEOUT_MS so the remote kill lands first.
 const REMOTE_PROBE_TIMEOUT_SECS = 15
 // No-mux tunnels are one `ssh -N -L` child each; a transient child death
 // (network blip, sshd restart, laptop resume) used to instantly poison
@@ -328,23 +324,7 @@ function buildInteractiveSshArgs(conn, remoteCwd, connectTimeoutMs?, remoteComma
   return args
 }
 
-// Wrap a remote probe command in a POSIX watchdog so a hung remote CLI is
-// killed REMOTELY after `timeoutSecs` instead of orphaning when the local ssh
-// child is SIGKILLed (#110478). Pure POSIX sh (dash, macOS sh) — deliberately
-// not GNU `timeout`, which macOS remotes do not ship.
-//
-// The wrapped command must be a SINGLE command: the watchdog kills its direct
-// child, so the exact invocation that can hang must be the direct child —
-// a hung grandchild of a compound wrapper would orphan anyway. (The ownership
-// probe nests the watchdog around the inner `serve --help` inside its
-// `$( ... )` for this reason; note the load-bearing space in `$( (`.)
-// The wrapped command keeps its stdout; the shell exits non-zero when the
-// watchdog fires and the probe's existing failure path handles it.
-//
-// The sleeper's stdio is detached (</dev/null >/dev/null 2>&1): killing the
-// sleeper subshell orphans its `sleep` grandchild, and an orphan holding the
-// session pipes would keep the ssh channel open until the full timeout even on
-// the healthy path. Detached, the orphan is a benign self-reaping `sleep`.
+// POSIX-sh watchdog killing hung remote probes remotely (#110478): the command must be SINGLE (only the direct child dies) and the sleeper's stdio is detached so an orphaned `sleep` can't hold the ssh channel open.
 function withRemoteTimeout(remoteCommand, timeoutSecs = REMOTE_PROBE_TIMEOUT_SECS) {
   const secs =
     Number.isFinite(timeoutSecs) && timeoutSecs > 0

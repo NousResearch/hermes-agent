@@ -1894,6 +1894,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             if hasattr(agent, "_transport_cache"):
                 agent._transport_cache.clear()
             agent._fallback_activated = True
+            agent._fallback_status_reason = _fallback_reason_text(reason)
 
             _rebind_fallback_credential_pool(agent, fb_provider, fb_model)
             from agent.client_lifecycle import _swap_fallback_clients

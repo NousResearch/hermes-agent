@@ -265,6 +265,7 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
     gateway_platforms: dict = {}
     gateway_exit_reason = None
     gateway_updated_at = None
+    fallback_status = None
     if runtime:
         gateway_state = runtime.get("gateway_state")
         if not gateway_running:
@@ -276,6 +277,7 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
         gateway_platforms = _project_gateway_platforms(
             runtime.get("platforms") or {}, configured, gateway_running, gateway_state)
         gateway_exit_reason = runtime.get("exit_reason")
+        fallback_status = _sanitize_fallback_status(runtime.get("fallback_status"))
         # Contract: gateway_updated_at is RFC3339 string | null, never a number. ``runtime``
         # may be the local gateway_state.json (legacy gateways wrote epoch floats; hand
         # edits can inject anything) or a remote /health/detailed body — normalize both.
@@ -292,6 +294,7 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
         "runtime": runtime, "gateway_running": gateway_running, "gateway_pid": liveness.pid,
         "gateway_state": gateway_state, "gateway_platforms": gateway_platforms,
         "gateway_exit_reason": gateway_exit_reason, "gateway_updated_at": gateway_updated_at,
+        "fallback_status": fallback_status,
         "gateway_shared_with": [str(p) for p in served] if isinstance(served, list) else None}
 
 
@@ -441,6 +444,7 @@ async def get_status(profile: Optional[str] = None):
             "gateway_platforms": gateway["gateway_platforms"],
             "gateway_exit_reason": gateway["gateway_exit_reason"],
             "gateway_updated_at": gateway["gateway_updated_at"],
+            "fallback_status": gateway["fallback_status"],
             # Non-null only for a profile served by the shared multiplexer: every profile that process carries.
             "gateway_shared_with": gateway["gateway_shared_with"],
             "active_agents": active_agents,

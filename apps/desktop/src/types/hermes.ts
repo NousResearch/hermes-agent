@@ -1260,11 +1260,25 @@ export interface PlatformStatus {
   updated_at: string
 }
 
+export interface FallbackRoute {
+  provider: string
+  model: string
+}
+
+/** Sanitized fallback-chain state from the gateway runtime status path. */
+export interface FallbackStatus {
+  active: FallbackRoute | null
+  chain: FallbackRoute[]
+  cooldown_until?: number | null
+  reason?: string | null
+}
+
 export interface StatusResponse {
   active_sessions: number
   config_path: string
   config_version: number
   env_path: string
+  fallback_status?: FallbackStatus | null
   gateway_exit_reason: string | null
   gateway_health_url: string | null
   gateway_pid: number | null

@@ -801,12 +801,33 @@ def _coerce_session_store(session_store: Any) -> dict[str, str]:
     return {"status": state if state in {"ok", "unavailable", "retrying"} else "unknown"}
 
 
+def _sanitize_fallback_status(value: Any) -> Optional[dict[str, Any]]:
+    """Keep fallback operational status display-only and secret-free."""
+    if not isinstance(value, dict):
+        return None
+    clean_route = lambda route: {
+        "provider": str(route.get("provider") or "")[:80],
+        "model": str(route.get("model") or "")[:200],
+    } if isinstance(route, dict) and route.get("provider") and route.get("model") else None
+    active = clean_route(value.get("active"))
+    chain = [route for raw in (value.get("chain") or []) if (route := clean_route(raw))]
+    result: dict[str, Any] = {"active": active, "chain": chain}
+    if value.get("cooldown_until") is not None:
+        with contextlib.suppress(TypeError, ValueError):
+            result["cooldown_until"] = float(value["cooldown_until"])
+    reason = value.get("reason")
+    if isinstance(reason, str) and reason.strip():
+        result["reason"] = reason.strip()[:240]
+    return result
+
+
 def write_runtime_status(
     *, gateway_state: Any = _UNSET, exit_reason: Any = _UNSET, restart_requested: Any = _UNSET,
     active_agents: Any = _UNSET, active_work: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
     error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
     retrying_since: Any = _UNSET, served_profiles: Any = _UNSET, session_store: Any = _UNSET,
-    ingress_url: Any = _UNSET, listener_base: Any = _UNSET, clear_profile_platforms: bool = False,
+    ingress_url: Any = _UNSET, listener_base: Any = _UNSET, fallback_status: Any = _UNSET,
+    clear_profile_platforms: bool = False,
     drop_profile_platforms: Optional[str] = None,
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status. ``drop_profile_platforms``
@@ -839,6 +860,7 @@ def write_runtime_status(
         # Multiplexed profiles; absent/empty for a single-profile gateway.
         ("served_profiles", served_profiles, lambda v: list(v or [])),
         ("session_store", session_store, _coerce_session_store),
+        ("fallback_status", fallback_status, _sanitize_fallback_status),
     ))
     if platform is not _UNSET:
         platform_payload = payload["platforms"].get(platform, {})

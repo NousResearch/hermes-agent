@@ -1499,6 +1499,10 @@ class GatewayStartupMixin:
         is_thread = bool(new_thread_id) and not is_telegram_private_chat
         chat_type = "thread" if is_thread else "dm"
         scope_id = None
+        if platform == Platform.TELEGRAM and not is_telegram_private_chat:
+            # The Telegram adapter keys forum-topic replies ``group:<chat>:<topic>`` (never
+            # ``thread``); bind the handoff on the same slot.
+            chat_type = "group"
         if platform == Platform.SLACK:
             # Slack keys a thread reply on the parent channel's type ("dm" for a D… channel, else
             # "group") plus the workspace id — never on a "thread" slot. Mirror the adapter's inbound

@@ -158,3 +158,13 @@ def test_slack_handoff_without_stored_scope_uses_the_sole_workspace_on_a_cold_ch
     adapter._channel_team, adapter._channel_teams, adapter._team_clients = {}, {}, {"T0C2HL96FH6": object()}
     _dest, handoff = _handoff_destination(Platform.SLACK, "D0C1HFBMQAX", "1789474088.089709", None, adapter)
     assert handoff == _organic_slack_reply_key("D0C1HFBMQAX", "1789474088.089709", "T0C2HL96FH6", "dm")
+
+
+def test_telegram_forum_handoff_key_matches_the_topic_reply_key():
+    """The Telegram adapter keys forum-topic replies ``group:<chat>:<topic>``; the handoff must
+    bind the same slot, not ``thread``."""
+    _dest, handoff = _handoff_destination(Platform.TELEGRAM, "-1001234567", "77", None, SimpleNamespace())
+    assert handoff == build_session_key(SessionSource(
+        platform=Platform.TELEGRAM, chat_id="-1001234567", chat_type="group", user_id="42",
+        thread_id="77"), thread_sessions_per_user=False)
+    assert handoff == "agent:main:telegram:group:-1001234567:77"

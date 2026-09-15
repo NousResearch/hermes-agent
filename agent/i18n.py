@@ -17,7 +17,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 SUPPORTED_LANGUAGES: tuple[str, ...] = (
-    "en", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
+    "en", "zh", "zh-hant", "ja", "de", "es", "fa", "fr", "tr", "uk",
     "af", "ko", "it", "ga", "pt", "ru", "hu", "ar",
 )
 DEFAULT_LANGUAGE = "en"

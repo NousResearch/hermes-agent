@@ -27,10 +27,12 @@ _UPDATE_RUNTIME_RELOAD_MODULES = "hermes_constants", "tools.environments.local",
 
 #: Modules EXECUTING the update survive the purge: evicting them buys nothing (running frames
 #: keep them alive) and reloading them mid-flight is the one genuinely unsafe move.
-#: ``hermes_logging`` is protected for a different reason: its queue listener, handler list and
-#: ``_logging_initialized`` flag are module globals, so a fresh copy starts a SECOND
-#: QueueListener over the same log files while the first one keeps running.
-_STALE_PURGE_PROTECTED = frozenset({"hermes_cli", "hermes_cli.main", "hermes_logging"})
+#: Two root modules carry process-wide identity state and are refreshed in place by
+#: ``_reload_updated_runtime_modules`` instead: ``hermes_logging`` (a fresh copy starts a SECOND
+#: QueueListener over the same log files while the first keeps running) and ``hermes_constants``
+#: (its ``_HERMES_HOME_OVERRIDE`` ContextVar — a token taken through the old module cannot reset a
+#: fresh module's var, and an override set before the purge would silently vanish).
+_STALE_PURGE_PROTECTED = frozenset({"hermes_cli", "hermes_cli.main", "hermes_logging", "hermes_constants"})
 
 #: The updater's own module family (``update_cmd*``, ``update_receipt``, ``update_inventory``,
 #: ``update_lock``, ...) is protected as a prefix: these hold per-run state — the open receipt

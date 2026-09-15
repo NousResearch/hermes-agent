@@ -70,9 +70,9 @@ def test_update_migration_survives_stale_module_missing_call_time_symbol(tmp_pat
 
 
 def test_update_migration_import_failure_after_purge_prints_fallback(tmp_path, monkeypatch, capsys):
-    """The purge evicts ``hermes_cli.*`` but not root modules (``hermes_constants``, ...), so the
-    post-purge ``from hermes_cli.config import ...`` re-executes NEW config.py against OLD root
-    modules and can raise ImportError. That must print the 'run hermes config migrate' fallback and
+    """The purge protects ``hermes_constants`` (identity-bearing ContextVar state), so the
+    post-purge ``from hermes_cli.config import ...`` re-executes NEW config.py against that OLD
+    root module and can raise ImportError. That must print the 'run hermes config migrate' fallback and
     return — not escape and abort the rest of post-update maintenance (fleet restart)."""
     home = tmp_path / "flat-home"
     home.mkdir()

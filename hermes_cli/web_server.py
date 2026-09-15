@@ -74,7 +74,9 @@ from hermes_cli.web_server_lifecycle import (  # noqa: E402
 )
 
 
-def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60) -> None:
+def _start_desktop_cron_ticker(
+    stop_event: "threading.Event", interval: int = 60, *, admission_gate=None,
+) -> None:
     """Tick the cron scheduler from inside the desktop dashboard backend.
 
     The desktop spawns a ``hermes dashboard`` backend, not a gateway, so without
@@ -96,6 +98,9 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
 
     start_kwargs: dict = {"interval": interval}
     if isinstance(provider, InProcessCronScheduler):
+        if admission_gate is not None:
+            start_kwargs["can_dispatch"] = admission_gate.can_dispatch
+            start_kwargs["dispatch_guard"] = admission_gate.dispatch_guard
         try:
             from hermes_cli.profiles import (
                 _check_gateway_running, _served_by_running_multiplexer, profiles_to_serve)
@@ -197,6 +202,9 @@ async def _lifespan(app: "FastAPI"):
     cron_stop: "threading.Event | None" = None
     cron_thread: "threading.Thread | None" = None
     if os.getenv("HERMES_DESKTOP") == "1":
+        from hermes_cli.web_server_idle_exit import CronAdmissionGate
+
+        app.state.cron_admission_gate = CronAdmissionGate()
         # Reap an orphaned gateway from an abnormal previous exit (reparented to
         # launchd, still holding the platform WebSocket) before forking a fresh
         # one that would race the same credential (#77276). Runs
@@ -213,6 +221,7 @@ async def _lifespan(app: "FastAPI"):
         cron_thread = threading.Thread(
             target=_start_desktop_cron_ticker,
             args=(cron_stop,),
+            kwargs={"admission_gate": app.state.cron_admission_gate},
             daemon=True,
             name="desktop-cron-ticker",
         )
@@ -255,6 +264,9 @@ async def _lifespan(app: "FastAPI"):
         _hosted_groups.stop_hosted_room_service(timeout=5.0)
         hosted_room_start_thread.join(timeout=1.0)
         if cron_stop is not None:
+            admission_gate = getattr(app.state, "cron_admission_gate", None)
+            if admission_gate is not None:
+                admission_gate.close()
             cron_stop.set()
         pty_reaper_task.cancel()
         selftest_task.cancel()
@@ -1242,7 +1254,12 @@ def _on_server_started(
             grace = float((load_config().get("dashboard") or {}).get("ssh_isolated_idle_grace_s", DEFAULT_IDLE_GRACE_S))
         except (TypeError, ValueError):
             grace = DEFAULT_IDLE_GRACE_S
-        start_idle_watchdog(server, app.state.ssh_isolated_clients, grace_s=grace)
+        start_idle_watchdog(
+            server,
+            app.state.ssh_isolated_clients,
+            grace_s=grace,
+            admission_gate=getattr(app.state, "cron_admission_gate", None),
+        )
 
     actual_port = _read_bound_port(server, fallback=port)
     app.state.bound_port = actual_port

@@ -46,6 +46,14 @@ describe('tile split-share memory across close/reopen', () => {
     return { model, registerBrowser, registry, tree }
   }
 
+  const sessionTile = (id: string, anchor: string) => ({
+    id: `session-tile:${id}`,
+    area: 'panes',
+    title: id,
+    data: { placement: 'main', dock: { pane: anchor, pos: 'right' as const } },
+    render: () => null
+  })
+
   /** The root row's weights, normalized to shares of their sum. */
   function rowShares(root: LayoutNode) {
     if (root.type !== 'split') {
@@ -65,7 +73,7 @@ describe('tile split-share memory across close/reopen', () => {
     expect(rowShares(tree.$layoutTree.get()!)).toEqual([0.5, 0.5])
   })
 
-  it('reopening restores the share the pane was closed at', async () => {
+  it('reopening after reload restores the share when the seam partner matches', async () => {
     const { registerBrowser, tree } = await setup()
 
     const dispose = registerBrowser()
@@ -84,13 +92,45 @@ describe('tile split-share memory across close/reopen', () => {
     tree.removeTreePane('preview-tile:url:browser')
     expect(tree.$layoutTree.get()!.type).toBe('group')
 
-    // …and re-open: adoption re-docks at the remembered quarter, not [1, 1].
-    registerBrowser()
+    // Simulate a hard reload: both the layout and split-share memory must be
+    // read back from storage before the browser contribution returns.
+    vi.resetModules()
+    const reloaded = await setup()
 
-    const shares = rowShares(tree.$layoutTree.get()!)
+    // Re-open against the same workspace seam partner.
+    reloaded.registerBrowser()
+
+    const shares = rowShares(reloaded.tree.$layoutTree.get()!)
 
     expect(shares[0]).toBeCloseTo(0.75)
     expect(shares[1]).toBeCloseTo(0.25)
+  })
+
+  it('rejects stale shares when chained session tiles re-adopt beside different partners', async () => {
+    const { registry, tree } = await setup()
+    const disposeA = registry.register(sessionTile('a', 'workspace'))
+    const disposeB = registry.register(sessionTile('b', 'session-tile:a'))
+    const root = tree.$layoutTree.get()!
+
+    if (root.type !== 'split') {
+      throw new Error('expected a split root')
+    }
+
+    // Give each departing tile a distinctive share against its current seam:
+    // b owns 1/4 beside a, then a owns 3/4 beside workspace.
+    tree.setTreeSplitWeights(root.id, [1, 3, 1])
+    disposeB()
+    tree.removeTreePane('session-tile:b')
+    disposeA()
+    tree.removeTreePane('session-tile:a')
+
+    // A reload/profile reconciliation can re-adopt the same tiles in a new
+    // chain. Neither old share belongs to the new seam, so both insertions use
+    // the existing even default instead of replaying 1/4 and 3/4 stale shares.
+    registry.register(sessionTile('b', 'workspace'))
+    registry.register(sessionTile('a', 'session-tile:b'))
+
+    expect(rowShares(tree.$layoutTree.get()!)).toEqual([0.5, 0.25, 0.25])
   })
 
   it('a stacked tab records no share (its removal changes no geometry)', async () => {

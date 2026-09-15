@@ -241,10 +241,28 @@ export function undismissTreePanes(paneIds: Iterable<string>): void {
 // open re-took half the chat, whatever the user had resized it to.
 const PANE_SHARE_KEY = 'hermes.desktop.paneShare.v1'
 
-const paneShares: Record<string, number> = readJson<Record<string, number>>(PANE_SHARE_KEY) ?? {}
+interface PaneShareRecord {
+  partner: string
+  share: number
+}
+
+type PersistedPaneShare = number | PaneShareRecord
+
+const paneShares: Record<string, PersistedPaneShare> =
+  readJson<Record<string, PersistedPaneShare>>(PANE_SHARE_KEY) ?? {}
 
 const validShare = (share: unknown): share is number =>
   typeof share === 'number' && Number.isFinite(share) && share > 0 && share < 1
+
+const validShareRecord = (value: unknown): value is PaneShareRecord => {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const record = value as Partial<PaneShareRecord>
+
+  return typeof record.partner === 'string' && record.partner.length > 0 && validShare(record.share)
+}
 
 function rememberPaneShare(tree: LayoutNode, paneId: string) {
   const zone = findGroupOfPane(tree, paneId)
@@ -266,21 +284,28 @@ function rememberPaneShare(tree: LayoutNode, paneId: string) {
   // index 0 pairs with the sibling after it instead.
   const at = parent.children.findIndex(child => child.id === zone.id)
   const partner = at > 0 ? at - 1 : at + 1
+  const partnerPane = parent.children[partner] ? allPaneIds(parent.children[partner])[0] : undefined
   const pair = (parent.weights[at] ?? 1) + (parent.weights[partner] ?? 1)
   const share = pair > 0 ? (parent.weights[at] ?? 1) / pair : null
 
-  if (validShare(share)) {
-    paneShares[paneId] = share
+  if (partnerPane && validShare(share)) {
+    paneShares[paneId] = { partner: partnerPane, share }
     writeJson(PANE_SHARE_KEY, paneShares)
   }
 }
 
 /** The [target, added] weight pair a re-inserted pane's edge split should get,
- *  or undefined for the even default. Persisted state is untrusted. */
-function recalledEdgeWeights(paneId: string): [number, number] | undefined {
-  const share = paneShares[paneId]
+ *  or undefined for the even default. Legacy scalars have no partner identity,
+ *  so they fail open to that default. Persisted state is untrusted. */
+function recalledEdgeWeights(tree: LayoutNode, paneId: string, targetGroupId: string): [number, number] | undefined {
+  const memory = paneShares[paneId]
+  const target = findGroup(tree, targetGroupId)
 
-  return validShare(share) ? [1 - share, share] : undefined
+  if (!validShareRecord(memory) || !target?.panes.includes(memory.partner)) {
+    return undefined
+  }
+
+  return [1 - memory.share, memory.share]
 }
 
 // HIDE-ONLY STRIP TABS (`hideOnly` chrome: sessions / Bots) — standing chrome
@@ -1480,7 +1505,7 @@ export function adoptContributedPanes(): void {
           dock?.pos ?? 'center',
           dock?.before,
           false,
-          recalledEdgeWeights(pane.id)
+          recalledEdgeWeights(next, pane.id, target)
         ) ?? next
     }
   }
@@ -1589,7 +1614,7 @@ export function dockPaneBeside(paneId: string, anchorPaneId: string) {
 
   const next = findGroupOfPane(tree, paneId)
     ? movePaneOp(tree, paneId, { groupId: anchor.id, pos })
-    : insertAtGroup(tree, anchor.id, paneId, pos, undefined, true, recalledEdgeWeights(paneId))
+    : insertAtGroup(tree, anchor.id, paneId, pos, undefined, true, recalledEdgeWeights(tree, paneId, anchor.id))
 
   if (next && next !== tree) {
     commit(next)

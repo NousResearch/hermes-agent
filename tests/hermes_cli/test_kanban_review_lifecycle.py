@@ -21,6 +21,7 @@ down:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -199,6 +200,8 @@ def test_request_review_refuses_to_clear_live_claim_without_ownership(
         tid = kb.create_task(conn, title="live claim", assignee="worker")
         claimed = kb.claim_task(conn, tid)
         assert claimed is not None
+        # This process stands in for the spawned worker: alive, fingerprinted.
+        kbd._set_worker_pid(conn, tid, os.getpid())
 
         # 1) No run id, no force -> refused with a distinct reason.
         ok, reason = kb.request_review(conn, tid, with_reason=True)

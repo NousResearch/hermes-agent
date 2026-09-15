@@ -2614,6 +2614,20 @@ class LiveClaimError(ValueError):
         )
 
 
+def _claim_is_live(trow) -> bool:
+    """True when a ``running`` task's claim still protects a run: the worker process
+    it spawned exists (PID + start-time fingerprint). A claim whose worker is gone,
+    or a library/CLI claim that never spawned one, has no run to protect. TTL expiry
+    is deliberately not consulted: ``reclaim_stale_tasks`` extends, not reclaims, the
+    claim of a live worker, so the process is the liveness authority here too."""
+    return bool(
+        trow["status"] == "running"
+        and trow["claim_lock"] is not None
+        and trow["worker_pid"]
+        and _worker_alive(trow["worker_pid"], trow["worker_started_at"])
+    )
+
+
 def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
@@ -2659,18 +2673,9 @@ def complete_task(
         ).fetchone()
         prior_status = trow["status"] if trow else None
         # Refuse to close a LIVE worker's run without proof of ownership
-        # (expected_run_id) or an explicit human override (force=True). "Live"
-        # means the spawned worker process still exists: a claim whose worker
-        # is gone (or a library claim that never spawned one) has no run to
-        # protect, so manual completion keeps working there.
-        if (
-            expected_run_id is None
-            and not force
-            and prior_status == "running"
-            and trow["claim_lock"] is not None
-            and trow["worker_pid"]
-            and _worker_alive(trow["worker_pid"], trow["worker_started_at"])
-        ):
+        # (expected_run_id) or an explicit human override (force=True); see
+        # _claim_is_live for what "live" means.
+        if expected_run_id is None and not force and trow and _claim_is_live(trow):
             raise LiveClaimError(task_id)
         sql = """
                 UPDATE tasks
@@ -3164,19 +3169,15 @@ def request_review(
             if not _parents_satisfied(conn, task_id):
                 return _ret(False, "parent dependencies are not satisfied")
             trow = conn.execute(
-                "SELECT assignee, status, claim_lock, current_run_id "
-                "FROM tasks WHERE id = ?", (task_id,),
+                "SELECT assignee, status, claim_lock, current_run_id, worker_pid, "
+                "worker_started_at FROM tasks WHERE id = ?", (task_id,),
             ).fetchone()
             if trow is None:
                 return _ret(False, "task not found")
             # Refuse to clear a live worker's claim without proof of ownership
-            # (expected_run_id) or an explicit human override (force=True).
-            if (
-                expected_run_id is None
-                and not force
-                and trow["status"] == "running"
-                and trow["claim_lock"] is not None
-            ):
+            # (expected_run_id) or an explicit human override (force=True);
+            # the same fence as complete_task (_claim_is_live).
+            if expected_run_id is None and not force and _claim_is_live(trow):
                 return _ret(
                     False, "task is running under a live claim; pass expected_run_id "
                     "(worker ownership) or force=True (explicit operator "

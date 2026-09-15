@@ -75,3 +75,17 @@ def test_claimless_complete_of_unclaimed_card_unchanged(conn):
     tid = kb.create_task(conn, title="admin", assignee="coder")
     assert kb.complete_task(conn, tid, result="done") is True
     assert conn.execute("SELECT status FROM tasks WHERE id = ?", (tid,)).fetchone()["status"] == "done"
+
+
+def test_request_review_shares_the_live_worker_fence(conn):
+    """``request_review`` keys on the same liveness as ``complete_task``: a claim
+    without a live worker process is not a live claim (the human/library flow
+    ``claim`` -> ``request_review`` works), a live worker's claim still is."""
+    tid, _ = _claimed_running_task(conn, live_worker=False)
+    assert kb.request_review(conn, tid, summary="handoff") is True
+    assert kb.get_task(conn, tid).status == "review"
+
+    tid2, run2 = _claimed_running_task(conn)
+    ok, reason = kb.request_review(conn, tid2, summary="steal", with_reason=True)
+    assert ok is False and "live claim" in reason
+    assert kb.request_review(conn, tid2, summary="own", expected_run_id=run2) is True

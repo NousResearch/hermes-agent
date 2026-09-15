@@ -223,6 +223,12 @@ class InterruptControlMixin:
         with _ic_lock(self, "_pending_steer_lock"):
             existing = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
             self._pending_steer = (existing + "\n" + cleaned) if existing else cleaned
+        observer = getattr(self, "_steer_observer", None)
+        if callable(observer):
+            try:
+                observer(cleaned)
+            except Exception:
+                logger.debug("steer observer failed", exc_info=True)
         return True
 
     def redirect(self, text: str) -> bool:

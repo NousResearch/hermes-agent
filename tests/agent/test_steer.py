@@ -49,6 +49,14 @@ class TestSteerAcceptance:
         assert agent.steer("go ahead and check the logs") is True
         assert agent._pending_steer == "go ahead and check the logs"
 
+    def test_notifies_frontend_after_accepting_external_steer(self):
+        agent = _bare_agent()
+        observed = []
+        agent._steer_observer = observed.append
+
+        assert agent.steer("show this in the terminal") is True
+        assert observed == ["show this in the terminal"]
+
 
 
 

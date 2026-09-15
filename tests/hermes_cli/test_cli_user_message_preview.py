@@ -51,6 +51,14 @@ def _make_cli(user_message_preview=None):
 
 
 class TestSubmittedUserMessagePreview:
+    def test_external_steer_uses_the_same_renderer_as_manual_input(self):
+        cli = _make_cli()
+        cli._print_user_message_preview = MagicMock()
+
+        cli._on_external_steer("change direction now")
+
+        cli._print_user_message_preview.assert_called_once_with("change direction now")
+
     def test_default_preview_shows_first_two_lines_and_last_two_lines(self):
         cli = _make_cli()
 

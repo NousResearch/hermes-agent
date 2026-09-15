@@ -173,6 +173,10 @@ def _resume_panel_colors() -> tuple:
 
 
 class CLIAgentSetupMixin:
+    def _on_external_steer(self, text: str) -> None:
+        """Render external steer through the normal submitted-user-message path."""
+        self._print_user_message_preview(text)
+
     """Agent construction + session-resume display methods for ``HermesCLI``."""
 
     def _ensure_runtime_credentials(self) -> bool:
@@ -589,6 +593,7 @@ class CLIAgentSetupMixin:
             # patch_stdout's StdoutProxy (#2262), holding lines while a response box streams so a
             # subagent/background completion notice never splits the reply mid-paragraph.
             self.agent._print_fn = self._agent_status_print
+            self.agent._steer_observer = self._on_external_steer
             # Hydrate credits notices at session OPEN (parity with the TUI) so a depletion
             # warning shows before the first message. Idempotent + fail-open in the helper.
             try:

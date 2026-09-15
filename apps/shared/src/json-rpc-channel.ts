@@ -32,9 +32,9 @@ export interface ServerRequest<M extends string = string, P extends ServerReques
   params: P
   /**
    * Route the answer back to the backend that asked. Idempotent: the first
-   * `respond` (or `fail`) wins; a request re-delivered after a reconnect
-   * (`open_requests`) reuses the id, so a stale card answering twice is a
-   * no-op on the wire.
+   * `respond` (or `fail`) wins. Callbacks from a detached or replaced
+   * connection are inert; a reconnect replay (`open_requests`) supplies
+   * fresh callbacks bound to the current connection.
    */
   respond: (result: Record<string, unknown>) => void
   /** Answer with a JSON-RPC error (the backend treats it as unanswered). */
@@ -326,17 +326,18 @@ export class JsonRpcRequestChannel {
    * dropped socket.
    */
   deliverRequest(id: string, method: string, params: ServerRequestParams, replayed = false): boolean {
+    const transport = this.transport
     let settled = false
 
     const send = (frame: Record<string, unknown>) => {
-      if (settled) {
+      if (settled || !transport || !this.owns(transport)) {
         return
       }
 
       settled = true
 
       try {
-        this.transport?.send(JSON.stringify({ jsonrpc: '2.0', id, ...frame }))
+        transport.send(JSON.stringify({ jsonrpc: '2.0', id, ...frame }))
       } catch {
         // The generation is gone; the backend withdraws the request itself (timeout / reconnect replay).
       }

@@ -39,7 +39,7 @@ import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { revealFileInTree } from '@/store/layout'
 import { $onboardingGate, guidedOnboardingActive } from '@/store/onboarding-gate'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $projectScope, $projectTree, newSessionLanding, projectNameForCwd } from '@/store/projects'
+import { $projectScope, $projectTree, newSessionLanding, projectNameForCwd, workspaceChipLabel } from '@/store/projects'
 import {
   $activeSessionId,
   $busy,
@@ -95,6 +95,7 @@ export function useStatusbarItems({
   commandCenterOpen,
   extraLeftItems,
   extraRightItems,
+  freshDraftReady,
   gatewayState,
   inferenceStatus,
   openAgents,
@@ -252,6 +253,16 @@ export function useStatusbarItems({
   useStore($newChatWorkspaceTarget)
   const landing = newSessionLanding()
   const projectName = useMemo(() => projectNameForCwd(currentCwd), [currentCwd, projectTree])
+
+  const workspaceLabel = workspaceChipLabel({
+    copy: { detached: t.sidebar.landingDetached, home: t.sidebar.projects.home },
+    currentCwd,
+    cwdLeaf: pathLeaf(currentCwd),
+    freshDraft: freshDraftReady,
+    landing,
+    primaryFocused,
+    projectName
+  })
 
   const sessionStartedAt = primaryFocused
     ? primarySessionStartedAt
@@ -499,18 +510,13 @@ export function useStatusbarItems({
         variant: 'action'
       },
       {
-        hidden: false,
+        hidden: !workspaceLabel,
         icon: <FolderOpen className="size-3" />,
         id: 'workspace-cwd',
         // Prefer the named project; fall back to the cwd leaf. Empty cwd on a
-        // fresh draft still names Home / Detached so Ctrl+N is not unlabeled.
-        label:
-          projectName ||
-          (currentCwd
-            ? pathLeaf(currentCwd)
-            : landing.kind === 'home'
-              ? t.sidebar.projects.home
-              : t.sidebar.landingDetached),
+        // fresh primary draft names Home / Detached / the landing project.
+        // Tiles and non-drafts with no cwd stay hidden (do not inherit).
+        label: workspaceLabel ?? undefined,
         menuItems: currentCwd
           ? [
               {
@@ -599,15 +605,12 @@ export function useStatusbarItems({
       gatewayRestarting,
       inferenceReady,
       inferenceStatus?.reason,
-      landing.kind,
       openAgents,
-      projectName,
       sessionsShowing,
       subagentsFailed,
       subagentsRunning,
-      t.sidebar.landingDetached,
-      t.sidebar.projects.home,
-      toggleCommandCenter
+      toggleCommandCenter,
+      workspaceLabel
     ]
   )
 

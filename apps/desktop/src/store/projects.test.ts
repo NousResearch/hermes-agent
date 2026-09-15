@@ -34,7 +34,8 @@ import {
   refreshWorktrees,
   resolveNewSessionCwd,
   scanAndRecordRepos,
-  startWorkInRepo
+  startWorkInRepo,
+  workspaceChipLabel
 } from './projects'
 import {
   $removedSessionIds,
@@ -351,6 +352,127 @@ describe('newSessionLanding', () => {
   it('treats an explicit null workspace target as Home', () => {
     $newChatWorkspaceTarget.set(null)
     expect(newSessionLanding().kind).toBe('home')
+  })
+
+  it('keeps an explicit string target even inside Home scope', () => {
+    enterProject(NO_PROJECT_ID)
+    $newChatWorkspaceTarget.set('/repos/hermes')
+    $projectTree.set([treeNode({ id: 'p_hermes', label: 'Hermes', path: '/repos/hermes' })])
+    expect(newSessionLanding()).toEqual({
+      cwd: '/repos/hermes',
+      id: 'p_hermes',
+      kind: 'project',
+      name: 'Hermes'
+    })
+  })
+})
+
+describe('workspaceChipLabel', () => {
+  const copy = { detached: 'Detached — no project', home: 'Home' }
+
+  const detached = {
+    cwd: '',
+    id: null,
+    kind: 'detached' as const,
+    name: null
+  }
+
+  const home = {
+    cwd: '',
+    id: NO_PROJECT_ID,
+    kind: 'home' as const,
+    name: null
+  }
+
+  const project = {
+    cwd: '/repos/hermes',
+    id: 'p_hermes',
+    kind: 'project' as const,
+    name: 'Hermes'
+  }
+
+  it('uses the named project when cwd is set', () => {
+    expect(
+      workspaceChipLabel({
+        copy,
+        currentCwd: '/repos/hermes',
+        cwdLeaf: 'hermes',
+        freshDraft: false,
+        landing: detached,
+        primaryFocused: true,
+        projectName: 'Hermes'
+      })
+    ).toBe('Hermes')
+  })
+
+  it('hides an empty-cwd tile so it does not inherit the primary draft', () => {
+    expect(
+      workspaceChipLabel({
+        copy,
+        currentCwd: '',
+        cwdLeaf: '',
+        freshDraft: true,
+        landing: home,
+        primaryFocused: false,
+        projectName: null
+      })
+    ).toBeNull()
+  })
+
+  it('hides empty cwd when the primary is not a fresh draft', () => {
+    expect(
+      workspaceChipLabel({
+        copy,
+        currentCwd: '',
+        cwdLeaf: '',
+        freshDraft: false,
+        landing: detached,
+        primaryFocused: true,
+        projectName: null
+      })
+    ).toBeNull()
+  })
+
+  it('names Home on a fresh primary draft', () => {
+    expect(
+      workspaceChipLabel({
+        copy,
+        currentCwd: '',
+        cwdLeaf: '',
+        freshDraft: true,
+        landing: home,
+        primaryFocused: true,
+        projectName: null
+      })
+    ).toBe('Home')
+  })
+
+  it('names Detached on a fresh primary draft', () => {
+    expect(
+      workspaceChipLabel({
+        copy,
+        currentCwd: '',
+        cwdLeaf: '',
+        freshDraft: true,
+        landing: detached,
+        primaryFocused: true,
+        projectName: null
+      })
+    ).toBe('Detached — no project')
+  })
+
+  it('names the project when the draft landing is a project with empty cwd', () => {
+    expect(
+      workspaceChipLabel({
+        copy,
+        currentCwd: '',
+        cwdLeaf: '',
+        freshDraft: true,
+        landing: project,
+        primaryFocused: true,
+        projectName: null
+      })
+    ).toBe('Hermes')
   })
 })
 

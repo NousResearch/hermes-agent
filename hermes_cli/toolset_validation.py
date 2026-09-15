@@ -31,13 +31,24 @@ def _platform_default_is_valid(
 def validate_platform_toolsets(
     platform_toolsets: object, is_valid_toolset: Callable[[str], bool],
     is_allowed_for_platform: Callable[[str, str], bool] = toolset_allowed_for_platform,
+    is_valid_mcp_server: Callable[[str], bool] | None = None,
 ) -> List[str]:
     """Return human-readable warnings for a ``platform_toolsets`` mapping.
     Reports: a toolset name ``is_valid_toolset`` rejects (suggesting ``hermes-<platform>`` when that
     would have been valid); a non-empty mapping resolving to zero valid toolsets (agent would start with
     no tools); a platform with no valid toolsets, checked per-platform because the global net is
     suppressed once any platform is valid; and non-list platform values, which fall back to the platform
-    default. ``is_valid_toolset`` is injected so this does no registry imports or I/O."""
+    default. ``is_valid_toolset`` is injected so this does no registry imports or I/O.
+
+    MCP server names are a legitimate ``platform_toolsets`` entry: the listed names form a per-platform
+    MCP allowlist (see ``tools_config._merge_mcp_servers`` and ``_save_platform_tools``, which preserve
+    them). The runtime registers the ``mcp-<server>`` alias only after MCP discovery
+    (``tools/mcp_tool_registration.py``), so in a fresh interpreter (update CLI / config migration)
+    the registry is empty and ``is_valid_toolset`` rejects every MCP name. ``is_valid_mcp_server`` is
+    the injected predicate covering that case: True when ``name`` is an enabled MCP server or the
+    ``mcp-<server>`` prefixed form of one (None disables the check). An MCP-validated name counts as
+    valid for the zero-toolset safety nets, so a platform list consisting only of MCP names does not
+    warn."""
     warnings: List[str] = []
     if not isinstance(platform_toolsets, dict) or not platform_toolsets:
         return warnings
@@ -69,6 +80,12 @@ def validate_platform_toolsets(
             if not isinstance(name, str) or not name:
                 continue
             if not is_valid_toolset(name):
+                if is_valid_mcp_server is not None and is_valid_mcp_server(name):
+                    # MCP allowlist entry (bare server name or mcp-<server> form): valid, and it
+                    # must count toward the zero-toolset safety nets.
+                    valid_count += 1
+                    platform_valid_count += 1
+                    continue
                 hint = f" — did you mean '{default}'?" if default_valid else ""
                 warnings.append(f"platform '{platform}' references unknown toolset '{name}'{hint}")
             elif is_allowed_for_platform(name, str(platform)):

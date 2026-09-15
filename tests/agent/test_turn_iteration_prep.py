@@ -11,7 +11,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.turn_iteration_prep import apply_retry_restarts
+from agent.turn_iteration_prep import (
+    _inject_steer_after_newest_tool_result,
+    apply_retry_restarts,
+)
 from agent.turn_retry_state import TurnRetryState
 
 RESTART_FLAGS = ["restart_with_redirected_messages", "restart_with_rebuilt_messages"]
@@ -64,3 +67,37 @@ def test_restart_refunds_are_bounded_per_turn(flag):
     assert verdicts[-1]._turn_exit_reason.endswith("restart_limit_exceeded")
     # The correction that tripped the redirect cap is handed back as the next user turn.
     assert agent.steered == (["last correction"] if flag == "restart_with_redirected_messages" else [])
+
+
+def test_pre_api_steer_does_not_attach_to_a_historical_tool_result():
+    """A steer queued before the first API call must wait for this turn's tool result."""
+    agent = SimpleNamespace(_pending_steer=None)
+    messages = [
+        {"role": "user", "content": "previous turn"},
+        {"role": "tool", "content": "previous result"},
+        {"role": "user", "content": "current turn with an image"},
+    ]
+
+    _inject_steer_after_newest_tool_result(
+        agent, messages, "correct the image interpretation", current_turn_user_idx=2
+    )
+
+    assert messages[-1]["role"] == "user"
+    assert "correct the image interpretation" not in messages[1]["content"]
+    assert agent._pending_steer == "correct the image interpretation"
+
+
+def test_pre_api_steer_attaches_after_a_tool_result_from_the_active_turn():
+    agent = SimpleNamespace(_pending_steer=None)
+    messages = [
+        {"role": "user", "content": "current turn"},
+        {"role": "tool", "content": "active result"},
+    ]
+
+    _inject_steer_after_newest_tool_result(
+        agent, messages, "use the corrected direction", current_turn_user_idx=0
+    )
+
+    assert messages[-1]["role"] == "user"
+    assert "use the corrected direction" in messages[-1]["content"]
+    assert agent._pending_steer is None

@@ -1667,6 +1667,16 @@ class GatewayNotificationsMixin:
             new_output = _redact_gateway_user_facing_secrets(new_output)
         return new_output
 
+    async def _launching_turn_active(self, platform_name: str, watcher: dict) -> bool:
+        """Whether the session that launched *watcher*'s process is still inside a turn on its
+        adapter (``_active_sessions`` is the base adapter's busy guard)."""
+        session_key = str(watcher.get("session_key") or "").strip()
+        if not session_key:
+            return False
+        source = await asyncio.to_thread(self._build_process_event_source, watcher)
+        adapter = self._resolve_injection_adapter(platform_name, source)
+        return session_key in (getattr(adapter, "_active_sessions", None) or {})
+
     async def _send_watcher_message(self, platform_name: str, chat_id, thread_id, message_text: str, watcher: dict) -> None:
         from gateway.run import _non_conversational_metadata
         source = await asyncio.to_thread(self._build_process_event_source, watcher)
@@ -1738,6 +1748,22 @@ class GatewayNotificationsMixin:
         header = "⏳ Background task still running" + (f" — `{short_cmd}`" if short_cmd else "")
         return f"{header}\n\nRecent output:\n```\n{new_output.strip()}\n```" if new_output.strip() else header
 
+    def arm_process_watcher(self, watcher: dict) -> bool:
+        """Start ``_run_process_watcher`` for a watcher registered mid-turn, from the agent's
+        tool thread. Waiting for the post-turn drain leaves a process that finishes while its
+        launching turn is still running with no watcher at all (#112033). False = the gateway
+        is not serving (startup, shutdown): the caller keeps the descriptor in
+        ``pending_watchers`` for the startup / post-turn drain."""
+        loop = getattr(self, "_gateway_loop", None)
+        if not getattr(self, "_running", False) or loop is None or not loop.is_running():
+            return False
+        from agent.async_utils import safe_schedule_threadsafe
+        future = safe_schedule_threadsafe(
+            self._run_process_watcher(watcher), loop, logger=logger,
+            log_message="Live process watcher arming failed",
+        )
+        return future is not None
+
     async def _run_process_watcher(self, watcher: dict) -> None:
         """Poll a background process and push updates until it exits. Mode
         (``display.background_process_notifications``): concise (default one-liner; failures append
@@ -1780,11 +1806,23 @@ class GatewayNotificationsMixin:
                     synth_text = format_process_notification(completion_evt)
                     if not synth_text:
                         break
+                    # Captured before injection: afterwards the key is busy either way (the injected
+                    # turn itself installs the guard).
+                    turn_busy = await self._launching_turn_active(platform_name, watcher)
                     delivered = await self._enqueue_process_completion_notification(synth_text, completion_evt)
                     if delivered is False:
                         # The process remains terminal; retry after failed adapter injection instead
                         # of suppressing the result.
                         continue
+                    # The agent normally reports the result itself, so the chat gets no separate receipt.
+                    # While the launching turn is still running the injection only queues a follow-up, and
+                    # the chat would stay mute for as long as that turn lasts (#112033): send the concise
+                    # receipt now.
+                    if turn_busy and (notify_mode in {"concise", "all", "result"} or (
+                        notify_mode == "error" and session.exit_code not in {0, None}
+                    )):
+                        message_text = self._format_process_final_message(session_id, session, "concise")
+                        await self._send_watcher_message(platform_name, chat_id, thread_id, message_text, watcher)
                     break
                 # Text-only notification; skip when already consumed via wait/log (the agent_notify branch
                 # FALLS THROUGH here, hence the re-check).

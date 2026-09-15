@@ -18,7 +18,7 @@ import pytest
 import tools.approval as A
 import tools.approval_prompt as approval_prompt
 from tools import approval_context
-from tools import approval_detection, approval_floors
+from tools import approval_detection, approval_floors, tirith_security
 from hermes_cli import approvals_test as at
 
 
@@ -38,7 +38,9 @@ def isolated_approvals(monkeypatch):
     monkeypatch.setattr(A, "is_current_session_yolo_enabled", lambda: False)
     monkeypatch.setattr(A, "load_permanent_allowlist", lambda: set())
     saved = set(A._permanent_approved)
+    saved_sessions = {key: set(value) for key, value in A._session_approved.items()}
     A._permanent_approved.clear()
+    A._session_approved.clear()
     # The tester must NEVER prompt or persist — make any attempt explode.
     def _boom(*_a, **_kw):  # pragma: no cover - failure path
         raise AssertionError("read-only tester touched a prompt/persistence path")
@@ -49,6 +51,8 @@ def isolated_approvals(monkeypatch):
     yield A
     A._permanent_approved.clear()
     A._permanent_approved.update(saved)
+    A._session_approved.clear()
+    A._session_approved.update(saved_sessions)
 
 
 class TestVerdicts:
@@ -71,6 +75,17 @@ class TestVerdicts:
         assert rc == 2
         assert "ask-approval" in out
         assert "recursive delete" in out
+
+    def test_permanent_class_key_allows_like_runtime(self, isolated_approvals,
+                                                     capsys):
+        isolated_approvals._permanent_approved.add("recursive delete")
+
+        rc = at.approvals_test_command(_args(["rm", "-rf", "~/project/build"]))
+        out = capsys.readouterr().out
+
+        assert rc == 0
+        assert "recursive delete" in out
+        assert "already approved" in out
 
     def test_user_deny_rule_from_config_honored(self, isolated_approvals, capsys,
                                                 monkeypatch):
@@ -102,6 +117,125 @@ class TestVerdicts:
         assert "off" in out
         rc = at.approvals_test_command(_args(["sudo", "re" + "boot"]))
         assert rc == 3
+
+
+class TestRuntimeParity:
+    """The dry-run's answer must equal what the runtime gate actually does.
+
+    This is the contract the command exists to keep: `hermes approvals test`
+    predicts `check_all_command_guards`. Both are driven for real here — the
+    only stub is the human prompt, which stands in for "a prompt happened".
+    """
+
+    @staticmethod
+    def _runtime_would_prompt(command, monkeypatch):
+        """Run the REAL runtime gate; True when it reaches the human prompt."""
+        prompted = []
+
+        def _fake_prompt(*_a, **_kw):
+            prompted.append(command)
+            return "deny"
+
+        monkeypatch.setattr(A, "prompt_dangerous_approval", _fake_prompt)
+        monkeypatch.setattr(approval_prompt, "prompt_dangerous_approval", _fake_prompt)
+        # Interactive CLI presence, so the gate reaches the prompt instead of
+        # resolving through an unattended context.
+        monkeypatch.setattr(A, "_presence", lambda cb=None: (None, True, False, False))
+        result = A.check_all_command_guards(command, env_type="local")
+        return bool(prompted), result
+
+    @pytest.mark.parametrize("command,setup,label", [
+        # No approval recorded: both must predict a prompt.
+        ("rm -rf ~/project/build", None, "unapproved dangerous pattern"),
+        # 'always' persists the PATTERN KEY into command_allowlist; the runtime
+        # then allows silently, so the dry-run must not predict a prompt.
+        ("rm -rf ~/project/build",
+         lambda: A._permanent_approved.add("recursive delete"),
+         "permanent class key"),
+        # Session-scoped approval of the same key.
+        ("rm -rf ~/project/build",
+         lambda: A._session_approved.setdefault(
+             approval_context.get_current_session_key(), set()).add("recursive delete"),
+         "session class key"),
+        # Another session's approval must NOT leak into this one.
+        ("rm -rf ~/project/build",
+         lambda: A._session_approved.setdefault("other-session", set()).add(
+             "recursive delete"),
+         "other session's class key"),
+    ])
+    def test_dry_run_prompt_prediction_matches_runtime(
+            self, isolated_approvals, monkeypatch, command, setup, label):
+        if setup is not None:
+            setup()
+
+        runtime_prompts, runtime_result = self._runtime_would_prompt(command, monkeypatch)
+        dry = at.evaluate_command(command, env_type="local")
+        dry_prompts = dry["verdict"] == "ask-approval"
+
+        assert dry_prompts == runtime_prompts, (
+            f"{label}: dry-run says {dry['verdict']!r} but the runtime "
+            f"{'prompts' if runtime_prompts else 'allows silently'}"
+        )
+        # And when neither prompts, the runtime really did approve.
+        if not runtime_prompts:
+            assert runtime_result["approved"] is True
+
+    @pytest.mark.parametrize("approve_tirith_key", [False, True])
+    def test_tirith_only_finding_matches_runtime(self, isolated_approvals,
+                                                 monkeypatch, approve_tirith_key):
+        """A security-scan finding with no DANGEROUS_PATTERNS match must not read as `allow`.
+
+        The runtime folds tirith findings and dangerous-pattern hits into ONE
+        warning list and prompts if anything survives the approved-key filter, so a
+        command the static patterns miss can still prompt. conftest disables tirith
+        for the suite, so the scanner is stubbed here (the documented opt-in).
+        """
+        command = "definitely-not-a-dangerous-pattern --flag"
+        # Precondition: the static classifier does NOT flag this, so tirith is the
+        # only reason a prompt could fire. Without this the test could pass for the
+        # wrong reason.
+        assert approval_detection.detect_dangerous_command(command)[0] is False
+
+        monkeypatch.setattr(tirith_security, "check_command_security", lambda _c: {
+            "action": "warn", "summary": "stubbed finding",
+            "findings": [{"rule_id": "stub_rule", "severity": "HIGH",
+                          "title": "stubbed finding", "description": "for test"}],
+        })
+        if approve_tirith_key:
+            A._permanent_approved.add("tirith:stub_rule")
+
+        runtime_prompts, runtime_result = self._runtime_would_prompt(command, monkeypatch)
+        dry = at.evaluate_command(command, env_type="local")
+
+        assert (dry["verdict"] == "ask-approval") == runtime_prompts
+        # Sanity-check the arms are actually different, so neither is vacuous.
+        assert runtime_prompts is not approve_tirith_key
+        if not runtime_prompts:
+            assert runtime_result["approved"] is True
+
+    @pytest.mark.parametrize("command,deny_globs,expected", [
+        ("rm -rf /", [], "hardline-deny"),
+        ("rm -rf ~/project/build", ["rm -rf *"], "user-deny"),
+    ])
+    def test_approved_class_key_cannot_punch_through_the_floors(
+            self, isolated_approvals, monkeypatch, command, deny_globs, expected):
+        """An approved pattern key must never downgrade an unconditional block.
+
+        Both floors fire before the allowlist at runtime; the dry-run must keep
+        that ordering, or the command would advertise a bypass that does not exist.
+        """
+        _dangerous, pattern_key, _desc = approval_detection.detect_dangerous_command(command)
+        A._permanent_approved.add(pattern_key)
+        monkeypatch.setattr(
+            approval_context, "_get_approval_config",
+            lambda: {"mode": "manual", "deny": deny_globs})
+
+        dry = at.evaluate_command(command, env_type="local")
+        runtime = A.check_all_command_guards(command, env_type="local")
+
+        assert dry["verdict"] == expected
+        assert dry["exit_code"] == 3
+        assert runtime["approved"] is False
 
 
 class TestNormalizationParity:

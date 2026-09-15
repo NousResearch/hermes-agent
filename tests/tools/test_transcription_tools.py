@@ -440,6 +440,83 @@ class TestTranscribeLocalExtended:
 
 
 # ============================================================================
+# CUDA → CPU rescue — a missing runtime library must never lose a voice note
+# ============================================================================
+
+class TestCudaCpuRescue:
+    """ctranslate2 dlopens the CUDA runtime libraries on the FIRST encode: not in the
+    ``WhisperModel(...)`` constructor, and not in ``model.transcribe(...)`` — which only returns a
+    lazy generator. Anything that wraps those two calls alone can never fire."""
+
+    def test_cuda_library_failure_while_draining_segments_retries_on_cpu(self, tmp_path):
+        """The library error arrives while the lazy generator is consumed — the rescue must cover it."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        def poisoned_segments():
+            raise RuntimeError("Library libcublas.so.12 is not found or cannot be loaded")
+            yield  # pragma: no cover - never reached; this is what a lazy generator looks like
+
+        poisoned = MagicMock()
+        poisoned.transcribe.return_value = (poisoned_segments(), MagicMock())
+
+        segment = MagicMock()
+        segment.text = "hello"
+        segment.no_speech_prob = 0.1
+        segment.avg_logprob = -0.2
+        recovered = MagicMock()
+        recovered.transcribe.return_value = ([segment], MagicMock(language="en", duration=1.0))
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("tools.transcription_tools._get_or_load_local_model", return_value=poisoned), \
+             patch("tools.transcription_tools._replace_cached_model_on_cpu",
+                   return_value=recovered) as cpu_reload:
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert cpu_reload.call_count == 1
+        assert result["success"] is True
+        assert result["transcript"] == "hello"
+
+    def test_auto_device_probe_falls_back_to_cpu_when_cuda_cannot_encode(self):
+        """``device: auto`` must not commit to a CUDA runtime that cannot load: construction does not
+        touch the libraries, so probe with one real encode at load and pin CPU + int8 when that is
+        the only thing that fails."""
+        from tools.transcription_local import _load_local_whisper_model
+
+        cuda_model = MagicMock()
+        cuda_model.model.device = "cuda"
+        cuda_model.encode.side_effect = RuntimeError(
+            "Library libcublas.so.12 is not found or cannot be loaded")
+        cpu_model = MagicMock()
+        whisper_cls = MagicMock(side_effect=[cuda_model, cpu_model])
+
+        with patch("faster_whisper.WhisperModel", whisper_cls):
+            model = _load_local_whisper_model("base")
+
+        assert model is cpu_model
+        assert [call.kwargs for call in whisper_cls.call_args_list] == [
+            {"device": "auto", "compute_type": "auto"},
+            {"device": "cpu", "compute_type": "int8"},
+        ]
+
+    def test_auto_device_keeps_cuda_when_the_probe_encodes(self):
+        """A CUDA runtime that does load must not be second-guessed by the probe."""
+        cuda_model = MagicMock()
+        cuda_model.model.device = "cuda"
+        whisper_cls = MagicMock(return_value=cuda_model)
+
+        with patch("faster_whisper.WhisperModel", whisper_cls):
+            from tools.transcription_local import _load_local_whisper_model
+            model = _load_local_whisper_model("base")
+
+        assert model is cuda_model
+        assert cuda_model.encode.call_count == 1
+        whisper_cls.assert_called_once_with("base", device="auto", compute_type="auto")
+
+
+# ============================================================================
 # Model auto-correction
 # ============================================================================
 

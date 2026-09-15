@@ -120,11 +120,35 @@ def _get_idle_unload_seconds(local_cfg: Dict[str, Any]) -> int:
     return max(_config_number(local_cfg, "unload_after_idle_seconds", 0, int), 0)
 
 
+def _cuda_runtime_unusable(model: Any) -> bool:
+    """True when a model the device picker resolved to CUDA cannot actually encode.
+
+    ctranslate2 dlopens the CUDA runtime libraries on the FIRST encode, not in the
+    ``WhisperModel(...)`` constructor, so a successful construction proves nothing — only a real
+    encode does. Inconclusive probe failures (anything that is not a missing/broken library)
+    return False: a legitimate runtime error must surface instead of silently degrading to CPU.
+    """
+    if getattr(getattr(model, "model", None), "device", None) != "cuda":
+        return False
+    try:
+        import numpy as np
+        # One second is enough: ctranslate2 pads a short frame up to Whisper's 3 000 mel frames and
+        # runs the encoder (a longer frame is rejected on shape before any kernel runs).
+        features = model.feature_extractor(np.zeros(16_000, dtype=np.float32))
+        model.encode(features)
+    except Exception as exc:  # noqa: BLE001 - the probe's whole job is to surface the failure
+        if _looks_like_cuda_lib_error(exc):
+            return True
+        logger.debug("faster-whisper CUDA probe inconclusive (%s); keeping the requested device", exc)
+    return False
+
+
 def _load_local_whisper_model(model_name: str, device: str = "auto", compute_type: str = "auto"):
     """Load faster-whisper with graceful CUDA → CPU fallback. ``device="auto"`` picks CUDA
     whenever the ctranslate2 wheel ships CUDA libs, even on hosts without the NVIDIA runtime (WSL2,
-    headless servers): try the requested config first; on a CUDA library load failure fall back to
-    CPU + int8. Pass ``stt.local.device`` / ``compute_type`` to pin.
+    headless servers): try the requested config first; on a CUDA library load failure — at
+    construction, or on the probe encode that construction never performs — fall back to CPU +
+    int8. Pass ``stt.local.device`` / ``compute_type`` to pin.
 
     ``device`` / ``compute_type`` default to ``"auto"`` so the historical behaviour is unchanged; pass
     explicit values from ``stt.local.device`` / ``stt.local.compute_type`` to pin a configuration (#9088).
@@ -140,13 +164,21 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
                     "(int8) to avoid native device autodetection crashes")
         return WhisperModel(model_name, device="cpu", compute_type="int8")
     try:
-        return WhisperModel(model_name, device=device, compute_type=compute_type)
+        model = WhisperModel(model_name, device=device, compute_type=compute_type)
     except Exception as exc:
         if not _looks_like_cuda_lib_error(exc):
             raise
         logger.warning("faster-whisper CUDA load failed (%s) — falling back to CPU (int8). "
                        "Install the NVIDIA CUDA runtime (libcublas/libcudnn) to use GPU.", exc)
         return WhisperModel(model_name, device="cpu", compute_type="int8")
+    # Only the picker's own choice may be overridden: an explicit ``device: cuda`` pin is the
+    # user's call and keeps today's behaviour (the mid-transcribe rescue in _transcribe_local
+    # still covers it).
+    if device == "auto" and _cuda_runtime_unusable(model):
+        logger.warning("faster-whisper CUDA runtime is unusable on this host — falling back to "
+                       "CPU (int8). Install the NVIDIA CUDA runtime (libcublas/libcudnn) to use GPU.")
+        return WhisperModel(model_name, device="cpu", compute_type="int8")
+    return model
 
 
 # Silence-hallucination hardening for local faster-whisper (whisper decodes junk like
@@ -217,6 +249,18 @@ def _join_confident_segments(segments: Any, local_cfg: Dict[str, Any]) -> str:
             continue
         kept.append(segment.text.strip())
     return " ".join(kept).strip()
+
+
+def _drain_segments(model, file_path: str, transcribe_kwargs: Dict[str, Any]):
+    """Run ``model.transcribe`` and materialize the lazy Segment generator it returns.
+
+    The CUDA runtime libraries are dlopen'd on the first encode — inside that generator, not in
+    the ``transcribe()`` call itself — so a missing-library failure only ever surfaces here, while
+    the segments are consumed. Draining them at the call site is what lets the CUDA → CPU retry in
+    ``_transcribe_local`` see the failure at all.
+    """
+    segments, info = model.transcribe(file_path, **transcribe_kwargs)
+    return list(segments), info
 
 
 def _transcribe_local_command(

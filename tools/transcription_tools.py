@@ -28,7 +28,7 @@ from tools.transcription_audio import (
     _convert_caf_to_wav, _prepare_audio_for_transcription, _trim_silence_for_cloud_stt,
     _validate_audio_file, _validate_audio_file_size, _validate_audio_source_file)
 from tools.transcription_local import (
-    _get_idle_unload_seconds, _has_local_command, _join_confident_segments,
+    _drain_segments, _get_idle_unload_seconds, _has_local_command, _join_confident_segments,
     _load_local_whisper_model, _looks_like_cuda_lib_error, _normalize_local_model,
     _transcribe_local_command, _try_lazy_install_stt, build_local_transcribe_kwargs)
 # The ``_transcribe_<provider>`` handlers are looked up in this module's globals by _dispatch_stt_provider.
@@ -356,7 +356,7 @@ def _transcribe_local(
         transcribe_kwargs.update({k: v for k, v in (("language", language), ("initial_prompt", prompt))
                                   if v})
         try:
-            segments, info = model.transcribe(file_path, **transcribe_kwargs)
+            segments, info = _drain_segments(model, file_path, transcribe_kwargs)
         except Exception as exc:
             # CUDA libs can fail at dlopen-on-first-use, AFTER loading: evict the poisoned
             # cached model, reload on CPU and retry once, else every later message fails.
@@ -365,7 +365,7 @@ def _transcribe_local(
             logger.warning("faster-whisper CUDA runtime failed mid-transcribe (%s) — "
                            "evicting cached model and retrying on CPU (int8).", exc)
             model = _replace_cached_model_on_cpu(model_name)
-            segments, info = model.transcribe(file_path, **transcribe_kwargs)
+            segments, info = _drain_segments(model, file_path, transcribe_kwargs)
         transcript = _join_confident_segments(segments, local_cfg)
         logger.info("Transcribed %s via local whisper (%s, lang=%s, %.1fs audio)",
                     Path(file_path).name, model_name, info.language, info.duration)

@@ -269,6 +269,17 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     Returns a JSON string ``{"success": bool, "data": {"web": [{"title", "url", "description", "position"},
     ...]}}`` (metadata only — use web_extract_tool for page content) or ``{"success": false, "error": ...}``.
     """
+    # Guard before any network call: an empty query cannot succeed on any backend,
+    # and calling out anyway burns a paid request plus a paid keyless-rescue retry
+    # while returning a provider error that does not say the parameter was missing.
+    if not isinstance(query, str) or not query.strip():
+        return json.dumps({
+            "success": False,
+            "error": "web_search requires a non-empty 'query' string (one query per call). "
+                     "No request was sent. If you passed 'queries' or a list, retry as "
+                     "web_search(query=\"<single query>\") and call it once per query.",
+        }, indent=2, ensure_ascii=False)
+
     try:
         limit = min(max(int(limit), 1), 100)
     except (TypeError, ValueError):
@@ -451,7 +462,7 @@ from tools.registry import registry, tool_error
 
 WEB_SEARCH_SCHEMA = {
     "name": "web_search",
-    "description": "Search the web for information. Returns up to 5 results by default with titles, URLs, and descriptions. The query is passed through to the configured backend, so operators such as site:domain, filetype:pdf, intitle:word, -term, and \"exact phrase\" may work when the backend supports them.",
+    "description": "Search the web for information. Returns up to 5 results by default with titles, URLs, and descriptions. Takes ONE query string per call (the parameter is 'query', not 'queries') — call it again for each additional query. The query is passed through to the configured backend, so operators such as site:domain, filetype:pdf, intitle:word, -term, and \"exact phrase\" may work when the backend supports them.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -493,9 +504,45 @@ WEB_EXTRACT_SCHEMA = {
     }
 }
 
+def _web_search_query_arg(args: dict) -> str:
+    """Read the query from `query`, tolerating the `queries` shape models reach for.
+
+    The schema asks for a single string `query`. Models trained on multi-query search
+    tools send `queries` (sometimes a list, sometimes a JSON-encoded list). Coercing
+    the first element is strictly better than sending an empty query to a paid
+    backend, which is what a bare `args.get("query", "")` did.
+    """
+    raw = args.get("query")
+    if isinstance(raw, str) and raw.strip():
+        return raw
+    if isinstance(raw, list) and raw:
+        first = raw[0]
+        if isinstance(first, str) and first.strip():
+            return first
+    alt = args.get("queries")
+    if isinstance(alt, str) and alt.strip():
+        text = alt.strip()
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+            except (ValueError, TypeError):
+                parsed = None
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, str) and item.strip():
+                        return item
+            return ""
+        return text
+    if isinstance(alt, list):
+        for item in alt:
+            if isinstance(item, str) and item.strip():
+                return item
+    return ""
+
+
 registry.register(
     name="web_search", toolset="web", schema=WEB_SEARCH_SCHEMA,
-    handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit", 5)),
+    handler=lambda args, **kw: web_search_tool(_web_search_query_arg(args), limit=args.get("limit", 5)),
     check_fn=check_web_api_key, requires_env=_web_requires_env(), emoji="🔍",
     max_result_size_chars=100_000,
 )

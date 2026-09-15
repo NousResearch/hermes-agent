@@ -1941,3 +1941,11 @@ def test_gateway_multiplex_keys_are_recognized_config_keys():
     known, suggestion = _validate_config_key("gateway.auto_migrate")
     assert known is False
     assert suggestion == "gateway.auto_multiplex_migration"
+
+
+def test_gateway_human_silence_key_is_recognized():
+    from hermes_cli.config import _validate_config_key
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["gateway"].get("allow_human_silence_markers") is False
+    assert _validate_config_key("gateway.allow_human_silence_markers") == (True, None)

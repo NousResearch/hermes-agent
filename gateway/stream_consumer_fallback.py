@@ -372,17 +372,22 @@ class StreamFallbackMixin:
 
     # Fresh send carried exactly ``text`` — record it so the gateway can reconcile the flag against the
     # completed response (#71643/#95382 content-vs-flag contract).
-    async def _suppress_silence_marker(self) -> None:
+    async def _suppress_silence_marker(self, *, segment_only: bool = False) -> None:
         """Retract any streamed preview when the final reply is a bare silence marker.  Flags
         stay False so the gateway's whole-response filter owns what goes out next: "" for a
-        machinery turn, the visible fallback for a human one."""
+        machinery turn, the visible fallback for a human one. Format-only final segments spare
+        substantive pre-tool segments that were already finalized."""
         # A native-stream bubble isn't a deletable message — close an open one
         # (e.g. from an eager re-seed) with an empty finalize so it doesn't hang.
         if self._native_stream_opened:
             await self._close_empty_native_bubble("Silence-marker native stream close failed: %s")
 
-        await self._delete_previews(self._stale_preview_ids(), label="Silence-marker")
-        self._preview_message_ids = set()
+        stale_ids = self._stale_preview_ids(segment_only=segment_only)
+        await self._delete_previews(stale_ids, label="Silence-marker")
+        if segment_only:
+            self._preview_message_ids.difference_update(stale_ids)
+        else:
+            self._preview_message_ids = set()
         self._message_id = None
         self._accumulated = self._stream_ledger = self._last_sent_text = ""
         self._already_sent = False

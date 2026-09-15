@@ -1940,6 +1940,9 @@ DEFAULT_CONFIG = {
         # boot (ambiguous cases carry a "recovered reply — may be a duplicate" marker;
         # at-least-once). Disable to lose in-flight final responses on crash/restart.
         "delivery_ledger": True,
+        # Ambient/free-response bots may deliberately return an exact silence marker for a human
+        # turn. Off by default so ordinary request/reply bots still surface accidental silence.
+        "allow_human_silence_markers": False,
         # Seconds to wait for one platform to connect at startup/reconnect; raise on "discord
         # connect timed out" loops (many slash commands to sync). 0/negative = wait forever. Bridged
         # to HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT, which wins if set explicitly.

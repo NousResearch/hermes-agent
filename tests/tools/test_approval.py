@@ -168,6 +168,7 @@ class TestDynamicShellWordSpellings:
         "find ./missing-approval-target -del*",
         "find ./missing-approval-target -delet?",
         "find ./missing-approval-target -delet[e]",
+        "echo x; find ./missing-approval-target -{delete,print}",
         "rg --pre{=,=sh} pattern missing-approval-payload.sh",
         "rg --hostname-bin{=,=sh} pattern file",
         "sort --compress-program{=,=sh} file",
@@ -182,7 +183,13 @@ class TestDynamicShellWordSpellings:
         "echo '-{delete,print}' '-del*'",
         'echo -g"*.py" \'-{delete,print}\' "--pre{=,=sh}"',
         "find . -name '*.pyc' -print",
+        "find . -name 'log-del*'",
+        "find . -name 'pre-exec*.sh'",
+        "find src -path '*-exec[0-9]*'",
+        "echo find . -{delete,print}",
+        "grep -r 'find . -del*' docs",
         "rg --pretty pattern file",
+        'rg "--pre*" pattern file',
     ])
     def test_inert_spellings_remain_safe(self, command):
         assert detect_dangerous_command(command) == (False, None, None), command

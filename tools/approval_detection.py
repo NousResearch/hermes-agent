@@ -320,13 +320,16 @@ DANGEROUS_PATTERNS = [
     (r'\bfind\b.*-exec(?:dir)?\s+(/\S*/)?rm\b', "find -exec/-execdir rm"),
     # Unquoted brace/glob spellings the shell can expand into the flags above at run time
     # (`find . -{delete,print}`, `find . -del*`). Additive: catches these spellings only; approval is
-    # still decided from source text, so `$var`/`$(...)`-built words are not covered here.
-    (r'\bfind\b[^;|&\n]*-(?:\{[^}\s]*(?:delete|exec(?:dir)?)[^}\s]*\}|(?:del(?:ete?)?|exec(?:dir)?)[*?\[])',
+    # still decided from source text, so `$var`/`$(...)`-built words are not covered here. `find` must
+    # be the command word and the dynamic word a whitespace-delimited token; both rules are matched
+    # against the quote-masked variant (_QUOTE_MASKED_DANGEROUS_DESCRIPTIONS) because a quoted glob
+    # (`find . -name 'log-del*'`) is a literal predicate argument the shell never expands.
+    (_CMDPOS + r'find\s[^;|&\n]*(?<!\S)-(?:\{[^}\s]*(?:delete|exec(?:dir)?)[^}\s]*\}|(?:del(?:ete?)?|exec(?:dir)?)[*?\[])',
      "find dynamic shell word may expand to destructive flag"),
     (r'\bfind\b.*-delete\b', "find -delete"),
     # Same for program-bearing read-tool options, which _execution_flag_findings() parses structurally
     # only when the option is spelled literally.
-    (r'\b(?:rg|sort|ag|man)\b[^;|&\n]*--(?:pre|hostname-bin|compress-program|pager|html)(?:\{|[*?\[])',
+    (r'\b(?:rg|sort|ag|man)\b[^;|&\n]*(?<!\S)--(?:pre|hostname-bin|compress-program|pager|html)(?:\{|[*?\[])',
      "dynamic shell word may expand to arbitrary program execution flag"),
     # Gateway lifecycle: stopping/restarting the gateway kills all running agents. Global flags
     # between `hermes` and `gateway` (`hermes -p ade gateway restart`) are allowed so a profile flag can't slip past.
@@ -435,6 +438,12 @@ DANGEROUS_PATTERNS = [
 
 
 DANGEROUS_PATTERNS_COMPILED = [(re.compile(p, _RE_FLAGS), d) for p, d in DANGEROUS_PATTERNS]
+# Dynamic-word rules look for glob/brace characters, which are ordinary data inside quotes
+# (`find . -name 'log-del*'`), so they scan the quote-masked variant like the positionless hardline rules.
+_QUOTE_MASKED_DANGEROUS_DESCRIPTIONS = frozenset({
+    "find dynamic shell word may expand to destructive flag",
+    "dynamic shell word may expand to arbitrary program execution flag",
+})
 
 # Preserve approvals stored under the removed interpreter regex rules.
 _REMOVED_PATTERN_KEY_ALIASES = {
@@ -1099,9 +1108,11 @@ def _iter_shell_command_starts(command: str):
                 starts.append(inner)
                 scan(inner, end if j is None else j - 1)
             elif kind == "char" and quote is None and i != skip:
-                # `${` opens a parameter expansion, not a brace group: a start marked inside it would
-                # split `${IFS}` and defeat the IFS collapse in normalization.
-                if command[i] in "({;\n" and not (command[i] == "{" and i > 0 and command[i - 1] == "$"):
+                # `{` opens a brace group only as its own word (after whitespace or a separator): `${IFS}`
+                # is a parameter expansion and `-{delete,print}` a brace-expansion word, and a start
+                # marked inside either splits the word the flat patterns need to see intact.
+                if command[i] in "(;\n" or (command[i] == "{" and (i == 0 or command[i - 1].isspace()
+                                                                   or command[i - 1] in "(;&|)")):
                     starts.append(i + 1)
                 elif command[i] in "&|":
                     repeated = i + 1 < end and command[i + 1] == command[i]
@@ -1454,8 +1465,14 @@ def detect_dangerous_command(command: str) -> tuple:
         return (False, None, None)
     for command_variant in _command_detection_variants(command):
         command_lower = command_variant.lower()
+        masked_lower: str | None = None
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
-            if pattern_re.search(command_lower):
+            if description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS:
+                if masked_lower is None:
+                    masked_lower = _mask_quoted_prose(command_variant).lower()
+                if pattern_re.search(masked_lower):
+                    return (True, description, description)
+            elif pattern_re.search(command_lower):
                 return (True, description, description)
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):

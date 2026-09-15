@@ -20,6 +20,28 @@ if not _MCP_AVAILABLE:
         _mcp_mod.ClientSession = MagicMock
 
 
+def test_format_connect_error_finds_missing_executable_in_deep_exception_chain():
+    """A deeply wrapped missing binary must not recurse while formatting it."""
+    missing = FileNotFoundError(2, "No such file or directory", "/opt/bin/removed-mcp")
+    current = missing
+    for _ in range(sys.getrecursionlimit() + 10):
+        wrapper = RuntimeError("stdio startup failed")
+        wrapper.__cause__ = current
+        current = wrapper
+
+    assert _format_connect_error(current) == "missing executable '/opt/bin/removed-mcp'"
+
+
+def test_format_connect_error_handles_cyclic_exception_chain():
+    """Malformed exception chains must fall back to a finite, sanitized message."""
+    first = RuntimeError("first failure")
+    second = RuntimeError("second failure")
+    first.__cause__ = second
+    second.__cause__ = first
+
+    assert _format_connect_error(first) == "first failure; second failure"
+
+
 def test_resolve_stdio_command_falls_back_to_hermes_node_bin(tmp_path):
     node_bin = tmp_path / "node" / "bin"
     node_bin.mkdir(parents=True)

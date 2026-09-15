@@ -307,23 +307,52 @@ def _exc_children(exc: BaseException) -> List[BaseException]:
 
 def _format_connect_error(exc: BaseException) -> str:
     """Render nested MCP connection errors into an actionable short message."""
-    def _find_missing(current: BaseException) -> Optional[str]:
-        if isinstance(current, FileNotFoundError):
-            if getattr(current, "filename", None):
-                return str(current.filename)
-            match = re.search(r"No such file or directory: '([^']+)'", str(current))
-            if match:
-                return match.group(1)
-        return next(filter(None, map(_find_missing, _exc_children(current))), None)
+    def _find_missing() -> Optional[str]:
+        """Find a missing executable without recursing through malformed chains."""
+        stack = [exc]
+        seen: set[int] = set()
+        budget = _EXC_TRAVERSAL_MAX_NODES
+        while stack and budget > 0:
+            current = stack.pop()
+            if id(current) in seen:
+                continue
+            seen.add(id(current))
+            budget -= 1
+            if isinstance(current, FileNotFoundError):
+                if getattr(current, "filename", None):
+                    return str(current.filename)
+                match = re.search(r"No such file or directory: '([^']+)'", str(current))
+                if match:
+                    return match.group(1)
+            # Reverse preserves the former left-to-right depth-first order.
+            stack.extend(reversed(_exc_children(current)))
+        return None
 
-    def _flatten_messages(current: BaseException) -> List[str]:
-        # A group's own str() is opaque — only its children speak.
-        text = "" if getattr(current, "exceptions", None) else str(current).strip()
-        messages = ([text] if text else []) + [m for child in _exc_children(current) for m in _flatten_messages(child)]
-        return messages or [current.__class__.__name__]
-    missing = _find_missing(exc)
+    def _flatten_messages() -> List[str]:
+        """Collect a short, cycle-safe rendering of an exception chain."""
+        stack = [exc]
+        seen: set[int] = set()
+        messages: List[str] = []
+        budget = _EXC_TRAVERSAL_MAX_NODES
+        while stack and budget > 0:
+            current = stack.pop()
+            if id(current) in seen:
+                continue
+            seen.add(id(current))
+            budget -= 1
+            children = _exc_children(current)
+            # A group's own str() is opaque — only its children speak.
+            text = "" if getattr(current, "exceptions", None) else str(current).strip()
+            if text:
+                messages.append(text)
+            elif not children:
+                messages.append(current.__class__.__name__)
+            stack.extend(reversed(children))
+        return messages or [exc.__class__.__name__]
+
+    missing = _find_missing()
     if not missing:
-        return _sanitize_error("; ".join(list(dict.fromkeys(_flatten_messages(exc)))[:3]))
+        return _sanitize_error("; ".join(list(dict.fromkeys(_flatten_messages()))[:3]))
     message = f"missing executable '{missing}'"
     if os.path.basename(missing) in {"npx", "npm", "node"}:
         message += (" (ensure Node.js is installed and PATH includes its bin directory, "

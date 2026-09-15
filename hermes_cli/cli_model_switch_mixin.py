@@ -203,6 +203,15 @@ def _commit_model_switch(
     snapshot = cli._snapshot_model_runtime() if one_turn else None
     if not cli._stage_and_swap_model(result, old_model):
         return
+    # Re-resolve reasoning_config for the model that is now active. It used to be computed only at
+    # CLI startup and (incompletely) at /new, so a /model switch left the PREVIOUS model's
+    # reasoning_config attached to the CLI wrapper - which hard-fails (400) against a target model
+    # carrying a `none` override in agent.reasoning_overrides. The agent re-resolves its own copy
+    # inside switch_model(); this closes the CLI-wrapper half. An explicit `--reasoning` still
+    # wins: _apply_reasoning_after_switch() runs below, after this.
+    from cli import CLI_CONFIG
+    from hermes_constants import resolve_reasoning_config
+    cli.reasoning_config = resolve_reasoning_config(CLI_CONFIG, cli.model)
     if not picker:
         cli._pending_one_turn_model_restore = snapshot
     _print_switch_summary(cli, result, old_model, one_turn=one_turn, strict_context=not picker)

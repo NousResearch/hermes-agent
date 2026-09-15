@@ -1,9 +1,13 @@
-"""Live model-load progress from the managed llama-server router.
+"""Live model-load progress from llama-server routers — managed or your own.
 
-Children emit per-tensor progress ({stages, current, value}) which the router relays ONLY over its
-/models/sse stream — GET /models carries just the coarse status. The watcher starts on first call,
-reconnects with backoff (the router bounces on download/eject), and never raises into callers: no
-router, no state file, or no SSE support (older engines) all read as "nothing loading".
+Managed server first (ownership-guarded state file); otherwise the first
+detected external router-mode llama-server. Detection is TTL-cached so chat
+turns never pay probe timeouts. Children emit per-tensor progress ({stages,
+current, value}) which the router relays ONLY over its /models/sse stream —
+GET /models carries just the coarse status. The watcher starts on first call,
+reconnects with backoff (the router bounces on download/eject), and never
+raises into callers: no router, no state file, or no SSE support (older
+engines, single-model servers) all read as "nothing loading".
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ logger = logging.getLogger(__name__)
 _TEXT_STAGE_SHARE = 0.85     # composite range share for the text model
 _RECONNECT_DELAY_S = 3.0
 _STALE_ENTRY_TTL_S = 120.0   # a loading entry with no events this long is dead
+_DETECT_TTL_S = 30.0         # detection cache: probes cost ~3s/port when nothing listens
 _LOAD_EVENTS = ("status_change", "model_status")
 
 _lock = threading.Lock()
@@ -47,10 +52,57 @@ def _composite_percent(stages: list[str], current: str, value: float) -> int:
 
 
 def _endpoint() -> "tuple[str, str] | None":
-    """(base_root, api_key) of the managed router via the ownership-guarded reader, or None."""
-    from hermes_cli.local_runtime.endpoint import managed_root
+    """(base_root, api_key) of the watched router: managed first, else the
+    first detected external router-mode llama-server. Single global fallback —
+    per-endpoint watchers if multi-server use ever grows."""
+    with suppress(Exception):
+        from hermes_cli.local_runtime.endpoint import managed_root
 
-    return managed_root()
+        managed = managed_root()
+        if managed:
+            return managed
+    return _detected_endpoint()
+
+
+_detected_at = 0.0
+_detected: "tuple[str, str] | None" = None
+
+
+def _detected_endpoint() -> "tuple[str, str] | None":
+    """First detected external router-mode llama-server, TTL-cached. Keyless
+    only (auth-bearing servers are skipped, same as endpoint resolution);
+    router-mode only (single-model servers have no /models/sse to watch)."""
+    global _detected_at, _detected
+    now = time.monotonic()
+    if now - _detected_at < _DETECT_TTL_S:
+        return _detected
+    _detected_at = now
+    _detected = None
+    with suppress(Exception):
+        from hermes_cli.local_runtime.detect import detect_server
+
+        ports: tuple[int, ...] = ()
+        with suppress(Exception):
+            from hermes_cli.config import load_config
+
+            ports = tuple(int(p) for p in
+                          ((load_config().get("local_runtime") or {}).get("detect_ports") or ()))
+        hit = detect_server(extra_ports=ports)
+        if hit and hit.router_mode and not hit.auth_required:
+            _detected = (hit.base_url.rsplit("/v1", 1)[0], "")
+    return _detected
+
+
+def watched_netloc() -> str:
+    """Netloc of the watched router, or "" — the chat notice's gate."""
+    ep = _endpoint()
+    if not ep:
+        return ""
+    with suppress(Exception):
+        from urllib.parse import urlparse
+
+        return urlparse(ep[0]).netloc.lower()
+    return ""
 
 
 def _apply_event(model: str, event: str, data: dict) -> None:

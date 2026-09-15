@@ -99,9 +99,17 @@ models** section on the same page searches all of Hugging Face:
 
 ## Using your own llama-server
 
-If a llama-server is already running on your machine, Hermes detects it
-and uses it instead of starting its own. Point a custom endpoint at any
-OpenAI-compatible server for full manual control — the managed runtime is
+If a router-mode llama-server is already running on your machine
+(`GET /models` answers with a list), Hermes detects it and shows the same
+live status it shows for the managed server: `⏳ loading <model> — N%`
+during cold loads (from the router's `/models/sse` stream) and
+`⚙ processing prompt — P%` during long prefills (from `/slots`). No
+configuration needed — it follows whichever server your session's `base_url`
+points at, whether you added it as a Custom Endpoint or via
+`provider: llamacpp`. Single-model (non-router) servers get prefill notices
+only; context growth and supervision stay managed-only by design. For full
+manual control, point a custom endpoint at any
+OpenAI-compatible server — the managed runtime is
 a default, not a requirement. For manual setups (Ollama, MLX, custom
 builds, headless CLI machines), see
 [Run Hermes Locally with Ollama](/guides/local-ollama-setup) and

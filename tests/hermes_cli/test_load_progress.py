@@ -10,6 +10,7 @@ status route's `loading` field and the chat's load notice."""
 from __future__ import annotations
 
 import json
+import os
 import time
 
 import hermes_cli.local_runtime.load_progress as lp
@@ -18,6 +19,8 @@ import hermes_cli.local_runtime.load_progress as lp
 def setup_function(_fn):
     with lp._lock:
         lp._snapshot.clear()
+    lp._detected_at = 0.0
+    lp._detected = None
 
 
 # ── composite percent ────────────────────────────────────────
@@ -101,7 +104,8 @@ def test_load_notice_for_managed_model(tmp_path, monkeypatch):
 
     state = tmp_path / "server.json"
     state.write_text(json.dumps({"base_url": "http://127.0.0.1:18434/v1",
-                                 "api_key": "k"}), encoding="utf-8")
+                                 "api_key": "k",
+                                 "pid": os.getpid()}), encoding="utf-8")
     monkeypatch.setattr("hermes_cli.local_runtime.supervisor.state_path",
                         lambda: state)
     lp._apply_event("Qwen-Test", "status_change", _loading_event(0.5))
@@ -155,7 +159,8 @@ def test_prefill_notice_for_managed_model(tmp_path, monkeypatch):
 
     state = tmp_path / "server.json"
     state.write_text(json.dumps({"base_url": "http://127.0.0.1:18434/v1",
-                                 "api_key": "k"}), encoding="utf-8")
+                                 "api_key": "k",
+                                 "pid": os.getpid()}), encoding="utf-8")
     monkeypatch.setattr("hermes_cli.local_runtime.supervisor.state_path",
                         lambda: state)
     monkeypatch.setattr(lp, "_ensure_watcher", lambda: None)
@@ -188,7 +193,8 @@ def test_load_notice_outranks_prefill(tmp_path, monkeypatch):
 
     state = tmp_path / "server.json"
     state.write_text(json.dumps({"base_url": "http://127.0.0.1:18434/v1",
-                                 "api_key": "k"}), encoding="utf-8")
+                                 "api_key": "k",
+                                 "pid": os.getpid()}), encoding="utf-8")
     monkeypatch.setattr("hermes_cli.local_runtime.supervisor.state_path",
                         lambda: state)
     monkeypatch.setattr(lp, "_ensure_watcher", lambda: None)
@@ -250,6 +256,8 @@ def test_endpoint_respects_ownership_guard(monkeypatch):
     import hermes_cli.local_runtime.load_progress as lp
 
     # Guard says "not ours": no endpoint, regardless of state on disk.
+    # (Detection stubbed out — this test pins the managed half only.)
+    monkeypatch.setattr(lp, "_detected_endpoint", lambda: None)
     monkeypatch.setattr("hermes_cli.local_runtime.endpoint._state_endpoint",
                         lambda: None)
     assert lp._endpoint() is None
@@ -258,3 +266,57 @@ def test_endpoint_respects_ownership_guard(monkeypatch):
         "hermes_cli.local_runtime.endpoint._state_endpoint",
         lambda: {"base_url": "http://127.0.0.1:18434/v1", "api_key": "k"})
     assert lp._endpoint() == ("http://127.0.0.1:18434", "k")
+
+
+# ── external router fallback ───────────────────────────────────
+
+
+def _router_hit(**kw):
+    from hermes_cli.local_runtime.detect import DetectedServer
+
+    base = dict(base_url="http://127.0.0.1:8080/v1", build_info="b10472",
+                model_path="", n_ctx=128000, router_mode=True,
+                auth_required=False)
+    base.update(kw)
+    return DetectedServer(**base)
+
+
+def test_endpoint_falls_back_to_detected_router(monkeypatch):
+    """No managed server + a router-mode llama-server on 8080: the watcher
+    follows the external router (keyless, /v1 stripped for SSE routes)."""
+    monkeypatch.setattr("hermes_cli.local_runtime.endpoint._state_endpoint",
+                        lambda: None)
+    monkeypatch.setattr("hermes_cli.local_runtime.detect.detect_server",
+                        lambda extra_ports=(): _router_hit())
+    assert lp._endpoint() == ("http://127.0.0.1:8080", "")
+    assert lp.watched_netloc() == "127.0.0.1:8080"
+
+
+def test_load_notice_for_external_router(monkeypatch):
+    """The chat notice fires for a Custom-Endpoint session on the user's own
+    router — single-stage text_model events map straight to percent (the live
+    b10472 shape), foreign endpoints still get nothing."""
+    from agent.chat_completion_helpers import _managed_local_load_notice
+
+    monkeypatch.setattr("hermes_cli.local_runtime.endpoint._state_endpoint",
+                        lambda: None)
+    monkeypatch.setattr("hermes_cli.local_runtime.detect.detect_server",
+                        lambda extra_ports=(): _router_hit())
+    monkeypatch.setattr(lp, "_ensure_watcher", lambda: None)
+    lp._apply_event("Ling-3.0-Tiny", "status_change",
+                    {"status": "loading",
+                     "progress": {"stages": ["text_model"],
+                                  "current": "text_model", "value": 0.5}})
+
+    class _Agent:
+        base_url = "http://127.0.0.1:8080/v1"
+
+    notice = _managed_local_load_notice(_Agent(), {"model": "Ling-3.0-Tiny"})
+    assert notice is not None
+    assert notice.startswith("⏳ loading Ling-3.0-Tiny into memory — 50%")
+
+    class _Foreign:
+        base_url = "http://127.0.0.1:9999/v1"
+
+    assert _managed_local_load_notice(_Foreign(),
+                                      {"model": "Ling-3.0-Tiny"}) is None

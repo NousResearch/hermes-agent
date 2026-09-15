@@ -156,6 +156,33 @@ describe('TitlebarControls fixed clusters', () => {
       expect(center).not.toBeNull()
       expect(left?.contains(center)).toBe(false)
     })
+
+    it('delivers clicks to titleBar.center chrome (switcher stays interactive)', async () => {
+      let clicked = false
+      disposeChrome() // replace the shared text chrome with an interactive one
+      disposeChrome = registry.register({
+        area: 'titleBar.center',
+        id: 'test-clickable-chrome',
+        render: () => (
+          <button type="button" data-testid="center-chrome-button" onClick={() => { clicked = true }}>
+            switcher
+          </button>
+        )
+      })
+
+      renderControls('/kanban')
+
+      const center = document.querySelector('[data-titlebar-cluster="center"]')
+      expect(center).not.toBeNull()
+
+      // Simulates a user click on the centered switcher: the event must land.
+      const button = within(center as HTMLElement).getByTestId('center-chrome-button')
+      await act(async () => {
+        button.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+      })
+
+      expect(clicked).toBe(true)
+    })
   })
 })
 

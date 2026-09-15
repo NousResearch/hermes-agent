@@ -76,7 +76,7 @@ def render_qr_terminal(url: str) -> str:
 
 def print_qr_code(url: str, *, include_link: bool = True) -> None:
     """Print a QR code to stdout, with URL fallback if qrcode is missing."""
-    print(render_qr_terminal(url) or "  (Install 'qrcode' for a scannable QR code: pip install qrcode)")
+    print(render_qr_terminal(url) or f"  (Install 'qrcode' for a scannable QR code: {sys.executable} -m pip install qrcode)")
     if include_link:
         print(f"  Link: {url}")
 

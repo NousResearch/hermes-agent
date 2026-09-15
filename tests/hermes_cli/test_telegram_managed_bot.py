@@ -36,6 +36,17 @@ class TestQRCode:
         captured = capsys.readouterr()
         assert "https://t.me/newbot/Bot/test_bot" in captured.out
 
+    def test_print_qr_code_tip_targets_active_interpreter(self, capsys):
+        # Regression for #111695: a bare `pip install` targets the wrong
+        # environment when Hermes runs in an isolated venv. The fallback tip
+        # must name the interpreter that is actually running.
+        import sys
+
+        with patch.dict("sys.modules", {"qrcode": None}):
+            print_qr_code("https://t.me/newbot/Bot/test_bot")
+        captured = capsys.readouterr()
+        assert sys.executable in captured.out
+
 
 class TestCreatePairing:
     def test_success(self):

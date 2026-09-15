@@ -122,3 +122,62 @@ class TestReverseCachePathTranslation:
         monkeypatch.setenv("TERMINAL_ENV", "no_such_backend")
         path = "/root/.hermes/cache/images/file.png"
         assert cf.from_agent_visible_cache_path(path) == path
+
+
+def test_configured_values_reach_registered_provider(monkeypatch, tmp_path):
+    from tools import terminal_tool as terminal
+    from tools.terminal_tool_lifecycle import _create_configured_env
+    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
+    (tmp_path / 'config.yaml').write_text('terminal:\n  backend: testbox\n  container_cpu: 3\n')
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    received = []
+    def create(self, **kwargs):
+        received.append(kwargs['container_config'])
+        return _Env()
+    _register(create_environment=create)
+    token = install_profile_terminal_scope(tmp_path)
+    try:
+        config = terminal._get_env_config()
+        _create_configured_env(config, config['env_type'], image=None, cwd=config['cwd'],
+                               timeout=config['timeout'], task_id='fixture', host_cwd=None)
+        assert received[0]['container_cpu'] == 3
+    finally:
+        reset_terminal_scope(token)
+
+
+def test_provider_specific_values_survive_factory_shaping():
+    from tools.terminal_tool_lifecycle import _create_configured_env
+    received = []
+    def create(self, **kwargs):
+        received.append(kwargs['container_config'])
+        return _Env()
+    _register(create_environment=create)
+    _create_configured_env({'testbox_region': 'eu-west'}, 'testbox', image=None,
+                           cwd='/workspace', timeout=30, task_id='fixture', host_cwd=None)
+    assert received[0]['testbox_region'] == 'eu-west'
+
+
+@pytest.mark.parametrize('ambient,scoped', [('local', 'testbox'), ('testbox', 'local')])
+def test_reverse_cache_mapping_uses_profile_scope(monkeypatch, tmp_path, ambient, scoped):
+    from tools import credential_files as cf
+    from tools.terminal_scope import set_terminal_scope, reset_terminal_scope
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setenv('TERMINAL_ENV', ambient)
+    _register(cache_path_base='/root/.hermes')
+    host = str(tmp_path / 'cache' / 'images' / 'fixture.png')
+    token = set_terminal_scope({'TERMINAL_ENV': scoped})
+    try:
+        visible = cf.to_agent_visible_cache_path(host)
+        assert (visible != host) is (scoped == 'testbox')
+        assert cf.from_agent_visible_cache_path(visible) == host
+    finally:
+        reset_terminal_scope(token)
+
+
+def test_raising_provider_cache_property_returns_path_unchanged(monkeypatch):
+    from tools import credential_files as cf
+    def broken(self):
+        raise RuntimeError('broken provider')
+    _register(cache_path_base=property(broken))
+    monkeypatch.setenv('TERMINAL_ENV', 'testbox')
+    assert cf.from_agent_visible_cache_path('/root/.hermes/cache/images/x') == '/root/.hermes/cache/images/x'

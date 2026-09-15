@@ -3477,6 +3477,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             self._check_termios_drift,
             lambda: self._drain_process_notifications("cli-idle"),
             self._maybe_fire_loop_tick,
+            self._maybe_fire_wakeup,
             self._maybe_resume_parked_goal,
         ):
             with suppress(Exception):

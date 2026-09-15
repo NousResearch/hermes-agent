@@ -230,6 +230,34 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
             mgr.abandon_fire()
 
 
+def _maybe_fire_tui_wakeup(sid: str, session: dict) -> None:
+    """Fire the earliest due agent-scheduled wakeup (``schedule_wakeup`` tool) for an idle TUI/Desktop/dashboard
+    session. Same claim-then-dispatch discipline as the heartbeat tick: the wakeup is removed from the persisted
+    set before the turn starts, and a dispatch that never starts a turn re-arms it."""
+    try:
+        from hermes_cli.wakeups import WakeupManager
+    except Exception:
+        return
+    if not (sid_key := session.get("session_key") or ""):
+        return
+    mgr = WakeupManager(session_id=sid_key)
+    if not mgr.has_pending() or not _notif_claim_turn(session):
+        return  # nothing scheduled, or busy — a due wakeup waits for the next idle poll
+    if not (prompt := mgr.due_prompt()):
+        _notif_release_turn(session)
+        return
+    started = False
+    try:
+        _emit("status.update", sid, {"kind": "wakeup", "text": "⏰ scheduled wakeup firing…"})
+        started = bool(_run_prompt_submit(f"__wakeup__{int(time.time() * 1000)}", sid, session, prompt))
+    except Exception as exc:
+        _notif_log_failure("wakeup dispatch failed", exc)
+    if not started:
+        _notif_release_turn(session)
+        with contextlib.suppress(Exception):
+            mgr.abandon_fire()
+
+
 def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
     """Fire a due /loop wakeup for an idle TUI/Desktop/dashboard session (per-session poller, coarse cadence). Claims
     the session (running=True) before dispatching so a racing user prompt wins; the post-turn hook completes the tick."""
@@ -584,11 +612,12 @@ def _notification_poller_loop(stop_event: threading.Event, sid: str, session: di
             _poll_bot_live_delivery_once(sid, session)
         except Exception:
             logger.warning("Bot live-owner delivery poll failed", exc_info=True)
-        # /loop and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
+        # /loop, /heartbeat and schedule_wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
         # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:
             last_loop_poll = now
-            for what, fire in (("loop wakeup", _maybe_fire_tui_loop_tick), ("heartbeat", _maybe_fire_tui_heartbeat_tick)):
+            for what, fire in (("loop wakeup", _maybe_fire_tui_loop_tick), ("heartbeat", _maybe_fire_tui_heartbeat_tick),
+                               ("scheduled wakeup", _maybe_fire_tui_wakeup)):
                 try:
                     fire(sid, session)
                 except Exception as tick_exc:

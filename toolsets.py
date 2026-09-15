@@ -25,7 +25,7 @@ _HERMES_CORE_TOOLS = [
     "session_search",
     "clarify",
     "execute_code", "delegate_task",
-    "cronjob_manage",
+    "cronjob_manage", "schedule_wakeup",
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     "kanban_show", "kanban_list",
     "kanban_complete", "kanban_block", "kanban_request_review",
@@ -66,7 +66,7 @@ def _core_without(*excluded, kanban=True):
 
 # Coding posture: everything you reach for while pairing on code; drops messaging,
 # tts, image_gen, home-assistant, cron, kanban and computer-use.
-_CODING_TOOLS = _core_without("image_generate", "text_to_speech", "cronjob_manage", "computer_use", *_HA_TOOLS, kanban=False)
+_CODING_TOOLS = _core_without("image_generate", "text_to_speech", "cronjob_manage", "schedule_wakeup", "computer_use", *_HA_TOOLS, kanban=False)
 
 # Core toolset definitions: individual tools or references to other toolsets.
 TOOLSETS = {
@@ -116,6 +116,10 @@ TOOLSETS = {
         "Cronjob management tool - create, list, update, pause, resume, remove, and "
         "trigger scheduled tasks",
         ["cronjob_manage"],
+    ),
+    "wakeup": _ts(
+        "Agent-scheduled one-shot wakeups that resume the current session later (schedule, list, cancel)",
+        ["schedule_wakeup"],
     ),
     "file": _ts(
         "File manipulation tools: read, write, patch (with fuzzy matching), and "
@@ -192,7 +196,7 @@ TOOLSETS = {
     "hermes-api-server": _ts(
         "OpenAI-compatible API server — full agent tools accessible via HTTP (no "
         "interactive UI tools like clarify or send_message)",
-        _core_without("text_to_speech", "clarify", "computer_use", kanban=False),
+        _core_without("text_to_speech", "clarify", "computer_use", "schedule_wakeup", kanban=False),
     ),
     "hermes-cli": _bundle("Full interactive CLI toolset - all default tools plus cronjob management"),
 

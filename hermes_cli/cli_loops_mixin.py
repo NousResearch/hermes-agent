@@ -482,6 +482,38 @@ class CLILoopsMixin:
             return lambda sid: LoopManager(session_id=sid)
         return self._session_bound_manager("_loop_manager", "loop manager", load)
 
+    def _get_wakeup_manager(self):
+        """WakeupManager bound to the current session_id (see ``_session_bound_manager``)."""
+        def load():
+            from hermes_cli.wakeups import WakeupManager
+            return lambda sid: WakeupManager(session_id=sid)
+        return self._session_bound_manager("_wakeup_manager", "wakeup manager", load)
+
+    def _maybe_fire_wakeup(self) -> None:
+        """Idle hook run from process_loop: fire the earliest due agent-scheduled wakeup
+        (``schedule_wakeup`` tool) as a normal user turn. A real user message always wins the
+        idle boundary; the claim is persisted before the put so a failed put re-arms it."""
+        from cli import _DIM, _RST, _cprint
+        now = time.time()
+        if now - getattr(self, "_last_wakeup_check", 0.0) < 2.0:
+            return
+        self._last_wakeup_check = now
+        mgr = self._get_wakeup_manager()
+        if mgr is None or not self._pending_input.empty():
+            return
+        prompt = mgr.due_prompt(now)
+        if not prompt:
+            return
+        try:
+            _cprint(f"  {_DIM}⏰ scheduled wakeup firing…{_RST}")
+            self._pending_input.put(prompt)
+        except Exception as exc:
+            logging.debug("wakeup injection failed: %s", exc)
+            try:
+                mgr.abandon_fire()
+            except Exception:
+                pass
+
     def _start_heartbeat_watchdog(self):
         """Start the idle-poll daemon that injects a due heartbeat prompt into
         ``_pending_input`` as a normal user turn when the session is idle. Missed ticks

@@ -2927,6 +2927,9 @@ def _carry_session_state_to_child(agent: Any, old_session_id: str, old_title: An
     with _swallow('Could not migrate heartbeat on compression: %s'):
         from hermes_cli.heartbeat import migrate_heartbeat_to_session
         migrate_heartbeat_to_session(old_session_id, agent.session_id)
+    with _swallow('Could not migrate wakeups on compression: %s'):
+        from hermes_cli.wakeups import migrate_wakeups_to_session
+        migrate_wakeups_to_session(old_session_id, agent.session_id)
     with _swallow('Could not migrate loop on compression: %s'):
         from hermes_cli.loops import migrate_loop_to_session
         migrate_loop_to_session(old_session_id, agent.session_id, reason="compression")

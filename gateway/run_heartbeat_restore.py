@@ -1,4 +1,4 @@
-"""Recover heartbeat watches from the gateway's canonical persisted routing index."""
+"""Recover heartbeat / scheduled-wakeup idle watches from the gateway's canonical persisted routing index."""
 from __future__ import annotations
 
 import logging
@@ -15,6 +15,7 @@ async def restore_heartbeat_watches(runner) -> None:
     """
     from gateway.run import _profile_runtime_scope
     from hermes_cli.heartbeat import HeartbeatManager
+    from hermes_cli.wakeups import WakeupManager
     from hermes_constants import get_hermes_home
 
     store = runner.session_store
@@ -31,8 +32,8 @@ async def restore_heartbeat_watches(runner) -> None:
                     continue
                 try:
                     with runner._profile_scope_for_source(entry.origin):
-                        manager = HeartbeatManager(entry.session_id)
-                        if manager.is_active():
+                        # Agent-scheduled wakeups ride the same idle watch as /heartbeat.
+                        if HeartbeatManager(entry.session_id).is_active() or WakeupManager(entry.session_id).has_pending():
                             restored.append((entry.session_key, entry.origin, entry.session_id))
                 except Exception:
                     logger.debug("heartbeat restore for %s failed", entry.session_key, exc_info=True)

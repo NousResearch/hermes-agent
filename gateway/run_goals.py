@@ -142,12 +142,19 @@ class GatewayGoalsMixin:
         ):
             return  # keep missed intervals due until user work has drained
         from hermes_cli.heartbeat import HeartbeatManager
+        from hermes_cli.wakeups import WakeupManager
 
+        # One idle watch per session drives both the user's /heartbeat and the agent's own
+        # schedule_wakeup entries; both managers share the claim/abandon_fire contract.
         mgr = HeartbeatManager(session_id=session_id)
-        if not mgr.has_heartbeat():
+        wakeups = WakeupManager(session_id=session_id)
+        if not mgr.has_heartbeat() and not wakeups.has_pending():
             watch.pop(quick_key, None)
             return
-        prompt = mgr.due_prompt()
+        prompt = mgr.due_prompt() if mgr.has_heartbeat() else None
+        if not prompt:
+            mgr = wakeups
+            prompt = wakeups.due_prompt()
         if not prompt:
             return
         event = self._synthetic_prompt_event(source, prompt)

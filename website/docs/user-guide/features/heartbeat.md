@@ -50,6 +50,23 @@ Rule of thumb: if the recurring prompt needs the conversation's context, use `/h
 - **Execution accounting.** The gateway reserves a due tick at adapter admission. If that exact attempt ends before entering the agent runner (including cancellation or a routing, authorization, emergency-stop, or preparation rejection), it refunds the tick unless the schedule has since changed. Once the agent runner is entered, the fire remains counted even if execution fails or is interrupted. This count is **not** proof of a successful model response or outbound delivery; abrupt process death can prevent the refund callback.
 - **Don't-invent-work guard.** The injected prompt tells the agent to reply briefly and stop when nothing meaningful changed, so an idle heartbeat doesn't generate busywork.
 
+## Agent-scheduled wakeups
+
+`/heartbeat` is a schedule **you** set. The agent has its own one-shot counterpart: the `schedule_wakeup` tool. When it cannot keep a turn open — CI finishes in twenty minutes, a deploy settles in an hour, a slow job needs a later poll — it schedules a wakeup and ends the turn; when the time comes, the same conversation resumes with the prompt it chose, marked `[Scheduled wakeup <id>]` and noting that no user may be present.
+
+```
+Agent: CI is running on PR #1234; I'll check back in 20 minutes.
+       ⏰ schedule_wakeup(prompt="Check CI on PR #1234 and summarize", delay="20m")
+
+[20 minutes later, session idle]
+  ⏰ scheduled wakeup firing…
+Agent: CI is green — 412 tests passed, no new warnings.
+```
+
+- **One-shot, agent-owned.** `delay` (`30s`, `5m`, `2h`, `1d`; 10s minimum, 7-day maximum) or an absolute ISO-8601 `when`. Up to 10 pending per session; `action="list"` and `action="cancel"` manage them.
+- **Same drivers as heartbeats.** Fires idle-only, as a plain user turn, from the CLI idle poll, the TUI/Desktop poller, or the gateway idle watch (restored after a gateway restart). A dispatch that never starts a turn re-arms the wakeup instead of consuming it. State is `SessionDB.state_meta` under `wakeups:<session_id>` and follows compression rotations.
+- **Where it is absent.** Cron jobs, delegated subagents and Kanban workers have no live owner to wake, so the tool is not offered there; a one-shot `cronjob_manage` schedule (`in 30m`) is the equivalent for a fresh session.
+
 ## Example
 
 ```

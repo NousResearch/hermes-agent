@@ -83,6 +83,12 @@ token). Other sessions do not see it.
 |------|-------------|----------------------|
 | `cronjob` | Unified scheduled-task manager. Use `action="create"`, `"list"`, `"update"`, `"pause"`, `"resume"`, `"run"`, or `"remove"` to manage jobs. Supports skill-backed jobs with one or more attached skills, and `skills=[]` on update clears attached skills. Cron runs happen in fresh sessions with no current-chat context. | — |
 
+## `wakeup` toolset
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `schedule_wakeup` | The agent schedules a one-shot wakeup for **itself**: at the given `delay` (`30s`…`7d`, min 10s) or absolute ISO-8601 `when`, the *current* session resumes with the prompt it chose, as a normal user turn (same context, same prompt cache). `action="list"` / `"cancel"` manage the pending set (max 10 per session). Fires only while the owning process is running: the CLI idle poll, the TUI/Desktop session poller, or the gateway idle watch. Unavailable inside cron jobs, subagents and Kanban workers (no wakeable owner) — those use a one-shot cron job instead. See [Session Heartbeats](/user-guide/features/heartbeat#agent-scheduled-wakeups). | Interactive CLI, TUI/Desktop, or gateway session |
+
 ## `delegation` toolset
 
 | Tool | Description | Requires environment |

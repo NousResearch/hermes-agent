@@ -1429,7 +1429,10 @@ describe('sealOpenToolParts', () => {
       )
     ])
 
-    const messages = [...stopped, { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'ask something else' }] } as ChatMessage]
+    const messages = [
+      ...stopped,
+      { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'ask something else' }] } as ChatMessage
+    ]
 
     const restored = restorePendingClarifyToolCall(
       messages,

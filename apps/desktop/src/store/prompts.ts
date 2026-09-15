@@ -159,7 +159,12 @@ export async function receiveApprovalRequest(gateway: ApprovalGateway | null, re
   // request that already carries the same queue entry (it knows how to answer).
   const current = approval.$all.get()[keyFor(request.sessionId)]
 
-  if (current?.requestId && current.requestId === request.requestId && current.serverRequestId && !request.serverRequestId) {
+  if (
+    current?.requestId &&
+    current.requestId === request.requestId &&
+    current.serverRequestId &&
+    !request.serverRequestId
+  ) {
     return
   }
 

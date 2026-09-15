@@ -193,10 +193,19 @@ def _resolve_skill_dir(name: str, category: str = None) -> Path:
 
 
 def _iter_skill_dirs(root: Path):
-    from agent.skill_utils import is_excluded_skill_path
-    for skill_md in root.rglob("SKILL.md"):
-        if not is_excluded_skill_path(skill_md):
-            yield skill_md.parent
+    """Skill dirs under ``root`` (every directory holding a ``SKILL.md``).
+
+    Delegates to the canonical index walk the READ path uses (skill_view /
+    skills_list). ``Path.rglob`` does not descend into symlinked directories, so a
+    profile that installs each skill as a per-skill symlink into a shared tree
+    (``profiles/<p>/skills/<cat>/<skill>`` -> ``<shared>/<cat>/<skill>``) had none of
+    its skills visible to the write path while every read resolved them: writes
+    failed with "not found in active profile". Keep this on ``iter_skill_index_files``
+    -- write resolution and read resolution disagreeing IS the bug.
+    """
+    from agent.skill_utils import iter_skill_index_files
+    for skill_md in iter_skill_index_files(root, "SKILL.md"):
+        yield skill_md.parent
 
 
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
@@ -206,25 +215,32 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     categorized relative path (``mlops/axolotl``) — the two forms skill_view resolves. The
     categorized form matches RELATIVE to the local root only (relative_to raises for external dirs)."""
     from agent.skill_utils import get_all_skills_dirs
-    local_root = None
+    local_roots: List[Path] = []
     if "/" in name or "\\" in name:
+        # BOTH forms of the root: a profile that keeps its skills as per-skill symlinks
+        # into a shared tree would fail a resolved comparison (it points outside the root),
+        # while a profile whose skills root is itself a symlink resolves past the configured
+        # path. Lexical first, resolved as a fallback.
+        local_roots.append(_skills_dir())
         try:
-            local_root = _skills_dir().resolve()
+            resolved_root = _skills_dir().resolve()
         except OSError:
             logger.debug(
-                "skills dir resolve failed; categorized lookups fall back to the unresolved path",
+                "skills dir resolve failed; categorized lookups use the unresolved path only",
                 exc_info=True)
-            local_root = _skills_dir()
+        else:
+            if resolved_root != local_roots[0]:
+                local_roots.append(resolved_root)
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
             continue
         for skill_dir in _iter_skill_dirs(skills_dir):
             if skill_dir.name == name:
                 return {"path": skill_dir}
-            if local_root is not None:
-                resolved = skill_dir.resolve()
-                if (resolved.is_relative_to(local_root)
-                        and resolved.relative_to(local_root).as_posix() == name):  # POSIX form
+            for local_root in local_roots:
+                if not skill_dir.is_relative_to(local_root):
+                    continue
+                if skill_dir.relative_to(local_root).as_posix() == name:  # POSIX form
                     return {"path": skill_dir}
     return None
 

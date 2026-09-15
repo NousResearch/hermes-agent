@@ -1,4 +1,4 @@
-> **Hermes adaptation note:** upstream auteur generated assets through local agent CLIs (`agy`, `codex`, `grok`). In Hermes, read every such invocation as a call to the built-in `image_generate` tool with the same prompt (then move the returned file into the project's `assets/gen/` path), use the `terminal` tool for `ffmpeg`/`node`/`npx`, and `browser_exec` or Playwright-via-terminal for screenshot loops. The per-CLI routing/strength tables below are upstream reference material — the taste guidance transfers, the CLI names do not.
+> **Hermes adaptation note:** upstream auteur routed asset generation to several local image CLIs by strength. In Hermes there is one route: the built-in `image_generate` tool for every still and edit (move the returned file into the project's `assets/gen/` path), the `terminal` tool for `ffmpeg`/`node`/`npx`, and `browser_exec` or Playwright-via-terminal for screenshot loops. The taste guidance below transfers; the per-CLI shootout tables were dropped in the port.
 
 # assets.md — producing visual assets
 
@@ -6,36 +6,25 @@ The storyboard's `asset:` lines are a shot list. This file turns them into files
 
 ## 0. The crew — probe once, route by strength
 
-**Probe with a real round trip, never with `--version`.** These are subscription CLIs and the failure
-that actually happens is expired auth, not a missing binary — measured: all three passed `--version`
-and all three were dead. Worse, they fail dishonestly: **`grok` exits 0 while printing "Not signed
-in"** and **`agy` exits 2 while printing nothing at all**. Read the OUTPUT, not the exit code.
+**Probe with a real round trip, never with a version flag.** The failure that actually happens is an unconfigured or expired backend, not a missing binary. Before the shoot, run one tiny `image_generate` call and confirm a file or URL actually came back; run `ffmpeg -version` in `terminal` for the encode leg. Read the OUTPUT, not the exit code.
 
-```bash
-agy -p "reply with the single word: ok"                  # Gemini: fast image gen + edit, writes straight to a path
-codex exec --skip-git-repo-check "reply with: ok"        # gpt-image: highest fidelity
-grok -p "reply with the single word: ok"                 # grok-4.5: gen + edit + real video, one consistent engine
-ffmpeg -version                                          # not a subscription; --version is fine here
-```
+A route that does not return a real asset is unavailable. Note it as unavailable in the asset plan and route around it — §0.5 and §4 — rather than discovering it mid-shoot.
 
-A tool that does not answer `ok` is unavailable, whatever its version says. Note it as unavailable in
-the asset plan and route around it — §0.5 and §4 — rather than discovering it mid-shoot.
+MiniMax music (ambient score) needs `MINIMAX_API_KEY` — skip the audio leg if unset.
 
-Grok reaches **grok-4.5** only through the non-EU proxy (`ALL_PROXY="$GROK_PROXY" HTTPS_PROXY="$GROK_PROXY"`); without it grok still gens/edits/videos on grok-build. MiniMax music (ambient score) needs `MINIMAX_API_KEY` — skip the audio leg if unset.
+**Route each asset to its strength:**
 
-**Route each asset to its strength** (locked by a shootout, 2026-07):
-
-| Asset | Tool | Why |
+| Asset | Route | Why |
 |---|---|---|
-| Hero / brand-critical stills — peak scene, abstract hero background (needs clean negative space for text), product mockup / UI screen, premium transparent element or icon | **codex** | quality king across every type tested: cleanest UI render, most negative space, best material realism. Weaknesses: palette drifts warm (weak on teal-shadow / cool briefs), and it cannot make video. It *can* edit an existing frame — via stdin only, see §2 |
-| Any scene that becomes VIDEO or needs a consistent A→B edit pair; exact brand-COLOR adherence | **grok-4.5** | one engine does gen + edit + video → zero scene drift across the A→B→clip pipeline; best palette adherence when codex drifts warm |
-| Volume & CONTEXT — lifestyle/environmental shots (room, hands, props, in-situ), bulk backgrounds, fast iteration | **agy** | fast, natural environmental context, writes direct to file |
-| Real video | **grok** `image_to_video` (6 or 10s) | animate an approved keyframe |
+| Hero / brand-critical stills — peak scene, abstract hero background (needs clean negative space for text), product mockup / UI screen, premium transparent element or icon | `image_generate` | one frame first, approve, then batch style-locked to the anchor. Watch for warm palette drift on cool briefs — anchor the palette in the prompt |
+| Any scene that becomes VIDEO or needs a consistent A→B edit pair; exact brand-COLOR adherence | `image_generate` edit of frame A (§2) | editing keeps the world intact; a second generation never does |
+| Volume & CONTEXT — lifestyle/environmental shots (room, hands, props, in-situ), bulk backgrounds, fast iteration | `image_generate` | cheap iteration; keep the anchor still as the style reference |
+| Real video | an image→video model on an approved keyframe (6–10s) — user-supplied backend or browser tool | animate an approved keyframe; Hermes ships no native video tool |
 | Ambient score | **MiniMax** music | one loopable bed matched to the commit-sheet mood |
 
-All three do transparent PNG (alpha): codex crispest, grok close, agy usable-but-softer. **Match the asset's background to the page** — generate the subject on the SAME ground the page uses (white-on-white, or true alpha) so it melts into the layout with no visible frame; a photographic rectangle floating on a flat page is an instant slop tell.
+Transparent PNG (alpha) depends on the configured backend. **Match the asset's background to the page** — generate the subject on the SAME ground the page uses (white-on-white, or true alpha) so it melts into the layout with no visible frame; a photographic rectangle floating on a flat page is an instant slop tell.
 
-Missing a tool → don't fake it: descend the ladder (§4), ask the user for assets, or pivot to type-led/CSS scenes (a great film can be shot entirely in typography). Note what's available in the asset plan.
+Missing a route → don't fake it: descend the ladder (§4), ask the user for assets, or pivot to type-led/CSS scenes (a great film can be shot entirely in typography). Note what's available in the asset plan.
 
 ## 0.5 Source before you generate — the routing decision
 
@@ -88,7 +77,7 @@ Name the ~20 symbols you actually use in `entry.js` rather than `export * from '
 | a typeface | **source** — Google Fonts | and check it against ban #8/#18 before falling in love |
 | **the peak scene keyframe** | **generate** | it has to be this brand's world and nobody else's — this is the whole point |
 | the hero video | **generate** (§3) | the wow moment cannot be a clip three thousand pages already use |
-| an environmental / lifestyle still | **generate** (agy) | unless the brief needs a *real, identifiable* place |
+| an environmental / lifestyle still | **generate** (`image_generate`) | unless the brief needs a *real, identifiable* place |
 | a documentary photo of a real thing or place | **source** — Openverse | generation invents; if it must be true, it must be photographed |
 | an ambient background loop or video texture | **source ok** — Coverr | supporting layer only |
 
@@ -120,43 +109,23 @@ Build the prompt FROM the scene-sheet — `subject` + `camera` + `lighting` are 
 
 > "⟨subject⟩, ⟨camera: low-angle close shot / orbital view / macro detail⟩, ⟨lighting: hard rim light at dusk / soft studio / neon-soaked⟩, color palette anchored on ⟨primary OKLCH → describe as human color⟩, photographic, no text, no watermark, 16:9"
 
-**agy (fast, direct to file):**
-```bash
-agy -p "Generate an image: <prompt>. Save to <ABSOLUTE-PATH>/assets/gen/s3-peak-a.png"
-```
-Always give an absolute path; verify the file actually landed on disk (agy occasionally reports success without writing — re-run once if missing).
+**Generate with `image_generate`:** pass the prompt above, then move the returned file to `assets/gen/s3-peak-a.png` (project-relative). Verify the file actually landed on disk before building on it — re-run once if missing.
 
-**codex (higher quality, for the peak scene / brand-critical frames):**
-```bash
-codex exec --skip-git-repo-check "Generate an image: <prompt>"
-```
-codex cannot write into your project (read-only sandbox). Pick up the newest PNG from its output store and copy it yourself — PowerShell:
-```powershell
-Get-ChildItem "$env:USERPROFILE\.codex\generated_images" -Recurse -Filter *.png |
-  Sort-Object LastWriteTime -Descending | Select-Object -First 1 |
-  Copy-Item -Destination "assets/gen/s3-peak-a.png"
-```
-
-Default split: agy for volume and iteration speed; codex for the peak scene and anything the viewer will stare at.
+Default split: cheap iteration for volume; spend the retries on the peak scene and anything the viewer will stare at.
 
 ## 2. The consistency trick: frame B is an EDIT of frame A, never a second generation
 
 Two independent generations of "the same scene" are never the same scene — lighting, geometry and lens drift. Editing frame A into frame B keeps the world intact and is what makes the two-keyframe cinema moves (displacement morph, before/after scrub) look like camera work instead of a jump cut.
 
-**agy edit — word the change HARSHLY.** agy ignores soft phrasing ("replace X with Y" often returns the original). Use the REQUIRED CHANGE pattern:
-```bash
-agy -p "Load the image <ABS>/assets/gen/s3-peak-a.png and edit it. REQUIRED CHANGE: the laptop is now open, screen glowing, and the room lights have dimmed. KEEP IDENTICAL: camera angle, framing, composition, every other object, lighting direction, color grade. Save to <ABS>/assets/gen/s3-peak-b.png"
-```
+**Edit — word the change HARSHLY.** Image models ignore soft phrasing ("replace X with Y" often returns the original). Call `image_generate` with frame A as the input image and the REQUIRED CHANGE pattern:
 
-**codex edit — prompt via stdin only** (a positional prompt together with `-i` fails with "No prompt provided"):
-```bash
-printf '%s' "REQUIRED CHANGE: ... KEEP IDENTICAL: camera, composition, lighting." | codex exec --skip-git-repo-check -i assets/gen/s3-peak-a.png -
-```
-…then pick up from `generated_images` as above.
+> "REQUIRED CHANGE: the laptop is now open, screen glowing, and the room lights have dimmed. KEEP IDENTICAL: camera angle, framing, composition, every other object, lighting direction, color grade."
 
-**Verify the pair eyes-on before building on it:** open A and B side by side. Same camera? Same composition? Only the intended state changed? Small texture drift is fine — the displacement transition tolerates it (it *hides* mid-morph mush). A camera/framing shift is a FAIL: re-edit with harder KEEP IDENTICAL wording, then try codex, then descend the ladder.
+…then move the result to `assets/gen/s3-peak-b.png`.
 
-**Retry policy:** any generation/edit gets ONE sharpened retry on the same tool, then ONE attempt on the other tool, then descend the ladder. Do not burn ten generations chasing a frame — reshape the scene instead.
+**Verify the pair eyes-on before building on it:** open A and B side by side. Same camera? Same composition? Only the intended state changed? Small texture drift is fine — the displacement transition tolerates it (it *hides* mid-morph mush). A camera/framing shift is a FAIL: re-edit with harder KEEP IDENTICAL wording, then descend the ladder.
+
+**Retry policy:** any generation/edit gets ONE sharpened retry, then descend the ladder. Do not burn ten generations chasing a frame — reshape the scene instead.
 
 ### N-frame chains (for the scroll-cinema state-machine engine)
 
@@ -164,7 +133,7 @@ Extend the A→B pair to a chain: **A→B→C→D…, each an EDIT of the previo
 the whole world stays photographically consistent while it ages / opens / transforms / gets crowded. 4–6
 frames covers most stories. Verify each link same-camera before editing the next; keep the chain in scroll
 order (`s1-a … s1-d`). This chain IS the input to scroll-cinema's Tier-1 scrubber — do the whole chain in
-ONE grok session so the image model never drifts.
+ONE sitting with the same backend so the image model never drifts.
 
 ## 2.5 Depth maps (for the 2.5D composite / rack-focus)
 
@@ -184,18 +153,13 @@ Alternatives: a **Blender Z-pass** when the scene is a 3D render (Blender CLI; �
 grayscale "depth-style" version (fast, imperfect — ok for subtle pointer-parallax, NOT for rack-focus).
 Depth is a cached master like any still. Feed color + depth to scroll-cinema §3 (2.5D composite).
 
-## 3. Video — now local via grok
+## 3. Video — animate an approved keyframe
 
-Grok animates an approved keyframe: `grok image_to_video` (6 or 10 seconds). Run it through the proxy for grok-4.5, save into `assets/gen/`, then optimize (§5). **Spend video like the motion budget spends attention** — one hero clip + at most a couple supporting; a video that isn't the wow peak is usually a still that should have stayed a still.
+An image→video model animates an approved keyframe (6 or 10 seconds); Hermes has no native video tool, so use whatever image→video backend the user has (or a browser tool via `browser_exec`), save into `assets/gen/`, then optimize (§5). **Spend video like the motion budget spends attention** — one hero clip + at most a couple supporting; a video that isn't the wow peak is usually a still that should have stayed a still.
 
-```bash
-ALL_PROXY="$GROK_PROXY" HTTPS_PROXY="$GROK_PROXY" grok -m grok-4.5 --yolo -p \
-  "image_to_video on <ABS>/assets/gen/s1-hero-a.png: slow push-in, rising steam, 6s. Save the mp4 to <ABS>/assets/gen/s1-hero.mp4"
-```
-
-**Directed A→B state change (before/after, "first+last frame").** ⚠️ grok has NO true first+last-frame interpolator (checked 2026-07): `image_to_video` animates ONE source frame with no end frame; `reference_to_video` takes 2–7 images but treats them as style/content *references*, not strict start/end keyframes — an A+B reference clip is organic drift, not a controlled morph. Routes, best first:
+**Directed A→B state change (before/after, "first+last frame").** ⚠️ Most image→video models have NO true first+last-frame interpolator: image-to-video animates ONE source frame with no end frame; reference-to-video modes treat extra images as style/content *references*, not strict start/end keyframes — an A+B reference clip is organic drift, not a controlled morph. Routes, best first:
 - **Controlled, on the web (preferred):** the WebGL displacement morph between frame A and frame B (scroll-cinema.md) — exact, scroll-scrubbable, no video model, and it's the skill's signature move anyway. This is the real answer to "we have two frames and want the transition".
-- **Organic video:** `reference_to_video` with A+B as references for a loose transition, or `image_to_video` on A for pure motion (push-in, steam, drift) — endpoints not guaranteed.
+- **Organic video:** reference-to-video with A+B as references for a loose transition, or image-to-video on A for pure motion (push-in, steam, drift) — endpoints not guaranteed.
 - **A TRUE controlled first→last VIDEO** (hard requirement) still means browser Kling (first+last mode) / Runway / Veo: package frame A + frame B + the motion prompt for the user, continue other scenes, drop the clip in when it arrives.
 
 **Going past 10s — chain segments.** Clips cap at 6–10s: `image_to_video` frame A, generate/edit the next state, animate that, `ffmpeg` concat. Each segment starts on the previous last frame so the seams hide.
@@ -256,8 +220,8 @@ Budgets (verify.md re-checks): hero video ≤2MB · poster ≤300KB · sequence 
 
 The crew also produces the small stuff — but every generated element must survive slopscan; a generated gradient/texture that's just decoration is banned like any other. Spend it, then make it earn its place.
 
-- **Textures / grain / noise / abstract shapes** → agy (fast, transparent where possible). Use as CSS `background`, `mask-image`, or a low-opacity overlay. Generate once, cache, reuse.
-- **UI mockups in a scene** (device frame + screen, product-in-hand) → codex or grok for the still; Remotion when the mockup must move.
+- **Textures / grain / noise / abstract shapes** → `image_generate` (transparent where the backend allows). Use as CSS `background`, `mask-image`, or a low-opacity overlay. Generate once, cache, reuse.
+- **UI mockups in a scene** (device frame + screen, product-in-hand) → `image_generate` for the still; Remotion when the mockup must move.
 - **Hero mockup gate** (phase 0) can now be a *generated* frame, not only a hand-built HTML screen — one throwaway, screenshotted, approved before the real build.
 - **Iconography / brand marks** → generate a set, then hand-pick: generated icon sets drift in weight/style, so treat them as sketches to redraw in SVG, not final assets.
 

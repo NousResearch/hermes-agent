@@ -1,4 +1,4 @@
-> **Hermes adaptation note:** upstream auteur generated assets through local agent CLIs (`agy`, `codex`, `grok`). In Hermes, read every such invocation as a call to the built-in `image_generate` tool with the same prompt (then move the returned file into the project's `assets/gen/` path), use the `terminal` tool for `ffmpeg`/`node`/`npx`, and `browser_exec` or Playwright-via-terminal for screenshot loops. The per-CLI routing/strength tables below are upstream reference material — the taste guidance transfers, the CLI names do not.
+> **Hermes adaptation note:** upstream auteur generated assets through several local image CLIs. In Hermes, read every generation instruction as a call to the built-in `image_generate` tool with the same prompt (then move the returned file into the project's `assets/gen/` path), use the `terminal` tool for `ffmpeg`/`node`/`npx`, and `browser_exec` or Playwright-via-terminal for screenshot loops. The per-CLI routing/strength tables below are upstream reference material — the taste guidance transfers, the CLI names do not.
 
 # direct.md — the cinematic register
 
@@ -65,10 +65,10 @@ media:        the director's shot spec for this scene's asset (→ the asset pla
               · route: SOURCE or GENERATE — assets.md §0.5 decides. Geometry, IBL lighting and tiling
                        materials are SOURCE (source.mjs, CC0); the peak keyframe and the hero video are
                        always GENERATE; stock video is never the peak
-              · tool:  codex (peak photoreal) | grok-4.5 (color hero + ANYTHING that becomes video) | agy (volume/elements)
+              · tool:  image_generate (stills, A→B edits) | image→video backend (anything that becomes video)
                        | source.mjs hdri|model|texture|icon|image|video
               · frame prompt: the literal keyframe prompt = subject + camera + lighting + palette anchor (write it now)
-              · motion prompt: (video/morph only) what moves — e.g. "grok image_to_video on frame A: slow push-in + steam, 6s". Controlled A→B state change = WebGL displacement morph (two frames), NOT a video model
+              · motion prompt: (video/morph only) what moves — e.g. "image-to-video on frame A: slow push-in + steam, 6s". Controlled A→B state change = WebGL displacement morph (two frames), NOT a video model
               · score:  (peak/ambient scenes only) mood/tempo for MiniMax music, or "none"
 fallback:     what this scene is when WebGL/video/motion is unavailable (static frame + one line)
 ```

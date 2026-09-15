@@ -3,7 +3,7 @@
    ----------------------------------------------------------------------------
    Portable scroll-scrubbed camera-flight engine. Photoreal AI-video "fly through
    the world" — auteur's video-scrub tier, complementary to its real-time WebGL
-   recipes. Asset-source-agnostic: feed it ANY .mp4 clips (grok image_to_video,
+   recipes. Asset-source-agnostic: feed it ANY .mp4 clips (image→video models,
    Gemini, real footage). See references/scroll-flight.md for the full recipe.
 
    VENDORED from scroll-world (github.com/cth9191/scroll-world), MIT (c) 2026 cyw.

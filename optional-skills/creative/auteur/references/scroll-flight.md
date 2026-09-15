@@ -1,4 +1,4 @@
-> **Hermes adaptation note:** upstream auteur generated assets through local agent CLIs (`agy`, `codex`, `grok`). In Hermes, read every such invocation as a call to the built-in `image_generate` tool with the same prompt (then move the returned file into the project's `assets/gen/` path), use the `terminal` tool for `ffmpeg`/`node`/`npx`, and `browser_exec` or Playwright-via-terminal for screenshot loops. The per-CLI routing/strength tables below are upstream reference material — the taste guidance transfers, the CLI names do not.
+> **Hermes adaptation note:** upstream auteur generated assets through several local image CLIs. In Hermes, read every generation instruction as a call to the built-in `image_generate` tool with the same prompt (then move the returned file into the project's `assets/gen/` path), use the `terminal` tool for `ffmpeg`/`node`/`npx`, and `browser_exec` or Playwright-via-terminal for screenshot loops. The per-CLI routing/strength tables below are upstream reference material — the taste guidance transfers, the CLI names do not.
 
 # scroll-flight — photoreal scroll-scrubbed video ("fly through the world")
 
@@ -24,8 +24,8 @@ They compose: a WebGL hero can hand off into a scrubbed-video mid-section.
 
 ## ⚠️ AI clips barely move the camera — the scroll-dolly does the travelling
 
-The single most important thing to know here. **`grok image_to_video` (and
-most image→video models) animate a still *ambiently* — light shimmers, water
+The single most important thing to know here. **image→video models (all the
+common ones) animate a still *ambiently* — light shimmers, water
 drifts, particles float — but they do NOT fly the camera through the scene.**
 Verified on disk: a clip's first and last frame are near-identical. So a scene
 built only from a raw AI clip reads as *a slightly-moving photo*, not a journey.
@@ -58,11 +58,11 @@ never reveal. *That* is what manufactures forward/descent travel; the clip's
 1. **Scene stills** — one anchor still first, get art-direction approval, then
    batch the rest **style-locked to the anchor** (pass the approved still as the
    style reference). A style miss caught on the anchor costs 1 gen, not N.
-   Sources: `codex`/`agy` (Gemini)/`grok` image gen — see `assets.md`.
-2. **Dive clips** — animate each still into a short camera push-in (grok
-   `image_to_video`, or any image→video model). One clip per scene.
+   Source: `image_generate` — see `assets.md`.
+2. **Dive clips** — animate each still into a short camera push-in (any
+   image→video model). One clip per scene.
 3. **Seams** — two ways, pick by what your video model can do:
-   - **Crossfade seams (default, grok/start-image-only models).** Leave
+   - **Crossfade seams (default, start-image-only models).** Leave
      `connectors` empty/`null`; the engine crossfades directly between adjacent
      dives. Ship-safe, always works, reads clean. This is auteur's baseline.
    - **Seamless flight (only with an end-image model — Higgsfield seedance /
@@ -73,8 +73,8 @@ never reveal. *That* is what manufactures forward/descent travel; the clip's
 5. **Posters** — extract each encoded clip's first frame (§ below).
 6. **Wire** the engine config; run the motion + slopscan gates.
 
-> auteur has no Higgsfield account by default; grok `image_to_video` is the
-> baseline. So the honest default is **crossfade-seam** photoreal scrub — still
+> auteur has no Higgsfield account by default; a start-image-only
+> image→video model is the baseline. So the honest default is **crossfade-seam** photoreal scrub — still
 > Apple-tier. Fully-seamless chaining is an upgrade you unlock only with an
 > end-image-capable video model.
 
@@ -188,5 +188,5 @@ it only when video-scrub genuinely stutters on the target hardware.
 ---
 
 *Technique & engine adapted from **scroll-world** by cyw
-(github.com/cth9191/scroll-world), MIT. auteur pairs it with grok/Gemini asset
-generation and its own slopscan / motionqa gates.*
+(github.com/cth9191/scroll-world), MIT. auteur pairs it with `image_generate` asset
+production and its own slopscan / motionqa gates.*

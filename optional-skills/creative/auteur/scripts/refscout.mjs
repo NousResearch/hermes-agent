@@ -279,7 +279,7 @@ async function fingerprint(ctx, url) {
 // --- gallery harvesting -------------------------------------------------------
 // awwwards is the one gallery whose listing AND detail pages both render reliably headless
 // and expose the outbound site URL. Other galleries either need JS we can't wait out or bury
-// the real URL behind affiliate redirects — for those, find URLs with WebSearch and pass them
+// the real URL behind affiliate redirects — for those, find URLs with web_search and pass them
 // positionally.
 async function harvestAwwwards(ctx, tag, text, n) {
   const page = await ctx.newPage();
@@ -322,7 +322,7 @@ let targets = urls.map(u => ({ site: u, name: null, via: 'direct' }));
 if (from) {
   const [gallery, tag] = from.split(':');
   if (gallery === 'awwwards') targets = targets.concat(await harvestAwwwards(ctx, tag, search, limit));
-  else console.error(`[refscout] unknown gallery "${gallery}" — supported: awwwards. Pass URLs directly instead (find them with WebSearch).`);
+  else console.error(`[refscout] unknown gallery "${gallery}" — supported: awwwards. Pass URLs directly instead (find them with web_search).`);
 }
 targets = targets.slice(0, limit);
 

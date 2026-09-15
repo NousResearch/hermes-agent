@@ -29,9 +29,9 @@ def test_mentioned_paths_exist_or_annotated():
     assert not missing, f"paths mentioned but absent and unannotated: {missing}"
 
 
-def test_no_claude_residue():
-    """Upstream is a Claude Code plugin; its plugin-only frontmatter keys and
-    harness name must not leak into the Hermes port."""
+def test_no_upstream_harness_residue():
+    """Upstream ships as a plugin for another agent harness; its plugin-only
+    frontmatter keys and harness name must not leak into the Hermes port."""
     text = SKILL_MD.read_text(encoding="utf-8").lower()
     for token in ("claude", "allowed-tools", "argument-hint"):
         assert token not in text, f"residual '{token}' in SKILL.md"

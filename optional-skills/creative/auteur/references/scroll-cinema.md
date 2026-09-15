@@ -847,7 +847,7 @@ Rules: rAF-throttle (one transform write per frame, never per event); clamp so t
 ## State-machine cinema — A→B→C morph + audio-reactive (Tier-1 engine)
 
 The signature 2026 move: ONE world that transforms through a chain of scene-consistent frames
-(assets.md §2 — grok edit-chain A→B→C…N), scrubbed by scroll AND driven by an audio track, both feeding
+(assets.md §2 — the edit-chain A→B→C…N), scrubbed by scroll AND driven by an audio track, both feeding
 the SAME `uMix`/`uEnergy` uniforms so picture and sound move as one. Extends the two-frame displacement
 to N frames. One persistent WebGL context; swap textures, never remount.
 
@@ -864,7 +864,7 @@ the current position with a noise-driven wipe, so it reads as a morph, not a cro
 ```js
 import * as THREE from 'three'
 import Lenis from 'lenis'
-const FRAMES = ['/gen/s1-a.webp','/gen/s1-b.webp','/gen/s1-c.webp','/gen/s1-d.webp'] // grok edit-chain, in order
+const FRAMES = ['/gen/s1-a.webp','/gen/s1-b.webp','/gen/s1-c.webp','/gen/s1-d.webp'] // edit-chain, in order
 const canvas = document.getElementById('c')
 const renderer = new THREE.WebGLRenderer({ canvas, antialias:true })
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2))

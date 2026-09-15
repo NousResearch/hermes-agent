@@ -40,7 +40,7 @@
 - **copy:** H: "…" / sub: "…"  <!-- real words, not lorem -->
 - **media:** <!-- the director's shot spec — route via assets.md §0.5 (source) and §0 (generate) -->
   - type: <!-- still | A→B morph | video | sequence | element/texture | 3D model | HDRI | none (type-led) -->
-  - route: <!-- SOURCE (source.mjs hdri|model|texture|icon|image|video) or GENERATE (codex | grok-4.5 | agy) — assets.md §0.5 decides -->
+  - route: <!-- SOURCE (source.mjs hdri|model|texture|icon|image|video) or GENERATE (image_generate; image→video backend for clips) — assets.md §0.5 decides -->
   - frame prompt: <!-- the literal keyframe prompt = subject + camera + lighting + palette anchor. Write it NOW, not in phase 1. -->
   - motion prompt: <!-- video/morph only. A controlled A→B state change is the WebGL displacement morph, NOT a video model. -->
   - score: <!-- peak/ambient scenes only: mood/tempo for MiniMax music, or "none" -->

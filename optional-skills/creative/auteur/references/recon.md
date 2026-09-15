@@ -30,7 +30,7 @@ node scripts/refscout.mjs --from awwwards --limit 8
 node scripts/refscout.mjs --from awwwards:scrolling --limit 6
 node scripts/refscout.mjs --from awwwards --search "coffee" --limit 5
 
-# or profile sites you already know / found with WebSearch
+# or profile sites you already know / found with web_search
 node scripts/refscout.mjs https://a.com https://b.com --shots 4
 ```
 
@@ -39,7 +39,7 @@ Output lands in `design/refs/`: `REFERENCES.md` (read it), `refs.json`, `shots/*
 **Finding candidates.** `--from awwwards` is the only harvester wired in, because it is the only
 gallery whose listing *and* detail pages render reliably headless and expose the outbound site
 URL. For everything else — godly.website, curated.design, minimal.gallery, land-book, siteinspire,
-thefwa, lapa.ninja, mobbin — use WebSearch to find the write-ups, then pass the site URLs to
+thefwa, lapa.ninja, mobbin — use `web_search` to find the write-ups, then pass the site URLs to
 refscout positionally. Searching for the *page about* a site is more reliable than scraping the
 gallery that lists it.
 
@@ -198,7 +198,7 @@ and none of them ships:
 
 | symptom | what it means | do this |
 |---|---|---|
-| `awwwards listing returned no cards` | the gallery markup moved | fall back to WebSearch + positional URLs |
+| `awwwards listing returned no cards` | the gallery markup moved | fall back to `web_search` + positional URLs |
 | most entries are `NO CAPTURE` | network or a broad bot wall | profile fewer, better-known sites; lean on the shots and your own eyes |
 | `pinterest returned 0` | login wall, normal | ignore, bing covered it |
 | the sheet is 20 variants of one image | single narrow query | re-run with 2–3 queries on different axes |

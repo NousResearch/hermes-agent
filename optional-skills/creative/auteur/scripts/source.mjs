@@ -36,6 +36,7 @@
 import { mkdir, writeFile, readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { resolve, join, dirname } from 'path';
+import { tmpdir } from 'os';
 
 const args = process.argv.slice(2);
 const KINDS = ['hdri', 'model', 'texture', 'icon', 'font', 'image', 'video'];
@@ -172,7 +173,7 @@ async function icons() {
 const GF_BANNED = ['Inter', 'Space Grotesk', 'Instrument Serif', 'Playfair Display'];
 async function fonts() {
   // Not inside --out: that just relocates 1.5MB from your cwd into your shipped assets tree.
-  const cacheFile = join(process.env.TEMP || process.env.TMPDIR || '.', 'auteur-gf-metadata.json');
+  const cacheFile = join(tmpdir(), 'auteur-gf-metadata.json');
   let meta;
   if (existsSync(cacheFile)) meta = JSON.parse(await readFile(cacheFile, 'utf8'));
   else {

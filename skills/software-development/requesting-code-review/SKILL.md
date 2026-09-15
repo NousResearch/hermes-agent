@@ -1,13 +1,13 @@
 ---
 name: requesting-code-review
-description: "Pre-commit review: security scan, quality gates, auto-fix."
-version: 2.0.0
+description: "Read-only review by default; commit only if authorized."
+version: 2.1.0
 author: Hermes Agent (adapted from obra/superpowers + MorAlekss)
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [code-review, security, verification, quality, pre-commit, auto-fix]
+    tags: [code-review, security, verification, quality, pre-commit, auto-fix, read-only]
     related_skills: [subagent-driven-development, test-driven-development, github]
 ---
 
@@ -18,12 +18,30 @@ quality gates, an independent reviewer subagent, and an auto-fix loop.
 
 **Core principle:** No agent should verify its own work. Fresh context finds what you miss.
 
+**Mutation principle:** Review-only is **read-only**. Auto-fix and commit run only
+after explicit authorization (see When to Use). Unauthorized success still
+reports and stops.
+
 ## When to Use
 
-- After implementing a feature or bug fix, before `git commit` or `git push`
-- When user says "commit", "push", "ship", "done", "verify", or "review before merge"
-- After completing a task with 2+ file edits in a git repo
-- After each task in subagent-driven-development (the two-stage review)
+**Review-only** (default when the user did not authorize mutation):
+- User asks to review / verify / inspect / audit / report
+- Independent check of a diff without asking to land it
+- Review-only is **read-only**: report findings and stop. Do not auto-fix,
+  `git add`, or `git commit`.
+
+**Pre-commit / authorized mutation** — only when one of these is true:
+- User explicitly says "commit", "push", "ship", "commit after review", or
+  "verify then commit"
+- User explicitly asks to apply fixes / auto-fix / "fix issues"
+- An outer workflow (e.g. subagent-driven-development's task-completion gate)
+  already authorized verify-then-commit
+
+**Also use after** (path still follows the authorization gate above):
+- Implementing a feature or bug fix, before an *authorized* `git commit` or
+  `git push`
+- Completing a task with 2+ file edits in a git repo
+- Each task in subagent-driven-development (the two-stage review)
 
 **Skip for:** documentation-only changes, pure config tweaks, or when user says "skip verification".
 
@@ -177,9 +195,19 @@ Return ONLY this JSON:
 
 Combine results from Steps 2, 3, and 5.
 
-**All passed:** Proceed to Step 8 (commit).
+**All passed:**
+- **Review-only** (no explicit commit/push/ship/fix authorization): report the
+  verdict and stop. Do **not** proceed to Step 7 or Step 8.
+- **Commit authorized** (user asked to commit/push/ship / "commit after review"
+  / "verify then commit", or an outer workflow already authorized
+  verify-then-commit): proceed to Step 8.
 
-**Any failures:** Report what failed, then proceed to Step 7 (auto-fix).
+**Any failures:**
+- Report what failed (template below).
+- **Review-only:** stop after the report. Do **not** run Step 7 (auto-fix
+  mutates the working tree).
+- **Fix authorized** (user asked to fix / auto-fix / apply fixes, or an outer
+  workflow authorized repairs): proceed to Step 7.
 
 ```
 VERIFICATION FAILED
@@ -192,6 +220,11 @@ Suggestions (non-blocking): [list]
 ```
 
 ## Step 7 — Auto-fix loop
+
+**Authorization gate:** Run this step only when the user explicitly requested
+fix / auto-fix / apply fixes, or an outer workflow authorized repairs.
+On review-only requests, skip this step — report issues and stop. Do not
+modify files.
 
 **Maximum 2 fix-and-reverify cycles.**
 
@@ -220,20 +253,32 @@ Fix each issue precisely. Describe what you changed and why.""",
 ```
 
 After the fix agent completes, re-run Steps 1-6 (full verification cycle).
-- Passed: proceed to Step 8
+- Passed and commit authorized: proceed to Step 8
+- Passed and review-only: report results and stop (do not commit)
 - Failed and attempts < 2: repeat Step 7
 - Failed after 2 attempts: escalate to user with the remaining issues and
-  suggest `git stash` or `git reset` to undo
+  suggest `git stash` or `git reset` to undo only if those operations were
+  authorized
 
 ## Step 8 — Commit
 
-If verification passed:
+**Authorization gate:** Commit only when the user explicitly requested
+commit / push / ship / "commit after review" / "verify then commit", or an
+outer workflow already authorized verify-then-commit.
+
+Review-only is read-only: do not `git add` or `git commit`.
+
+If authorization is present and verification passed, stage **intended paths
+only** (the files this change is meant to land — never the entire working
+tree):
 
 ```bash
-git add -A && git commit -m "[verified] <description>"
+git add -- <intended paths>
+git commit -m "[verified] <description>"
 ```
 
-The `[verified]` prefix indicates an independent reviewer approved this change.
+Do not stage unrelated files. The `[verified]` prefix indicates an
+independent reviewer approved this change.
 
 ## Reference: Common Patterns to Flag
 
@@ -270,6 +315,8 @@ tests exist, tests pass, no regressions.
 
 ## Pitfalls
 
+- **Review-only request** — report and stop; do not auto-fix or commit without
+  explicit authorization
 - **Empty diff** — check `git status`, tell user nothing to verify
 - **Not a git repo** — skip and tell user
 - **Large diff (>15k chars)** — split by file, review each separately

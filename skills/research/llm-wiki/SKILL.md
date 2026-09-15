@@ -474,6 +474,28 @@ sudo loginctl enable-linger $USER
 This lets the agent write to `~/wiki` on a server while you browse the same
 vault in Obsidian on your laptop/phone — changes appear within seconds.
 
+### Markdown Tables with Wikilinks
+
+When using wikilinks inside Markdown tables, the pipe character `|` in
+`[[target|Display]]` conflicts with table column delimiters.
+
+**Syntax:** Inside table cells, escape the pipe with backslash:
+```markdown
+| Method | Paper |
+|--------|-------|
+| GPTQ   | [[gptq\|GPTQ paper]] |  ✓ Correct (escaped)
+| GPTQ   | [[gptq|GPTQ paper]]  |  ✗ Breaks table rendering
+```
+
+**Detect violations:**
+```bash
+# Find unescaped wikilinks in tables
+grep -r "^|.*\[\[[^\\]*|[^\\]*\]\]" ~/wiki --include="*.md" | grep -v "\\\\|"
+```
+
+**Fix:** Replace `[[target|Display]]` with `[[target\|Display]]` in table cells.
+Consider adding this convention to `SCHEMA.md` for your wiki.
+
 ## Pitfalls
 
 - **Never modify files in `raw/`** — sources are immutable. Corrections go in wiki pages.

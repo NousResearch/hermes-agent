@@ -74,6 +74,7 @@ import {
   parseResumeControlMessage,
   shouldFollowPtyOutput,
 } from "@/lib/pty-scroll";
+import { installTerminalTouchScroll } from "@/lib/terminal-touch-scroll";
 import {
   imageFilesFromTransfer,
   transferMayContainImage,
@@ -819,6 +820,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       ev.stopPropagation();
       return false;
     });
+    const cleanupTouchScroll = installTerminalTouchScroll(host, term);
 
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
@@ -1521,6 +1523,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       onScrollDisposable?.dispose();
       mobileInputCleanup?.();
       compositionForwarder.dispose();
+      cleanupTouchScroll();
       host.removeEventListener("paste", handleBrowserPaste, true);
       host.removeEventListener("dragover", handleBrowserDragOver, true);
       host.removeEventListener("drop", handleBrowserDrop, true);

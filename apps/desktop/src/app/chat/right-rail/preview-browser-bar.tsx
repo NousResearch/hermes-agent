@@ -24,6 +24,7 @@ import { useI18n } from '@/i18n'
 import { isSubmitEnter } from '@/lib/ime'
 import { ANNOTATE_BLUE } from '@/lib/preview-annotate'
 import { cn } from '@/lib/utils'
+import { BROWSER_PAGE_ZOOM_STEP, MAX_BROWSER_PAGE_ZOOM_PERCENT, MIN_BROWSER_PAGE_ZOOM_PERCENT } from '@/store/preview'
 
 interface PreviewBrowserBarProps {
   annotateMode?: boolean
@@ -37,6 +38,7 @@ interface PreviewBrowserBarProps {
   onFlushComments?: () => void
   onForward: () => void
   onNavigate: (url: string) => void
+  onPageZoomChange: (percent: number) => void
   onOpenExternal?: () => void
   onPopIn?: () => void
   onPopOut?: () => void
@@ -44,6 +46,7 @@ interface PreviewBrowserBarProps {
   onToggleAnnotate?: () => void
   onToggleConsole: () => void
   onToggleDevTools: () => void
+  pageZoomPercent: number
   /** The page's CURRENT address (it moves as the user navigates), not the
    *  target the tab was opened with. */
   url: string
@@ -106,6 +109,7 @@ export function PreviewBrowserBar({
   onFlushComments,
   onForward,
   onNavigate,
+  onPageZoomChange,
   onOpenExternal,
   onPopIn,
   onPopOut,
@@ -113,6 +117,7 @@ export function PreviewBrowserBar({
   onToggleAnnotate,
   onToggleConsole,
   onToggleDevTools,
+  pageZoomPercent,
   url
 }: PreviewBrowserBarProps) {
   const { t } = useI18n()
@@ -214,6 +219,32 @@ export function PreviewBrowserBar({
           label={t.contextMenu.link.copyUrl}
           showLabel={false}
           text={url}
+        />
+      </div>
+      <div aria-label={copy.pageZoom} className="flex shrink-0 items-center" role="group">
+        <PaneStripGlyph
+          disabled={pageZoomPercent <= MIN_BROWSER_PAGE_ZOOM_PERCENT}
+          icon={<Codicon name="zoom-out" size="0.75rem" />}
+          label={copy.decreasePageZoom}
+          onSelect={() =>
+            onPageZoomChange(Math.max(MIN_BROWSER_PAGE_ZOOM_PERCENT, pageZoomPercent - BROWSER_PAGE_ZOOM_STEP))
+          }
+        />
+        <button
+          aria-label={copy.resetPageZoom}
+          className="h-6 min-w-10 rounded px-1 text-[0.625rem] font-medium tabular-nums text-muted-foreground hover:bg-(--chrome-action-hover) hover:text-foreground"
+          onClick={() => onPageZoomChange(100)}
+          type="button"
+        >
+          {pageZoomPercent}%
+        </button>
+        <PaneStripGlyph
+          disabled={pageZoomPercent >= MAX_BROWSER_PAGE_ZOOM_PERCENT}
+          icon={<Codicon name="zoom-in" size="0.75rem" />}
+          label={copy.increasePageZoom}
+          onSelect={() =>
+            onPageZoomChange(Math.min(MAX_BROWSER_PAGE_ZOOM_PERCENT, pageZoomPercent + BROWSER_PAGE_ZOOM_STEP))
+          }
         />
       </div>
       {onToggleAnnotate ? (

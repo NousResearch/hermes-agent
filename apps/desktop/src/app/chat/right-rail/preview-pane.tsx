@@ -40,6 +40,7 @@ import {
 } from '@/store/preview'
 import { $selectedStoredSessionId } from '@/store/session'
 import { canOpenBrowserWindow, isBrowserWindow } from '@/store/windows'
+import { $zoomPercent } from '@/store/zoom'
 
 import { placeAnnotateCard, PreviewAnnotateCard } from './preview-annotate-card'
 import {
@@ -93,6 +94,23 @@ type PreviewWebview = HTMLElement & {
   replaceMisspelling?: (word: string) => void
   selectAll?: () => void
   sendInputEvent?: (event: PreviewInputEvent) => void
+  setZoomFactor?: (factor: number) => void
+}
+
+function applyPageZoom(webview: PreviewWebview | null, pageZoomPercent: number): void {
+  if (!webview?.setZoomFactor) {
+    return
+  }
+
+  try {
+    const hostFactor = window.hermesDesktop?.zoom?.factor?.()
+    const scale = Number.isFinite(hostFactor) && hostFactor! > 0 ? hostFactor! : 1
+    const percent = Number.isFinite(pageZoomPercent) && pageZoomPercent > 0 ? pageZoomPercent : 100
+
+    webview.setZoomFactor(Math.round((percent / 100 / scale) * 1_000_000) / 1_000_000)
+  } catch {
+    // The tag can exist before its guest attaches or after it is destroyed.
+  }
 }
 
 /** Electron throws if getURL/getTitle run before attach + dom-ready, or after
@@ -130,7 +148,9 @@ interface GuestContextMenuParams {
 
 interface PreviewPaneProps {
   embedded?: boolean
+  onPageZoomChange?: (percent: number) => void
   onRestartServer?: (url: string, context?: string) => Promise<string>
+  pageZoomPercent?: number
   reloadRequest?: number
   /** The preview tab this pane renders. Keys the per-tab console store the
    *  browser bar's console toggle and the console panel both read. */
@@ -244,7 +264,15 @@ function PreviewLoadError({
   )
 }
 
-export function PreviewPane({ embedded = false, onRestartServer, reloadRequest = 0, tabId, target }: PreviewPaneProps) {
+export function PreviewPane({
+  embedded = false,
+  onPageZoomChange = () => undefined,
+  onRestartServer,
+  pageZoomPercent = 100,
+  reloadRequest = 0,
+  tabId,
+  target
+}: PreviewPaneProps) {
   const { t } = useI18n()
   const copy = t.preview.web
   // The console store belongs to the TAB, not this render: the toggles live on
@@ -257,7 +285,10 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   const lastRestartEventRef = useRef('')
   const previewContentRef = useRef<HTMLDivElement | null>(null)
   const webviewRef = useRef<PreviewWebview | null>(null)
+  const pageZoomPercentRef = useRef(pageZoomPercent)
+  pageZoomPercentRef.current = pageZoomPercent
   const previewServerRestart = useStore($previewServerRestart)
+  const hostZoomPercent = useStore($zoomPercent)
   const consoleHeight = useStore(consoleState.$height)
   const consoleOpen = useStore(consoleState.$open)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
@@ -307,6 +338,8 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   }, [tabId, target.kind])
 
   const isRemoteHtml = isRemoteHtmlTarget && target.renderMode !== 'source' && Boolean(target.dataUrl)
+
+  useEffect(() => applyPageZoom(webviewRef.current, pageZoomPercent), [hostZoomPercent, pageZoomPercent])
 
   const remoteHtmlDocument = useMemo(
     () => (isRemoteHtml ? remoteHtmlPreviewDocument(target.dataUrl!) : null),
@@ -1081,6 +1114,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       }
 
       notePage()
+      applyPageZoom(webview, pageZoomPercentRef.current)
 
       // Ask the webview rather than counting navigations: the guest page can
       // move itself (redirects, history.pushState, a link into a new document),
@@ -1118,6 +1152,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
     const onStop = () => {
       setLoading(false)
+      applyPageZoom(webview, pageZoomPercentRef.current)
       // A load that ends without a `did-navigate` (an in-place reload, a
       // cancelled navigation) still settles the history — resync so the
       // buttons can't be left stale.
@@ -1130,6 +1165,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     // and the glyph was left stuck "on" when we tracked it locally.
     const onDevToolsOpened = () => setDevtoolsOpen(true)
     const onDevToolsClosed = () => setDevtoolsOpen(false)
+    const onDomReady = () => applyPageZoom(webview, pageZoomPercentRef.current)
 
     // Right-clicks INSIDE the guest page. The tag surfaces Chromium's full
     // context-menu params (link, image, editable, selection, spellcheck), so
@@ -1209,6 +1245,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     webview.addEventListener('context-menu', onGuestContextMenu)
     webview.addEventListener('devtools-closed', onDevToolsClosed)
     webview.addEventListener('devtools-opened', onDevToolsOpened)
+    webview.addEventListener('dom-ready', onDomReady)
     webview.addEventListener('did-fail-load', onFail)
     webview.addEventListener('did-navigate', onNavigate)
     webview.addEventListener('did-navigate-in-page', onNavigate)
@@ -1226,6 +1263,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       webview.removeEventListener('context-menu', onGuestContextMenu)
       webview.removeEventListener('devtools-closed', onDevToolsClosed)
       webview.removeEventListener('devtools-opened', onDevToolsOpened)
+      webview.removeEventListener('dom-ready', onDomReady)
       webview.removeEventListener('did-fail-load', onFail)
       webview.removeEventListener('did-navigate', onNavigate)
       webview.removeEventListener('did-navigate-in-page', onNavigate)
@@ -1301,6 +1339,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
                 ? () => void window.hermesDesktop?.openExternal(currentUrl)
                 : undefined
             }
+            onPageZoomChange={onPageZoomChange}
             onPopIn={isBrowserWindow() ? () => window.close() : undefined}
             onPopOut={
               isBrowserWindow() || !tabId || !canOpenBrowserWindow() ? undefined : () => popOutBrowserTab(tabId)
@@ -1309,6 +1348,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
             onToggleAnnotate={toggleAnnotate}
             onToggleConsole={() => consoleState.setOpen(open => !open)}
             onToggleDevTools={toggleDevTools}
+            pageZoomPercent={pageZoomPercent}
             url={currentUrl}
           />
         )}

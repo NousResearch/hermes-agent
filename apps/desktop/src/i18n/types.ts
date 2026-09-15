@@ -3334,6 +3334,10 @@ export interface Translations {
       goBack: string
       goForward: string
       reload: string
+      pageZoom: string
+      decreasePageZoom: string
+      resetPageZoom: string
+      increasePageZoom: string
       address: string
       addressPlaceholder: string
       blankPageBody: string

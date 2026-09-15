@@ -366,9 +366,9 @@ class TestLocalModelLoading:
 
     @pytest.mark.parametrize("download_error", [None, "Got: ConnectTimeout: [Errno 110] Connection timed out"])
     def test_cache_miss_falls_back_with_actionable_download_failure(self, download_error):
-        from huggingface_hub.errors import LocalEntryNotFoundError
-        from tools.transcription_local import _create_whisper_model
+        from tools.transcription_local import _create_whisper_model, _hub_cache_miss_error
 
+        LocalEntryNotFoundError = _hub_cache_miss_error()
         if download_error:
             download_error = LocalEntryNotFoundError(download_error)
 

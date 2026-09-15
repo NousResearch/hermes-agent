@@ -120,15 +120,27 @@ def _get_idle_unload_seconds(local_cfg: Dict[str, Any]) -> int:
     return max(_config_number(local_cfg, "unload_after_idle_seconds", 0, int), 0)
 
 
+def _hub_cache_miss_error() -> type:
+    """Exception faster-whisper raises for a model missing from the local Hub cache.
+
+    ``huggingface_hub`` is an optional dependency (it arrives with faster-whisper); when it is
+    absent, its ``LocalEntryNotFoundError`` base class ``OSError`` is the closest match.
+    """
+    try:
+        from huggingface_hub.errors import LocalEntryNotFoundError
+    except ImportError:
+        return OSError
+    return LocalEntryNotFoundError
+
+
 def _create_whisper_model(model_name: str, *, device: str, compute_type: str):
     """Use a cached model without contacting the Hub, downloading only on a cache miss."""
     from faster_whisper import WhisperModel
-    from huggingface_hub.errors import LocalEntryNotFoundError
 
     kwargs = {"device": device, "compute_type": compute_type}
     try:
         return WhisperModel(model_name, local_files_only=True, **kwargs)
-    except LocalEntryNotFoundError:
+    except _hub_cache_miss_error():
         logger.info("faster-whisper model '%s' is not cached; downloading it from the Hugging Face Hub", model_name)
 
     # huggingface_hub surfaces every Hub/network failure as an OSError subclass

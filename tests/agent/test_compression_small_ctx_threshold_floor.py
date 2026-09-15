@@ -12,10 +12,14 @@ Covers the July 2026 compression tuning pass:
    floored at 75% (raise-only — a higher configured value always wins).
 """
 
+import contextlib
+import io
 from unittest.mock import patch
 
 import agent.context_compressor as cc
 from agent.context_compressor import ContextCompressor
+from hermes_state import SessionDB
+from run_agent import AIAgent
 
 
 def _make(ctx: int, pct: float = 0.50) -> ContextCompressor:
@@ -50,6 +54,68 @@ class TestSmallContextThresholdFloor:
         comp.update_model("small", 200_000)
         assert comp.threshold_percent == 0.75
         assert comp.threshold_tokens == 150_000
+
+    def test_policy_profiles_resolve_at_construction_and_model_switch(
+        self, monkeypatch, tmp_path
+    ):
+        config = {
+            "model": {"context_length": 200_000},
+            "compression": {
+                "threshold": 0.60,
+                "target_ratio": 0.20,
+                "tail_mode": "legacy",
+                "model_thresholds": {
+                    "200k": {"threshold": 0.65, "target_ratio": 0.25},
+                    "exact-200k": {"threshold": 0.70, "target_ratio": 0.30},
+                    "legacy": 0.70,
+                    "clamped": {"threshold": 1.20, "target_ratio": 0.05},
+                    "malformed": {"threshold": "early", "target_ratio": []},
+                },
+                "context_window_profiles": [
+                    {"max_context": 250_000, "threshold": 0.55, "target_ratio": 0.40},
+                    {"min_context": 900_000, "threshold": 0.30, "target_ratio": 0.05},
+                ],
+            },
+            "prompt_caching": {"cache_ttl": "5m"},
+            "sessions": {},
+            "bedrock": {},
+        }
+        from hermes_cli import config as config_mod
+
+        monkeypatch.setattr(config_mod, "load_config", lambda: config)
+        monkeypatch.setattr(config_mod, "load_config_readonly", lambda: config)
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent = AIAgent(
+                model="exact-200k",
+                provider="custom",
+                base_url="http://127.0.0.1:9/v1",
+                api_key="test",
+                enabled_toolsets=[],
+                disabled_toolsets=[],
+                quiet_mode=True,
+                skip_memory=True,
+                session_db=SessionDB(db_path=tmp_path / "state.db"),
+                session_id="compression-policy-profile-test",
+            )
+
+        compressor = agent.context_compressor
+        assert (compressor.threshold_percent, compressor.summary_target_ratio) == (0.70, 0.30)
+        assert compressor.threshold_tokens == 140_000  # structured threshold bypasses the 0.75 floor
+
+        cases = (
+            ("vendor-exact-200k-v2", 200_000, 0.70, 0.30),  # longest substring
+            ("context-only", 200_000, 0.55, 0.40),          # context bucket bypasses floor
+            ("large-context", 1_000_000, 0.30, 0.10),      # target clamps to established bound
+            ("legacy", 300_000, 0.75, 0.20),               # scalar keeps legacy floor
+            ("clamped", 300_000, 1.00, 0.10),              # structured values clamp
+            ("malformed", 300_000, 0.75, 0.20),            # malformed fields fail open
+        )
+        for model, context_length, threshold, target_ratio in cases:
+            compressor.update_model(model, context_length=context_length, provider="custom")
+            assert (compressor.threshold_percent, compressor.summary_target_ratio) == (
+                threshold,
+                target_ratio,
+            ), model
 
 
 class TestReasoningExcludedFromSummarizer:

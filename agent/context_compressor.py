@@ -7,6 +7,7 @@ import copy
 import hashlib
 import json
 import logging
+import math
 import sqlite3
 import re
 import time
@@ -1555,31 +1556,132 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
     return f"[{tool_name}]{first_arg} ({content_len:,} chars result)"
 
 
-def _model_threshold_key_rank(key: str, model: str, provider: str) -> "tuple[int, int] | None":
+def _model_threshold_key_rank(key: str, model: str, provider: str) -> "tuple[int, int, int] | None":
     """Match rank for one ``model_thresholds`` key, or None when it does not apply.
     ``"<provider>:<substr>"`` keys apply only on that provider; bare keys apply on every route.
     The same slug means different windows on different routes (Codex caps Astra at 272K; OpenRouter
     serves the full window), so a bare ``astra: 0.85`` written for Codex silently leaks everywhere.
-    Rank = (substring length, scoped): the most specific model match wins, scope breaks ties."""
+    Rank = (exact, substring length, scoped): exact model wins, then the longest substring,
+    and provider scope breaks otherwise-identical ties."""
     scope, sep, substr = key.partition(":")
     if not sep:
-        return (len(key), 0) if key in model else None
-    return (len(substr), 1) if scope.strip().lower() == provider and substr in model else None
+        return (int(key == model), len(key), 0) if key in model else None
+    return (
+        (int(substr == model), len(substr), 1)
+        if scope.strip().lower() == provider and substr in model
+        else None
+    )
+
+
+@dataclass(frozen=True)
+class CompressionPolicy:
+    """Resolved compression ratios and whether an explicit profile threshold bypasses the legacy floor."""
+
+    threshold: float
+    target_ratio: float
+    bypass_small_context_floor: bool = False
+
+
+def _bounded_policy_float(value: Any, minimum: float, maximum: float) -> float | None:
+    """Finite numeric policy value clamped to its established bounds; malformed values are absent."""
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed):
+        return None
+    return max(minimum, min(parsed, maximum))
+
+
+def _matching_context_profile(context_length: int, profiles: Any) -> dict[str, Any] | None:
+    """First valid declared context bucket containing ``context_length``."""
+    if context_length <= 0 or not isinstance(profiles, list):
+        return None
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            continue
+        raw_min, raw_max = profile.get("min_context"), profile.get("max_context")
+        if raw_min is None and raw_max is None:
+            continue
+        try:
+            if isinstance(raw_min, bool) or isinstance(raw_max, bool):
+                raise ValueError
+            minimum = 0 if raw_min is None else int(raw_min)
+            maximum = context_length if raw_max is None else int(raw_max)
+        except (TypeError, ValueError):
+            continue
+        if minimum < 0 or maximum <= 0 or minimum > maximum:
+            continue
+        if minimum <= context_length <= maximum:
+            return profile
+    return None
+
+
+def resolve_compression_policy(
+    model: str,
+    context_length: int,
+    model_thresholds: dict[str, Any] | None,
+    context_window_profiles: list[dict[str, Any]] | None,
+    default_threshold: float,
+    default_target_ratio: float,
+    provider: str = "",
+) -> CompressionPolicy:
+    """Resolve threshold and target ratio independently through the documented precedence chain."""
+    threshold = target_ratio = None
+    bypass_floor = False
+    provider = (provider or "").strip().lower()
+    if model and isinstance(model_thresholds, dict):
+        ranked = []
+        for raw_key, value in model_thresholds.items():
+            key = str(raw_key)
+            rank = _model_threshold_key_rank(key, model, provider)
+            if rank is not None:
+                ranked.append((rank, key, value))
+        for _rank, _key, value in sorted(
+            ranked, key=lambda item: (item[0], item[1]), reverse=True
+        ):
+            structured = isinstance(value, dict)
+            if threshold is None:
+                raw_threshold = value.get("threshold") if structured else value
+                resolved = _bounded_policy_float(raw_threshold, 0.0, 1.0)
+                if resolved is not None:
+                    threshold = resolved
+                    bypass_floor = structured
+            if target_ratio is None and structured:
+                target_ratio = _bounded_policy_float(value.get("target_ratio"), 0.10, 0.80)
+            if threshold is not None and target_ratio is not None:
+                break
+
+    context_profile = _matching_context_profile(context_length, context_window_profiles)
+    if context_profile is not None:
+        if threshold is None:
+            resolved = _bounded_policy_float(context_profile.get("threshold"), 0.0, 1.0)
+            if resolved is not None:
+                threshold, bypass_floor = resolved, True
+        if target_ratio is None:
+            target_ratio = _bounded_policy_float(context_profile.get("target_ratio"), 0.10, 0.80)
+
+    fallback_threshold = _bounded_policy_float(default_threshold, 0.0, 1.0)
+    fallback_target = _bounded_policy_float(default_target_ratio, 0.10, 0.80)
+    return CompressionPolicy(
+        threshold=threshold if threshold is not None else (fallback_threshold if fallback_threshold is not None else 0.50),
+        target_ratio=target_ratio if target_ratio is not None else (fallback_target if fallback_target is not None else 0.20),
+        bypass_small_context_floor=bypass_floor,
+    )
 
 
 def resolve_model_threshold(
-    model: str, model_thresholds: dict[str, float] | None, default: float, provider: str = "",
+    model: str, model_thresholds: dict[str, Any] | None, default: float, provider: str = "",
 ) -> float:
     """Per-model threshold: longest matching ``model_thresholds`` key wins, else ``default``.
     Keys are substrings of the model name, optionally provider-scoped as ``"<provider>:<substr>"``
     (a scoped key outranks a bare one of the same substring). Module-level so plugin context
     engines can reuse it."""
-    if not model_thresholds or not model:
-        return default
-    provider = (provider or "").strip().lower()
-    ranked = ((_model_threshold_key_rank(key, model, provider), key) for key in model_thresholds)
-    best = max(((rank, key) for rank, key in ranked if rank is not None), default=None)
-    return float(model_thresholds[best[1]]) if best else default
+    return resolve_compression_policy(
+        model, 0, model_thresholds, None, default, 0.20, provider
+    ).threshold
 
 
 def _memory_provider_section(memory_context: str) -> str:
@@ -1784,8 +1886,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 config_context_length=self._config_context_length, provider=self.provider,
                 custom_providers=self.custom_providers,
             )
-            # Raise-only small-context floor; must run after context_length resolves and before threshold_tokens derives.
-            self.threshold_percent = self._effective_threshold_percent(self._resolved_context_length, self._base_threshold_percent)
+            self._apply_resolved_policy(self._resolved_context_length)
             self._emit_init_summary_once()
         return self._resolved_context_length
 
@@ -1799,10 +1900,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         if value == getattr(self, "_resolved_context_length", None):
             return
         self._resolved_context_length = value
-        # Re-apply the raise-only floor so percent and tokens derive from the same window.
-        _base = getattr(self, "_base_threshold_percent", None)
-        if _base is not None:
-            self.threshold_percent = self._effective_threshold_percent(value, _base)
+        self._apply_resolved_policy(value)
         self._threshold_tokens = self._tail_token_budget = self._max_summary_tokens = None
         self._emit_init_summary_once()
 
@@ -2185,10 +2283,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         runtime_changed = (model, provider, base_url, api_mode) != (self.model, self.provider, self.base_url, self.api_mode)
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         self.context_length = context_length
-        # Re-resolve from the raw config value so a switch away from an overridden model falls back correctly.
-        _config_pct = getattr(self, "_config_threshold_percent", self.threshold_percent)
-        self._base_threshold_percent = resolve_model_threshold(model, self.model_thresholds, _config_pct, provider)
-        self.threshold_percent = self._effective_threshold_percent(context_length, self._base_threshold_percent)
+        self._apply_resolved_policy(context_length)
         # max_tokens=None means "unspecified": keep the existing output reservation.
         # A switch that genuinely changes the output budget passes the new value explicitly. (#43547)
         if max_tokens is not None:
@@ -2250,11 +2345,53 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 self.threshold_tokens = _effective_cap
 
     @staticmethod
-    def _effective_threshold_percent(context_length: int, threshold_percent: float) -> float:
+    def _effective_threshold_percent(
+        context_length: int, threshold_percent: float, bypass_small_context_floor: bool = False,
+    ) -> float:
         """Raise-only small-context threshold floor: models under 512K trigger at >= 75%."""
-        if context_length and context_length < _SMALL_CTX_WINDOW_LIMIT:
+        if not bypass_small_context_floor and context_length and context_length < _SMALL_CTX_WINDOW_LIMIT:
             return max(threshold_percent, _SMALL_CTX_THRESHOLD_PERCENT)
         return threshold_percent
+
+    def _apply_resolved_policy(self, context_length: int) -> None:
+        policy = resolve_compression_policy(
+            self.model,
+            context_length,
+            self.model_thresholds,
+            self.context_window_profiles,
+            self._config_threshold_percent,
+            self._config_target_ratio,
+            self.provider,
+        )
+        self._base_threshold_percent = policy.threshold
+        self.summary_target_ratio = policy.target_ratio
+        self._threshold_bypasses_small_context_floor = policy.bypass_small_context_floor
+        self.threshold_percent = self._effective_threshold_percent(
+            context_length, policy.threshold, policy.bypass_small_context_floor
+        )
+
+    def update_compression_policy(
+        self,
+        *,
+        threshold_percent: Any,
+        summary_target_ratio: Any,
+        model_thresholds: dict[str, Any] | None,
+        context_window_profiles: list[dict[str, Any]] | None,
+    ) -> None:
+        """Apply live config and re-resolve both policy values for the current model/window."""
+        self._config_threshold_percent = threshold_percent
+        self._configured_threshold_percent = threshold_percent
+        self._config_target_ratio = summary_target_ratio
+        self.model_thresholds = (
+            {str(key): value for key, value in model_thresholds.items()}
+            if isinstance(model_thresholds, dict)
+            else {}
+        )
+        self.context_window_profiles = (
+            list(context_window_profiles) if isinstance(context_window_profiles, list) else []
+        )
+        self._apply_resolved_policy(self.context_length)
+        self._threshold_tokens = self._tail_token_budget = None
 
     @staticmethod
     def _compute_threshold_tokens(
@@ -2298,10 +2435,11 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         summary_target_ratio: float = 0.20, quiet_mode: bool = False, summary_model_override: str = None,
         base_url: str = "", api_key: str = "", config_context_length: int | None = None, provider: str = "",
         api_mode: str = "", abort_on_summary_failure: bool = False, max_tokens: int | None = None,
-        model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
+        model_thresholds: dict[str, Any] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
         custom_providers: list | None = None,
+        context_window_profiles: list[dict[str, Any]] | None = None,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
@@ -2309,12 +2447,17 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # Per-model context_length overrides live in custom_providers; without them deferred
         # resolution falls back to the hardcoded family catalog (#83324).
         self.custom_providers = custom_providers or None
-        # Per-model overrides (longest substring match wins); floor applied on top.
-        self.model_thresholds = model_thresholds or {}
-        # Raw config value, before override/floor; fallback when switching to a model with no override.
+        self.model_thresholds = (
+            {str(key): value for key, value in model_thresholds.items()}
+            if isinstance(model_thresholds, dict)
+            else {}
+        )
+        self.context_window_profiles = (
+            list(context_window_profiles) if isinstance(context_window_profiles, list) else []
+        )
         self._config_threshold_percent = threshold_percent
-        self._base_threshold_percent = resolve_model_threshold(model, self.model_thresholds, threshold_percent, provider)
-        self.threshold_percent = self._base_threshold_percent
+        self._config_target_ratio = summary_target_ratio
+        self._apply_resolved_policy(0)
         # Effective trigger = min(ratio threshold, cap); re-applied in update_model().
         self.threshold_tokens_cap = self._coerce_threshold_tokens_cap(threshold_tokens_cap)
         self.protect_first_n, self.protect_last_n = protect_first_n, protect_last_n
@@ -2332,7 +2475,6 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # distinct reason + rearm snapshot instead of every iteration.
         self._last_reclaim_block_warn: "tuple[str, int] | None" = None
         self.min_tail_user_messages = min_tail_user_messages
-        self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
         # Usable input = context_length - max_tokens; only a positive int counts as a reservation.
         self.max_tokens = self._coerce_max_tokens(max_tokens)
@@ -2364,7 +2506,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # _config_threshold_percent (the raw config value snapshotted above), so switching small -> large
         # correctly drops back to the configured value. See #32221.
         self._config_context_length = config_context_length
-        self._configured_threshold_percent = self.threshold_percent
+        self._configured_threshold_percent = self._config_threshold_percent
         self._resolved_context_length: int | None = None
         self._threshold_tokens = self._tail_token_budget = self._max_summary_tokens = None
         self.compression_count = 0

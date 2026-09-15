@@ -109,31 +109,53 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
         raw = compression.get(key, default)
         with contextlib.suppress(TypeError, ValueError):
             setattr(cc, key, max(min_value, default if raw is None else int(raw)))
-    with contextlib.suppress(TypeError, ValueError):
-        ratio_raw = compression.get("target_ratio", _compressor_ctor_default("summary_target_ratio", 0.20))
-        cc.summary_target_ratio = max(0.10, min(float(ratio_raw), 0.80))
-    # Absent or invalid shape (agent_init treats both as empty): stale overrides must stop steering.
+    ratio_raw = compression.get(
+        "target_ratio", _compressor_ctor_default("summary_target_ratio", 0.20)
+    )
     raw_thresholds = compression.get("model_thresholds")
-    cc.model_thresholds = {
-        str(k): float(v) for k, v in raw_thresholds.items() if isinstance(v, (int, float)) and not isinstance(v, bool)
-    } if isinstance(raw_thresholds, dict) else {}
-    # threshold: present value wins; absence derives via the agent_init resolution (default + autoraise).
-    # resolve_model_threshold returns ``pct`` unchanged when model_thresholds is empty.
-    from agent.context_compressor import resolve_model_threshold
+    model_thresholds = (
+        {str(k): v for k, v in raw_thresholds.items()}
+        if isinstance(raw_thresholds, dict)
+        else {}
+    )
+    raw_profiles = compression.get("context_window_profiles")
+    context_window_profiles = list(raw_profiles) if isinstance(raw_profiles, list) else []
+    # threshold: present value wins; malformed/absent restores the construction-derived default.
     pct: float | None = None
     if "threshold" in compression:
+        from math import isfinite
+
         with contextlib.suppress(TypeError, ValueError):
-            pct = float(compression["threshold"])
+            candidate = float(compression["threshold"])
+            if isfinite(candidate):
+                pct = candidate
     if pct is None:
         pct = _derived_default_threshold_percent(agent, compression)
-    cc._config_threshold_percent = cc._configured_threshold_percent = pct
-    base = cc._base_threshold_percent = resolve_model_threshold(
-        getattr(agent, "model", "") or "", cc.model_thresholds, pct, getattr(agent, "provider", "") or "",
-    )
-    try:
-        cc.threshold_percent = cc._effective_threshold_percent(cc.context_length, base)
-    except Exception:
-        cc.threshold_percent = pct
+    update_policy = getattr(cc, "update_compression_policy", None)
+    if callable(update_policy):
+        update_policy(
+            threshold_percent=pct,
+            summary_target_ratio=ratio_raw,
+            model_thresholds=model_thresholds,
+            context_window_profiles=context_window_profiles,
+        )
+    else:
+        # Third-party engines retain the legacy scalar threshold contract.
+        cc.model_thresholds = {
+            key: float(value)
+            for key, value in model_thresholds.items()
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        }
+        with contextlib.suppress(TypeError, ValueError):
+            cc.summary_target_ratio = max(0.10, min(float(ratio_raw), 0.80))
+        from agent.context_compressor import resolve_model_threshold
+        cc._config_threshold_percent = pct
+        cc.threshold_percent = resolve_model_threshold(
+            getattr(agent, "model", "") or "",
+            cc.model_thresholds,
+            pct,
+            getattr(agent, "provider", "") or "",
+        )
     raw_ctx = model_cfg.get("context_length")
     if raw_ctx is not None:
         with contextlib.suppress(TypeError, ValueError):

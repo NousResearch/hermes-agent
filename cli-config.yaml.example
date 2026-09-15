@@ -1438,6 +1438,11 @@ platform_toolsets:
 #     Lower it below the server's session TTL for servers that expire idle
 #     sessions quickly (e.g. Unreal Engine editor MCP, ~15s), otherwise idle
 #     tool calls hit an expired session and pay a slow reconnect. Floored at 5s.
+#   lazy: register tools from the local schema cache without connecting at startup
+#     (default: false). Missing or expired schemas fall back to a live connection.
+#   lazy_allow_stale_schema: with lazy=true, allow an expired cached schema when
+#     the config fingerprint still matches (default: false). Use only when keeping
+#     tools visible during a temporarily offline server is preferable to TTL expiry.
 #
 # mcp_servers:
 #   time:

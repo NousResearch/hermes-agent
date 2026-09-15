@@ -23,6 +23,7 @@ export const todoListActive = (todos: readonly TodoItem[]) =>
   todos.some(t => t.status === 'pending' || t.status === 'in_progress')
 
 let todoProgress: Readonly<Record<string, string>> = {}
+let todoStoredSessionIds: Readonly<Record<string, string>> = {}
 
 /** Live "X/Y" per STORED session id, for the sidebar's inbox cards. The live
  *  map keys on runtime ids; this projects through the same storedSessionId +
@@ -130,6 +131,11 @@ function dropSessionTodos(sid: string, forgetRevision: boolean) {
 
 export function clearSessionTodos(sid: string) {
   dropSessionTodos(sid, true)
+
+  if (sid in todoStoredSessionIds) {
+    const { [sid]: _drop, ...rest } = todoStoredSessionIds
+    todoStoredSessionIds = rest
+  }
 }
 
 // Drop a still-active todo list (any pending/in_progress item) — used at turn
@@ -149,11 +155,40 @@ export function clearActiveSessionTodos(sid: string) {
 
 /** Apply a session.resume/activate or todo.updated full snapshot. Idle
  * sessions keep the existing stale-active guard; running sessions restore the
- * active plan because the backend has proved that turn is still live. */
-export function restoreSessionTodosFromSnapshot(sid: string, snapshot: unknown, running: boolean) {
+ * active plan because the backend has proved that turn is still live. A
+ * stored session id makes a resume/activate snapshot authoritative: rebinding
+ * a reused runtime id must discard the previous conversation's todos. */
+export function restoreSessionTodosFromSnapshot(
+  sid: string,
+  snapshot: unknown,
+  running: boolean,
+  storedSessionId?: string
+) {
+  if (!sid) {
+    return
+  }
+
+  if (storedSessionId) {
+    const previousStoredSessionId = todoStoredSessionIds[sid]
+
+    if (previousStoredSessionId && previousStoredSessionId !== storedSessionId) {
+      clearSessionTodos(sid)
+    }
+
+    todoStoredSessionIds = { ...todoStoredSessionIds, [sid]: storedSessionId }
+  }
+
   const todos = parseTodos(snapshot)
 
-  if (!sid || todos === null) {
+  if (todos === null) {
+    // session.resume/session.activate omits todo_state when the runtime has no
+    // todo store. That absence is authoritative for the newly bound session,
+    // unlike a malformed live todo.updated event which must fail open.
+    if (storedSessionId) {
+      clearSessionTodos(sid)
+      todoStoredSessionIds = { ...todoStoredSessionIds, [sid]: storedSessionId }
+    }
+
     return
   }
 
@@ -163,6 +198,14 @@ export function restoreSessionTodosFromSnapshot(sid: string, snapshot: unknown, 
   // real snapshot. Applying it would stamp watermark 0 and leave an empty
   // list in the map.
   if (todos.length === 0 && (revision == null || revision === 0)) {
+    return
+  }
+
+  if (todos.length === 0) {
+    if (acceptRevision(sid, revision)) {
+      dropSessionTodos(sid, false)
+    }
+
     return
   }
 

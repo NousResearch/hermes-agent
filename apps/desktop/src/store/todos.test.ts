@@ -135,6 +135,34 @@ describe('revisioned snapshots', () => {
     expect($todosBySession.get().s1?.[0]?.id).toBe('active')
   })
 
+  it('drops old todos and their revision when a runtime id is rebound to another stored session', () => {
+    restoreSessionTodosFromSnapshot('s1', { revision: 8, todos: [todo('old', 'completed')] }, false, 'session-a')
+
+    restoreSessionTodosFromSnapshot('s1', undefined, true, 'session-b')
+
+    expect($todosBySession.get().s1).toBeUndefined()
+    expect($todoRevisionsBySession.get().s1).toBeUndefined()
+  })
+
+  it('clears a prior list when an authoritative snapshot explicitly reports an empty list', () => {
+    restoreSessionTodosFromSnapshot('s1', { revision: 4, todos: [todo('old', 'completed')] }, false, 'session-a')
+
+    restoreSessionTodosFromSnapshot('s1', { revision: 5, todos: [] }, false, 'session-a')
+
+    expect($todosBySession.get().s1).toBeUndefined()
+    expect($todoRevisionsBySession.get().s1).toBe(5)
+  })
+
+  it('rehydrates a finished plan after restart without blocking a later live active update', () => {
+    restoreSessionTodosFromSnapshot('s1', { revision: 3, todos: [todo('done', 'completed')] }, false, 'session-a')
+
+    expect($todosBySession.get().s1?.[0]?.id).toBe('done')
+
+    restoreSessionTodosFromSnapshot('s1', { revision: 4, todos: [todo('live', 'in_progress')] }, true, 'session-a')
+
+    expect($todosBySession.get().s1?.[0]?.id).toBe('live')
+  })
+
   it('applies an unversioned update after a revisioned snapshot (tool.start merge)', () => {
     setSessionTodos('s1', [todo('a', 'pending'), todo('b', 'pending')], 5)
     setSessionTodos('s1', [todo('a', 'completed'), todo('b', 'pending')])

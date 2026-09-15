@@ -166,15 +166,23 @@ def _resolve_base_dir(
     if container_paths is None:
         container_paths = _uses_container_paths(task_id)
     # A backend's relative cwd is anchored to the process cwd once, here.
-    return _anchor(_host_text(root or os.getcwd(), container_paths), os.getcwd, container_paths)
+    result = _anchor(_host_text(root or os.getcwd(), container_paths), os.getcwd, container_paths)
+    if container_paths:
+        from tools.terminal_workspace import apple_workspace_path
+        result = apple_workspace_path(result, task_id)
+    return result
 
 
 def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
     """Resolve *filepath* against the task's absolute base directory
     (absolute inputs are returned resolved-but-unanchored)."""
     container_paths = _uses_container_paths(task_id)
-    return _anchor(_host_text(filepath, container_paths),
-                   lambda: _resolve_base_dir(task_id, container_paths=container_paths), container_paths)
+    result = _anchor(_host_text(filepath, container_paths),
+                     lambda: _resolve_base_dir(task_id, container_paths=container_paths), container_paths)
+    if container_paths:
+        from tools.terminal_workspace import apple_workspace_path
+        result = apple_workspace_path(result, task_id)
+    return result
 
 
 

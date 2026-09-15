@@ -62,6 +62,9 @@ _RESOURCE_KEYS = (("cpu", "container_cpu", 1), ("memory", "container_memory", 51
 _CONTAINER_KEYS = (
     ("container_cpu", 1), ("container_memory", 5120), ("container_disk", 51200),
     ("container_persistent", True), ("modal_mode", "auto"), ("vercel_runtime", ""),
+    ("apple_container_image", "python:3.11-slim-bookworm"),
+    ("apple_container_mount_cwd_to_workspace", False),
+    ("apple_container_volumes", []), ("apple_container_extra_args", []),
     ("docker_volumes", []), ("docker_mount_cwd_to_workspace", False), ("docker_forward_env", []),
     ("docker_env", {}), ("docker_run_as_host_user", False), ("docker_extra_args", []),
     ("docker_shm_size", "1g"), ("docker_network", True), ("docker_persist_across_processes", True),
@@ -205,11 +208,11 @@ def _build_ssh_env(*, cwd, timeout, ssh_config, probe_only=False, **_):
                            key_path=ssh_config.get("key", ""), cwd=cwd, timeout=timeout, probe_only=probe_only)
 
 
-def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, **_):
+def _build_plugin_env(*, env_type, image, cwd, timeout, cc, task_id, host_cwd=None, **_):
     provider = _get_plugin_env_provider(env_type)
     if provider is not None:
         env_obj = provider.create_environment(cwd=cwd, timeout=timeout, task_id=task_id, image=image,
-                                              container_config=cc)
+                                              container_config=cc, host_cwd=host_cwd)
         # Stamp the backend name so path-resolution and progress surfaces can identify plugin
         # backends without class-name sniffing. Test doubles may reject attributes.
         try:

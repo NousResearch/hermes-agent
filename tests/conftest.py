@@ -663,58 +663,6 @@ def _close_leaked_session_dbs():
             pass
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _pytest_memory_cap():
-    """Fail fast with MemoryError instead of eating the box (Linux only).
-
-    Applies ``RLIMIT_AS`` for the pytest process so any future in-process
-    accumulation (like the SessionDB leak this suite once had) dies with a
-    loud ``MemoryError`` at the cap instead of ballooning to 25 GB and
-    getting OOM-killed by the machine's sentinel.
-
-    Default cap: 12 GiB — generous headroom over the observed healthy peak
-    (< 1 GiB for the largest per-file runs, a few GiB for a full healthy
-    single-process run). Override with the ``HERMES_PYTEST_MEM_CAP`` env var:
-
-    * ``HERMES_PYTEST_MEM_CAP=0`` (or ``off``/``none``) disables the cap;
-    * any other integer is the cap in GiB (e.g. ``HERMES_PYTEST_MEM_CAP=4``).
-
-    This is a test-harness knob, not user-facing product config, hence an
-    env var rather than config.yaml. Skipped on non-Linux (RLIMIT_AS
-    semantics differ on macOS and don't exist on Windows) and when the
-    existing limit is already tighter.
-    """
-    if sys.platform != "linux":
-        yield
-        return
-    raw = os.environ.get("HERMES_PYTEST_MEM_CAP", "").strip().lower()
-    if raw in {"0", "off", "none", "disable", "disabled"}:
-        yield
-        return
-    cap_gib = 12
-    if raw:
-        try:
-            cap_gib = int(raw)
-        except ValueError:
-            cap_gib = 12
-        if cap_gib <= 0:
-            yield
-            return
-    try:
-        import resource
-
-        cap_bytes = cap_gib * 1024**3
-        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
-        new_soft = cap_bytes if soft in (resource.RLIM_INFINITY,) or soft > cap_bytes else soft
-        new_hard = hard if hard != resource.RLIM_INFINITY and hard < cap_bytes else cap_bytes
-        resource.setrlimit(resource.RLIMIT_AS, (new_soft, new_hard))
-    except Exception:
-        # Sandboxes/containers may refuse setrlimit; the cap is defensive,
-        # never a reason to fail the run.
-        pass
-    yield
-
-
 @pytest.fixture(autouse=True)
 def _neutralize_webbrowser(monkeypatch):
     """Record browser-open attempts instead of opening real browser windows."""

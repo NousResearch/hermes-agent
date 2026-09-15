@@ -35,12 +35,6 @@ Environment:
     HERMES_TEST_PATHS    Override discovery roots (colon-sep; on Windows
                          ';' also works and drive letters are handled;
                          default: 'tests')
-    HERMES_PYTEST_MEM_CAP
-                         Per-pytest-process RLIMIT_AS cap in GiB applied by
-                         tests/conftest.py (Linux only; default 12). Any
-                         runaway in-process accumulation dies with
-                         MemoryError instead of eating the box. Set to 0 /
-                         'off' to disable, or another integer to change it.
 
 Exit code: 0 if every file's pytest exited 0; 1 otherwise.
 """

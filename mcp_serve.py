@@ -9,6 +9,7 @@ channels_list. Client config: {"mcpServers": {"hermes": {"command": "hermes", "a
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -66,6 +67,18 @@ def _read_json(path: Path):
     except Exception as e:
         logger.debug("Failed to load %s: %s", path.name, e)
         return {}
+
+
+def _stable_message_id(message: dict) -> str:
+    """Content identity shared by compaction clones of one logical message."""
+    identity = {
+        key: message.get(key)
+        for key in ("role", "content", "timestamp", "tool_call_id", "tool_calls", "tool_name")
+    }
+    encoded = json.dumps(
+        identity, ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=str
+    ).encode("utf-8", "surrogatepass")
+    return f"msg_{hashlib.sha256(encoded).hexdigest()}"
 
 
 def _close_quietly(db, what: str) -> None:
@@ -523,7 +536,9 @@ class _ToolHandlers:
         """Read recent messages from a conversation.
 
         Returns the message history in chronological order with role, content,
-        and timestamp for each message.
+        timestamp, and a stable content-derived id for each logical message.
+        The storage row_id is included for diagnostics and may change after
+        transcript compaction.
 
         Args:
             session_key: The session key from conversations_list
@@ -533,13 +548,19 @@ class _ToolHandlers:
         all_messages, error = _conversation_messages(session_key)
         if error:
             return error
-        filtered = []
+        filtered_by_id = {}
         for msg in all_messages:
             role = msg.get("role", "")
             content = _extract_message_content(msg) if role in {"user", "assistant"} else ""
             if content:
-                filtered.append({"id": str(msg.get("id", "")), "role": role,
-                                 "content": content[:2000], "timestamp": msg.get("timestamp", "")})
+                stable_id = _stable_message_id(msg)
+                # Compaction and transcript rewrites can leave byte-identical storage generations.
+                # Keep one logical message while retaining the newest row locator for diagnostics.
+                filtered_by_id[stable_id] = {
+                    "id": stable_id, "row_id": str(msg.get("id", "")), "role": role,
+                    "content": content[:2000], "timestamp": msg.get("timestamp", ""),
+                }
+        filtered = list(filtered_by_id.values())
         messages = filtered[-limit:]
         return json.dumps({"session_key": session_key, "count": len(messages),
                            "total_in_session": len(filtered), "messages": messages}, indent=2)
@@ -552,12 +573,14 @@ class _ToolHandlers:
 
         Args:
             session_key: The session key from conversations_list
-            message_id: The message ID from messages_read
+            message_id: The stable message ID from messages_read. Legacy numeric
+                row IDs are also accepted while that storage row still exists.
         """
         all_messages, error = _conversation_messages(session_key)
         if error:
             return error
-        target_msg = next((m for m in all_messages if str(m.get("id", "")) == message_id), None)
+        target_msg = next((m for m in all_messages
+                           if _stable_message_id(m) == message_id or str(m.get("id", "")) == message_id), None)
         if not target_msg:
             return json.dumps({"error": f"Message not found: {message_id}"})
         attachments = _extract_attachments(target_msg)

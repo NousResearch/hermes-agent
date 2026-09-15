@@ -971,3 +971,130 @@ def test_sync_pipeline_cleans_temp_files(monkeypatch):
     assert created, "expected temp files to be created via mkstemp"
     leftovers = [p for p in created if os.path.exists(p)]
     assert not leftovers, f"temp files not cleaned: {leftovers}"
+
+
+# ── Command providers (tts.providers.<name>: {type: command}) ─────────────
+# The sync path already synthesizes a command provider one sentence at a time, so a streamer
+# changes WHEN the audio reaches the speaker, not the provider contract: the streaming surfaces
+# (stream_tts_to_speaker, /api/audio/speak-stream) get sentence-one playback instead of falling
+# back to whole-text synthesis. Real subprocesses and real files here — only the two external
+# audio binaries are shims (ffmpeg copies its input to stdout; the provider command echoes the
+# sentence it was handed), because the process plumbing is exactly what this code must get right.
+
+_FFMPEG_SHIM = """#!/bin/sh
+# Byte-for-byte stdout copy of the -i input. Decoding is ffmpeg's job, not this test's.
+src=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-i" ]; then src="$arg"; fi
+  prev="$arg"
+done
+exec cat "$src"
+"""
+
+_TTS_SHIM = """import pathlib, sys
+
+
+def flag(name):
+    return sys.argv[sys.argv.index(name) + 1]
+
+
+text = pathlib.Path(flag("--text-file")).read_text(encoding="utf-8")
+pathlib.Path(flag("--out")).write_bytes(("audio:" + text).encode())
+runs = pathlib.Path(flag("--runs"))
+line = f"{text}|speed={flag('--speed')}\\n"
+runs.write_text((runs.read_text(encoding="utf-8") if runs.exists() else "") + line, encoding="utf-8")
+"""
+
+
+@pytest.fixture
+def command_provider(tmp_path, monkeypatch):
+    """``(tts_config, runs_log)`` for a command provider wired to the fake TTS script + ffmpeg shim."""
+    shim = tmp_path / "ffmpeg"
+    shim.write_text(_FFMPEG_SHIM, encoding="utf-8")
+    shim.chmod(0o755)
+    monkeypatch.setenv("PATH", os.pathsep.join([str(tmp_path), os.environ.get("PATH", "")]))
+    script = tmp_path / "fake_tts.py"
+    script.write_text(_TTS_SHIM, encoding="utf-8")
+    runs = tmp_path / "runs.txt"
+    command = (f"{sys.executable} {script} --text-file {{text_path}} --out {{output_path}} "
+               f"--speed {{speed}} --runs {runs}")
+    config = {"provider": "sanotts", "providers": {
+        "sanotts": {"type": "command", "command": command, "format": "ogg", "speed": 1.25}}}
+    return config, runs
+
+
+def test_command_provider_resolves_to_a_streamer(command_provider):
+    config, _runs = command_provider
+    streamer = ts.resolve_streaming_provider(config)
+    assert isinstance(streamer, ts.CommandTTSStreamer)
+    assert streamer.provider_name == "sanotts"
+    assert (streamer.sample_rate, streamer.channels) == (24000, 1)
+
+
+def test_pinned_provider_name_reaches_the_command_streamer(command_provider):
+    # tts.streaming.provider names the streamer that must be used even when it is a command
+    # provider (the registry has no entry for it).
+    config, _runs = command_provider
+    config["provider"] = "edge"
+    config["streaming"] = {"provider": "sanotts"}
+    assert isinstance(ts.resolve_streaming_provider(config), ts.CommandTTSStreamer)
+
+
+def test_command_provider_opt_out_disables_streaming(command_provider):
+    config, _runs = command_provider
+    config["providers"]["sanotts"]["streaming"] = False
+    assert ts.resolve_streaming_provider(config) is None
+
+
+def test_top_level_section_opt_out_disables_streaming(command_provider):
+    config, _runs = command_provider
+    config["sanotts"] = {"streaming": False}
+    assert ts.resolve_streaming_provider(config) is None
+
+
+def test_no_ffmpeg_means_no_command_streamer(command_provider, tmp_path, monkeypatch):
+    config, _runs = command_provider
+    empty = tmp_path / "empty-bin"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    assert ts.resolve_streaming_provider(config) is None
+
+
+def test_stream_runs_the_provider_command_once_per_sentence(command_provider):
+    config, runs = command_provider
+    streamer = ts.resolve_streaming_provider(config)
+    assert streamer is not None
+    first = b"".join(streamer.stream("Hola, esta es la primera frase."))
+    second = b"".join(streamer.stream("Y esta es la segunda."))
+    assert first == b"audio:Hola, esta es la primera frase."
+    assert second == b"audio:Y esta es la segunda."
+    assert runs.read_text(encoding="utf-8").splitlines() == [
+        "Hola, esta es la primera frase.|speed=1.25",
+        "Y esta es la segunda.|speed=1.25",
+    ]
+
+
+def test_stream_caps_a_runaway_command_output(command_provider, monkeypatch):
+    config, _runs = command_provider
+    streamer = ts.resolve_streaming_provider(config)
+    assert streamer is not None
+    monkeypatch.setattr(ts, "_STREAM_SENTENCE_BYTE_CAP", 16)
+    total = sum(len(block) for block in streamer.stream("Una frase larga para truncar."))
+    assert total <= 16 + ts._PCM_BLOCK_BYTES  # capped: never the full sentence
+
+
+def test_stream_raises_when_the_command_writes_no_audio(command_provider):
+    config, _runs = command_provider
+    config["providers"]["sanotts"]["command"] = f"{sys.executable} -c pass"
+    streamer = ts.resolve_streaming_provider(config)
+    assert streamer is not None
+    with pytest.raises(RuntimeError):
+        list(streamer.stream("Hola."))
+
+
+def test_builtin_provider_never_grows_a_command_streamer(command_provider):
+    # A command provider section that the configured provider doesn't name is not picked up.
+    config, _runs = command_provider
+    config["provider"] = "edge"
+    assert ts.resolve_streaming_provider(config) is None

@@ -993,7 +993,12 @@ class TestLaunchdSupervisedBackends:
                                              restart_ok=False)
         respawn.assert_not_called()
         assert result["unrecovered"] == [9103]
-        assert "launchctl kickstart -k gui/501/ai.hermes.dashboard" in capsys.readouterr().out
+        assert "run: launchctl kickstart -k gui/501/ai.hermes.dashboard" in capsys.readouterr().out
+
+        # A LaunchDaemon lives in the system domain: kickstart needs root, so a non-root hint says sudo.
+        with patch("hermes_cli.dashboard_procs.os.geteuid", return_value=501, create=True):  # windows-footgun: ok — patch target string, create=True
+            self._run(9105, [("system", "ai.hermes.serve", list(self.ARGV), None)], restart_ok=False)
+        assert "run: sudo launchctl kickstart -k system/ai.hermes.serve" in capsys.readouterr().out
 
         other = ("gui/501", "ai.hermes.other", ["hermes", "dashboard", "--port", "8300"], 777)
         result, restart, respawn = self._run(9104, [other])

@@ -447,8 +447,11 @@ def _restart_killed_backends(
             if _dash._restart_launchd_job(domain, label, old_pid):
                 print(f"    ✓ restarted launchd job {target}")
             else:
+                # A LaunchDaemon (system domain) can only be kickstarted by root; the hint must
+                # be the command that works from the shell the operator is actually in.
+                sudo = "sudo " if domain.startswith("system") and os.geteuid() != 0 else ""  # windows-footgun: ok — launchd jobs exist only on macOS
                 failed_restarts.append(
-                    (target, f"launchd is not supervising a fresh process; run: launchctl kickstart -k {target}"))
+                    (target, f"launchd is not supervising a fresh process; run: {sudo}launchctl kickstart -k {target}"))
                 unrecovered.append(pid)
         elif pid in pid_cmdline:
             respawn_candidates.append((pid, pid_cmdline[pid], pid_home.get(pid)))

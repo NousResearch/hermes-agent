@@ -484,15 +484,8 @@ def _global_auth_file_path() -> Optional[Path]:
     """Global-root auth.json in profile mode; None when profile and global root are the same dir.
 
     Read-only fallback path, so no pytest seat belt here (it lives on ``_auth_file_path()``)."""
-    # Named profiles inherit root credentials by default for backward
-    # compatibility. Security-sensitive/service profiles can opt out in their
-    # own config.yaml:
-    #
-    #   auth:
-    #     global_fallback: false
-    #
-    # Keep this gate at the path resolver so every global read and OAuth
-    # refresh write-through observes the same boundary.
+    # ``auth.global_fallback: false`` opts a profile out of root credentials. The gate sits at the
+    # path resolver so every global read and OAuth refresh write-through sees the same boundary.
     try:
         resolved_config = load_config_readonly()
         auth_config = (

@@ -1280,8 +1280,17 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const leftToolsWidth = titlebarToolsWidthCss(clusters.left)
 
+  // Mirror the titlebar vars onto :root so body-level portals (the centered
+  // titleBar.center slot) resolve them outside this subtree.
+  useEffect(() => {
+    const root = document.documentElement
+    root.style.setProperty('--titlebar-controls-left', `${controlsPos.left}px`)
+    root.style.setProperty('--titlebar-controls-top', `${controlsPos.top}px`)
+    root.style.setProperty('--titlebar-controls-y-nudge', titlebarControlsYNudge(titlebarChrome))
+  }, [controlsPos.left, controlsPos.top, titlebarChrome])
+
   return (
-    <ContribWiringContext.Provider value={api}>
+  <ContribWiringContext.Provider value={api}>
       <div
         className="contents"
         style={

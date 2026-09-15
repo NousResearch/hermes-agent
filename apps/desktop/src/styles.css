@@ -3580,3 +3580,13 @@ html:has([data-hud-shell]) [data-slot='popover-content'] {
 [data-hud-shell] [data-slot='composer-bounds'] *::-webkit-scrollbar {
   display: none;
 }
+
+/* Centered titlebar chrome (titleBar.center slot, e.g. the kanban board
+   switcher) sits over the pane-header drag strip. A drag strip keeps
+   swallowing real clicks even through `pointer-events: none`, and a no-drag
+   on the container alone does not subtract its transparent descendants from
+   the region — opt the whole subtree out (#107676, #110070). */
+[data-titlebar-cluster='center'],
+[data-titlebar-cluster='center'] * {
+  -webkit-app-region: no-drag;
+}

@@ -1,0 +1,60 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: patsnap
+description: >-
+  Patsnap patent & scientific literature search — WIPO/EPO/USPTO/CNIPA/JPO/KIPO
+  patents plus PubMed/arXiv/Nature literature, natural-language and structured
+  search (stdio bridge to Patsnap's hosted MCP).
+source: https://github.com/patsnap/patent-literature-search-mcp
+
+# The repo ships a stdio bridge (Node >=20, package.json is "private": true —
+# no npm artifact) that proxies to Patsnap's hosted Streamable-HTTP MCP at
+# connect.patsnap.com, injecting the API key from the environment. Using the
+# bridge instead of transport:http keeps the key out of the URL and in
+# ~/.hermes/.env where it belongs.
+transport:
+  type: stdio
+  command: "node"
+  args:
+    - "${INSTALL_DIR}/src/index.js"
+
+install:
+  type: git
+  url: https://github.com/patsnap/patent-literature-search-mcp.git
+  # Pinned per catalog dependency policy: full commit SHA, ≥2 weeks old at
+  # pin time. This SHA is the "Release v1.2.0" commit (2026-07-29).
+  # Bumping the pin is a PR to this manifest.
+  ref: c4303c28685009fb16c000f47c40493ac867998b
+  bootstrap:
+    - "npm ci --omit=dev"
+
+auth:
+  type: api_key
+  env:
+    - name: PATSNAP_API_KEY
+      prompt: "Patsnap Open Platform API key (create at https://open.patsnap.com)"
+      required: true
+      secret: true
+
+# The bridge exposes exactly 2 compact tools (~3.2 KB combined schema —
+# negligible per-call token cost). Both are read-only searches; nothing to
+# prune.
+tools:
+  default_enabled:
+    - patsnap_search
+    - patsnap_fetch
+
+post_install: |
+  Requires Node.js >= 20 on PATH.
+
+  Get an API key from the Patsnap Open Platform (https://open.patsnap.com) —
+  free tier available; commercial quotas apply to heavy use.
+
+  Both tools are read-only: patsnap_search (natural-language / structured
+  patent + literature search) and patsnap_fetch (retrieve a full record by
+  ID). All queries are sent to Patsnap's hosted service at
+  connect.patsnap.com.
+
+  Start a new Hermes session to load the tools.

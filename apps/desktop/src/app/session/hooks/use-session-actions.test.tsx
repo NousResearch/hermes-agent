@@ -2581,18 +2581,15 @@ describe('resumeSession warm-cache mapping integrity', () => {
             })
       )
       vi.mocked(requestGatewayForAgent).mockImplementation(async (_connection, _profile, _method, params) =>
-        params?.session_id === rowA.id
+        paramsSessionId(params) === rowA.id
           ? resumedA.promise
-          : {
+          : sessionResumeResult({
               session_id: 'rt-background-B',
               resumed: rowB.id,
               session_key: rowB.id,
-              messages: [],
               messages_omitted: true,
-              message_count: 1,
-              running: false,
-              info: {}
-            }
+              message_count: 1
+            })
       )
       let resume!: Parameters<Parameters<typeof ResumeHarness>[0]['onReady']>[0]
       render(
@@ -2712,16 +2709,13 @@ describe('resumeSession warm-cache mapping integrity', () => {
         await waitFor(() => expect(JSON.stringify($messages.get())).toContain('fresh persisted history'))
         expect($messages.get()).not.toBe(provisional)
         const authoritative = $messages.get()
-        resumed.resolve({
+        resumed.resolve(sessionResumeResult({
           session_id: 'runtime-first-paint',
           resumed: 'stored-first-paint',
           session_key: 'stored-first-paint',
-          messages: [],
           messages_omitted: true,
-          message_count: 1,
-          running: false,
-          info: {}
-        })
+          message_count: 1
+        }))
         await pending
         expect($messages.get()).toBe(authoritative)
         expect(JSON.stringify($messages.get())).not.toContain('cached display history')
@@ -4350,18 +4344,15 @@ describe('resumeSession warm-cache mapping integrity', () => {
 
     vi.mocked(getLatestSessionMessages).mockReturnValue(persistedAuthority.promise as never)
 
-    const requestGateway = vi.fn(async (method: string, _params?: Record<string, unknown>) => {
+    const requestGateway = vi.fn(async (method: string, _params?: RoutableParams) => {
       if (method === 'session.activate') {
-        return {
-          info: {},
+        return sessionResumeResult({
           message_count: 2,
-          messages: [],
           messages_omitted: true,
           resumed: 'stored-1',
-          running: false,
           session_id: 'runtime-warm',
           session_key: 'stored-1'
-        } as never
+        }) as never
       }
 
       return {} as never

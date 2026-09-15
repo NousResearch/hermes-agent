@@ -199,19 +199,15 @@ class TestConversationLoopWiring:
 
         import agent.turn_overflow as loop  # 413 handler lives in recover_from_overflow
 
-        src = inspect.getsource(loop)
+        src = inspect.getsource(loop._recover_payload_too_large)
         # The byte measurement is taken before and after the 413 compression
         # pass and drives the progress decision.
         assert "original_bytes = serialized_messages_bytes(messages)" in src
         assert "new_bytes = serialized_messages_bytes(messages)" in src
         assert "new_bytes < original_bytes * 0.95" in src
-        # The old token-scored expression is gone from the 413 branch's
-        # decision. Isolate the 413 handler region: from its status line to
-        # its terminal error. (Token scoring survives in the
-        # context-overflow branches, which ARE token-budget errors.)
-        start = src.index("Request payload too large (413) — compression attempt")
-        end = src.index("Payload too large and cannot compress further")
-        branch = src[start:end]
-        assert "new_tokens < original_tokens * 0.95" not in branch
-        assert "original_bytes = serialized_messages_bytes" in branch
-        assert "new_bytes = serialized_messages_bytes" in branch
+        # The old token-scored expression is gone from this handler. Inspect
+        # the function directly so localizing user-facing status text cannot
+        # invalidate this source-level contract.
+        assert "new_tokens < original_tokens * 0.95" not in src
+        assert "original_bytes = serialized_messages_bytes" in src
+        assert "new_bytes = serialized_messages_bytes" in src

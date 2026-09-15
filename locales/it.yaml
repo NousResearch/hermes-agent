@@ -98,6 +98,20 @@ gateway:
     out_of_range:          "_(La pagina richiesta {requested} è fuori intervallo, mostrando la pagina {page}.)_"
 
   compress:
+    status_compacting:     "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
+    status_compacted:      "✓ Context compaction complete — continuing turn..."
+    status_pre_api:        "📦 Pre-API compression: ~{tokens} tokens near the context/output limit. Compacting before the next model call."
+    status_preflight:      "📦 Preflight compression: ~{tokens} tokens >= {threshold} threshold. This may take a moment."
+    status_idle:           "💤 Resumed after {idle_seconds}s idle — compacting ~{tokens} tokens before continuing."
+    status_retry_too_large: "🗜️ Context too large (~{tokens} tokens) — compressing ({attempt}/{cap})..."
+    status_retry_messages: "🗜️ Compressed {before} → {after} messages, retrying..."
+    status_retry_tokens:   "🗜️ Compressed ~{before} → ~{after} tokens, retrying..."
+    status_retry_reduced:  "🗜️ Context reduced to {new_ctx} tokens (was {old_ctx}), retrying..."
+    status_retry_payload_too_large: "⚠️  Request payload too large (413) — compression attempt {attempt}/{cap}..."
+    status_retry_retained_vision: "📐 Compression could not reduce the request further — removed retained vision payloads and retrying..."
+
+    status_heartbeat: "🗜️ Compacting context — still summarizing earlier conversation so I can continue..."
+    status_retry_bytes: "🗜️ Compressed {before} → {after} payload bytes, retrying..."
     not_enough:            "Conversazione insufficiente da comprimere (servono almeno 4 messaggi)."
     no_provider:           "Nessun provider configurato — impossibile comprimere."
     nothing_to_do:         "Niente da comprimere per ora (la trascrizione è ancora tutta contesto protetto)."

@@ -14,7 +14,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PLATFORMS_DIR = PROJECT_ROOT / "plugins" / "platforms"
 
 
@@ -33,6 +33,15 @@ def _discover_platform_plugins() -> list[str]:
 _PLATFORM_NAMES = _discover_platform_plugins()
 
 
+def test_platform_discovery_is_not_empty():
+    """Source-checkout interface tests must never silently skip all platforms."""
+    assert PLATFORMS_DIR.is_dir(), f"platform plugin dir missing: {PLATFORMS_DIR}"
+    assert _PLATFORM_NAMES, (
+        f"no platform plugins discovered under {PLATFORMS_DIR} — "
+        "the interface-compliance tests would all silently skip"
+    )
+
+
 @pytest.fixture
 def clean_registry():
     """Yield with a clean platform registry, restoring state afterwards."""
@@ -48,12 +57,14 @@ def clean_registry():
 class _MockPluginContext:
     """Minimal mock of hermes_cli.plugins.PluginContext.
 
-    Only implements register_platform so we can exercise the plugin's
-    register() entrypoint without importing the real plugin system.
+    Records platform, hook and CLI registrations without importing the real
+    plugin system or executing the registered callbacks.
     """
 
     def __init__(self):
         self.registered_names: list[str] = []
+        self.registered_hooks: list[str] = []
+        self.registered_cli_commands: list[str] = []
 
     def register_platform(
         self,
@@ -75,6 +86,19 @@ class _MockPluginContext:
         )
         platform_registry.register(entry)
         self.registered_names.append(name)
+
+    def register_hook(self, hook_name: str, callback: Any) -> None:
+        self.registered_hooks.append(hook_name)
+
+    def register_cli_command(
+        self,
+        name: str,
+        help: str,
+        setup_fn: Any,
+        handler_fn: Any = None,
+        description: str = "",
+    ) -> None:
+        self.registered_cli_commands.append(name)
 
 
 def _import_platform_module(name: str) -> ModuleType:

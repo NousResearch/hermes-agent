@@ -326,23 +326,72 @@ async def test_standalone_send_defaults_to_local_daemon(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_health_monitor_does_not_reconnect_quiet_healthy_ws(monkeypatch):
+async def test_health_monitor_keeps_application_idle_transport_that_pongs(monkeypatch):
     from gateway.config import PlatformConfig
+
+    class ResponsiveWs:
+        def __init__(self):
+            self.ping_calls = 0
+            self.close_calls = 0
+
+        async def ping(self):
+            self.ping_calls += 1
+            pong = asyncio.get_running_loop().create_future()
+            pong.set_result(None)
+            return pong
+
+        async def close(self, **kwargs):
+            self.close_calls += 1
+
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
     adapter = SimplexAdapter(cfg)
     adapter._running = True
     adapter._last_ws_activity = 0
-    adapter._ws = AsyncMock()
+    adapter._ws = ResponsiveWs()
 
     monkeypatch.setattr(_simplex, "HEALTH_CHECK_INTERVAL", 0.01)
     monkeypatch.setattr(_simplex, "HEALTH_CHECK_STALE_THRESHOLD", 0.01)
+    monkeypatch.setattr(_simplex, "HEALTH_CHECK_PING_TIMEOUT", 0.01)
 
     task = asyncio.create_task(adapter._health_monitor())
     await asyncio.sleep(0.03)
     adapter._running = False
     await asyncio.wait_for(task, timeout=1)
 
-    adapter._ws.close.assert_not_called()
+    assert adapter._ws.ping_calls > 0
+    assert adapter._ws.close_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_health_monitor_closes_stale_transport_when_ping_times_out(monkeypatch):
+    from gateway.config import PlatformConfig
+
+    class SilentWs:
+        def __init__(self):
+            self.close_calls = 0
+
+        async def ping(self):
+            return asyncio.get_running_loop().create_future()
+
+        async def close(self, **kwargs):
+            self.close_calls += 1
+
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+    adapter._running = True
+    adapter._last_ws_activity = 0
+    adapter._ws = SilentWs()
+
+    monkeypatch.setattr(_simplex, "HEALTH_CHECK_INTERVAL", 0.01)
+    monkeypatch.setattr(_simplex, "HEALTH_CHECK_STALE_THRESHOLD", 0.01)
+    monkeypatch.setattr(_simplex, "HEALTH_CHECK_PING_TIMEOUT", 0.01)
+
+    task = asyncio.create_task(adapter._health_monitor())
+    await asyncio.sleep(0.04)
+    adapter._running = False
+    await asyncio.wait_for(task, timeout=1)
+
+    assert adapter._ws.close_calls == 1
 
 
 

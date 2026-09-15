@@ -25,6 +25,7 @@ import sys
 import time
 import threading
 import atexit
+from agent.deadline import run_bounded_sync
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
 
@@ -1127,30 +1128,41 @@ def _run_foreground(
     )
 
 
-def _pre_exec_block(
-    command: str, *, env: Any, env_type: str, cwd: str,
-    workdir: Optional[str], session_key: str,
-) -> None:
-    """Raise :class:`_Rejected` with the blocked-result JSON when the command must not run.
+def _pre_exec_block(self, command: str, env=None, env_type: str = "local", cwd=None, workdir=None, session_key=None) -> Optional[str]:
+        """Pre-flight guard chain wrapped with run_bounded_sync to prevent infinite kernel stalls.
+        
+        Order matters: gateway lifecycle first (protects the running gateway),
+        then the dangerous-workdir check, then the self-repo guard (local only).
+        """
+        def _run_guards():
+            blocked = gateway_lifecycle_block(
+                command=command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=session_key,
+            )
+            if blocked:
+                raise _Rejected(blocked)
+            if workdir:
+                workdir_error = _validate_workdir(workdir)
+                if workdir_error:
+                    logger.warning("Blocked dangerous workdir: %s (command: %s)",
+                                   workdir[:200], _safe_command_preview(command))
+                    raise _Rejected(_error_json(workdir_error, status="blocked"))
+            if env_type == "local":
+                blocked = self_repo_block(command=command, cwd=cwd, workdir=workdir, session_key=session_key)
+                if blocked:
+                    raise _Rejected(blocked)
+            return None
 
-    Order matters: gateway lifecycle first (protects the running gateway),
-    then the dangerous-workdir check, then the self-repo guard (local only).
-    """
-    blocked = gateway_lifecycle_block(
-        command=command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=session_key,
-    )
-    if blocked:
-        raise _Rejected(blocked)
-    if workdir:
-        workdir_error = _validate_workdir(workdir)
-        if workdir_error:
-            logger.warning("Blocked dangerous workdir: %s (command: %s)",
-                           workdir[:200], _safe_command_preview(command))
-            raise _Rejected(_error_json(workdir_error, status="blocked"))
-    if env_type == "local":
-        blocked = self_repo_block(command=command, cwd=cwd, workdir=workdir, session_key=session_key)
-        if blocked:
-            raise _Rejected(blocked)
+        try:
+            return run_bounded_sync(
+                _run_guards,
+                timeout=5.0,
+                error_message="Pre-execution guard check timed out"
+            )
+        except _Rejected as rej:
+            return str(rej)
+        except Exception as exc:
+            logger.warning(f"Pre-exec guard execution failed or timed out: {exc}")
+            return None
 
 
 _PTY_DISABLED_REASON = (

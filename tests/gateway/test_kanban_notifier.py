@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+import time
 from pathlib import Path
 
 
@@ -80,6 +81,47 @@ def _unseen_terminal_events(tid):
             kinds=["completed", "blocked", "gave_up", "crashed", "timed_out"],
         )
         return events
+    finally:
+        conn.close()
+
+
+def test_notifier_gc_purges_week_old_done_subscription_by_default(tmp_path, monkeypatch):
+    """Default notifier GC bounds never-archived done-task subscriptions.
+
+    Done remains reversible for short review/controller flows, but a task that
+    has been quiet in ``done`` for over a week is treated as settled by the
+    notifier and its subscription is purged before it can wake or notify a stale
+    origin session.
+    """
+    db_path = tmp_path / "done-sub-gc-default.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    old = int(time.time()) - 8 * 86400
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="stale done", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.complete_task(conn, tid, summary="done a while ago")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET created_at = ?, completed_at = ? WHERE id = ?",
+                (old, old, tid),
+            )
+            conn.execute(
+                "UPDATE task_events SET created_at = ? WHERE task_id = ?",
+                (old, tid),
+            )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert adapter.sent == []
+    conn = kbc.connect()
+    try:
+        assert kbn.list_notify_subs(conn, tid) == []
     finally:
         conn.close()
 

@@ -17,6 +17,8 @@ _BREAKAWAY_MARKER = "_HERMES_GATEWAY_BREAKAWAY"
 
 
 
+
+
 def test_schtasks_encoding_falls_back_to_utf8(monkeypatch):
     """A broken/empty locale must not leave us without a decoder (issue #38172)."""
 
@@ -333,11 +335,22 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
     assert "pythonw.exe" in content
     assert "hermes_cli.main" in content
     assert "gateway run" in content
-    assert ", 0, False" in content  # hidden window, detached/async
+    assert "exit_code = sh.Run(" in content
+    assert ", 0, True)" in content  # hidden window; task tracks the gateway
+    assert "WScript.Quit exit_code" in content
     for var in ("HERMES_HOME", "PYTHONIOENCODING", "HERMES_GATEWAY_DETACHED", "VIRTUAL_ENV", "PYTHONPATH"):
         assert var in content
     assert "--profile" in content and "work" in content
     assert content.endswith("\r\n")
+
+
+def test_startup_launcher_remains_detached():
+    content = gateway_windows._build_startup_launcher(
+        Path(r"C:\Hermes\Hermes_Gateway_alice.cmd")
+    )
+
+    run_line = next(line for line in content.splitlines() if "sh.Run" in line)
+    assert run_line.endswith(", 0, False")
 
 
 
@@ -362,11 +375,6 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
 # the gateway's marker-watcher thread to drain + exit cleanly, then escalates
 # to taskkill if drain times out.
 # ---------------------------------------------------------------------------
-
-
-
-
-
 
 
 

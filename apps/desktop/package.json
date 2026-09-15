@@ -1,6 +1,6 @@
 {
   "name": "hermes",
-  "productName": "Hermes",
+  "productName": "Hermes Work",
   "private": true,
   "version": "0.17.0",
   "description": "Native desktop shell for Hermes Agent.",
@@ -188,7 +188,7 @@
   "build": {
     "electronVersion": "40.10.2",
     "appId": "com.nousresearch.hermes",
-    "productName": "Hermes",
+    "productName": "Hermes Work",
     "executableName": "Hermes",
     "protocols": [
       {
@@ -234,9 +234,9 @@
       "entitlements": "electron/entitlements.mac.plist",
       "entitlementsInherit": "electron/entitlements.mac.inherit.plist",
       "extendInfo": {
-        "CFBundleDisplayName": "Hermes",
+        "CFBundleDisplayName": "Hermes Work",
         "CFBundleExecutable": "Hermes",
-        "CFBundleName": "Hermes",
+        "CFBundleName": "Hermes Work",
         "NSAudioCaptureUsageDescription": "Hermes uses audio capture for voice conversations.",
         "NSCameraUsageDescription": "Hermes uses the camera when a plugin or feature you enable requests it.",
         "NSMicrophoneUsageDescription": "Hermes uses the microphone for voice input and voice conversations."
@@ -249,7 +249,7 @@
       ]
     },
     "dmg": {
-      "title": "Install Hermes",
+      "title": "Install Hermes Work",
       "backgroundColor": "#f5f5f7",
       "iconSize": 96,
       "window": {
@@ -292,8 +292,8 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "perMachine": false,
-      "shortcutName": "Hermes",
-      "uninstallDisplayName": "Hermes",
+      "shortcutName": "Hermes Work",
+      "uninstallDisplayName": "Hermes Work",
       "warningsAsErrors": false
     }
   }

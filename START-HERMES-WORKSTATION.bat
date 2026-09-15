@@ -1,23 +1,23 @@
 @echo off
 setlocal EnableExtensions
 cd /d "%~dp0"
-title Hermes Workstation - Dogfood Launcher
+title Hermes Work - Dogfood Launcher
 
 echo ============================================================
-echo   HERMES WORKSTATION - ONE-CLICK DOGFOOD
+echo   HERMES WORK - ONE-CLICK DOGFOOD
 echo ============================================================
 echo.
-echo [1/3] Installing and validating Hermes Workstation...
+echo [1/3] Installing and validating Hermes Work...
 call "%~dp0workstation\install.cmd"
 if errorlevel 1 goto :install_failed
 
 echo.
-echo [2/3] Running Hermes Workstation Doctor...
+echo [2/3] Running Hermes Work Doctor...
 call "%~dp0workstation\doctor.cmd" -Strict
 if errorlevel 1 goto :doctor_failed
 
 echo.
-echo [3/3] Starting Hermes Workstation...
+echo [3/3] Starting Hermes Work...
 findstr /c:"[switch]$SkipInstall" "%~dp0workstation\start.ps1" >nul 2>&1
 if errorlevel 1 (
   rem Backwards-compatible fallback for a checkout older than the one-click launcher support.
@@ -47,7 +47,7 @@ exit /b %HERMES_EXIT%
 
 :start_failed
 echo.
-echo [FAIL] Hermes Workstation exited with code %HERMES_EXIT%.
+echo [FAIL] Hermes Work exited with code %HERMES_EXIT%.
 echo Review the output above, then double-click this file to retry.
 pause
 exit /b %HERMES_EXIT%

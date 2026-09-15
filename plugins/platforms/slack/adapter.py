@@ -955,6 +955,16 @@ def _is_transient_transport_error(e: BaseException) -> bool:
         and not is_permanent_tls_error)
 
 
+def _slack_api_error_code(e: BaseException) -> Optional[str]:
+    """Return Slack's API error code when an SDK response exposes one."""
+    response = getattr(e, "response", None)
+    data = getattr(response, "data", None)
+    if not isinstance(data, dict):
+        return None
+    error = data.get("error")
+    return str(error) if error else None
+
+
 def _extra_or_env_flag_getter(key: str, env_var: str, *, strip: bool = False) -> Callable[..., bool]:
     """Method factory: ``self._extra_or_env_flag(key, env_var, strip=strip)``."""
 
@@ -2347,9 +2357,15 @@ class SlackAdapter(BasePlatformAdapter):
                     message_id, chat_id, e, exc_info=True)
                 return SendResult(
                     success=False, error=str(e), retryable=True, error_kind="transient")
-            logger.error(
-                "[Slack] Failed to edit message %s in channel %s: %s", message_id, chat_id, e,
-                exc_info=True)
+            api_error = _slack_api_error_code(e)
+            if api_error:
+                logger.error(
+                    "[Slack] API chat.update failure on message %s in channel %s: api_error=%s: %s",
+                    message_id, chat_id, api_error, e, exc_info=True)
+            else:
+                logger.error(
+                    "[Slack] Failed to edit message %s in channel %s: %s", message_id, chat_id, e,
+                    exc_info=True)
             return SendResult(success=False, error=str(e))
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:

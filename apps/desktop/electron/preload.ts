@@ -324,6 +324,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   resolveFavicon: url => ipcRenderer.invoke('hermes:resolveFavicon', url),
   sanitizeWorkspaceCwd: cwd => ipcRenderer.invoke('hermes:workspace:sanitize', cwd),
   settings: {
+    getQuitConfirmation: () => ipcRenderer.invoke('hermes:setting:quitConfirmation:get'),
+    setQuitConfirmation: mode => ipcRenderer.invoke('hermes:setting:quitConfirmation:set', mode),
     getDefaultProjectDir: () => ipcRenderer.invoke('hermes:setting:defaultProjectDir:get'),
     setDefaultProjectDir: dir => ipcRenderer.invoke('hermes:setting:defaultProjectDir:set', dir),
     pickDefaultProjectDir: () => ipcRenderer.invoke('hermes:setting:defaultProjectDir:pick')

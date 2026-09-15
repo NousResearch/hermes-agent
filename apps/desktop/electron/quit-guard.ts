@@ -1,10 +1,15 @@
 // Quitting with a turn in flight kills the backend mid-tool-call: the work is
 // lost, and anything the agent had half-written to disk stays half-written.
-// Renderers publish what they're running; the main process asks before it lets
-// that go. The decision + copy live here (pure, testable) so main.ts only owns
-// the IPC and the dialog call.
+// Renderers publish what they're running; the native quit confirmation applies
+// the user's preference. The decision + copy live here, separate from lifecycle.
 
 const MAX_LISTED = 4
+
+export type QuitConfirmationMode = 'always' | 'never' | 'while-working'
+
+export function isQuitConfirmationMode(value: unknown): value is QuitConfirmationMode {
+  return value === 'always' || value === 'never' || value === 'while-working'
+}
 
 export interface ActiveWork {
   /** Titles of sessions running a turn. Untitled sessions contribute a count only. */
@@ -65,9 +70,20 @@ export interface QuitPrompt {
  * are the app replacing itself, not the user walking away, and a modal there
  * would strand the detached script waiting on a PID that never exits.
  */
-export function quitPromptFor(work: ActiveWork, quittingForHandoff: boolean): null | QuitPrompt {
-  if (quittingForHandoff || work.count < 1) {
+export function quitPromptFor(
+  work: ActiveWork,
+  quittingForHandoff: boolean,
+  mode: QuitConfirmationMode = 'while-working'
+): null | QuitPrompt {
+  if (quittingForHandoff || mode === 'never' || (mode === 'while-working' && work.count < 1)) {
     return null
+  }
+
+  if (work.count < 1) {
+    return {
+      detail: 'Local models and prompt caches may be unloaded.',
+      message: 'Quit Hermes?'
+    }
   }
 
   const listed = work.titles.slice(0, MAX_LISTED)

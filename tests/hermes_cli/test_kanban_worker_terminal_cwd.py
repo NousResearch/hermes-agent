@@ -32,7 +32,7 @@ def _make_task(kb, *, assignee: str = "w"):
         workspace_path=None,
         claim_lock="lock",
         claim_expires=None,
-        tenant=None,
+        tenant="business-a",
         current_run_id=1,
     )
 
@@ -77,5 +77,7 @@ def test_terminal_cwd_pinned_to_workspace(monkeypatch, tmp_path):
     # The subprocess cwd and TERMINAL_CWD must agree — both anchor the workspace.
     assert captured["cwd"] == str(workspace)
     assert captured["env"]["HERMES_KANBAN_WORKSPACE"] == str(workspace)
-
+    assert captured["env"]["HERMES_KANBAN_RUN_ID"] == "1"
+    assert captured["env"]["HERMES_KANBAN_CLAIM_LOCK"] == "lock"
+    assert captured["env"]["HERMES_KANBAN_TENANT"] == "business-a"
 

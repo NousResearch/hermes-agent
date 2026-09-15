@@ -18,14 +18,23 @@ ROOT = Path(__file__).resolve().parents[2]
 def _worker_board(tmp_path, monkeypatch):
     db = tmp_path / "assigned.db"
     conn = connect(db)
-    own, foreign = [kb.create_task(conn, title=title) for title in ("own", "foreign")]
+    own, foreign = [
+        kb.create_task(
+            conn, title=title, tenant="business-a", workspace_kind="dir",
+            workspace_path=str(tmp_path / f"workspace-{title}"),
+        )
+        for title in ("own", "foreign")
+    ]
     for tid in (own, foreign):
         kb.claim_task(conn, tid)
     task = kb.get_task(conn, own)
     for key, value in {
         "HERMES_KANBAN_DB": str(db), "HERMES_KANBAN_BOARD": "default",
         "HERMES_KANBAN_TASK": own, "HERMES_KANBAN_RUN_ID": str(task.current_run_id),
-        "HERMES_KANBAN_CLAIM_LOCK": task.claim_lock, "HOME": str(tmp_path),
+        "HERMES_KANBAN_CLAIM_LOCK": task.claim_lock,
+        "HERMES_KANBAN_TENANT": task.tenant,
+        "HERMES_KANBAN_WORKSPACE": task.workspace_path,
+        "HOME": str(tmp_path),
     }.items():
         monkeypatch.setenv(key, value)
     monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)

@@ -95,7 +95,8 @@ case "$MODE" in
     # Pure-decision matrix for the linux relaunch gate. Builds a fake
     # checkout layout under /tmp; --self-test-gate prints the decision and
     # exits without running an update.
-    G="/tmp/hermes-gate-test.$$"
+    G="$(mktemp -d "${TMPDIR:-/tmp}/hermes-gate-test.XXXXXXXX")"
+    trap 'rm -rf "$G"' EXIT
     UNPACKED="$G/hermes-agent/apps/desktop/release/linux-unpacked"
     mkdir -p "$UNPACKED"
     touch "$UNPACKED/hermes" && chmod +x "$UNPACKED/hermes"
@@ -112,23 +113,46 @@ case "$MODE" in
     expect "no chrome-sandbox (namespace)"      relaunch "$(decide --relaunch-target "$UNPACKED/hermes")"
 
     touch "$UNPACKED/chrome-sandbox"
-    expect "sandbox not root/setuid"            manual   "$(decide --relaunch-target "$UNPACKED/hermes")"
+    userns_expect=manual
+    if command -v unshare >/dev/null 2>&1 && unshare --user --map-root-user true 2>/dev/null; then
+      userns_expect=relaunch
+    fi
+    expect "sandbox not root/setuid"            "$userns_expect" "$(decide --relaunch-target "$UNPACKED/hermes")"
     expect "opt-out: --sandbox-fallback"        relaunch "$(decide --relaunch-target "$UNPACKED/hermes" --sandbox-fallback)"
     expect "opt-out: --no-sandbox launch arg"   relaunch "$(decide --relaunch-target "$UNPACKED/hermes" -- --no-sandbox)"
     expect "opt-out: ELECTRON_DISABLE_SANDBOX"  relaunch "$(ELECTRON_DISABLE_SANDBOX=1 decide --relaunch-target "$UNPACKED/hermes")"
 
     # Result JSON must survive hostile strings (git allows `"` in branch
     # names; messages carry arbitrary text) -- parse it back with python.
-    QHOME="$G/qhome"; mkdir -p "$QHOME/hermes-agent"
-    bash "$SCRIPT_DIR/posix.sh" --no-ui --no-marker-cleanup --desktop-pid 0 \
-      --install-root "$QHOME/hermes-agent" --branch 'evil"branch\n$(x)' >/dev/null 2>&1 || true
-    if python3 -c "import json,sys; d=json.load(open('$QHOME/.hermes-update-result.json')); sys.exit(0 if d['branch']=='evil\"branch\\\\n\$(x)' and d['ok']==False else 1)"; then
+    QHOME="$G/qhome"; RESULT="$QHOME/.hermes-update-result.json"
+    NOTIFY_PROBE="$QHOME/notify-called"; PROBE_BIN="$QHOME/bin"
+    mkdir -p "$QHOME/hermes-agent" "$PROBE_BIN"
+    for notifier in notify-send zenity kdialog; do
+      printf '#!/bin/sh\nprintf called > "$HERMES_NOTIFY_PROBE"\n' > "$PROBE_BIN/$notifier"
+      chmod +x "$PROBE_BIN/$notifier"
+    done
+    PATH="$PROBE_BIN:$PATH" HERMES_NOTIFY_PROBE="$NOTIFY_PROBE" \
+      bash "$SCRIPT_DIR/posix.sh" --no-ui --no-notify --no-marker-cleanup --desktop-pid 0 \
+      --install-root "$QHOME/hermes-agent" --branch 'evil"branch\n$(x)' >/dev/null 2>"$QHOME/handoff.stderr" || true
+    for _ in $(seq 1 100); do
+      [ -f "$RESULT" ] && break
+      sleep 0.1
+    done
+    if python3 -c "import json,sys; d=json.load(open('$RESULT')); sys.exit(0 if d['branch']=='evil\"branch\\\\n\$(x)' and d['ok']==False else 1)"; then
       printf 'ok   result JSON escapes hostile branch/message\n'
     else
-      printf 'FAIL result JSON escaping\n'; fails=$((fails+1))
+      printf 'FAIL invocation-scoped result JSON did not arrive or parse\n'
+      sed -n '1,3p' "$QHOME/handoff.stderr" 2>/dev/null || true
+      fails=$((fails+1))
+    fi
+    if [ ! -e "$NOTIFY_PROBE" ]; then
+      printf 'ok   fake-home run suppresses notification fallbacks\n'
+    else
+      printf 'FAIL fake-home run invoked a notification fallback\n'; fails=$((fails+1))
     fi
 
     rm -rf "$G"
+    trap - EXIT
     [ "$fails" -eq 0 ] && say "gate matrix: all pass" || { say "gate matrix: $fails FAILED"; exit 1; }
     ;;
   launch)

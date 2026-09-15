@@ -227,6 +227,42 @@ class TestDynamicParamGating(unittest.TestCase):
             self.assertNotIn(p, props, p)
         self.assertIn("text-to-video only", schema["description"])
 
+    def test_reference_images_named_in_description_only_when_advertised(self):
+        """The description must not sell a param the schema omits.
+
+        ``reference_image_urls`` is added only when the backend declares
+        ``max_reference_images > 0`` — deepinfra and fal ship 0 — so the
+        generic blurb has to drop the reference-to-video sentence for them,
+        the way image_generate drops its edit clause."""
+        bare = {
+            "modalities": ["text", "image"],
+            "supports_audio": False, "supports_negative_prompt": False,
+            "supports_seed": False, "supports_upscale": False,
+            "max_reference_images": 0,
+        }
+        schema = self._schema_with(bare)
+        self.assertNotIn("reference_image_urls",
+                         schema["parameters"]["properties"])
+        self.assertNotIn("reference_image_urls", schema["description"])
+        self.assertNotIn("reference images", schema["description"])
+        # image_url is still advertised and still explained.
+        self.assertIn("image_url", schema["parameters"]["properties"])
+        self.assertIn("Pass `image_url` to animate an image.",
+                      schema["description"])
+
+        schema = self._schema_with(dict(bare, max_reference_images=3))
+        self.assertIn("reference_image_urls",
+                      schema["parameters"]["properties"])
+        self.assertIn("reference_image_urls", schema["description"])
+
+        # A text-only model on a reference-capable backend drops the property
+        # (it hangs off image_url), so the description must drop it too.
+        schema = self._schema_with(dict(bare, max_reference_images=3),
+                                   model_meta={"modalities": ["text"]})
+        self.assertNotIn("reference_image_urls",
+                         schema["parameters"]["properties"])
+        self.assertNotIn("reference_image_urls", schema["description"])
+
     def test_i2v_only_model_overrides_backend_union(self):
         # gemini-omni-flash case: dual-modality backend, i2v-only model.
         schema = self._schema_with(

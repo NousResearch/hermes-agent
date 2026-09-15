@@ -1,5 +1,5 @@
 import type { FC, ReactNode } from 'react'
-import { useMemo } from 'react'
+import { isValidElement, useMemo } from 'react'
 
 import { type Contribution, useContributions } from '@/contrib'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
@@ -27,18 +27,73 @@ const onboardingEnabled = isOnboardingEnabled()
  * other contribution area.
  */
 
-/** Extract the paragraph's text when it is text-only — directives never carry
- *  inline markup, so any non-string child disqualifies the paragraph. */
+/** The autolink form of `text`: GFM linkifies bare emails and URLs inside a
+ *  paragraph, so the href it synthesises is derivable from the text itself.
+ *  A hand-authored `[label](url)` link never satisfies this. Hrefs arrive URL-
+ *  normalized (a bare authority gains its root slash), so compare against that
+ *  form too rather than only the literal concatenation. */
+function isAutolinkLiteral(href: string, text: string): boolean {
+  const candidates = [text, `mailto:${text}`, `http://${text}`, `https://${text}`]
+
+  return candidates.some(candidate => href === candidate || href === `${candidate}/`)
+}
+
+/** True for a child React elements only ever produced by GFM autolinking:
+ *  an anchor whose sole child is the string its own href was derived from. */
+function autolinkText(child: ReactNode): null | string {
+  if (!isValidElement(child)) {
+    return null
+  }
+
+  const props = child.props as { children?: ReactNode; href?: unknown }
+  const text = props.children
+
+  if (typeof props.href !== 'string' || typeof text !== 'string') {
+    return null
+  }
+
+  return isAutolinkLiteral(props.href, text) ? text : null
+}
+
+/**
+ * Extract the paragraph's text when it carries no authored markup.
+ *
+ * Directives are written as plain text, so a paragraph holding real inline
+ * markup is not one. The subtlety is that GFM autolinks bare emails and URLs
+ * during the inline phase, and an attribute VALUE is data, not markup: a
+ * Follow-up prompt mentioning an address arrives as text + <a> + text and used
+ * to disqualify the whole paragraph, degrading the card to raw `::name{...}`
+ * in front of the user. Autolink anchors are therefore folded back to the text
+ * they were made from; anything else still disqualifies the paragraph.
+ */
 export function paragraphPlainText(children: ReactNode): string | null {
   if (typeof children === 'string') {
     return children
   }
 
-  if (Array.isArray(children) && children.length > 0 && children.every(child => typeof child === 'string')) {
-    return children.join('')
+  if (!Array.isArray(children) || children.length === 0) {
+    return null
   }
 
-  return null
+  const parts: string[] = []
+
+  for (const child of children) {
+    if (typeof child === 'string') {
+      parts.push(child)
+
+      continue
+    }
+
+    const linked = autolinkText(child)
+
+    if (linked === null) {
+      return null
+    }
+
+    parts.push(linked)
+  }
+
+  return parts.join('')
 }
 
 /** The contribution claiming `name`, if any. First registration wins. */

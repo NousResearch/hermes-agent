@@ -21,6 +21,46 @@ describe('paragraphPlainText', () => {
     expect(paragraphPlainText(null)).toBeNull()
     expect(paragraphPlainText([])).toBeNull()
   })
+
+  // GFM autolinks bare emails/URLs during the inline phase, so an attribute
+  // VALUE that merely mentions one arrives as text + <a> + text. Attribute
+  // values are data, never markup — folding the anchor back to its own text
+  // is what keeps the card from degrading to raw `::name{...}`.
+  it('folds GFM email autolinks back into the paragraph text', () => {
+    expect(
+      paragraphPlainText([
+        '::followup{p1="ask ',
+        <a href="mailto:a@b.com" key="m">
+          a@b.com
+        </a>,
+        ' about it"}'
+      ])
+    ).toBe('::followup{p1="ask a@b.com about it"}')
+  })
+
+  it('folds GFM url autolinks back into the paragraph text', () => {
+    expect(
+      paragraphPlainText([
+        '::followup{p1="open ',
+        <a href="http://www.example.com" key="u">
+          www.example.com
+        </a>,
+        '"}'
+      ])
+    ).toBe('::followup{p1="open www.example.com"}')
+  })
+
+  it('still disqualifies an authored link whose label differs from its href', () => {
+    expect(
+      paragraphPlainText([
+        '::followup{p1="',
+        <a href="https://example.com" key="a">
+          click here
+        </a>,
+        '"}'
+      ])
+    ).toBeNull()
+  })
 })
 
 describe('TranscriptDirectiveLeaf', () => {

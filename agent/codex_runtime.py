@@ -656,9 +656,21 @@ class _CodexResponseAssembler:
                 self._safe(self.on_first_delta, "on_first_delta")
             self._safe(self.on_text_delta, "on_text_delta", delta_text)
 
+    def _pending_function_key(self, item_id: str, output_index: Any) -> str | None:
+        if item_id in self.pending_function_calls:
+            return item_id
+        # Copilot rotates opaque item IDs between SSE events. The response-local
+        # output_index still identifies the call, including index zero.
+        if output_index is not None:
+            return next((key for key, pending in self.pending_function_calls.items()
+                         if pending["output_index"] == output_index), None)
+        return None
+
     def _on_function_call(self, event: Any, event_type: str) -> None:
         self.has_tool_calls = True
-        pending = self.pending_function_calls.get(str(_event_field(event, "item_id", "")))
+        key = self._pending_function_key(str(_event_field(event, "item_id", "")),
+                                         _event_field(event, "output_index"))
+        pending = self.pending_function_calls.get(key)
         if pending is None:
             return  # the item itself lands on output_item.done
         if "delta" in event_type:
@@ -688,13 +700,16 @@ class _CodexResponseAssembler:
         # Reuse the announced position when known (fresh tail sequence for unannounced items); the .done
         # event's own output_index wins over the announced one.
         done_id = str(_event_field(done_item, "id", ""))
-        announced_sequence, announced_index = self.announced_output_order.get(done_id, (None, None))
+        pending_key = None
+        if "function_call" in str(_event_field(done_item, "type", "")):
+            pending_key = self._pending_function_key(done_id, _event_field(event, "output_index"))
+        announced_sequence, announced_index = self.announced_output_order.get(pending_key or done_id, (None, None))
         if announced_sequence is None:
             announced_sequence, self.next_output_sequence = self.next_output_sequence, self.next_output_sequence + 1
         self.output_indexes.append(_event_field(event, "output_index", announced_index))
         self.output_sequences.append(announced_sequence)
         # Confirmed by the authoritative done event; never settle it twice.
-        self.pending_function_calls.pop(done_id, None)
+        self.pending_function_calls.pop(pending_key or done_id, None)
         if _message_phase(done_item) == "commentary" and self.on_commentary_message is not None:
             commentary_text = "".join(self.commentary_text_deltas).strip() or _output_text_of(done_item)
             if commentary_text:
@@ -757,15 +772,13 @@ class _CodexResponseAssembler:
         return [entry[2] for entry in indexed]
 
     def result(self) -> SimpleNamespace:
+        # Successful completion orders all output, even when no calls remain pending.
+        # Done items stay authoritative; only successful streams settle missing done events.
+        output: List[Any] = self._settled_output() if self.saw_response_completed else list(self.output_items)
         # With only plain text deltas (no tool calls), synthesize one message item.
-        output: List[Any] = list(self.output_items)
         if not output and self.text_deltas and not self.has_tool_calls:
             content = [SimpleNamespace(type="output_text", text="".join(self.text_deltas))]
             output = [SimpleNamespace(type="message", role="assistant", status="completed", content=content)]
-        # Done items stay authoritative; settlement only fills the gap left by backends that omit
-        # per-item done events on a successful completion.
-        if self.pending_function_calls and self.saw_response_completed:
-            output = self._settled_output()
         # No terminal frame AND no usable content = truncated / rejected stream.
         if not self.saw_terminal and not output:
             raise RuntimeError("Codex Responses stream did not emit a terminal response")

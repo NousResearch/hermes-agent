@@ -414,27 +414,47 @@ def heartbeat_worker(
     return True
 
 
-def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str]:
-    """Terminate workers whose per-task ``max_runtime_seconds`` has elapsed.
+def enforce_max_runtime(
+    conn: sqlite3.Connection, *, signal_fn=None, default_max_runtime_seconds: Optional[int] = None,
+) -> list[str]:
+    """Terminate workers whose ``max_runtime_seconds`` has elapsed.
 
     SIGTERM, short grace, then SIGKILL. Emits ``timed_out`` and restores the
     task's source phase so the next tick re-spawns the same kind of worker —
     unless the circuit breaker already gave up, leaving it blocked. Host-local
     only (same reasoning as ``detect_crashed_workers``). ``signal_fn`` is a test hook.
+
+    ``default_max_runtime_seconds`` (``kanban.default_max_runtime_seconds``) is
+    the dispatcher-wide backstop for tasks that carry no per-task cap. Without
+    it a task with NULL ``max_runtime_seconds`` — the overwhelming majority —
+    is skipped here entirely, so a worker that keeps its heartbeat alive while
+    making no progress is bounded only by the stale-heartbeat backstop. A
+    per-task value always wins, including a deliberately larger one.
+    ``None``/0 keeps the per-task-only behaviour.
     """
     timed_out: list[str] = []
     now = int(time.time())
     host_prefix = _kb._host_prefix()
 
+    try:
+        fallback_limit = int(default_max_runtime_seconds or 0)
+    except (TypeError, ValueError):
+        fallback_limit = 0
+    if fallback_limit < 0:
+        fallback_limit = 0
+
     rows = conn.execute(
         "SELECT t.id, t.worker_pid, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
+        "       COALESCE(t.max_runtime_seconds, ?) AS effective_max_runtime, "
         "       t.max_runtime_seconds, t.claim_lock "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
-        "WHERE t.status = 'running' AND t.max_runtime_seconds IS NOT NULL "
+        "WHERE t.status = 'running' "
+        "  AND COALESCE(t.max_runtime_seconds, ?) > 0 "
         "  AND COALESCE(r.started_at, t.started_at) IS NOT NULL "
-        "  AND t.worker_pid IS NOT NULL"
+        "  AND t.worker_pid IS NOT NULL",
+        (fallback_limit, fallback_limit),
     ).fetchall()
     for row in rows:
         lock = row["claim_lock"] or ""
@@ -443,7 +463,9 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         # Runtime is per attempt: ``tasks.started_at`` records the FIRST start,
         # so retries must be measured from the active task_runs row.
         elapsed = now - int(row["active_started_at"])
-        limit = int(row["max_runtime_seconds"])
+        # The limit actually enforced: the dispatcher default when the task carries no cap.
+        limit = int(row["effective_max_runtime"])
+        limit_source = "task" if row["max_runtime_seconds"] is not None else "dispatcher_default"
         if elapsed < limit:
             continue
 
@@ -477,6 +499,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                     "pid": pid,
                     "elapsed_seconds": int(elapsed),
                     "limit_seconds": limit,
+                    "limit_source": limit_source,
                     "sigkill": killed,
                     "retry_status": retry_status,
                 }
@@ -1429,6 +1452,7 @@ def dispatch_once(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    default_max_runtime_seconds: Optional[int] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -1452,6 +1476,7 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
+            default_max_runtime_seconds=default_max_runtime_seconds,
         )
 
     try:
@@ -1631,6 +1656,7 @@ def _run_reclaim_phase(
     stale_timeout_seconds: int,
     failure_limit: int,
     reconcile_orphans: bool,
+    default_max_runtime_seconds: Optional[int] = None,
 ) -> None:
     """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
     reap_worker_zombies()
@@ -1643,7 +1669,7 @@ def _run_reclaim_phase(
     # went back to ``ready`` and the respawn guard defers them until quota clears.
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
-    result.timed_out = enforce_max_runtime(conn)
+    result.timed_out = enforce_max_runtime(conn, default_max_runtime_seconds=default_max_runtime_seconds)
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
 
 
@@ -1761,6 +1787,7 @@ def _dispatch_once_locked(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    default_max_runtime_seconds: Optional[int] = None,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
     todo -> ready, then atomically claim each spawnable ready/review row and
@@ -1771,6 +1798,7 @@ def _dispatch_once_locked(
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans,
+        default_max_runtime_seconds=default_max_runtime_seconds,
     )
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,

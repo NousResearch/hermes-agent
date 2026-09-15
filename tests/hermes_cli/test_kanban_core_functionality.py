@@ -260,6 +260,99 @@ def test_read_worker_log_tail(kanban_home):
 
 # ---------------------------------------------------------------------------
 # Max-runtime enforcement (item 1 from the Multica audit)
+
+def _run_overrunning_worker(conn, *, elapsed_seconds, max_runtime_seconds=None):
+    """Create a running task whose active run started ``elapsed_seconds`` ago."""
+    tid = kb.create_task(
+        conn, title="long job", assignee="worker",
+        max_runtime_seconds=max_runtime_seconds,
+    )
+    kb.claim_task(conn, tid)
+    kbd._set_worker_pid(conn, tid, os.getpid())
+    old_started = int(time.time()) - elapsed_seconds
+    with kb.write_txn(conn):
+        conn.execute("UPDATE tasks SET started_at = ? WHERE id = ?", (old_started, tid))
+        conn.execute(
+            "UPDATE task_runs SET started_at = ? "
+            "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
+            (old_started, tid),
+        )
+    return tid
+
+
+def test_default_max_runtime_bounds_tasks_without_a_per_task_cap(kanban_home, monkeypatch):
+    """A task with NULL max_runtime_seconds is bounded by the dispatcher's
+    ``kanban.default_max_runtime_seconds``; without it the worker runs on."""
+    import hermes_cli.kanban_db as _kb
+    monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
+
+    conn = kbc.connect()
+    try:
+        # No dispatcher default configured: NULL cap == no enforcement (today's behaviour).
+        tid = _run_overrunning_worker(conn, elapsed_seconds=3600)
+        assert kbd.enforce_max_runtime(conn, signal_fn=lambda *_: None) == []
+        assert kb.get_task(conn, tid).status == "running"
+
+        # With the default, the same task is terminated and requeued.
+        timed_out = kbd.enforce_max_runtime(
+            conn, signal_fn=lambda *_: None, default_max_runtime_seconds=900,
+        )
+        assert tid in timed_out
+        assert kb.get_task(conn, tid).status == "ready"
+
+        event = next(e for e in kb.list_events(conn, tid) if e.kind == "timed_out")
+        assert event.payload["limit_seconds"] == 900
+        assert event.payload["limit_source"] == "dispatcher_default"
+    finally:
+        conn.close()
+
+
+def test_per_task_max_runtime_overrides_the_dispatcher_default(kanban_home, monkeypatch):
+    """An explicit per-task cap wins over the dispatcher default in both
+    directions: a deliberately larger one keeps a long task running, a
+    smaller one is enforced at the task's own limit."""
+    import hermes_cli.kanban_db as _kb
+    monkeypatch.setattr(_kb, "_pid_alive", lambda pid: False)
+
+    conn = kbc.connect()
+    try:
+        # Per-task cap LARGER than the default: not yet overrun.
+        patient = _run_overrunning_worker(conn, elapsed_seconds=300, max_runtime_seconds=7200)
+        timed_out = kbd.enforce_max_runtime(
+            conn, signal_fn=lambda *_: None, default_max_runtime_seconds=60,
+        )
+        assert patient not in timed_out
+        assert kb.get_task(conn, patient).status == "running"
+
+        # Per-task cap SMALLER: enforced at the task's own limit.
+        strict = _run_overrunning_worker(conn, elapsed_seconds=300, max_runtime_seconds=30)
+        timed_out = kbd.enforce_max_runtime(
+            conn, signal_fn=lambda *_: None, default_max_runtime_seconds=7200,
+        )
+        assert strict in timed_out
+        event = next(e for e in kb.list_events(conn, strict) if e.kind == "timed_out")
+        assert event.payload["limit_seconds"] == 30
+        assert event.payload["limit_source"] == "task"
+    finally:
+        conn.close()
+
+
+def test_dispatcher_settings_read_default_max_runtime_seconds():
+    """The gateway dispatcher reads kanban.default_max_runtime_seconds and hands it to
+    dispatch_once via the settings dataclass (unset/invalid/<1 -> None, i.e. no cap)."""
+    from dataclasses import asdict
+    from gateway.kanban_watchers_dispatcher import _resolve_dispatcher_settings
+
+    assert _resolve_dispatcher_settings({}, kb).default_max_runtime_seconds is None
+    assert _resolve_dispatcher_settings({"default_max_runtime_seconds": 0}, kb).default_max_runtime_seconds is None
+    assert _resolve_dispatcher_settings({"default_max_runtime_seconds": "nope"}, kb).default_max_runtime_seconds is None
+    settings = _resolve_dispatcher_settings({"default_max_runtime_seconds": 3600}, kb)
+    assert settings.default_max_runtime_seconds == 3600
+    # The dispatcher forwards every setting except the tick interval as dispatch_once kwargs.
+    import inspect
+    kwargs = {k for k in asdict(settings) if k != "interval"}
+    assert kwargs <= set(inspect.signature(kbd.dispatch_once).parameters)
+
 # ---------------------------------------------------------------------------
 
 def test_max_runtime_terminates_overrun_worker(kanban_home):

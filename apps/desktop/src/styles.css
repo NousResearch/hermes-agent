@@ -1360,12 +1360,12 @@ body.guest-pointer-lock :is(webview, iframe) {
      platform overlay (fade in on scroll, zero gutter) to classic always-on
      gutters. `.scrollbar-overlay` opts a surface out of the themed rules so
      Electron keeps native overlay — used by conversation code blocks where a
-     permanent 4px track eats the card and always draws a bar. */
+     permanent 8px track eats the card and always draws a bar. */
 
   .scrollbar-dt::-webkit-scrollbar,
   .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar {
-    width: 0.25rem;
-    height: 0.25rem;
+    width: 0.5rem;
+    height: 0.5rem;
   }
 
   .scrollbar-dt::-webkit-scrollbar-track,
@@ -1447,8 +1447,8 @@ body.guest-pointer-lock :is(webview, iframe) {
      #root. Same visual treatment, applied directly to the overlay
      container so its (and only its) internal scrollbar is themed. */
   .dt-portal-scrollbar::-webkit-scrollbar {
-    width: 0.25rem;
-    height: 0.25rem;
+    width: 0.5rem;
+    height: 0.5rem;
   }
 
   .dt-portal-scrollbar::-webkit-scrollbar-track,

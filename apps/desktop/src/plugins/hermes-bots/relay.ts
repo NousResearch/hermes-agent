@@ -80,6 +80,8 @@ interface RelayLifecycle {
   pushDebounceTimer: null | ReturnType<typeof setTimeout>
   pushUnsub: (() => void) | null
   rosterBusy: boolean
+  /** The below-two-connections roster clear went out; stays set until the peer set relays again. */
+  rosterCleared: boolean
   rosterTimer: null | ReturnType<typeof setInterval>
 }
 
@@ -91,6 +93,7 @@ const relay: RelayLifecycle = {
   pushDebounceTimer: null,
   pushUnsub: null,
   rosterBusy: false,
+  rosterCleared: false,
   rosterTimer: null
 }
 
@@ -258,8 +261,27 @@ async function syncRelayRosters() {
     const connections = await relayConnections()
 
     if (connections.length < 2) {
+      // Nothing to relay — but the gateways that remain still hold the last
+      // pushed roster, so a departed machine's agents would stay in every
+      // bot's prompt (and as message_agent targets) until a second connection
+      // reappears. Push the now-empty roster once so they forget it.
+      if (!relay.rosterCleared) {
+        relay.rosterCleared = true
+        await Promise.all(
+          connections.map(async connection => {
+            try {
+              await host.requestProfile(connection.route, 'bot_relay.roster.sync', { agents: [] })
+            } catch {
+              // Older backend without the relay RPCs — skip this connection.
+            }
+          })
+        )
+      }
+
       return
     }
+
+    relay.rosterCleared = false
 
     const agentsByConnection = new Map<string, RelayAgentRow[]>()
     await Promise.all(
@@ -463,6 +485,7 @@ function scheduleRelayPushDrain() {
 
 export function startBotRelay() {
   relay.disposed = false
+  relay.rosterCleared = false
 
   // Source-shape test harnesses evaluate plugin.js without DOM timers —
   // the relay only runs where a real event loop exists.

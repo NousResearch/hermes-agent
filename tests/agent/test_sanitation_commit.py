@@ -869,6 +869,7 @@ def test_sanitation_commit_after_durable_parent_adoption_keeps_row_ids(tmp_path)
         + '"'
     )
     harness.agent.context_compressor.candidate = copy.deepcopy(expected_candidate)
+    harness.agent.context_compressor.expected_messages = copy.deepcopy(durable_with_ids)
     stale_snapshot = harness.db.get_messages_as_conversation(harness.agent.session_id)[
         :-1
     ]

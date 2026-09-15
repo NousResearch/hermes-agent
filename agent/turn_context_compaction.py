@@ -241,10 +241,44 @@ def _preflight_compression(
         _rearm_uncompressed_overflow_warn(agent, out.messages, out.active_system_prompt)
         return
     _compressor = agent.context_compressor
-    if _tc._review_fork_first_request_pending(agent) or not _tc._should_run_preflight_estimate(
+    if _tc._review_fork_first_request_pending(agent):
+        return
+    if not _tc._should_run_preflight_estimate(
         out.messages, _compressor.protect_first_n, _compressor.protect_last_n,
         _compressor.threshold_tokens,
     ):
+        _compression_cooldown = getattr(
+            _compressor,
+            "get_active_compression_failure_cooldown",
+            lambda: None,
+        )()
+        _preflight_deferred = (
+            not getattr(agent, "_request_pressure_anchored", False)
+            and getattr(
+                _compressor,
+                "should_defer_preflight_to_real_usage",
+                lambda _tokens: False,
+            )(0)
+        )
+        if not (
+            _compression_cooldown
+            or _preflight_deferred
+            or _codex_native_auto_compaction(agent)
+        ):
+            _engine_preflight_maintenance(
+                agent,
+                out,
+                _compressor,
+                0,
+                system_message,
+                effective_task_id,
+            )
+            if out.compressed:
+                out.current_turn_user_idx = _reanchor(
+                    agent,
+                    out.messages,
+                    user_message,
+                )
         return
 
     _preflight_tokens = _tc._preflight_request_tokens(

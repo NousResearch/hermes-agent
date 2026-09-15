@@ -2404,12 +2404,19 @@ class _CompressionLease:
     def start_refresher(self) -> None:
         if self.holder is None:
             return
-        candidate = _CompressionLockLeaseRefresher(self.db, self.sid, self.holder, self.ttl, self._refresh_interval)
         # Cancellation may release the holder between hook publication and this
         # start; serialize with the release path so no refresher starts on a freed lock.
         with self._release_guard:
-            if not self._released:
-                self._refresher = candidate.start()
+            if self._released or self._refresher is not None:
+                return
+            candidate = _CompressionLockLeaseRefresher(
+                self.db,
+                self.sid,
+                self.holder,
+                self.ttl,
+                self._refresh_interval,
+            )
+            self._refresher = candidate.start()
 
     def release_holder_only(self) -> None:
         """Stop this holder's refresher and release only its durable lock.
@@ -3639,6 +3646,7 @@ def _run_summary_phase(
             if _adopted_parent is not None:
                 messages = _adopted_parent
                 pre_msg_count = len(messages)
+                prepared_operation = None
                 # Estimate was for the stale snapshot; force re-derivation from adopted rows.
                 approx_tokens = 0
                 # Adopted list is fully durable: re-anchor persist idx at the end so the post-

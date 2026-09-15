@@ -656,13 +656,13 @@ def test_automatic_sanitation_commits_exact_candidate_without_boundary_side_effe
     monkeypatch.setattr(context_compressor, "salvage_grown_transcript", _salvage)
 
     captured_commit = {}
-    real_archive = harness.db.archive_and_compact
+    real_sanitize = harness.db.sanitize_and_compact
 
-    def _archive(*args, **kwargs):
+    def _sanitize(*args, **kwargs):
         captured_commit.update(kwargs)
-        return real_archive(*args, **kwargs)
+        return real_sanitize(*args, **kwargs)
 
-    monkeypatch.setattr(harness.db, "archive_and_compact", _archive)
+    monkeypatch.setattr(harness.db, "sanitize_and_compact", _sanitize)
     caplog.set_level(logging.INFO, logger="agent.conversation_compression")
 
     returned, _ = compression.compress_context(
@@ -680,7 +680,6 @@ def test_automatic_sanitation_commits_exact_candidate_without_boundary_side_effe
     assert harness.session_end_calls == []
     assert captured_commit["watermark"] is not None
     assert captured_commit["lock_holder"]
-    assert captured_commit["model_config_patch"] is None
     assert _without_persistence_markers(
         harness.db.get_messages_as_conversation(harness.agent.session_id)
     ) == _without_persistence_markers(harness.candidate)
@@ -974,7 +973,7 @@ def test_sanitation_commit_failure_rolls_back_without_boundary_hooks(
     )
     monkeypatch.setattr(
         harness.db,
-        "archive_and_compact",
+        "sanitize_and_compact",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             RuntimeError("commit failed")
         ),

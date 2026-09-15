@@ -92,6 +92,18 @@ _SANITATION_PLACEHOLDER_RE = re.compile(
     r"chars=([0-9]{1,9}); bytes=([0-9]{1,9})"
     r"(?:; sha256=([0-9a-f]{16}))?\]"
 )
+_LCM_EXTERNALIZED_TOOL_OUTPUT_RE = re.compile(
+    r"\[Externalized tool output: "
+    r"tool_call_id=[A-Za-z0-9_.:/?-]{1,120}; "
+    r"chars=([0-9]{1,9}); bytes=([0-9]{1,9}); "
+    r"ref=[A-Za-z0-9_.-]{1,255}\.json\]"
+)
+_LCM_EXTERNALIZED_PAYLOAD_RE = re.compile(
+    r"\[Externalized payload: kind=raw_payload; "
+    r"role=(system|user|assistant|tool); "
+    r"chars=([0-9]{1,9}); bytes=([0-9]{1,9}); "
+    r"ref=[A-Za-z0-9_.-]{1,255}\.json\]"
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -108,12 +120,61 @@ class _SanitationChanges:
         )
 
 
-def _validate_sanitized_string(original: str, candidate: str) -> Optional[_SanitationChanges]:
+def _validate_sanitized_string(
+    original: str,
+    candidate: str,
+    *,
+    externalized_role: str | None = None,
+    allow_json_normalization: bool = False,
+) -> Optional[_SanitationChanges]:
     if candidate == original:
         return _SanitationChanges()
+    externalized_tool = (
+        _LCM_EXTERNALIZED_TOOL_OUTPUT_RE.fullmatch(candidate)
+        if externalized_role == "tool"
+        else None
+    )
+    externalized_payload = (
+        _LCM_EXTERNALIZED_PAYLOAD_RE.fullmatch(candidate)
+        if externalized_role is not None
+        else None
+    )
+    externalized_counts = None
+    if externalized_tool is not None:
+        externalized_counts = externalized_tool.groups()
+    elif (
+        externalized_payload is not None
+        and externalized_payload.group(1) == externalized_role
+    ):
+        externalized_counts = externalized_payload.groups()[1:]
+    if externalized_counts is not None:
+        chars, byte_count = (int(value) for value in externalized_counts)
+        if chars < 1 or byte_count < 1:
+            return None
+        return _SanitationChanges(
+            changed_fields=1,
+            placeholders=1,
+            declared_growth_chars=len(candidate) - len(original),
+        )
     placeholders = list(_SANITATION_PLACEHOLDER_RE.finditer(candidate))
     if not placeholders:
         return None
+    if allow_json_normalization:
+        try:
+            original_json = json.loads(original)
+            candidate_json = json.loads(candidate)
+        except (TypeError, ValueError):
+            pass
+        else:
+            json_changes = _validate_sanitized_value(
+                original_json,
+                candidate_json,
+            )
+            if json_changes is not None and json_changes.placeholders:
+                return dataclasses.replace(
+                    json_changes,
+                    declared_growth_chars=len(candidate) - len(original),
+                )
     pattern_parts: list[str] = []
     cursor = 0
     for index, match in enumerate(placeholders):
@@ -141,15 +202,43 @@ def _validate_sanitized_string(original: str, candidate: str) -> Optional[_Sanit
     )
 
 
-def _validate_sanitized_value(original: Any, candidate: Any) -> Optional[_SanitationChanges]:
+def _validate_sanitized_value(
+    original: Any,
+    candidate: Any,
+    *,
+    externalized_role: str | None = None,
+    allow_json_normalization: bool = False,
+) -> Optional[_SanitationChanges]:
+    if (
+        not isinstance(original, str)
+        and isinstance(candidate, str)
+        and externalized_role is not None
+    ):
+        externalized_changes = _validate_sanitized_string(
+            str(original),
+            candidate,
+            externalized_role=externalized_role,
+        )
+        if externalized_changes is not None:
+            return externalized_changes
     if isinstance(original, str) and isinstance(candidate, str):
-        return _validate_sanitized_string(original, candidate)
+        return _validate_sanitized_string(
+            original,
+            candidate,
+            externalized_role=externalized_role,
+            allow_json_normalization=allow_json_normalization,
+        )
     if isinstance(original, list) and isinstance(candidate, list):
         if len(original) != len(candidate):
             return None
         changes = _SanitationChanges()
         for original_item, candidate_item in zip(original, candidate):
-            item_changes = _validate_sanitized_value(original_item, candidate_item)
+            item_changes = _validate_sanitized_value(
+                original_item,
+                candidate_item,
+                externalized_role=externalized_role,
+                allow_json_normalization=allow_json_normalization,
+            )
             if item_changes is None:
                 return None
             changes = changes.plus(item_changes)
@@ -161,7 +250,25 @@ def _validate_sanitized_value(original: Any, candidate: Any) -> Optional[_Sanita
         unmatched_original = [key for key in original if key not in candidate]
         unmatched_candidate = [key for key in candidate if key not in original]
         for key in original.keys() & candidate.keys():
-            value_changes = _validate_sanitized_value(original[key], candidate[key])
+            value_changes = _validate_sanitized_value(
+                original[key],
+                candidate[key],
+                externalized_role=(
+                    str(original.get("role"))
+                    if (
+                        key == "content"
+                        and original.get("role") == candidate.get("role")
+                        and original.get("role")
+                        in {"system", "user", "assistant", "tool"}
+                    )
+                    else externalized_role
+                ),
+                allow_json_normalization=(
+                    key == "arguments"
+                    and "name" in original
+                    and "name" in candidate
+                ),
+            )
             if value_changes is None:
                 return None
             changes = changes.plus(value_changes)
@@ -182,7 +289,10 @@ def _validate_sanitized_value(original: Any, candidate: Any) -> Optional[_Sanita
                 if key_changes is None:
                     continue
                 value_changes = _validate_sanitized_value(
-                    original[original_key], candidate[candidate_key]
+                    original[original_key],
+                    candidate[candidate_key],
+                    externalized_role=externalized_role,
+                    allow_json_normalization=allow_json_normalization,
                 )
                 if value_changes is None:
                     continue
@@ -3591,16 +3701,20 @@ def _commit_compaction(
                 from agent.context_compressor import PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY, stamp_db_persisted_markers
                 # Tail rows tagged by compress() are archived as superseded duplicates, not
                 # compacted=1. Count against the FINAL list — salvage may have dropped rows.
-                agent._session_db.archive_and_compact(
-                    agent.session_id, compressed,
-                    model_config_patch=(
-                        None
-                        if pure_sanitation
-                        else {PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None}
-                    ),
-                    watermark=lease.watermark, lock_holder=lease.holder,
-                    tail_count=sum(1 for m in compressed if id(m) in _tail_tagged_ids),
-                )
+                if pure_sanitation:
+                    agent._session_db.sanitize_and_compact(
+                        agent.session_id,
+                        compressed,
+                        watermark=lease.watermark,
+                        lock_holder=lease.holder,
+                    )
+                else:
+                    agent._session_db.archive_and_compact(
+                        agent.session_id, compressed,
+                        model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
+                        watermark=lease.watermark, lock_holder=lease.holder,
+                        tail_count=sum(1 for m in compressed if id(m) in _tail_tagged_ids),
+                    )
                 split_status = "in_place_committed"
                 # compress() returned marker-swept copies; stamp them as persisted or the next
                 # flush re-INSERTs the whole compacted transcript, doubling the live set. Reset

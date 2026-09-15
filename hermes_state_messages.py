@@ -564,6 +564,58 @@ class SessionMessagesMixin:
             f"WHERE id IN ({_placeholders(tail_ids)}) ORDER BY id",
             [session_id, *tail_ids] if retarget else tail_ids)
 
+    def sanitize_and_compact(self, session_id: str, sanitized_messages: List[Dict[str, Any]],
+        *, watermark: int, lock_holder: str) -> int:
+        """Destructively publish a sanitized transcript under a lease and watermark.
+
+        Unlike ordinary compaction, sanitation must remove superseded rows and their
+        FTS entries. Rows appended after *watermark* are cloned byte-exactly after the
+        sanitized snapshot, then their earlier display generation is deleted in the
+        same transaction.
+        """
+        from hermes_state import SessionCompressionInProgressError
+
+        def _do(conn):
+            lock_row = conn.execute(_COMPRESSION_LOCK_ROW_SQL, (session_id,)).fetchone()
+            if (
+                lock_row is None
+                or lock_row["holder"] != lock_holder
+                or float(lock_row["expires_at"]) <= time.time()
+            ):
+                raise SessionCompressionInProgressError(
+                    f"Compression lease for {session_id!r} lost before sanitation; "
+                    "refusing to publish a stale transcript"
+                )
+            tail_ids, tail_tool_calls = self._tail_rows_after_watermark(
+                conn,
+                "SELECT id, tool_calls FROM messages "
+                "WHERE session_id = ? AND active = 1 AND id > ? ORDER BY id",
+                (session_id, int(watermark)),
+            )
+            conn.execute(
+                "DELETE FROM messages WHERE session_id = ? AND id <= ?",
+                (session_id, int(watermark)),
+            )
+            inserted, tool_calls_total = self._insert_message_rows(
+                conn, session_id, sanitized_messages
+            )
+            if tail_ids:
+                self._clone_message_rows(conn, tail_ids)
+                conn.execute(
+                    f"DELETE FROM messages WHERE session_id = ? "
+                    f"AND id IN ({_placeholders(tail_ids)})",
+                    [session_id, *tail_ids],
+                )
+                inserted += len(tail_ids)
+                tool_calls_total += tail_tool_calls
+            conn.execute(
+                f"{_SET_COUNTERS_SQL} WHERE id = ?",
+                (inserted, tool_calls_total, session_id),
+            )
+            return inserted
+
+        return self._execute_write(_do)
+
     def archive_and_compact(self, session_id: str, compacted_messages: List[Dict[str, Any]],
         model_config_patch: Optional[Dict[str, Any]] = None, watermark: Optional[int] = None,
         lock_holder: Optional[str] = None, tail_count: int = 0) -> int:

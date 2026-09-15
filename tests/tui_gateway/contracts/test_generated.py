@@ -1,7 +1,10 @@
 """Runtime catalog and generated-contract invariants.
 
-Events need no source completeness scan: ``server._event_frame`` only accepts a ``Payload`` instance,
-so an undeclared event has no payload class to construct and fails with ``TypeError`` at that boundary.
+``server._event_frame`` proves a payload's SHAPE once it has found the event's contract; it cannot prove
+that every emitted event NAME has one (an undeclared or mistyped literal is a ``KeyError`` on the first
+execution of that path). The source inventory below keeps that closure mechanical, and the same scan
+refuses a dict literal at a typed emit helper — the producer-side crossing the frame check catches only
+at runtime.
 """
 
 from __future__ import annotations
@@ -9,6 +12,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -45,11 +49,73 @@ def _generator(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_registered_methods_match_contract_catalog():
-    from tui_gateway import server
-    from tui_gateway.contracts.registry import METHODS
+# The emitter inventory: names must come from CODE the gateway runs, never from the contract tables.
+_EMIT_HELPERS = ("_emit", "_broadcast_global_event", "_voice_emit", "_pet_emit", "_emit_tool_lifecycle")
+_LITERAL_EMIT = re.compile(r"\b(?:%s)\(\s*\"([a-z_][a-z0-9_.]*)\"" % "|".join(_EMIT_HELPERS))
+_REQUEST_HELPERS = ("server_requests\\.send", "server_requests\\.send_async", "_ask", "_read_block")
+_LITERAL_REQUEST = re.compile(r"\b(?:%s)\(\s*\"([a-z_][a-z0-9_.]*)\"" % "|".join(_REQUEST_HELPERS))
+_LITERAL_FRAME = re.compile(r"\"method\":\s*\"event\".{0,120}?\"type\":\s*\"([a-z_][a-z0-9_.]*)\"", re.S)
+_SIDE_AGENT = re.compile(r"_spawn_side_agent\((?:[^()]|\([^()]*\))*?\"([a-z_][a-z0-9_.]*\.complete)\"", re.S)
+_SUBAGENT_RELAY = re.compile(r"\"(subagent\.[a-z_]+)\"")
+_DESKTOP_UI_EMIT = re.compile(r"desktop_ui\.(?:emit|emit_or_error)\(\s*\"([a-z_][a-z0-9_.]*)\"")
+_BROKER_FRAME = re.compile(r"^FRAME_[A-Z_]+ = \"(browser\.controller\.[a-z_]+)\"", re.M)
+_SETUP_READY = re.compile(r"^SETUP_READY_EVENT = \"([a-z_.]+)\"", re.M)
+# A dict literal where the typed helpers expect a Payload instance (the event-name string, the session
+# id, then ``{``): the exact producer-side crossing that lands as TypeError after state already changed.
+_DICT_PAYLOAD = re.compile(r"\b(?:_emit|_broadcast_global_event|_voice_emit|_pet_emit)\(\s*\"[a-z_][a-z0-9_.]*\"\s*,(?:(?:[^,()]|\([^()]*\))*,)?\s*\{")
 
-    assert set(server._methods) == set(METHODS)
+
+def _read(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def emitted_event_names() -> set[str]:
+    names: set[str] = set()
+    for src in (REPO / "tui_gateway").glob("*.py"):
+        text = _read(src)
+        names.update(_LITERAL_EMIT.findall(text))
+        names.update(_LITERAL_FRAME.findall(text))
+        names.update(_SIDE_AGENT.findall(text))
+    from tui_gateway.agent_callbacks import _CHILD_DELTA_EVENTS
+    from tui_gateway.change_watcher import _CHANGE_WATCHES
+
+    names.update(_CHANGE_WATCHES)
+    names.update(_CHILD_DELTA_EVENTS.values())
+    for src in (REPO / "tools").glob("delegate_tool*.py"):
+        names.update(_SUBAGENT_RELAY.findall(_read(src)))
+    names.discard("subagent.text")  # mirrored into the watch window as message.delta, never emitted
+    from tools.registry import _tool_module_candidates
+
+    for src in _tool_module_candidates(REPO / "tools"):
+        names.update(_DESKTOP_UI_EMIT.findall(_read(src)))
+    names.update(_BROKER_FRAME.findall(_read(REPO / "gateway" / "browser_control_broker.py")))
+    names.update(_SETUP_READY.findall(_read(REPO / "hermes_cli" / "free_tier_bootstrap.py")))
+    return names
+
+
+def sent_server_requests() -> set[str]:
+    names: set[str] = set()
+    for src in (REPO / "tui_gateway").glob("*.py"):
+        names.update(_LITERAL_REQUEST.findall(_read(src)))
+    return names
+
+
+def test_catalog_covers_the_whole_wire():
+    """Every registered method, every emitted event name and every sent server request has a contract,
+    and no contract is orphaned (a deleted handler or emitter must take its contract with it)."""
+    from tui_gateway import server
+    from tui_gateway.contracts import registry
+
+    registry.assert_complete(server._methods, emitted_event_names(), sent_server_requests())
+
+
+def test_no_producer_hands_a_dict_to_a_typed_emit_helper():
+    offenders = []
+    for src in sorted((REPO / "tui_gateway").glob("*.py")):
+        for match in _DICT_PAYLOAD.finditer(_read(src)):
+            line = _read(src).count("\n", 0, match.start()) + 1
+            offenders.append(f"{src.relative_to(REPO)}:{line}")
+    assert offenders == [], f"dict literal payloads at typed emit helpers: {offenders}"
 
 
 def test_openrpc_validates_against_vendored_meta_schema(gen):

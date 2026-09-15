@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib
 
 from .method_ctx import bind_module
+from .contracts.events import ErrorPayload
 from typing import Any
 from utils import is_truthy_value
 import logging
@@ -188,9 +189,9 @@ def _apply_pending_model_switch(sid: str, session: dict) -> None:
         # Honour the expensive-model confirm: surface the warning and drop the switch rather than spend
         # on a model the user never confirmed.
         if result.get("confirm_required"):
-            srv._emit("error", sid, {"message": result.get("confirm_message") or result.get("warning") or ""})
+            srv._emit("error", sid, ErrorPayload(message=result.get("confirm_message") or result.get("warning") or ""))
     except Exception as e:
-        srv._emit("error", sid, {"message": f"Could not switch model: {e}"})
+        srv._emit("error", sid, ErrorPayload(message=f"Could not switch model: {e}"))
 
 
 class CompressionLockHeld(Exception):

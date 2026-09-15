@@ -77,13 +77,20 @@ def event(name: str, payload: type[Payload] | None = None, *, doc: str = "") -> 
     return entry
 
 
-def assert_complete(methods: dict[str, object], server_requests: set[str]) -> None:
-    """Every registered method and sent server request has exactly one contract."""
+def assert_complete(methods: dict[str, object], emitted_events: set[str], server_requests: set[str]) -> None:
+    """Every registered method, every emitted event name and every sent server request has exactly one
+    contract, and no contract is orphaned. ``emitted_events`` comes from a source scan of the emitters:
+    ``_event_frame`` proves a payload's shape once it has found the contract, so a mistyped or undeclared
+    event name would otherwise surface only as a ``KeyError`` on the first execution of that path."""
     problems = []
     if missing := sorted(set(methods) - set(METHODS)):
         problems.append(f"methods without a contract: {missing}")
     if orphan := sorted(set(METHODS) - set(methods)):
         problems.append(f"method contracts with no handler: {orphan}")
+    if missing := sorted(emitted_events - set(EVENTS)):
+        problems.append(f"emitted events without a contract: {missing}")
+    if orphan := sorted(set(EVENTS) - emitted_events):
+        problems.append(f"event contracts nothing emits: {orphan}")
     if missing := sorted(server_requests - set(SERVER_REQUESTS)):
         problems.append(f"server requests without a contract: {missing}")
     if orphan := sorted(set(SERVER_REQUESTS) - server_requests):

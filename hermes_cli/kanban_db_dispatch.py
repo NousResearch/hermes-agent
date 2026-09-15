@@ -1180,6 +1180,32 @@ def check_respawn_guard(
     if lane == "review":
         return None
 
+    # A native reviewer handoff authorizes the original implementer to update
+    # the existing PR.  Only the latest run may grant this exception: a later
+    # writer/crash must consume the old changes-request permit.
+    handoff = conn.execute(
+        "SELECT r.id, r.outcome, r.ended_at, t.status, t.assignee, "
+        "t.current_run_id, t.claim_lock, t.worker_pid "
+        "FROM task_runs r JOIN tasks t ON t.id = r.task_id "
+        "WHERE r.task_id = ? ORDER BY r.id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if (
+        handoff is not None
+        and handoff["outcome"] == "changes_requested"
+        and handoff["ended_at"] is not None
+        and handoff["status"] == "ready"
+        and handoff["current_run_id"] is None
+        and not handoff["claim_lock"]
+        and not handoff["worker_pid"]
+    ):
+        event = _kb._latest_event(
+            conn, task_id, "changes_requested", handoff["id"]
+        )
+        payload = _kb._json_dict(event["payload"] if event is not None else None)
+        if payload.get("implementer") == handoff["assignee"]:
+            return None
+
     # 3. Completed run within guard window. Exception: an explicit re-queue
     #    AFTER that success (done→ready drag, re-promotion, unblock, reclaim) is
     #    a deliberate "run it again" — otherwise a manual done→ready would sit

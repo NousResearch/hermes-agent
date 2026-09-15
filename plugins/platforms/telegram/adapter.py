@@ -257,13 +257,28 @@ def _escape_mdv2(text: str) -> str:
 
 
 def _strip_mdv2(text: str) -> str:
-    """Strip MarkdownV2 escapes and formatting markers for the plain-text fallback."""
-    cleaned = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!\\])', r'\1', text)  # escape backslashes
+    """Strip MarkdownV2 escapes/formatting AND raw block markdown for the plain-text fallback.
+
+    This is the last-resort path when Telegram rejects a MarkdownV2 parse: it runs with
+    ``parse_mode=None``, so *any* MarkdownV2 or CommonMark syntax left behind renders literally
+    (``` fences, ``#`` headers, ``>`` quotes, ``[text](url)`` links, ``*``/``_``/``~`` markers)
+    and reads as garble. Inline escapes are removed and inline emphasis markers are dropped, then
+    block constructs that would still show raw are neutralized rather than kept verbatim. The
+    result is plain text the bot would have sent if markdown framing were never applied.
+    """
+    cleaned = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!\\])', r'\1', text)  # undo backslash escapes
+    # Fenced code blocks (``` ```) → keep body, drop fences; lone markers dropped too.
+    cleaned = re.sub(r'(?m)^\s*```[^\n]*\n([\s\S]*?)\n?\s*```\s*$', r'\1', cleaned)
+    cleaned = re.sub(r'(?m)^\s*```[^\n]*[ \t]*\n?', '', cleaned)  # lone markers + their newline
+    cleaned = re.sub(r'`([^`]+)`', r'\1', cleaned)  # inline code → drop backticks
     cleaned = re.sub(r'\*\*([^*]+)\*\*', r'\1', cleaned)  # **bold** BEFORE MarkdownV2 *bold*
     cleaned = re.sub(r'\*([^*]+)\*', r'\1', cleaned)
     cleaned = re.sub(r'(?<!\w)_([^_]+)_(?!\w)', r'\1', cleaned)  # italic; word-bounded so snake_case survives
     cleaned = re.sub(r'~([^~]+)~', r'\1', cleaned)  # strikethrough
     cleaned = re.sub(r'\|\|([^|]+)\|\|', r'\1', cleaned)  # spoiler
+    cleaned = re.sub(r'(?m)^\s*#{1,6}\s+(.+)$', r'\1', cleaned)  # ATX headers → bare text
+    cleaned = re.sub(r'(?m)^\s*>\s?', '', cleaned)  # blockquote ">" prefix
+    cleaned = re.sub(r'\[([^\]]+)\]\([^)]*\)', r'\1', cleaned)  # links → display text only
     return cleaned
 
 

@@ -74,6 +74,48 @@ def test_format_footer_skips_missing_context_length():
     assert "/tmp/wd" in out
 
 
+def test_format_footer_renders_opt_in_session_usage():
+    out = format_runtime_footer(
+        model="openai/gpt-5.4",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        total_tokens=12_300,
+        estimated_cost_usd=0.0234,
+        cost_status="estimated",
+        fields=("tokens", "cost"),
+    )
+    assert out == "12.3k tokens · ~$0.02"
+
+
+def test_format_footer_omits_cost_when_pricing_is_unknown():
+    out = format_runtime_footer(
+        model="m",
+        context_tokens=0,
+        context_length=None,
+        cwd="",
+        total_tokens=12_300,
+        estimated_cost_usd=0,
+        cost_status="unknown",
+        fields=("tokens", "cost"),
+    )
+    assert out == "12.3k tokens"
+
+
+def test_build_footer_line_passes_opt_in_session_usage_fields():
+    out = build_footer_line(
+        user_config={"display": {"runtime_footer": {"enabled": True, "fields": ["tokens", "cost"]}}},
+        platform_key="slack",
+        model="m",
+        context_tokens=0,
+        context_length=None,
+        total_tokens=900,
+        estimated_cost_usd=0.0046,
+        cost_status="estimated",
+    )
+    assert out == "900 tokens · ~$0.0046"
+
+
 # ---------------------------------------------------------------------------
 # resolve_footer_config
 # ---------------------------------------------------------------------------

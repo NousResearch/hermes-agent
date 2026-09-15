@@ -3,13 +3,15 @@ minimal. Config: ``display.runtime_footer: {enabled: bool, fields: [model, conte
 (order shown; drop any to hide), per-platform override ``display.platforms.<p>.runtime_footer``,
 toggled by ``/footer on|off``. Fields: ``model`` (vendor prefix dropped), ``context_pct`` (last-call
 occupancy), ``latency`` (turn wall-clock, opt-in — NOT in the default set so an unset ``fields``
-renders exactly as before), ``cwd`` (home-relative). ``gateway/run.py`` appends the footer to the
-final response only (never to tool-progress or streaming partials); when streaming already
-delivered the text, it goes out as a trailing message via ``send_trailing_footer()``."""
+renders exactly as before), ``tokens`` (session total), ``cost`` (known estimated session cost),
+and ``cwd`` (home-relative). ``gateway/run.py`` appends the footer to the final response only
+(never to tool-progress or streaming partials); when streaming already delivered the text, it
+goes out as a trailing message via ``send_trailing_footer()``."""
 
 from __future__ import annotations
 
 import os
+from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable, Optional
 
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
@@ -33,6 +35,25 @@ def _home_relative_cwd(cwd: str) -> str:
 def _model_short(model: Optional[str]) -> str:
     """Drop ``vendor/`` prefix (``openai/gpt-5.4`` → ``gpt-5.4``)."""
     return model.rsplit("/", 1)[-1] if model else ""
+
+
+def _format_token_count(tokens: int) -> str:
+    """Render a compact, human-readable session token total."""
+    if tokens < 1_000:
+        return f"{tokens:,} tokens"
+    return f"{tokens / 1_000:.1f}k tokens"
+
+
+def _format_estimated_cost(amount: object, status: Optional[str]) -> str:
+    """Render a known estimated session cost without guessing for unknown pricing."""
+    if status != "estimated":
+        return ""
+    try:
+        value = Decimal(str(amount))
+    except (InvalidOperation, TypeError, ValueError):
+        return ""
+    from agent.usage_pricing import format_cost_label
+    return format_cost_label(value)
 
 
 def _env_cwd() -> str:
@@ -73,7 +94,8 @@ def _format_latency(seconds: float) -> str:
 
 def format_runtime_footer(*, model: Optional[str], context_tokens: int,
                           context_length: Optional[int], cwd: Optional[str] = None,
-                          turn_seconds: Optional[float] = None,
+                          turn_seconds: Optional[float] = None, total_tokens: Optional[int] = None,
+                          estimated_cost_usd: object = None, cost_status: Optional[str] = None,
                           fields: Iterable[str] = _DEFAULT_FIELDS) -> str:
     """Render the footer line, or "" if no fields have data. Fields whose data is missing (and
     unknown field names) are skipped silently — a partial footer beats ``?%`` or empty slots."""
@@ -85,6 +107,8 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
     renderers = {
         "model": lambda: _model_short(model),
         "context_pct": context_pct,
+        "tokens": lambda: _format_token_count(total_tokens) if isinstance(total_tokens, int) and total_tokens >= 0 else "",
+        "cost": lambda: _format_estimated_cost(estimated_cost_usd, cost_status),
         # Skipped when the caller did not measure (None) or the value is negative.
         "latency": lambda: _format_latency(turn_seconds) if turn_seconds is not None and turn_seconds >= 0 else "",
         "cwd": lambda: _home_relative_cwd(cwd or _env_cwd()),
@@ -94,7 +118,9 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
 
 def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str | None,
                       model: Optional[str], context_tokens: int, context_length: Optional[int],
-                      cwd: Optional[str] = None, turn_seconds: Optional[float] = None) -> str:
+                      cwd: Optional[str] = None, turn_seconds: Optional[float] = None,
+                      total_tokens: Optional[int] = None, estimated_cost_usd: object = None,
+                      cost_status: Optional[str] = None) -> str:
     """Entry point for gateway/run.py: footer text, or "" when disabled / no data. Callers append it
     to the final response themselves, preserving a single blank line of separation.
     ``turn_seconds`` is the caller-measured (``time.monotonic()``) run duration; ``None`` skips the
@@ -104,4 +130,6 @@ def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str |
         return ""
     return format_runtime_footer(model=model, context_tokens=context_tokens,
                                  context_length=context_length, cwd=cwd, turn_seconds=turn_seconds,
+                                 total_tokens=total_tokens, estimated_cost_usd=estimated_cost_usd,
+                                 cost_status=cost_status,
                                  fields=cfg.get("fields") or _DEFAULT_FIELDS)

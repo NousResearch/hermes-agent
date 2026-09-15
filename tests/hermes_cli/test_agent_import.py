@@ -260,7 +260,7 @@ class TestClaudeCodeImport:
 
 
     def test_allowlist_lands_in_config_yaml(self, report, hermes_home):
-        config = yaml.safe_load((hermes_home / "config.yaml").read_text())
+        config = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
         allow = config["command_allowlist"]
         assert "npm run build" in allow
         assert "npm run test*" in allow
@@ -287,7 +287,7 @@ class TestCodexImport:
 
 
     def test_mcp_servers_from_config_toml(self, report, hermes_home):
-        config = yaml.safe_load((hermes_home / "config.yaml").read_text())
+        config = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
         docs = config["mcp_servers"]["docs"]
         assert docs["command"] == "uvx"
         assert docs["args"] == ["docs-mcp"]
@@ -330,7 +330,7 @@ class TestSecretsNeverImported:
 
     def test_non_secret_header_kept(self, claude_tree, hermes_home):
         run_import("claude-code", claude_tree, hermes_home, execute=True)
-        config = yaml.safe_load((hermes_home / "config.yaml").read_text())
+        config = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
         assert config["mcp_servers"]["remote"]["headers"] == {"X-Region": "us-east"}
 
 
@@ -349,7 +349,7 @@ class TestMalformedInputs:
         assert any(i["kind"] == "settings" for i in errors)
         # CLAUDE.md still imported despite bad settings.json
         assert "still importable" in (
-            hermes_home / "memories" / "MEMORY.md").read_text()
+            hermes_home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
 
 
     def test_empty_tree_all_skipped(self, profile_env, hermes_home):
@@ -372,7 +372,7 @@ class TestMergeSemantics:
             yaml.safe_dump({"mcp_servers": {"github": {"command": "mine"}}}),
             encoding="utf-8")
         report = run_import("claude-code", claude_tree, hermes_home, execute=True)
-        config = yaml.safe_load((hermes_home / "config.yaml").read_text())
+        config = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
         assert config["mcp_servers"]["github"]["command"] == "mine"
         assert any(
             i["status"] == "conflict" and i["source"] == "github"
@@ -386,7 +386,7 @@ class TestMergeSemantics:
         dest.mkdir(parents=True)
         (dest / "SKILL.md").write_text("mine\n", encoding="utf-8")
         report = run_import("claude-code", claude_tree, hermes_home, execute=True)
-        assert (dest / "SKILL.md").read_text() == "mine\n"
+        assert (dest / "SKILL.md").read_text(encoding="utf-8") == "mine\n"
         assert any(
             i["kind"] == "skill" and i["status"] == "conflict"
             for i in report["items"]
@@ -394,9 +394,9 @@ class TestMergeSemantics:
 
     def test_reimport_is_idempotent_for_memory(self, claude_tree, hermes_home):
         run_import("claude-code", claude_tree, hermes_home, execute=True)
-        first = (hermes_home / "memories" / "MEMORY.md").read_text()
+        first = (hermes_home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
         report = run_import("claude-code", claude_tree, hermes_home, execute=True)
-        assert (hermes_home / "memories" / "MEMORY.md").read_text() == first
+        assert (hermes_home / "memories" / "MEMORY.md").read_text(encoding="utf-8") == first
         memory_items = [i for i in report["items"] if i["kind"] == "claude-md"]
         assert memory_items[0]["status"] == "skipped"
 

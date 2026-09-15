@@ -28,17 +28,16 @@ function fontFamilyFromConfig(config: HermesConfigRecord): string {
 export function TerminalFontSetting() {
   const { t } = useI18n()
   const copy = t.settings.appearance
-  const { data: loadedConfig } = useHermesConfigRecord()
+  const { data: loadedConfig, dataUpdatedAt } = useHermesConfigRecord()
   // draft === null ⇔ unseeded: nothing painted yet for this profile. The
-  // profile-switch handler resets it to null and records the config object
-  // it was looking at (`staleConfig`) — the seed effect refuses to re-seed
-  // from that same object, so the previous profile's cached record can't
-  // repopulate the field; the next profile's fetch (a new object) seeds it.
-  // `draft` itself is the seed marker (no ref mirroring, per the lint rule).
+  // profile-switch handler keeps it unseeded until a config refetch completes;
+  // the timestamp is the freshness proof because React Query can reuse the
+  // same config object when the next profile has identical settings.
   const [draft, setDraft] = useState<string | null>(null)
-  const [staleConfig, setStaleConfig] = useState<HermesConfigRecord | null>(null)
+  const [profilePending, setProfilePending] = useState(false)
   const [saveVersion, setSaveVersion] = useState(0)
   const saveVersionRef = useRef(0)
+  const staleConfigStamp = useRef<null | number>(null)
 
   // Lexically outside every useEffect so async save callbacks can cancel the
   // in-flight version without assigning to a ref inside an effect body.
@@ -47,19 +46,28 @@ export function TerminalFontSetting() {
   }
 
   useEffect(() => {
-    if (!loadedConfig || draft !== null || loadedConfig === staleConfig) {
+    if (!loadedConfig || draft !== null || profilePending) {
       return
     }
 
     const value = fontFamilyFromConfig(loadedConfig)
     setDraft(value)
     setTerminalFontFamilyFromConfig(value)
-  }, [draft, loadedConfig, staleConfig])
+  }, [draft, loadedConfig, profilePending])
+
+  // eslint-disable-next-line no-restricted-syntax -- query freshness stamp is a non-rendering latch
+  useEffect(() => {
+    if (profilePending && staleConfigStamp.current !== null && dataUpdatedAt !== staleConfigStamp.current) {
+      staleConfigStamp.current = null
+      setProfilePending(false)
+    }
+  }, [dataUpdatedAt, profilePending])
 
   useOnProfileSwitch(() => {
     saveVersionRef.current += 1
     setDraft(null)
-    setStaleConfig(loadedConfig ?? null)
+    staleConfigStamp.current = dataUpdatedAt
+    setProfilePending(true)
     setSaveVersion(0)
     // Do not show the previous profile's font while the new profile loads.
     setTerminalFontFamilyFromConfig('')

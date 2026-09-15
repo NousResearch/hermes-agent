@@ -29,30 +29,43 @@ function fontFamilyFromConfig(config: HermesConfigRecord): string {
 export function ChatFontSetting() {
   const { t } = useI18n()
   const copy = t.settings.appearance
-  const { data: loadedConfig } = useHermesConfigRecord()
+  const { data: loadedConfig, dataUpdatedAt } = useHermesConfigRecord()
   const [draft, setDraft] = useState<string | null>(null)
-  const [staleConfig, setStaleConfig] = useState<HermesConfigRecord | null>(null)
+  const [profilePending, setProfilePending] = useState(false)
   const [saveVersion, setSaveVersion] = useState(0)
   const saveVersionRef = useRef(0)
+  const staleConfigStamp = useRef<null | number>(null)
 
   const cancelPendingSave = () => {
     saveVersionRef.current = 0
   }
 
   useEffect(() => {
-    if (!loadedConfig || draft !== null || loadedConfig === staleConfig) {
+    if (!loadedConfig || draft !== null || profilePending) {
       return
     }
 
     const value = fontFamilyFromConfig(loadedConfig)
     setDraft(value)
     setChatFontFamilyFromConfig(value)
-  }, [draft, loadedConfig, staleConfig])
+  }, [draft, loadedConfig, profilePending])
+
+  // A profile switch invalidates without clearing the shared query. Wait for
+  // its next successful result rather than comparing object identity: React
+  // Query may structurally share an unchanged config record across refetches.
+  // eslint-disable-next-line no-restricted-syntax -- query freshness stamp is a non-rendering latch
+  useEffect(() => {
+    if (profilePending && staleConfigStamp.current !== null && dataUpdatedAt !== staleConfigStamp.current) {
+      staleConfigStamp.current = null
+      setProfilePending(false)
+    }
+  }, [dataUpdatedAt, profilePending])
 
   useOnProfileSwitch(() => {
     saveVersionRef.current += 1
     setDraft(null)
-    setStaleConfig(loadedConfig ?? null)
+    staleConfigStamp.current = dataUpdatedAt
+    setProfilePending(true)
     setSaveVersion(0)
     setChatFontFamilyFromConfig('')
   })

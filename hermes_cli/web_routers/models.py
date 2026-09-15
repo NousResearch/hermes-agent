@@ -6,6 +6,7 @@ Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch o
 
 import asyncio
 import logging
+import os
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -48,6 +49,18 @@ def _load_config_scoped(profile: Optional[str]) -> dict:
     with _profile_scope(profile):
         return load_config()
 
+def _resolve_model_cfg_api_key(model_cfg: dict) -> str:
+    """Inline ``api_key`` (a ``${VAR}`` template resolves from the environment), else
+    ``key_env``/``api_key_env``. Same resolution order as ``model_switch._entry_configured_key``,
+    needed here because custom-endpoint context-length probes (e.g. a LiteLLM proxy requiring
+    auth on /v1/models) 401 without it."""
+    key = str(model_cfg.get("api_key") or "").strip()
+    if key.startswith("${") and key.endswith("}"):
+        key = os.environ.get(key[2:-1], "").strip()
+    if not key:
+        key_env = str(model_cfg.get("key_env") or model_cfg.get("api_key_env") or "").strip()
+        key = os.environ.get(key_env, "").strip() if key_env else ""
+    return key
 
 @router.get("/api/model/info")
 def get_model_info(profile: Optional[str] = None):
@@ -59,6 +72,8 @@ def get_model_info(profile: Optional[str] = None):
         model_name, provider = _main_model_fields(model_cfg)
         base_url = model_cfg.get("base_url", "") if isinstance(model_cfg, dict) else ""
         config_ctx = model_cfg.get("context_length") if isinstance(model_cfg, dict) else None
+        api_key = _resolve_model_cfg_api_key(model_cfg) if isinstance(model_cfg, dict) else ""
+
 
         if not model_name:
             return dict(_EMPTY_MODEL_INFO, provider=provider)
@@ -66,8 +81,8 @@ def get_model_info(profile: Optional[str] = None):
         try:
             from agent.model_metadata import get_model_context_length
             # config_context_length=None: ignore the override — we want the auto value
-            auto_ctx = get_model_context_length(model=model_name, base_url=base_url, provider=provider,
-                                                config_context_length=None)
+            auto_ctx = get_model_context_length(model=model_name, base_url=base_url, api_key=api_key,
+                                                provider=provider, config_context_length=None)
         except Exception:
             auto_ctx = 0
 

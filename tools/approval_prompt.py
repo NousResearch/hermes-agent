@@ -250,15 +250,34 @@ def _consent(choice, unresolved: str) -> str:
     return unresolved if choice == "timeout" else "decline"
 
 
+def _remember_elicitation_choice(session_key: str, choice: str, persist_key: str) -> None:
+    """Honour the scope the user picked for a keyed elicitation approval: ``session``
+    remembers it for this session, ``always`` also writes it to the permanent
+    allowlist. Persistence failures only downgrade to re-asking next time; they never
+    change the answer for the call already approved."""
+    from tools import approval as _a
+    try:
+        _a._persist_choice(session_key, choice, [(persist_key, None, False)])
+    except Exception:
+        logger.warning("Could not persist elicitation approval %r (%s)", persist_key, choice)
+
+
 def request_elicitation_consent(message: str, description: str, *,
                                 timeout_seconds: int | None = None,
-                                surface: str = "mcp-elicitation") -> str:
+                                surface: str = "mcp-elicitation",
+                                persist_key: str | None = None) -> str:
     """Route an MCP elicitation request to the surface owning the active session:
     gateway sessions through ``_await_gateway_decision``, CLI/TUI through
     ``prompt_dangerous_approval``. Always fails closed: a missing notify_cb in a
     gateway session, timeouts, and exceptions map to ``"decline"`` so a server
     treats them as "user did not approve" rather than retrying or hanging.
-    Returns ``"accept" | "decline" | "cancel"``."""
+    Returns ``"accept" | "decline" | "cancel"``.
+
+    ``persist_key``: approval key under which a ``session``/``always`` answer is
+    remembered (``tools.approval.is_approved``). Without it the answer is per-call
+    — the pre-existing behaviour for server-initiated elicitations, which have no
+    (server, tool) identity to key a standing approval on. Callers that pass a key
+    must consult ``is_approved`` first, or the remembered entry never skips a prompt."""
     from tools import approval as _a
     try:
         session_key = _ctx.get_current_session_key()
@@ -284,13 +303,19 @@ def request_elicitation_consent(message: str, description: str, *,
             return "decline"
         if not decision.get("resolved"):
             return "cancel"
-        return _consent(decision.get("choice"), "decline")
+        choice = decision.get("choice")
+        if persist_key and choice in ("session", "always"):
+            _remember_elicitation_choice(session_key, choice, persist_key)
+        return _consent(choice, "decline")
 
-    # allow_permanent=False: elicitation is a per-call confirmation — no pattern to remember.
+    # allow_permanent=False: elicitation never offers "always" at the CLI; a "session"
+    # answer still gets remembered when the caller keyed the approval.
     try:
         choice = prompt_dangerous_approval(message, description, timeout_seconds=timeout_seconds,
                                            allow_permanent=False)
     except Exception as exc:
         logger.error("Elicitation CLI prompt failed: %s", exc, exc_info=True)
         return "decline"
+    if persist_key and choice == "session":
+        _remember_elicitation_choice(session_key, choice, persist_key)
     return _consent(choice, "cancel")  # timeout mirrors the gateway's unresolved outcome

@@ -48,6 +48,16 @@ def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
     if (trust != _core._TRUST_UNTRUSTED
             or _core._tool_read_only_hints.get(_resolve_server_key(server_name), {}).get(tool_name) is True):
         return None
+    # Keyed per (server, tool) so a "session"/"always" answer on one tool never widens to the
+    # server's other write-capable tools (#109818). is_approved consults the session and
+    # permanent allowlists; a lookup failure falls through to prompting (still fail-closed).
+    persist_key = f"mcp:{key}/{tool_name}"
+    try:
+        from tools import approval as _approval, approval_context as _actx
+        if _approval.is_approved(_actx.get_current_session_key(), persist_key):
+            return None
+    except Exception:
+        pass
     try:  # lazy: tools.approval routes the prompt to whichever surface owns the session
         from tools.approval_prompt import request_elicitation_consent
         answer = request_elicitation_consent(
@@ -55,7 +65,7 @@ def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
             f"(no readOnlyHint=true annotation) and may modify external state.",
             f"Server '{server_name}' is configured 'trust: untrusted'. "
             f"Approve to run '{tool_name}' once, or deny to block it.",
-            surface=f"mcp-trust/{server_name}")
+            surface=f"mcp-trust/{server_name}", persist_key=persist_key)
     except Exception as exc:
         logger.error("MCP trust gate: approval check failed for %s.%s: %s", server_name, tool_name, exc, exc_info=True)
         return tool_error(f"MCP tool '{tool_name}' on untrusted server '{server_name}' was blocked: the approval "

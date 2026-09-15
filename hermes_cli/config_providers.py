@@ -107,7 +107,8 @@ _CAMEL_ALIASES: Dict[str, str] = {
     "apiKeyEnv": "key_env",  # OpenClaw-compatible + docs variant
     "defaultModel": "default_model",
     "contextLength": "context_length",
-    "rateLimitDelay": "rate_limit_delay"}
+    "rateLimitDelay": "rate_limit_delay",
+    "sessionAffinityHeader": "session_affinity_header"}
 
 
 _KNOWN_PROVIDER_KEYS = {
@@ -117,7 +118,8 @@ _KNOWN_PROVIDER_KEYS = {
     "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env", "key_cmd",
     "api_mode", "transport", "model", "default_model", "models", "models_discovered",
     "context_length", "rate_limit_delay", "request_timeout_seconds", "stale_timeout_seconds",
-    "discover_models", "extra_body", "extra_headers", "capabilities", "ssl_ca_cert", "ssl_verify"}
+    "discover_models", "extra_body", "extra_headers", "capabilities", "ssl_ca_cert", "ssl_verify",
+    "session_affinity_header"}
 
 
 def _pick_provider_base_url(entry: Dict[str, Any], provider_key: str) -> str:
@@ -263,6 +265,7 @@ def _normalize_custom_provider_entry(
 
     # Per-provider extra HTTP headers may carry credentials — never log them downstream.
     _put("extra_headers", normalize_extra_headers(entry.get("extra_headers")))
+    _put("session_affinity_header", _stripped("session_affinity_header"))
     _put("ssl_ca_cert", _stripped("ssl_ca_cert"))
 
     ssl_verify = entry.get("ssl_verify")
@@ -285,7 +288,7 @@ def _custom_provider_entry_to_provider_config(
     for field in (
         "name", "api_key", "key_env", "key_cmd", "models", "models_discovered", "context_length",
         "rate_limit_delay", "discover_models", "extra_body", "extra_headers",
-        "ssl_ca_cert", "ssl_verify"):
+        "session_affinity_header", "ssl_ca_cert", "ssl_verify"):
         if field in normalized:
             provider_entry[field] = normalized[field]
     if "model" in normalized:
@@ -476,6 +479,46 @@ def apply_custom_provider_extra_headers_to_client_kwargs(
     merged = dict(client_kwargs.get("default_headers") or {})
     merged.update(extra_headers)
     client_kwargs["default_headers"] = merged
+
+
+def get_custom_provider_session_affinity_header(
+    base_url: Optional[str] = None,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+    provider: Optional[str] = None) -> Optional[str]:
+    """Return the declared ``session_affinity_header`` for a provider or route, or None."""
+    from hermes_cli.config import get_compatible_custom_providers
+    if custom_providers is None:
+        try:
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            custom_providers = []
+    if not isinstance(custom_providers, list):
+        return None
+
+    want_p = str(provider or "").strip().lower()
+    target_url = normalize_route_base_url(base_url) if base_url else ""
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        header = entry.get("session_affinity_header")
+        if not (isinstance(header, str) and header.strip()):
+            continue
+        header_clean = header.strip()
+
+        if want_p:
+            entry_p = str(entry.get("provider_key") or "").strip().lower()
+            entry_n = str(entry.get("name") or "").strip().lower()
+            if want_p == entry_p or want_p == entry_n:
+                return header_clean
+
+        if target_url:
+            entry_url = normalize_route_base_url(entry.get("base_url"))
+            if entry_url and entry_url == target_url:
+                return header_clean
+
+    return None
 
 
 def get_custom_provider_context_length(

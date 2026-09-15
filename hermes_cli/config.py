@@ -3264,13 +3264,15 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     if top in _OPEN_SUBKEY_TOP_LEVEL_KEYS:
         return True, None
 
-    # Walk DEFAULT_CONFIG: a nested ``platforms`` container or a scalar leaf hit before the path is
-    # consumed both accept (the latter matches set_config_value's leaf->dict replacement); an
-    # unknown sub-key fails with a same-level "did you mean" suggestion.
+    # Walk DEFAULT_CONFIG: a nested ``platforms`` container, a scalar leaf, or an EMPTY dict hit
+    # before the path is consumed all accept. An empty dict is a free-form mapping section
+    # (``compression.model_thresholds.<model>``, ``terminal.docker_env.<VAR>``,
+    # ``lsp.servers.<lang>``): its keys are user-chosen, so nothing under it can be a typo. An
+    # unknown sub-key of a populated section fails with a same-level "did you mean" suggestion.
     node: Any = DEFAULT_CONFIG.get(top)
     consumed = [top]
     for seg in segments[1:]:
-        if seg in _PLATFORM_CONTAINER_KEYS or not isinstance(node, dict):
+        if seg in _PLATFORM_CONTAINER_KEYS or not isinstance(node, dict) or not node:
             return True, None
         if seg not in node:
             sibling = _suggest_closest_key(seg, set(node.keys()))

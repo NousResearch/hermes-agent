@@ -395,6 +395,52 @@ def _profile_action_environment(
     return action_env
 
 
+# Gateway lifecycle verbs the CLI refuses below root on a system-scope install
+# (``gateway.py::_require_root_for_system_service``).
+_ROOT_REQUIRING_GATEWAY_VERBS = frozenset({"restart", "start", "stop"})
+
+
+def _action_targets_system_gateway(subcommand: List[str]) -> bool:
+    """True when *subcommand* is a gateway lifecycle verb that resolves to the SYSTEM unit.
+
+    Scope is decided by the CLI's own picker (``_select_systemd_scope``) evaluated for the profile
+    the action addresses, not by "a system unit exists": a host carrying both units resolves to the
+    user unit, which the dashboard user operates unelevated. Root already has the privilege.
+    """
+    if not hasattr(os, "geteuid") or os.geteuid() == 0:
+        return False
+    try:
+        verb = subcommand[subcommand.index("gateway") + 1]
+    except (ValueError, IndexError):
+        return False
+    if verb not in _ROOT_REQUIRING_GATEWAY_VERBS:
+        return False
+
+    from hermes_cli.gateway import _select_systemd_scope
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    profile = _named_profile_from_action(subcommand)
+    if profile is None:
+        return _select_systemd_scope(False)
+    # Unit names are derived from HERMES_HOME, so a selector-bearing action must be resolved
+    # against the TARGET profile's home (``-p default gateway restart`` from a pooled named
+    # dashboard asks about the default unit, not about its own).
+    from hermes_cli.web_server_profiles import _resolve_profile_dir
+    token = set_hermes_home_override(_resolve_profile_dir(profile))
+    try:
+        return _select_systemd_scope(False)
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _sudo_noninteractive_available() -> bool:
+    """True when this user can elevate without being prompted (``sudo -n true``)."""
+    try:
+        return subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=5).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def _spawn_hermes_action(
     subcommand: List[str], name: str, *, env_overrides: Optional[Dict[str, str]] = None
 ) -> subprocess.Popen:
@@ -405,6 +451,23 @@ def _spawn_hermes_action(
     log_file.write(f"\n=== {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode())
 
     cmd = [_dashboard_spawn_executable(), "-m", "hermes_cli.main", *subcommand]
+    if _action_targets_system_gateway(subcommand):
+        # A system-scope lifecycle verb spawned as the dashboard's own user can only ever write
+        # "System gateway <verb> requires root" into this log, so the button never worked on a
+        # system install (#110820). Elevate — the CLI is sudo-aware: it adopts the unit's
+        # HERMES_HOME past sudo's env_reset and reads SUDO_USER for the service identity.
+        # ``-n`` never prompts (stdin is DEVNULL anyway); without a passwordless path the
+        # REQUEST fails instead of reporting a started action whose child refuses.
+        if not _sudo_noninteractive_available():
+            message = (
+                f"{name} targets the system-scope gateway service, which requires root, and "
+                "passwordless sudo is unavailable for the dashboard user. Run "
+                f"'sudo hermes {' '.join(subcommand)}' on the host, or grant that user NOPASSWD sudo."
+            )
+            log_file.write(f"{message}\n".encode())
+            log_file.close()
+            raise RuntimeError(message)
+        cmd = ["sudo", "-n", *cmd]
     # Named-profile actions get a scrubbed, pinned environment so the child cannot inherit the
     # dashboard profile's credentials; see _profile_action_environment (also drops _HERMES_GATEWAY).
     action_env = _profile_action_environment(subcommand, env_overrides)

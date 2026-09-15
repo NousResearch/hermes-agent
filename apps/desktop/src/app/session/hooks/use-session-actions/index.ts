@@ -1311,7 +1311,7 @@ export function useSessionActions({
                   ? false
                   : resolveResumedBusy(activated.running ?? cachedViewState.busy, Boolean(latestCachedState?.busy))
 
-              restoreSessionTodosFromSnapshot(cachedRuntimeId, activated.todo_state, running)
+              restoreSessionTodosFromSnapshot(cachedRuntimeId, activated.todo_state, running, storedSessionId)
 
               const activatedTurnStartedAt =
                 typeof activated.turn_started_at === 'number' && activated.turn_started_at > 0
@@ -1776,7 +1776,7 @@ export function useSessionActions({
           Boolean(sessionStateByRuntimeIdRef.current.get(resumed.session_id)?.busy)
         )
 
-        restoreSessionTodosFromSnapshot(resumed.session_id, resumed.todo_state, resumedRunning)
+        restoreSessionTodosFromSnapshot(resumed.session_id, resumed.todo_state, resumedRunning, storedSessionId)
 
         // Crash-survivable turn progress: fold a journaled in-flight tail
         // (persisted by use-session-state-cache while the turn streamed;

@@ -283,6 +283,7 @@ export const de: Translations = {
       discord: "Discord",
       slack: "Slack",
       email: "Email",
+      all: "Alle verbundenen Kanäle",
     },
   },
 

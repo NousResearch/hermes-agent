@@ -283,6 +283,7 @@ export const tr: Translations = {
       discord: "Discord",
       slack: "Slack",
       email: "Email",
+      all: "Bağlı tüm kanallar",
     },
   },
 

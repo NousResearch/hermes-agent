@@ -57,6 +57,17 @@ describe('cron delivery targets', () => {
   it('does not allow the final delivery target to be unchecked', () => {
     expect(toggleCronDeliveryTarget('origin', 'origin', false)).toBe('origin')
   })
+
+  it('parses the all routing token like any other target', () => {
+    expect(parseCronDeliveryTargets('local,all')).toEqual(['local', 'all'])
+    expect(parseCronDeliveryTargets('all')).toEqual(['all'])
+  })
+
+  it('adds and removes all alongside explicit targets in the comma-separated format', () => {
+    expect(toggleCronDeliveryTarget('local', 'all', true)).toBe('local,all')
+    expect(toggleCronDeliveryTarget('local,all', 'all', false)).toBe('local')
+    expect(toggleCronDeliveryTarget('all', 'origin', true)).toBe('all,origin')
+  })
 })
 
 describe('cronEditorUpdates', () => {

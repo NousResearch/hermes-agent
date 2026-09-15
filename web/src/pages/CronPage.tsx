@@ -354,12 +354,17 @@ function CronJobFormFields({
     onChange({ ...form, [key]: next });
   };
   const onlyLocalAvailable =
-    deliveryTargets.filter((target) => target.id !== "local").length === 0;
+    deliveryTargets.filter((target) => target.id !== "local" && target.id !== "all").length === 0;
 
   const deliveryOptions = selectOptions(
     form.deliver,
     deliveryTargets.map((target) => {
-      const base = target.id === "local" ? t.cron.delivery.local : target.name;
+      const base =
+        target.id === "local"
+          ? t.cron.delivery.local
+          : target.id === "all"
+            ? t.cron.delivery.all
+            : target.name;
       if (target.id !== "local" && !target.home_target_set) {
         const hint = t.cron.delivery.needsHomeChannel ?? "set a home channel first";
         return { value: target.id, label: `${base} — ${hint}` };

@@ -282,6 +282,7 @@ export const zhHant: Translations = {
       discord: "Discord",
       slack: "Slack",
       email: "Email",
+      all: "所有已連線頻道",
     },
   },
 

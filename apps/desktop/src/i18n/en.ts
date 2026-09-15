@@ -2454,7 +2454,8 @@ export const en: Translations = {
       telegram: 'Telegram',
       discord: 'Discord',
       slack: 'Slack',
-      email: 'Email'
+      email: 'Email',
+      all: 'All connected channels'
     },
     scheduleLabels: {
       daily: 'Daily',

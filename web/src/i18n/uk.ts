@@ -283,6 +283,7 @@ export const uk: Translations = {
       discord: "Discord",
       slack: "Slack",
       email: "Email",
+      all: "Усі підключені канали",
     },
   },
 

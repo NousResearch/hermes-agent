@@ -83,11 +83,22 @@ def build_write_denied_paths(home: str) -> set[str]:
         (".ssh", "authorized_keys"), (".ssh", "id_rsa"), (".ssh", "id_ed25519"),
         (".netrc",), (".pgpass",), (".npmrc",), (".pypirc",), (".git-credentials",),
     )
-    # Both the active-profile and top-level copies: overwriting the root .env leaks
-    # credentials across every profile that inherits from it; the root Anthropic
-    # PKCE store is still read by default/non-profile sessions when a profile is
-    # active; bws_cache.enc.json is the Bitwarden Secrets Manager encrypted cache.
-    hermes_files = (".env", ".anthropic_oauth.json", os.path.join("cache", "bws_cache.enc.json"))
+    # Secret material under HERMES_HOME, on both the active profile and the global
+    # root: overwriting the root .env leaks credentials across every profile that
+    # inherits it, and the root Anthropic PKCE store is still read by default /
+    # non-profile sessions when a profile is active. google_oauth.json is an OAuth
+    # token store; both Bitwarden caches hold Secrets Manager material.
+    #
+    # auth.json, auth.lock, config.yaml and webhook_subscriptions.json are
+    # deliberately NOT here: #45947 freed those control files on purpose
+    # ("true containment belongs in Docker/remote backends and OS permissions,
+    # not an expanding hardcoded denylist"). They stay read-denied, not write-denied.
+    hermes_files = (
+        ".env", ".anthropic_oauth.json",
+        os.path.join("auth", "google_oauth.json"),
+        os.path.join("cache", "bws_cache.json"),
+        os.path.join("cache", "bws_cache.enc.json"),
+    )
     paths = [
         *(os.path.join(home, *f) for f in home_files),
         *(str(base / f) for f in hermes_files for base in (_hermes_home_path(), _hermes_root_path())),
@@ -132,6 +143,11 @@ def build_write_approval_paths(home: str) -> set[str]:
 # mcp-tokens/ and pairing/ hold credential material.
 _HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions", "mcp-tokens", "pairing")
 
+# Read-denied directories that are also secret material, so writes are blocked
+# too. Kept as its own tuple (not derived from _READ_DENIED_DIRS) so adding a
+# read-only *convenience* deny later cannot silently become a write deny.
+_WRITE_DENIED_SECRET_DIRS = ("vault", "browser-profile")
+
 
 def _classify_write_denial(path: str) -> Optional[str]:
     """Return ``'credential'``, ``'safe_root'``, or ``None`` if writes are allowed."""
@@ -149,6 +165,14 @@ def _classify_write_denial(path: str) -> Optional[str]:
 
     for base in _hermes_dirs():
         for sub in _HERMES_PROTECTED_SUBPATHS:
+            with suppress(Exception):
+                if _is_under(resolved, os.path.realpath(os.path.join(str(base), sub))):
+                    return "credential"
+        # vault/ (key + ciphertext side by side) and browser-profile/ (copied
+        # cookies / Login Data) are secret stores, not control files, so the
+        # #45947 relaxation does not cover them. mcp-tokens/ is already in
+        # _HERMES_PROTECTED_SUBPATHS.
+        for sub in _WRITE_DENIED_SECRET_DIRS:
             with suppress(Exception):
                 if _is_under(resolved, os.path.realpath(os.path.join(str(base), sub))):
                     return "credential"

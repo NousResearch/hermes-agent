@@ -928,6 +928,28 @@ class TestSymlinkedExternalSkill:
         assert "external" in result["error"].lower()
         assert "OLD_MARKER" in (source / "SKILL.md").read_text(encoding="utf-8")
 
+    def test_failed_create_batch_never_deletes_through_a_link(self, tmp_path):
+        """A batch-created skill is removed at its LEXICAL path on rollback. When an alias already
+        sat at that path (no SKILL.md behind it, so 'create' saw no skill and wrote through the
+        link), rollback must refuse the link — as rmtree does on a plain path — rather than
+        resolve it and delete the target's contents."""
+        local = tmp_path / "local"
+        target = tmp_path / "shared" / "_src" / "aliased"
+        local.mkdir(); target.mkdir(parents=True)
+        (target / "notes.txt").write_text("keep me", encoding="utf-8")
+        try:
+            (local / "aliased").symlink_to(target, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("Directory symlinks are unavailable on this platform")
+        with _skill_dir(local):
+            result = _batch([
+                {"name": "aliased", "action": "create", "content": VALID_SKILL_CONTENT},
+                {"name": "aliased", "action": "write_file",
+                 "file_path": "bad/nope.md", "file_content": "x"}])
+        assert result["success"] is False
+        assert (local / "aliased").is_symlink()
+        assert (target / "notes.txt").read_text(encoding="utf-8") == "keep me"
+
 
 class TestBackgroundOwnershipPolicyConsistency:
     """The autonomous write policy must not depend on its own side effects.

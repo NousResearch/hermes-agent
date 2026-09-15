@@ -117,7 +117,12 @@ def _rollback(snapshots, find_skill):
     notes = []
     for nm, (pre_dir, snap) in snapshots.items():
         try:
-            _restore_snapshot(pre_dir, snap, _real_skill_dir(find_skill(nm)))
+            post = find_skill(nm)
+            # A batch-created skill (no snapshot) is removed at its LEXICAL path: if an alias
+            # already sat there, rmtree refuses the link (loud rollback failure, as on a plain
+            # create) instead of following it into a shared tree.
+            post_dir = (Path(post["path"]) if post else None) if snap is None else _real_skill_dir(post)
+            _restore_snapshot(pre_dir, snap, post_dir)
         except Exception as exc:  # noqa: BLE001
             notes.append(f"ROLLBACK FAILED for '{nm}' ({exc})"
                          + (f"; snapshot preserved at '{snap}'" if snap is not None else ""))

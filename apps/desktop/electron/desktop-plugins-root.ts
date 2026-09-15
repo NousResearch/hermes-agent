@@ -218,7 +218,18 @@ export async function reconcileUnifiedDesktopHalves(hermesHome: string, appRoot:
         continue
       }
 
-      const result = await materializeDesktopHalf(path.join(pluginsRoot, name), appRoot, name)
+      let result: null | string
+
+      try {
+        result = await materializeDesktopHalf(path.join(pluginsRoot, name), appRoot, name)
+      } catch (error) {
+        // One package the app cannot read (Windows ACL EPERM on lstat/copy, a
+        // mode-000 folder) must not reject the whole reconcile — the root would
+        // never resolve and EVERY desktop plugin would silently stop loading.
+        console.warn(`[desktop-plugins] skipping unreadable package ${name}: ${String(error)}`)
+
+        continue
+      }
 
       if (result || fs.existsSync(path.join(pluginsRoot, name, 'desktop', 'plugin.js'))) {
         seen.add(name)

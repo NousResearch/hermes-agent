@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   migrateProfileScopedDesktopPlugins,
@@ -100,6 +100,29 @@ describe('reconcileUnifiedDesktopHalves', () => {
     expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([path.join(appRoot, 'media')])
     expect(fs.existsSync(path.join(appRoot, 'media'))).toBe(false)
   })
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'skips a package the app cannot read and still materializes its siblings',
+    async () => {
+      // #111804: one unreadable plugin folder rejected the whole reconcile, so the
+      // desktop-plugins root never resolved and no desktop plugin loaded.
+      const home = makeHome()
+      const appRoot = path.join(home, 'desktop-plugins')
+      const denied = path.join(home, 'plugins', 'denied', 'desktop', 'plugin.js')
+      write(denied, 'x')
+      write(path.join(home, 'plugins', 'good', 'desktop', 'plugin.js'), 'y')
+      fs.chmodSync(denied, 0)
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+      try {
+        expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([path.join(appRoot, 'good')])
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('skipping unreadable package denied'))
+      } finally {
+        warn.mockRestore()
+        fs.chmodSync(denied, 0o600)
+      }
+    }
+  )
 
   it('stamps the package origin (catalog sidecar, else git remote) so "Install here" can reinstall the agent half', async () => {
     const home = makeHome()

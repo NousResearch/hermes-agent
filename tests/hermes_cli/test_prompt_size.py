@@ -116,6 +116,26 @@ def test_skills_breakdown_attributes_demoted_category_shared_line(isolated_home)
         assert entry["index_line_shared_bytes"] > 0
         assert entry["index_line_skill_count"] == 2
 
+def test_skills_breakdown_keeps_same_named_skills_in_different_categories_distinct(
+    isolated_home,
+):
+    """Two local skills sharing a frontmatter name report their own paths and sizes.
 
-
-
+    The index legitimately lists both (one line per category); the breakdown must not
+    collapse them onto one first-wins path, which reads as a byte-identical duplicate row.
+    """
+    _seed_skill(isolated_home, "dup-skill", "description one")
+    other = isolated_home / "skills" / "other-place" / "dup-skill"
+    other.mkdir(parents=True)
+    (other / "SKILL.md").write_text(
+        "---\nname: dup-skill\ndescription: description two\n---\n# dup-skill\n"
+        + "x" * 500,
+        encoding="utf-8",
+    )
+    data = compute_prompt_breakdown("cli")
+    rows = [s for s in data["skills_breakdown"] if s["name"] == "dup-skill"]
+    assert len(rows) == 2
+    assert len({s["path"] for s in rows}) == 2
+    for s in rows:
+        assert s["path"] and Path(s["path"]).stat().st_size == s["skill_md_bytes"]
+    assert len({s["skill_md_bytes"] for s in rows}) == 2

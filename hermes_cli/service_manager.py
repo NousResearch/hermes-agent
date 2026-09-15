@@ -173,6 +173,11 @@ class LaunchdServiceManager(_HostServiceManager):
     _backend = "gateway"
     _fn_prefix = "launchd_"
 
+    def stop(self, name: str) -> None:
+        backend = self._backend_module()
+        if backend.launchd_stop() is False:
+            raise backend.LaunchdStopError("Gateway did not stop")
+
     def is_running(self, name: str) -> bool:
         return self._backend_module()._probe_launchd_service_running()
 

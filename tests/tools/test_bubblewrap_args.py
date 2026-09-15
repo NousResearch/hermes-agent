@@ -1,0 +1,660 @@
+"""Unit tests for the pure bwrap argv builder in tools.environments.bubblewrap.
+
+The builder never touches the host: every path is passed in, so these tests
+run on any platform, with or without bwrap installed.
+"""
+
+import logging
+import os
+from pathlib import Path
+
+import pytest
+
+from tools.environments.bubblewrap import (
+    BindMount,
+    BubblewrapConfig,
+    PROFILE_NAMES,
+    SENSITIVE_HOME_PATHS,
+    ancestor_pin_args,
+    build_bwrap_args,
+    empty_file_path,
+    load_bubblewrap_config,
+    resolve_bind_dests,
+    runtime_overlay_args,
+    sensitive_paths,
+)
+
+BWRAP = "/usr/bin/bwrap"
+
+NAMESPACE_FLAGS = ("--unshare-all", "--die-with-parent", "--new-session", "--unshare-cgroup-try")
+BASE_MOUNTS = (
+    ("--ro-bind", "/", "/"),
+    ("--dev", "/dev"),
+    ("--proc", "/proc"),
+    ("--tmpfs", "/tmp"),
+)
+
+
+@pytest.fixture
+def paths(tmp_path):
+    home = tmp_path / "home"
+    hermes_home = home / ".hermes"
+    return {
+        "initial_cwd": str(tmp_path / "work"),
+        "state_dir": str(hermes_home / "sandboxes" / "bwrap-abc123"),
+        "home": str(home),
+        "hermes_home": str(hermes_home),
+        "tracked_cwd": str(tmp_path / "work"),
+    }
+
+
+def build(config=None, bwrap_path=BWRAP, **overrides):
+    """Build argv with the shared fixture paths, overriding any of them."""
+    kwargs = dict(overrides.pop("paths"))
+    kwargs.update(overrides)
+    return build_bwrap_args(config or BubblewrapConfig(), bwrap_path=bwrap_path, **kwargs)
+
+
+def triples(argv, flag):
+    """Return the (src, dest) pairs that follow every occurrence of *flag*."""
+    return [(argv[i + 1], argv[i + 2]) for i, a in enumerate(argv) if a == flag]
+
+
+def singles(argv, flag):
+    """Return the operand that follows every occurrence of a one-operand *flag*."""
+    return [argv[i + 1] for i, a in enumerate(argv) if a == flag]
+
+
+def contains_sequence(argv, seq):
+    n = len(seq)
+    return any(tuple(argv[i:i + n]) == tuple(seq) for i in range(len(argv) - n + 1))
+
+
+class TestNamespaceAndBaseMounts:
+    def test_starts_with_bwrap_path(self, paths):
+        argv = build(paths=paths)
+        assert argv[0] == BWRAP
+
+    def test_namespace_flags_present(self, paths):
+        argv = build(paths=paths)
+        for flag in NAMESPACE_FLAGS:
+            assert flag in argv
+
+    def test_base_mounts_present(self, paths):
+        argv = build(paths=paths)
+        for seq in BASE_MOUNTS:
+            assert contains_sequence(argv, seq), seq
+
+    def test_root_ro_bind_precedes_every_other_mount(self, paths):
+        argv = build(paths=paths)
+        root = argv.index("--ro-bind")
+        for flag in ("--dev", "--proc", "--tmpfs", "--bind"):
+            if flag in argv:
+                assert argv.index(flag) > root
+
+    def test_argv_ends_with_option_terminator(self, paths):
+        argv = build(paths=paths)
+        assert argv[-1] == "--"
+
+    def test_state_dir_bound_read_write(self, paths):
+        argv = build(paths=paths)
+        assert (paths["state_dir"], paths["state_dir"]) in triples(argv, "--bind")
+
+
+class TestProfiles:
+    def test_default_profile_is_network(self):
+        assert BubblewrapConfig().profile == "network"
+
+    @pytest.mark.parametrize("profile,expect_net", [
+        ("restricted", False),
+        ("workspace", False),
+        ("network", True),
+    ])
+    def test_share_net_only_for_network(self, paths, profile, expect_net):
+        argv = build(BubblewrapConfig(profile=profile), paths=paths)
+        assert ("--share-net" in argv) is expect_net
+
+    @pytest.mark.parametrize("profile,expect_bind", [
+        ("restricted", False),
+        ("workspace", True),
+        ("network", True),
+    ])
+    def test_cwd_writable_only_for_workspace_and_network(self, paths, profile, expect_bind):
+        argv = build(BubblewrapConfig(profile=profile), paths=paths)
+        cwd = paths["initial_cwd"]
+        # The -try form skips a cwd deleted on the host instead of failing the spawn.
+        assert ((cwd, cwd) in triples(argv, "--bind-try")) is expect_bind
+        # Restricted still binds the cwd, read-only, so --chdir resolves when
+        # the cwd lives under the masked /tmp.
+        assert ((cwd, cwd) in triples(argv, "--ro-bind-try")) is not expect_bind
+        assert (cwd, cwd) not in triples(argv, "--bind")
+        assert (cwd, cwd) not in triples(argv, "--ro-bind")
+
+    def test_unknown_profile_raises_listing_valid_names(self, paths):
+        with pytest.raises(ValueError) as excinfo:
+            build(BubblewrapConfig(profile="bogus"), paths=paths)
+        message = str(excinfo.value)
+        assert "bogus" in message
+        for name in ("restricted", "workspace", "network"):
+            assert name in message
+
+    def test_profile_names_are_the_three_documented(self):
+        assert set(PROFILE_NAMES) == {"restricted", "workspace", "network"}
+
+
+class TestTrackedCwd:
+    def test_chdir_uses_tracked_cwd(self, paths):
+        tracked = "/usr/share"
+        argv = build(paths=paths, tracked_cwd=tracked)
+        assert contains_sequence(argv, ("--chdir", tracked))
+
+    def test_tracked_cwd_never_feeds_a_mount(self, paths):
+        tracked = str(Path(paths["home"]) / "elsewhere")
+        argv = build(paths=paths, tracked_cwd=tracked)
+        mount_paths = {p for flag in ("--bind", "--ro-bind") for pair in triples(argv, flag) for p in pair}
+        assert tracked not in mount_paths
+        assert argv.count("--chdir") == 1
+
+    def test_mount_set_identical_across_tracked_cwd_changes(self, paths):
+        first = build(paths=paths)
+        second = build(paths=paths, tracked_cwd="/usr/share")
+        strip = lambda argv: [a for i, a in enumerate(argv) if a != "--chdir" and argv[i - 1] != "--chdir"]
+        assert strip(first) == strip(second)
+
+
+class TestExtraBinds:
+    def test_plain_bind_added_with_requested_mode(self, paths, tmp_path):
+        rw = BindMount(src=str(tmp_path / "data"), dest="/data", readonly=False)
+        ro = BindMount(src=str(tmp_path / "ref"), dest=str(tmp_path / "ref"), readonly=True)
+        argv = build(BubblewrapConfig(binds=(rw, ro)), paths=paths)
+        assert (rw.src, "/data") in triples(argv, "--bind")
+        assert (ro.src, ro.dest) in triples(argv, "--ro-bind")
+
+    def test_sensitive_bind_dropped_with_warning(self, paths, tmp_path, caplog):
+        plain = BindMount(src=str(tmp_path / "data"), dest=str(tmp_path / "data"), readonly=False)
+        secret = BindMount(src=str(Path(paths["home"]) / ".ssh" / "keys"), dest="/keys", readonly=True)
+        with caplog.at_level(logging.WARNING, logger="tools.environments.bubblewrap"):
+            argv = build(BubblewrapConfig(binds=(plain, secret)), paths=paths)
+        baseline = build(paths=paths)
+        extra_pairs = (len(triples(argv, "--bind")) + len(triples(argv, "--ro-bind"))) - (
+            len(triples(baseline, "--bind")) + len(triples(baseline, "--ro-bind"))
+        )
+        assert extra_pairs == 1
+        assert (plain.src, plain.dest) in triples(argv, "--bind")
+        assert not any(secret.src in pair for pair in triples(argv, "--ro-bind"))
+        assert any(secret.src in rec.getMessage() for rec in caplog.records if rec.levelno >= logging.WARNING)
+
+    @pytest.mark.parametrize("rel", sorted(SENSITIVE_HOME_PATHS))
+    def test_every_sensitive_home_path_is_rejected(self, paths, rel):
+        src = str(Path(paths["home"]) / rel)
+        argv = build(BubblewrapConfig(binds=(BindMount(src=src, dest=src),)), paths=paths)
+        assert (src, src) not in triples(argv, "--ro-bind")
+        assert (src, src) not in triples(argv, "--bind")
+
+    def test_hermes_home_bind_dropped(self, paths, caplog):
+        src = str(Path(paths["hermes_home"]) / "config.yaml")
+        with caplog.at_level(logging.WARNING, logger="tools.environments.bubblewrap"):
+            argv = build(BubblewrapConfig(binds=(BindMount(src=src, dest="/cfg"),)), paths=paths)
+        assert (src, "/cfg") not in triples(argv, "--ro-bind")
+        assert any(src in rec.getMessage() for rec in caplog.records)
+
+    def test_sibling_of_sensitive_path_is_kept(self, paths):
+        src = str(Path(paths["home"]) / ".sshfs")
+        argv = build(BubblewrapConfig(binds=(BindMount(src=src, dest=src),)), paths=paths)
+        assert (src, src) in triples(argv, "--ro-bind")
+
+    def test_symlinked_source_into_sensitive_path_is_dropped(self, paths, tmp_path):
+        home = Path(paths["home"])
+        (home / ".ssh").mkdir(parents=True)
+        link = tmp_path / "innocent"
+        link.symlink_to(home / ".ssh")
+        argv = build(BubblewrapConfig(binds=(BindMount(src=str(link), dest="/x"),)), paths=paths)
+        assert (str(link), "/x") not in triples(argv, "--ro-bind")
+
+    @pytest.mark.parametrize("readonly", [True, False])
+    def test_bind_containing_a_hidden_path_mapped_elsewhere_is_dropped(self, paths, readonly, caplog):
+        # A mirror of HOME at /mnt would show ~/.ssh at /mnt/.ssh: the overlays
+        # cover the hidden paths only at their own location.
+        home = paths["home"]
+        with caplog.at_level(logging.WARNING, logger="tools.environments.bubblewrap"):
+            argv = build(BubblewrapConfig(binds=(BindMount(src=home, dest="/mnt", readonly=readonly),)), paths=paths)
+        assert not any(dest == "/mnt" for _, dest in triples(argv, "--ro-bind") + triples(argv, "--bind"))
+        messages = [rec.getMessage() for rec in caplog.records if rec.levelno >= logging.WARNING]
+        hidden = sensitive_paths(paths["home"], paths["hermes_home"])
+        assert any(home in m and "/mnt" in m and any(h in m for h in hidden) for m in messages), messages
+
+    def test_bind_containing_a_hidden_path_at_its_own_path_is_kept(self, paths):
+        # dest == src is the cwd=HOME shape: the overlays and pins land on top of it.
+        home = paths["home"]
+        argv = build(BubblewrapConfig(binds=(BindMount(src=home, dest=home, readonly=False),)), paths=paths)
+        assert (home, home) in triples(argv, "--bind")
+
+    def test_project_bind_under_home_mapped_elsewhere_is_kept(self, paths):
+        src = str(Path(paths["home"]) / "proj")
+        argv = build(BubblewrapConfig(binds=(BindMount(src=src, dest="/proj"),)), paths=paths)
+        assert (src, "/proj") in triples(argv, "--ro-bind")
+
+    def test_builder_emits_a_tilde_source_as_given(self, paths):
+        # BubblewrapEnvironment expands the source once at construction; the
+        # pure builder resolves nothing per spawn.
+        argv = build(BubblewrapConfig(binds=(BindMount(src="~/data", dest="/data"),)), paths=paths)
+        assert ("~/data", "/data") in triples(argv, "--ro-bind")
+
+
+class TestLoadConfig:
+    def test_defaults_when_env_is_empty(self):
+        config = load_bubblewrap_config({})
+        assert config.profile == "network"
+        assert config.binds == ()
+        assert config.memory_mb == 256
+        assert config.cpu_seconds == 30
+        assert config.max_procs == 256
+
+    def test_reads_every_terminal_bubblewrap_env_name(self):
+        env = {
+            "TERMINAL_BUBBLEWRAP_PROFILE": "restricted",
+            "TERMINAL_BUBBLEWRAP_BINDS": '[{"src": "/data", "dest": "/mnt/data", "readonly": false}, {"src": "/ref"}]',
+            "TERMINAL_BUBBLEWRAP_MEMORY_MB": "512",
+            "TERMINAL_BUBBLEWRAP_CPU_SECONDS": "0",
+            "TERMINAL_BUBBLEWRAP_MAX_PROCS": "64",
+        }
+        config = load_bubblewrap_config(env)
+        assert config.profile == "restricted"
+        assert config.binds == (
+            BindMount(src="/data", dest="/mnt/data", readonly=False),
+            BindMount(src="/ref", dest="/ref", readonly=True),
+        )
+        assert config.memory_mb == 512
+        assert config.cpu_seconds == 0
+        assert config.max_procs == 64
+
+    def test_profile_is_normalized(self):
+        assert load_bubblewrap_config({"TERMINAL_BUBBLEWRAP_PROFILE": " Workspace "}).profile == "workspace"
+
+    def test_blank_values_fall_back_to_defaults(self):
+        env = {k: "" for k in (
+            "TERMINAL_BUBBLEWRAP_PROFILE", "TERMINAL_BUBBLEWRAP_BINDS",
+            "TERMINAL_BUBBLEWRAP_MEMORY_MB", "TERMINAL_BUBBLEWRAP_CPU_SECONDS",
+            "TERMINAL_BUBBLEWRAP_MAX_PROCS",
+        )}
+        assert load_bubblewrap_config(env) == BubblewrapConfig()
+
+    @pytest.mark.parametrize("value", ["not json", "{}", '["/data"]', '[{"dest": "/x"}]'])
+    def test_malformed_binds_raise(self, value):
+        with pytest.raises(ValueError, match="TERMINAL_BUBBLEWRAP_BINDS"):
+            load_bubblewrap_config({"TERMINAL_BUBBLEWRAP_BINDS": value})
+
+    @pytest.mark.parametrize("name", [
+        "TERMINAL_BUBBLEWRAP_MEMORY_MB", "TERMINAL_BUBBLEWRAP_CPU_SECONDS", "TERMINAL_BUBBLEWRAP_MAX_PROCS",
+    ])
+    @pytest.mark.parametrize("value", ["abc", "-1", "1.5"])
+    def test_bad_limits_raise(self, name, value):
+        with pytest.raises(ValueError, match=name):
+            load_bubblewrap_config({name: value})
+
+    def test_loaded_config_drives_the_builder(self, paths):
+        config = load_bubblewrap_config({"TERMINAL_BUBBLEWRAP_PROFILE": "restricted"})
+        argv = build(config, paths=paths)
+        assert "--share-net" not in argv
+        assert (paths["initial_cwd"], paths["initial_cwd"]) not in triples(argv, "--bind-try")
+
+
+class TestRuntimeOverlays:
+    """The user's runtime dir and the docker socket are masked (agent sockets)."""
+
+    def test_runtime_dir_gets_a_tmpfs_when_present(self, paths):
+        uid = os.getuid()
+        runtime_dir = f"/run/user/{uid}"
+        argv = runtime_overlay_args(paths["state_dir"], uid)
+        present = os.path.isdir(runtime_dir)
+        assert (("--tmpfs" in argv) and argv[argv.index("--tmpfs") + 1] == runtime_dir) is present
+
+    def test_absent_runtime_dir_emits_no_tmpfs(self, paths):
+        argv = runtime_overlay_args(paths["state_dir"], 2**31 - 1)
+        assert "--tmpfs" not in argv
+
+    def test_existing_docker_sockets_get_the_empty_file_once(self, paths):
+        from tools.environments.bubblewrap import DOCKER_SOCKETS
+
+        argv = runtime_overlay_args(paths["state_dir"], 2**31 - 1)
+        pairs = triples(argv, "--ro-bind")
+        empty = empty_file_path(paths["state_dir"])
+        present = [s for s in DOCKER_SOCKETS if os.path.exists(s)]
+        distinct = {os.path.realpath(s) for s in present}
+        assert len(pairs) == len(distinct)
+        for src, dest in pairs:
+            assert src == empty
+            assert dest in distinct  # the real path, not the /var/run symlink
+
+    def test_overlays_sit_after_the_base_mounts_and_before_the_cwd(self, paths):
+        argv = build(paths=paths)
+        overlays = runtime_overlay_args(paths["state_dir"], os.getuid())
+        if not overlays:
+            pytest.skip("host has neither a runtime dir nor a docker socket")
+        i_tmp = argv.index("/tmp")
+        i_cwd = argv.index(paths["initial_cwd"])
+        for operand in (overlays[1], overlays[-1]):
+            assert i_tmp < argv.index(operand) < i_cwd
+
+
+class TestAncestorPins:
+    """Ancestors of a hidden path that lie strictly inside a writable bind are
+    bound over themselves so the sandbox cannot rename them out from under
+    their overlay.
+    """
+
+    @staticmethod
+    def _pins(argv, paths):
+        """Every --bind of a path over itself other than the state dir."""
+        return [pair for pair in triples(argv, "--bind") if pair[0] == pair[1] and pair[0] != paths["state_dir"]]
+
+    @pytest.fixture
+    def home(self, paths):
+        home = Path(paths["home"])
+        (home / ".config" / "gcloud").mkdir(parents=True)
+        (home / ".ssh").mkdir()
+        return home
+
+    def test_cwd_at_home_pins_the_config_dir_only(self, paths, home):
+        argv = build(BubblewrapConfig(profile="workspace"), paths=paths, initial_cwd=str(home), tracked_cwd=str(home))
+        pins = triples(argv, "--bind")
+        assert (str(home / ".config"), str(home / ".config")) in pins
+        # The bind root and the hidden entries are mount points already.
+        assert (str(home), str(home)) not in pins
+        assert (str(home / ".ssh"), str(home / ".ssh")) not in pins
+        assert (str(home / ".config" / "gcloud"), str(home / ".config" / "gcloud")) not in pins
+
+    def test_cwd_above_home_pins_home_and_the_config_dir(self, paths, home):
+        parent = str(home.parent)
+        argv = build(BubblewrapConfig(profile="workspace"), paths=paths, initial_cwd=parent, tracked_cwd=parent)
+        pins = triples(argv, "--bind")
+        assert (str(home), str(home)) in pins
+        assert (str(home / ".config"), str(home / ".config")) in pins
+        assert (parent, parent) not in pins
+
+    def test_restricted_profile_adds_no_pins(self, paths, home):
+        argv = build(BubblewrapConfig(profile="restricted"), paths=paths, initial_cwd=str(home), tracked_cwd=str(home))
+        assert self._pins(argv, paths) == []
+
+    def test_cwd_outside_home_adds_no_pins(self, paths, home):
+        argv = build(paths=paths)
+        assert self._pins(argv, paths) == []
+
+    def test_hermes_home_ancestors_are_pinned(self, paths, home, tmp_path):
+        hermes_home = tmp_path / "state" / "hermes"
+        hermes_home.mkdir(parents=True)
+        argv = build(paths=paths, initial_cwd=str(tmp_path), tracked_cwd=str(tmp_path), hermes_home=str(hermes_home))
+        pins = triples(argv, "--bind")
+        assert (str(tmp_path / "state"), str(tmp_path / "state")) in pins
+        assert (str(hermes_home), str(hermes_home)) not in pins
+
+    def test_rw_operator_bind_above_home_pins_and_ro_does_not(self, paths, home):
+        parent = str(home.parent)
+        rw = build(BubblewrapConfig(binds=(BindMount(src=parent, dest=parent, readonly=False),)), paths=paths)
+        ro = build(BubblewrapConfig(binds=(BindMount(src=parent, dest=parent, readonly=True),)), paths=paths)
+        assert (str(home), str(home)) in triples(rw, "--bind")
+        assert (str(home / ".config"), str(home / ".config")) in triples(rw, "--bind")
+        assert self._pins(ro, paths) == []
+
+    def test_pin_follows_a_bind_whose_dest_differs_from_its_src(self, paths, home, tmp_path):
+        # The pin's source is the host path the sandbox path maps to.
+        src = tmp_path / "elsewhere"
+        (src / "home" / ".config" / "gcloud").mkdir(parents=True)
+        parent = str(home.parent)
+        config = BubblewrapConfig(binds=(BindMount(src=str(src), dest=parent, readonly=False),))
+        argv = build(config, paths=paths)
+        assert (str(src / "home"), str(home)) in triples(argv, "--bind")
+        assert (str(src / "home" / ".config"), str(home / ".config")) in triples(argv, "--bind")
+
+    def test_ancestor_that_is_a_bind_dest_is_not_pinned(self, paths, home, tmp_path):
+        other = tmp_path / "other"
+        other.mkdir()
+        config = BubblewrapConfig(binds=(BindMount(src=str(other), dest=str(home / ".config"), readonly=False),))
+        argv = build(config, paths=paths, initial_cwd=str(home), tracked_cwd=str(home))
+        pins = [p for p in triples(argv, "--bind") if p[1] == str(home / ".config")]
+        assert pins == [(str(other), str(home / ".config"))]
+
+    def test_symlinked_ancestor_is_not_pinned(self, paths, home, tmp_path):
+        # A mount cannot pin a symlink and would bind its target instead.
+        real = tmp_path / "real-config"
+        (real / "gcloud").mkdir(parents=True)
+        (home / ".config" / "gcloud").rmdir()
+        (home / ".config").rmdir()
+        (home / ".config").symlink_to(real)
+        argv = build(paths=paths, initial_cwd=str(home), tracked_cwd=str(home))
+        assert self._pins(argv, paths) == []
+        assert str(real) not in argv
+
+    def test_missing_ancestor_is_not_pinned(self, paths, home):
+        (home / ".config" / "gcloud").rmdir()
+        (home / ".config").rmdir()
+        argv = build(paths=paths, initial_cwd=str(home), tracked_cwd=str(home))
+        assert self._pins(argv, paths) == []
+
+    def test_pins_sit_after_the_operator_binds_and_before_the_overlays(self, paths, home, tmp_path):
+        shared = tmp_path / "shared"
+        shared.mkdir()
+        config = BubblewrapConfig(binds=(BindMount(src=str(shared), dest=str(shared)),))
+        argv = build(config, paths=paths, initial_cwd=str(home), tracked_cwd=str(home))
+        i_cwd = argv.index("--bind-try")
+        i_shared = argv.index(str(shared))
+        i_pin = argv.index(str(home / ".config"))
+        i_overlay = argv.index(str(home / ".ssh"))
+        assert i_cwd < i_shared < i_pin < i_overlay
+
+    def test_pins_are_deduplicated_across_binds(self, paths, home):
+        parent = str(home.parent)
+        config = BubblewrapConfig(binds=(BindMount(src=parent, dest=parent, readonly=False),))
+        argv = build(config, paths=paths, initial_cwd=parent, tracked_cwd=parent)
+        pins = triples(argv, "--bind")
+        assert pins.count((str(home / ".config"), str(home / ".config"))) == 1
+
+
+class TestResolvedHiddenSet:
+    """A symlinked entry is hidden at its target: the set is resolved through
+    realpath once, at construction, and the builder mounts only over real
+    paths."""
+
+    def test_relative_symlinked_entry_is_hidden_at_its_target_and_the_target_parent_pinned(self, paths):
+        home = Path(paths["home"])
+        (home / "dotfiles" / "ssh").mkdir(parents=True)
+        (home / ".ssh").symlink_to("dotfiles/ssh")
+        hidden = sensitive_paths(paths["home"], paths["hermes_home"])
+        assert str(home / "dotfiles" / "ssh") in hidden
+        assert str(home / ".ssh") not in hidden
+        argv = build(paths=paths, initial_cwd=str(home), tracked_cwd=str(home))
+        assert str(home / "dotfiles" / "ssh") in singles(argv, "--tmpfs")
+        assert str(home / ".ssh") not in argv
+        assert (str(home / "dotfiles"), str(home / "dotfiles")) in triples(argv, "--bind")
+
+    def test_absolute_symlinked_file_entry_binds_the_empty_file_over_its_target(self, paths, tmp_path):
+        home = Path(paths["home"])
+        home.mkdir()
+        real = tmp_path / "vault" / "npmrc"
+        real.parent.mkdir()
+        real.write_text("token")
+        (home / ".npmrc").symlink_to(real)
+        argv = build(paths=paths)
+        assert (empty_file_path(paths["state_dir"]), str(real)) in triples(argv, "--ro-bind")
+        assert str(home / ".npmrc") not in argv
+
+    def test_symlinked_component_resolves_the_whole_set(self, paths, tmp_path):
+        real_home = tmp_path / "real-home"
+        (real_home / ".ssh").mkdir(parents=True)
+        Path(paths["home"]).symlink_to(real_home)
+        hidden = sensitive_paths(paths["home"], paths["hermes_home"])
+        assert all(h.startswith(str(real_home) + os.sep) for h in hidden), hidden
+        argv = build(paths=paths)
+        assert str(real_home / ".ssh") in singles(argv, "--tmpfs")
+        assert str(Path(paths["home"]) / ".ssh") not in argv
+
+    def test_dangling_entry_emits_nothing(self, paths, tmp_path):
+        home = Path(paths["home"])
+        home.mkdir()
+        (home / ".netrc").symlink_to(tmp_path / "gone")
+        argv = build(paths=paths)
+        assert str(tmp_path / "gone") not in argv
+        assert str(home / ".netrc") not in argv
+
+    def test_symlink_planted_at_a_resolved_path_after_construction_emits_nothing(self, paths):
+        home = Path(paths["home"])
+        home.mkdir()
+        hidden = sensitive_paths(paths["home"], paths["hermes_home"])  # .aws is missing: resolved as itself
+        (home / ".aws").symlink_to("/etc")
+        argv = build(paths=paths, hidden_paths=hidden)
+        assert str(home / ".aws") not in argv
+        assert "/etc" not in argv
+
+    def test_builder_uses_the_hidden_set_it_is_given(self, paths, tmp_path):
+        home = Path(paths["home"])
+        (home / ".ssh").mkdir(parents=True)
+        hidden = sensitive_paths(paths["home"], paths["hermes_home"])
+        # The host (or a sandbox with HOME writable) swaps the entry for a
+        # symlink afterwards: the fixed set neither follows it nor mounts on it.
+        (home / ".ssh").rmdir()
+        (home / "elsewhere").mkdir()
+        (home / ".ssh").symlink_to("elsewhere")
+        argv = build(paths=paths, hidden_paths=hidden)
+        assert str(home / "elsewhere") not in argv
+        assert str(home / ".ssh") not in argv
+
+    def test_default_hermes_home_is_hidden_when_hermes_home_is_relocated(self, paths, tmp_path):
+        # A profile HERMES_HOME leaves HOME/.hermes (the default home, with
+        # its .env and auth.json) an ordinary directory unless it is hidden
+        # too.
+        home = Path(paths["home"])
+        (home / ".hermes").mkdir(parents=True)
+        relocated = tmp_path / "profiles" / "coder"
+        relocated.mkdir(parents=True)
+        hidden = sensitive_paths(paths["home"], str(relocated))
+        assert str(relocated) in hidden
+        assert str(home / ".hermes") in hidden
+        argv = build(paths=paths, hermes_home=str(relocated), hidden_paths=hidden)
+        assert str(home / ".hermes") in singles(argv, "--tmpfs")
+        assert str(relocated) in singles(argv, "--tmpfs")
+
+    def test_absent_default_hermes_home_stays_in_the_set_and_emits_nothing(self, paths, tmp_path):
+        home = Path(paths["home"])
+        home.mkdir()
+        relocated = tmp_path / "hermes"
+        relocated.mkdir()
+        hidden = sensitive_paths(paths["home"], str(relocated))
+        assert str(home / ".hermes") in hidden
+        argv = build(paths=paths, hermes_home=str(relocated), hidden_paths=hidden)
+        assert str(home / ".hermes") not in argv
+
+    def test_default_hermes_home_is_listed_once_when_it_is_hermes_home(self, paths):
+        hidden = sensitive_paths(paths["home"], paths["hermes_home"])
+        assert hidden.count(os.path.realpath(paths["hermes_home"])) == 1
+        assert hidden.count(str(Path(paths["home"]) / ".hermes")) == 1
+        assert len(hidden) == len(set(hidden))
+
+
+class TestResolvedBindDest:
+    """An operator bind lands at the real path of its dest, so the pins are
+    computed in the real tree of the bind. The
+    environment resolves once at construction; the builder resolves
+    nothing per spawn, so these resolve themselves."""
+
+    @staticmethod
+    def _config(*binds):
+        return BubblewrapConfig(binds=tuple(resolve_bind_dests(binds)))
+
+    @pytest.fixture
+    def tree(self, tmp_path):
+        real = tmp_path / "real" / "home"
+        (real / ".config" / "gcloud").mkdir(parents=True)
+        return real
+
+    @staticmethod
+    def _link(tmp_path, tree, target):
+        link = tmp_path / "home-link"
+        link.symlink_to(os.path.relpath(tree, tmp_path) if target == "relative" else tree)
+        return link
+
+    @pytest.mark.parametrize("target", ["relative", "absolute"])
+    def test_symlinked_dest_binds_and_pins_at_the_real_path(self, paths, tree, tmp_path, target):
+        link = self._link(tmp_path, tree, target)
+        hidden = (str(tree / ".config" / "gcloud"),)
+        bind = BindMount(src=str(link), dest=str(link), readonly=False)
+        argv = build(self._config(bind), paths=paths, hidden_paths=hidden)
+        pins = triples(argv, "--bind")
+        assert (str(link), str(tree)) in pins
+        assert (str(link / ".config"), str(tree / ".config")) in pins
+        dests = [dest for _, dest in pins + triples(argv, "--ro-bind")]
+        assert not any(dest == str(link) or dest.startswith(str(link) + os.sep) for dest in dests)
+
+    def test_relative_and_absolute_symlink_dests_produce_the_same_argv(self, paths, tree, tmp_path):
+        hidden = (str(tree / ".config" / "gcloud"),)
+        argvs = []
+        for target in ("relative", "absolute"):
+            link = self._link(tmp_path, tree, target)
+            bind = BindMount(src=str(link), dest=str(link), readonly=False)
+            argvs.append(build(self._config(bind), paths=paths, hidden_paths=hidden))
+            link.unlink()
+        assert argvs[0] == argvs[1]
+
+    def test_symlinked_component_in_the_dest_resolves_too(self, paths, tree, tmp_path):
+        (tmp_path / "via").symlink_to("real")
+        dest = tmp_path / "via" / "home"
+        bind = BindMount(src=str(tree), dest=str(dest), readonly=False)
+        hidden = (str(tree / ".config" / "gcloud"),)
+        argv = build(self._config(bind), paths=paths, hidden_paths=hidden)
+        pins = triples(argv, "--bind")
+        assert (str(tree), str(tree)) in pins
+        assert (str(tree / ".config"), str(tree / ".config")) in pins
+        assert str(dest) not in argv
+
+    def test_builder_emits_a_dest_as_given(self, paths, tree, tmp_path):
+        # Resolution is the environment's, once at construction: a symlink
+        # planted under a dest after that must not move the mount.
+        link = self._link(tmp_path, tree, "relative")
+        bind = BindMount(src=str(tree), dest=str(link), readonly=False)
+        argv = build(BubblewrapConfig(binds=(bind,)), paths=paths)
+        assert (str(tree), str(link)) in triples(argv, "--bind")
+        assert str(tree) not in [dest for _, dest in triples(argv, "--bind")]
+
+
+class TestPinTargetInsideTheBind:
+    """A pin lands only on a directory inside the real tree of its bind, so
+    it never widens the writable set. These call
+    ancestor_pin_args with an unresolved hidden set on purpose."""
+
+    def test_symlinked_component_leaving_the_bind_gets_no_pin(self, tmp_path):
+        w = tmp_path / "w"
+        w.mkdir()
+        real_home = tmp_path / "realE" / "home"
+        (real_home / ".config" / "gcloud").mkdir(parents=True)
+        (w / "home").symlink_to("../realE/home")
+        hidden = (str(w / "home" / ".config" / "gcloud"),)
+        argv = ancestor_pin_args([(str(w), str(w))], [str(w)], hidden)
+        assert argv == []
+
+    def test_symlinked_component_staying_inside_the_bind_gets_no_pin_either(self, tmp_path):
+        # The real ancestor is what a resolved hidden set pins; a pin
+        # through the link would be a second mount of the same dir.
+        w = tmp_path / "w"
+        (w / "other" / "home" / ".config" / "gcloud").mkdir(parents=True)
+        (w / "home").symlink_to("other/home")
+        hidden = (str(w / "home" / ".config" / "gcloud"),)
+        argv = ancestor_pin_args([(str(w), str(w))], [str(w)], hidden)
+        assert argv == []
+
+    def test_bind_source_with_a_symlinked_prefix_still_pins(self, tmp_path):
+        real = tmp_path / "real"
+        (real / "proj" / "home" / ".config" / "gcloud").mkdir(parents=True)
+        (tmp_path / "link").symlink_to(real)
+        src = str(tmp_path / "link" / "proj")
+        hidden = (os.path.join(src, "home", ".config", "gcloud"),)
+        argv = ancestor_pin_args([(src, src)], [src], hidden)
+        home = os.path.join(src, "home")
+        config = os.path.join(home, ".config")
+        assert argv == ["--bind", home, home, "--bind", config, config]
+
+    def test_real_ancestors_inside_a_real_bind_pin_as_before(self, tmp_path):
+        w = tmp_path / "w"
+        (w / "home" / ".config" / "gcloud").mkdir(parents=True)
+        hidden = (str(w / "home" / ".config" / "gcloud"),)
+        argv = ancestor_pin_args([(str(w), str(w))], [str(w)], hidden)
+        home, config = str(w / "home"), str(w / "home" / ".config")
+        assert argv == ["--bind", home, home, "--bind", config, config]

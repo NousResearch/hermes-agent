@@ -76,6 +76,17 @@ def _probe_singularity_backend(_cfg) -> tuple:
     return ("needs_setup", "Neither singularity nor apptainer found on PATH.")
 
 
+def _probe_bubblewrap_backend(_cfg) -> tuple:
+    if not shutil.which("bwrap"):
+        return ("needs_setup", "bwrap not found on PATH — install the bubblewrap package.")
+    try:
+        from tools.environments.bubblewrap import run_probe
+        _path, failure = run_probe()
+    except Exception as exc:
+        return ("unavailable", f"bwrap probe failed: {exc}")
+    return ("ready", "") if failure is None else ("needs_setup", failure)
+
+
 def _probe_ssh_backend(terminal_cfg: dict) -> tuple:
     host = _terminal_cfg_value(terminal_cfg, "ssh_host", "TERMINAL_SSH_HOST")
     user = _terminal_cfg_value(terminal_cfg, "ssh_user", "TERMINAL_SSH_USER")
@@ -114,6 +125,7 @@ _BACKEND_PROBES = {
     "local": lambda _cfg: ("ready", ""),
     "docker": _probe_docker_backend,
     "singularity": _probe_singularity_backend,
+    "bubblewrap": _probe_bubblewrap_backend,
     "ssh": _probe_ssh_backend,
     "modal": _probe_modal_backend,
     "daytona": _probe_daytona_backend,

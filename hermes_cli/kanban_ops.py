@@ -105,7 +105,17 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, who, current) in res.skipped_per_profile_capped
             ],
             "auto_assigned_default": res.auto_assigned_default,
+            "skipped_locked": res.skipped_locked,
+            "respawn_guarded": [
+                {"task_id": tid, "reason": reason} for (tid, reason) in res.respawn_guarded
+            ],
+            "rate_limited": res.rate_limited,
         }, ascii=True)
+        return 0
+    # A lock-loss tick did no work and wrote nothing: every counter below would
+    # be a meaningless 0, indistinguishable from "board idle". Say so and stop.
+    if res.skipped_locked:
+        print("Skipped: another dispatcher held the board lock; no work attempted.")
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
     for label, items in (
@@ -136,6 +146,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
             f"{', '.join(res.skipped_nonspawnable)}"
         )
+    for tid, reason in res.respawn_guarded:
+        print(f"Respawn-guarded ({reason}): {tid}")
+    if res.rate_limited:
+        print(f"Rate-limited (released to ready): {', '.join(res.rate_limited)}")
     return 0
 
 

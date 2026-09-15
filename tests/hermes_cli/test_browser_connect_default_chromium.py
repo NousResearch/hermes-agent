@@ -144,6 +144,81 @@ class TestDetectDefaultLinux:
             assert bc._detect_default_linux() is None
 
 
+class TestWindowsProgId25H2:
+    """25H2 writes only ``UserChoiceLatest``; the legacy key can hold a stale,
+    even uninstalled browser. The reader must prefer the key the OS maintains."""
+
+    class _FakeWinreg:
+        HKEY_CURRENT_USER = 0
+
+        def __init__(self, subkeys: dict[str, str]):
+            self._subkeys = subkeys
+            self.opened: list[str] = []
+
+        def OpenKey(self, _root, path: str):
+            # path = ...\UrlAssociations\<scheme>\<subkey>
+            tail = path.replace("\\", "/").rsplit("/", 2)
+            name = f"{tail[-2]}/{tail[-1]}"
+            self.opened.append(name)
+            if name not in self._subkeys:
+                raise FileNotFoundError(path)
+            return name
+
+        def QueryValueEx(self, key, _name):
+            return self._subkeys[key], 0
+
+        def CloseKey(self, _key):
+            return None
+
+    def _run_with(self, subkeys: dict[str, str]):
+        fake = self._FakeWinreg(subkeys)
+        return patch.dict("sys.modules", {"winreg": fake}), fake
+
+    def test_25h2_prefers_userchoicelatest_over_stale_legacy(self):
+        with_block, fake = self._run_with({
+            "https/UserChoiceLatest": "ChromeHTML",
+            "https/UserChoice": "MSEdgeHTM",
+        })
+        with with_block:
+            assert bc._detect_default_windows() == "chrome"
+        assert fake.opened == ["https/UserChoiceLatest"]
+
+    def test_pre_25h2_falls_back_to_legacy_userchoice(self):
+        with_block, fake = self._run_with({"https/UserChoice": "MSEdgeHTM"})
+        with with_block:
+            assert bc._detect_default_windows() == "edge"
+        assert fake.opened == ["https/UserChoiceLatest", "https/UserChoice"]
+
+    def test_http_scheme_is_the_fallback_when_https_has_no_choice(self):
+        with_block, fake = self._run_with({
+            "https/UserChoice": "",
+            "http/UserChoiceLatest": "ChromeHTML",
+        })
+        with with_block:
+            assert bc._detect_default_windows() == "chrome"
+        assert "http/UserChoiceLatest" in fake.opened
+
+    def test_stale_legacy_with_uninstalled_browser_returns_none(self):
+        with_block, _fake = self._run_with({"https/UserChoice": "MSEdgeHTM"})
+        # Edge uninstalled: no executable will be found downstream, but the
+        # ProgId read itself must succeed -- the classify step decides.
+        with with_block:
+            assert bc._windows_default_prog_id() == "MSEdgeHTM"
+
+    def test_missing_winreg_on_non_windows_hosts_is_none(self):
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _no_winreg(name, *args, **kwargs):
+            if name == "winreg":
+                raise ImportError(name)
+            return real_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", side_effect=_no_winreg):
+            assert bc._windows_default_prog_id() is None
+
+
 class TestLinuxProfileDir:
     def _env(self, monkeypatch, home):
         monkeypatch.setenv("HOME", str(home))

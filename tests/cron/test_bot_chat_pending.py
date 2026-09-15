@@ -1,5 +1,6 @@
 """Only never-started cron delivery may wait for a CLI owner's release."""
 import subprocess
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -38,6 +39,47 @@ def test_cli_owner_deferral_and_attempt_fence(tmp_path, monkeypatch, error):
     finally:
         lease.release()
         db.close()
+
+
+def test_delivery_exception_retains_attempt_and_continues_siblings(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    blocked_parent = tmp_path / "blocked"
+    blocked_home = blocked_parent / "recipient"
+    blocked_home.mkdir(parents=True)
+    for home in (blocked_home, tmp_path):
+        db = SessionDB(db_path=home / "state.db")
+        db.create_session(session_id="chat", source="cli")
+        db.set_session_title("chat", "Bot Chat")
+        db.close()
+    queue.defer("b" * 64, {"id": "bad"}, "bad output", "", blocked_home)
+    queue.defer("a" * 64, {"id": "good"}, "good output", "", tmp_path)
+    calls = []
+    original_is_dir = Path.is_dir
+    armed = False
+
+    def resolve_cli(_):
+        nonlocal armed
+        armed = True
+        return "/bin/hermes"
+
+    def is_dir(self):
+        if armed and self == blocked_home:
+            raise PermissionError("target traversal denied after discovery")
+        return original_is_dir(self)
+
+    def run(*args, **kwargs):
+        calls.append(kwargs["env"]["HERMES_HOME"])
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    monkeypatch.setattr(delivery.shutil, "which", resolve_cli)
+    monkeypatch.setattr(delivery.subprocess, "run", run)
+    monkeypatch.setattr(Path, "is_dir", is_dir)
+    queue.drain()
+    assert queue.read_pending("b" * 64)["status"] == "ambiguous"
+    assert "PermissionError" in queue.read_pending("b" * 64)["error"]
+    assert queue.read_pending("a" * 64)["status"] == "settled"
+    queue.drain()
+    assert calls == [str(tmp_path)]
 
 
 def test_pending_queue_uses_admission_order_and_keeps_claims(tmp_path, monkeypatch):

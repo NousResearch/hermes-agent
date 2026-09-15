@@ -59,6 +59,23 @@ was not created, so `--in ~` correctly refused); that failed receipt is retained
 in `native-green.log`, and both source legs were rerun with an existing HOME.
 Prior `/tmp/botmode-dm-recovery*` evidence remains untouched.
 
+## Per-record delivery exception isolation
+
+Set `BOT_DM_EXCEPTION=1` and select `-g "cron output"` for the controlled native
+exception probe. `exception-tick.py` raises `PermissionError` at the actual
+post-discovery target `Path.is_dir()` boundary, not at the delivery helper.
+The same exception was first reproduced with real directory traversal permission
+loss on Python 3.11/Linux; the retained test uses a portable controlled fault.
+Before the guard, native tick exits 1, leaving the head claimed and sibling queued.
+Afterward, the head is ambiguous, the sibling settles and renders once, and a
+second real tick replays neither. Logs: `/tmp/botmode-dm-exception-{red,green}.log`;
+receipts and screenshot: `/tmp/botmode-dm-exception/{red,green}/`.
+
+The review's repeated-head starvation claim is not reachable: the claim commits
+before delivery and later scans skip every non-queued record. One failed tick is
+real; recurring replay of that same head is not. Indefinite queued/payload retention
+is intentional, with no TTL or automatic ambiguous retry introduced here.
+
 ## Ordinary custom-root fallback (#104066 / #104055)
 
 `probe-cron-root.spec.ts` adds the never-deferred sibling: copy it to

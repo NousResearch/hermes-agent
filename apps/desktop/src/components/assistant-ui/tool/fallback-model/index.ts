@@ -1052,13 +1052,13 @@ function toolSubtitle(
   )
 }
 
-function toolDetailLabel(toolName: string): string {
+function toolDetailLabel(toolName: string, labels?: ToolDetailLabels): string {
   if (toolName === 'web_search') {
-    return 'Details'
+    return labels?.webSearchDetails ?? 'Details'
   }
 
   if (toolName === 'browser_snapshot') {
-    return 'Snapshot summary'
+    return labels?.browserSnapshot ?? 'Snapshot summary'
   }
 
   return ''
@@ -1408,7 +1408,15 @@ function dynamicTitle(
   return fallback
 }
 
-export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
+/** Section labels for web-search and browser-snapshot detail blocks, resolved
+ *  from the active locale by the renderer before calling `buildToolView`. */
+export interface ToolDetailLabels {
+  browserSnapshot: string
+  errorDetails: string
+  webSearchDetails: string
+}
+
+export function buildToolView(part: ToolPart, inlineDiff: string, labels?: ToolDetailLabels): ToolView {
   const argsRecord = parseMaybeObject(part.args)
   const resultRecord = parseMaybeObject(part.result)
   const meta = toolMeta(part.toolName)
@@ -1479,7 +1487,7 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   return {
     countLabel: resultCount ? formatCountLabel(resultCount) : undefined,
     detail,
-    detailLabel: error ? 'Error details' : toolDetailLabel(part.toolName),
+    detailLabel: error ? (labels?.errorDetails ?? 'Error details') : toolDetailLabel(part.toolName, labels),
     durationLabel: durationLabel(resultRecord),
     icon: meta.icon,
     imageUrl: toolImageUrl(argsRecord, resultRecord),

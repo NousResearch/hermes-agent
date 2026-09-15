@@ -568,6 +568,9 @@ _TURN_STATE: Dict[str, Any] = {
     # a stale rebuild instead of clobbering a newer one.
     "_tool_snapshot_generation": 0,
     "_rate_limit_state": None,  # from x-ratelimit-* headers; read by /usage
+    # Per-call anthropic-ratelimit-unified-overage-in-use header (None = absent); read by the
+    # runtime footer's ``billing`` field (gateway/runtime_footer.py).
+    "_last_anthropic_overage_in_use": None,
     # Credits tracking (dev-only, HERMES_DEV_CREDITS) from x-nous-credits-* headers; session
     # start is latched on the first header so cumulative spend can be reported.
     "_credits_state": None,

@@ -67,6 +67,16 @@ class RateLimitCreditsMixin:
         aggregated ``Message`` drops them). Fail-open."""
         self._capture_rate_limits(http_response)
         self._capture_credits(http_response)
+        # Per-call overage flag straight from the provider's own header, for the runtime footer's
+        # ``billing`` field (gateway/runtime_footer.py). None = header absent (non-subscription
+        # account or a proxy stripped it); True/False = the provider's per-message answer to
+        # "was this turn served on paid overage rather than the included allowance?".
+        try:
+            headers = _response_headers(http_response)
+            raw = headers.get("anthropic-ratelimit-unified-overage-in-use") if headers else None
+            self._last_anthropic_overage_in_use = None if raw is None else str(raw).strip().lower() == "true"
+        except Exception:
+            self._last_anthropic_overage_in_use = None
 
     def _capture_credits(self, http_response: Any) -> None:
         """Parse x-nous-credits-* headers, cache CreditsState, fire threshold notices.

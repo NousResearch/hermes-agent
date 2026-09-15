@@ -13,7 +13,7 @@ import {
   type TimelineSourceMessage
 } from './timeline-data'
 
-const MIN_ENTRIES = 4
+const MIN_ENTRIES = 1
 const VIEWPORT = '[data-slot="aui_thread-viewport"]'
 const HOVER_CLOSE_MS = 140
 
@@ -125,7 +125,7 @@ function scrollToPrompt(root: HTMLElement | null, id: string) {
 }
 
 /**
- * Right-edge prompt rail — hover previews, click to jump. ≥4 user turns only.
+ * Right-edge prompt rail — hover previews, click to jump. Any user turn.
  *
  * Everything here is DEFERRED until it can actually be seen. A chat surface
  * stays mounted while its tab is in the background (keep-alive, see
@@ -137,7 +137,7 @@ function scrollToPrompt(root: HTMLElement | null, id: string) {
  *     selector, the scroll listener, and the popover markup all stand down.
  *  2. ACTIVE BUT UNHOVERED → the ticks paint, but the popover's rows are not
  *     built at all; the previews only exist once the pointer opens it.
- *  3. BELOW THE THRESHOLD → the rail renders null, so the measure effect never
+ *  3. NO ENTRIES YET → the rail renders null, so the measure effect never
  *     touches layout for it.
  *  4. FOLLOWING THE BOTTOM → the active prompt is the last one by definition,
  *     answered from data instead of a rect walk (see compute() below).
@@ -250,7 +250,7 @@ const ActiveThreadTimeline: FC = () => {
   useEffect(() => () => window.clearTimeout(closeTimerRef.current), [])
 
   useEffect(() => {
-    // Below the threshold the rail renders null, so measuring prompt offsets
+    // No entries yet: the rail renders null, so measuring prompt offsets
     // buys nothing — bail before touching layout at all.
     if (entries.length < MIN_ENTRIES) {
       return

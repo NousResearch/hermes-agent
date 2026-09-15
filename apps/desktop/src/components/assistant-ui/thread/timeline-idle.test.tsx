@@ -123,13 +123,21 @@ describe('ThreadTimeline popover', () => {
   })
 })
 
-describe('ThreadTimeline below the threshold', () => {
-  it('renders nothing for a short thread', () => {
-    messages = transcript(2)
+describe('ThreadTimeline with no user turns yet', () => {
+  it('renders nothing before the first prompt', () => {
+    messages = []
 
     const { container } = renderTimeline()
 
     expect(container.querySelector('[data-slot="thread-timeline"]')).toBeNull()
+  })
+
+  it('renders the rail from the very first prompt', () => {
+    messages = transcript(1)
+
+    const { container } = renderTimeline()
+
+    expect(container.querySelector('[data-slot="thread-timeline"]')).not.toBeNull()
   })
 })
 

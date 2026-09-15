@@ -90,6 +90,18 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
         "new_name",
         help="New profile name (for 'default': a display name — the canonical id stays 'default')")
 
+    profile_migrate = profile_subparsers.add_parser(
+        "migrate-identity",
+        help="Retry a renamed profile's session/routing identity migration",
+        description="Re-run the session/routing identity migration that `hermes profile rename` "
+            "performs automatically. The rename has already happened when this is needed, so pass "
+            "the OLD and NEW names: state still keyed by the old profile name (session keys, "
+            "profile_name, heartbeats, routing/delivery rows) is rekeyed to the new one. Run it "
+            "after restarting the gateway (which reloads the routing index from the DB) or after "
+            "stopping it. Idempotent.")
+    profile_migrate.add_argument("old_name", help="Profile name before the rename")
+    profile_migrate.add_argument("new_name", help="Profile name after the rename")
+
     profile_export = profile_subparsers.add_parser("export", help="Export a profile to archive")
     profile_export.add_argument("profile_name", help="Profile to export")
     profile_export.add_argument(

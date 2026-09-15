@@ -892,9 +892,9 @@ prompt_caching:
 # Persistent Memory
 # =============================================================================
 # Bounded curated memory injected into the system prompt every session.
-# Two stores: MEMORY.md (agent's notes) and USER.md (user profile).
-# Character limits keep the memory small and focused. The agent manages
-# pruning -- when at the limit, it must consolidate or replace entries.
+# Two stores: MEMORY.md (agent's notes) and USER.md (user profile), plus any topic
+# files you keep yourself. Character limits keep the memory small and focused. The
+# agent manages pruning -- when at the limit, it must consolidate or replace entries.
 # Disabled by default in batch_runner.
 #
 memory:
@@ -907,6 +907,15 @@ memory:
   # Character limits (~2.75 chars per token, model-independent)
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
+
+  # Topic memory files: your own markdown files, injected at session start as their
+  # own named sections. Put them in ~/.hermes/memories/topics/ (per profile) and they
+  # load alongside MEMORY.md/USER.md, sorted by file name. No files = no change.
+  topics_enabled: true
+  topics_dir: topics        # relative to memories/; absolute paths honored
+  topics_glob: "*.md"       # "**/*.md" also picks up subdirectories
+  topic_char_limit: 2200    # per file; longer files are truncated in the prompt (marked)
+  topic_total_budget: 0     # combined cap for all topic files; 0 = uncapped
 
   # Periodic memory nudge: remind the agent to consider saving memories
   # every N user turns. Set to 0 to disable. Only active when memory is enabled.

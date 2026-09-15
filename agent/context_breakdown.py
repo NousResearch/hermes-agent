@@ -63,17 +63,19 @@ def _split_tools(tools: Sequence[dict]) -> Tuple[List[dict], List[dict], List[di
     return builtin, mcp, subagent
 
 
-def _memory_blocks(agent: Any) -> Tuple[str, str]:
-    memory_block = user_block = ""
+def _memory_blocks(agent: Any) -> Tuple[str, str, str]:
+    memory_block = user_block = topics_block = ""
     store = getattr(agent, "_memory_store", None)
     try:
         if store is not None and getattr(agent, "_memory_enabled", True):
             memory_block = store.format_for_system_prompt("memory") or ""
         if store is not None and getattr(agent, "_user_profile_enabled", True):
             user_block = store.format_for_system_prompt("user") or ""
+        if store is not None:
+            topics_block = store.format_for_system_prompt("topics") or ""
     except Exception:
         pass
-    return memory_block, user_block
+    return memory_block, user_block, topics_block
 
 
 def _strip_blocks(text: str, *blocks: str) -> str:
@@ -124,9 +126,10 @@ def compute_session_context_breakdown(agent: Any, messages: Optional[List[dict]]
     parts = build_system_prompt_parts(agent)
     stable = parts.get("stable", "") or ""
     skills_index = _skills_block(stable)
-    memory_block, user_block = _memory_blocks(agent)
+    memory_block, user_block, topics_block = _memory_blocks(agent)
     system_prompt_text = _join(
-        _strip_blocks(stable, skills_index), _strip_blocks(parts.get("volatile", "") or "", memory_block, user_block)
+        _strip_blocks(stable, skills_index),
+        _strip_blocks(parts.get("volatile", "") or "", memory_block, user_block, topics_block)
     )
     builtin_tools, mcp_tools, subagent_tools = _split_tools(list(getattr(agent, "tools", None) or []))
     tokens_by_id = {
@@ -136,7 +139,7 @@ def compute_session_context_breakdown(agent: Any, messages: Optional[List[dict]]
         "skills": _chars_to_tokens(skills_index),
         "mcp": _json_tokens(mcp_tools),
         "subagent_definitions": _json_tokens(subagent_tools),
-        "memory": _chars_to_tokens(_join(memory_block, user_block)),
+        "memory": _chars_to_tokens(_join(memory_block, user_block, topics_block)),
         "conversation": estimate_messages_tokens_rough(messages),
     }
     estimated_total = sum(tokens_by_id.values())

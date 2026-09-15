@@ -241,7 +241,7 @@ def _format_turn(user: str, assistant: str) -> str:
 def _capture_custom_id(session_id: str, now: Optional[datetime] = None) -> str:
     """<session>_<YYYY-MM-DD>_b<0..5>: same id within a 4h window, so the API appends turns to one document."""
     now = now or datetime.now(timezone.utc)
-    return f"{_sanitize_tag(session_id) or 'hermes'}_{now:%Y-%m-%d}_b{now.hour // _CAPTURE_BUCKET_HOURS}"
+    return f"{_sanitize_tag(session_id)}_{now:%Y-%m-%d}_b{now.hour // _CAPTURE_BUCKET_HOURS}"
 
 
 def _build_client(api_key: str, config: dict, container_tag: str) -> _SupermemoryClient:
@@ -427,12 +427,11 @@ class SupermemoryMemoryProvider(MemoryProvider):
                 now = datetime.now(timezone.utc)
                 content = "\n\n".join(_format_turn(t["user"], t["assistant"]) for t in batch)
                 metadata = {"type": "conversation", "session_id": sid, "timestamp": now.isoformat()}  # no sm_capture_mode: Hermes policy
-                try:
-                    self._client.add_memory(content, metadata=metadata, entity_context=self._entity_context,
-                                            custom_id=_capture_custom_id(sid, now))
-                except Exception:
-                    logger.log(logging.WARNING if mode != "turn" else logging.DEBUG, "Supermemory capture failed (%s, session=%s, %d turns pending)",
-                               mode, sid, len(batch), exc_info=True)
+                result = _quietly(lambda: self._client.add_memory(content, metadata=metadata, entity_context=self._entity_context,
+                                                                  custom_id=_capture_custom_id(sid, now)),
+                                  "Supermemory capture failed (%s, session=%s, %d turns pending)", mode, sid, len(batch),
+                                  level=logging.WARNING if mode != "turn" else logging.DEBUG)
+                if result is None:  # add_memory always returns a dict on success; None = it raised
                     failed += batch
             self._pending_turns = failed
 

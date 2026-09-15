@@ -78,14 +78,15 @@ class OnePasswordLoginBackend(LoginBackend):
             cmd += ["--account", account]
         proc = run_with_stdin_secret(cmd, env=self._env(None), secret=master_password, timeout=_TIMEOUT, label="op")
         token = (proc.stdout or "").strip()
-        if proc.returncode != 0 or not token:
+        # Desktop-app integration: rc=0 with empty stdout is an unlocked session (no OP_SESSION token).
+        if proc.returncode != 0:
             raise RuntimeError(f"1Password unlock failed: {_scrub(proc.stderr or '')[:200] or 'no session token'}")
         if not _unlock.store_session_token(self.name, token, generation):
             raise RuntimeError("1Password was locked while unlocking; try again")
 
     def _run(self, *args: str) -> str:
         token = None if self._service_token else _unlock.get_session_token(self.name)
-        if not self._service_token and not token:
+        if not self._service_token and token is None:
             raise UnlockRequired(self)
         proc = run_cli([str(self._op()), *args], env=self._env(token), timeout=_TIMEOUT, label="op",
                        timeout_message="op timed out", stdin=subprocess.DEVNULL)

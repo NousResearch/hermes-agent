@@ -69,6 +69,58 @@ def _write_skill(skills_dir: Path, name: str):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("config_text, expected", [
+    (None, False),
+    ("{}\n", False),
+    ("curator: {}\n", False),
+    ("curator: null\n", False),
+    ("curator:\n  prune_builtins: false\n", False),
+    ("curator:\n  prune_builtins: true\n", True),
+])
+def test_prune_builtins_config_requires_opt_in(tmp_path, monkeypatch, config_text, expected):
+    from agent import curator
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    if config_text is not None:
+        (tmp_path / "config.yaml").write_text(config_text, encoding="utf-8")
+
+    # Exercise the real loader: mocked defaults hide accidental destructive opt-ins.
+    assert curator.get_prune_builtins() is expected
+
+
+@pytest.mark.parametrize("opt_in", [None, False, True])
+def test_curator_archives_builtins_only_with_opt_in(tmp_path, monkeypatch, opt_in):
+    from agent import curator
+    from tools import skill_usage
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    if opt_in is not None:
+        (tmp_path / "config.yaml").write_text(
+            f"curator:\n  prune_builtins: {str(opt_in).lower()}\n", encoding="utf-8",
+        )
+    skills_dir = tmp_path / "skills"
+    name = "unused-builtin"
+    skill_dir = _write_skill(skills_dir, name)
+    (skills_dir / ".bundled_manifest").write_text(f"{name}:abc\n", encoding="utf-8")
+    record = skill_usage._empty_record()
+    record["last_used_at"] = (datetime.now(timezone.utc) - timedelta(days=500)).isoformat()
+    skill_usage.save_usage({name: record})
+
+    enabled = opt_in is True
+    assert skill_usage.is_curation_eligible(name) is enabled
+    assert (name in skill_usage.list_agent_created_skill_names()) is enabled
+    counts = curator.apply_automatic_transitions()
+
+    assert counts["archived"] == int(enabled)
+    assert skill_dir.exists() is not enabled
+    assert (name in skill_usage.read_suppressed_names()) is enabled
+    assert skill_usage.load_usage()[name]["state"] == (
+        skill_usage.STATE_ARCHIVED if enabled else skill_usage.STATE_ACTIVE
+    )
+
+
 
 
 

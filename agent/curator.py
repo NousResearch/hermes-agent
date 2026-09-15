@@ -121,8 +121,8 @@ def get_archive_after_days() -> int:
 
 
 def get_prune_builtins() -> bool:
-    """Bundled built-ins are curation candidates (ON by default); a suppression list keeps them archived across `hermes update` re-seeds. Hub skills are never pruned."""
-    return bool(_load_config().get("prune_builtins", True))
+    """Bundled pruning is opt-in: a suppression list keeps archives from being re-seeded by `hermes update`. Hub skills are never pruned."""
+    return bool(_load_config().get("prune_builtins", False))
 
 
 def get_consolidate() -> bool:

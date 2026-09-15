@@ -8,7 +8,7 @@
 import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
-export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'
+export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es' | 'fa'
 
 /** One error-card entry: a short title and one plain sentence. Either may
  *  take the failing provider's display name (falls back to "the AI service"). */
@@ -4464,6 +4464,30 @@ export interface Translations {
         runningTool: (action: string) => string
       }
       titles: Record<ToolTitleKey, ToolTitleCopy>
+    }
+
+    /** Section labels for the technical-mode raw payload disclosure, and the
+     *  web-search hit list labels that `fallback.tsx` renders inline. */
+    toolDetails: {
+      payloadDisclosure: string
+      argumentsHeading: string
+      resultHeading: string
+      searchLabel: string
+      searchResultsLabel: string
+      errorDetailsLabel: string
+      webSearchDetailsLabel: string
+      browserSnapshotLabel: string
+    }
+
+    /** Zoom-pan viewer toolbar (Mermaid diagrams and any Zoomable overlay). */
+    viewer: {
+      openFullView: string
+      zoomIn: string
+      zoomOut: string
+      reset: string
+      copied: string
+      copy: string
+      close: string
     }
   }
 

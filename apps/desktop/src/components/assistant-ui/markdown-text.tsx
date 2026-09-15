@@ -18,6 +18,7 @@ import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
+import { FOLDER_LINK_PREFIX } from '@/lib/folder-links'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
@@ -43,6 +44,7 @@ import { cn } from '@/lib/utils'
 import { ArtifactCard } from './artifact-card'
 import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
+import { FolderLink } from './folder-link'
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
 import { paragraphPlainText, TranscriptDirectiveLeaf, useResolvedParagraph } from './transcript-directive'
 
@@ -260,6 +262,10 @@ function childrenToText(children: unknown): string {
 }
 
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
+  if (href?.startsWith(FOLDER_LINK_PREFIX)) {
+    return <FolderLink href={href}>{children}</FolderLink>
+  }
+
   const mediaPath = mediaPathFromMarkdownHref(href)
 
   if (mediaPath) {

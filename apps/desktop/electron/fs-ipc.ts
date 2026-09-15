@@ -24,6 +24,7 @@ export interface FsIpcDeps {
   resolveRequestedPathForIpc: (value: string, options: { purpose: string }) => string
   directoryExists: (value: string) => boolean
   resolveGitBinary: () => string
+  openExistingDirectory: (senderId: number, request: unknown) => Promise<{ ok: boolean; error?: string }>
 }
 
 export function registerFsIpc({
@@ -32,8 +33,11 @@ export function registerFsIpc({
   expandUserPath,
   resolveRequestedPathForIpc,
   directoryExists,
-  resolveGitBinary
+  resolveGitBinary,
+  openExistingDirectory
 }: FsIpcDeps) {
+  ipcMain.handle('hermes:fs:openExistingDirectory', (event, request) => openExistingDirectory(event.sender.id, request))
+
   ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => readDirForIpc(dirPath))
 
   ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => gitRootForIpc(startPath))

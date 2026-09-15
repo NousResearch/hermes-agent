@@ -3,6 +3,12 @@ import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 import type { Translations } from './types'
 
 export const en: Translations = {
+  folderLinks: {
+    localConnectionRequired: 'Folder links require this session’s current local connection.',
+    unavailable: 'Native folder opening is unavailable.',
+    openFailed: 'Could not open folder.',
+    openFailedWithMessage: message => `Could not open folder: ${message}`
+  },
   connectors: {
     title: 'Connect your apps',
     connect: 'Connect',

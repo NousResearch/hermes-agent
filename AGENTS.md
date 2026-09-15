@@ -70,7 +70,8 @@ grow: expansive at the edges, conservative at the waist.
   mid-loop), and a system prompt byte-stable for the life of a conversation.
 - **Contributor credit preserved.** Salvage external work by cherry-picking (rebase-merge) so
   authorship survives; build on top rather than reimplementing.
-
+- Provide security review
+  
 ### What we don't want (rejected even when well-built)
 
 - **Speculative infrastructure.** Hooks/callbacks/extension points with no concrete consumer.

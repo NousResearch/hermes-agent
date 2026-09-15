@@ -284,6 +284,9 @@ def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
     spawned, payloads, handoff, get = _stub_external_worker_launch(scheduler, monkeypatch)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "should-not-cross-profile")
     monkeypatch.setenv("SERVICE_TOKEN", "default-profile-token")
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setenv("HERMES_GATEWAY_SESSION", "gateway-session")
+    monkeypatch.setenv("HERMES_EXEC_ASK", "always")
     from agent.secret_scope import set_multiplex_active
 
     set_multiplex_active(True)
@@ -297,6 +300,9 @@ def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
     assert spawned[0][1]["start_new_session"] is True
     assert "ANTHROPIC_API_KEY" not in spawned[0][1]["env"]
     assert spawned[0][1]["env"]["SERVICE_TOKEN"] == "target-profile-token"
+    assert "HERMES_INTERACTIVE" not in spawned[0][1]["env"]
+    assert "HERMES_GATEWAY_SESSION" not in spawned[0][1]["env"]
+    assert "HERMES_EXEC_ASK" not in spawned[0][1]["env"]
     handoff.assert_called_once_with("exec-1")
     assert get.call_count == 2
     assert payloads[0]["multiplex_active"] is True

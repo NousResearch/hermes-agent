@@ -117,14 +117,18 @@ export function implicitSlashAcceptIndex(
   activeIndex: number,
   activeExplicit: boolean
 ): number | null {
+  // A deliberately arrowed highlight ALWAYS wins — "Enter means I want this
+  // one", even on a bare `/` query where no command name has been typed yet.
+  // This must be checked before the `!typed` early-return so an explicit pick
+  // is never suppressed on a bare `/` (#98535).
+  if (activeExplicit && itemTexts[activeIndex] != null) {
+    return activeIndex
+  }
+
   const typed = slashCompletionToken(query)
 
   if (!typed) {
     return null
-  }
-
-  if (activeExplicit && itemTexts[activeIndex] != null) {
-    return activeIndex
   }
 
   const exact = itemTexts.findIndex(text => slashCompletionToken(text) === typed)

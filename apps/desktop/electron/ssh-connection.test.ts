@@ -1102,6 +1102,17 @@ test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#11
   // session pipes open until the full timeout on the healthy path.
   assert.ok(healthyElapsed < 4000, `healthy probe returned fast (took ${healthyElapsed}ms)`)
 
+  // A non-interactive zsh exits when asked to enable monitor mode. The wrapper
+  // must skip that optional optimization so Desktop's remote capability probe
+  // can still run on macOS accounts whose login shell is zsh.
+  const zsh = await execFileAsync('sh', ['-c', 'command -v zsh || true']).then(r => r.stdout.trim())
+
+  if (zsh) {
+    const { stdout: zshStdout } = await execFileAsync(zsh, ['-c', withRemoteTimeout('echo zsh-ok', 5)])
+
+    assert.equal(zshStdout, 'zsh-ok\n')
+  }
+
   // … a hung command is killed promptly with a non-zero exit … The duration
   // is unique to this run so the orphan sweep below cannot match an unrelated
   // `sleep` on a busy host.

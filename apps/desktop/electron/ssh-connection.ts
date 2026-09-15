@@ -353,7 +353,11 @@ function withRemoteTimeout(remoteCommand, timeoutSecs = REMOTE_PROBE_TIMEOUT_SEC
   // the CLI without exec. Shells that cannot enable it without a tty fall
   // back to killing the direct child.
   return (
-    `set -m 2>/dev/null; (${remoteCommand}) </dev/null & __htp=$!; set +m 2>/dev/null; ` +
+    // zsh exits a non-interactive remote shell when asked to enable job control.
+    // Skip monitor mode there; the watchdog still kills its direct child.
+    `if [ -z "${'${ZSH_VERSION:-}'}" ]; then set -m 2>/dev/null; fi; ` +
+    `(${remoteCommand}) </dev/null & __htp=$!; ` +
+    `if [ -z "${'${ZSH_VERSION:-}'}" ]; then set +m 2>/dev/null; fi; ` +
     `(sleep ${secs} </dev/null >/dev/null 2>&1; kill -9 -- -$__htp 2>/dev/null; kill -9 $__htp 2>/dev/null) & __htw=$!; ` +
     `wait $__htp; __htrc=$?; ` +
     `kill $__htw 2>/dev/null; wait $__htw 2>/dev/null; ` +

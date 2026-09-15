@@ -12,6 +12,7 @@ import {
   $projectScope,
   $projectsRpcAvailable,
   $projectTree,
+  $projectTreeProfile,
   $worktreeRefreshToken,
   ALL_PROJECTS,
   createProject,
@@ -22,6 +23,7 @@ import {
   pickProjectFolder,
   projectIdForCwd,
   projectNameForCwd,
+  projectTreeSupportsProfile,
   refreshProjects,
   refreshProjectTree,
   refreshWorktrees,
@@ -280,6 +282,13 @@ describe('projectNameForCwd', () => {
 
   beforeEach(() => {
     $projectTree.set([])
+    $projectTreeProfile.set(null)
+  })
+
+  it('uses a tree only for its owning profile', () => {
+    expect(projectTreeSupportsProfile('work', 'work')).toBe(true)
+    expect(projectTreeSupportsProfile('default', 'work')).toBe(false)
+    expect(projectTreeSupportsProfile(null, 'work')).toBe(false)
   })
 
   it('names the explicit project owning the cwd (longest path match)', () => {
@@ -289,6 +298,13 @@ describe('projectNameForCwd', () => {
     ])
 
     expect(projectNameForCwd('/repos/website/src/app')).toBe('Website')
+  })
+
+  it('resolves against the supplied profile tree snapshot', () => {
+    $projectTree.set([treeNode({ id: 'p_personal', label: 'Personal', path: '/repos/shared' })])
+    const workTree = [treeNode({ id: 'p_work', label: 'Work', path: '/repos/shared' })]
+
+    expect(projectNameForCwd('/repos/shared/src', workTree)).toBe('Work')
   })
 
   it('matches nested repo and worktree paths, not just the project root', () => {
@@ -842,6 +858,7 @@ describe('project tree profile isolation', () => {
     await pendingA
 
     expect($projectTree.get().map(project => project.id)).toEqual(['profile-b'])
+    expect($projectTreeProfile.get()).toBe('profile-b')
   })
 
   it('does not publish a late projects.list response from the previous profile', async () => {

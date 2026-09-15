@@ -48,7 +48,8 @@ import {
   ensureGatewayAgent,
   ensureGatewayProfile,
   normalizeProfileKey,
-  resolveNewChatOwnerRoute
+  resolveNewChatOwnerRoute,
+  resolveNewSessionProfile
 } from '@/store/profile'
 import { $projectScope, resolveNewSessionCwd } from '@/store/projects'
 import { receiveApprovalRequest } from '@/store/prompts'
@@ -313,7 +314,7 @@ async function desktopSessionCreateParams(
     provider: isManualSelection ? $currentProvider.get().trim() : ''
   }
 
-  const profile = capturedRoute?.profile || $newChatProfile.get() || normalizeProfileKey($activeGatewayProfile.get())
+  const profile = capturedRoute?.profile || resolveNewSessionProfile()
 
   if (capturedRoute) {
     await ensureGatewayAgent(capturedRoute.connectionId, profile)

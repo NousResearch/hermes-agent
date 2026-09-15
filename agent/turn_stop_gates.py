@@ -49,6 +49,76 @@ def _verify_on_stop_nudge(agent) -> Optional[str]:
     return None
 
 
+def todo_continuation_nudge(agent, messages, full_response: str) -> Optional[str]:
+    """Reconcile adopted work, not a stale plan or a new mandate.
+
+    Todo statuses do not encode authority or wait ownership. Only an adopted
+    in-progress task is a candidate; declared human gates and owned wakeups yield.
+    """
+    import json
+    import re
+
+    if (getattr(agent, "_interrupt_requested", False)
+            or getattr(agent, "_pending_steer", None)
+            or getattr(agent, "_tool_guardrail_halt_decision", None) is not None):
+        return None
+    store = getattr(agent, "_todo_store", None)
+    if store is None or not any(t.get("status") == "in_progress" for t in store.read()):
+        return None
+    # This is a conservative opt-out, not an authorization classifier. A
+    # declared dependency or question is enough to leave the answer alone.
+    if re.search(r"\b(?:approval|permission|consent|paused|stopped|blocked|"
+                 r"awaiting|waiting|pending|credentials)\b|\bneed (?:your|you to)\b|[?]",
+                 full_response, re.IGNORECASE):
+        return None
+
+    # A successful write after the latest user row adopts the plan. Reading
+    # it for a status question, history, or a redirect does not. Synthetic user
+    # rows also terminate the scan conservatively.
+    results = {}
+    adopted = False
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            break
+        if message.get("role") == "tool":
+            results[message.get("tool_call_id")] = message.get("content")
+        for call in message.get("tool_calls") or []:
+            function = call.get("function") or {}
+            if function.get("name") != "todo_list":
+                continue
+            try:
+                args = json.loads(function.get("arguments", "{}"))
+                result = json.loads(results.get(call.get("id")) or "{}")
+                adopted = adopted or (bool(args.get("todos"))
+                                      and result.get("revision") == store.snapshot()["revision"]
+                                      and result.get("todos") == store.read())
+            except (ValueError, TypeError, AttributeError):
+                continue
+    if not adopted:
+        return None
+
+    # Parent turns must end to receive async completion callbacks. Do not
+    # let another session's processes suppress this session's reconciliation.
+    from hermes_cli.goals import count_active_delegations, gather_background_processes
+    if count_active_delegations(getattr(agent, "session_id", None)):
+        return None
+    owner = getattr(agent, "_current_task_id", None)
+    if owner and any(p.get("notify_on_complete") or p.get("watch_patterns")
+                     for p in gather_background_processes(owner_task_id=owner)):
+        return None
+    return (
+        "Your current task list still has in-progress work. Before ending, reconcile it "
+        "with the latest user request and the evidence already collected. Continue only "
+        "a runnable, already-authorized next step; isolate a blocked lane rather than "
+        "repeating failed attempts. Do not treat the task list as permission to send, "
+        "spend, publish, merge, or bypass approval. Respect stop/redirect instructions. "
+        "If work is complete, update the list truthfully. If only a human gate or an "
+        "owned background wakeup remains, state that boundary and end the turn without "
+        "busy-polling or starting duplicate work. This is a bounded reconciliation, "
+        "not a new mandate or an extension of the run budget."
+    )
+
+
 def _pre_verify_nudge(agent, final_response, attempt: int) -> Optional[str]:
     """After code edits a registered ``pre_verify`` hook may keep the agent going one
     more turn; no default continuation cost."""

@@ -151,6 +151,37 @@ class TestPerJobToolsetMcpMerge:
             result = _resolve_cron_enabled_toolsets(job, {})
         assert result == ["file", "memory", "web"]
 
+    def test_resolver_fails_closed_by_default_on_resolution_error(self):
+        job = {"enabled_toolsets": None}
+        with patch(
+            "hermes_cli.tools_config._get_platform_tools",
+            side_effect=ImportError("broken import"),
+        ):
+            # Default policy: deny (returns [])
+            result = _resolve_cron_enabled_toolsets(job, {})
+        assert result == []
+
+    def test_resolver_falls_back_to_full_default_when_configured(self):
+        job = {"enabled_toolsets": None}
+        cfg = {"cron": {"toolset_resolution_failure": "full"}}
+        with patch(
+            "hermes_cli.tools_config._get_platform_tools",
+            side_effect=RuntimeError("transient error"),
+        ):
+            # Explicit opt-in to full default: returns None
+            result = _resolve_cron_enabled_toolsets(job, cfg)
+        assert result is None
+
+    def test_resolver_fails_closed_when_explicitly_configured_deny(self):
+        job = {"enabled_toolsets": None}
+        cfg = {"cron": {"toolset_resolution_failure": "deny"}}
+        with patch(
+            "hermes_cli.tools_config._get_platform_tools",
+            side_effect=RuntimeError("transient error"),
+        ):
+            result = _resolve_cron_enabled_toolsets(job, cfg)
+        assert result == []
+
 
 class TestResolveOrigin:
     def test_full_origin(self):

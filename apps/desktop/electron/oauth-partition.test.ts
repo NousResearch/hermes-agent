@@ -142,3 +142,93 @@ describe('resolveOauthPartition (#92183 per-connection cookie jars)', () => {
     expect(got).toContain('alpha')
   })
 })
+
+// The registry editor can sign a draft in BEFORE it is saved. The login window
+// must then write to the jar the saved entry will read — an unsaved draft has
+// no on-disk entry to URL-match, so identity (connectionId) decides instead.
+describe('resolveOauthPartition with connectionId (pre-save sign-in identity)', () => {
+  it('sends a pending (unsaved) draft sign-in to its own jar, not the legacy shared one', () => {
+    const reg = registry('local', [{ id: 'local', kind: 'local' }])
+
+    const got = resolveOauthPartition('https://macmini.lan:9119', { registry: reg, connectionId: 'macmini' })
+
+    expect(got).not.toBe(LEGACY_OAUTH_PARTITION)
+    expect(got).toContain('conn:macmini')
+    // Deterministic across calls — the saved entry must read the jar the login wrote.
+    expect(resolveOauthPartition('https://macmini.lan:9119', { registry: reg, connectionId: 'macmini' })).toBe(got)
+  })
+
+  it('keeps a pending same-host sign-in out of an existing gateway’s jar (no #92183 eviction)', () => {
+    const reg = registry('local', [{ id: 'local', kind: 'local' }, remote('conn-a', 'https://10.27.27.7:9119')])
+
+    const pending = resolveOauthPartition('https://10.27.27.7:9220', { registry: reg, connectionId: 'conn-b' })
+    const existing = resolveOauthPartition('https://10.27.27.7:9119', { registry: reg })
+
+    expect(pending).not.toBe(LEGACY_OAUTH_PARTITION)
+    expect(pending).not.toBe(existing)
+    expect(existing).toContain('conn-a')
+    expect(pending).toContain('conn-b')
+  })
+
+  it('resolves an existing entry by identity even when the URL was edited but not yet saved', () => {
+    const reg = registry('local', [{ id: 'local', kind: 'local' }, remote('conn-a', 'https://old.example.com')])
+
+    const got = resolveOauthPartition('https://new.example.com', { registry: reg, connectionId: 'conn-a' })
+
+    expect(got).toContain('conn-a')
+    expect(got).not.toBe(LEGACY_OAUTH_PARTITION)
+  })
+
+  it('keeps the primary, the local entry, cloud, and token-auth identities on the legacy jar', () => {
+    const reg = registry('conn-a', [
+      { id: 'local', kind: 'local' },
+      remote('conn-a', 'https://gw-a.example.com'),
+      remote('tok-1', 'https://gw-t.example.com', { authMode: 'token' }),
+      { id: 'cloud-1', kind: 'cloud', url: 'https://agent.nousresearch.com', authMode: 'oauth' }
+    ])
+
+    expect(resolveOauthPartition('https://gw-a.example.com', { registry: reg, connectionId: 'conn-a' })).toBe(
+      LEGACY_OAUTH_PARTITION
+    )
+    expect(resolveOauthPartition('https://gw-a.example.com', { registry: reg, connectionId: 'local' })).toBe(
+      LEGACY_OAUTH_PARTITION
+    )
+    expect(resolveOauthPartition('https://gw-t.example.com', { registry: reg, connectionId: 'tok-1' })).toBe(
+      LEGACY_OAUTH_PARTITION
+    )
+    expect(resolveOauthPartition('https://agent.nousresearch.com', { registry: reg, connectionId: 'cloud-1' })).toBe(
+      LEGACY_OAUTH_PARTITION
+    )
+  })
+
+  it('keeps a v1-migrated entry on the legacy jar even when named by id', () => {
+    const reg = registry('local', [{ id: 'local', kind: 'local' }, remote('mig-1', 'https://gw-a.example.com')])
+
+    expect(
+      resolveOauthPartition('https://gw-a.example.com', {
+        registry: reg,
+        connectionId: 'mig-1',
+        v1RemoteUrl: 'https://gw-a.example.com'
+      })
+    ).toBe(LEGACY_OAUTH_PARTITION)
+  })
+
+  it('ignores blank or non-string connectionIds and falls back to URL matching', () => {
+    const reg = registry('local', [remote('conn-a', 'https://gw-a.example.com')])
+
+    for (const junk of ['', '   ', 42, null, undefined]) {
+      expect(resolveOauthPartition('https://gw-a.example.com', { registry: reg, connectionId: junk })).toContain(
+        'conn-a'
+      )
+    }
+  })
+
+  it('sanitizes hostile pending ids into partition-safe names', () => {
+    const reg = registry('local', [{ id: 'local', kind: 'local' }])
+
+    const got = resolveOauthPartition('https://gw.example.com', { registry: reg, connectionId: 'we ird/id:€' })
+
+    expect(got.startsWith('persist:')).toBe(true)
+    expect(got).not.toMatch(/[\s/€]/)
+  })
+})

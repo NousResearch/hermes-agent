@@ -138,6 +138,74 @@ class TestPlayInVoiceChannelMixerPath:
         # Legacy path must NOT have been used.
         vc.play.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_mixer_path_pauses_receiver_while_speaking(self):
+        # Echo prevention: the receiver must be paused before play_speech and
+        # resumed once the speech drains, mirroring the legacy one-shot path.
+        adapter = _make_adapter()
+        vc = MagicMock()
+        vc.is_connected.return_value = True
+        adapter._voice_clients[111] = vc
+        adapter._reset_voice_timeout = MagicMock()
+        adapter._playback_timeout_for_audio = AsyncMock(return_value=5.0)
+
+        receiver = MagicMock()
+        adapter._voice_receivers[111] = receiver
+
+        class _Mixer:
+            def __init__(self):
+                self._polls = 0
+                self.play_speech = MagicMock()
+
+            @property
+            def speech_active(self):
+                self._polls += 1
+                return self._polls <= 1
+
+        mixer = _Mixer()
+        adapter._voice_mixers[111] = mixer
+
+        order = []
+        receiver.pause.side_effect = lambda: order.append("pause")
+        mixer.play_speech.side_effect = lambda *a, **k: order.append("play_speech")
+        receiver.resume.side_effect = lambda: order.append("resume")
+
+        fake_pcm = b"\x00" * vm.FRAME_SIZE
+        with patch.object(vm, "decode_to_pcm", return_value=fake_pcm):
+            assert await adapter.play_in_voice_channel(111, "/tmp/x.mp3") is True
+
+        assert order == ["pause", "play_speech", "resume"]
+        vc.play.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_mixer_path_resumes_receiver_after_playback_timeout(self):
+        # The drain loop can time out and break; resume must still happen.
+        adapter = _make_adapter()
+        vc = MagicMock()
+        vc.is_connected.return_value = True
+        adapter._voice_clients[111] = vc
+        adapter._reset_voice_timeout = MagicMock()
+        adapter._playback_timeout_for_audio = AsyncMock(return_value=0.0)
+
+        receiver = MagicMock()
+        adapter._voice_receivers[111] = receiver
+
+        class _StuckMixer:
+            speech_active = True
+            stop_speech = MagicMock()
+            play_speech = MagicMock()
+
+        mixer = _StuckMixer()
+        adapter._voice_mixers[111] = mixer
+
+        fake_pcm = b"\x00" * vm.FRAME_SIZE
+        with patch.object(vm, "decode_to_pcm", return_value=fake_pcm):
+            assert await adapter.play_in_voice_channel(111, "/tmp/x.mp3") is True
+
+        receiver.pause.assert_called_once()
+        receiver.resume.assert_called_once()
+        mixer.stop_speech.assert_called_once()
+
 
 class TestLeadSilence:
     """Warm-up lead silence prepended to speech so the first word isn't clipped

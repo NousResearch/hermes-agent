@@ -2653,15 +2653,23 @@ def complete_task(
             return False
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
             return False
-        trow = conn.execute("SELECT status, claim_lock FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        trow = conn.execute(
+            "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
         prior_status = trow["status"] if trow else None
-        # Refuse to close a live worker's run without proof of ownership
-        # (expected_run_id) or an explicit human override (force=True).
+        # Refuse to close a LIVE worker's run without proof of ownership
+        # (expected_run_id) or an explicit human override (force=True). "Live"
+        # means the spawned worker process still exists: a claim whose worker
+        # is gone (or a library claim that never spawned one) has no run to
+        # protect, so manual completion keeps working there.
         if (
             expected_run_id is None
             and not force
             and prior_status == "running"
             and trow["claim_lock"] is not None
+            and trow["worker_pid"]
+            and _worker_alive(trow["worker_pid"], trow["worker_started_at"])
         ):
             raise LiveClaimError(task_id)
         sql = """

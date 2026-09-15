@@ -10,11 +10,13 @@ row while that worker kept executing. The guard mirrors ``request_review``'s: a
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_connect as kbc
 
 
@@ -31,9 +33,12 @@ def conn(tmp_path, monkeypatch):
         yield c
 
 
-def _claimed_running_task(conn) -> tuple[str, int]:
+def _claimed_running_task(conn, *, live_worker: bool = True) -> tuple[str, int]:
     tid = kb.create_task(conn, title="live", assignee="coder")
     assert kb.claim_task(conn, tid, claimer=kb._claimer_id()) is not None
+    if live_worker:
+        # This process stands in for the spawned worker: alive, fingerprinted.
+        kbd._set_worker_pid(conn, tid, os.getpid())
     return tid, kb._current_run_id(conn, tid)
 
 
@@ -54,6 +59,15 @@ def test_claimless_complete_refuses_live_run_until_forced(conn):
     assert kb.complete_task(conn, tid2, result="operator override", force=True) is True
     run = conn.execute("SELECT ended_at, outcome FROM task_runs WHERE id = ?", (run2,)).fetchone()
     assert run["ended_at"] is not None and run["outcome"] == "completed"
+
+
+def test_claimless_complete_of_claim_without_live_worker_unchanged(conn):
+    """A claim whose worker never spawned (or is gone) protects no live run: the
+    library / CLI flow that claims and then completes keeps working."""
+    tid, run_id = _claimed_running_task(conn, live_worker=False)
+    assert kb.complete_task(conn, tid, result="done") is True
+    run = conn.execute("SELECT ended_at FROM task_runs WHERE id = ?", (run_id,)).fetchone()
+    assert run["ended_at"] is not None
 
 
 def test_claimless_complete_of_unclaimed_card_unchanged(conn):

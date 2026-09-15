@@ -257,15 +257,26 @@ def _agent_skills_dir(agent: Any) -> Optional[Path]:
 
 
 def _profile_name_for_home(home: Path) -> str:
-    """``<root>/profiles/X`` -> ``"X"``; anything else -> ``"default"``.
+    """``<root>/profiles/X`` -> ``"X"``; a symlink-farm overlay into
+    ``<root>/profiles/X`` -> ``"X"`` (#93862); anything else -> ``"default"``.
     Uses ``get_default_hermes_root()`` (NOT ``get_hermes_home()``): on a bound
     profile session the ambient home IS the profile dir, so every profile
     would misreport as "default"."""
     try:
         from hermes_constants import get_default_hermes_root
-        rel = home.resolve().relative_to((get_default_hermes_root() / "profiles").resolve())
+        root = get_default_hermes_root()
+    except Exception:
+        return "default"
+    try:
+        rel = home.resolve().relative_to((root / "profiles").resolve())
         return rel.parts[0] if rel.parts else "default"
     except (ValueError, OSError):
+        pass
+    try:
+        from agent.file_safety import _profile_name_from_overlay_links
+
+        return _profile_name_from_overlay_links(home, root) or "default"
+    except Exception:
         return "default"
 
 

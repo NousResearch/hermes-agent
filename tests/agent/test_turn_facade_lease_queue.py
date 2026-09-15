@@ -103,7 +103,7 @@ def test_inbound_delivery_that_loses_the_wait_is_queued_not_failed(tmp_path, mon
     assert admission.lease is None
     result = admission.early_result
     assert result is not None
-    assert result["queued"] is True
+    assert result["queued"] is True and result["status"] == "queued"
     assert not result.get("failed")
     assert not result.get("error")
     assert result["delivery_id"] == "peer-42"
@@ -270,7 +270,8 @@ def test_real_store_reports_holder_and_queue_depth_on_the_receipt(tmp_path, monk
         inbound_delivery={"message": "queued body", "author": "peer", "delivery_id": "real-1"},
     )
     result = admission.early_result
-    assert result["queued"] is True
+    assert result is not None
+    assert result["queued"] is True and result["status"] == "queued"
     assert result["holder"] == holder
     assert result["queue_depth"] == 1
     assert isinstance(result["waiter_age_s"], float)

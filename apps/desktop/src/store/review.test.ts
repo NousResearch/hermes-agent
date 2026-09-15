@@ -39,7 +39,7 @@ import {
   toggleReviewTreeMode,
   unstageReviewFile
 } from './review'
-import { $currentCwd } from './session'
+import { $currentCwd, $selectedStoredSessionId, $workspaceCwdOwner, releaseWorkspaceCwdOwner } from './session'
 
 // requestOneShot is the only cross-module dependency that must be faked (it
 // reaches the gateway); everything else routes through window.hermesDesktop.git,
@@ -101,6 +101,8 @@ beforeEach(() => {
   $reviewScopeCwd.set(null)
   $reviewScopeTarget.set('main')
   $currentCwd.set('/repo')
+  $selectedStoredSessionId.set(null)
+  $workspaceCwdOwner.set(null)
 })
 
 afterEach(() => {
@@ -177,6 +179,83 @@ describe('refreshReview', () => {
     expect($reviewFiles.get()).toEqual([])
     expect($reviewIsRepo.get()).toBe(true)
     expect($reviewLoading.get()).toBe(false)
+  })
+
+  it('ignores a leftover cwd the selected conversation does not own (switch window / bare new chat)', async () => {
+    const review = stubReview({ list: vi.fn(async () => ({ files: [file('previous-chat.ts')] })) })
+    $reviewOpen.set(true)
+    $currentCwd.set('/previous-conversation-repo')
+    $selectedStoredSessionId.set('session-b')
+    $workspaceCwdOwner.set('session-a')
+
+    await refreshReview()
+
+    expect(review.list).not.toHaveBeenCalled()
+    expect($reviewFiles.get()).toEqual([])
+    expect($reviewIsRepo.get()).toBe(false)
+    expect($reviewLoading.get()).toBe(false)
+  })
+
+  it('reads the cwd once the resume settles and ownership matches the selection', async () => {
+    const review = stubReview({ list: vi.fn(async () => ({ files: [file('mine.ts')] })) })
+    $reviewOpen.set(true)
+    $currentCwd.set('/my-repo')
+    $selectedStoredSessionId.set('session-b')
+    $workspaceCwdOwner.set('session-b')
+
+    await refreshReview()
+
+    expect(review.list).toHaveBeenCalledWith('/my-repo', 'uncommitted', null)
+    expect($reviewFiles.get().map(f => f.path)).toEqual(['mine.ts'])
+    expect($reviewIsRepo.get()).toBe(true)
+  })
+
+  it('keeps reading a pinned tile scope regardless of cwd ownership', async () => {
+    const review = stubReview({ list: vi.fn(async () => ({ files: [file('tile.ts')] })) })
+    $reviewOpen.set(true)
+    $reviewScopeCwd.set('/tile-worktree')
+    $selectedStoredSessionId.set('session-b')
+    $workspaceCwdOwner.set('session-a')
+
+    await refreshReview()
+
+    expect(review.list).toHaveBeenCalledWith('/tile-worktree', 'uncommitted', null)
+    expect($reviewFiles.get().map(f => f.path)).toEqual(['tile.ts'])
+  })
+
+  it('re-evaluates an open pane when cwd ownership flips without the path moving', async () => {
+    vi.useFakeTimers()
+    const review = stubReview({ list: vi.fn(async () => ({ files: [file('mine.ts')] })) })
+    $reviewOpen.set(true)
+    $currentCwd.set('/my-repo')
+    $selectedStoredSessionId.set('session-b')
+    $workspaceCwdOwner.set('session-b')
+    await refreshReview()
+    expect($reviewFiles.get().map(f => f.path)).toEqual(['mine.ts'])
+
+    // Switch away: selection moves to session-a, the path is released to the
+    // previous conversation — without the cwd itself changing.
+    $selectedStoredSessionId.set('session-a')
+    releaseWorkspaceCwdOwner()
+
+    // The ownership subscriber clears + schedules a debounced refresh; flush it.
+    await vi.advanceTimersByTimeAsync(150)
+
+    expect($reviewFiles.get()).toEqual([])
+    expect($reviewIsRepo.get()).toBe(false)
+    expect(review.list).toHaveBeenCalledTimes(1)
+
+    // Switch back in: the resume settles and adopts the same path for session-a.
+    review.list.mockResolvedValue({ files: [file('adopted.ts')] })
+    $workspaceCwdOwner.set('session-a')
+    await vi.advanceTimersByTimeAsync(150)
+
+    expect(review.list).toHaveBeenCalledTimes(2)
+    expect(review.list).toHaveBeenLastCalledWith('/my-repo', 'uncommitted', null)
+    expect($reviewFiles.get().map(f => f.path)).toEqual(['adopted.ts'])
+    expect($reviewIsRepo.get()).toBe(true)
+
+    vi.useRealTimers()
   })
 })
 

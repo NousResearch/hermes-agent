@@ -92,7 +92,12 @@ def _format_db_size(db_path: Path) -> str:
 def _report_database_journal_modes(hermes_home: Path | None = None, version_info: tuple[int, ...] | None = None) -> None:
     """List each database's journal mode; warn on WAL under a vulnerable SQLite."""
     from hermes_cli.doctor import HERMES_HOME
-    from hermes_state_wal import _path_on_cross_vm_fs, _wal_reset_repair_hint, is_sqlite_wal_reset_vulnerable
+    from hermes_state_wal import (
+        _path_on_cross_vm_fs,
+        _path_on_network_fs,
+        _wal_reset_repair_hint,
+        is_sqlite_wal_reset_vulnerable,
+    )
     vulnerable = is_sqlite_wal_reset_vulnerable(version_info)
     try:
         databases = _hermes_database_paths(hermes_home if hermes_home is not None else HERMES_HOME)
@@ -120,6 +125,14 @@ def _report_database_journal_modes(hermes_home: Path | None = None, version_info
                        "(WAL can silently corrupt across the VM boundary; stop every Hermes process and run a one-time "
                        "offline 'PRAGMA journal_mode=DELETE' on the file, then set `database.journal_mode: delete` — "
                        "or move the database onto a native/named volume)")
+        elif mode == "wal" and _path_on_network_fs(str(path)):
+            # #110848 remainder: network filesystems never refuse WAL for fresh databases (single-writer NFS homes
+            # are legitimate), so an existing WAL file here is one concurrent writer away from silent corruption.
+            check_warn(f"{name} is in WAL mode on a network filesystem (nfs/cifs/smb/sshfs, {size})",
+                       "(WAL shared-memory is unsafe across network filesystems for concurrent writers; if more than "
+                       "one process will write it, stop every Hermes process and run a one-time offline "
+                       "'PRAGMA journal_mode=DELETE' on the file, then set `database.journal_mode: delete`, "
+                       "or move the database onto local disk)")
         elif mode == "wal" and vulnerable:
             exposed.append(name)
             check_warn(f"{name} is in WAL mode ({size})", "(exposed to the WAL-reset bug until SQLite is upgraded)")

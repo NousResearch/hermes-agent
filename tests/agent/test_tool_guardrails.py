@@ -142,16 +142,44 @@ def test_hard_stop_enabled_blocks_repeated_exact_failure_before_next_execution()
     assert blocked.count == 2
 
 
+def test_search_files_failure_hint_names_target_files_and_regex():
+    """search_files recovery hint points at target='files' vs regex (glob pitfall).
+
+    Uses *varying* args so the hint comes through ``same_tool_failure_warning``
+    (which routes via ``_tool_failure_recovery_hint``). With identical args the
+    controller prefers ``repeated_exact_failure_warning`` and its own message.
+    """
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(same_tool_failure_warn_after=2, same_tool_failure_halt_after=3)
+    )
+
+    first = controller.after_call(
+        "search_files", {"pattern": "*config*"}, '{"error":"boom"}', failed=True
+    )
+    second = controller.after_call(
+        "search_files", {"pattern": "*x*"}, '{"error":"boom"}', failed=True
+    )
+
+    assert first.action == "allow"
+    assert second.action == "warn"
+    assert second.code == "same_tool_failure_warning"
+    # The hint must teach the glob-vs-regex distinction, not just "change args".
+    assert "target='files'" in second.message
+    assert "REGEX" in second.message
+    assert "nothing to repeat" in second.message
+    assert "pattern='*.py'" in second.message
+    assert controller.halt_decision is None
 
 
-
-
-
-
-
-
-
-
+def test_search_files_failure_hint_only_for_search_files():
+    """The search_files-specific hint does not leak into other tools' hints."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(same_tool_failure_warn_after=1, same_tool_failure_halt_after=99)
+    )
+    decision = controller.after_call("web_search", {"query": "q"}, '{"error":"boom"}', failed=True)
+    assert decision.code == "same_tool_failure_warning"
+    assert "target='files'" not in decision.message
+    assert "nothing to repeat" not in decision.message
 
 
 def test_skill_read_tools_are_idempotent_and_block_repeated_identical_success_output():

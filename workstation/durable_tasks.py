@@ -1,0 +1,706 @@
+"""Durable Task Runner, WorkPlan, and WorkItem infrastructure.
+
+Provides persistent, atomic, resumable execution for multi-step and batch
+operations outside the conversational LLM loop. State is persisted in SQLite
+(via the canonical Kanban DB) and survives process restarts, model switches,
+and context compaction.
+"""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+import json
+import logging
+import sqlite3
+import threading
+from typing import Any, Dict, List, Optional, Tuple
+from uuid import uuid4
+
+from hermes_cli import kanban_db
+
+logger = logging.getLogger(__name__)
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class AtomicPersistenceViolation(RuntimeError):
+    """Raised when an operation attempts to complete without verified persistence and validation."""
+
+
+class WorkItemStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    CAPTURED = "captured"
+    PERSISTED = "persisted"
+    VALIDATED = "validated"
+    COMPLETED = "completed"
+    RETRYING = "retrying"
+    WAITING_FOR_USER = "waiting_for_user"
+    BLOCKED = "blocked"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+@dataclass(slots=True)
+class WorkItem:
+    id: str
+    plan_id: str
+    task_id: str
+    item_index: int
+    status: WorkItemStatus = WorkItemStatus.PENDING
+    attempts: int = 0
+    input_payload: Dict[str, Any] = field(default_factory=dict)
+    raw_output_ref: Optional[str] = None
+    normalized_output_ref: Optional[str] = None
+    validation_result: Dict[str, Any] = field(default_factory=dict)
+    evidence_refs: List[Dict[str, Any]] = field(default_factory=list)
+    checkpoints: Dict[str, str] = field(default_factory=dict)
+    retry_state: Dict[str, Any] = field(default_factory=dict)
+    last_error: Optional[str] = None
+    created_at: str = field(default_factory=_utc_now)
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+
+    @property
+    def is_terminal(self) -> bool:
+        return self.status in {WorkItemStatus.COMPLETED, WorkItemStatus.FAILED, WorkItemStatus.CANCELLED}
+
+    def verify_can_complete(self) -> None:
+        """Enforce strict invariant: cannot complete if persist and validate are missing."""
+        persist_ok = self.checkpoints.get("persist") == "ok" or bool(self.normalized_output_ref)
+        validate_ok = self.checkpoints.get("validate") == "ok" or bool(
+            self.validation_result and self.validation_result.get("valid") is True
+        )
+        if not persist_ok:
+            raise AtomicPersistenceViolation(
+                f"WorkItem {self.id} cannot be marked completed: output has not been persisted to storage."
+            )
+        if not validate_ok:
+            raise AtomicPersistenceViolation(
+                f"WorkItem {self.id} cannot be marked completed: output has not been validated."
+            )
+
+    def to_dict(self) -> Dict[str, Any]:
+        data = asdict(self)
+        data["status"] = self.status.value
+        return data
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "WorkItem":
+        raw_status = data.get("status", WorkItemStatus.PENDING.value)
+        try:
+            status = WorkItemStatus(raw_status)
+        except ValueError:
+            status = WorkItemStatus.PENDING
+
+        def _json_or_dict(val: Any) -> Any:
+            if isinstance(val, str):
+                try:
+                    return json.loads(val)
+                except Exception:
+                    return {}
+            return val or {}
+
+        def _json_or_list(val: Any) -> Any:
+            if isinstance(val, str):
+                try:
+                    return json.loads(val)
+                except Exception:
+                    return []
+            return val or []
+
+        return cls(
+            id=str(data["id"]),
+            plan_id=str(data["plan_id"]),
+            task_id=str(data["task_id"]),
+            item_index=int(data.get("item_index", 0)),
+            status=status,
+            attempts=int(data.get("attempts", 0)),
+            input_payload=_json_or_dict(data.get("input_payload")),
+            raw_output_ref=data.get("raw_output_ref"),
+            normalized_output_ref=data.get("normalized_output_ref"),
+            validation_result=_json_or_dict(data.get("validation_result")),
+            evidence_refs=_json_or_list(data.get("evidence_refs")),
+            checkpoints=_json_or_dict(data.get("checkpoints")),
+            retry_state=_json_or_dict(data.get("retry_state")),
+            last_error=data.get("last_error"),
+            created_at=str(data.get("created_at", _utc_now())),
+            started_at=data.get("started_at"),
+            completed_at=data.get("completed_at"),
+        )
+
+
+@dataclass(slots=True)
+class WorkPlan:
+    id: str
+    task_id: str
+    title: str
+    session_id: Optional[str] = None
+    status: str = "pending"
+    total_items: int = 0
+    checkpoint_frequency: int = 1
+    max_retries: int = 3
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=_utc_now)
+    updated_at: str = field(default_factory=_utc_now)
+    completed_at: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "WorkPlan":
+        meta = data.get("metadata")
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except Exception:
+                meta = {}
+        return cls(
+            id=str(data["id"]),
+            task_id=str(data["task_id"]),
+            title=str(data.get("title", "Untitled WorkPlan")),
+            session_id=data.get("session_id"),
+            status=str(data.get("status", "pending")),
+            total_items=int(data.get("total_items", 0)),
+            checkpoint_frequency=int(data.get("checkpoint_frequency", 1)),
+            max_retries=int(data.get("max_retries", 3)),
+            metadata=meta or {},
+            created_at=str(data.get("created_at", _utc_now())),
+            updated_at=str(data.get("updated_at", _utc_now())),
+            completed_at=data.get("completed_at"),
+        )
+
+
+class DurableTaskStore:
+    """ACID persistence store for WorkPlans and WorkItems on SQLite."""
+
+    def __init__(self, *, board: Optional[str] = None, conn: Optional[sqlite3.Connection] = None) -> None:
+        self.board = board
+        self._external_conn = conn
+        self._conn: Optional[sqlite3.Connection] = None
+        self._lock = threading.RLock()
+        self._tables_ensured = False
+
+    def _ensure_tables(self, conn: sqlite3.Connection) -> None:
+        with self._lock:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS work_plans (
+                    id                   TEXT PRIMARY KEY,
+                    task_id              TEXT NOT NULL,
+                    session_id           TEXT,
+                    title                TEXT NOT NULL,
+                    status               TEXT NOT NULL,
+                    total_items          INTEGER NOT NULL DEFAULT 0,
+                    checkpoint_frequency INTEGER NOT NULL DEFAULT 1,
+                    max_retries          INTEGER NOT NULL DEFAULT 3,
+                    metadata             TEXT,
+                    created_at           TEXT NOT NULL,
+                    updated_at           TEXT NOT NULL,
+                    completed_at         TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS work_items (
+                    id                     TEXT PRIMARY KEY,
+                    plan_id                TEXT NOT NULL,
+                    task_id                TEXT NOT NULL,
+                    item_index             INTEGER NOT NULL,
+                    status                 TEXT NOT NULL,
+                    attempts               INTEGER NOT NULL DEFAULT 0,
+                    input_payload          TEXT,
+                    raw_output_ref         TEXT,
+                    normalized_output_ref  TEXT,
+                    validation_result      TEXT,
+                    evidence_refs          TEXT,
+                    error                  TEXT,
+                    last_error             TEXT,
+                    checkpoints            TEXT,
+                    retry_state            TEXT,
+                    created_at             TEXT NOT NULL,
+                    started_at             TEXT,
+                    completed_at           TEXT,
+                    FOREIGN KEY(plan_id) REFERENCES work_plans(id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_work_plans_task ON work_plans(task_id);
+                CREATE INDEX IF NOT EXISTS idx_work_plans_status ON work_plans(status);
+                CREATE INDEX IF NOT EXISTS idx_work_items_plan ON work_items(plan_id, item_index);
+                CREATE INDEX IF NOT EXISTS idx_work_items_status ON work_items(status);
+                """
+            )
+            try:
+                cols = {row[1] for row in conn.execute("PRAGMA table_info(work_items)").fetchall()}
+                if "error" not in cols:
+                    conn.execute("ALTER TABLE work_items ADD COLUMN error TEXT")
+                if "last_error" not in cols:
+                    conn.execute("ALTER TABLE work_items ADD COLUMN last_error TEXT")
+                if "evidence_refs" not in cols:
+                    conn.execute("ALTER TABLE work_items ADD COLUMN evidence_refs TEXT")
+                conn.commit()
+            except Exception:
+                pass
+
+    def get_connection(self) -> sqlite3.Connection:
+        if self._external_conn is not None:
+            conn = self._external_conn
+        else:
+            if self._conn is None:
+                self._conn = kanban_db.connect(board=self.board)
+            conn = self._conn
+        if not self._tables_ensured:
+            self._ensure_tables(conn)
+            self._tables_ensured = True
+        return conn
+
+    def close(self) -> None:
+        with self._lock:
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
+
+    def __enter__(self) -> "DurableTaskStore":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
+    def create_plan(
+        self,
+        task_id: str,
+        title: str,
+        items: List[Dict[str, Any]],
+        *,
+        session_id: Optional[str] = None,
+        checkpoint_frequency: int = 1,
+        max_retries: int = 3,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> WorkPlan:
+        plan_id = f"plan_{uuid4().hex[:12]}"
+        now = _utc_now()
+        plan = WorkPlan(
+            id=plan_id,
+            task_id=task_id,
+            session_id=session_id,
+            title=title,
+            status="running",
+            total_items=len(items),
+            checkpoint_frequency=checkpoint_frequency,
+            max_retries=max_retries,
+            metadata=metadata or {},
+            created_at=now,
+            updated_at=now,
+        )
+
+        with self._lock, self.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO work_plans (
+                    id, task_id, session_id, title, status, total_items,
+                    checkpoint_frequency, max_retries, metadata, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    plan.id,
+                    plan.task_id,
+                    plan.session_id,
+                    plan.title,
+                    plan.status,
+                    plan.total_items,
+                    plan.checkpoint_frequency,
+                    plan.max_retries,
+                    json.dumps(plan.metadata, ensure_ascii=False),
+                    plan.created_at,
+                    plan.updated_at,
+                ),
+            )
+
+            # Insert work items
+            for idx, item_input in enumerate(items, start=1):
+                item_id = f"{plan_id}_{idx:04d}"
+                conn.execute(
+                    """
+                    INSERT INTO work_items (
+                        id, plan_id, task_id, item_index, status, attempts,
+                        input_payload, checkpoints, retry_state, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        item_id,
+                        plan.id,
+                        plan.task_id,
+                        idx,
+                        WorkItemStatus.PENDING.value,
+                        0,
+                        json.dumps(item_input, ensure_ascii=False),
+                        json.dumps({}, ensure_ascii=False),
+                        json.dumps({}, ensure_ascii=False),
+                        now,
+                    ),
+                )
+            conn.commit()
+
+        return plan
+
+    def get_plan(self, plan_id_or_task_id: str) -> Optional[WorkPlan]:
+        with self.get_connection() as conn:
+            cur = conn.execute(
+                "SELECT * FROM work_plans WHERE id = ? OR task_id = ? ORDER BY created_at DESC LIMIT 1",
+                (plan_id_or_task_id, plan_id_or_task_id),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            col_names = [d[0] for d in cur.description]
+            return WorkPlan.from_dict(dict(zip(col_names, row)))
+
+    def get_work_items(
+        self,
+        plan_id_or_task_id: str,
+        *,
+        status: Optional[WorkItemStatus] = None,
+    ) -> List[WorkItem]:
+        with self.get_connection() as conn:
+            if status is not None:
+                cur = conn.execute(
+                    """
+                    SELECT * FROM work_items
+                    WHERE (plan_id = ? OR task_id = ?) AND status = ?
+                    ORDER BY item_index ASC
+                    """,
+                    (plan_id_or_task_id, plan_id_or_task_id, status.value),
+                )
+            else:
+                cur = conn.execute(
+                    """
+                    SELECT * FROM work_items
+                    WHERE plan_id = ? OR task_id = ?
+                    ORDER BY item_index ASC
+                    """,
+                    (plan_id_or_task_id, plan_id_or_task_id),
+                )
+            rows = cur.fetchall()
+            if not rows:
+                return []
+            col_names = [d[0] for d in cur.description]
+            return [WorkItem.from_dict(dict(zip(col_names, row))) for row in rows]
+
+    def get_item(self, item_id: str) -> Optional[WorkItem]:
+        with self.get_connection() as conn:
+            cur = conn.execute("SELECT * FROM work_items WHERE id = ?", (item_id,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            col_names = [d[0] for d in cur.description]
+            return WorkItem.from_dict(dict(zip(col_names, row)))
+
+    def update_item_checkpoint(
+        self,
+        item_id: str,
+        step: str,
+        status_val: str = "ok",
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> WorkItem:
+        now = _utc_now()
+        with self._lock, self.get_connection() as conn:
+            cur = conn.execute("SELECT checkpoints, attempts FROM work_items WHERE id = ?", (item_id,))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError(f"WorkItem {item_id} not found")
+            try:
+                cp = json.loads(row[0] or "{}")
+            except Exception:
+                cp = {}
+            cp[step] = status_val
+            if metadata:
+                cp[f"{step}_meta"] = metadata
+
+            conn.execute(
+                """
+                UPDATE work_items
+                SET checkpoints = ?,
+                    status = CASE
+                        WHEN status IN ('pending', 'retrying') THEN 'running'
+                        ELSE status
+                    END,
+                    started_at = COALESCE(started_at, ?)
+                WHERE id = ?
+                """,
+                (json.dumps(cp, ensure_ascii=False), now, item_id),
+            )
+            conn.commit()
+
+        item = self.get_item(item_id)
+        assert item is not None
+        return item
+
+    def mark_item_captured(self, item_id: str, raw_output_ref: str) -> WorkItem:
+        now = _utc_now()
+        with self._lock, self.get_connection() as conn:
+            cur = conn.execute("SELECT checkpoints FROM work_items WHERE id = ?", (item_id,))
+            row = cur.fetchone()
+            try:
+                cp = json.loads(row[0] or "{}") if row else {}
+            except Exception:
+                cp = {}
+            cp["capture"] = "ok"
+
+            conn.execute(
+                """
+                UPDATE work_items
+                SET status = ?,
+                    raw_output_ref = ?,
+                    checkpoints = ?
+                WHERE id = ?
+                """,
+                (WorkItemStatus.CAPTURED.value, raw_output_ref, json.dumps(cp, ensure_ascii=False), item_id),
+            )
+            conn.commit()
+
+        item = self.get_item(item_id)
+        assert item is not None
+        return item
+
+    def mark_item_persisted(self, item_id: str, normalized_output_ref: str) -> WorkItem:
+        with self._lock, self.get_connection() as conn:
+            cur = conn.execute("SELECT checkpoints FROM work_items WHERE id = ?", (item_id,))
+            row = cur.fetchone()
+            try:
+                cp = json.loads(row[0] or "{}") if row else {}
+            except Exception:
+                cp = {}
+            cp["persist"] = "ok"
+
+            conn.execute(
+                """
+                UPDATE work_items
+                SET status = ?,
+                    normalized_output_ref = ?,
+                    checkpoints = ?
+                WHERE id = ?
+                """,
+                (WorkItemStatus.PERSISTED.value, normalized_output_ref, json.dumps(cp, ensure_ascii=False), item_id),
+            )
+            conn.commit()
+
+        item = self.get_item(item_id)
+        assert item is not None
+        return item
+
+    def mark_item_validated(self, item_id: str, validation_result: Dict[str, Any]) -> WorkItem:
+        valid = validation_result.get("valid", False)
+        status = WorkItemStatus.VALIDATED.value if valid else WorkItemStatus.BLOCKED.value
+        with self._lock, self.get_connection() as conn:
+            cur = conn.execute("SELECT checkpoints FROM work_items WHERE id = ?", (item_id,))
+            row = cur.fetchone()
+            try:
+                cp = json.loads(row[0] or "{}") if row else {}
+            except Exception:
+                cp = {}
+            cp["validate"] = "ok" if valid else "failed"
+
+            conn.execute(
+                """
+                UPDATE work_items
+                SET status = ?,
+                    validation_result = ?,
+                    checkpoints = ?
+                WHERE id = ?
+                """,
+                (status, json.dumps(validation_result, ensure_ascii=False), json.dumps(cp, ensure_ascii=False), item_id),
+            )
+            conn.commit()
+
+        item = self.get_item(item_id)
+        assert item is not None
+        return item
+
+    def complete_item(self, item_id: str) -> WorkItem:
+        """Mark item as COMPLETED after verifying strict persistence and validation invariants."""
+        item = self.get_item(item_id)
+        if not item:
+            raise ValueError(f"WorkItem {item_id} not found")
+        item.verify_can_complete()
+
+        now = _utc_now()
+        with self._lock, self.get_connection() as conn:
+            conn.execute(
+                """
+                UPDATE work_items
+                SET status = ?,
+                    completed_at = ?,
+                    error = NULL,
+                    last_error = NULL
+                WHERE id = ?
+                """,
+                (WorkItemStatus.COMPLETED.value, now, item_id),
+            )
+            # Update plan timestamp and check if all completed
+            conn.execute(
+                "UPDATE work_plans SET updated_at = ? WHERE id = ?",
+                (now, item.plan_id),
+            )
+            conn.commit()
+
+        updated = self.get_item(item_id)
+        assert updated is not None
+        return updated
+
+    def fail_item(
+        self,
+        item_id: str,
+        error: str,
+        *,
+        can_retry: bool = True,
+        max_retries: Optional[int] = None,
+    ) -> WorkItem:
+        now = _utc_now()
+        item = self.get_item(item_id)
+        if not item:
+            raise ValueError(f"WorkItem {item_id} not found")
+
+        plan = self.get_plan(item.plan_id)
+        limit = max_retries if max_retries is not None else (plan.max_retries if plan else 3)
+        next_attempts = item.attempts + 1
+
+        retry_state = dict(item.retry_state)
+        history = list(retry_state.get("history", []))
+        history.append({"attempt": next_attempts, "error": error, "at": now})
+        retry_state["history"] = history
+        retry_state["attempts"] = next_attempts
+
+        if can_retry and next_attempts <= limit:
+            new_status = WorkItemStatus.RETRYING.value
+        else:
+            new_status = WorkItemStatus.FAILED.value
+
+        with self._lock, self.get_connection() as conn:
+            conn.execute(
+                """
+                UPDATE work_items
+                SET status = ?,
+                    attempts = ?,
+                    error = ?,
+                    last_error = ?,
+                    retry_state = ?,
+                    completed_at = CASE WHEN ? = 'failed' THEN ? ELSE completed_at END
+                WHERE id = ?
+                """,
+                (new_status, next_attempts, error, error, json.dumps(retry_state, ensure_ascii=False), new_status, now, item_id),
+            )
+            conn.commit()
+
+        updated = self.get_item(item_id)
+        assert updated is not None
+        return updated
+
+    def resume_plan(self, task_id: str) -> List[WorkItem]:
+        """Return all items that are not yet COMPLETED for the active plan.
+
+        If a process died while an item was RUNNING, it is safely rehydrated
+        without duplicating already-completed items.
+        """
+        plan = self.get_plan(task_id)
+        if not plan:
+            return []
+
+        with self.get_connection() as conn:
+            cur = conn.execute(
+                """
+                SELECT * FROM work_items
+                WHERE plan_id = ? AND status != ?
+                ORDER BY item_index ASC
+                """,
+                (plan.id, WorkItemStatus.COMPLETED.value),
+            )
+            rows = cur.fetchall()
+            col_names = [d[0] for d in cur.description]
+            return [WorkItem.from_dict(dict(zip(col_names, row))) for row in rows]
+
+    def get_progress_summary(self, task_id: str) -> Dict[str, Any]:
+        plan = self.get_plan(task_id)
+        if not plan:
+            return {"task_id": task_id, "found": False}
+
+        items = self.get_work_items(plan.id)
+        counts: Dict[str, int] = {}
+        for item in items:
+            counts[item.status.value] = counts.get(item.status.value, 0) + 1
+
+        completed = counts.get(WorkItemStatus.COMPLETED.value, 0)
+        failed = counts.get(WorkItemStatus.FAILED.value, 0)
+        running = counts.get(WorkItemStatus.RUNNING.value, 0)
+        pending = counts.get(WorkItemStatus.PENDING.value, 0)
+        retrying = counts.get(WorkItemStatus.RETRYING.value, 0)
+        waiting = counts.get(WorkItemStatus.WAITING_FOR_USER.value, 0)
+
+        # Count suspects: items validated but flagged as suspect
+        suspects = sum(
+            1 for item in items
+            if item.validation_result and item.validation_result.get("suspect") is True
+        )
+
+        return {
+            "task_id": task_id,
+            "plan_id": plan.id,
+            "title": plan.title,
+            "total_items": plan.total_items,
+            "completed": completed,
+            "failed": failed,
+            "running": running,
+            "pending": pending,
+            "retrying": retrying,
+            "waiting_for_user": waiting,
+            "suspect": suspects,
+            "progress_ratio": (completed / plan.total_items) if plan.total_items > 0 else 0.0,
+            "all_done": completed == plan.total_items and plan.total_items > 0,
+        }
+
+    def to_compact_context(self, task_id: str) -> str:
+        """Produce an ultra-compact structured summary for context compaction.
+
+        Replaces verbose narrative prose with a canonical operational handle.
+        """
+        summary = self.get_progress_summary(task_id)
+        if not summary.get("found", True):
+            return f"task://{task_id} (not found)"
+
+        total = summary["total_items"]
+        completed = summary["completed"]
+        suspect = summary.get("suspect", 0)
+        failed = summary.get("failed", 0)
+        waiting = summary.get("waiting_for_user", 0)
+
+        parts = [f"task://{task_id}", f"[{completed}/{total} completed"]
+        if suspect > 0:
+            parts.append(f"{suspect} suspect")
+        if failed > 0:
+            parts.append(f"{failed} failed")
+        if waiting > 0:
+            parts.append("waiting for human")
+        parts[-1] = parts[-1] + "]"
+        return " ".join(parts)
+
+    def get_delta_state(self, task_id: str, last_completed_count: int = 0) -> Dict[str, Any]:
+        """Compute delta progress to avoid transmitting full state snapshots repeatedly."""
+        summary = self.get_progress_summary(task_id)
+        current_completed = summary.get("completed", 0)
+        delta = current_completed - last_completed_count
+        sign = f"+{delta}" if delta >= 0 else str(delta)
+        return {
+            "task_id": task_id,
+            "delta": {
+                "completed": sign,
+                "current": f"{current_completed}/{summary.get('total_items', 0)}",
+                "suspect": summary.get("suspect", 0),
+                "failed": summary.get("failed", 0),
+            },
+        }

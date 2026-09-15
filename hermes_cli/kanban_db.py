@@ -1607,6 +1607,50 @@ CREATE INDEX IF NOT EXISTS idx_hybrid_delegations_card
     ON hybrid_card_delegations(human_card_id, attempt);
 CREATE INDEX IF NOT EXISTS idx_hybrid_delegations_task
     ON hybrid_card_delegations(agent_task_id);
+
+-- Durable execution tables for WorkPlans and WorkItems.
+-- Keeps batch runners and long browser workflows resumable without duplicate databases (D-007).
+CREATE TABLE IF NOT EXISTS work_plans (
+    id                   TEXT PRIMARY KEY,
+    task_id              TEXT NOT NULL,
+    session_id           TEXT,
+    title                TEXT NOT NULL,
+    status               TEXT NOT NULL,
+    total_items          INTEGER NOT NULL DEFAULT 0,
+    checkpoint_frequency INTEGER NOT NULL DEFAULT 1,
+    max_retries          INTEGER NOT NULL DEFAULT 3,
+    metadata             TEXT,
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL,
+    completed_at         TEXT
+);
+
+CREATE TABLE IF NOT EXISTS work_items (
+    id                     TEXT PRIMARY KEY,
+    plan_id                TEXT NOT NULL,
+    task_id                TEXT NOT NULL,
+    item_index             INTEGER NOT NULL,
+    status                 TEXT NOT NULL,
+    attempts               INTEGER NOT NULL DEFAULT 0,
+    input_payload          TEXT,
+    raw_output_ref         TEXT,
+    normalized_output_ref  TEXT,
+    validation_result      TEXT,
+    evidence_refs          TEXT,
+    last_error             TEXT,
+    error                  TEXT,
+    checkpoints            TEXT,
+    retry_state            TEXT,
+    created_at             TEXT NOT NULL,
+    started_at             TEXT,
+    completed_at           TEXT,
+    FOREIGN KEY(plan_id) REFERENCES work_plans(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_work_plans_task ON work_plans(task_id);
+CREATE INDEX IF NOT EXISTS idx_work_plans_status ON work_plans(status);
+CREATE INDEX IF NOT EXISTS idx_work_items_plan ON work_items(plan_id, item_index);
+CREATE INDEX IF NOT EXISTS idx_work_items_status ON work_items(status);
 """
 
 
@@ -2916,6 +2960,61 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "UPDATE task_events SET kind = ? WHERE kind = ?",
             (new, old),
         )
+
+    # Ensure durable execution tables exist on pre-existing DBs
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS work_plans (
+            id                   TEXT PRIMARY KEY,
+            task_id              TEXT NOT NULL,
+            session_id           TEXT,
+            title                TEXT NOT NULL,
+            status               TEXT NOT NULL,
+            total_items          INTEGER NOT NULL DEFAULT 0,
+            checkpoint_frequency INTEGER NOT NULL DEFAULT 1,
+            max_retries          INTEGER NOT NULL DEFAULT 3,
+            metadata             TEXT,
+            created_at           TEXT NOT NULL,
+            updated_at           TEXT NOT NULL,
+            completed_at         TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS work_items (
+            id                     TEXT PRIMARY KEY,
+            plan_id                TEXT NOT NULL,
+            task_id                TEXT NOT NULL,
+            item_index             INTEGER NOT NULL,
+            status                 TEXT NOT NULL,
+            attempts               INTEGER NOT NULL DEFAULT 0,
+            input_payload          TEXT,
+            raw_output_ref         TEXT,
+            normalized_output_ref  TEXT,
+            validation_result      TEXT,
+            evidence_refs          TEXT,
+            last_error             TEXT,
+            error                  TEXT,
+            checkpoints            TEXT,
+            retry_state            TEXT,
+            created_at             TEXT NOT NULL,
+            started_at             TEXT,
+            completed_at           TEXT,
+            FOREIGN KEY(plan_id) REFERENCES work_plans(id)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_work_plans_task ON work_plans(task_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_work_plans_status ON work_plans(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_work_items_plan ON work_items(plan_id, item_index)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_work_items_status ON work_items(status)")
+
+    wi_cols = {row["name"] for row in conn.execute("PRAGMA table_info(work_items)")}
+    if "last_error" not in wi_cols:
+        _add_column_if_missing(conn, "work_items", "last_error", "last_error TEXT")
+    if "evidence_refs" not in wi_cols:
+        _add_column_if_missing(conn, "work_items", "evidence_refs", "evidence_refs TEXT")
 
     _rebuild_drifted_tables(conn)
 

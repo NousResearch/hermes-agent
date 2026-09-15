@@ -628,7 +628,76 @@ class TestFindHermesMd:
         with patch("agent.prompt_builder._find_git_root", return_value=None):
             assert _find_hermes_md(cwd) is None
 
+    def test_hermes_home_fallback_when_walk_finds_nothing(self, tmp_path, monkeypatch):
+        """Walk fails → HERMES_HOME is the last-resort anchor for .hermes.md.
 
+        The gateway maps a placeholder terminal.cwd to Path.home(), which sits
+        ABOVE HERMES_HOME (~/.hermes is its child), so the parent walk can
+        never reach the user's .hermes.md. load_soul_md already anchors on
+        HERMES_HOME for the same reason; this mirrors it after the walk.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        (tmp_path / "hermes_home").mkdir()
+        (tmp_path / "hermes_home" / ".hermes.md").write_text("home rules")
+        cwd = tmp_path / "project" / "src"
+        cwd.mkdir(parents=True)
+        # No .hermes.md anywhere from cwd upward.
+        from unittest.mock import patch
+        with patch("agent.prompt_builder._find_git_root", return_value=None):
+            assert _find_hermes_md(cwd) == tmp_path / "hermes_home" / ".hermes.md"
+
+    def test_walk_still_wins_over_hermes_home_fallback(self, tmp_path, monkeypatch):
+        """A .hermes.md found by the walk must beat the HERMES_HOME fallback."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        (tmp_path / "hermes_home").mkdir()
+        (tmp_path / "hermes_home" / ".hermes.md").write_text("home rules")
+        (tmp_path / "project").mkdir()
+        (tmp_path / "project" / ".hermes.md").write_text("project rules")
+        cwd = tmp_path / "project"
+        # Walk finds the project file; fallback never consulted.
+        from unittest.mock import patch
+        with patch("agent.prompt_builder._find_git_root", return_value=None):
+            assert _find_hermes_md(cwd) == tmp_path / "project" / ".hermes.md"
+
+    def test_hermes_home_fallback_picks_up_hermes_md_alias(self, tmp_path, monkeypatch):
+        """Fallback honors both filenames, .hermes.md first (same as the walk)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        (tmp_path / "hermes_home").mkdir()
+        (tmp_path / "hermes_home" / "HERMES.md").write_text("home rules alias")
+        cwd = tmp_path / "work"
+        cwd.mkdir()
+        from unittest.mock import patch
+        with patch("agent.prompt_builder._find_git_root", return_value=None):
+            assert _find_hermes_md(cwd) == tmp_path / "hermes_home" / "HERMES.md"
+
+    def test_hermes_home_fallback_ignores_nonexistent_file(self, tmp_path, monkeypatch):
+        """HERMES_HOME set but no context file there → still None, no raise."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "empty_home"))
+        (tmp_path / "empty_home").mkdir()
+        cwd = tmp_path / "work"
+        cwd.mkdir()
+        from unittest.mock import patch
+        with patch("agent.prompt_builder._find_git_root", return_value=None):
+            assert _find_hermes_md(cwd) is None
+
+    def test_git_root_boundary_stops_before_hermes_home_fallback(self, tmp_path, monkeypatch):
+        """Inside a git repo, the walk stops AT the git root — fallback NOT reached.
+
+        Deliberate asymmetry: the anti-injection hardening limits the no-git-root
+        walk to cwd only, and the loop early-returns at the git root, so a repo
+        cwd yields None even when HERMES_HOME holds a .hermes.md. Pinned so a
+        future refactor that extends the fallback past repo boundaries is a
+        reviewed decision, not silent drift. Repo-external anchoring stays
+        load_soul_md's job.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        (tmp_path / "hermes_home").mkdir()
+        (tmp_path / "hermes_home" / ".hermes.md").write_text("home rules")
+        repo = tmp_path / "repo"
+        (repo / ".git").mkdir(parents=True)
+        (repo / "src").mkdir()
+        # Real .git dir: walk stops at repo root, finds nothing, returns None.
+        assert _find_hermes_md(repo / "src") is None
 
 
 class TestFindGitRoot:

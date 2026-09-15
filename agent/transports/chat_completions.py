@@ -362,6 +362,20 @@ def _sanitize_message(msg: Any, strip_extra_content: bool) -> dict | None:
     return out_msg if strip_keys or copied_tool_calls is not None else None
 
 
+def _is_zai_base_url(base_url: Any) -> bool:
+    """Z.AI/BigModel reached through a route whose profile is not ``zai``: profiles resolve
+    by name only, so a ``custom:`` route or an unregistered provider aimed at their host
+    needs the URL check. A registered ``zai`` route already gets ``tool_stream`` from
+    ``ZaiProfile.build_extra_body``, so this fires there as well and no-ops.
+
+    Host-anchored, never a substring: a proxy that merely carries the vendor host in its
+    path must not be steered onto Z.AI's wire quirks. Same hosts as the auxiliary client's
+    Z.AI base-URL rewrite."""
+    from utils import base_url_host_matches
+
+    return base_url_host_matches(base_url, "api.z.ai") or base_url_host_matches(base_url, "open.bigmodel.cn")
+
+
 class ChatCompletionsTransport(ProviderTransport):
     """Transport for api_mode='chat_completions'."""
 
@@ -463,6 +477,8 @@ class ChatCompletionsTransport(ProviderTransport):
             elif raw_thinking_config:
                 extra_body["thinking_config"] = raw_thinking_config
 
+        if tools and _is_zai_base_url(base_url):
+            extra_body.setdefault("tool_stream", True)
         if params.get("extra_body_additions"):
             extra_body.update(params["extra_body_additions"])
         if extra_body:
@@ -494,12 +510,14 @@ class ChatCompletionsTransport(ProviderTransport):
         extra_body: dict[str, Any] = {}
         profile_body = profile.build_extra_body(
             session_id=params.get("session_id"), provider_preferences=params.get("provider_preferences"), model=model,
-            base_url=params.get("base_url"), reasoning_config=reasoning_config,
+            base_url=params.get("base_url"), reasoning_config=reasoning_config, tools=tools,
             openrouter_min_coding_score=params.get("openrouter_min_coding_score"),
         )
         for part in (profile_body, extra_body_from_profile, params.get("extra_body_additions")):
             if part:
                 extra_body.update(part)
+        if tools and _is_zai_base_url(params.get("base_url")):
+            extra_body.setdefault("tool_stream", True)
         for k, v in (params.get("request_overrides") or {}).items():
             if k == "extra_body" and isinstance(v, dict):
                 extra_body.update(v)

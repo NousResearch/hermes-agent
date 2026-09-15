@@ -222,3 +222,64 @@ class TestZaiFullKwargsIntegration:
         )
         assert kwargs["reasoning_effort"] == "max"
         assert kwargs["extra_body"]["thinking"] == {"type": "enabled"}
+
+
+class TestZaiToolStreamWireShape:
+    """``build_extra_body`` asks Z.AI to stream tool-call arguments.
+
+    Without ``tool_stream`` Z.AI buffers the whole argument string and emits it in a
+    single delta, so the connection carries nothing for the entire generation. Measured
+    against glm-5.3-flash with a ~2.5KB argument: the longest silent gap was 19-38s
+    without the flag and 5-8s with it (4 runs each). Long gaps are what a proxy in front
+    of the endpoint drops. Tool calls themselves work either way -- this is a robustness
+    and latency fix, not a correctness one.
+    """
+
+    def test_tools_request_asks_for_tool_stream(self, zai_profile):
+        assert zai_profile.build_extra_body(tools=[{"type": "function"}]) == {"tool_stream": True}
+
+    def test_plain_completion_omits_tool_stream(self, zai_profile):
+        """No tools -> nothing to stream; the flag would be noise on the wire."""
+        assert zai_profile.build_extra_body(tools=None) == {}
+        assert zai_profile.build_extra_body() == {}
+
+    def test_tool_stream_reaches_full_kwargs(self, zai_profile):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="glm-5.3",
+            messages=[{"role": "user", "content": "ping"}],
+            tools=[{"type": "function", "function": {"name": "t", "parameters": {}}}],
+            provider_profile=zai_profile,
+            base_url="https://api.z.ai/api/paas/v4",
+            provider_name="zai",
+        )
+        assert kwargs["extra_body"]["tool_stream"] is True
+
+
+class TestZaiToolStreamOnAuxiliaryPath:
+    """Auxiliary and sub-agent calls assemble kwargs on their own path.
+
+    They carry tools just like the main loop, so they hit the same buffered-argument
+    stall; the profile only sees it because ``_project_provider_profile`` hands the
+    profile its tools. Sibling call path of the transport-side wiring.
+    """
+
+    def test_auxiliary_tool_call_asks_for_tool_stream(self, zai_profile):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            "zai", "glm-5.3", [{"role": "user", "content": "ping"}],
+            tools=[{"type": "function", "function": {"name": "t", "parameters": {}}}],
+            base_url="https://api.z.ai/api/paas/v4",
+        )
+        assert kwargs["extra_body"]["tool_stream"] is True
+
+    def test_auxiliary_plain_completion_omits_tool_stream(self, zai_profile):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            "zai", "glm-5.3", [{"role": "user", "content": "ping"}],
+            base_url="https://api.z.ai/api/paas/v4",
+        )
+        assert "tool_stream" not in kwargs.get("extra_body", {})

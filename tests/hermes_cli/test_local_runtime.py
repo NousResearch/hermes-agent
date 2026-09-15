@@ -216,7 +216,8 @@ def test_install_dir_is_profile_scoped(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("vendor,os_name,expected", [
     ("NVIDIA GeForce RTX 5090", "win", "cuda"),
-    ("nvidia", "ubuntu", "cuda"),
+    ("nvidia", "ubuntu", "vulkan"),
+    ("nvidia", "linux", "vulkan"),
     ("AMD Radeon RX 7900", "win", "vulkan"),
     ("intel", "win", "vulkan"),
     (None, "win", "cpu"),

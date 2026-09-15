@@ -129,5 +129,73 @@ def test_resolve_worktree_falls_back_when_path_occupied(kanban_home, tmp_path):
     assert head == "wt/sibling"
 
 
+@pytest.mark.parametrize("entry", ["helper", "persisted"])
+def test_stale_canonical_worktree_refuses_without_mutation(
+    kanban_home, tmp_path, monkeypatch, entry
+):
+    repo = _make_repo(tmp_path)
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="retry", workspace_kind="worktree", workspace_path=str(repo)
+        )
+        task = kb.get_task(conn, tid)
+        target, branch = kbw._resolve_worktree_workspace(task)
+        kbw.set_workspace_path(conn, tid, target)
+        kbw.set_branch_name(conn, tid, branch)
+        task = kb.get_task(conn, tid)
+        # The retry sees exactly the dispatcher-persisted canonical path.
+        _git(target, "checkout", "-b", "wt/stale")
+        (target / "README.md").write_bytes(b"dirty tracked\n")
+        (target / "untracked").write_bytes(b"dirty untracked\n")
+        before_head = (kbw._git_dir(target) / "HEAD").read_bytes()
+        before_task = (task.workspace_path, task.branch_name)
+        real_run = subprocess.run
+        commands = []
+
+        def record_run(args, *a, **kw):
+            commands.append(args)
+            return real_run(args, *a, **kw)
+
+        monkeypatch.setattr(subprocess, "run", record_run)
+        with pytest.raises(RuntimeError, match="branch") as exc:
+            if entry == "helper":
+                kbw._ensure_git_worktree(repo, target, branch)
+            else:
+                kbw._resolve_worktree_workspace(task)
+        assert str(target) in str(exc.value)
+        assert branch in str(exc.value) and "wt/stale" in str(exc.value)
+        assert "manually" in str(exc.value)
+        assert not any("checkout" in cmd or "switch" in cmd for cmd in commands)
+        assert (kbw._git_dir(target) / "HEAD").read_bytes() == before_head
+        assert (target / "README.md").read_bytes() == b"dirty tracked\n"
+        assert (target / "untracked").read_bytes() == b"dirty untracked\n"
+        persisted = kb.get_task(conn, tid)
+        assert (persisted.workspace_path, persisted.branch_name) == before_task
+        assert (task.workspace_path, task.branch_name) == before_task
+
+
+def test_linked_anchor_same_branch_reuse_and_foreign_sibling(kanban_home, tmp_path):
+    repo = _make_repo(tmp_path)
+    anchor = _add_worktree(repo, tmp_path / "anchor", "wt/anchor")
+    target = _add_worktree(repo, anchor / ".worktrees" / "same", "wt/same")
+    (target / "README.md").write_bytes(b"keep dirty\n")
+    kbw._ensure_git_worktree(anchor, target, "wt/same")
+    assert kbw._git_common_dir(anchor) == kbw._git_common_dir(target)
+    assert (target / "README.md").read_bytes() == b"keep dirty\n"
+    with kbc.connect() as conn:
+        tid = kb.create_task(
+            conn, title="sibling", workspace_kind="worktree", workspace_path=str(target)
+        )
+        task = kb.get_task(conn, tid)
+        resolved, branch = kbw._resolve_worktree_workspace(task)
+        assert resolved == (anchor / ".worktrees" / tid).resolve()
+        assert kbw._git_current_branch(resolved) == branch
+        assert kbw._git_current_branch(target) == "wt/same"
+        assert (target / "README.md").read_bytes() == b"keep dirty\n"
+        kbw.set_workspace_path(conn, tid, resolved)
+        kbw.set_branch_name(conn, tid, branch)
+        assert kbw._resolve_worktree_workspace(kb.get_task(conn, tid)) == (resolved, branch)
+
+
 
 

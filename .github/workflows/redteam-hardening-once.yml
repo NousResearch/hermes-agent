@@ -112,4 +112,4 @@ jobs:
           git push origin HEAD:main
           echo "validated_commit=$(git rev-parse HEAD)"
 
-# redteam bootstrap revision 3
+# redteam bootstrap revision 4

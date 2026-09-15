@@ -1690,6 +1690,26 @@ class TestMoAReferenceGenerations:
 
         assert gens == []
 
+    def test_failed_flag_survives_to_the_dashboard_metadata(self, monkeypatch):
+        """An advisor that returned no usable text is flagged ``failed`` in the
+        generation metadata: its tokens are still billed, so a dashboard must not
+        read them as a successful contribution."""
+        mod = self._fresh_plugin()
+        gens = []
+        state = self._state(mod, monkeypatch, gens)
+
+        refs = self._refs()
+        refs[0]["failed"] = True
+        refs[0]["output"] = "[failed: empty response]"
+        refs[1]["failed"] = False
+
+        mod._emit_moa_reference_generations(state, client=object(), references=refs)
+
+        assert gens[0].kw["metadata"]["failed"] is True
+        # A healthy advisor carries the explicit False, not a missing key.
+        assert gens[1].kw["metadata"]["failed"] is False
+
+
 class TestAtexitFinalization(TestTurnTraceIsolation):
     """Short-lived processes (kanban workers, `hermes chat -q`, cron) can exit
     with tool calls still queued — the root span never ends and the backend

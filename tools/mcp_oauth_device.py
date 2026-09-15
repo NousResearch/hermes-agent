@@ -30,6 +30,7 @@ async def _discover(client, provider):
         handle_protected_resource_response,
         validate_metadata_issuer,
     )
+    from mcp.client.auth.exceptions import OAuthFlowError
     context = provider.context
     response = await client.get(context.server_url)
     challenge = extract_resource_metadata_from_www_auth(response)
@@ -39,23 +40,34 @@ async def _discover(client, provider):
         if prm:
             await provider._validate_resource_match(prm)
             context.protected_resource_metadata = prm
-            context.auth_server_url = str(prm.authorization_servers[0])
             break
-    for url in build_oauth_authorization_server_metadata_discovery_urls(context.auth_server_url, context.server_url):
-        response = await client.get(url)
-        if response.status_code == 404:
-            continue
-        data = _payload(response, "OAuth metadata")
-        if not data.get("device_authorization_endpoint"):
-            raise RuntimeError("Server does not advertise device authorization; use --flow browser if supported")
-        metadata = DeviceOAuthMetadata.model_validate(data)
-        if context.auth_server_url:
-            validate_metadata_issuer(metadata, context.auth_server_url)
-        grants = metadata.grant_types_supported
-        if grants is not None and DEVICE_GRANT not in grants:
-            raise RuntimeError("Server does not advertise the device_code grant")
-        context.oauth_metadata = metadata
-        return
+    authorization_servers = (
+        [str(server) for server in context.protected_resource_metadata.authorization_servers]
+        if context.protected_resource_metadata and context.protected_resource_metadata.authorization_servers
+        else [context.auth_server_url]
+    )
+    for auth_server_url in authorization_servers:
+        for url in build_oauth_authorization_server_metadata_discovery_urls(auth_server_url, context.server_url):
+            response = await client.get(url)
+            if response.status_code == 404:
+                continue
+            data = _payload(response, "OAuth metadata")
+            if not data.get("device_authorization_endpoint"):
+                continue
+            try:
+                metadata = DeviceOAuthMetadata.model_validate(data)
+                if auth_server_url:
+                    validate_metadata_issuer(metadata, auth_server_url)
+            except (OAuthFlowError, ValueError):
+                # A protected-resource document may advertise several authorization
+                # servers. Only use one whose metadata is bound to that server.
+                continue
+            grants = metadata.grant_types_supported
+            if grants is not None and DEVICE_GRANT not in grants:
+                continue
+            context.auth_server_url = auth_server_url
+            context.oauth_metadata = metadata
+            return
     raise RuntimeError("No OAuth authorization server metadata found")
 
 

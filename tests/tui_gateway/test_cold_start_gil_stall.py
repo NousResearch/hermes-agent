@@ -14,7 +14,6 @@ between ``HERMES_BACKEND_READY`` and the first prompt. Three fixes:
 """
 
 import asyncio
-import inspect
 import sys
 from unittest.mock import patch, MagicMock
 
@@ -112,51 +111,65 @@ def test_handle_ws_resolves_skin_off_the_loop_thread():
 
 
 def test_handle_ws_ready_payload_wires_skin_through_to_thread():
-    """The gateway.ready payload construction must route resolve_skin
-    through asyncio.to_thread with change_events preserved.
+    """The gateway.ready payload must carry the resolved skin, and
+    resolve_skin must not run on the event-loop thread (#60800).
 
-    Exercises handle_ws's actual payload site by faking the transport
-    and asserting on the written frame.
+    Drives the real ``handle_ws`` with a fake transport and asserts on the
+    frame it actually writes, so a revert to an inline ``resolve_skin()``
+    call fails here: the recorded resolver thread would equal the loop
+    thread.
     """
     import asyncio as _asyncio
+    import json
     import threading
 
     import tui_gateway.server as server_mod
     import tui_gateway.ws as ws_mod
 
     idents = {}
-    frames = []
+    sent = []
 
     def _fake_resolve_skin():
         idents["skin_thread"] = threading.get_ident()
         return {"palette": "wired"}
 
+    class FakeWS:
+        async def accept(self, *_a, **_k):
+            pass
+
+        async def send_text(self, line):
+            sent.append(line)
+
+        async def receive_text(self):
+            raise ws_mod._WebSocketDisconnect()
+
+        async def close(self):
+            pass
+
     async def _scenario():
         idents["loop_thread"] = threading.get_ident()
-        with patch.object(server_mod, "resolve_skin", _fake_resolve_skin):
-            # Reproduce handle_ws's ready-frame construction verbatim.
-            skin_payload = await _asyncio.to_thread(server_mod.resolve_skin)
-            frames.append(
-                {
-                    "jsonrpc": "2.0",
-                    "method": "event",
-                    "params": {
-                        "type": "gateway.ready",
-                        "payload": {"skin": skin_payload, "change_events": True},
-                    },
-                }
-            )
+        await ws_mod.handle_ws(FakeWS())
 
-    _asyncio.run(_scenario())
+    with patch.object(server_mod, "resolve_skin", _fake_resolve_skin), \
+            patch.object(server_mod, "_ensure_skin_watcher", lambda: None), \
+            patch.object(server_mod, "register_live_transport", lambda *_a, **_k: None), \
+            patch.object(server_mod, "_start_backend_heartbeat_refresher", lambda: None), \
+            patch.object(server_mod, "_WS_ORPHAN_REAP_GRACE_S", 0):
+        _asyncio.run(_scenario())
 
-    assert frames[0]["params"]["payload"]["skin"] == {"palette": "wired"}
-    assert frames[0]["params"]["payload"]["change_events"] is True
-    assert idents["skin_thread"] != idents["loop_thread"]
-    # Belt and braces: the production site must still route through
-    # to_thread — assert against the live source so a revert to inline
-    # resolve_skin() cannot slip past the behavioral stub above.
-    source = inspect.getsource(ws_mod.handle_ws)
-    assert "to_thread(server.resolve_skin)" in source
+    ready = next(
+        json.loads(line)
+        for line in sent
+        if json.loads(line).get("params", {}).get("type") == "gateway.ready"
+    )
+    assert ready["params"]["payload"]["skin"] == {"palette": "wired"}
+    assert ready["params"]["payload"]["change_events"] is True
+    # The offload contract: resolve_skin ran off the loop thread. This is what
+    # #60800 actually fixed, and it fails if the call is ever inlined again.
+    assert idents["skin_thread"] != idents["loop_thread"], (
+        "resolve_skin ran on the event loop thread — the #60800 cold-start "
+        "stall would be back."
+    )
 
 
 # ─── Fix 3: _warm_gateway_module pre-imports heavy chains ──────────────

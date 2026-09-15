@@ -7,6 +7,7 @@ import pytest
 from agent.replay_cleanup import canonicalize_replay_history
 from hermes_state import SessionDB
 from tui_gateway import server
+from tui_gateway.contracts.events import SessionResumeProgressPayload
 
 
 @pytest.mark.parametrize("source,omit_messages", [("desktop", True), ("desktop", False), ("tui", True)])
@@ -87,7 +88,8 @@ def test_deferred_resume_preserves_model_history_and_db_ownership(tmp_path, monk
         assert session["display_history_prefix"] == ([] if model_only else prefix)
         count = stored_count if model_only else len(display)
         assert session["resume_message_count"] == count
-        assert ("session.resume_progress", {"message_count": count, "phase": "history", "status": "complete"}) in events
+        assert ("session.resume_progress", SessionResumeProgressPayload(
+            message_count=count, phase="history", status="complete")) in events
         if profile:
             assert closed.wait(5)
             assert db._conn is None
@@ -143,7 +145,7 @@ def test_model_hydration_discards_stale_results_and_closes_owned_db(tmp_path, mo
             assert server._sessions["hydrating"] is replacement
             assert replacement == {"history": [{"role": "user", "content": "replacement"}]}
             assert old["history"] == []
-            assert not any(payload.get("status") == "complete" for _, _, payload in events)
+            assert not any(payload.status == "complete" for _, _, payload in events)
         else:
             assert "hydrating" not in server._sessions
             assert old["resume_history_ready"].is_set()

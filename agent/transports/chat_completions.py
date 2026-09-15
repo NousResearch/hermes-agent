@@ -35,6 +35,7 @@ _XAI_TOOL_SEARCH_ALIAS = "hermes_tool_search"
 # providers reject with HTTP 400 ("Extra inputs are not permitted").
 _STRIP_MSG_KEYS = (
     "codex_reasoning_items", "codex_message_items", "tool_name", "effect_disposition", "timestamp",
+    "tool_result_format",
     "platform_message_id", "api_content", "anthropic_content_blocks", "bedrock_content_blocks",
 )
 _STRIP_TC_KEYS = ("call_id", "response_item_id")

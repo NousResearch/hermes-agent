@@ -37,11 +37,13 @@ _DANGLING_NOTICES = (
 _INTERRUPT_MARKER_LINE = re.compile(r"^\[(?:command|execution) interrupted\b[^\n]*\]\s*$", re.IGNORECASE)
 
 
-def is_interrupted_tool_result(content: Any) -> bool:
-    """True only when the result has the executor's interrupt SHAPE: the marker is the last
-    line of the output (JSON envelope with a non-zero exit code, or a bare text result). A
-    marker quoted inside successful output — a grep hit, a doc example — is ordinary data;
-    this runs on every live request, so a false positive rewrites real tool output."""
+def is_interrupted_tool_result(content: Any, *, allow_bare: bool = True) -> bool:
+    """Recognize executor-shaped interruptions, retaining bare support for legacy callers.
+
+    Current messages set ``allow_bare=False``: a marker at the end of a successful
+    bare payload is still ordinary data, indistinguishable from old interrupt text.
+    Structured results require a non-zero exit code and a final output marker.
+    """
     if not isinstance(content, str):
         return False
     output = content
@@ -55,8 +57,17 @@ def is_interrupted_tool_result(content: Any) -> bool:
         output = envelope.get("output")
         if not isinstance(output, str):
             return False
+    elif not allow_bare:
+        return False
     last_line = output.rstrip().rsplit("\n", 1)[-1]
     return _INTERRUPT_MARKER_LINE.match(last_line) is not None
+
+
+def _is_interrupted_message(message: Dict[str, Any]) -> bool:
+    # NULL/missing format is legacy: keep recovery of historical bare interrupt tails.
+    return is_interrupted_tool_result(
+        message.get("content", ""), allow_bare=message.get("tool_result_format") != "structured",
+    )
 
 
 def _call_name(call: Dict[str, Any]) -> str:
@@ -93,13 +104,13 @@ def strip_interrupted_tool_tails(agent_history: List[Dict[str, Any]]) -> List[Di
             while j < n and agent_history[j].get("role") == "tool":
                 j += 1
             tool_results = agent_history[i + 1:j]
-            if any(is_interrupted_tool_result(m.get("content", "")) for m in tool_results):
+            if any(_is_interrupted_message(m) for m in tool_results):
                 calls = msg.get("tool_calls") or []
                 if _any_side_effecting(calls):
                     call_names = {_call_id(call): _call_name(call) for call in calls}
                     cleaned.append(msg)
                     for tool_result in tool_results:
-                        if is_interrupted_tool_result(tool_result.get("content", "")):
+                        if _is_interrupted_message(tool_result):
                             name = call_names.get(str(tool_result.get("tool_call_id") or ""), "")
                             disposition, content = _orphan_recovery(name, _INTERRUPTED_NOTICES)
                             tool_result = {**tool_result, "effect_disposition": disposition, "content": content}
@@ -109,7 +120,7 @@ def strip_interrupted_tool_tails(agent_history: List[Dict[str, Any]]) -> List[Di
                                  i, j - 1, len(tool_results))
                 i = j
                 continue
-        if msg.get("role") == "tool" and is_interrupted_tool_result(msg.get("content", "")):
+        if msg.get("role") == "tool" and _is_interrupted_message(msg):
             logger.debug("Stripping orphan interrupted tool result from replay history")
         else:
             cleaned.append(msg)

@@ -1963,14 +1963,16 @@ def _synthesize_ended_run(
 # --- Dependency resolution (todo -> ready) ---
 
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
-    """True when the newest ``blocked``/``unblocked`` event is ``blocked`` — an
-    explicit ``kanban_block`` that must wait for an operator. A breaker trip
-    emits ``gave_up`` (not ``blocked``) and so auto-recovers, as does a task
-    with no such event at all (direct DB edit).
+    """True when the newest ``blocked``/``unblocked`` event is ``blocked``.
+
+    An explicit ``kanban_block`` (including a typed spawn-exhaustion
+    ``capability`` block) must wait for an operator. A timeout/crash
+    breaker trip emits ``gave_up`` (not ``blocked``) and so auto-recovers,
+    as does a task with no such event at all (direct DB edit).
 
     See #28712.
     Returns ``False`` when there is no such event at all (e.g. the task was set to ``status='blocked'`` by
-    the circuit breaker or by direct DB manipulation) — preserves the pre-#28712 auto-recover semantics for
+    the circuit breaker or by direct DB manipulation) -- preserves the pre-#28712 auto-recover semantics for
     that path.
     """
     row = conn.execute(

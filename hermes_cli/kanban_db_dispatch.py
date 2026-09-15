@@ -1003,16 +1003,21 @@ def _record_task_failure(
     running with an open run — restore source phase or ``blocked``, release
     claim, close run). Both False: timeout/crash path (caller already restored
     the phase and closed the run; only the counter moves, a trip flips to
-    ``blocked`` + ``gave_up``). Threshold: per-task ``max_retries`` >
-    ``failure_limit`` > ``DEFAULT_FAILURE_LIMIT``. ``force_trip`` trips
-    unconditionally (caller applied its own bounded-retry policy).
+    ``blocked``). A ``spawn_failed`` trip writes a typed ``blocked``
+    event (``block_kind=capability``, reason = the error) instead of
+    ``gave_up``, so it is distinguishable from a ``needs_input``
+    question block. Timeout/crash trips still emit ``gave_up``.
+    Threshold: per-task ``max_retries`` > ``failure_limit`` >
+    ``DEFAULT_FAILURE_LIMIT``. ``force_trip`` trips unconditionally
+    (caller applied its own bounded-retry policy).
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
     error = error[:500]
     with _kb.write_txn(conn):
         row = conn.execute(
-            "SELECT consecutive_failures, status, max_retries, current_run_id "
+            "SELECT consecutive_failures, status, max_retries, current_run_id, "
+            "block_kind, block_recurrences "
             "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if row is None:
@@ -1060,15 +1065,34 @@ def _record_task_failure(
                 )
             return False
 
+        # Spawn/workspace/project failures that exhaust retries are a hard
+        # wall (missing checkout root, no credentials, profile cannot start).
+        # Write a typed ``blocked`` event with ``block_kind=capability`` and
+        # the error as the reason so the card is distinguishable from a
+        # ``needs_input`` open-questions block (which has comments + kind).
+        # Timeout/crash trips keep emitting ``gave_up`` so they still
+        # auto-recover via ``_has_sticky_block``.
+        capability_give_up = outcome == "spawn_failed"
+        if capability_give_up:
+            new_status, event_kind, set_sql, block_params, block_payload = _kb._route_block(
+                "capability", error, retry_status,
+                prev_kind=_kb._row_get(row, "block_kind"),
+                prev_recurrences=int(_kb._row_get(row, "block_recurrences") or 0),
+            )
+        else:
+            new_status, event_kind = "blocked", "gave_up"
+            set_sql, block_params, block_payload = "", (), {}
+
         # Spawn path (release_claim) is still running and also clears claim
         # state; the timeout/crash path already did.
         conn.execute(
-            "UPDATE tasks SET status = 'blocked', "
+            "UPDATE tasks SET status = ?, "
             + ("claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
                if release_claim else "")
-            + "consecutive_failures = ?, last_failure_error = ? "
-            "WHERE id = ? AND status IN ('running', 'ready', 'review')",
-            (failures, error, task_id),
+            + "consecutive_failures = ?, last_failure_error = ?"
+            + (", " + set_sql if set_sql else "")
+            + " WHERE id = ? AND status IN ('running', 'ready', 'review')",
+            (new_status, failures, error, *block_params, task_id),
         )
         payload = {
             "failures": failures,
@@ -1078,22 +1102,25 @@ def _record_task_failure(
             "trigger_outcome": outcome,
             "retry_status": retry_status,
         }
+        payload.update(block_payload)
         run_id = None
         if end_run:
             # Only the spawn path has an open run to close.
+            run_outcome = "blocked" if capability_give_up else "gave_up"
             run_id = _kb._end_run(
-                conn, task_id, outcome="gave_up", status="gave_up", error=error,
+                conn, task_id, outcome=run_outcome, status=run_outcome, error=error,
                 metadata={
                     "failures": failures,
                     "trigger_outcome": outcome,
                     "effective_limit": effective_limit,
                     "limit_source": limit_source,
                     "retry_status": retry_status,
+                    **({"block_kind": "capability"} if capability_give_up else {}),
                 },
             )
         if event_payload_extra:
             payload.update(event_payload_extra)
-        _kb._append_event(conn, task_id, "gave_up", payload, run_id=run_id)
+        _kb._append_event(conn, task_id, event_kind, payload, run_id=run_id)
         return True
 
 

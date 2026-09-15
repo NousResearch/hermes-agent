@@ -10,6 +10,7 @@ tracked .gitignore must cover the runtime state set, mirroring the
 .hermes-bootstrap-complete / .install_method precedent (#38529 / #66189).
 """
 import shutil
+import sqlite3
 import subprocess
 from pathlib import Path
 
@@ -35,6 +36,8 @@ FLAT_INSTALL_RUNTIME_STATE = (
     "sessions/2026-09-14_06-00-00_abcd123d.jsonl",
     "browser-profile/Cookies",
     "cron/executions.db",
+    "cron/executions.db-wal",
+    "cron/executions.db-shm",
     "cron/jobs.json",
     "cron.pid",
     "gateway.lock",
@@ -126,3 +129,33 @@ def test_untracked_autostash_cannot_sweep_runtime_state(flat_install_repo):
         if not (flat_install_repo / rel).exists()
     ]
     assert missing == []
+
+
+def test_untracked_autostash_leaves_open_wal_database_readable(flat_install_repo):
+    """The updater's real stash step must not unlink the -wal/-shm sidecars of a
+    WAL-mode database the scheduler holds open (cron/executions.db). With the
+    base file ignored but its sidecars swept, the next ``cron.executions._connect()``
+    finds a database whose WAL vanished under a live writer and fails with
+    ``disk I/O error`` (the review repro on #111175)."""
+    from hermes_cli.update_cmd_stash import _stash_local_changes_if_needed
+
+    db_path = flat_install_repo / "cron" / "executions.db"
+    db_path.unlink()  # the fixture's placeholder is not a database
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE executions (id INTEGER PRIMARY KEY, status TEXT)")
+        conn.execute("INSERT INTO executions (status) VALUES ('ok')")
+        conn.commit()
+        assert (db_path.parent / "executions.db-wal").exists()
+        # A tracked local change makes the updater actually enter its stash step.
+        (flat_install_repo / "app.py").write_text("print('changed')\n")
+
+        stash_ref = _stash_local_changes_if_needed(["git"], flat_install_repo)
+
+        assert stash_ref
+        # Fresh connection, exactly as every cron.executions call opens one.
+        with sqlite3.connect(db_path) as reader:
+            assert reader.execute("SELECT status FROM executions").fetchall() == [("ok",)]
+    finally:
+        conn.close()

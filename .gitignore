@@ -188,7 +188,7 @@ docs/superpowers/*
 /gateway/discord_message_recovery.db*
 /sessions/
 /browser-profile/
-/cron/executions.db
+/cron/executions.db*
 /cron/jobs.json
 /cron.pid
 /gateway.lock

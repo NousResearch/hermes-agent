@@ -39,6 +39,37 @@ def test_media_delivery_denies_encrypted_bitwarden_cache(tmp_path, monkeypatch):
     assert base.validate_media_delivery_path(str(path)) is None
 
 
+def test_denylist_covers_native_home_under_a_custom_hermes_root(tmp_path, monkeypatch):
+    """A custom HERMES_HOME moves the deployment root out from under ``$HOME``.
+
+    The host's own native ``~/.hermes`` then sits outside every root the credential denylist
+    enumerated (active home / shared root / ``<root>/profiles/*``), and ``$HOME`` is exempt from
+    the ``/root``-style system prefix, so ``MEDIA:<native-home>/auth.json`` resolved to a real
+    file and was DELIVERED — root's live credentials off the box, on any host that also has a
+    native install. The native home must be denylisted for credential paths like every other
+    Hermes home, while non-credential files under that tree stay deliverable (no whole-tree deny).
+    """
+    import gateway.platforms.base as base
+
+    fake_home = tmp_path / "home"
+    native_home = fake_home / ".hermes"
+    native_home.mkdir(parents=True)
+    custom_root = tmp_path / "custom-root"
+    custom_root.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.delenv("HERMES_MEDIA_DELIVERY_STRICT", raising=False)
+    monkeypatch.setattr(base, "_HERMES_HOME", custom_root)
+    monkeypatch.setattr(base, "_HERMES_ROOT", custom_root)
+
+    secret = native_home / "auth.json"
+    secret.write_text('{"token": "SECRET"}')
+    artifact = native_home / "adhoc_report.pdf"
+    artifact.write_bytes(b"%PDF-1.4")
+
+    assert base.validate_media_delivery_path(str(secret)) is None
+    assert base.validate_media_delivery_path(str(artifact)) == str(artifact.resolve())
+
+
 class TestInboundMediaSizeCap:
     """gateway.max_inbound_media_bytes caps inbound media buffered into RAM (#13145)."""
 
@@ -958,6 +989,9 @@ class TestDockerContainerMediaPathTranslation:
         surface: .env, auth.json) must NOT resolve through the persistent
         home mount — those host-side copies sit outside the credential
         denylist prefixes and would otherwise deliver."""
+        # Host-independent: the credential denylist covers the platform-native ~/.hermes
+        # (_credential_home_roots), so a host that really has ~/.hermes/auth.json is refused
+        # exactly like CI, where the literal path does not exist.
         sandbox = tmp_path / "sandboxes"
         home = sandbox / "docker" / "default" / "home"
         secret = home / ".hermes"
@@ -1475,6 +1509,9 @@ class TestDockerProfileSandboxMediaTranslation:
         """The /root/.hermes exclusion survives profile scoping: translating
         the home mount must never expose the container's secret surface —
         in the profile layout AND the legacy session layout."""
+        # Host-independent by construction: the denylist covers the platform-native ~/.hermes
+        # (_credential_home_roots), so this assertion does not depend on whether the host running
+        # the suite has its own ~/.hermes/auth.json.
         self._enable_docker(monkeypatch)
         for task in ("default", f"session:{self.SESSION_KEY}"):
             secrets = self._sandbox_dir(task) / "home" / ".hermes"

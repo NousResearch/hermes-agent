@@ -234,7 +234,7 @@ def _(rid, params: CompletePathParams) -> CompletionItemsResult | dict:
     local = _effective_terminal_backend() == "local"
     # A non-local backend's cwd lives inside the target; the host cannot validate it, so take the composer's
     # session cwd (Desktop sends it) or the session's terminal cwd as-is.
-    root = _completion_cwd(params) if local else (params.cwd or _terminal_task_cwd(session))
+    root = _completion_cwd({"cwd": params.cwd, "session_id": params.session_id, "profile": params.profile}) if local else (params.cwd or _terminal_task_cwd(session))
     session_key = session.get("session_key") if session else None
     is_context = word.startswith("@")
     query = word[1:] if is_context else word

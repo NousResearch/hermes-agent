@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 from tui_gateway import git_probe
 
+from .contracts.events import SessionInfoPayload
 from .method_ctx import bind_module
 
 
@@ -184,7 +185,7 @@ def _emit_settled_session_info(sid: str, session: dict, agent) -> None:
         _reconcile_session_cwd_from_terminal(session)
     except Exception:
         logger.debug("failed to reconcile settled session cwd", exc_info=True)
-    _emit("session.info", sid, _session_info(agent, session))
+    _emit("session.info", sid, SessionInfoPayload(**_session_info(agent, session).model_dump(mode="json")))
 
 
 def _session_source(session: dict | None) -> str:

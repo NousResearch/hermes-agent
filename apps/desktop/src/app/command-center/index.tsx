@@ -9,8 +9,14 @@ import { SearchField } from '@/components/ui/search-field'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { ResponsiveTabs } from '@/components/ui/tab-dropdown'
 import { Tip } from '@/components/ui/tooltip'
-import { getActionStatus, getLogs, getStatus, getUsageAnalytics, restartGateway, updateHermes } from '@/hermes'
-import type { ActionStatusResponse, AnalyticsResponse, SessionInfo, StatusResponse } from '@/hermes'
+import { getActionStatus, getLogs, getStatus, getUsageAnalytics, restartGateway, searchSessions, updateHermes } from '@/hermes'
+import type {
+  ActionStatusResponse,
+  AnalyticsResponse,
+  SessionInfo,
+  SessionSearchResult,
+  StatusResponse
+} from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
@@ -25,6 +31,7 @@ import {
   Wrench
 } from '@/lib/icons'
 import { exportSession } from '@/lib/session-export'
+import { mergeSessionSearchResults, sessionMatchesSearch } from '@/lib/session-search'
 import { fmtDateTime } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
@@ -159,9 +166,65 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   const [usage, setUsage] = useState<AnalyticsResponse | null>(null)
   const [usageLoading, setUsageLoading] = useState(false)
   const [usageError, setUsageError] = useState('')
+  const [serverMatches, setServerMatches] = useState<SessionSearchResult[]>([])
+  const [searchPending, setSearchPending] = useState(false)
   const usageRequestRef = useRef(0)
 
   const debouncedQuery = useDebouncedValue(query.trim(), 180)
+
+  // Server-side FTS across the *whole* session DB (not just the loaded page) so
+  // archived and older-than-page sessions stay findable, mirroring the sidebar.
+  // Gated on the Sessions tab like the store subscription above — firing
+  // requests for a hidden tab would defeat that tab's isolation.
+  useEffect(() => {
+    if (section !== 'sessions' || !debouncedQuery) {
+      setServerMatches([])
+      setSearchPending(false)
+
+      return
+    }
+
+    let cancelled = false
+
+    setSearchPending(true)
+    // A new query invalidates the previous hits so they cannot masquerade as results for it.
+    setServerMatches([])
+
+    void searchSessions(debouncedQuery)
+      .then(res => {
+        if (!cancelled) {
+          setServerMatches(res.results)
+        }
+      })
+      .catch((error: unknown) => {
+        console.error('[command-center] session search failed', error)
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setSearchPending(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [debouncedQuery, section])
+
+  // Index both identities so a server hit for either side of a compression
+  // tip rotation finds the richer loaded row instead of a synthesized one.
+  const loadedById = useMemo(() => {
+    const map = new Map<string, SessionInfo>()
+
+    for (const session of sessions) {
+      map.set(session.id, session)
+
+      if (session._lineage_root_id) {
+        map.set(session._lineage_root_id, session)
+      }
+    }
+
+    return map
+  }, [sessions])
 
   const filteredSessions = useMemo(() => {
     const sorted = [...sessions].sort((a, b) => {
@@ -171,18 +234,16 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
       return right - left
     })
 
-    const needle = debouncedQuery.toLowerCase()
-
-    if (!needle) {
+    if (!debouncedQuery) {
       return sorted
     }
 
-    return sorted.filter(session => {
-      const haystack = `${sessionTitle(session)} ${session.id}`.toLowerCase()
-
-      return haystack.includes(needle)
-    })
-  }, [debouncedQuery, sessions])
+    return mergeSessionSearchResults(
+      sorted.filter(session => sessionMatchesSearch(session, debouncedQuery)),
+      serverMatches,
+      loadedById
+    )
+  }, [debouncedQuery, loadedById, serverMatches, sessions])
 
   const refreshSystem = useCallback(async () => {
     setSystemLoading(true)
@@ -374,7 +435,9 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
           {section === 'sessions' ? (
             <div className="min-h-0 flex-1 overflow-y-auto">
               {!sessionListHasResults ? (
-                <EmptyPanel description={debouncedQuery ? cc.noResults : cc.noSessions} />
+                <EmptyPanel
+                  description={debouncedQuery ? (searchPending ? cc.searching : cc.noResults) : cc.noSessions}
+                />
               ) : (
                 <ul>
                   {filteredSessions.map(session => {
@@ -388,8 +451,15 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                           onClick={() => onOpenSession(session.id)}
                           type="button"
                         >
-                          <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
-                            {sessionTitle(session)}
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            {session.archived && (
+                              <span className="shrink-0 rounded-sm bg-(--ui-bg-quinary) px-1 py-px text-[0.6rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)">
+                                {t.desktop.archived}
+                              </span>
+                            )}
+                            <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
+                              {sessionTitle(session)}
+                            </div>
                           </div>
                           <div className="truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
                             {formatTimestamp(session.last_active || session.started_at)}

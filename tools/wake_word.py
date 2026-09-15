@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import subprocess
 import sys
 import threading
 import time
@@ -334,6 +335,51 @@ def _build_engine(cfg: Dict[str, Any]) -> _Engine:
     return globals()[_PROVIDERS[provider][0]](cfg)
 
 
+#: Native modules whose *import* can kill the process (an access violation /
+#: SIGSEGV bypasses every ``except``), keyed by lazy-deps feature. Probed in
+#: a throwaway interpreter — never imported in-process here (#109982).
+_NATIVE_SMOKE_MODULES = {
+    "wake.sherpa": ("sentencepiece",),
+}
+
+
+def _native_deps_loadable(modules) -> tuple:
+    """Import ``modules`` in a throwaway interpreter; ``(ok, detail)``.
+
+    A crashing wheel (sentencepiece 0.2.2 on some Windows boxes) dies with a
+    fatal signal instead of raising, so the verdict must come from the exit
+    code — importing here would take this process down with it.
+    """
+    script = "; ".join(f"import {m}" for m in modules) + "; print('ok')"
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"native dependency probe failed to launch: {exc}"
+    if proc.returncode != 0:
+        tail = (proc.stderr or "").strip().splitlines()
+        detail = tail[-1] if tail else f"exit {proc.returncode}"
+        return False, f"{', '.join(modules)} failed to load in a clean interpreter ({detail})"
+    return True, "ok"
+
+
+def _refuse_unloadable_native_deps(feature: str) -> None:
+    """Raise a catchable RuntimeError when the feature's native modules die
+    on import. Runs post-``ensure`` (see ``_Engine.__init__``) so a fresh
+    install still reaches the lazy installer; guards every arm path,
+    including direct ``start_listening`` callers that bypass
+    :func:`check_wake_word_requirements`."""
+    modules = _NATIVE_SMOKE_MODULES.get(feature, ())
+    if not modules:
+        return
+    ok, detail = _native_deps_loadable(modules)
+    if not ok:
+        raise RuntimeError(
+            f"wake-word native dependencies unloadable: {detail}. "
+            "Reinstall the wake dependencies or set wake_word.enabled false.")
+
+
 # ── Requirements probe (for /wake status + enable path) ──
 
 def _stt_ready() -> bool:
@@ -386,10 +432,24 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
     capture_mode = resolve_capture_mode(cfg)
     missing = " and ".join(n for n, ok in (("speech-to-text", stt_ok), ("text-to-speech", tts_ok)) if not ok)
 
+    # Native-import smoke (#109982): a wheel that dies with an access
+    # violation on import (sentencepiece 0.2.2 on some Windows boxes) bypasses
+    # every try/except, so probe it in a throwaway interpreter and refuse to
+    # arm here instead of green-lighting a crash. Runs only once deps claim
+    # installed — the install ladder below owns the missing-deps case.
+    smoke_modules = _NATIVE_SMOKE_MODULES.get(feature, ())
+    if deps_ok and smoke_modules:
+        native_ok, native_detail = _native_deps_loadable(smoke_modules)
+    else:
+        native_ok, native_detail = True, ""
+
     # Ordered remediation ladder: first true predicate wins.
     ladder = (
         (not key_ok, lambda: "Set PORCUPINE_ACCESS_KEY (free key at https://console.picovoice.ai)."),
         (not deps_ok and not lazy_ok, lambda: lazy_deps.feature_install_command(feature) or ""),
+        (not native_ok,
+         lambda: (f"Wake-word engine can't load here ({native_detail}): "
+                  "reinstall the wake dependencies or set wake_word.enabled false.")),
         (not tflite_ok,
          lambda: "The wake word needs the tflite runtime on this Mac: pip install ai-edge-litert"),
         (deps_ok and not audio_ok and capture_mode == "local",
@@ -410,8 +470,8 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
                     "build with client-capture wake support.")
 
     return {
-        "available": key_ok and stt_ok and tts_ok and tflite_ok and mic_ok, "provider": provider,
-        "deps_available": deps_ok, "audio_available": audio_ok,
+        "available": key_ok and stt_ok and tts_ok and tflite_ok and mic_ok and native_ok, "provider": provider,
+        "deps_available": deps_ok, "audio_available": audio_ok, "native_ok": native_ok,
         "local_input_available": _local_input_device_ready() if deps_ok else False,
         "capture": capture_mode, "access_key_set": key_ok, "stt_available": stt_ok, "tts_available": tts_ok,
         "phrase": wake_phrase(cfg), "hint": hint,

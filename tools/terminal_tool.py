@@ -1222,7 +1222,25 @@ def terminal_tool(
 
         session_key = get_current_session_key(default="") or (task_id or "")
 
-        _pre_exec_block(command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=session_key)
+        # A supervised-gateway identity check can enter a kernel-level psutil
+        # query.  Put the whole pre-execution chain behind the command's wall
+        # clock deadline so that a wedged probe cannot hold a cron run forever.
+        # A timed-out guard fails open: its worker is abandoned, while ordinary
+        # guard rejections and exceptions keep their original behavior.
+        from agent.deadline import run_bounded_sync
+
+        bounded_guard = run_bounded_sync(
+            lambda: _pre_exec_block(
+                command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=session_key,
+            ),
+            plan.effective_timeout,
+            label="terminal.pre-exec-guard",
+        )
+        if bounded_guard.timed_out:
+            logger.warning(
+                "Terminal pre-execution guard timed out after %ss; continuing fail-open",
+                plan.effective_timeout,
+            )
         # Pre-exec security checks (tirith + dangerous command detection);
         # force=True means the user already confirmed.
         verdict = _run_approval_guards(command, env_type, plan.config, force=force)

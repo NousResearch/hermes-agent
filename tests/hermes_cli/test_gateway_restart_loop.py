@@ -1484,6 +1484,45 @@ class TestLifecycleGuardModule:
         # Must not raise; relative script cannot resolve without a home.
         check_gateway_lifecycle("daily ops", "relative-script.sh")
 
+    @pytest.mark.skipif(os.name != "posix", reason="os.mkfifo is POSIX-only")
+    def test_hash_inside_word_is_literal_in_multiline_single_quote(self, tmp_path):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        fifo = tmp_path / "public" / "app.js"
+        fifo.parent.mkdir()
+        os.mkfifo(fifo)
+        command = f"runner tag#literal 'first line\n{fifo}\nlast line'"
+
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=str(tmp_path)
+        ) is False
+
+    def test_real_comment_hides_referenced_script_path(self, tmp_path):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        script = tmp_path / "restart.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            f"runner ok # sh {script}", cwd=str(tmp_path)
+        ) is False
+
+    def test_command_after_comment_remains_visible(self, tmp_path):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        script = tmp_path / "restart.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+
+        assert contains_gateway_lifecycle_command_or_referenced_script(
+            f"runner ok # ignored\nsh {script}", cwd=str(tmp_path)
+        ) is True
+
 
 # ---------------------------------------------------------------------------
 # Defense 2 (chokepoint): cron.jobs.create_job blocks the AGENT model-tool path

@@ -94,6 +94,64 @@ def test_roster_lines_carry_roles(tmp_path):
     assert "Deep research and literature review" in section
 
 
+def test_roster_lines_alias_renamed_profile(tmp_path):
+    """#100671: a renamed folder lists its display name + slug (untagged handoff)."""
+    import textwrap as _tw
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    d = home / "profiles" / "writer"
+    d.mkdir(parents=True)
+    (d / "profile.yaml").write_text(
+        _tw.dedent(
+            """\
+            display_name: Scribe
+            ui_meta:
+              hermes-bots:
+                shape: cloud
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert "Scribe" in section
+    assert "@scribe" in section
+    assert "`@writer" in section
+
+
+def test_roster_lines_skip_alias_when_name_matches(tmp_path):
+    """display_name == folder id adds no noise."""
+    import textwrap as _tw
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    d = home / "profiles" / "builder"
+    d.mkdir(parents=True)
+    (d / "profile.yaml").write_text(
+        _tw.dedent(
+            """\
+            display_name: Builder
+            ui_meta:
+              hermes-bots:
+                shape: cloud
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert "`@builder`" in section
+    assert "aka" not in section
+
+
+def test_mention_name_forms_parity_with_desktop():
+    assert bot_mode_probe._mention_name_forms("Research Buddy") == ["research-buddy", "researchbuddy"]
+    assert bot_mode_probe._mention_name_forms("Dr. Foo") == ["dr-foo", "drfoo"]
+    assert bot_mode_probe._mention_name_forms("Hermes") == []
+    assert bot_mode_probe._mention_name_forms("") == []
+
+
 def test_soul_legacy_protocol_no_longer_suppresses_live_section(tmp_path):
     """Plugin-era SOUL append is stripped at load time; the live roster is the only copy."""
     home = tmp_path / ".hermes"

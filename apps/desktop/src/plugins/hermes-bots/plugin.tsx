@@ -745,17 +745,25 @@ export default {
             const target =
               bot.remoteSource && bot.connectionId ? `${bot.name}@${bot.connectionId}` : botHandle(bot.name)
 
+            // Renamed local bots are tagged by their friendly slug (@scribe
+            // for folder 'writer'): the emitted line must name the canonical
+            // folder id message_agent accepts, not the UI-only slug (#100671).
+            // Show the tag the user actually typed (the friendly slug when one
+            // exists) and annotate the canonical target whenever it differs.
+            const tag = botMentionTag(bot)
+            const shown = tag && tag.toLowerCase() !== handle.toLowerCase() ? tag : handle
+
             // Local rows get the same annotation whenever their UI alias
-            // ('default-this-device') differs from the resolvable handle —
-            // otherwise the agent has only the alias to go on and the local
-            // path rejects it the same way (#97678).
+            // ('default-this-device') or friendly slug ('scribe') differs from
+            // the resolvable handle — otherwise the agent has only the alias
+            // to go on and the local path rejects it the same way (#97678).
             const where = bot.remoteSource
               ? ` — on ${bot.connectionLabel || bot.connectionId} (message_agent target: "${target}")`
-              : handle !== target
+              : handle !== target || shown.toLowerCase() !== target.toLowerCase()
                 ? ` (message_agent target: "${target}")`
                 : ''
 
-            return `@${handle} = agent profile "${bot.name}"${title ? ` ("${title}")` : ''}${where}`
+            return `@${shown} = agent profile "${bot.name}"${title ? ` ("${title}")` : ''}${where}`
           })
 
           const note =

@@ -195,6 +195,141 @@ def test_unregistered_peer_rejected(tmp_path):
     assert result["peers"] == ["spark"]
 
 
+# ── local alias resolution (#100671) ──────────────────────────────────────────
+
+
+def _managed_home_with_identities(tmp_path, identities) -> Path:
+    """Managed home where each teammate carries display_name / Bot Mode title.
+
+    ``identities``: {folder: {"display_name": ..., "title": ...}}.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir(exist_ok=True)
+    for name, meta in identities.items():
+        d = home / "profiles" / name
+        d.mkdir(parents=True, exist_ok=True)
+        lines = []
+        if meta.get("display_name"):
+            lines.append(f"display_name: {meta['display_name']}")
+        lines.append("description: teammate for tests")
+        lines.append("ui_meta:")
+        lines.append("  hermes-bots:")
+        if meta.get("title"):
+            lines.append(f"    title: {meta['title']}")
+        else:
+            lines.append("    shape: cloud")
+        (d / "profile.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return home
+
+
+def test_resolve_local_name_display_name_and_slug(tmp_path):
+    """@scribe / Scribe resolve to folder `writer`; Builder to `builder`."""
+    home = _managed_home_with_identities(
+        tmp_path, {"writer": {"display_name": "Scribe"}, "builder": {"display_name": "Builder"}}
+    )
+    from tools.bot_mode_probe import _local_alias_map, _roster, _hermes_root
+
+    root = _hermes_root(home)
+    roster_homes = dict(_roster(root))
+    roster = list(roster_homes)
+    alias_map = _local_alias_map(list(roster_homes.items()))
+    for target in ("scribe", "@scribe", "Scribe", "SCRIBE"):
+        assert bot_mode_dm._resolve_local_name(target, roster, alias_map) == "writer"
+    for target in ("Builder", "BUILDER", "@builder", "builder"):
+        assert bot_mode_dm._resolve_local_name(target, roster, alias_map) == "builder"
+    # folder ids still win
+    assert bot_mode_dm._resolve_local_name("writer", roster, alias_map) == "writer"
+
+
+def test_resolve_local_name_punctuated_display_name(tmp_path):
+    """'Dr. Foo' and its Desktop slugs resolve to folder `foo`."""
+    home = _managed_home_with_identities(tmp_path, {"foo": {"display_name": "Dr. Foo"}})
+    from tools.bot_mode_probe import _local_alias_map, _roster, _hermes_root
+
+    root = _hermes_root(home)
+    roster_homes = dict(_roster(root))
+    roster = list(roster_homes)
+    alias_map = _local_alias_map(list(roster_homes.items()))
+    for target in ("Dr. Foo", "dr. foo", "dr-foo", "drfoo", "@dr-foo"):
+        assert bot_mode_dm._resolve_local_name(target, roster, alias_map) == "foo"
+
+
+def test_resolve_local_name_bot_mode_title(tmp_path):
+    """The Bot Mode title is an alias too."""
+    home = _managed_home_with_identities(
+        tmp_path, {"researcher": {"title": "Research Buddy"}}
+    )
+    from tools.bot_mode_probe import _local_alias_map, _roster, _hermes_root
+
+    root = _hermes_root(home)
+    roster_homes = dict(_roster(root))
+    roster = list(roster_homes)
+    alias_map = _local_alias_map(list(roster_homes.items()))
+    for target in ("Research Buddy", "research-buddy", "researchbuddy"):
+        assert bot_mode_dm._resolve_local_name(target, roster, alias_map) == "researcher"
+
+
+def test_resolve_local_name_ambiguous_fails_closed(tmp_path):
+    """One display name on two profiles resolves to neither."""
+    home = _managed_home_with_identities(
+        tmp_path, {"aaa": {"display_name": "Scribe"}, "bbb": {"display_name": "Scribe"}}
+    )
+    from tools.bot_mode_probe import _local_alias_map, _roster, _hermes_root
+
+    root = _hermes_root(home)
+    roster_homes = dict(_roster(root))
+    roster = list(roster_homes)
+    alias_map = _local_alias_map(list(roster_homes.items()))
+    assert bot_mode_dm._resolve_local_name("scribe", roster, alias_map) is None
+    # folder ids stay unambiguous
+    assert bot_mode_dm._resolve_local_name("aaa", roster, alias_map) == "aaa"
+
+
+def test_resolve_local_name_reserved_never_hijacked(tmp_path):
+    """A bot renamed 'Hermes' must not steal the primary profile's alias."""
+    home = _managed_home_with_identities(tmp_path, {"ops": {"display_name": "Hermes"}})
+    from tools.bot_mode_probe import _local_alias_map, _roster, _hermes_root
+
+    root = _hermes_root(home)
+    roster_homes = dict(_roster(root))
+    roster = list(roster_homes)
+    alias_map = _local_alias_map(list(roster_homes.items()))
+    assert bot_mode_dm._resolve_local_name("hermes", roster, alias_map) == "default"
+    assert bot_mode_dm._resolve_local_name("ops", roster, alias_map) == "ops"
+
+
+def test_message_agent_accepts_display_name_and_slug(tmp_path, monkeypatch):
+    """End to end: target 'Scribe'/@scribe delivers into folder `writer`."""
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home_with_identities(
+        tmp_path, {"writer": {"display_name": "Scribe"}, "builder": {"display_name": "Builder"}}
+    )
+    agent = _FakeAgent(home, title="Bot Chat")
+    for target in ("Scribe", "@scribe", "scribe"):
+        calls.clear()
+        result = json.loads(
+            bot_mode_dm.message_agent_tool(target=target, message="hi", agent=agent)
+        )
+        assert result["status"] == "sent", result
+        _mode, _dm_file, transport_argv = _runner_parts(calls[0]["command"])
+        assert transport_argv[1:3] == ["-p", "writer"]
+
+
+def test_message_agent_accepts_punctuated_display_name(tmp_path, monkeypatch):
+    """End to end: 'Dr. Foo' (spaces/punctuation) is a valid target."""
+    calls = _capture_spawn(monkeypatch)
+    home = _managed_home_with_identities(tmp_path, {"foo": {"display_name": "Dr. Foo"}})
+    agent = _FakeAgent(home, title="Bot Chat")
+    for target in ("Dr. Foo", "dr-foo"):
+        calls.clear()
+        result = json.loads(
+            bot_mode_dm.message_agent_tool(target=target, message="hi", agent=agent)
+        )
+        assert result["status"] == "sent", result
+        _mode, _dm_file, transport_argv = _runner_parts(calls[0]["command"])
+        assert transport_argv[1:3] == ["-p", "foo"]
+
+
 # ── delivery command shape ───────────────────────────────────────────────────
 
 

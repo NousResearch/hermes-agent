@@ -357,6 +357,37 @@ describe('the mention middleware', () => {
     expect(result.text).not.toMatch(/ — on /)
   })
 
+  it('emits the canonical folder id for a renamed local bot slug (#100671)', async () => {
+    // Folder `writer`, display_name `Scribe`: the user tags @scribe, the
+    // backend only accepts the folder id — the annotation must carry it.
+    const { handler } = await contributions({
+      focused: 'builder',
+      profiles: [
+        { display_name: 'Scribe', name: 'writer' },
+        { display_name: 'Builder', name: 'builder' }
+      ]
+    })
+    const result = await handler({ text: 'ask @scribe about the design' })
+
+    expect(result.text).toMatch(/@scribe = agent profile "writer"/)
+    expect(result.text).toMatch(/message_agent target: "writer"/)
+    expect(result.text).not.toMatch(/message_agent target: "scribe"/)
+  })
+
+  it('needs no target annotation when the friendly name matches the folder id', async () => {
+    const { handler } = await contributions({
+      focused: 'writer',
+      profiles: [
+        { display_name: 'Scribe', name: 'writer' },
+        { display_name: 'Builder', name: 'builder' }
+      ]
+    })
+    const result = await handler({ text: 'ask @builder about the design' })
+
+    expect(result.text).toMatch(/@builder = agent profile "builder"/)
+    expect(result.text).not.toMatch(/message_agent target: "builder"/)
+  })
+
   it('teaches no shellout and forbids forwarding the user’s text verbatim', async () => {
     // The class behind #91397 / #91304 / #91339: the renderer used to compose
     // a `hermes -p …` handoff, giving the model a second send path and a way

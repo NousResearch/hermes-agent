@@ -134,6 +134,20 @@ mcp_servers:
 
 This creates a `mcp-github` toolset you can reference in `--toolsets` or platform configs. The bare server name (`github`) works as an alias. If a server is named like a built-in toolset (`homeassistant`, `browser`), that name resolves to the built-in tools **plus** the server's `mcp__<server>__*` tools; neither side shadows the other.
 
+### Slack-origin signing for a fixed HTTP MCP server
+
+For a server that must route a request back to the Slack chat and thread that started a gateway turn, opt in on that **specific** HTTP server. The secret is read only at call time from the named environment variable; do not place its value in `config.yaml`.
+
+```yaml
+mcp_servers:
+  nexus-agent-services:
+    url: https://example.invalid/mcp
+    slack_origin_signing:
+      secret_env: NEXUS_SLACK_ORIGIN_SIGNING_SECRET
+```
+
+Hermes adds `x-nexus-slack-origin` only immediately before a tool call to this opted-in server. Its opaque value contains a signed `{chat_id, thread_id?, issued_at}` payload. Calls without trusted Slack gateway context, a valid policy, HTTP transport, or the configured secret fail closed. This policy is intentionally not inherited by other MCP servers, and tool arguments cannot supply or override the origin.
+
 ### Plugin toolsets
 
 Plugins can register their own toolsets via `ctx.register_tool()` during plugin initialization. These appear alongside built-in toolsets and can be enabled/disabled the same way.

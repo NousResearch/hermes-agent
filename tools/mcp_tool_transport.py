@@ -379,10 +379,15 @@ class MCPServerTransportMixin:
         httpx = _core.sdk_httpx()
         _strip_auth_on_cross_origin_redirect = _make_redirect_header_stripper(
             httpx.URL(url), strict=strict_cfg_headers, configured_header_names=configured_header_names)
+        signing_policy = self._config.get("slack_origin_signing")
+        request_hooks = []
+        if signing_policy is not None:
+            from tools.mcp_slack_origin import slack_origin_request_hook
+            request_hooks.append(lambda request: slack_origin_request_hook(signing_policy, request))
         # verify/cert live on the inner transport: a custom transport= makes client-level TLS kwargs inert.
         client_kwargs: dict = {"follow_redirects": True, "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                                **({"headers": headers} if headers else {}),
-                               "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
+                               "event_hooks": {"request": request_hooks, "response": [_strip_auth_on_cross_origin_redirect]},
                                "transport": _make_mcp_body_cap_transport(
                                    httpx, httpx.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))),
                                **_present(auth=oauth_auth)}

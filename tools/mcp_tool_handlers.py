@@ -487,6 +487,17 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         server, error = _acquire_call_server(server_name, tool_timeout)
         if server is None:
             return error
+        signing_policy = getattr(server, "_config", {}).get("slack_origin_signing")
+        signing_header = None
+        if signing_policy is not None:
+            if not getattr(server, "_config", {}).get("url"):
+                return tool_error(f"MCP server '{server_name}' requires HTTP transport for Slack-origin signing.")
+            try:
+                from tools.mcp_slack_origin import build_slack_origin_header
+                signing_header = build_slack_origin_header(signing_policy, issued_at=int(time.time()))
+            except Exception:
+                # Deliberately generic: a protected route must not disclose context or secret details to the model.
+                return tool_error(f"MCP server '{server_name}' requires a valid trusted Slack origin and signing key.")
 
         async def _call():
             async with server._rpc_lock, _track_inflight_rpc(server, server_name, op):
@@ -502,10 +513,18 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         def _on_failure(exc):
             _core._bump_server_error(server_name)
             logger.error("MCP tool %s/%s call failed: %s", server_name, tool_name, exc)
-        return _dispatch(
-            server_name, server, op, _call, tool_timeout,
-            (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, _handle_session_expired_and_retry),
-            _on_failure, record_outcome=True)
+
+        def _dispatch_call():
+            return _dispatch(
+                server_name, server, op, _call, tool_timeout,
+                (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, _handle_session_expired_and_retry),
+                _on_failure, record_outcome=True)
+
+        if signing_header is not None:
+            from tools.mcp_slack_origin import slack_origin_header_context
+            with slack_origin_header_context(signing_header):
+                return _dispatch_call()
+        return _dispatch_call()
     return _handler
 
 

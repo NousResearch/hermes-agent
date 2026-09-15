@@ -2252,7 +2252,13 @@ class GatewayTurnMixin:
                     fallback_model=self._refresh_fallback_model(),
                 )
                 try:
-                    return agent.run_conversation(user_message=enriched_prompt, task_id=task_id)
+                    from tools.mcp_slack_origin import slack_origin_context
+                    platform = getattr(source.platform, "value", source.platform)
+                    with slack_origin_context(
+                        platform=str(platform or ""), chat_id=str(getattr(source, "chat_id", "") or ""),
+                        thread_id=getattr(source, "thread_id", None),
+                    ):
+                        return agent.run_conversation(user_message=enriched_prompt, task_id=task_id)
                 finally:
                     self._cleanup_agent_resources(agent)
 

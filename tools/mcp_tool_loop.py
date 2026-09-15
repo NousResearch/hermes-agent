@@ -160,6 +160,8 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
     # would vanish here; re-establish it inside the task's own context.
     coro = _wrap_with_dashboard_oauth_flow(_wrap_with_home_override(
         coro_or_factory() if callable(coro_or_factory) else coro_or_factory))
+    from tools.mcp_slack_origin import propagate_slack_origin_context
+    coro = propagate_slack_origin_context(coro)
     future = safe_schedule_threadsafe(coro, loop, logger=logger, log_message="MCP scheduling failed")
     if future is None:
         raise RuntimeError("MCP event loop unavailable (failed to schedule)")

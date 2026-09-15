@@ -31,6 +31,7 @@
 import { installPluginSdk, sdkImportMap } from '@/sdk/runtime'
 import { notifyError } from '@/store/notifications'
 
+import { trackGatewayEventDisposers } from './events'
 import { createPluginContext, type HermesPlugin } from './plugin'
 import { $pluginRecords, dropPlugin, pluginActive, type PluginKind, publishPlugin } from './plugins-store'
 
@@ -181,7 +182,10 @@ export async function loadRuntimePlugin(
       // Reload = dispose the previous incarnation, then register fresh.
       unloadRuntimePlugin(plugin.id)
       const disposers: (() => void)[] = []
-      plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose)))
+      trackGatewayEventDisposers(
+        dispose => disposers.push(dispose),
+        () => plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose)))
+      )
       loaded.set(plugin.id, disposers)
       publishPlugin({ ...record, status: 'loaded' })
     }

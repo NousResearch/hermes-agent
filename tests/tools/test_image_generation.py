@@ -382,6 +382,15 @@ class TestModelResolution:
             mid, _ = image_tool._resolve_fal_model()
         assert mid == "fal-ai/nano-banana-pro"
 
+    def test_unknown_model_falls_back_to_default_with_warning(self, image_tool, caplog):
+        stored_model = "fal-ai/krea/v2/medium/text-to-image"
+        with patch("hermes_cli.config.load_config",
+                   return_value={"image_gen": {"model": stored_model}}):
+            with caplog.at_level("WARNING", logger=image_tool.logger.name):
+                mid, _ = image_tool._resolve_fal_model()
+        assert mid == image_tool.DEFAULT_MODEL
+        assert stored_model in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # Aspect ratio handling
@@ -626,11 +635,11 @@ class TestManagedKreaRouting:
 
 
 class TestFalKreaCatalog:
-    """Krea 2 on FAL remains in the FAL picker for FAL-billed users."""
+    """Krea 2 is reached through the native plugin only, never through FAL."""
 
-    def test_fal_krea_models_in_fal_catalog(self, image_tool):
-        assert "fal-ai/krea/v2/medium/text-to-image" in image_tool.FAL_MODELS
-        assert "fal-ai/krea/v2/large/text-to-image" in image_tool.FAL_MODELS
+    def test_no_fal_krea_models_in_fal_catalog(self, image_tool):
+        fal_krea_models = [mid for mid in image_tool.FAL_MODELS if mid.startswith("fal-ai/krea/")]
+        assert fal_krea_models == []
 
 
 # ---------------------------------------------------------------------------

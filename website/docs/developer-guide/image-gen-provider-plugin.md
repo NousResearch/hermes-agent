@@ -273,6 +273,31 @@ Some backends return image URLs (fal, Replicate); others return base64 payloads 
 
 Drop a user plugin at `~/.hermes/plugins/image_gen/<name>/` with the same `name` property as a bundled one and enable it via `hermes plugins enable <name>` — the registry is last-writer-wins, so your version replaces the built-in. Useful for pointing an `openai` plugin at a private proxy, or swapping in a custom model catalog.
 
+## OpenAI-compatible image endpoint
+
+If your backend implements the OpenAI Images API (`POST /v1/images/generations`), select the bundled `openai-compatible` provider instead of writing a Python plugin:
+
+```yaml
+image_gen:
+  provider: openai-compatible
+  model: vendor/image-model
+  openai_compatible:
+    display_name: Local Image Service
+    base_url: http://localhost:30122/v1
+    size_by_aspect:
+      square: 512x512
+      landscape: 1024x576
+      portrait: 576x1024
+    params:
+      num_inference_steps: 8
+      guidance_scale: 1.0
+    timeout: 600
+```
+
+Store the bearer token as `OPENAI_COMPATIBLE_IMAGE_API_KEY` in the active profile's `.env` or configured external secret source. Literal credentials and authorization headers are intentionally not accepted in `config.yaml`.
+
+`base_url` may be either the service root or its `/v1` API root; Hermes appends exactly one `/v1/images/generations` path. It must not contain embedded credentials, a query string, or a fragment. The provider accepts `b64_json` or URL outputs and caches the result under `$HERMES_HOME/cache/images/` before returning it. Hermes returns one image per call, so `image_gen.openai_compatible.n` must remain `1`. Optional compatibility-sensitive fields such as `response_format` are sent only when explicitly configured.
+
 ## Testing
 
 ```bash

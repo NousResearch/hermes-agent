@@ -36,6 +36,7 @@ _WAIT_ALREADY_TIMED_OUT = False  # after one full wait, later callers only peek
 _REMOTE_BACKENDS = frozenset({
     "docker", "singularity", "modal", "daytona", "ssh", "managed_modal",
     "vercel_sandbox",
+    "apple_container",
 })
 
 

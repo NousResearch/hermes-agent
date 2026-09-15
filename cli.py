@@ -289,12 +289,13 @@ def _parse_service_tier_config(raw: str) -> str | None:
 
 
 # terminal.<key> -> TERMINAL_<KEY> env var. Container-resource keys apply to docker,
-# singularity, modal, daytona and vercel_sandbox only (ignored for local/ssh).
+# singularity, modal, daytona, vercel_sandbox and apple_container only (ignored for local/ssh).
 _TERMINAL_ENV_MAPPINGS = {
     key: f"TERMINAL_{key.upper()}"
     for key in (
         "degraded_mode", "cwd", "timeout", "home_mode", "lifetime_seconds", "docker_image",
         "docker_forward_env", "singularity_image", "modal_image", "daytona_image", "vercel_runtime",
+        "apple_container_image", "apple_container_volumes", "apple_container_extra_args",
         "ssh_host", "ssh_user", "ssh_port", "ssh_key", "container_cpu", "container_memory",
         "container_disk", "container_persistent", "docker_volumes", "docker_env", "docker_extra_args",
         "docker_shm_size", "docker_mount_cwd_to_workspace", "docker_network", "docker_run_as_host_user",

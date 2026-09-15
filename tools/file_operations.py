@@ -2,7 +2,7 @@
 """File operations (read, write, patch, search) over any terminal backend.
 
 Every operation is a shell command run through the backend's ``execute()``, so one
-implementation serves every environment (local, docker, ssh, modal, ...). Companions:
+implementation serves every environment (local, docker, ssh, modal, apple_container, ...). Companions:
 ``file_operations_common`` (result dataclasses, text helpers), ``file_operations_lint``
 (LintMixin), ``file_operations_search`` (SearchMixin).
 """

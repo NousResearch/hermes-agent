@@ -275,7 +275,7 @@ def _config_profile_scope(profile: Optional[str]):
 
 
 # Terminal backend picker rows — GUI counterpart of terminal.backend. Keep in sync with
-# tools/terminal_tool.py::_create_environment and the terminal.backend enum.
+# tools/terminal_tool_backends.py::_create_environment and the terminal.backend enum.
 
 # --------------------------------------------------------------------------- Terminal execution backend
 # picker — the GUI counterpart of terminal.backend in config.yaml. Each row carries a fast, defensive health
@@ -292,7 +292,8 @@ _TERMINAL_BACKENDS: List[Dict[str, str]] = [
          "Run commands in a Singularity/Apptainer container (HPC-friendly, rootless)."),
         ("modal", "Modal", "Run commands in a Modal cloud sandbox."),
         ("daytona", "Daytona", "Run commands in a Daytona cloud sandbox."),
-        ("ssh", "SSH", "Run commands on a remote host over SSH."))]
+        ("ssh", "SSH", "Run commands on a remote host over SSH."),
+        ("apple_container", "Apple Container", "Run commands in a native Linux VM on macOS Apple Silicon."))]
 
 
 def _plugin_terminal_backend_rows() -> List[Dict[str, str]]:

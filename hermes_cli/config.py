@@ -2058,6 +2058,7 @@ TERMINAL_CONFIG_ENV_MAP = {
             "modal_mode", "degraded_mode", "cwd", "temp_dir", "timeout", "lifetime_seconds",
             "docker_image", "docker_forward_env", "singularity_image", "modal_image",
             "daytona_image", "vercel_runtime", "ssh_host", "ssh_user", "ssh_port", "ssh_key",
+            "apple_container_image", "apple_container_volumes", "apple_container_extra_args",
             "container_cpu", "container_memory", "container_disk", "container_persistent",
             "docker_volumes", "docker_env", "docker_mount_cwd_to_workspace", "docker_network",
             "docker_extra_args", "docker_shm_size", "docker_run_as_host_user", "docker_snap_compat",
@@ -2864,6 +2865,12 @@ def _show_terminal_section(config: Dict[str, Any]) -> None:
             f"  Vercel runtime: {terminal.get('vercel_runtime', 'node24')}",
             f"  Vercel auth:    {'configured' if get_env_value('VERCEL_OIDC_TOKEN') or (get_env_value('VERCEL_TOKEN') and get_env_value('VERCEL_PROJECT_ID') and get_env_value('VERCEL_TEAM_ID')) else '(not set)'}",
         ],
+        'apple_container': lambda: [
+            f"  Apple image:  {terminal.get('apple_container_image', 'python:3.11-slim-bookworm')}",
+            f"  Apple volumes: {len(terminal.get('apple_container_volumes', []))} configured",
+            f"  CPUs:         {terminal.get('container_cpu', 4)}",
+            f"  Memory:       {terminal.get('container_memory', 5120)} MB",
+            f"  Persistent:   {'yes' if terminal.get('container_persistent', True) else 'no'}"],
         'ssh': lambda: [
             f"  SSH host:     {get_env_value('TERMINAL_SSH_HOST') or '(not set)'}",
             f"  SSH user:     {get_env_value('TERMINAL_SSH_USER') or '(not set)'}"]}

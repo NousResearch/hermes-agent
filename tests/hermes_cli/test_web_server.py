@@ -3013,6 +3013,74 @@ class TestNewEndpoints:
         assert ssh["status"] == "ready"
         assert "hermes@devbox.example.com" in ssh["detail"]
 
+    @pytest.mark.parametrize(
+        ("executable", "runtime", "expected"),
+        [
+            (None, None, "needs_setup"),
+            ("/container", (False, "stopped"), "needs_setup"),
+            ("/container", (True, "running"), "ready"),
+        ],
+    )
+    def test_apple_container_backend_health(
+        self, monkeypatch, executable, runtime, expected
+    ):
+        monkeypatch.setattr(
+            "tools.environments.apple_container.is_apple_container_supported_host", lambda: True
+        )
+        monkeypatch.setattr(
+            "tools.environments.apple_container.find_container_cli", lambda: executable
+        )
+        if runtime is not None:
+            monkeypatch.setattr(
+                "tools.environments.apple_container.container_system_status",
+                lambda _executable=None: runtime,
+            )
+
+        body = self.client.get("/api/tools/terminal/backends").json()
+        apple = next(row for row in body["backends"] if row["name"] == "apple_container")
+        assert apple["label"] == "Apple Container"
+        assert apple["status"] == expected
+
+    def test_apple_container_backend_unavailable_on_unsupported_host(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.environments.apple_container.is_apple_container_supported_host", lambda: False
+        )
+        monkeypatch.setattr(
+            "tools.environments.apple_container.find_container_cli",
+            lambda: pytest.fail("CLI must not be probed on an unsupported host"),
+        )
+        body = self.client.get("/api/tools/terminal/backends").json()
+        apple = next(row for row in body["backends"] if row["name"] == "apple_container")
+        assert apple["status"] == "unavailable"
+        assert "macOS 26" in apple["detail"]
+
+    def test_select_apple_container_backend_persists(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.environments.apple_container.is_apple_container_supported_host", lambda: True
+        )
+        monkeypatch.setattr(
+            "tools.environments.apple_container.find_container_cli", lambda: None
+        )
+        response = self.client.put(
+            "/api/tools/terminal/backend", json={"backend": "apple_container"}
+        )
+        assert response.status_code == 200
+        from hermes_cli.config import load_config
+
+        assert load_config()["terminal"]["backend"] == "apple_container"
+
+    def test_select_apple_container_backend_rejects_unsupported_host(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.environments.apple_container.is_apple_container_supported_host", lambda: False
+        )
+
+        response = self.client.put(
+            "/api/tools/terminal/backend", json={"backend": "apple_container"}
+        )
+
+        assert response.status_code == 400
+        assert "macOS 26" in response.json()["detail"]
+
 
 
 

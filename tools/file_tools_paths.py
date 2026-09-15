@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath
 # ``TERMINAL_CWD`` values that mean "not configured" ("." from a stale config;
 # "auto"/"cwd" are wizard placeholders). gateway/run.py sanitizes the same set.
 _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
-_CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
+_CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox", "apple_container"})
 # Backend name inferred from the live environment's class name (first match wins).
 _ENV_CLASS_NAME_HINTS = ("local", "ssh", "docker", "singularity", "modal", "daytona")
 
@@ -54,6 +54,8 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
         if env is not None:
             name = env.__class__.__name__.lower()
             hint = next((h for h in _ENV_CLASS_NAME_HINTS if h in name), None)
+            if not hint and "applecontainer" in name:
+                hint = "apple_container"
             stamped = getattr(env, "_hermes_backend_name", None)
             if hint or (isinstance(stamped, str) and stamped):
                 return hint or stamped

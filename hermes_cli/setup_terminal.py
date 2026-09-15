@@ -1,4 +1,4 @@
-"""Terminal-backend setup wizard (local/docker/singularity/modal/daytona/vercel/ssh/plugin).
+"""Terminal-backend setup wizard (local/docker/singularity/modal/daytona/vercel/ssh/Apple/plugin).
 setup.py names are resolved through the module object so test patches on ``hermes_cli.setup.<name>``
 take effect; setup.py re-exports the public entry points."""
 
@@ -228,6 +228,32 @@ def _setup_backend_vercel(config: dict) -> None:
     _prompt_vercel_sandbox_settings(config)
 
 
+def _setup_backend_apple_container(config: dict) -> None:
+    _setup.print_success("Terminal backend: Apple Container")
+    _setup.print_info("Runs commands in a Linux VM using Apple's container CLI.")
+    from tools.environments.apple_container import container_system_status, find_container_cli
+
+    executable = find_container_cli()
+    if not executable:
+        _setup.print_warning("Apple Container CLI not found.")
+        _setup.print_info("Install Apple Container manually, then run: container system start")
+    else:
+        running, _detail = container_system_status(executable)
+        if running:
+            _setup.print_info(f"Apple Container system running: {executable}")
+        else:
+            _setup.print_warning("Apple Container system is not running.")
+            _setup.print_info("Start it manually with: container system start")
+
+    terminal = config["terminal"]
+    terminal.setdefault("apple_container_image", "python:3.11-slim-bookworm")
+    terminal.setdefault("apple_container_volumes", [])
+    terminal.setdefault("apple_container_extra_args", [])
+    terminal["container_cpu"] = 4
+    terminal["container_memory"] = 5120
+    terminal["container_persistent"] = True
+
+
 def _setup_backend_ssh(config: dict) -> None:
     _setup.print_success("Terminal backend: SSH")
     _setup.print_info("Run commands on a remote machine via SSH.")
@@ -278,7 +304,7 @@ _BUILTIN_TERMINAL_BACKENDS = [
 _TERMINAL_BACKEND_SETUP = {
     "local": _setup_backend_local, "docker": _setup_backend_docker, "singularity": _setup_backend_singularity,
     "modal": _setup_backend_modal, "daytona": _setup_backend_daytona, "vercel_sandbox": _setup_backend_vercel,
-    "ssh": _setup_backend_ssh}
+    "ssh": _setup_backend_ssh, "apple_container": _setup_backend_apple_container}
 # Backend -> env var mirrored from config after setup (config.yaml is the source of truth, but
 # terminal_tool reads these from .env).
 _BACKEND_ENV_MIRROR = {"modal": ("TERMINAL_MODAL_MODE", "modal_mode", "auto"),
@@ -294,6 +320,9 @@ def setup_terminal_backend(config: dict):
                  f"   Guide: {_setup._DOCS_BASE}/user-guide/configuration#terminal-backend-configuration", None)
     current_backend = _setup.cfg_get(config, "terminal", "backend", default="local")
     backends = list(_BUILTIN_TERMINAL_BACKENDS)
+    from tools.environments.apple_container import is_apple_container_supported_host
+    if is_apple_container_supported_host():
+        backends.append(("apple_container", "Apple Container - native Linux VM isolation on Apple Silicon"))
     if _platform.system() == "Linux":
         backends.append(("singularity", "Singularity/Apptainer - HPC-friendly container"))
     # Plugin-registered backends (~/.hermes/plugins/). Fail-soft: a broken plugin must not take

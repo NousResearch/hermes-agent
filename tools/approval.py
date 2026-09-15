@@ -976,11 +976,22 @@ def _run_approval_gate(
 
 
 def _should_skip_container_guards(env_type: str, has_host_access: bool = False) -> bool:
-    """True when the backend is isolated enough to skip dangerous-command prompts. Docker is the
-    exception once host paths are bind-mounted: ``rm -rf /workspace`` then reaches host files."""
-    if env_type == "docker":
+    """Only isolated containers may skip the dangerous-command approval layer.
+
+    Docker and Apple Container with user-selected host mounts retain guards.
+    Plugin backends declare their isolation via ``skip_container_guards``.
+    """
+    if env_type in {"docker", "apple_container"}:
         return not has_host_access
-    return env_type in ("singularity", "modal", "daytona", "vercel_sandbox")
+    if env_type in ("singularity", "modal", "daytona", "vercel_sandbox"):
+        return True
+    # Plugin-registered backend: consult the registry (fail-soft to False so an
+    # unknown or misbehaving backend never skips approval).
+    try:
+        from agent.terminal_env_registry import provider_flag
+        return bool(provider_flag(env_type, "skip_container_guards", False))
+    except Exception:
+        return False
 
 
 def _user_deny_block(command: str) -> dict | None:

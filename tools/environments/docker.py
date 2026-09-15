@@ -5,6 +5,7 @@ resource limits (CPU, memory, disk), and optional filesystem persistence via
 bind mounts.
 """
 
+import csv
 import datetime
 import hashlib
 import json
@@ -280,6 +281,118 @@ def _extra_args_network_mode(extra_args: list) -> Optional[str]:
             if arg.startswith(f"{flag}="):
                 return arg.split("=", 1)[1]
     return None
+
+
+# Docker's named-volume grammar. Anything else in the source position of a
+# ``host:container`` spec is a path, including the dot-relative ``.`` / ``..``
+# forms docker resolves against the client's working directory.
+_NAMED_VOLUME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
+
+
+def _bind_value_may_be_host_path(value: str) -> bool:
+    """True unless *value* is a recognizable named or anonymous volume.
+
+    ``host:container[:opts]`` binds a host path; ``name:/container`` is docker-managed
+    storage and ``/container`` with no separator is an anonymous volume. A Windows drive
+    source (``C:\\host:/container``) keeps its drive colon out of the split.
+    """
+    if not isinstance(value, str):
+        return False
+    value = value.strip()
+    if not value:
+        return False
+    if re.match(r"^[A-Za-z]:[/\\]", value):
+        return ":" in value[2:]
+    if ":" not in value:
+        return False
+    return not _NAMED_VOLUME_RE.match(value.split(":", 1)[0])
+
+
+def _mount_value_may_be_host_path(value: str) -> bool:
+    """Conservatively classify explicit binds and caller-selected volume drivers/options.
+
+    Parsed as CSV because docker accepts quoted fields containing commas
+    (``type=bind,"source=/tmp/a,b",target=/mnt``). Docker trims the whole value before
+    parsing, so outer whitespace is stripped first: otherwise a leading space or tab keeps
+    a quoted field from starting at position 0 and ``"type=bind"`` parses as the literal
+    key ``"type``, which would miss the bind entirely.
+
+    Every explicit bind reaches the host, whatever its source. Ordinary volumes
+    retain the fast path, but explicit drivers/options can turn them into binds.
+    We do not inspect the daemon's registry or infer external volume provenance.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        fields = next(csv.reader([value.strip()], strict=True))
+    except (csv.Error, StopIteration):
+        # Ambiguous mount syntax must not buy an isolated-container fast path.
+        return True
+    pairs = []
+    for field in fields:
+        key, sep, val = field.partition("=")
+        if sep:
+            pairs.append((key.strip().strip('"\'').lower(), val.strip().strip('"\'').lower()))
+    return (
+        any(key == "type" and val == "bind" for key, val in pairs)
+        or any(key in {"volume-driver", "volume-opt"} for key, _ in pairs)
+    )
+
+
+def extra_args_may_bind_host_path(extra_args: list) -> bool:
+    """True when ``docker_extra_args`` may carry a host bind mount.
+
+    Operator args reach host files exactly like ``docker_volumes`` entries, so the approval
+    guard must count them: otherwise ``approval._should_skip_container_guards`` treats a
+    container with host mounts as isolated and skips dangerous-command / execute_code
+    approval. Covers every spelling docker's flag parser accepts — separate tokens
+    (``-v /host:/c``), attached values (``-v/host:/c``), boolean shorthand clusters
+    (``-iv/host:/c``, ``-iv=/host:/c``) and the ``=``-joined long forms.
+
+    Deliberately conservative: this does NOT track which flags consume a following value,
+    so a mount-looking token that is really another option's value (``--label
+    --volume=/tmp:/mnt``) also returns True. Detecting a potential bind is the goal;
+    precisely determining docker isolation is not. Inherited volumes and explicit
+    driver choices/options conservatively enable guards. Recognized named and
+    anonymous volumes without those options, and unrelated arguments, stay isolated.
+    """
+    args = [a for a in (extra_args or []) if isinstance(a, str)]
+    for i, arg in enumerate(args):
+        nxt = args[i + 1] if i + 1 < len(args) else None
+        if arg in {"--volumes-from", "--volume-driver"} or arg.startswith(
+            ("--volumes-from=", "--volume-driver=")
+        ):
+            return True
+        if arg == "--mount":
+            if nxt is not None and _mount_value_may_be_host_path(nxt):
+                return True
+            continue
+        if arg.startswith("--mount="):
+            if _mount_value_may_be_host_path(arg.split("=", 1)[1]):
+                return True
+            continue
+        if arg == "--volume":
+            if nxt is not None and _bind_value_may_be_host_path(nxt):
+                return True
+            continue
+        if arg.startswith("--volume="):
+            if _bind_value_may_be_host_path(arg.split("=", 1)[1]):
+                return True
+            continue
+        # Short-flag cluster: pflag lets booleans combine and the value attach to the
+        # last flag, so ``-iv/host:/c`` is ``-i`` plus ``-v /host:/c``.
+        if len(arg) > 1 and arg[0] == "-" and arg[1] != "-":
+            cluster = arg[1:]
+            pos = cluster.find("v")
+            if pos == -1:
+                continue
+            rest = cluster[pos + 1:]
+            if rest:
+                if _bind_value_may_be_host_path(rest[1:] if rest[0] == "=" else rest):
+                    return True
+            elif nxt is not None and _bind_value_may_be_host_path(nxt):
+                return True
+    return False
 
 
 # /run is separate from _BASE_SECURITY_ARGS: s6-overlay images exec

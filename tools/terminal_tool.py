@@ -125,23 +125,29 @@ from tools.approval import (
 
 
 def _docker_volume_uses_host_path(volume_spec: str) -> bool:
-    """Return True when a docker volume spec bind-mounts a host path."""
-    if not isinstance(volume_spec, str):
-        return False
-    vol = volume_spec.strip()
-    return bool(vol) and (
-        vol.startswith(("/", "~", "./", "../")) or
-        (len(vol) >= 3 and vol[1] == ":" and vol[2] in ("/", "\\"))
-    )
+    """Classify a complete Docker volume spec using the runtime-adjacent detector."""
+    from tools.environments.docker import extra_args_may_bind_host_path
+    return extra_args_may_bind_host_path(["--volume", volume_spec])
 
 
 def _docker_has_host_access(config: Dict[str, Any]) -> bool:
-    """Return True when a Docker sandbox exposes host paths through bind mounts."""
-    if config.get("env_type") != "docker":
+    """Historical shared entry point for local-container host-mount approval."""
+    backend = config.get("env_type")
+    if backend == "apple_container":
+        from tools.environments.apple_container import extra_args_may_bind_host_path
+        # Apple's structured volume format permits explicit host bind paths.
+        return bool(config.get("apple_container_volumes", [])) or extra_args_may_bind_host_path(
+            config.get("apple_container_extra_args", [])
+        )
+    if backend != "docker":
         return False
     if config.get("host_cwd") and config.get("docker_mount_cwd_to_workspace"):
         return True
-    return any(_docker_volume_uses_host_path(vol) for vol in config.get("docker_volumes", []))
+    from tools.environments.docker import extra_args_may_bind_host_path
+    return (
+        any(_docker_volume_uses_host_path(vol) for vol in config.get("docker_volumes", []))
+        or extra_args_may_bind_host_path(config.get("docker_extra_args", []))
+    )
 
 
 def _check_all_guards(command: str, env_type: str,
@@ -328,7 +334,7 @@ def _resolve_container_alias(task_id: str) -> str:
 
 _ISOLATION_OVERRIDE_KEYS = frozenset({
     "docker_image", "modal_image", "singularity_image",
-    "daytona_image", "env_type",
+    "daytona_image", "apple_container_image", "env_type",
 })
 
 
@@ -464,6 +470,7 @@ def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
 
 # Backends that take an image, keyed to the override/config key carrying it.
 _IMAGE_KEY_BY_BACKEND = {
+    "apple_container": "apple_container_image",
     "docker": "docker_image",
     "singularity": "singularity_image",
     "modal": "modal_image",
@@ -634,6 +641,20 @@ def _get_env_config() -> Dict[str, Any]:
     else:
         docker_forward_env, docker_volumes, docker_env, docker_extra_args, docker_shm_size = [], [], {}, [], "1g"
 
+    if env_type == "apple_container":
+        apple_container_volumes = _parse_env_var(
+            "TERMINAL_APPLE_CONTAINER_VOLUMES", "[]", json.loads, "valid JSON"
+        )
+        apple_container_extra_args = _parse_env_var(
+            "TERMINAL_APPLE_CONTAINER_EXTRA_ARGS", "[]", json.loads, "valid JSON"
+        )
+        if not isinstance(apple_container_volumes, list):
+            raise ValueError("TERMINAL_APPLE_CONTAINER_VOLUMES must be a JSON list")
+        if not isinstance(apple_container_extra_args, list):
+            raise ValueError("TERMINAL_APPLE_CONTAINER_EXTRA_ARGS must be a JSON list")
+    else:
+        apple_container_volumes, apple_container_extra_args = [], []
+
     cwd, host_cwd = _resolve_config_cwd(env_type, mount_docker_cwd)
 
     return {
@@ -644,6 +665,11 @@ def _get_env_config() -> Dict[str, Any]:
         "singularity_image": _tenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": _tenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": _tenv("TERMINAL_DAYTONA_IMAGE", default_image),
+        "apple_container_image": _tenv(
+            "TERMINAL_APPLE_CONTAINER_IMAGE", "python:3.11-slim-bookworm"
+        ),
+        "apple_container_volumes": apple_container_volumes,
+        "apple_container_extra_args": apple_container_extra_args,
         "vercel_runtime": _tenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
         "cwd": cwd,
         "host_cwd": host_cwd,
@@ -679,6 +705,7 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_shared_container_key": _tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip(),
         "docker_orphan_reaper": _tenv_bool("TERMINAL_DOCKER_ORPHAN_REAPER", "true"),
     }
+
 
 
 def _cleanup_thread_worker():
@@ -1267,6 +1294,7 @@ def check_terminal_requirements() -> bool:
         logger.error("Terminal requirements check failed: %s", e, exc_info=True)
         _record_unavailable_reason(f"the requirements check failed: {e}")
         return False
+
 
 
 from tools.registry import registry

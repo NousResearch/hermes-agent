@@ -43,6 +43,14 @@ function backends(overrides: Partial<TerminalBackendsResponse> = {}): TerminalBa
         active: false,
         status: 'ready',
         detail: 'hermes@devbox'
+      },
+      {
+        name: 'apple_container',
+        label: 'Apple Container',
+        description: 'Run commands in an Apple Container Linux VM.',
+        active: false,
+        status: 'unavailable',
+        detail: 'Apple Container requires macOS 26 on Apple Silicon.'
       }
     ],
     ...overrides
@@ -122,6 +130,17 @@ describe('TerminalBackendPanel', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Local/ }))
 
     await new Promise(resolve => setTimeout(resolve, 50))
+    expect(selectTerminalBackend).not.toHaveBeenCalled()
+  })
+
+  it('does not allow selecting an unavailable backend', async () => {
+    const { TerminalBackendPanel } = await import('./terminal-backend-panel')
+    render(<TerminalBackendPanel onConfiguredChange={vi.fn()} />)
+
+    const appleContainer = await screen.findByRole('button', { name: /Apple Container/ })
+    expect((appleContainer as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(appleContainer)
+
     expect(selectTerminalBackend).not.toHaveBeenCalled()
   })
 })

@@ -80,7 +80,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     },
     "terminal.backend": _select(
         "Terminal execution backend",
-        "local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity",
+        "local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity", "apple_container",
     ),
     # sync with _SUPPORTED_VERCEL_RUNTIMES in terminal_tool.py
     "terminal.vercel_runtime": _select("Vercel Sandbox runtime", "node24", "node22", "python3.13"),

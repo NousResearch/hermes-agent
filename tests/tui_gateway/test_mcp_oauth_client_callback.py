@@ -143,6 +143,68 @@ def test_start_flow_rejects_bad_client_redirect(monkeypatch):
     )
 
 
+def test_start_flow_preserves_worker_startup_error(monkeypatch):
+    monkeypatch.setattr(mcp_oauth_sessions, "_sessions", {})
+    flows = []
+
+    def worker(session_id, *_args):
+        flow = mcp_oauth_sessions._sessions[session_id]["flow"]
+        flows.append(flow)
+        flow.mark_error("dynamic client registration failed")
+        flow.mark_worker_done()
+
+    monkeypatch.setattr(mcp_oauth_sessions, "_worker", worker)
+
+    with pytest.raises(RuntimeError, match="dynamic client registration failed"):
+        mcp_oauth_sessions.start_flow(
+            str(get_hermes_home()),
+            "startup-error",
+            {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
+            client_redirect_uri="http://127.0.0.1:8412/callback",
+            url_timeout=2,
+        )
+
+    assert flows
+    assert flows[0].snapshot()["error"] == "dynamic client registration failed"
+
+
+def test_start_flow_shutdown_preserves_original_error_if_mark_error_fails(monkeypatch):
+    monkeypatch.setattr(mcp_oauth_sessions, "_sessions", {})
+    shutdowns = []
+
+    def broken_mark_error(_message):
+        raise RuntimeError("mark_error failed")
+
+    def worker(session_id, *_args):
+        flow = mcp_oauth_sessions._sessions[session_id]["flow"]
+        flow.mark_error("dynamic client registration failed")
+        flow.mark_error = broken_mark_error
+        flow.mark_worker_done()
+
+    def shutdown(rec):
+        shutdowns.append(rec["session_id"])
+
+    monkeypatch.setattr(mcp_oauth_sessions, "_worker", worker)
+    monkeypatch.setattr(mcp_oauth_sessions, "_shutdown_listener", shutdown)
+
+    with pytest.raises(RuntimeError, match="dynamic client registration failed"):
+        mcp_oauth_sessions.start_flow(
+            str(get_hermes_home()),
+            "startup-error-cleanup",
+            {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
+            client_redirect_uri="http://127.0.0.1:8412/callback",
+            url_timeout=2,
+        )
+
+    rec = next(
+        r
+        for r in mcp_oauth_sessions._sessions.values()
+        if r["server_name"] == "startup-error-cleanup"
+    )
+
+    assert shutdowns == [rec["session_id"]]
+
+
 # ---------------------------------------------------------------------------
 # deliver_callback_flow: relay accept/reject semantics
 # ---------------------------------------------------------------------------

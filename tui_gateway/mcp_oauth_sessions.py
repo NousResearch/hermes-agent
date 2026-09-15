@@ -34,6 +34,12 @@ def _shutdown_listener(rec: Dict[str, Any]) -> None:
     rec["httpd"] = None
 
 
+def _mark_error_and_shutdown(flow: Any, rec: Dict[str, Any], message: str) -> None:
+    with suppress(Exception):
+        flow.mark_error(message)
+    _shutdown_listener(rec)
+
+
 def _validate_client_redirect_uri(uri: str) -> str:
     """Accept only plain-http loopback URLs (RFC 8252) so the gateway can't pin an
     attacker-controlled redirect into a DCR registration."""
@@ -199,9 +205,11 @@ def start_flow(
             time.sleep(0.1)
         if not auth_url:
             raise TimeoutError("Timed out waiting for MCP authorization URL")
-    except Exception:
-        flow.mark_error("Timed out waiting for MCP authorization URL")
-        _shutdown_listener(rec)
+    except TimeoutError:
+        _mark_error_and_shutdown(flow, rec, "Timed out waiting for MCP authorization URL")
+        raise
+    except Exception as exc:
+        _mark_error_and_shutdown(flow, rec, str(exc) or "MCP OAuth flow failed before authorization")
         raise
     # ``flow`` mirrors the provider-OAuth discriminator: open a URL then poll (no user_code).
     return {"session_id": session_id, "auth_url": auth_url, "flow": "pkce"}

@@ -1,6 +1,7 @@
 """Tests for lazy forum command registration in TelegramAdapter."""
 
 import asyncio
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -83,3 +84,47 @@ async def test_ensure_forum_commands_race_safety():
 
     # The lock should make this exactly 1 call, not 2.
     assert adapter._bot.set_my_commands.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_register_command_menu_builds_skill_menu_off_event_loop(monkeypatch):
+    """A slow skill scan must not starve Telegram's reconnect event loop."""
+    import telegram
+
+    adapter = _make_test_adapter()
+    scan_started = threading.Event()
+    release_scan = threading.Event()
+    loop_progressed = threading.Event()
+    observed = {}
+
+    def _blocking_menu(*, max_commands):
+        assert max_commands == 60
+        scan_started.set()
+        release_scan.wait(timeout=1)
+        observed["loop_progressed"] = loop_progressed.is_set()
+        return [("help", "Show help"), ("skill", "Run a skill")], 0
+
+    monkeypatch.setattr("hermes_cli.commands_platforms.telegram_menu_max_commands", lambda: 60)
+    monkeypatch.setattr("hermes_cli.commands_platforms.telegram_menu_commands", _blocking_menu)
+    monkeypatch.setattr(
+        telegram, "BotCommand", lambda command, description: SimpleNamespace(command=command, description=description))
+    # This releases a pre-fix synchronous scan so the regression test cannot hang the suite.
+    safety_release = threading.Timer(0.2, release_scan.set)
+    safety_release.start()
+    task = asyncio.create_task(adapter._register_command_menu())
+    try:
+        await asyncio.to_thread(scan_started.wait)
+        loop_progressed.set()
+        release_scan.set()
+        await task
+    finally:
+        release_scan.set()
+        safety_release.cancel()
+        if not task.done():
+            task.cancel()
+            await task
+
+    assert observed["loop_progressed"] is True
+    assert adapter._bot.set_my_commands.await_count == 3
+    for call in adapter._bot.set_my_commands.await_args_list:
+        assert [command.command for command in call.args[0]] == ["help", "skill"]

@@ -130,6 +130,12 @@ class TestNasRefusalCodes:
         assert err.code == anon_auth.ANON_SERVER_ERROR and err.retryable is not False
         assert "hiccup" in str(err)
 
+    def test_a_bare_401_on_sign_up_rides_the_ladder_rather_than_dying_for_the_process(self, nas):
+        nas.create_response = httpx.Response(401, json={})
+        err = _mint_error(nas)
+        assert err.code == anon_auth.ANON_CREDENTIAL_DEAD
+        assert anon_auth.last_mint_failure()["retryable"] is True
+
     def test_the_wire_failing_is_unreachable(self, nas):
         nas.raise_transport = httpx.ConnectTimeout("no route")
         err = _mint_error(nas)
@@ -192,11 +198,11 @@ class TestBootstrapRecord:
             429, json={"error": "temporarily_unavailable"}, headers={"Retry-After": "30"})
         record = free_tier_bootstrap.run_bootstrap(announce=False)
         assert record.has_identity is False and record.free_tier is False
-        assert record.error_code == anon_auth.ANON_RATE_LIMITED
-        assert record.retryable is True and 28 <= record.retry_after <= 30
+        assert record.failure["error_code"] == anon_auth.ANON_RATE_LIMITED
+        assert record.failure["retryable"] is True and 28 <= record.failure["retry_after"] <= 30
         assert record.failure_fields() == {
             "error": record.error, "error_code": anon_auth.ANON_RATE_LIMITED, "retryable": True,
-            "retry_after": record.retry_after}
+            "retry_after": record.failure["retry_after"]}
 
     def test_a_clean_boot_carries_no_failure_block(self, nas):
         record = free_tier_bootstrap.run_bootstrap(announce=False)
@@ -224,7 +230,7 @@ class TestBootstrapRecord:
         nas.create_response = httpx.Response(404, json={"error": "not_found"})
         monkeypatch.setattr(free_tier_bootstrap, "_sleep", lambda s: pytest.fail("must not sleep"))
         free_tier_bootstrap._bootstrap_then_retry()
-        assert free_tier_bootstrap.current_record().error_code == anon_auth.ANON_GATE_CLOSED
+        assert free_tier_bootstrap.current_record().failure["error_code"] == anon_auth.ANON_GATE_CLOSED
         assert nas.creates() == 1
 
     def test_the_background_loop_is_bounded(self, nas, monkeypatch):
@@ -236,7 +242,7 @@ class TestBootstrapRecord:
         monkeypatch.setattr(free_tier_bootstrap, "_sleep", _sleep)
         free_tier_bootstrap._bootstrap_then_retry()
         assert nas.creates() == 1 + free_tier_bootstrap.BOOTSTRAP_RETRY_ATTEMPTS
-        assert free_tier_bootstrap.current_record().error_code == anon_auth.ANON_UNREACHABLE
+        assert free_tier_bootstrap.current_record().failure["error_code"] == anon_auth.ANON_UNREACHABLE
 
     def test_a_retry_re_inventories_so_a_provider_connected_meanwhile_keeps_inference(self, nas, monkeypatch):
         nas.raise_transport = httpx.ConnectTimeout("no route")
@@ -247,6 +253,24 @@ class TestBootstrapRecord:
         record = free_tier_bootstrap.retry_bootstrap_mint(force=True, announce=False)
         assert record.has_identity is True and record.other_providers is True
         assert _load_auth_store().get("active_provider") != "nous"
+
+    def test_a_late_failed_build_never_overwrites_a_success_that_landed_meanwhile(self, nas, monkeypatch):
+        """The background loop and the user's click can race: the loop's build (no identity, still
+        in cooldown) must not replace the record the click just wrote."""
+        nas.raise_transport = httpx.ConnectTimeout("no route")
+        free_tier_bootstrap.run_bootstrap(announce=False)
+        real_build = free_tier_bootstrap._build_record
+
+        def slow_build(**kw):
+            stale = real_build(**kw)                       # no identity: still inside the cooldown
+            monkeypatch.setattr(free_tier_bootstrap, "_build_record", real_build)
+            nas.raise_transport = None                    # ...meanwhile the click's forced mint succeeds
+            free_tier_bootstrap.retry_bootstrap_mint(force=True, announce=False)
+            return stale
+        monkeypatch.setattr(free_tier_bootstrap, "_build_record", slow_build)
+        record = free_tier_bootstrap.retry_bootstrap_mint(force=False, announce=False)
+        assert record.has_identity is True
+        assert free_tier_bootstrap.current_record().has_identity is True
 
     def test_the_desktop_retry_refreshes_the_boot_record(self, nas):
         nas.raise_transport = httpx.ConnectTimeout("no route")
@@ -270,7 +294,7 @@ class TestSignInFailures:
     ])
     def test_a_service_verdict_keeps_its_code_wait_and_copy(self, code, retry_after, retryable, needle):
         state = anon_sign_in._failed_from_exception(
-            anon_auth._anon_err("x", code, retry_after=retry_after or None, retryable=retryable))
+            anon_auth._anon_err("x", code, retry_after=retry_after or None))
         assert state.kind == "failed" and state.reason == code
         assert state.retryable is retryable
         assert state.retry_after == retry_after

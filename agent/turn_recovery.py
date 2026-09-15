@@ -719,14 +719,21 @@ def _welcome_tier_guidance(classified: Any, *, model: Any, in_chat: bool, door: 
     return welcome_route_refusal_copy(str(route), in_chat=in_chat, door=door)
 
 
+# Closed table: every card kind the desktop has copy for. An unknown gateway reason lands on
+# "refused" (generic card, sentence kept) rather than a code the desktop cannot key on.
+_WELCOME_SURFACE_KINDS = {
+    "rate_limited": "rate_limited", "at_capacity": "at_capacity", "admission_closed": "at_capacity",
+    "model_not_free": "model_not_free", "feature_not_free": "model_not_free",
+}
+
+
 def _welcome_surface_kind(classified: Any) -> str:
     """The free-tier failure kind a client renders its card from (``error_surface`` code
     ``free_tier_<kind>``): the welcome refusal's reason, or the route refusal; "" otherwise."""
     ctx = getattr(classified, "error_context", None) or {}
     refusal = ctx.get("welcome_refusal") if isinstance(ctx, dict) else None
     if isinstance(refusal, dict):
-        reason = str(refusal.get("reason") or "")
-        return {"admission_closed": "at_capacity", "feature_not_free": "model_not_free"}.get(reason, reason) or "refused"
+        return _WELCOME_SURFACE_KINDS.get(str(refusal.get("reason") or ""), "refused")
     route = ctx.get("welcome_route") if isinstance(ctx, dict) else None
     if route == "tier_disabled":
         return "disabled"
@@ -748,8 +755,9 @@ def _welcome_outage_copy(base_url: Any, classified: Any) -> str:
         from hermes_cli.anon_auth import FREE_TIER_OUTAGE_COPY, route_is_welcome_host
         if not route_is_welcome_host(base_url):
             return ""
-        if classified.reason in (FailoverReason.timeout, FailoverReason.overloaded,
-                                 FailoverReason.server_error, FailoverReason.unknown):
+        # Not ``unknown``: that is the classifier's catch-all for status-less local failures, which
+        # are not the free model's trouble.
+        if classified.reason in (FailoverReason.timeout, FailoverReason.overloaded, FailoverReason.server_error):
             return FREE_TIER_OUTAGE_COPY
     except Exception:
         pass
@@ -1410,9 +1418,12 @@ def _is_genuine_nous_rate_limit(agent: Any, api_error: Exception, error_context:
             is_genuine_nous_rate_limit, is_long_welcome_rate_limit, record_nous_rate_limit)
         _err_resp = getattr(api_error, "response", None)
         _err_hdrs = getattr(_err_resp, "headers", None) if _err_resp else None
+        from hermes_cli.anon_auth import route_is_welcome_host
         _classified_ctx = getattr(classified, "error_context", None) or {}
+        # Route-gated: only the welcome host's fairshare body is an allowance verdict; a paid-host
+        # 429 keeps main's rule (an exhausted x-ratelimit bucket), whatever its body says.
         _genuine = (
-            is_long_welcome_rate_limit(_classified_ctx)
+            (route_is_welcome_host(getattr(agent, "base_url", "")) and is_long_welcome_rate_limit(_classified_ctx))
             or is_genuine_nous_rate_limit(headers=_err_hdrs, last_known_state=agent._rate_limit_state))
         if _genuine:
             _merged = {**(error_context if isinstance(error_context, dict) else {}), **_classified_ctx}

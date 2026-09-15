@@ -55,6 +55,13 @@ class TestDarkTier403:
     def test_the_same_403_from_the_paid_host_stays_an_ordinary_403(self):
         assert "welcome_route" not in _classify(_generic_403(), base_url=PAID).error_context
 
+    def test_a_403_that_says_something_else_keeps_its_own_classification(self):
+        """A safety refusal or a billing wall on the welcome host is not the tier going dark."""
+        body = {"status": 403, "message": "This request violates our usage policies."}
+        result = _classify(_gateway_error(403, body))
+        assert "welcome_route" not in result.error_context
+        assert result.reason == FailoverReason.content_policy_blocked
+
     def test_a_403_from_another_provider_on_any_host_is_untouched(self):
         result = classify_api_error(_generic_403(), provider="openrouter", base_url=WELCOME)
         assert "welcome_route" not in result.error_context
@@ -140,6 +147,10 @@ class TestLongWaitRule:
         classified = _classify(err)
         assert _is_genuine_nous_rate_limit(_agent(), err, turn_ctx, classified) is True
         assert recorded and recorded[0]["error_context"]["reset_at"] == classified.error_context["reset_at"]
+        # The same body from the PAID host is not an allowance verdict: main's header rule stands.
+        recorded.clear()
+        assert _is_genuine_nous_rate_limit(_agent(base_url=PAID), err, turn_ctx, classified) is False
+        assert recorded == []
         # A short one is not an exhausted allowance: nothing recorded, the turn waits it out.
         recorded.clear()
         short = _refusal("rate_limited", retry_after=5)
@@ -149,7 +160,7 @@ class TestLongWaitRule:
 
 class TestOutageCopy:
     @pytest.mark.parametrize("reason", [FailoverReason.timeout, FailoverReason.overloaded,
-                                        FailoverReason.server_error, FailoverReason.unknown])
+                                        FailoverReason.server_error])
     def test_a_spent_transport_failure_on_the_welcome_host_reads_as_one_sentence(self, reason):
         from agent.turn_recovery import _welcome_outage_copy
         from hermes_cli.anon_auth import FREE_TIER_OUTAGE_COPY
@@ -159,6 +170,8 @@ class TestOutageCopy:
         from agent.turn_recovery import _welcome_outage_copy
         assert _welcome_outage_copy(PAID, SimpleNamespace(reason=FailoverReason.timeout)) == ""
         assert _welcome_outage_copy(WELCOME, SimpleNamespace(reason=FailoverReason.rate_limit)) == ""
+        # ``unknown`` is the catch-all for status-less local failures, not the free model's trouble.
+        assert _welcome_outage_copy(WELCOME, SimpleNamespace(reason=FailoverReason.unknown)) == ""
 
 
 class TestTerminalResultsCarryTheFreeTierBlock:
@@ -184,7 +197,7 @@ class TestTerminalResultsCarryTheFreeTierBlock:
         # The chat text names /login; the card text (a button beside it) leaves that tail off.
         assert "switched off" in result["final_response"] and "/login" in result["final_response"]
         assert result["free_tier"]["kind"] == "disabled"
-        assert result["free_tier"]["message"] == result["final_response"].replace(" To sign in: /login.", "")
+        assert result["final_response"].startswith(result["free_tier"]["message"])
         assert "/login" not in result["free_tier"]["message"]
         assert result["error"] == "HTTP 403: no permissions"      # the technical detail stays in the log line
 

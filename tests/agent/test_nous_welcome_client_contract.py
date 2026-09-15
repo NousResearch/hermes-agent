@@ -131,7 +131,9 @@ class TestRefusalCopy:
     def test_copy_names_the_served_model_and_the_sign_in(self):
         refusal = anon_auth.parse_welcome_refusal({"reason": "model_not_free", "alternates": ["nous/welcome"]})
         chat = anon_auth.welcome_refusal_copy(refusal, model="gpt-5", in_chat=True)
-        assert chat == "gpt-5 isn't available without signing in, so Hermes uses nous/welcome for now. Sign in for more models. To sign in: /login."
+        assert "gpt-5" in chat and "nous/welcome" in chat and chat.endswith(anon_auth._SIGNIN_CHAT)
+        card = anon_auth.welcome_refusal_copy(refusal, model="gpt-5", in_chat=True, door=False)
+        assert chat == f"{card} {anon_auth._SIGNIN_CHAT}"   # door=False drops exactly the tail
         terminal = anon_auth.welcome_refusal_copy(refusal, model="gpt-5", in_chat=False)
         assert "`hermes auth upgrade`" in terminal and "/login" not in terminal
 

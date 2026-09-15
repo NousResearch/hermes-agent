@@ -569,7 +569,11 @@ def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
         if refusal["retry_after"] > 0:
             ctx["reset_at"] = time.time() + refusal["retry_after"]
         return _v(_R.rate_limit, should_fallback=True, error_context=ctx)
-    kind = welcome_route_refusal(status, c.msg, c.base_url if c.provider == "nous" else None)
+    # The route-keyed dark-tier 403 applies only to a 403 that says nothing else: a safety refusal
+    # or a billing wall on the welcome host keeps its own classification (and its own recovery).
+    plain_403 = c.provider == "nous" and not any(
+        p in c.msg for p in _CONTENT_POLICY_BLOCKED_PATTERNS + _BILLING_PATTERNS)
+    kind = welcome_route_refusal(status, c.msg, c.base_url if plain_403 else None)
     if kind is None:
         return None
     ctx = {"welcome_route": kind}

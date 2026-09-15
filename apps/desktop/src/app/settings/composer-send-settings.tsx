@@ -9,10 +9,17 @@ import {
   $composerSendConfigPath,
   $composerSendPrefs,
   clampDoubleEnterMs,
+  clampSendGraceMs,
+  clampTypingIdleMs,
   type ComposerSendMode,
   DOUBLE_ENTER_MAX_MS,
   DOUBLE_ENTER_MIN_MS,
-  setComposerSendPrefs
+  SEND_GRACE_MAX_MS,
+  SEND_GRACE_MIN_MS,
+  type SendGraceScope,
+  setComposerSendPrefs,
+  TYPING_IDLE_MAX_MS,
+  TYPING_IDLE_MIN_MS
 } from '@/store/composer-send'
 import { notify } from '@/store/notifications'
 
@@ -20,25 +27,86 @@ import { composerSendModeHint } from '../chat/composer/send-mode-hint'
 
 import { ListRow } from './primitives'
 
-/** Settings → Keyboards: how a draft gets committed.
+interface MsFieldProps {
+  clamp: (value: unknown) => number
+  label: string
+  max: number
+  min: number
+  onChange: (value: number) => void
+  unit: string
+  value: number
+}
+
+/**
+ * One millisecond value: slider for the common case, number box for precision.
+ *
+ * The text is mirrored locally so a half-typed number ("4", on the way to
+ * "450") is not clamped and persisted on every keystroke — it commits on blur
+ * or Enter, and the slider stays clamped so its thumb never leaves the track.
+ */
+function MsField({ clamp, label, max, min, onChange, unit, value }: MsFieldProps) {
+  const [draft, setDraft] = useState(String(value))
+
+  useEffect(() => {
+    setDraft(String(value))
+  }, [value])
+
+  const commit = (next: number | string) => {
+    const clamped = clamp(next)
+
+    setDraft(String(clamped))
+    onChange(clamped)
+  }
+
+  return (
+    <div className="flex items-center gap-3">
+      <input
+        aria-label={label}
+        className="h-1.5 min-w-40 flex-1 cursor-pointer appearance-none rounded-full bg-(--ui-bg-tertiary)"
+        max={max}
+        min={min}
+        onChange={event => commit(event.currentTarget.value)}
+        step={10}
+        style={{ accentColor: 'var(--dt-primary)' }}
+        type="range"
+        value={clamp(draft)}
+      />
+      <Input
+        aria-label={label}
+        className="w-20 text-right tabular-nums"
+        max={max}
+        min={min}
+        onBlur={() => commit(draft)}
+        onChange={event => setDraft(event.currentTarget.value)}
+        onKeyDown={event => {
+          if (event.key === 'Enter') {
+            commit(draft)
+          }
+        }}
+        suffix={unit}
+        type="number"
+        value={draft}
+      />
+    </div>
+  )
+}
+
+/** Settings → Keyboards: how a draft gets committed, and what a guessed send
+ *  costs before it goes.
  *
  *  This is the one composer shortcut that is a preference rather than a
- *  rebindable action — the three modes disagree about what a bare Enter means,
- *  so they can't all be expressed as one combo. The rows below the control
- *  (the shortcuts map) follow the choice. */
+ *  rebindable action — the modes disagree about what a bare Enter means, so
+ *  they can't all be expressed as one combo. The rows below the control (the
+ *  shortcuts map) follow the choice, and every numeric row names the JSON file
+ *  main persists to, so the hand-edit path is discoverable rather than
+ *  folklore. */
 export function ComposerSendSettings() {
   const { t } = useI18n()
   const k = t.keybinds.composerSend
   const prefs = useStore($composerSendPrefs)
   const configPath = useStore($composerSendConfigPath)
 
-  // Local text mirror so a half-typed number ("4", on the way to "45") isn't
-  // clamped and committed on every keystroke.
-  const [draftMs, setDraftMs] = useState(String(prefs.doubleEnterMs))
-
-  useEffect(() => {
-    setDraftMs(String(prefs.doubleEnterMs))
-  }, [prefs.doubleEnterMs])
+  const fileHint = configPath ? k.fileHint(configPath) : undefined
 
   const commitMode = (mode: ComposerSendMode) => {
     triggerHaptic('selection')
@@ -60,10 +128,9 @@ export function ComposerSendSettings() {
     })
   }
 
-  const commitDoubleEnterMs = (value: number | string) => {
-    const next = clampDoubleEnterMs(value)
-    setDraftMs(String(next))
-    void setComposerSendPrefs({ doubleEnterMs: next })
+  const commitGrace = (sendGrace: SendGraceScope) => {
+    triggerHaptic('selection')
+    void setComposerSendPrefs({ sendGrace })
   }
 
   return (
@@ -75,6 +142,7 @@ export function ComposerSendSettings() {
             options={[
               { id: 'enter', label: k.modeEnter },
               { id: 'double-enter', label: k.modeDoubleEnter },
+              { id: 'pause', label: k.modePause },
               { id: 'mod-enter', label: k.modeModEnter }
             ]}
             value={prefs.mode}
@@ -84,42 +152,80 @@ export function ComposerSendSettings() {
         title={k.title}
       />
 
-      {prefs.mode === 'double-enter' && (
+      {/* `pause` measures its mid-flow presses against the same window as
+          `double-enter`, so it needs the same knob. */}
+      {(prefs.mode === 'double-enter' || prefs.mode === 'pause') && (
         <ListRow
           action={
-            <div className="flex items-center gap-3">
-              <input
-                aria-label={k.doubleTapTitle}
-                className="h-1.5 min-w-40 flex-1 cursor-pointer appearance-none rounded-full bg-(--ui-bg-tertiary)"
-                max={DOUBLE_ENTER_MAX_MS}
-                min={DOUBLE_ENTER_MIN_MS}
-                onChange={event => commitDoubleEnterMs(event.currentTarget.value)}
-                step={10}
-                style={{ accentColor: 'var(--dt-primary)' }}
-                type="range"
-                value={clampDoubleEnterMs(draftMs)}
-              />
-              <Input
-                aria-label={k.doubleTapTitle}
-                className="w-20 text-right tabular-nums"
-                max={DOUBLE_ENTER_MAX_MS}
-                min={DOUBLE_ENTER_MIN_MS}
-                onBlur={() => commitDoubleEnterMs(draftMs)}
-                onChange={event => setDraftMs(event.currentTarget.value)}
-                onKeyDown={event => {
-                  if (event.key === 'Enter') {
-                    commitDoubleEnterMs(draftMs)
-                  }
-                }}
-                suffix={k.doubleTapUnit}
-                type="number"
-                value={draftMs}
-              />
-            </div>
+            <MsField
+              clamp={clampDoubleEnterMs}
+              label={k.doubleTapTitle}
+              max={DOUBLE_ENTER_MAX_MS}
+              min={DOUBLE_ENTER_MIN_MS}
+              onChange={doubleEnterMs => void setComposerSendPrefs({ doubleEnterMs })}
+              unit={k.doubleTapUnit}
+              value={prefs.doubleEnterMs}
+            />
           }
           description={k.doubleTapDescription}
-          hint={configPath ? k.doubleTapFileHint(configPath) : undefined}
+          hint={fileHint}
           title={k.doubleTapTitle}
+        />
+      )}
+
+      {prefs.mode === 'pause' && (
+        <ListRow
+          action={
+            <MsField
+              clamp={clampTypingIdleMs}
+              label={k.typingIdleTitle}
+              max={TYPING_IDLE_MAX_MS}
+              min={TYPING_IDLE_MIN_MS}
+              onChange={typingIdleMs => void setComposerSendPrefs({ typingIdleMs })}
+              unit={k.typingIdleUnit}
+              value={prefs.typingIdleMs}
+            />
+          }
+          description={k.typingIdleDescription}
+          hint={fileHint}
+          title={k.typingIdleTitle}
+        />
+      )}
+
+      {/* Unconditional: the grace window also covers the default `enter` mode,
+          which is the setting people actually need undo-send for. */}
+      <ListRow
+        action={
+          <SegmentedControl
+            onChange={commitGrace}
+            options={[
+              { id: 'off', label: k.graceOff },
+              { id: 'inferred', label: k.graceInferred },
+              { id: 'all', label: k.graceAll }
+            ]}
+            value={prefs.sendGrace}
+          />
+        }
+        description={k.graceDescription}
+        title={k.graceTitle}
+      />
+
+      {prefs.sendGrace !== 'off' && (
+        <ListRow
+          action={
+            <MsField
+              clamp={clampSendGraceMs}
+              label={k.graceMsTitle}
+              max={SEND_GRACE_MAX_MS}
+              min={SEND_GRACE_MIN_MS}
+              onChange={sendGraceMs => void setComposerSendPrefs({ sendGraceMs })}
+              unit={k.graceMsUnit}
+              value={prefs.sendGraceMs}
+            />
+          }
+          description={k.graceMsDescription}
+          hint={fileHint}
+          title={k.graceMsTitle}
         />
       )}
     </>

@@ -28,7 +28,8 @@ from agent.redact import redact_sensitive_text
 from tools.file_tools_paths import (
     _expand_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_path_for_task)
 from tools.file_tools_write_guards import (
-    _READ_DEDUP_STATUS_MESSAGE, _check_approval_required_write, _check_binary_document_write,
+    _READ_DEDUP_STATUS_MESSAGE, _check_approval_required_write, _check_authority_policy_patch,
+    _check_authority_policy_write, _check_binary_document_write,
     _check_cross_profile_path, _check_protected_instruction_write, _check_sensitive_path,
     _is_internal_file_tool_content)
 from tools.file_tools_read_tracking import (
@@ -762,7 +763,10 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     cross-PROFILE guard it was named for no longer exists).
     """
     # write_file checks the binary-document guard before the mirror guard.
+    # _check_authority_policy_write sits right after the sensitive-path deny so that the principal
+    # profile's config.yaml allowance is immediately narrowed to "anything except the policy keys".
     err = (_check_sensitive_path(path, task_id)
+           or _check_authority_policy_write(path, content, task_id)
            or _check_binary_document_write(path, task_id)
            or _check_protected_instruction_write([path], task_id)
            or _check_approval_required_write([path], task_id)
@@ -857,6 +861,11 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     precheck_err = _write_precheck_error(_paths_to_check, _content_write_paths, task_id, cross_profile)
     if precheck_err:
         return tool_error(precheck_err)
+    # Fragment edits to config.yaml cannot be inspected for changes to the policy keys, so under
+    # principal they are refused outright (whole-file write_file is still allowed and IS inspected).
+    policy_err = _check_authority_policy_patch(_paths_to_check, task_id)
+    if policy_err:
+        return tool_error(policy_err)
     try:
         # Lock paths in sorted, deduplicated order so concurrent callers with
         # overlapping multi-file patches can't deadlock (every caller locks in

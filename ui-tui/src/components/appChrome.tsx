@@ -524,22 +524,20 @@ export function StatusRule({
 
   // On narrow terminals the context read-out collapses to a bare token count
   // (`12k tok`) and the visual fill bar is dropped entirely.
-  // `context_detail` (used/max) and `context_pct` (the % + bar) are SEPARATE
-  // segments: ORing them into one gate meant asking for the percentage alone
-  // still rendered the used/max detail, so the filter looked ignored.
+  // `context_detail` (used/max) and `context_pct` are SEPARATE segments: this
+  // label belongs to `context_detail` ONLY — the percentage and its bar are
+  // rendered by the `showBar` block below, which `context_pct` gates. Emitting
+  // a `%` here as well (the first attempt at this fix) printed the percentage
+  // twice, once bare and once inside the bar.
   const showCtxDetail = ok('context_detail')
   const showCtxPct = ok('context_pct')
 
   const ctxLabel =
-    showCtxDetail || showCtxPct
+    showCtxDetail || (segs.compactCtx && showCtxPct)
       ? usage.context_max
         ? segs.compactCtx
           ? `${contextMark}${compactNumber(usage.context_used ?? 0)} tok`
-          : showCtxDetail
-            ? `${contextMark}${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max ?? 0)}`
-            : showCtxPct
-              ? `${contextMark}${usage.context_percent != null ? `${usage.context_percent}%` : compactNumber(usage.context_used ?? 0)}`
-              : ''
+          : `${contextMark}${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max ?? 0)}`
         : (usage.total ?? 0) > 0
           ? `${compactNumber(usage.total)} tok`
           : ''

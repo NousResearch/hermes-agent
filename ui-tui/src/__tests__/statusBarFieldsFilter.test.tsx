@@ -86,15 +86,17 @@ describe('display.status_bar.fields', () => {
     expect(text).toContain('deepseek flash')
   })
 
-  it('context_pct alone renders the percentage and never the used/max detail', () => {
+  it('context_pct alone renders the percentage exactly once (in the bar block)', () => {
     const text = renderRule(new Set(['model', 'context_pct']))
 
-    expect(text).toContain('7%')
-    // The defect: the OR'd gate rendered the detail anyway.
+    // The percentage lives in the bar block; `ctxLabel` must not repeat it.
+    expect(text.match(/7%/g) ?? []).toHaveLength(1)
+    expect(text).toContain('[█')
+    // The defect: the OR'd gate rendered the used/max detail anyway.
     expect(text).not.toContain('68.8k/1M')
   })
 
-  it('context_detail alone renders used/max and never the percentage read-out', () => {
+  it('context_detail alone renders used/max and no percentage read-out', () => {
     const text = renderRule(new Set(['model', 'context_detail']))
 
     expect(text).toContain('68.8k/1M')

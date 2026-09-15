@@ -1,5 +1,5 @@
 """Completion helpers (@-mention / path fuzzy ranking, repo file listing) for the complete.* RPCs.
- Reaches server.py state through ``srv`` (method_ctx.py).
+Reaches server.py state through ``srv`` (method_ctx.py).
 """
 
 from __future__ import annotations
@@ -184,7 +184,7 @@ def _model_picker_context(agent):
 
 def register(server) -> None:
     """Publish this module's helpers + handlers onto ``server`` and install its handlers."""
-    bind_module(globals(), server, skip=("_",))
+    bind_module(globals(), server)
 
 # Bound last, after every definition, so importing this module first (tests, the gateway process)
 # lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.

@@ -7,14 +7,13 @@ every definition. Attribute access keeps facade state late-bound (``monkeypatch.
 still works) and ty sees server.py's real types. The tail placement is what breaks the import cycle in
 both directions: server.py imports the siblings at the end of its own import — once every global
 exists — and when a sibling is imported first, its own tail import runs server.py, whose tail then
-finds the sibling fully defined. Each sibling's ``register(server)`` calls :func:`bind_module`, which
-publishes what the sibling defines onto the facade and installs its ``@method`` handlers. Nothing is
-re-created against another module's globals: what ruff and ty resolve is what runs.
+finds the sibling fully defined. Each sibling's ``register(server)`` either calls :func:`bind_module`
+(publish what the sibling defines onto the facade, then install its ``@method`` handlers) or, for
+handler-only modules, ``_registry.install(server, globals())``. Nothing is re-created against another
+module's globals: what ruff and ty resolve is what runs.
 """
 
 import types
-
-
 
 
 class HandlerRegistry:
@@ -36,8 +35,8 @@ class HandlerRegistry:
         return fn
 
     def install(self, server, module_globals: dict | None = None) -> None:
-        """Register the pending handlers on ``server``. Modules that skip ``bind_module`` pass their
-        ``globals()`` so the contract models they import are published too."""
+        """Register the pending handlers on ``server``. Handler-only modules pass their ``globals()`` so
+        their ``srv`` follows this server instance and the contract models they import are published."""
         if module_globals is not None:
             bind_facade(module_globals, server)
             publish_imported_classes(server, module_globals)
@@ -77,8 +76,8 @@ def publish_imported_class(server, mod_name: str, name: str, obj: type) -> None:
     setattr(server, name, obj)
 
 
-def bind_module(module_globals: dict, server, *, skip=()) -> None:
-    """Publish everything a split module defines onto ``server`` (functions, classes, tables, values)
+def bind_module(module_globals: dict, server) -> None:
+    """Publish everything a split module defines onto ``server`` (functions, classes, values)
     and install its ``_registry`` handlers. ``module_globals`` is the caller's ``globals()`` (not
     ``sys.modules[__name__]``: tests that ``patch.dict(sys.modules)`` around the server import drop
     the submodule entries). Imported modules/functions, dunders and registry plumbing are skipped;
@@ -86,8 +85,7 @@ def bind_module(module_globals: dict, server, *, skip=()) -> None:
     mod_name = module_globals["__name__"]
     bind_facade(module_globals, server)
     for name, obj in list(module_globals.items()):
-        if (name.startswith("__") or name in _PLUMBING or name in skip
-                or isinstance(obj, (types.ModuleType, HandlerRegistry))):
+        if name.startswith("__") or name in _PLUMBING or isinstance(obj, (types.ModuleType, HandlerRegistry)):
             continue
         if isinstance(obj, types.FunctionType) and obj.__module__ != mod_name and name == obj.__name__:
             continue  # plain import; server has its own (``_alias = other.fn`` publishes as-is)

@@ -1,7 +1,6 @@
 """Tools & system / slash / insights / rollback / plugins / cron / skills / MCP JSON-RPC handlers.
 
-Rebound onto server.py's globals at install time (``method_ctx.bind_module``), so
-bodies reference server globals bare (``_ok``, ``_err``, ``_sessions``, ...).
+Reaches server.py state through ``srv`` (method_ctx.py).
 Helper names must not collide with server.py's own (``_cmd_`` / ``_toolset_`` / ``_mcp_`` prefixes).
 """
 
@@ -327,7 +326,6 @@ def _(rid, params) -> ReloadMcpResult | dict:
         return ReloadMcpResult(status="reloaded", message=None, loaded_rev=None, coalesced=None, turn_isolation=True, host_ack=ack)
     _mcp_agent, _mcp_lifecycle, _mcp_discovery = (
         _tools_mod("tools.mcp_tool_agent"), _tools_mod("tools.mcp_tool_lifecycle"), _tools_mod("tools.mcp_tool_discovery"))
-    pass  # (server-owned state is written through srv.)
     # Revision the CALLER wants loaded; empty on legacy clients / manual /reload-mcp
     # (generation-only coalescing).
     req_rev = str(params.rev or "")
@@ -354,7 +352,6 @@ def _(rid, params) -> ReloadMcpResult | dict:
         """shutdown+discover+refresh under the lock, then mark a completed generation. Config
         can change WHILE discover connects: re-hash and repeat until stable so the marked
         generation matches what loaded."""
-        pass  # (server-owned state is written through srv.)
         loaded = srv._compute_mcp_rev()
         for _ in range(srv._MCP_RELOAD_MAX_PASSES):
             _mcp_lifecycle.shutdown_mcp_servers()
@@ -1541,7 +1538,7 @@ def _(rid, params) -> ShellExecResult | dict:
 
 def register(server) -> None:
     """Publish this module's helpers + handlers onto ``server`` and install its handlers."""
-    bind_module(globals(), server, skip=("_",))
+    bind_module(globals(), server)
 
 # Bound last, after every definition, so importing this module first (tests, the gateway process)
 # lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.

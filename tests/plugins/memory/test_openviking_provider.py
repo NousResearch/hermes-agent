@@ -1954,6 +1954,47 @@ class TestNamespaceRootRetry:
         )
         assert not _is_namespace_root_uri("viking://resources/vet-global/plan/01-DATABASE.md")
 
+    def test_namespace_summary_nested_below_its_own_root_is_recognised(self):
+        """Regression: the server nests a namespace summary under a sibling doc.
+
+        A live corpus returns ``<ns>/README.md/<ns>/.overview.md`` as the top
+        hit for a namespace-named query. Anchoring the namespace to the first
+        path segment missed it, so the retry never fired against real data
+        while every synthetic test still passed.
+        """
+        from plugins.memory.openviking import _is_namespace_root_uri, _namespace_of
+
+        uri = "viking://resources/vet-global/README.md/vet-global/.overview.md"
+        assert _is_namespace_root_uri(uri)
+        assert _namespace_of(uri) == "vet-global"
+
+        # A directory that is not a document still owns a directory summary.
+        assert _is_namespace_root_uri("viking://resources/vet-global/docs/.abstract.md")
+        # ...but a leaf document's own summary at any depth stays content.
+        assert not _is_namespace_root_uri(
+            "viking://resources/vet-global/docs/runbook-phat-hanh.md/.abstract.md"
+        )
+        assert (
+            _namespace_of("viking://resources/vet-global/runbook-phat-hanh.md/.overview.md")
+            == ""
+        )
+
+    def test_retry_fires_on_real_world_hit_shape(self):
+        """The exact top-3 a live instance returned must trigger the retry."""
+        from plugins.memory.openviking import (
+            _should_retry_without_namespace,
+            _strip_namespace_tokens,
+        )
+
+        hits = [
+            {"uri": "viking://resources/vet-global/README.md/vet-global/.overview.md"},
+            {"uri": "viking://resources/vet-global/.overview.md"},
+            {"uri": "viking://resources/vet-global/README.md/.abstract.md"},
+        ]
+        query = "lenh phat hanh vet-global la gi"
+        assert _should_retry_without_namespace(query, hits)
+        assert _strip_namespace_tokens(query, hits) == "lenh phat hanh la gi"
+
     def test_namespace_tokens_are_stripped_from_query(self):
         from plugins.memory.openviking import _strip_namespace_tokens
 

@@ -74,20 +74,36 @@ _LEVEL_MAX_CHARS = {"abstract": 1200, "overview": 4000}
 _RECALL_SUMMARY_KEYS = ("abstract", "overview", "text", "content")
 _NAMESPACE_ROOT_TAILS = (".abstract.md", ".overview.md")
 _NAMESPACE_ROOT_RE = re.compile(
-    r"^viking://resources/(?P<ns>[^/]+)/(?:" + "|".join(re.escape(t) for t in _NAMESPACE_ROOT_TAILS) + r")$"
+    r"^viking://resources/(?P<ns>[^/]+)/(?:(?P<mid>.+)/)?(?:"
+    + "|".join(re.escape(t) for t in _NAMESPACE_ROOT_TAILS)
+    + r")$"
 )
 
 
 def _is_namespace_root_uri(uri: Any) -> bool:
-    """True for a whole-namespace summary (``resources/<ns>/.abstract.md``).
+    """True for a directory-level summary such as ``resources/<ns>/.abstract.md``.
 
     A leaf's own ``<doc>.md/.overview.md`` is real content and must NOT match:
-    demoting those was measured to help nothing.
+    demoting those was measured to help nothing. The two are told apart by the
+    segment directly above the summary -- a leaf summary sits under a ``*.md``
+    document, a directory summary does not.
+
+    The server also nests a namespace summary deeper than its own root (e.g.
+    ``<ns>/README.md/<ns>/.overview.md``), so the middle of the path is not
+    anchored; only the parent segment decides.
     """
-    return bool(_NAMESPACE_ROOT_RE.match(str(uri or "").strip()))
+    match = _NAMESPACE_ROOT_RE.match(str(uri or "").strip())
+    if not match:
+        return False
+    mid = match.group("mid")
+    parent = mid.rsplit("/", 1)[-1] if mid else match.group("ns")
+    return not parent.lower().endswith(".md")
 
 
 def _namespace_of(uri: Any) -> str:
+    """Namespace owning ``uri``, but only when it is a directory summary."""
+    if not _is_namespace_root_uri(uri):
+        return ""
     match = _NAMESPACE_ROOT_RE.match(str(uri or "").strip())
     return match.group("ns") if match else ""
 

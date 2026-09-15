@@ -34237,6 +34237,18 @@
       ]
     },
     {
+      "name": "subagent.heartbeat",
+      "summary": "A delegated child's periodic liveness tick.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/SubagentEventPayload"
+          }
+        }
+      ]
+    },
+    {
       "name": "subagent.progress",
       "summary": "Batched tool-name progress from a child.",
       "params": [

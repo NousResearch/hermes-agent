@@ -4965,6 +4965,8 @@ export interface BackendGatewayEventMap {
   'status.update': StatusUpdatePayload
   /** A child finished (status + observability rollup). */
   'subagent.complete': SubagentEventPayload
+  /** A delegated child's periodic liveness tick. */
+  'subagent.heartbeat': SubagentEventPayload
   /** Batched tool-name progress from a child. */
   'subagent.progress': SubagentEventPayload
   /** delegate_task accepted a child goal (before the child starts). */
@@ -5054,6 +5056,7 @@ export const GATEWAY_EVENT_TYPES = [
   'skin.changed',
   'status.update',
   'subagent.complete',
+  'subagent.heartbeat',
   'subagent.progress',
   'subagent.spawn_requested',
   'subagent.start',

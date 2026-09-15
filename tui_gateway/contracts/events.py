@@ -462,6 +462,7 @@ class SubagentEventPayload(Payload):
 for _name, _doc in (
     ("subagent.spawn_requested", "delegate_task accepted a child goal (before the child starts)."),
     ("subagent.start", "A delegated child started running."),
+    ("subagent.heartbeat", "A delegated child's periodic liveness tick."),
     ("subagent.progress", "Batched tool-name progress from a child."),
     ("subagent.thinking", "A child's reasoning chunk."),
     ("subagent.tool", "A child called a tool."),

@@ -80,6 +80,7 @@ class TestBundledPluginsRegister:
             "brave-free",
             "ddgs",
             "exa",
+            "federated",
             "firecrawl",
             "keenable",
             "parallel",
@@ -101,6 +102,7 @@ class TestBundledPluginsRegister:
             ("tavily", True, True),
             ("perplexity", True, True),
             ("firecrawl", True, True),
+            ("federated", True, False),
             # xai: search-only via Grok's agentic web_search tool.
             ("xai", True, False),
         ],

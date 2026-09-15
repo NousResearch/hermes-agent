@@ -11,7 +11,7 @@ Covers:
 
 import json
 from contextlib import contextmanager
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -304,6 +304,181 @@ class TestConvertMessagesToConverse:
         system, msgs = convert_messages_to_converse(messages)
         # Empty string should get a space placeholder
         assert msgs[0]["content"][0]["text"].strip() != "" or msgs[0]["content"][0]["text"] == " "
+
+    # Bedrock's real ConverseStream wire shape: text deltas carry contentBlockIndex but get NO
+    # contentBlockStart (only toolUse does). The running-counter parser once shredded that text one block per
+    # delta with the toolUse spliced into the middle — the sidecar Claude 5 rejects on replay as assistant
+    # message prefill (#108200). Pins the replayed turn end to end through the real parser.
+    @pytest.mark.parametrize("text_deltas, tool_names", [
+        (["Running ", "two ", "tools."], ["one"]),
+        (["Running ", "two tools."], ["one", "two"]),
+    ])
+    def test_streamed_turn_replays_its_full_text_before_the_tool_uses(self, text_deltas, tool_names):
+        from agent.bedrock_adapter import convert_messages_to_converse, normalize_converse_stream_events
+        events = [{"messageStart": {"role": "assistant"}}]
+        events += [{"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": t}}} for t in text_deltas]
+        events.append({"contentBlockStop": {"contentBlockIndex": 0}})
+        for index, name in enumerate(tool_names, start=1):
+            events += [
+                {"contentBlockStart": {"contentBlockIndex": index,
+                                       "start": {"toolUse": {"toolUseId": f"tu_{index}", "name": name}}}},
+                {"contentBlockDelta": {"contentBlockIndex": index, "delta": {"toolUse": {"input": '{"n": 1}'}}}},
+                {"contentBlockStop": {"contentBlockIndex": index}},
+            ]
+        events += [{"messageStop": {"stopReason": "tool_use"}}]
+        msg = normalize_converse_stream_events({"stream": events}).choices[0].message
+        assert msg.content == "Running two tools."
+        history_msg = {  # the history dict build_assistant_message() produces for this response
+            "role": "assistant", "content": msg.content, "bedrock_content_blocks": msg.bedrock_content_blocks,
+            "tool_calls": [{"id": tc.id, "type": "function",
+                            "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                           for tc in msg.tool_calls],
+        }
+        results = [{"role": "tool", "tool_call_id": f"tu_{i}", "content": "ok"} for i in range(1, len(tool_names) + 1)]
+        _system, msgs = convert_messages_to_converse([{"role": "user", "content": "go"}, history_msg, *results])
+        assert msgs[1]["content"] == [{"text": "Running two tools."}] + [
+            {"toolUse": {"toolUseId": f"tu_{i}", "name": name, "input": {"n": 1}}}
+            for i, name in enumerate(tool_names, start=1)
+        ]
+
+
+def _tool_use(tool_use_id, name="f", input_dict=None):
+    return {"toolUse": {"toolUseId": tool_use_id, "name": name, "input": {} if input_dict is None else input_dict}}
+
+
+def _tool_call(tool_call_id, name="f", arguments="{}"):
+    return {"id": tool_call_id, "type": "function", "function": {"name": name, "arguments": arguments}}
+
+
+def _signed(text, signature="sig"):
+    """A signed thinking block as the sidecar stores it."""
+    return {"reasoningContent": {"text": text, "signature": signature}}
+
+
+def _signed_wire(text, signature="sig"):
+    """The same block as ``_replay_ordered_blocks`` puts it on the wire."""
+    return {"reasoningContent": {"reasoningText": {"text": text, "signature": signature}}}
+
+
+_REDACTED = {"reasoningContent": {"redactedContentBase64": "AA=="}}
+_REDACTED_WIRE = {"reasoningContent": {"redactedContent": b"\x00"}}
+
+
+class TestSidecarMerge:
+    """The ``bedrock_content_blocks`` sidecar owns the block ORDER; the message's ``content`` and ``tool_calls``
+    own every VALUE. Every rewrite after normalization (id uniquify, name repair, argument normalization,
+    post-call dedup, compressor argument truncation, storage-time think-strip / secret redaction) lands on the
+    flat fields and never on the sidecar, so replaying it verbatim undid them. Reasoning blocks never move and
+    keep their signatures: Bedrock validates the signature string itself, not the turn around it (probed live:
+    a corrupt or missing signature is a 400, a dropped toolUse or edited text next to it is accepted)."""
+
+    @pytest.mark.parametrize("case, tool_calls, sidecar, expected", [
+        ("repaired tool name",
+         [_tool_call("a", name="terminal", arguments='{"command": "ls"}')],
+         [{"text": "Run it."}, _tool_use("a", name="bash_run", input_dict={"command": "ls"})],
+         [{"text": "Run it."}, _tool_use("a", name="terminal", input_dict={"command": "ls"})]),
+        ("compressor-truncated arguments",
+         [_tool_call("a", arguments='{"a": "x...[truncated]"}')],
+         [{"text": "Run it."}, _tool_use("a", input_dict={"a": "x" * 1000})],
+         [{"text": "Run it."}, _tool_use("a", input_dict={"a": "x...[truncated]"})]),
+        ("dedup dropped b (#108584): its toolUse goes, both thinking blocks stay put",
+         [_tool_call("a", name="one")],
+         [_REDACTED, {"text": "Run it."}, _tool_use("a", name="one"), _signed("again"), _tool_use("b", name="one")],
+         [_REDACTED_WIRE, {"text": "Run it."}, _tool_use("a", name="one"), _signed_wire("again")]),
+        ("uniquify renamed the reused id t1 -> t1_d2; dedup then dropped t1_d3",
+         [_tool_call("t1", arguments='{"n": 1}'), _tool_call("t1_d2", arguments='{"n": 2}')],
+         [{"text": "Run it."}, _tool_use("t1", input_dict={"n": 1}), _signed("x"), _tool_use("t1", input_dict={"n": 2}), _tool_use("t1")],
+         [{"text": "Run it."}, _tool_use("t1", input_dict={"n": 1}), _signed_wire("x"), _tool_use("t1_d2", input_dict={"n": 2})]),
+        ("the rename rule only fires on duplicate sidecar ids: a legit id ending in _d2 is not a rename",
+         [_tool_call("a_d2")],
+         [{"text": "Run it."}, _tool_use("a")],
+         [{"text": "Run it."}, _tool_use("a_d2")]),
+        ("a call no block claims is appended, never lost; reasoning still never moves",
+         [_tool_call("a"), _tool_call("z")],
+         [_signed("plan"), {"text": "Run it."}, _tool_use("a")],
+         [_signed_wire("plan"), {"text": "Run it."}, _tool_use("a"), _tool_use("z")]),
+        ("SDK-object tool calls (host-fed history) are read like dicts",
+         [SimpleNamespace(id="a", function=SimpleNamespace(name="terminal", arguments='{"n": 1}'))],
+         [{"text": "Run it."}, _tool_use("a", name="bash_run")],
+         [{"text": "Run it."}, _tool_use("a", name="terminal", input_dict={"n": 1})]),
+        ("unparseable stored arguments fall back to the sidecar's captured input, not {}",
+         [_tool_call("a", arguments='{"n": ')],
+         [{"text": "Run it."}, _tool_use("a", input_dict={"n": 1})],
+         [{"text": "Run it."}, _tool_use("a", input_dict={"n": 1})]),
+        ("non-object arguments ('null', '[]') never reach the wire: Converse input must be an object",
+         [_tool_call("a", arguments="null"), _tool_call("b", arguments="[]")],
+         [{"text": "Run it."}, _tool_use("a", input_dict={"n": 1}), _tool_use("b")],
+         [{"text": "Run it."}, _tool_use("a", input_dict={"n": 1}), _tool_use("b")]),
+    ], ids=lambda value: value if isinstance(value, str) else "")
+    def test_tool_uses_take_their_values_from_tool_calls_in_sidecar_order(self, case, tool_calls, sidecar, expected):
+        from agent.bedrock_adapter import _assistant_blocks
+        msg = {"role": "assistant", "content": "Run it.", "tool_calls": tool_calls, "bedrock_content_blocks": sidecar}
+        assert _assistant_blocks(msg, msg["content"]) == expected
+
+    @pytest.mark.parametrize("case, content, sidecar, expected", [
+        ("agreeing text replays verbatim; storage trims content, whitespace never decides",
+         "Hi", [_signed("hmm"), {"text": "Hi\n"}, _tool_use("a")],
+         [_signed_wire("hmm"), {"text": "Hi\n"}, _tool_use("a")]),
+        ("text runs split by interleaved thinking stay split (content joins parts with newline)",
+         "one\ntwo", [_signed("a"), {"text": "one"}, _signed("b"), {"text": "two"}, _tool_use("a")],
+         [_signed_wire("a"), {"text": "one"}, _signed_wire("b"), {"text": "two"}, _tool_use("a")]),
+        ("content None has no opinion: the sidecar text is kept",
+         None, [_signed("a"), {"text": "kept"}, _tool_use("a")],
+         [_signed_wire("a"), {"text": "kept"}, _tool_use("a")]),
+        ("content None with text after the toolUse: kept, but moved ahead of it (never the prefill shape)",
+         None, [_signed("a"), _tool_use("a"), {"text": "after"}],
+         [_signed_wire("a"), {"text": "after"}, _tool_use("a")]),
+        ("secret-redacted content replaces the raw sidecar text in its own slot",
+         "token ***", [_REDACTED, _signed("plan"), {"text": "token AKIAABCDEFGHIJKLMNOP"}, _tool_use("a")],
+         [_REDACTED_WIRE, _signed_wire("plan"), {"text": "token ***"}, _tool_use("a")]),
+        ("disagreeing split text collapses into the first slot",
+         "one\nt**", [_signed("a"), {"text": "one"}, _signed("b"), {"text": "two"}, _tool_use("a")],
+         [_signed_wire("a"), {"text": "one\nt**"}, _signed_wire("b"), _tool_use("a")]),
+        ("no text slot: content lands ahead of the first toolUse",
+         "Now.", [_signed("plan"), _tool_use("a")],
+         [_signed_wire("plan"), {"text": "Now."}, _tool_use("a")]),
+        ("think-stripped to nothing drops the text block",
+         "", [_signed("plan"), {"text": "<think>x</think>"}, _tool_use("a")],
+         [_signed_wire("plan"), _tool_use("a")]),
+        ("a whitespace-only text block is dropped, the signed thinking around it is kept",
+         "", [_signed("plan"), {"text": "\n\n"}, _tool_use("a")],
+         [_signed_wire("plan"), _tool_use("a")]),
+        ("text after a toolUse (index-less stream fallback) moves ahead of it: Claude 5 rejects it as prefill (#108200)",
+         "Run it.", [_signed("plan"), {"text": "Run "}, _tool_use("a"), {"text": "it."}],
+         [_signed_wire("plan"), {"text": "Run it."}, _tool_use("a")]),
+        ("multimodal content with non-text parts always renders through the content converter",
+         [{"type": "text", "text": "Hi"}, {"type": "image_url", "image_url": {"url": "http://x/y.png"}}],
+         [_signed("plan"), {"text": "Hi"}, _tool_use("a")],
+         [_signed_wire("plan"), {"text": "Hi"}, {"text": "[Image: http://x/y.png]"}, _tool_use("a")]),
+    ], ids=lambda value: value if isinstance(value, str) else "")
+    def test_text_is_kept_in_place_when_it_agrees_with_content_else_content_fills_the_first_slot(
+        self, case, content, sidecar, expected,
+    ):
+        from agent.bedrock_adapter import _assistant_blocks
+        msg = {"role": "assistant", "content": content, "tool_calls": [_tool_call("a")], "bedrock_content_blocks": sidecar}
+        assert _assistant_blocks(msg, content) == expected
+
+    def test_renamed_duplicate_id_pairs_with_its_tool_result_and_signed_thinking_survives_a_dropped_call(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+        # Turn 1: dedup dropped tool b; its toolUse goes, the signed thinking next to it stays signed.
+        # Turn 2: the model reused id t1; uniquify_tool_call_ids renamed the second call t1_d2 and its tool result
+        # carries that id. Replayed verbatim, the sidecar's two t1 blocks left the second toolResult orphaned.
+        _system, msgs = convert_messages_to_converse([
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": None, "tool_calls": [_tool_call("a")],
+             "bedrock_content_blocks": [_signed("first"), _tool_use("a"), _tool_use("b")]},
+            {"role": "tool", "tool_call_id": "a", "content": "ok"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [_tool_call("t1", arguments='{"n": 1}'), _tool_call("t1_d2", arguments='{"n": 2}')],
+             "bedrock_content_blocks": [_REDACTED, _tool_use("t1", input_dict={"n": 1}),
+                                        _REDACTED, _tool_use("t1", input_dict={"n": 2})]},
+            {"role": "tool", "tool_call_id": "t1", "content": "ok"},
+            {"role": "tool", "tool_call_id": "t1_d2", "content": "ok"},
+        ])
+        assert msgs[1]["content"] == [_signed_wire("first"), _tool_use("a")]
+        assert msgs[3]["content"] == [_REDACTED_WIRE, _tool_use("t1", input_dict={"n": 1}),
+                                      _REDACTED_WIRE, _tool_use("t1_d2", input_dict={"n": 2})]
+        assert [b["toolResult"]["toolUseId"] for b in msgs[4]["content"]] == ["t1", "t1_d2"]
 
 
 # ---------------------------------------------------------------------------

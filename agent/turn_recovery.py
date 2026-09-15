@@ -473,6 +473,11 @@ def _recover_stale_codex_reasoning(agent: Any, _retry: TurnRetryState, messages:
     return True
 
 
+# Message keys that carry signed thinking back to the provider: the flat copy plus the native
+# block-order sidecars ``bedrock_adapter`` / ``anthropic_message_convert`` replay ahead of it.
+_SIGNED_THINKING_CARRIERS = ("reasoning_details", "bedrock_content_blocks", "anthropic_content_blocks")
+
+
 def _recover_format_errors(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState,
     messages: List[Dict[str, Any]], api_messages: Any,
@@ -480,21 +485,23 @@ def _recover_format_errors(
     """One-shot format-recovery strips: thinking-signature → invalid-encrypted-content
     replay disable → native-compaction reject → llama.cpp grammar strip. Returns True when
     the request was repaired and should be retried."""
-    # Upstream mutation invalidates Anthropic's thinking-block signature (400). Strip
-    # ``reasoning_details`` from ``api_messages`` only, never ``messages`` (state.db).
+    # Upstream mutation invalidates Anthropic's thinking-block signature (400). Strip every carrier
+    # of signed thinking — the flat ``reasoning_details`` AND the provider-native sidecars the
+    # adapters replay first — from ``api_messages`` only, never ``messages`` (state.db).
     if classified.reason == FailoverReason.thinking_signature and not _retry.thinking_sig_retry_attempted:
         _retry.thinking_sig_retry_attempted = True
         _api_stripped = 0
         for _m in api_messages:
-            if isinstance(_m, dict) and "reasoning_details" in _m:
-                _m.pop("reasoning_details", None)
+            if isinstance(_m, dict) and any(key in _m for key in _SIGNED_THINKING_CARRIERS):
+                for key in _SIGNED_THINKING_CARRIERS:
+                    _m.pop(key, None)
                 _api_stripped += 1
-        _vlines(agent, "⚠️  Thinking block signature invalid, stripped reasoning_details from api_messages for retry...")
+        _vlines(agent, "⚠️  Thinking block signature invalid, stripped signed thinking from api_messages for retry...")
         logger.warning(
             "%sThinking block signature recovery: stripped "
-            "reasoning_details from %d api_messages "
+            "%s from %d api_messages "
             "(canonical messages unchanged)",
-            agent.log_prefix, _api_stripped,
+            agent.log_prefix, "/".join(_SIGNED_THINKING_CARRIERS), _api_stripped,
         )
         return True
 

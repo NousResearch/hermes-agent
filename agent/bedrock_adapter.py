@@ -739,6 +739,40 @@ def _replay_ordered_blocks(ordered_blocks: List) -> List[Dict]:
     return content_blocks
 
 
+def _squash_whitespace(text) -> str:
+    return "".join(text.split()) if isinstance(text, str) else ""
+
+
+def _content_text(content) -> Optional[str]:
+    """The text a sidecar's text blocks are compared against: a str as is, a parts list → its text parts, or
+    None when the list also carries non-text parts (only ``_convert_content_to_converse`` can render those)."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    texts = []
+    for part in content:
+        if isinstance(part, str):
+            texts.append(part)
+        elif isinstance(part, dict) and part.get("type") == "text":
+            texts.append(str(part.get("text", "")))
+        else:
+            return None
+    return "".join(texts)
+
+
+def _text_blocks(content) -> List[Dict]:
+    """Converse text blocks for an assistant ``content``; empty when there is nothing to say."""
+    if isinstance(content, list):
+        return _convert_content_to_converse(content) if content else []
+    return [{"text": content}] if isinstance(content, str) and content.strip() else []
+
+
+def _field(obj, key: str):
+    """``obj[key]`` for a dict, ``obj.key`` for an SDK model / SimpleNamespace (host-fed history)."""
+    return obj.get(key) if isinstance(obj, dict) else getattr(obj, key, None)
+
+
 def _parse_tool_args(args) -> Any:
     """JSON-decode a tool-call argument string; {} on failure; non-str passes through."""
     try:
@@ -747,24 +781,116 @@ def _parse_tool_args(args) -> Any:
         return {}
 
 
+def _tool_use_from_call(tool_call, captured_input=None) -> Dict:
+    """toolUse block for a stored tool call. Arguments that are not a JSON object (unparseable, ``null``, ``[]``)
+    fall back to the sidecar's captured ``input``, else ``{}`` (the producers always store ``json.dumps`` of an
+    object, so this only guards host-fed rows)."""
+    fn = _field(tool_call, "function") or {}
+    arguments = _field(fn, "arguments")
+    try:
+        input_dict = json.loads(arguments) if isinstance(arguments, str) and arguments.strip() else arguments
+    except json.JSONDecodeError:
+        input_dict = None
+    if not isinstance(input_dict, dict):  # Converse ``toolUse.input`` must be an object: "null" / "[]" never go out
+        input_dict = captured_input if isinstance(captured_input, dict) else {}
+    return _tool_use_block(str(_field(tool_call, "id") or ""), str(_field(fn, "name") or ""), input_dict)
+
+
+# ``uniquify_tool_call_ids`` renames a duplicate id ``<id>`` to ``<id>_d<n>`` on tool_calls (and on its tool result).
+_UNIQUIFIED_ID = re.compile(r"^(.+)_d\d+$")
+
+
+def _pair_tool_uses(replayed: List[Dict], tool_calls: List) -> Tuple[Dict[int, Any], List]:
+    """``(slot → tool call)`` for every sidecar toolUse block a tool call owns, plus the calls no block claims.
+    Exact ids pair first. Only when the sidecar itself holds duplicate ids (the one situation uniquify fires) a
+    call whose id is a ``<id>_d<n>`` rename then claims a still-unpaired block carrying the original id. Blocks
+    left over were dropped by post-call dedup (#108584) and are omitted by the caller; calls left over have no
+    slot in the sidecar and are appended, so a call is never lost."""
+    unpaired = [i for i, block in enumerate(replayed) if "toolUse" in block]
+    sidecar_ids = [str(replayed[i]["toolUse"].get("toolUseId", "")) for i in unpaired]
+    has_duplicate_ids = len(set(sidecar_ids)) < len(sidecar_ids)
+
+    def claim(call_id: str) -> Optional[int]:
+        slot = next((i for i in unpaired if str(replayed[i]["toolUse"].get("toolUseId", "")) == call_id), None)
+        if slot is not None:
+            unpaired.remove(slot)
+        return slot
+
+    pairing: Dict[int, Any] = {}
+    unplaced = []
+    for tool_call in tool_calls:
+        slot = claim(str(_field(tool_call, "id") or ""))
+        if slot is None:
+            unplaced.append(tool_call)
+        else:
+            pairing[slot] = tool_call
+    leftovers = []
+    for tool_call in unplaced:
+        renamed = _UNIQUIFIED_ID.match(str(_field(tool_call, "id") or "")) if has_duplicate_ids else None
+        slot = claim(renamed.group(1)) if renamed else None
+        if slot is None:
+            leftovers.append(tool_call)
+        else:
+            pairing[slot] = tool_call
+    return pairing, leftovers
+
+
+def _merge_sidecar(replayed: List[Dict], content, tool_calls: List) -> List[Dict]:
+    """Sidecar order, flat-field values. The sidecar is the only carrier of block ORDER, but every VALUE is owned
+    by the message's ``content`` and ``tool_calls``: id uniquify, name repair, post-call dedup, storage-time
+    think-strip / secret redaction and compressor argument truncation all land there and never on the sidecar.
+    Reasoning blocks stay in place, signature included: Bedrock validates the signature string itself (corrupt or
+    missing → 400) but accepts a turn whose sibling text / toolUse blocks changed or went missing (probed live on
+    Sonnet 4.6 and Fable 5.1). Each toolUse is re-sourced from its paired tool call. The text run is kept in place
+    when it sits ahead of the first toolUse and agrees with ``content`` modulo whitespace; otherwise ``content``
+    fills the first text slot, ahead of the first toolUse — text trailing a toolUse (the index-less stream
+    fallback) is the shape #108200 saw rejected as assistant prefill. ``content`` None has no opinion: the
+    sidecar's own text is kept, still moved ahead of the first toolUse. Whitespace-only text blocks are dropped."""
+    pairing, leftover_calls = _pair_tool_uses(replayed, tool_calls)
+    first_tool_use = next((i for i, block in enumerate(replayed) if "toolUse" in block), len(replayed))
+    text_slots = [i for i, block in enumerate(replayed) if "text" in block and block["text"].strip()]
+    expected_text = _content_text(content)
+    text_agrees = content is None or (
+        expected_text is not None
+        and _squash_whitespace("".join(replayed[i]["text"] for i in text_slots)) == _squash_whitespace(expected_text)
+    )
+    keep_text = text_agrees and all(i < first_tool_use for i in text_slots)
+    replacement = [] if keep_text else [replayed[i] for i in text_slots] if content is None else _text_blocks(content)
+    text_slot = min(text_slots + [first_tool_use])
+    merged: List[Dict] = []
+    for index, block in enumerate(replayed):
+        if index == text_slot and not keep_text:
+            merged.extend(replacement)
+        if "toolUse" in block:
+            if index in pairing:
+                merged.append(_tool_use_from_call(pairing[index], block["toolUse"].get("input")))
+        elif "text" in block:
+            if keep_text and index in text_slots:
+                merged.append(block)
+        else:
+            merged.append(block)
+    if text_slot == len(replayed) and not keep_text:
+        merged.extend(replacement)
+    merged.extend(_tool_use_from_call(tool_call) for tool_call in leftover_calls)
+    return merged
+
+
 def _assistant_blocks(msg: Dict, content) -> List[Dict]:
-    """Assistant message → Converse blocks. An ordered ``bedrock_content_blocks`` sidecar is authoritative;
-    otherwise redacted thinking from ``reasoning_details`` (byte-for-byte), then text, then tool calls."""
+    """Assistant message → Converse blocks. A ``bedrock_content_blocks`` sidecar supplies the block order and
+    ``_merge_sidecar`` fills in the values from ``content`` / ``tool_calls``. Without a sidecar (every DB-reloaded
+    turn: the sidecar is never written to state.db) redacted thinking from ``reasoning_details`` byte-for-byte,
+    then text, then tool calls."""
     ordered_blocks = msg.get("bedrock_content_blocks")
-    if isinstance(ordered_blocks, list) and (content_blocks := _replay_ordered_blocks(ordered_blocks)):
-        return content_blocks
+    tool_calls = list(msg.get("tool_calls") or [])
+    if isinstance(ordered_blocks, list) and (replayed := _replay_ordered_blocks(ordered_blocks)):
+        return _merge_sidecar(replayed, content, tool_calls)
     redacted = [
         _decode_redacted(d.get("data") or d.get("redactedContentBase64"))
         for d in (msg.get("reasoning_details") or []) if isinstance(d, dict) and d.get("type") == "redacted_thinking"
     ]
     content_blocks: List[Dict] = [{"reasoningContent": {"redactedContent": r}} for r in redacted if r is not None]
-    if isinstance(content, str) and content.strip():
-        content_blocks.append({"text": content})
-    elif isinstance(content, list):
-        content_blocks.extend(_convert_content_to_converse(content))
-    for tc in (msg.get("tool_calls", []) or []):
-        fn = tc.get("function", {})
-        content_blocks.append(_tool_use_block(tc.get("id", ""), fn.get("name", ""), _parse_tool_args(fn.get("arguments", "{}"))))
+    content_blocks.extend(_text_blocks(content))
+    content_blocks.extend(_tool_use_from_call(tool_call) for tool_call in tool_calls)
     return content_blocks
 
 

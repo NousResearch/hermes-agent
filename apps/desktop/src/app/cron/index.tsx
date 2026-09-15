@@ -564,7 +564,9 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
           schedule: values.schedule,
           name: values.name || undefined,
           deliver: values.deliver || DEFAULT_DELIVER,
-          ...(values.model.trim() ? { model: values.model.trim(), provider: values.provider.trim() || undefined } : {})
+          ...(values.model.trim() ? { model: values.model.trim(), provider: values.provider.trim() || undefined } : {}),
+          no_agent: values.no_agent || undefined,
+          script: values.no_agent ? (values.script.trim() || undefined) : undefined
         })
       )
 
@@ -579,7 +581,8 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
       notify({ kind: 'success', title: c.created, message: truncate(jobTitle(created), 60) })
     } else if (editor.mode === 'edit') {
       const scriptOnlyJob = jobIsScriptOnly(editor.job)
-
+      // cronEditorUpdates preserves the no_agent/script fields on edit —
+      // they're set at creation and shown as read-only context in the dialog.
       const {
         value: updated,
         refreshError,
@@ -818,6 +821,7 @@ function CronJobDetail({
 
         <PanelMeta
           rows={[
+            { label: c.typeLabel, value: jobIsScriptOnly(job) ? c.modeScript : c.modeAgent },
             { label: c.frequencyLabel, value: jobScheduleDisplay(job) },
             { label: c.last.replace(/:$/, ''), value: formatTime(job.last_run_at) },
             { label: c.next.replace(/:$/, ''), value: formatTime(job.next_run_at) },
@@ -1033,6 +1037,8 @@ function CronEditorDialog({
   const scriptOnlyJob = initial ? jobIsScriptOnly(initial) : false
 
   const [name, setName] = useState('')
+  const [scriptOnly, setScriptOnly] = useState(false)
+  const [scriptPath, setScriptPath] = useState('')
   const [prompt, setPrompt] = useState('')
   const [schedule, setSchedule] = useState('')
   const [schedulePreset, setSchedulePreset] = useState('daily')
@@ -1089,6 +1095,8 @@ function CronEditorDialog({
     }
 
     setName(initial ? jobName(initial) : '')
+    setScriptOnly(initial ? jobIsScriptOnly(initial) : false)
+    setScriptPath(initial ? asText(initial.script) : '')
     setPrompt(initial ? jobPrompt(initial) : '')
     setSchedule(initial ? jobScheduleExpr(initial) : (SCHEDULE_OPTIONS[0].expr ?? ''))
     setSchedulePreset(initial ? scheduleOptionForExpr(jobScheduleExpr(initial)).value : 'daily')
@@ -1144,7 +1152,7 @@ function CronEditorDialog({
     const validationError = validateCronEditor({
       prompt,
       schedule,
-      scriptOnlyJob
+      scriptOnlyJob: scriptOnly
     })
 
     if (validationError) {
@@ -1156,6 +1164,12 @@ function CronEditorDialog({
             : c.promptScheduleRequired
       )
 
+      return
+    }
+
+    if (scriptOnly && !scriptPath.trim()) {
+      setError(c.scriptPathRequired)
+      setSaving(false)
       return
     }
 
@@ -1175,7 +1189,9 @@ function CronEditorDialog({
         name: name.trim(),
         prompt: prompt.trim(),
         provider: overrideProvider,
-        schedule: schedule.trim()
+        schedule: schedule.trim(),
+        no_agent: scriptOnly,
+        script: scriptPath.trim()
       })
     } catch (err) {
       setError(err instanceof Error ? err.message : c.failedSave)
@@ -1212,7 +1228,7 @@ function CronEditorDialog({
           <DialogDescription>{isEdit ? c.editDesc : c.createDesc}</DialogDescription>
         </DialogHeader>
 
-        {!isEdit && blueprintList.length > 0 && (
+{!isEdit && blueprintList.length > 0 && (
           <Field htmlFor="cron-template" label={c.blueprints.startFrom}>
             <Select onValueChange={setTemplateChoice} value={templateChoice}>
               <SelectTrigger className="h-9 rounded-md" id="cron-template">
@@ -1287,6 +1303,36 @@ function CronEditorDialog({
               </FieldHint>
             )}
 
+            {!isEdit && (
+              <div className="flex items-center gap-4 rounded-md bg-(--ui-bg-quinary) px-3 py-2">
+                <span className="text-xs font-medium text-foreground">{c.typeLabel}</span>
+                <div className="flex gap-1">
+                  <button
+                    className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+                      !scriptOnly
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                    onClick={() => setScriptOnly(false)}
+                    type="button"
+                  >
+                    {c.modeAgent}
+                  </button>
+                  <button
+                    className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+                      scriptOnly
+                        ? 'bg-primary text-primary-foreground'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                    onClick={() => setScriptOnly(true)}
+                    type="button"
+                  >
+                    {c.modeScript}
+                  </button>
+                </div>
+              </div>
+            )}
+
             <Field htmlFor="cron-name" label={c.nameLabel} optional optionalLabel={c.optional}>
               <Input
                 autoFocus
@@ -1297,15 +1343,32 @@ function CronEditorDialog({
               />
             </Field>
 
-            <Field htmlFor="cron-prompt" label={c.promptLabel} optional={scriptOnlyJob} optionalLabel={c.optional}>
-              <Textarea
-                className="min-h-24 font-mono"
-                id="cron-prompt"
-                onChange={event => setPrompt(event.target.value)}
-                placeholder={c.promptPlaceholder}
-                value={prompt}
-              />
-            </Field>
+            {!scriptOnly ? (
+              <Field
+                htmlFor="cron-prompt"
+                label={c.promptLabel}
+                optional={isEdit && scriptOnlyJob}
+                optionalLabel={c.optional}
+              >
+                <Textarea
+                  className="min-h-24 font-mono"
+                  id="cron-prompt"
+                  onChange={event => setPrompt(event.target.value)}
+                  placeholder={c.promptPlaceholder}
+                  value={prompt}
+                />
+              </Field>
+            ) : (
+              <Field htmlFor="cron-script" label={c.scriptPathLabel}>
+                <Input
+                  className="font-mono"
+                  id="cron-script"
+                  onChange={event => setScriptPath(event.target.value)}
+                  placeholder={c.scriptPathPlaceholder}
+                  value={scriptPath}
+                />
+              </Field>
+            )}
 
             <div className="grid items-start gap-4 sm:grid-cols-2">
               <Field htmlFor="cron-frequency" label={c.frequencyLabel}>
@@ -1424,6 +1487,8 @@ interface EditorValues {
   /** Provider slug for the model override ('' = none). */
   provider: string
   schedule: string
+  no_agent: boolean
+  script: string
 }
 
 interface ScheduleOption {

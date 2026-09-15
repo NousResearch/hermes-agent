@@ -15,11 +15,13 @@ import {
 } from '@/components/ui/dialog'
 import { Field } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import { LogView } from '@/components/ui/log-view'
 import { useI18n } from '@/i18n'
 import { isMissingPendingPromptRequest } from '@/lib/gateway-rpc'
 import { triggerHaptic } from '@/lib/haptics'
 import { KeyRound, Loader2, Lock, ShieldLock } from '@/lib/icons'
 import { $gateway } from '@/store/gateway'
+import { reconnectAction } from '@/store/gateway-reconnect'
 import { notifyError } from '@/store/notifications'
 import {
   clearSecretRequest,
@@ -69,7 +71,7 @@ function SudoDialog({ sessionId }: { sessionId: string | null }) {
       }
 
       if (!gateway) {
-        notifyError(new Error(copy.gatewayDisconnected), copy.sudoSendFailed)
+        notifyError(new Error(copy.gatewayDisconnected), copy.sudoSendFailed, { action: reconnectAction() })
 
         return
       }
@@ -119,11 +121,28 @@ function SudoDialog({ sessionId }: { sessionId: string | null }) {
 
   return (
     <Dialog onOpenChange={onOpenChange} open>
-      <DialogContent showCloseButton={false}>
+      <DialogContent blurBackdrop={false} showCloseButton={false}>
         <DialogHeader>
           <DialogTitle icon={Lock}>{copy.sudoTitle}</DialogTitle>
           <DialogDescription>{copy.sudoDesc}</DialogDescription>
         </DialogHeader>
+
+        {request.command?.trim() ? (
+          <Field label={t.assistant.approval.command}>
+            <LogView
+              aria-label={t.assistant.approval.command}
+              className="max-h-48 text-xs text-foreground"
+              role="region"
+              tabIndex={0}
+            >
+              {request.command}
+            </LogView>
+          </Field>
+        ) : (
+          <p className="text-xs text-(--ui-text-secondary)" role="status">
+            {copy.sudoCommandUnavailable}
+          </p>
+        )}
 
         <form className="grid gap-3" onSubmit={onSubmit}>
           <Input
@@ -169,7 +188,7 @@ function SecretDialog({ sessionId }: { sessionId: string | null }) {
       }
 
       if (!gateway) {
-        notifyError(new Error(copy.gatewayDisconnected), copy.secretSendFailed)
+        notifyError(new Error(copy.gatewayDisconnected), copy.secretSendFailed, { action: reconnectAction() })
 
         return
       }
@@ -270,7 +289,7 @@ function VaultUnlockDialog({ sessionId }: { sessionId: string | null }) {
       }
 
       if (!gateway) {
-        notifyError(new Error(copy.gatewayDisconnected), copy.vaultUnlockSendFailed)
+        notifyError(new Error(copy.gatewayDisconnected), copy.vaultUnlockSendFailed, { action: reconnectAction() })
 
         return
       }
@@ -367,7 +386,7 @@ function VaultSaveLoginDialog({ sessionId }: { sessionId: string | null }) {
       }
 
       if (!gateway) {
-        notifyError(new Error(copy.gatewayDisconnected), copy.vaultSaveSendFailed)
+        notifyError(new Error(copy.gatewayDisconnected), copy.vaultSaveSendFailed, { action: reconnectAction() })
 
         return
       }
@@ -479,7 +498,7 @@ function VaultCodeDialog({ sessionId }: { sessionId: string | null }) {
       }
 
       if (!gateway) {
-        notifyError(new Error(copy.gatewayDisconnected), copy.vaultCodeSendFailed)
+        notifyError(new Error(copy.gatewayDisconnected), copy.vaultCodeSendFailed, { action: reconnectAction() })
 
         return
       }

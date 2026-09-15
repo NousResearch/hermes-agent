@@ -9,9 +9,10 @@ import ...` in the restart phase raised ImportError, the whole phase
 aborted, and the running gateway kept serving pre-update code.
 
 The old mitigation (_UPDATE_RUNTIME_RELOAD_MODULES) reloaded 3 hardcoded
-modules — re-fixed per symptom. The purge evicts EVERY cached module under
-the Hermes package prefixes so later imports rebuild a self-consistent
-module graph from the updated checkout.
+modules — re-fixed per symptom. The purge evicts EVERY cached module whose
+top-level name is a ``.py`` file or package in the checkout root (minus
+``tests``) so later imports rebuild a self-consistent module graph from the
+updated checkout.
 """
 
 from __future__ import annotations
@@ -172,3 +173,42 @@ def test_purge_keeps_plan_record_class_identity():
     cli_main._purge_stale_hermes_modules()
     from hermes_cli.update_inventory import RuntimeRecord as after
     assert after is before
+
+
+def test_stale_top_level_utils_scenario_end_to_end():
+    """The 2026-09-12 field failure: `hermes update` from a pre-`base_url_origin`
+    checkout kept the old top-level `utils` cached, and the restart phase's import of
+    `hermes_cli.gateway` died on `from utils import base_url_origin`."""
+    stale = types.ModuleType("utils")
+    real = sys.modules.get("utils")
+    sys.modules["utils"] = stale
+    try:
+        try:
+            from utils import base_url_origin  # noqa: F401
+            raised = False
+        except ImportError:
+            raised = True
+        assert raised, "precondition: stale utils must lack base_url_origin"
+
+        cli_main._purge_stale_hermes_modules()
+
+        from utils import base_url_origin  # noqa: F401
+    finally:
+        sys.modules.pop("utils", None)
+        if real is not None:
+            sys.modules["utils"] = real
+
+
+def test_purge_protects_hermes_logging():
+    # A second copy of hermes_logging starts a second QueueListener over the same log
+    # files while the first keeps running: its listener/handler state is module-global.
+    real = sys.modules.get("hermes_logging")
+    sentinel = _fake_module("hermes_logging")
+    sys.modules["hermes_logging"] = sentinel
+    try:
+        cli_main._purge_stale_hermes_modules()
+        assert sys.modules.get("hermes_logging") is sentinel
+    finally:
+        sys.modules.pop("hermes_logging", None)
+        if real is not None:
+            sys.modules["hermes_logging"] = real

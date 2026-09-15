@@ -83,18 +83,33 @@ def _module_registers_tools(module_path: Path) -> bool:
         for stmt in tree.body)
 
 
+def _tool_module_candidates(tools_path: Path) -> List[Path]:
+    """Flat ``tools/*.py`` modules plus the package entry point ``tools/<pkg>/tool.py``, in one
+    sorted list. Only ``tool.py`` is scanned in a package, so every other file in it is a library
+    by construction. Sorted after merging: ``register()`` lets a same-name, same-toolset duplicate
+    overwrite silently, so the import order must not depend on file depth."""
+    candidates = list(tools_path.glob("*.py")) + list(tools_path.glob("*/tool.py"))
+    return sorted(candidates)
+
+
 def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
     """Import built-in self-registering tool modules and return their module names. The
     per-file AST scan costs ~145 ms over ~100 files, so verdicts are memoized on disk keyed
     by ``(mtime_ns, size)``; a mismatch or corrupt cache re-scans that file. The write is
     best-effort and atomic, so concurrent processes race harmlessly."""
-    tools_path = Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent
+    tools_path = (Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent).resolve()
     cache = _load_discovery_cache()
     fresh_cache: Dict[str, list] = {}
     cache_dirty = False
     module_names: List[str] = []
-    for path in sorted(tools_path.glob("*.py")):
+    for path in _tool_module_candidates(tools_path):
         if path.name in {"__init__.py", "registry.py", "mcp_tool.py"}:
+            continue
+        rel_parts = path.relative_to(tools_path).with_suffix("").parts
+        if len(rel_parts) > 1 and not (path.parent / "__init__.py").exists():
+            # setuptools' package finder drops a directory without __init__.py, so this tool would
+            # register from a checkout and vanish from an installed wheel.
+            logger.warning("Skipping %s: package %s has no __init__.py", path, path.parent.name)
             continue
         abs_path = str(path.resolve())
         try:
@@ -110,7 +125,7 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
             cache_dirty = True
         fresh_cache[abs_path] = [stat_key[0], stat_key[1], registers]
         if registers:
-            module_names.append(f"tools.{path.stem}")
+            module_names.append(".".join(("tools", *rel_parts)))
 
     # Drop entries for files that no longer exist; rewrite only when changed.
     if cache_dirty or set(fresh_cache) != set(cache):
@@ -255,9 +270,9 @@ def check_fn_cache_scope() -> Optional[str]:
     except Exception:
         pass
     try:
-        from agent.secret_scope import is_multiplex_active
+        from agent.secret_scope import serves_routed_profile
         from hermes_constants import get_hermes_home_override
-        if not is_multiplex_active():
+        if not serves_routed_profile():
             return None
         override = get_hermes_home_override()
         return str(Path(override).expanduser().resolve()) if override else CHECK_FN_CACHE_BYPASS
@@ -267,33 +282,34 @@ def check_fn_cache_scope() -> Optional[str]:
         return CHECK_FN_CACHE_BYPASS
 
 
-def _run_check_fn_uncached(fn: Callable, *, unresolved_scope: bool = False) -> bool:
+def _run_check_fn_uncached(fn: Callable) -> bool:
     """Run an availability check without cache/grace handling."""
-    from agent.secret_scope import UnscopedSecretError
+    from agent.secret_scope import UnscopedSecretError, current_secret_scope
     try:
         return bool(fn())
     except UnscopedSecretError:
-        if unresolved_scope:
-            # Expected fail-closed probe: with multiplexing on, boot-time check_fns run before
-            # any profile secret scope exists, so get_secret raises by design. No traceback,
-            # so it isn't mistaken for a crashed check_fn.
+        # The verdict comes from the LIVE scope at the catch site, not from which registry branch
+        # ran the probe: ``no_cache_check_fn`` probes skip the cache-scope lookup entirely, so a
+        # branch-derived hint misreported every boot-time uncached probe as a lost scope (#110635).
+        if current_secret_scope() is None:
+            # Expected fail-closed probe: with multiplexing on, boot-time check_fns run before any
+            # profile secret scope exists, so get_secret raises by design. No traceback, so this
+            # cannot be mistaken for a crashed check_fn (#100697).
             logger.debug(
-                # The tool re-probes on the first scoped turn — log without a traceback so this cannot be
-                # mistaken for a crashed check_fn (#100697).
                 "check_fn %s hit the multiplex fail-closed path with no "
                 "profile secret scope active; dependent tools re-probe on the first scoped turn",
                 _fn_label(fn))
         else:
-            # The scope resolved but the read still failed closed: a genuinely lost scope.
+            # The caller IS scoped but the read still failed closed: the probe dropped the scope on
+            # the way to get_secret (a bare thread/executor hop) — a spawn-site bug, kept loud.
             logger.warning(
                 "check_fn %s raised UnscopedSecretError while the profile cache "
                 "scope was resolved; dependent tools will be unavailable this turn",
                 _fn_label(fn), exc_info=True)
     except Exception:
-        detail = " while profile cache scope was unresolved" if unresolved_scope else ""
         logger.warning(
-            "check_fn %s raised%s; dependent tools will be unavailable this turn",
-            _fn_label(fn), detail, exc_info=True)
+            "check_fn %s raised; dependent tools will be unavailable this turn",
+            _fn_label(fn), exc_info=True)
     return False
 
 
@@ -304,7 +320,7 @@ def _check_fn_cached(fn: Callable) -> bool:
         return _run_check_fn_uncached(fn)
     scope = check_fn_cache_scope()
     if scope == CHECK_FN_CACHE_BYPASS:
-        return _run_check_fn_uncached(fn, unresolved_scope=True)
+        return _run_check_fn_uncached(fn)
     cache_key = (fn, scope)
     with _check_fn_cache_lock:
         _prune_check_fn_caches(now)  # leaves only entries within TTL

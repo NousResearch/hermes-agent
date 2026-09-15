@@ -1499,6 +1499,22 @@ def _print_served_ingress_urls(profile: str | None = None) -> None:
             print(line)
 
 
+def _print_unserved_shared_ingress(profile: str | None) -> None:
+    """Shared-ingress platforms (WhatsApp/Relay) this served profile enabled that the multiplexer runs
+    only on the default profile — the ``whatsapp: not served under multiplex`` line."""
+    try:
+        from hermes_cli.gateway_multiplex_served import served_profile_unserved_platforms
+        unserved = served_profile_unserved_platforms(profile or "")
+    except Exception:
+        return
+    if not unserved:
+        return
+    print()
+    for platform, reason in sorted(unserved.items()):
+        print(f"  ⚠ {platform}: {reason}")
+    print("  Enable it on the default profile (shared ingress serves every profile), or disable it here.")
+
+
 def _print_other_profiles_gateway_status() -> None:
     """Print other profiles' running gateways at the bottom of ``hermes gateway status``."""
     try:
@@ -2273,7 +2289,8 @@ def _run_systemctl(args: list[str], *, system: bool = False, **kwargs) -> subpro
     try:
         return subprocess.run(_systemctl_cmd(system) + args, **kwargs)
     except FileNotFoundError:
-        raise RuntimeError("systemctl is not available on this system") from None
+        from hermes_cli.gateway_command_errors import SystemctlUnavailableError
+        raise SystemctlUnavailableError() from None
 
 
 def _service_scope_label(system: bool = False) -> str:
@@ -4570,10 +4587,10 @@ def _guard_existing_gateway_process_conflict(replace: bool = False) -> None:
             pass
         return
 
-    print_error(f"Another gateway instance is already running (PID {pid}).")
-    print("  Use 'hermes gateway restart' to replace it,")
-    print("  or 'hermes gateway stop' first.")
-    print("  Or use 'hermes gateway run --replace' to auto-replace.")
+    print_error(f"A gateway is already running (PID {pid}), so your bots are most likely online already.")
+    print("  Check with `hermes gateway status`.")
+    print("  To restart it: `hermes gateway restart`. To stop it: `hermes gateway stop`.")
+    print("  To replace it from here: `hermes gateway run --replace`.")
     sys.exit(1)
 
 
@@ -5059,19 +5076,22 @@ def _prompt_csv(prompt_text: str, default: str) -> str:
 
 # (default index, *choices) for the no-allowlist access prompt, keyed by is_email.
 _UNAUTHORIZED_ACCESS_CHOICES = {
-    True: (2,
+    True: (3,
         "Enable open access (any email sender can message the bot)",
         "Use DM pairing (unknown email senders receive a pairing code)",
+        "Politely decline unknown senders (one-time message, then silence)",
         "Keep unknown senders silent"),
     False: (1,
         "Enable open access (anyone can message the bot)",
         "Use DM pairing (unknown users request access, you approve with 'hermes pairing approve')",
+        "Politely decline unknown senders (one-time message, then silence)",
         "Skip for now (bot will deny all users until configured)"),
 }
 
 
-def _prompt_unauthorized_access(*, is_email: bool) -> None:
-    """No allowlist was given — ask open access vs DM pairing vs skip/silent, and persist."""
+def _prompt_unauthorized_access(platform_key: str) -> None:
+    """No allowlist was given — ask open access vs DM pairing vs decline vs skip/silent, and persist."""
+    is_email = platform_key == "email"
     print()
     default_idx, *access_choices = _UNAUTHORIZED_ACCESS_CHOICES[is_email]
     access_idx = prompt_choice("  How should unauthorized users be handled?", access_choices, default_idx)
@@ -5083,6 +5103,9 @@ def _prompt_unauthorized_access(*, is_email: bool) -> None:
             _set_platform_unauthorized_dm_behavior("email", "pair")
         print_success("  DM pairing mode — users will receive a code to request access.")
         print_info("  Approve with: hermes pairing approve <platform> <code>")
+    elif access_idx == 2:
+        _set_platform_unauthorized_dm_behavior(platform_key, "decline")
+        print_success("  Unknown senders get one polite decline, then silence (unauthorized_dm_behavior: decline).")
     elif is_email:
         print_success("  Unknown email senders will be ignored.")
     else:
@@ -5154,7 +5177,7 @@ def _prompt_allowlist_var(var: dict, platform_key: str, auto_owner_user_id) -> s
     )
     value = prompt(f"  {var['prompt']}", password=False)
     if not value:
-        _prompt_unauthorized_access(is_email=platform_key == "email")
+        _prompt_unauthorized_access(platform_key)
         return None
     cleaned = value.replace(" ", "")
     if "DISCORD" in var["name"]:
@@ -5877,6 +5900,15 @@ def gateway_command(args):
         # System-scope action typed without sudo; the wizard intercepts this earlier with guidance.
         print(str(e))
         sys.exit(1)
+    except (subprocess.CalledProcessError, RuntimeError) as e:
+        # systemctl exited non-zero or is missing entirely: guidance, not a traceback.
+        from hermes_cli.gateway_command_errors import explain_service_failure
+        lines = explain_service_failure(e)
+        if lines is None:
+            raise
+        print_error(lines[0])
+        _print_indented("\n".join(lines[1:]))
+        sys.exit(1)
 
 
 def _maybe_redirect_run_to_s6_supervision(args) -> bool:
@@ -6057,7 +6089,10 @@ _NO_BACKEND_MESSAGES = {
         "Service uninstall is not applicable inside a Docker container.",
         "To stop the gateway, stop or remove the container:", "",
         "  docker stop <container>", "  docker rm <container>"),
-    ("uninstall", "unsupported"): (1, "Not supported on this platform."),
+    ("uninstall", "unsupported"): (1,
+        "Running the gateway as a background service is not available on this platform "
+        "(no systemd, launchd or Scheduled Tasks), so there is nothing to uninstall.",
+        "Stop a manually started gateway with: hermes gateway stop"),
     ("start", "termux"): (1,
         "Gateway service start is not supported on Termux because there is no system service manager.",
         "Run manually: hermes gateway"),
@@ -6071,7 +6106,10 @@ _NO_BACKEND_MESSAGES = {
         "  docker start <container>     # start a stopped container",
         "  docker restart <container>   # restart a running container", "",
         "Or run the gateway directly: hermes gateway run"),
-    ("start", "unsupported"): (1, "Not supported on this platform."),
+    ("start", "unsupported"): (1,
+        "Running the gateway as a background service is not available on this platform "
+        "(no systemd, launchd or Scheduled Tasks).",
+        "Run it directly with: hermes gateway run"),
 }
 
 
@@ -6288,6 +6326,18 @@ def _cmd_restart(args):
         )
         sys.exit(1)
 
+    # A gateway that declares an external supervisor (custom launchd agent / unit running
+    # `gateway run --external-supervisor`) restarts by exiting back to it: the stop + foreground
+    # run below would stamp this CLI's PID as the gateway and wedge every respawn (#110637).
+    from gateway.status import get_running_pid
+    from hermes_cli.gateway_supervised_restart import (
+        gateway_declares_external_supervisor, restart_externally_supervised_gateway,
+    )
+    supervised_pid = get_running_pid()
+    if supervised_pid and gateway_declares_external_supervisor(supervised_pid):
+        restart_externally_supervised_gateway(supervised_pid)
+        return
+
     if stop_profile_gateway():
         print("✓ Stopped gateway for this profile")
     _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
@@ -6344,6 +6394,7 @@ def _cmd_status(args):
         print("✓ Gateway is running via the default-profile multiplexer")
         print("  Manage it from the default profile: hermes gateway status")
         _print_served_ingress_urls(get_active_profile_name())
+        _print_unserved_shared_ingress(get_active_profile_name())
     elif (kind := _installed_service_kind_for(lambda: _windows_service_installed)) is not None:
         if kind == "systemd":
             systemd_status(deep, system=system, full=full)

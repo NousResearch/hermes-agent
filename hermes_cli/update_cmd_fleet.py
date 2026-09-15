@@ -28,6 +28,11 @@ _FLEET_RESTART_PENDING_NAME = "fleet_restart_pending"
 
 _FRESH_RESTART_SUPERVISORS = frozenset({"systemd", "launchd", "service", "s6"})
 
+# A supervisor can report a restarted unit active before the gateway finishes its
+# bootstrap and publishes ``gateway_state.json``. Keep the readiness poll bounded,
+# but allow the default systemd startup budget plus status-publication slack.
+_FLEET_PROBE_SETTLE_TIMEOUT_SECONDS = 120.0
+
 _SYSTEMD_SCOPES = (("user", ["systemctl", "--user"]), ("system", ["systemctl"]))
 _LIST_GATEWAY_UNITS = ["list-units", "hermes-gateway*", "hermes-serve*", "--plain", "--no-legend", "--no-pager"]
 
@@ -1378,7 +1383,7 @@ def _collect_fleet_snapshot(restart, rows_expected: bool) -> list:
     from hermes_cli.update_receipt import collect_fleet_versions
     if not rows_expected:
         return collect_fleet_versions(pre_restart_pids=restart.pre_restart_gateway_pids)
-    _fleet_deadline = _time.monotonic() + 30.0
+    _fleet_deadline = _time.monotonic() + _FLEET_PROBE_SETTLE_TIMEOUT_SECONDS
     while True:
         _time.sleep(2.0)
         snapshot = collect_fleet_versions(pre_restart_pids=restart.pre_restart_gateway_pids)

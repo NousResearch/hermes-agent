@@ -10,6 +10,7 @@ mocking git would just test the mock.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -401,6 +402,28 @@ class TestUpdate:
         assert (plan.target_dir / ".env").read_text() == "OPENAI_API_KEY=sk-user\n"
         assert (plan.target_dir / "auth.json").read_text() == '{"user": "auth"}'
         assert (plan.target_dir / "sessions" / "chat.json").read_text() == '{"s": 1}'
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+    def test_update_replaces_readonly_distribution_tree(self, profile_env):
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="readonly-tree")
+        installed_skills = plan.target_dir / "skills"
+        installed_skill = installed_skills / "demo"
+        installed_skill_file = installed_skill / "SKILL.md"
+
+        (staged / "skills" / "demo" / "SKILL.md").write_text("# Updated demo skill\n")
+        os.chmod(installed_skill_file, 0o444)
+        os.chmod(installed_skill, 0o555)
+        os.chmod(installed_skills, 0o555)
+
+        try:
+            update_distribution("readonly-tree")
+            assert installed_skill_file.read_text() == "# Updated demo skill\n"
+            assert os.stat(installed_skill_file).st_mode & 0o200
+        finally:
+            for path in (installed_skill_file, installed_skill, installed_skills):
+                if path.exists() and not path.is_symlink():
+                    os.chmod(path, os.stat(path).st_mode | 0o200)
 
     def test_update_preserves_config_by_default(self, profile_env):
         staged = _make_staging_dir(profile_env, "src")

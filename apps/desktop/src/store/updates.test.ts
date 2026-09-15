@@ -1125,6 +1125,86 @@ describe('applyBackendUpdate recovery', () => {
     expect(getActionStatusSpy).toHaveBeenCalledWith('hermes-update', 2000)
   })
 
+  it('reports a partial receipt as backend-updated with the desktop app still stale', async () => {
+    updateHermesSpy.mockResolvedValue({ ok: true, name: 'hermes-update', pid: 1 })
+    getActionStatusSpy.mockResolvedValue({
+      exit_code: 1,
+      lines: ['Desktop GUI build failed', 'The previous desktop app was left untouched and still works.'],
+      name: 'hermes-update',
+      pid: 1,
+      running: false,
+      receipt: {
+        outcome: 'partial',
+        started_at: new Date(Date.now() - 1000).toISOString(),
+        finished_at: new Date(Date.now()).toISOString(),
+        pre_sha: 'old-sha',
+        post_sha: 'new-sha',
+        post_version: '0.21.3',
+        fleet_states: []
+      }
+    })
+
+    const promise = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(1500)
+    const result = await promise
+
+    expect(result).toMatchObject({ ok: true, backendUpdated: true, guiUpdated: false, guiSkew: true })
+    expect($backendUpdateApply.get()).toMatchObject({ applying: false, stage: 'guiSkew' })
+    expect($updateOverlayOpen.get()).toBe(true)
+  })
+
+  it('trusts a current success receipt even when the action reports a nonzero exit code', async () => {
+    updateHermesSpy.mockResolvedValue({ ok: true, name: 'hermes-update', pid: 1 })
+    getActionStatusSpy.mockResolvedValue({
+      exit_code: 1,
+      lines: ['backend updated'],
+      name: 'hermes-update',
+      pid: 1,
+      running: false,
+      receipt: {
+        outcome: 'success',
+        started_at: new Date(Date.now() - 1000).toISOString(),
+        finished_at: new Date(Date.now()).toISOString(),
+        pre_sha: 'old-sha',
+        post_sha: 'new-sha',
+        post_version: '0.21.3',
+        fleet_states: []
+      }
+    })
+
+    const promise = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(1500)
+
+    await expect(promise).resolves.toMatchObject({ ok: true })
+    expect($backendUpdateApply.get().stage).toBe('idle')
+  })
+
+  it('trusts a current failed receipt even when the action reports a zero exit code', async () => {
+    updateHermesSpy.mockResolvedValue({ ok: true, name: 'hermes-update', pid: 1 })
+    getActionStatusSpy.mockResolvedValue({
+      exit_code: 0,
+      lines: ['backend update failed'],
+      name: 'hermes-update',
+      pid: 1,
+      running: false,
+      receipt: {
+        outcome: 'failed',
+        started_at: new Date(Date.now() - 1000).toISOString(),
+        finished_at: new Date(Date.now()).toISOString(),
+        pre_sha: 'old-sha',
+        post_sha: 'old-sha',
+        post_version: '0.21.2',
+        fleet_states: []
+      }
+    })
+
+    const promise = applyBackendUpdate()
+    await vi.advanceTimersByTimeAsync(1500)
+
+    await expect(promise).resolves.toMatchObject({ ok: false, error: 'apply-failed' })
+    expect($backendUpdateApply.get()).toMatchObject({ applying: false, stage: 'error' })
+  })
+
   it('proves a pre-action-ID backend reached its requested commit after restart', async () => {
     $backendUpdateStatus.set({
       behind: 2,

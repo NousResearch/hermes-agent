@@ -53,7 +53,13 @@ describe('resolveSpeakStreamUrl', () => {
     expect(url).toContain('wss://gateway.example')
     expect(url).toContain('/api/audio/speak-stream')
     expect(getConnectionFor).toHaveBeenCalledWith({ connectionId: 'gw-tailscale', profile: 'research' })
-    expect(getGatewayWsUrlFor).toHaveBeenCalledWith({ connectionId: 'gw-tailscale', profile: 'research' })
+    // Speech mints under its own purpose so its forwarded-cookie authorization
+    // is independent of the chat socket on the same route.
+    expect(getGatewayWsUrlFor).toHaveBeenCalledWith({
+      connectionId: 'gw-tailscale',
+      profile: 'research',
+      purpose: 'speech'
+    })
     // The v1 primary path must NOT be consulted — that's the local machine.
     expect(getConnection).not.toHaveBeenCalled()
     expect(getGatewayWsUrl).not.toHaveBeenCalled()

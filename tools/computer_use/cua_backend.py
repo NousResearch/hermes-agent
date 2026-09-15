@@ -274,9 +274,11 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
             if max_dim:  # smaller screenshots cost less over the daemon socket and per turn
                 self._best_effort("set_config(max_image_dimension) failed",
                                   self.set_config, max_image_dimension=max_dim)
-            if _cua_no_overlay():  # belt-and-suspenders when --no-overlay is unsupported or ignored
-                self._best_effort("set_agent_cursor_enabled failed",
-                                  self.set_agent_cursor_enabled, False, cursor_id=self._session_id)
+            # The engine default-hides the per-session cursor: opt in when the policy allows the overlay,
+            # opt out when it doesn't (belt-and-suspenders for an unsupported or ignored --no-overlay).
+            self._best_effort("set_agent_cursor_enabled failed",
+                              self.set_agent_cursor_enabled, not _cua_no_overlay(),
+                              cursor_id=self._session_id)
 
     def stop(self) -> None:
         # Best-effort end_session so the driver cleans per-session state (cursor overlay, recording ownership,

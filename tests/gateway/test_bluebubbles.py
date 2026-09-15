@@ -74,6 +74,41 @@ class TestBlueBubblesHelpers:
         adapter = _make_adapter(monkeypatch, server_url="http://localhost:1234/")
         assert adapter.server_url == "http://localhost:1234"
 
+    @pytest.mark.asyncio
+    async def test_outbound_only_connect_does_not_start_or_unregister_webhook(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        calls = []
+
+        async def fake_api_get(path):
+            calls.append(("get", path))
+            if path == "/api/v1/server/info":
+                return {"data": {"private_api": True, "helper_connected": True}}
+            return {"data": {}}
+
+        async def fail_register():
+            raise AssertionError("outbound-only connect must not register a webhook")
+
+        async def fail_unregister():
+            raise AssertionError("outbound-only disconnect must not unregister a webhook")
+
+        class MockClient:
+            async def aclose(self):
+                calls.append(("close", None))
+
+        monkeypatch.setattr(httpx, "AsyncClient", lambda *args, **kwargs: MockClient())
+        monkeypatch.setattr(adapter, "_api_get", fake_api_get)
+        monkeypatch.setattr(adapter, "_register_webhook", fail_register)
+        monkeypatch.setattr(adapter, "_unregister_webhook", fail_unregister)
+
+        assert await adapter.connect(outbound_only=True) is True
+        assert adapter._runner is None
+        await adapter.disconnect()
+        assert calls == [
+            ("get", "/api/v1/ping"),
+            ("get", "/api/v1/server/info"),
+            ("close", None),
+        ]
+
 
 class _FakeBlueBubblesRequest:
     def __init__(self, payload, password="secret"):

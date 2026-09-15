@@ -529,6 +529,50 @@ class TestWaitForGatewayExit:
         assert calls == [(22, True)]
 
 
+class TestLaunchdRestartDrain:
+    """launchd_restart's drain must escalate to a force-kill (#81642)."""
+
+    def test_drain_force_kills_when_gateway_drain_times_out(self, monkeypatch):
+        """A gateway whose graceful drain expires before it exits (wedged
+        event loop, e.g. synchronous session compression, #72707) must be
+        force-killed so the follow-up `launchctl kickstart -k` does not wait
+        on an undying process and `hermes update` hangs (#81642)."""
+        calls: dict = {"term": [], "launchctl": [], "wait": []}
+
+        monkeypatch.setattr(gateway, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(gateway, "_launchd_domain", lambda: "gui/501")
+        monkeypatch.setattr(gateway, "_get_restart_exit_wait_budget", lambda: 10.0)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 42)
+        monkeypatch.setattr(gateway, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr(
+            gateway, "probe_gateway_loop_liveness", lambda pid: gateway.GATEWAY_LOOP_ALIVE
+        )
+        # Graceful SIGUSR1 drain exhausts its budget without the PID exiting.
+        monkeypatch.setattr(gateway, "_graceful_restart_via_sigusr1", lambda pid, t: False)
+        monkeypatch.setattr(gateway, "_wait_for_pid_exit", lambda pid, timeout: calls["wait"].append(timeout) or True)
+
+        def fake_terminate(pid, force=False):
+            calls["term"].append((pid, force))
+
+        monkeypatch.setattr(gateway, "terminate_pid", fake_terminate)
+        monkeypatch.setattr(
+            gateway.subprocess,
+            "run",
+            lambda command, **kwargs: calls["launchctl"].append(command)
+            or SimpleNamespace(returncode=0, stderr=""),
+        )
+        monkeypatch.setattr(gateway, "_clear_launchd_unsupported_marker", lambda: None)
+
+        gateway.launchd_restart()
+
+        # After the graceful drain times out, the residual PID must be
+        # force-killed (never left alive) and launchd then kickstarts -k.
+        assert calls["term"] == [(42, True)]
+        assert calls["launchctl"] == [
+            ["launchctl", "kickstart", "-k", "gui/501/ai.hermes.gateway"]
+        ]
+
+
 class TestStopProfileGateway:
     def test_stop_profile_gateway_keeps_pid_file_when_process_still_running(self, monkeypatch):
         calls = {"kill": 0, "alive_probes": 0, "remove": 0, "reap_calls": 0}

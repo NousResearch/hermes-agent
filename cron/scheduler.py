@@ -428,14 +428,17 @@ def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     """Toolset list for a cron job. Precedence: per-job ``enabled_toolsets`` (+ MCP merge) >
     ``cron`` platform config (``_get_platform_tools``, which strips _DEFAULT_OFF_TOOLSETS so fresh
-    installs run without ``moa``) > ``None`` on any failure (full default set).
+    installs run without ``moa``) > fail closed (``[]``) on resolution failure unless configured to
+    fall back (``cron.toolset_resolution_failure: full`` -> ``None``).
 
     1. Per-job ``enabled_toolsets`` (set via ``cronjob`` tool on create/update). Keeps the agent's
     job-scoped toolset override intact — #6130. Enabled MCP servers are layered on per
-    ``_merge_mcp_into_per_job_toolsets`` so a native-toolset allowlist does not silently strip MCP tools. 2.
-    Mirrors gateway behavior (``_get_platform_tools(cfg, platform_key)``) so users can gate cron toolsets
-    globally without recreating every job. 3. ``None`` on any lookup failure — AIAgent loads the full
-    default set (legacy behavior before this change, preserved as the safety net).
+    ``_merge_mcp_into_per_job_toolsets`` so a native-toolset allowlist does not silently strip MCP tools.
+    2. Mirrors gateway behavior (``_get_platform_tools(cfg, platform_key)``) so users can gate cron
+    toolsets globally without recreating every job.
+    3. Fail closed on resolution failure: returns empty list ``[]`` to deny tools by default (preventing
+    unintended privilege widening on transient config/import failures, #111380). If
+    ``cron.toolset_resolution_failure`` is set to ``full``, falls back to legacy behavior (``None``).
     """
     per_job = job.get("enabled_toolsets")
     if per_job:
@@ -444,10 +447,19 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
         from hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load
         return sorted(_get_platform_tools(cfg or {}, "cron"))
     except Exception as exc:
+        cron_cfg = (cfg or {}).get("cron") if isinstance(cfg, dict) else {}
+        mode = "deny"
+        if isinstance(cron_cfg, dict):
+            mode = str(cron_cfg.get("toolset_resolution_failure") or "deny").strip().lower()
+        if mode == "full":
+            logger.warning(
+                "Cron toolset resolution failed, falling back to full default toolset: %s",
+                exc)
+            return None
         logger.warning(
-            "Cron toolset resolution failed, falling back to full default toolset: %s",
+            "Cron toolset resolution failed, failing closed (denying tools): %s",
             exc)
-        return None
+        return []
 
 
 def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | None:

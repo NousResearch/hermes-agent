@@ -40,7 +40,7 @@ DEFAULT_CATALOG_DIR = REPO_ROOT / "plugin-catalog"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "website" / "static" / "api"
 
 CATALOG_TIERS = ("official", "community")
-CATALOG_CATEGORIES = ("memory", "desktop", "platform", "web", "tools", "voice", "automation", "models", "other")
+CATALOG_CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -107,10 +107,10 @@ def load_catalog_entries(catalog_dir: Path) -> list[dict]:
         if tier not in CATALOG_TIERS:
             _log(f"{path.name} ({name}): unknown tier {tier!r}, treating as community")
             tier = "community"
-        category = str(raw.get("category") or "other").strip().lower()
+        category = str(raw.get("category") or "desktop").strip().lower()
         if category not in CATALOG_CATEGORIES:
-            _log(f"{path.name} ({name}): unknown category {category!r}, treating as other")
-            category = "other"
+            _log(f"{path.name} ({name}): unknown category {category!r}, treating as general")
+            category = "general"
 
         entries.append({
             "name": name,

@@ -4,6 +4,7 @@ sha: 307993c36e261af2769e486befc6841e96f93423
 description: Provenance-aware automatic session title maintenance that never overrides user titles.
 maintainer: Vocllum
 tier: community
+category: automation
 docs_url: https://github.com/Vocllum/hermes-auto-titler
 platforms: []
 capabilities:

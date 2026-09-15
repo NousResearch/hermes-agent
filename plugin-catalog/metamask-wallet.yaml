@@ -5,6 +5,7 @@ subdir: ""
 description: MetaMask Agent Wallet for Hermes — chat-only setup, reads, and approval-gated transfers/swaps/signatures, a gated Guard Mode policy editor, and a background 2FA watcher. Keys stay in MetaMask.
 maintainer: akugone
 tier: community
+category: tools
 requires_hermes: ">=0.21"
 docs_url: https://github.com/akugone/hermes-metamask-wallet
 platforms: [macos, linux]

@@ -5,6 +5,7 @@ description: Browse every pet installed for this Hermes profile in its own deskt
   (thumbnails, search, click-to-adopt), plus a read-only list_pets tool for the agent.
 maintainer: poponline63
 tier: community
+category: desktop
 requires_hermes: ">=0.19"
 docs_url: https://github.com/poponline63/hermes-pets-all
 platforms: []

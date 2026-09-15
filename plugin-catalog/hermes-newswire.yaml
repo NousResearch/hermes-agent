@@ -6,6 +6,7 @@ description: 'Breaking-news ticker for Hermes Desktop: a scrolling RSS/Atom/JSON
   in-app reading. Zero API keys, zero model tokens.'
 maintainer: tony-simons-aiowa
 tier: community
+category: desktop
 requires_hermes: '>=0.19'
 docs_url: https://github.com/tony-simons-aiowa/hermes-newswire
 platforms: []

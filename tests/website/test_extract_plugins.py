@@ -141,7 +141,7 @@ def test_main_writes_catalog_and_meta(mod, tmp_path):
     catalog = tmp_path / "plugin-catalog"
     catalog.mkdir()
     _write_entry(catalog, "alpha", tier="official", category="memory")
-    _write_entry(catalog, "beta")  # no category → "other" shelf
+    _write_entry(catalog, "beta")  # no category → default "desktop" shelf
     (catalog / "removed.yaml").write_text(
         "removed:\n  - name: gone\n", encoding="utf-8"
     )
@@ -155,8 +155,8 @@ def test_main_writes_catalog_and_meta(mod, tmp_path):
     assert [p["name"] for p in plugins] == ["alpha", "beta"]
     assert meta["total"] == 2
     assert meta["byTier"] == {"official": 1, "community": 1}
-    assert {p["name"]: p["category"] for p in plugins} == {"alpha": "memory", "beta": "other"}
-    assert meta["byCategory"] == {"memory": 1, "other": 1}
+    assert {p["name"]: p["category"] for p in plugins} == {"alpha": "memory", "beta": "desktop"}
+    assert meta["byCategory"] == {"desktop": 1, "memory": 1}
     assert meta["removedCount"] == 1
     assert meta["generatedAt"]
     # The live-refresh document consumed by installed clients: loader-schema entries + the kill list.

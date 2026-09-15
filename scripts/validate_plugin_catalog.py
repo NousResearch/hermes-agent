@@ -42,7 +42,7 @@ except ImportError:  # pragma: no cover - dependency guidance only
 NAME_RE = re.compile(r"^[a-z0-9_-]{1,64}$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 TIERS = ("official", "community")
-CATEGORIES = ("memory", "desktop", "platform", "web", "tools", "voice", "automation", "models", "other")
+CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
 PLATFORMS = ("linux", "macos", "windows")
 CAPABILITY_KEYS = (
     "provides_tools",
@@ -127,7 +127,7 @@ def validate_entry(data: object) -> tuple[list[str], list[str]]:
     if tier not in TIERS:
         errors.append(f"tier {tier!r} must be one of {list(TIERS)}")
 
-    category = data.get("category", "other")
+    category = data.get("category", "desktop")
     if category not in CATEGORIES:
         errors.append(f"category {category!r} must be one of {list(CATEGORIES)}")
 

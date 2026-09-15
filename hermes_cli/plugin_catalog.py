@@ -27,8 +27,9 @@ import yaml
 logger = logging.getLogger(__name__)
 
 CATALOG_TIERS = ("official", "community")
-# Browse taxonomy for the catalog page / picker. Entries without one land in "other".
-CATALOG_CATEGORIES = ("memory", "desktop", "platform", "web", "tools", "voice", "automation", "models", "other")
+# Browse taxonomy for the catalog page / picker. Entries without one land on the Desktop shelf
+# (the common case for community submissions); "general" is for plugins that fit no shelf.
+CATALOG_CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
 LIVE_CATALOG_URL = "https://hermes-agent.nousresearch.com/docs/api/plugin-catalog.json"
 LIVE_CATALOG_TTL_SECONDS = 6 * 60 * 60
 _REQUEST_TIMEOUT = 5.0
@@ -62,7 +63,7 @@ class PluginCatalogEntry:
     description: str
     maintainer: str
     tier: str = "community"
-    category: str = "other"
+    category: str = "desktop"
     requires_hermes: str = ""
     subdir: str = ""
     docs_url: str = ""
@@ -108,7 +109,7 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
     repo = str(data.get("repo") or "")
     sha = str(data.get("sha") or "").strip().lower()
     tier = str(data.get("tier") or "community")
-    category = str(data.get("category") or "other")
+    category = str(data.get("category") or "desktop")
     problem = (
         f"invalid name {name!r} (must match [a-z0-9_-]{{1,64}})" if not _NAME_RE.match(name)
         else f"repo must be an https:// URL (got {repo!r})" if not repo.startswith("https://")

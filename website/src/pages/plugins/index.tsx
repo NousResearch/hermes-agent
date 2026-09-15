@@ -71,15 +71,15 @@ const TIER_ORDER = ["all", "official", "community"];
 // grouped sections; keep it in sync with CATALOG_CATEGORIES in
 // hermes_cli/plugin_catalog.py and website/scripts/extract-plugins.py.
 const CATEGORY_CONFIG: Record<string, { label: string; icon: string; blurb: string }> = {
-  memory: { label: "Memory", icon: "\u{1F9E0}", blurb: "Memory providers and context engines" },
   desktop: { label: "Desktop", icon: "\u{1F5A5}\u{FE0F}", blurb: "Panes, tabs and views for Hermes Desktop" },
+  memory: { label: "Memory", icon: "\u{1F9E0}", blurb: "Memory providers and context engines" },
   platform: { label: "Platforms", icon: "\u{1F4AC}", blurb: "Messaging and channel adapters" },
   web: { label: "Web & Browser", icon: "\u{1F310}", blurb: "Search backends, extraction and browser control" },
   tools: { label: "Tools", icon: "\u{1F6E0}\u{FE0F}", blurb: "New tools the agent can call" },
   voice: { label: "Voice", icon: "\u{1F399}\u{FE0F}", blurb: "Speech, TTS and realtime audio" },
   automation: { label: "Automation", icon: "\u{23F1}\u{FE0F}", blurb: "Hooks, wake triggers and session automation" },
   models: { label: "Models", icon: "\u{2728}", blurb: "Model and inference providers" },
-  other: { label: "Other", icon: "\u{1F4E6}", blurb: "Everything else" },
+  general: { label: "General", icon: "\u{1F4E6}", blurb: "Plugins that span several areas" },
 };
 const CATEGORY_ORDER = Object.keys(CATEGORY_CONFIG);
 
@@ -465,7 +465,7 @@ export default function PluginCatalogPage() {
     if (search.trim() || categoryFilter !== "all") return null;
     const buckets = new Map<string, CatalogPlugin[]>();
     for (const p of filtered) {
-      const key = CATEGORY_CONFIG[p.category] ? p.category : "other";
+      const key = CATEGORY_CONFIG[p.category] ? p.category : "general";
       (buckets.get(key) ?? buckets.set(key, []).get(key)!).push(p);
     }
     return CATEGORY_ORDER.filter((c) => buckets.has(c)).map((c) => [c, buckets.get(c)!] as const);
@@ -475,7 +475,7 @@ export default function PluginCatalogPage() {
     const counts: Record<string, number> = {};
     for (const p of allPlugins) {
       if (tierFilter !== "all" && p.tier !== tierFilter) continue;
-      const key = CATEGORY_CONFIG[p.category] ? p.category : "other";
+      const key = CATEGORY_CONFIG[p.category] ? p.category : "general";
       counts[key] = (counts[key] || 0) + 1;
     }
     return counts;

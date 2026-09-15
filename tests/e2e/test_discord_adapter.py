@@ -107,6 +107,42 @@ class TestAutoThreadingPreservesCommand:
         assert "/new" in response
 
 
+class TestExplicitMentionMetadata:
+    @pytest.mark.parametrize(
+        ("content", "mentions", "expected_raw_user_ids"),
+        [
+            ("reply ping", True, set()),
+            (f"<@!{BOT_USER_ID}> inline mention <@12345>", False, {str(BOT_USER_ID), "12345"}),
+        ],
+        ids=["resolved-message-mention", "literal-mentions"],
+    )
+    async def test_explicit_mention_metadata_preserves_facts_before_normalization(
+        self, discord_adapter, bot_user, content, mentions, expected_raw_user_ids, monkeypatch,
+    ):
+        """The event delivered to pre_gateway_dispatch retains Discord mention facts."""
+        seen_metadata = []
+
+        def capture_hook(name, **kwargs):
+            if name == "pre_gateway_dispatch":
+                seen_metadata.append(kwargs["event"].metadata)
+            return []
+
+        monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+        discord_adapter._text_batch_delay_seconds = 0
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", capture_hook)
+        msg = make_discord_message(
+            content=content,
+            mentions=[bot_user] if mentions else [],
+        )
+
+        await dispatch(discord_adapter, msg)
+
+        assert seen_metadata == [{
+            "explicitly_mentioned": True,
+            "raw_mentioned_user_ids": expected_raw_user_ids,
+        }]
+
+
 class TestRepliedToMediaDispatch:
     async def test_reply_to_image_message_caches_referenced_attachment(
         self, discord_adapter, bot_user, monkeypatch

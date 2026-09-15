@@ -60,6 +60,28 @@ def _make_provider(slug, name=None, models=None, *, is_current=False,
 
 
 
+def test_prepend_moa_honors_excluded(monkeypatch):
+    """The gateway picker's virtual MoA row must respect exclusions."""
+    from hermes_cli.model_switch_providers import _prepend_moa_picker_provider
+    import hermes_cli.inventory as inventory_mod
+
+    monkeypatch.setattr(
+        inventory_mod, "_moa_provider_row",
+        lambda current="": {"slug": "moa", "name": "MoA", "models": ["p"],
+                            "total_models": 1, "is_current": False,
+                            "is_user_defined": False, "source": "virtual"},
+    )
+    base = [{"slug": "openai", "name": "OpenAI", "models": ["m"],
+             "total_models": 1, "is_current": False, "is_user_defined": False,
+             "source": "built-in"}]
+
+    hidden = _prepend_moa_picker_provider(list(base), excluded_providers=["MoA"])
+    assert {r["slug"] for r in hidden} == {"openai"}
+
+    shown = _prepend_moa_picker_provider(list(base), excluded_providers=[])
+    assert [r["slug"] for r in shown] == ["moa", "openai"]
+
+
 def test_passthrough_kwargs_to_base(monkeypatch):
     """All kwargs must be forwarded to ``list_authenticated_providers`` unchanged.
 

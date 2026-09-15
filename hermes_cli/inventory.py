@@ -94,11 +94,15 @@ def build_models_payload(
         excluded_providers=ctx.excluded_providers or [],
     )
 
+    # Normalized once for the virtual rows below: like list_authenticated_providers,
+    # an explicitly excluded provider stays hidden even with valid credentials.
+    excluded = {str(p).strip().lower() for p in (ctx.excluded_providers or []) if p}
+
     # Managed local runtime: staged GGUFs are selectable like any provider's models, but
     # list_authenticated_providers can't know about them (no credential — reachability is the
     # credential), so inject the row here where every picker surface inherits it.
     local_row = _local_runtime_row(ctx)
-    if local_row is not None:
+    if local_row is not None and not ({"llamacpp", "llama.cpp", "llama-cpp"} & excluded):
         rows = _without_slug(rows, "llamacpp") + [local_row]
         # A live session on the managed server reports provider "custom" (raw base_url label), which
         # would materialize a duplicate "Custom endpoint" row with the same staged models stealing the
@@ -113,7 +117,7 @@ def build_models_payload(
             rows = [r for r in rows if not _is_managed_custom(r)]
 
     moa_row = _moa_provider_row(ctx.current_provider)
-    if moa_row is not None:
+    if moa_row is not None and "moa" not in excluded:
         rows = [moa_row] + _without_slug(rows, "moa")
 
     if explicit_only:

@@ -64,6 +64,11 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "xiaomi",
     "arcee",
     "ollama-cloud",
+    # LM Studio's native server validates the model id against the ids it has
+    # downloaded and rejects a provider-prefixed name outright with a
+    # non-retryable HTTP 400 (``Invalid model identifier "lmstudio/<id>" ...
+    # code=model_not_found``), so every turn dies until the prefix is stripped.
+    "lmstudio",
     "nebius-token-factory",
     "custom",
     "gemini",

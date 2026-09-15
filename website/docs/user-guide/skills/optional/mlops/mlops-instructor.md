@@ -1,21 +1,21 @@
 ---
-title: "Instructor"
+title: "Instructor — Structured LLM outputs validated with Pydantic"
 sidebar_label: "Instructor"
-description: "Extract structured data from LLM responses with Pydantic validation, retry failed extractions automatically, parse complex JSON with type safety, and stream ..."
+description: "Structured LLM outputs validated with Pydantic"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Instructor
 
-Extract structured data from LLM responses with Pydantic validation, retry failed extractions automatically, parse complex JSON with type safety, and stream partial results with Instructor - battle-tested structured output library
+Structured LLM outputs validated with Pydantic.
 
 ## Skill metadata
 
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/mlops/instructor` |
-| Path | `optional-skills/mlops/instructor` |
+| Path | `optional-skills/mlops\instructor` |
 | Version | `1.0.0` |
 | Author | Orchestra Research |
 | License | MIT |

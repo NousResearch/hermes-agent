@@ -1,5 +1,3 @@
-"use strict"
-
 /**
  * Writes apps/desktop/build/install-stamp.json with the git ref the desktop
  * .exe should pin to at first-launch bootstrap time.  This file ships inside
@@ -13,24 +11,32 @@
  *     "branch":        "<branch name>",
  *     "builtAt":       "<ISO 8601 UTC timestamp>",
  *     "dirty":         true|false,
- *     "source":        "ci" | "local"
+ *     "source":        "ci" | "local" | "fallback"
  *   }
  *
  * Source preference order:
  *   1. CI env vars ($GITHUB_SHA / $GITHUB_REF_NAME) -- avoid edge cases with
  *      shallow clones, detached HEADs, etc. in CI.
  *   2. Local `git rev-parse` against the parent repo (../..).
+ *   3. Fallback stamp for local/personal builds from non-git source trees
+ *      (ZIP extract, interrupted clone with no HEAD, etc.).
  *
- * Dev / out-of-repo builds without git produce an explicit error rather than
- * silently writing an unstamped manifest -- the packaged app refuses to
- * bootstrap without a stamp.
+ * Dev / out-of-repo builds without git produce an explicit fallback stamp
+ * rather than aborting the whole build.  Bootstrap treats the all-zero
+ * commit as unpinned and follows the branch instead of fetching a fake SHA.
  */
 
 import { mkdirSync, writeFileSync } from "fs"
 import { resolve, join, relative } from "path"
 import { execSync } from "child_process"
 
+import { isMain } from "./utils.mjs"
+
 const STAMP_SCHEMA_VERSION = 1
+
+/** All-zero placeholder used when no real commit can be resolved. */
+export const FALLBACK_COMMIT = "0000000000000000000000000000000000000000"
+export const FALLBACK_BRANCH = "main"
 
 const DESKTOP_ROOT = resolve(import.meta.dirname, "..")
 const REPO_ROOT = resolve(DESKTOP_ROOT, "..", "..")
@@ -45,10 +51,10 @@ function tryExec(cmd, opts) {
   }
 }
 
-function fromCI() {
-  const sha = process.env.GITHUB_SHA
+export function fromCI(env = process.env) {
+  const sha = env.GITHUB_SHA
   if (!sha) return null
-  const branch = process.env.GITHUB_REF_NAME || process.env.GITHUB_HEAD_REF || null
+  const branch = env.GITHUB_REF_NAME || env.GITHUB_HEAD_REF || null
   return {
     commit: sha,
     branch: branch,
@@ -57,17 +63,17 @@ function fromCI() {
   }
 }
 
-function fromLocalGit() {
-  const sha = tryExec("git rev-parse HEAD", { cwd: REPO_ROOT })
+export function fromLocalGit(repoRoot = REPO_ROOT, execFn = tryExec) {
+  const sha = execFn("git rev-parse HEAD", { cwd: repoRoot })
   if (!sha) return null
-  const branch = tryExec("git rev-parse --abbrev-ref HEAD", { cwd: REPO_ROOT })
+  const branch = execFn("git rev-parse --abbrev-ref HEAD", { cwd: repoRoot })
   // `git status --porcelain -uno` is empty iff tracked files match HEAD.
   // We exclude untracked files (-uno) intentionally: a developer who's
   // checked out an installer scratch dir alongside the repo shouldn't
   // poison every local build with a [DIRTY] stamp.  We DO care about
   // tracked-but-modified files because those mean the .exe content
   // differs from the commit being pinned.
-  const status = tryExec("git status --porcelain -uno", { cwd: REPO_ROOT })
+  const status = execFn("git status --porcelain -uno", { cwd: repoRoot })
   const dirty = status !== null && status.length > 0
   return {
     commit: sha,
@@ -77,9 +83,41 @@ function fromLocalGit() {
   }
 }
 
+export function fromFallback(branch = FALLBACK_BRANCH) {
+  // Non-git builds (ZIP download, bootstrap installer without a resolvable
+  // HEAD) cannot determine a real commit.  Use a placeholder so local /
+  // personal builds can still complete.  The desktop bootstrap treats the
+  // all-zero commit as "unknown" and falls back to an unpinned branch
+  // bootstrap instead of trying to fetch a non-existent GitHub commit.
+  return {
+    commit: FALLBACK_COMMIT,
+    branch: branch || FALLBACK_BRANCH,
+    dirty: false,
+    source: "fallback"
+  }
+}
+
+/**
+ * Resolve the install stamp without writing it.  Pure enough for unit tests:
+ * inject env / execFn / repoRoot to simulate CI, local git, or no-git trees.
+ */
+export function resolveStamp({
+  env = process.env,
+  repoRoot = REPO_ROOT,
+  execFn = tryExec,
+  fallbackBranch = FALLBACK_BRANCH
+} = {}) {
+  return fromCI(env) || fromLocalGit(repoRoot, execFn) || fromFallback(fallbackBranch)
+}
+
+export function isFallbackCommit(commit) {
+  return typeof commit === "string" && /^0{7,40}$/.test(commit)
+}
+
 function main() {
-  const stamp = fromCI() || fromLocalGit()
+  const stamp = resolveStamp()
   if (!stamp || !stamp.commit) {
+    // Should not happen — fromFallback() always provides a commit.
     console.error(
       "[write-build-stamp] ERROR: could not determine git commit.\n" +
         "  - $GITHUB_SHA not set\n" +
@@ -90,6 +128,15 @@ function main() {
         "against. Run from a git checkout or set $GITHUB_SHA explicitly."
     )
     process.exit(1)
+  }
+
+  if (isFallbackCommit(stamp.commit)) {
+    console.warn(
+      "[write-build-stamp] WARNING: no git commit found (non-git checkout?).\n" +
+        "  Using placeholder commit — the packaged app will fall back to the\n" +
+        "  default branch for first-launch bootstrap.  For production builds,\n" +
+        "  run from a git checkout or set $GITHUB_SHA."
+    )
   }
 
   if (stamp.dirty) {
@@ -119,8 +166,11 @@ function main() {
       " -> " +
       stamp.commit.slice(0, 12) +
       (stamp.branch ? " (" + stamp.branch + ")" : "") +
-      (stamp.dirty ? " [DIRTY]" : "")
+      (stamp.dirty ? " [DIRTY]" : "") +
+      (stamp.source === "fallback" ? " [FALLBACK]" : "")
   )
 }
 
-main()
+if (isMain(import.meta.url)) {
+  main()
+}

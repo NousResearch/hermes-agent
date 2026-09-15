@@ -3,7 +3,8 @@
 How to build Hermes Desktop well. This is a judgment guide, not an inventory —
 it teaches the invariants and the reasoning behind them so a change fits the app
 even as files move. Read it with the repository `AGENTS.md` (root rules still
-apply) and [`DESIGN.md`](./DESIGN.md) for the visual and interaction contract.
+apply), [`DESIGN.md`](./DESIGN.md) for the visual and interaction contract, and
+`src/AGENTS.md` for the backend contract, slash-palette curation, and Bot Mode.
 
 When a rule here and the code disagree, trust the code and fix whichever is
 wrong — but never break an invariant to make a change easier.
@@ -125,9 +126,11 @@ normalization alike. Learn the shape, not a snapshot of the current rungs.
 Two auth-flavored corollaries worth naming because they are easy to get wrong:
 
 - **One-time credentials are never reused.** An OAuth gateway connection mints a
-  fresh WebSocket ticket on every dial; a mint failure means reauthentication,
-  not "fall back to the cached URL." Only long-lived token/local auth may reuse
-  a cached URL as a lower rung.
+  fresh WebSocket ticket on every dial and never falls back to the cached URL.
+  Only a confirmed 401/403 (or an explicitly tagged auth rejection) means
+  reauthentication; timeout, network, malformed-response, and server failures
+  remain connectivity errors. Only long-lived token/local auth may reuse a
+  cached URL as a lower rung.
 - **A connection test must exercise the leg you'll actually use.** An HTTP
   status probe passing while the WebSocket/auth leg fails is a false positive
   that ships as "it said connected but nothing works."
@@ -150,6 +153,14 @@ universal extension system, a manifest, or a plugin adapter for a single
 consumer. Design a shared contract only once more than one real consumer proves
 its shape. "Plugin" means several unrelated things across Hermes — do not assume
 one surface's extension model runs in another.
+
+When the new capability is an **agent-callable** one — a tool that acts on this
+renderer (open a pane, read the in-app browser, react to a message) — it is a
+property of the SESSION's client, not of the backend host. Wire its
+availability off the session source the app already sends on `session.create`
+(`source: 'desktop'`), never off an env var on the backend process: that
+process might be a remote or cloud gateway this app merely connected to. See
+the root AGENTS.md, "Surface capability is a property of the SESSION."
 
 ## Respect the person using it
 
@@ -185,6 +196,14 @@ boundaries, optimistic rollback and stale-response ordering, and both sides of a
 local/remote adapter with its profile routing intact. Match how the suite is
 actually run rather than inventing a command; when in doubt, read the scripts.
 
+## Rehearsing the guided onboarding
+
+From `apps/desktop`, use a fresh temporary directory for each rehearsal and run
+`env -u NODE_ENV HERMES_GUEST_ONBOARDING=1 HERMES_HOME=<tmp>/.hermes HERMES_DESKTOP_USER_DATA_DIR=<tmp>/electron-user-data npm run dev`
+(replace `<tmp>` with that directory). To use the portal stand-in, add
+`HERMES_PORTAL_BASE_URL=http://127.0.0.1:8765 HERMES_ANON_API_SECRET=test-secret HERMES_SHARED_AUTH_DIR=<tmp>/.hermes/shared`
+before `npm run dev`. Stop Electron and its dev server after the run.
+
 ## The taste test before you hand off
 
 - Does every piece of state live with its authority, at the narrowest scope?
@@ -198,3 +217,17 @@ actually run rather than inventing a command; when in doubt, read the scripts.
   locales?
 
 If any answer is "not sure," that's the part to go verify.
+
+## Nous free tier: state is pulled, never latched in the renderer
+
+The free tier (a Nous identity with no account, `hermes_cli/anon_auth.py`) reaches the renderer
+through one JSON-RPC pair: `free_tier.status` (has_guest, enabled, available,
+notice_pending, model, label) read from local auth state with zero network, and
+`free_tier.ack_notice`, which persists the one-time notice flag on the identity itself. The
+first-launch ready screen and the own-key strip are the SAME state rendered for two situations,
+keyed on `notice_pending`; there is no localStorage latch, so the CLI and the desktop cannot
+disagree about whether the notice was shown. Sign-in goes through the existing
+`POST /api/providers/oauth/nous/start` + poll route, which over a free-tier identity registers the
+connector transfer and reports `reason`, `account_email` and `model` on completion; every entry
+point (Billing, status chip, ready screen) opens the one free-tier sign-in dialog. Never branch on
+provider display names: the picker row carries `free_tier_row`, status cards carry `free_tier`.

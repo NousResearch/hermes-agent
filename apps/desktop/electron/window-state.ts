@@ -61,6 +61,7 @@ function onScreen(bounds, displays) {
     if (!a) {
       return false
     }
+
     const x = Math.min(bounds.x + bounds.width, a.x + a.width) - Math.max(bounds.x, a.x)
     const y = Math.min(bounds.y + bounds.height, a.y + a.height) - Math.max(bounds.y, a.y)
 
@@ -134,11 +135,32 @@ function debounce(fn, delayMs) {
   return debounced
 }
 
+// The geometry events worth persisting from. `moved` and `resized` — the
+// settled-once-per-drag pair — are macOS/Windows only (Electron tags them
+// `@platform darwin,win32`), so a window bound to those alone never saves its
+// place on Linux: the events simply never arrive. `move` and `resize` carry no
+// platform tag and fire everywhere. They also fire continuously mid-drag, which
+// is what the trailing debounce above is for — and once a burst collapses to a
+// single trailing run, the settled events add nothing the debounce hasn't
+// already given us.
+const GEOMETRY_EVENTS = ['move', 'resize']
+
+// Bind `schedule` to every geometry event, on a BrowserWindow or any emitter
+// with `.on`. One call site per window so the platform reasoning above can't be
+// half-applied to one window and not the other.
+function bindGeometryPersistence(win, schedule) {
+  for (const event of GEOMETRY_EVENTS) {
+    win.on(event, schedule)
+  }
+}
+
 export {
+  bindGeometryPersistence,
   computeWindowOptions,
   debounce,
   DEFAULT_HEIGHT,
   DEFAULT_WIDTH,
+  GEOMETRY_EVENTS,
   MIN_HEIGHT,
   MIN_VISIBLE,
   MIN_WIDTH,

@@ -56,6 +56,27 @@ export function writeKey(key: string, value: null | string) {
   emitPersistence({ key, op: value === null ? 'remove' : 'write', value })
 }
 
+/** Parsed JSON read. Returns null on absence, unavailable storage, OR malformed
+ *  JSON — callers layer their own shape validation on the parsed value. */
+export function readJson<T>(key: string): T | null {
+  const raw = readKey(key)
+
+  if (raw === null) {
+    return null
+  }
+
+  try {
+    return JSON.parse(raw) as T
+  } catch {
+    return null
+  }
+}
+
+/** JSON write; a null value removes the key. Best-effort (see writeKey). */
+export function writeJson(key: string, value: unknown) {
+  writeKey(key, value === null ? null : JSON.stringify(value))
+}
+
 export function storedBoolean(key: string, fallback: boolean): boolean {
   const value = readKey(key)
 

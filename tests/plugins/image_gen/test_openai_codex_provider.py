@@ -1,16 +1,18 @@
 """Tests for the bundled ``openai-codex`` image_gen plugin.
 
-Mirrors ``test_openai_provider.py`` but targets the standalone
-Codex/ChatGPT-OAuth-backed provider that uses the Responses
-``image_generation`` tool path instead of the ``images.generate`` REST
-endpoint.
+Mirrors ``test_openai_provider.py`` but targets the ChatGPT-OAuth-backed provider that posts to
+the Codex backend's native ``images/generations`` / ``images/edits`` endpoints (the route the
+official Codex client uses) — no chat host model, no hosted-tool SSE stream (#105398, #107076).
 """
 
 from __future__ import annotations
 
+import base64
 import importlib
+import json
 from pathlib import Path
 
+import httpx
 import pytest
 
 # The plugin directory uses a hyphen, which is not a valid Python identifier
@@ -27,14 +29,18 @@ _PNG_HEX = (
 )
 
 
+def _png_bytes() -> bytes:
+    return bytes.fromhex(_PNG_HEX)
+
+
 def _b64_png() -> str:
-    import base64
-    return base64.b64encode(bytes.fromhex(_PNG_HEX)).decode()
+    return base64.b64encode(_png_bytes()).decode()
 
 
 @pytest.fixture(autouse=True)
 def _tmp_hermes_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("OPENAI_IMAGE_MODEL", raising=False)
     yield tmp_path
 
 
@@ -43,6 +49,33 @@ def provider(monkeypatch):
     # Codex plugin is API-key-independent; clear it to make the test honest.
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     return codex_plugin.OpenAICodexImageGenProvider()
+
+
+@pytest.fixture
+def codex_backend(monkeypatch):
+    """Route the plugin's ``httpx.Client`` at a fake Codex images backend; returns the request log
+    and lets a test swap the response via ``state["respond"]``."""
+    monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+    state = {"requests": [], "respond": None}
+
+    def _default(request):
+        return httpx.Response(200, json={
+            "created": 1, "data": [{"b64_json": _b64_png(), "generation_id": "gen_1"}],
+            "background": "opaque", "output_format": "png", "quality": "low", "size": "1254x1254",
+        }, headers={"x-codex-imagegen-request-id": "req_abc"}, request=request)
+
+    def _handler(request):
+        state["requests"].append(request)
+        return (state["respond"] or _default)(request)
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        httpx, "Client",
+        lambda *args, **kwargs: real_client(
+            transport=httpx.MockTransport(_handler), headers=kwargs.get("headers"),
+            timeout=kwargs.get("timeout")),
+    )
+    return state
 
 
 # ── Metadata ────────────────────────────────────────────────────────────────
@@ -65,7 +98,7 @@ class TestMetadata:
     def test_setup_schema_has_no_required_env_vars(self, provider):
         schema = provider.get_setup_schema()
         assert schema["env_vars"] == []
-        assert schema["badge"] == "free"
+        assert "hermes auth codex" in schema["post_setup_hint"]
 
 
 # ── Availability ────────────────────────────────────────────────────────────
@@ -73,24 +106,20 @@ class TestMetadata:
 
 class TestAvailability:
     def test_unavailable_without_codex_token(self, monkeypatch):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: None)
         assert codex_plugin.OpenAICodexImageGenProvider().is_available() is False
 
     def test_available_with_codex_token(self, monkeypatch):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "tok")
         assert codex_plugin.OpenAICodexImageGenProvider().is_available() is True
 
     def test_openai_api_key_alone_is_not_enough(self, monkeypatch):
-        # Codex plugin is intentionally orthogonal to the API-key plugin —
-        # the API key alone must NOT make it appear available.
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: None)
         assert codex_plugin.OpenAICodexImageGenProvider().is_available() is False
 
 
-# ── Generate ────────────────────────────────────────────────────────────────
+# ── Generation ──────────────────────────────────────────────────────────────
 
 
 class TestGenerate:
@@ -100,212 +129,100 @@ class TestGenerate:
         assert result["success"] is False
         assert result["error_type"] == "auth_required"
 
-    def test_returns_invalid_argument_for_empty_prompt(self, provider, monkeypatch):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
-        result = provider.generate("   ")
-        assert result["success"] is False
-        assert result["error_type"] == "invalid_argument"
-
-    def test_generate_uses_codex_stream_path(self, provider, monkeypatch, tmp_path):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
-        monkeypatch.setattr(codex_plugin, "_collect_image_b64", lambda *a, **kw: _b64_png())
-
-        result = provider.generate("a cat", aspect_ratio="landscape")
+    def test_text_to_image_posts_generations_with_no_host_model(self, provider, codex_backend, tmp_path):
+        result = provider.generate("a cat", aspect_ratio="portrait")
 
         assert result["success"] is True
         assert result["model"] == "gpt-image-2-medium"
         assert result["provider"] == "openai-codex"
         assert result["quality"] == "medium"
-
+        assert result["pixel_size"] == "1x1"
+        # Backend-reported values travel separately from what we asked for (#107233).
+        assert result["reported_quality"] == "low"
+        assert result["reported_size"] == "1254x1254"
+        assert result["imagegen_request_id"] == "req_abc"
         saved = Path(result["image"])
-        assert saved.exists()
-        assert saved.parent == tmp_path / "cache" / "images"
-        # Filename prefix differs from the API-key plugin so cache audits can
-        # tell the two backends apart.
+        assert saved.exists() and saved.parent == tmp_path / "cache" / "images"
         assert saved.name.startswith("openai_codex_")
 
-    def test_codex_stream_request_shape(self, provider, monkeypatch):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        (request,) = codex_backend["requests"]
+        assert request.url.path.endswith("/backend-api/codex/images/generations")
+        assert request.headers["Authorization"] == "Bearer codex-token"
+        assert request.headers["x-codex-image-turn-id"]
+        body = json.loads(request.content)
+        assert body == {
+            "prompt": "a cat", "model": "gpt-image-2", "n": 1, "quality": "medium",
+            "size": "1024x1536", "background": "opaque",
+        }
+        # The whole point of the native route: nothing about a chat model in the request.
+        assert not any(key in body for key in ("tools", "input", "instructions"))
 
-        captured = {}
+    def test_source_images_post_edits_with_inline_data_urls(self, provider, codex_backend, tmp_path):
+        local = tmp_path / "ref.png"
+        local.write_bytes(_png_bytes())
+        data_url = "data:image/png;base64," + _b64_png()
 
-        def _collect(token, *, prompt, size, quality, input_images=None):
-            captured.update(codex_plugin._build_responses_payload(
-                prompt=prompt,
-                size=size,
-                quality=quality,
-                input_images=input_images,
-            ))
-            return _b64_png()
+        result = provider.generate("edit these", image_url=str(local), reference_image_urls=[data_url])
 
-        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
-
-        result = provider.generate("a cat", aspect_ratio="portrait")
         assert result["success"] is True
+        assert result["modality"] == "image"
+        assert result["input_image_count"] == 2
+        (request,) = codex_backend["requests"]
+        assert request.url.path.endswith("/backend-api/codex/images/edits")
+        body = json.loads(request.content)
+        assert [img["image_url"] for img in body["images"]] == [data_url, data_url]
 
-        assert captured["model"] == "gpt-5.5"
-        assert captured["store"] is False
-        assert captured["input"][0]["type"] == "message"
-        assert captured["input"][0]["role"] == "user"
-        assert captured["input"][0]["content"][0]["type"] == "input_text"
-        assert captured["tool_choice"]["type"] == "allowed_tools"
-        assert captured["tool_choice"]["mode"] == "required"
-        assert captured["tool_choice"]["tools"] == [{"type": "image_generation"}]
+    def test_remote_source_url_is_fetched_and_inlined(self, provider, codex_backend, monkeypatch):
+        # The backend's own URL downloader 400s on ordinary public images; we fetch client-side.
+        monkeypatch.setattr(
+            httpx, "get",
+            lambda url, **kw: httpx.Response(200, content=_png_bytes(), request=httpx.Request("GET", url)))
 
-        tool = captured["tools"][0]
-        assert tool["type"] == "image_generation"
-        assert tool["model"] == "gpt-image-2"
-        assert tool["quality"] == "medium"
-        assert tool["size"] == "1024x1536"
-        assert tool["output_format"] == "png"
-        assert tool["background"] == "opaque"
-        assert tool["partial_images"] == 1
+        result = provider.generate("edit", image_url="https://example.com/ref.png")
+
+        assert result["success"] is True
+        body = json.loads(codex_backend["requests"][0].content)
+        assert body["images"] == [{"image_url": "data:image/png;base64," + _b64_png()}]
 
     def test_capabilities_advertise_image_inputs(self, provider):
         caps = provider.capabilities()
         assert caps["modalities"] == ["text", "image"]
         assert caps["max_reference_images"] == 16
 
-    def test_codex_stream_request_includes_source_images(self, provider, monkeypatch, tmp_path):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
-        image_path = tmp_path / "source.png"
-        image_path.write_bytes(bytes.fromhex(_PNG_HEX))
-
-        captured = {}
-
-        def _collect(token, *, prompt, size, quality, input_images=None):
-            captured.update(codex_plugin._build_responses_payload(
-                prompt=prompt,
-                size=size,
-                quality=quality,
-                input_images=input_images,
-            ))
-            return _b64_png()
-
-        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
-
-        result = provider.generate(
-            "put this same person in a navy JK uniform",
-            aspect_ratio="portrait",
-            image_url=str(image_path),
-            reference_image_urls=["https://example.com/ref.png"],
-        )
-
-        assert result["success"] is True
-        assert result["modality"] == "image"
-        assert result["input_image_count"] == 2
-
-        content = captured["input"][0]["content"]
-        assert content[0] == {
-            "type": "input_text",
-            "text": "put this same person in a navy JK uniform",
-        }
-        assert content[1]["type"] == "input_image"
-        assert content[1]["image_url"].startswith("data:image/png;base64,")
-        assert content[2] == {"type": "input_image", "image_url": "https://example.com/ref.png"}
-
-    def test_generate_clamps_reference_images_to_cap(self, provider, monkeypatch):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
-        captured = {}
-
-        def _collect(token, *, prompt, size, quality, input_images=None):
-            captured["input_images"] = input_images
-            return _b64_png()
-
-        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
-
-        refs = [f"https://example.com/ref-{idx}.png" for idx in range(20)]
-        result = provider.generate("combine the references", reference_image_urls=refs)
-
-        assert result["success"] is True
-        assert result["modality"] == "image"
-        assert result["input_image_count"] == 16
-        assert len(captured["input_images"]) == 16
-        assert captured["input_images"][-1]["image_url"] == "https://example.com/ref-15.png"
-
-    def test_rejects_non_image_local_source(self, provider, monkeypatch, tmp_path):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+    def test_rejects_non_image_local_source(self, provider, codex_backend, tmp_path):
         text_path = tmp_path / "not-image.txt"
-        text_path.write_text("hello")
+        text_path.write_text("hello", encoding="utf-8")
 
         result = provider.generate("edit this", image_url=str(text_path))
 
         assert result["success"] is False
         assert result["error_type"] == "invalid_image_input"
         assert "not a supported image" in result["error"]
+        assert codex_backend["requests"] == []
 
-    def test_rejects_svg_local_source(self, provider, monkeypatch, tmp_path):
-        # The shared magic-byte sniffer recognizes SVG, but gpt-image-2's
-        # input_image accepts raster only — SVG must fail locally with a clear
-        # error, not get embedded and rejected server-side with an opaque 400.
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
-        svg_path = tmp_path / "vector.svg"
-        svg_path.write_text('<svg xmlns="http://www.w3.org/2000/svg"></svg>')
-
-        result = provider.generate("edit this", image_url=str(svg_path))
-
-        assert result["success"] is False
-        assert result["error_type"] == "invalid_image_input"
-        assert "not a supported image" in result["error"]
-
-    def test_partial_image_event_used_when_done_missing(self):
-        """If output_item.done is missing, partial_image_b64 is accepted."""
-        payload = {
-            "type": "response.image_generation_call.partial_image",
-            "partial_image_b64": _b64_png(),
-        }
-        assert codex_plugin._extract_image_b64(payload) == _b64_png()
-
-    def test_sse_parser_handles_event_and_data_lines(self):
-        class _Response:
-            def iter_lines(self):
-                return iter([
-                    "event: response.output_item.done",
-                    'data: {"item": {"type": "image_generation_call", "result": "abc"}}',
-                    "",
-                ])
-
-        events = list(codex_plugin._iter_sse_json(_Response()))
-        assert events == [{
-            "type": "response.output_item.done",
-            "item": {"type": "image_generation_call", "result": "abc"},
-        }]
-
-    def test_final_response_sweep_recovers_image(self):
-        """Completed response output is found by recursive payload scanning."""
-        payload = {
-            "type": "response.completed",
-            "response": {
-                "output": [{
-                    "type": "image_generation_call",
-                    "status": "completed",
-                    "id": "ig_final",
-                    "result": _b64_png(),
-                }],
-            },
-        }
-        assert codex_plugin._extract_image_b64(payload) == _b64_png()
-
-    def test_empty_response_returns_error(self, provider, monkeypatch):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
-        monkeypatch.setattr(codex_plugin, "_collect_image_b64", lambda *a, **kw: None)
+    def test_http_error_message_surfaces_verbatim_and_bounded(self, provider, codex_backend):
+        body = json.dumps({
+            "metadata": "x" * 600,
+            "error": {"message": "Missing required parameter: 'prompt'.", "type": "invalid_request_error"},
+        })
+        codex_backend["respond"] = lambda request: httpx.Response(400, text=body, request=request)
 
         result = provider.generate("a cat")
-        assert result["success"] is False
-        assert result["error_type"] == "empty_response"
 
-    def test_stream_exception_returns_api_error(self, provider, monkeypatch):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
-
-        def _boom(*args, **kwargs):
-            raise RuntimeError("cloudflare 403")
-
-        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _boom)
-
-        result = provider.generate("a cat")
         assert result["success"] is False
         assert result["error_type"] == "api_error"
-        assert "cloudflare 403" in result["error"]
+        assert "HTTP 400" in result["error"]
+        assert "Missing required parameter: 'prompt'." in result["error"]
+        assert len(result["error"]) < len(body)
+
+    def test_missing_image_data_is_empty_response(self, provider, codex_backend):
+        codex_backend["respond"] = lambda request: httpx.Response(
+            200, json={"created": 1, "data": []}, request=request)
+
+        result = provider.generate("a cat")
+
+        assert result["success"] is False
+        assert result["error_type"] == "empty_response"
 
 
 # ── Plugin entry point ──────────────────────────────────────────────────────

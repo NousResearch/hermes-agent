@@ -1,4 +1,3 @@
-'use strict'
 /**
  * before-pack.mjs — electron-builder beforePack hook.
  *
@@ -58,9 +57,10 @@
  *   - electronPlatformName: 'win32' | 'darwin' | 'linux'
  *   - arch:                 Arch enum (0=ia32, 1=x64, 2=armv7l, 3=arm64, 4=universal)
  */
-import { existsSync, rmSync } from 'node:fs'
+import { existsSync, rmSync, renameSync } from 'node:fs'
+import path from 'node:path'
 import { Arch } from 'electron-builder'
-import { stageNodePty } from './stage-native-deps.mjs'
+import { stageNodePty, stageGetWindows } from './stage-native-deps.mjs'
 
 export function cleanStaleAppOutDir(appOutDir) {
   if (!appOutDir || typeof appOutDir !== 'string') {
@@ -76,10 +76,52 @@ export function cleanStaleAppOutDir(appOutDir) {
   return true
 }
 
+/**
+ * Windows rollback material (#69179): before wiping the previous unpacked
+ * tree, preserve it as `<appOutDir>.bak` — but ONLY when it holds the product
+ * exe (i.e. it is a previously-working build, not the corrupted partial state
+ * cleanStaleAppOutDir exists to remove). If the fresh pack then produces a
+ * Hermes.exe that Windows can't load (truncated PE from a corrupt cached
+ * Electron zip, wrong arch), the updater's integrity gate in
+ * `hermes desktop --build-only` (hermes_cli/main.py
+ * `_ensure_desktop_exe_launchable`) restores this .bak instead of leaving the
+ * user with "This app can't run on your computer".
+ *
+ * Returns true when the tree was preserved (appOutDir no longer exists), false
+ * when there was nothing worth preserving (caller falls through to the wipe).
+ * A rename failure (AV holding a handle) also returns false — the wipe is the
+ * safe fallback and matches pre-#69179 behavior exactly.
+ */
+export function preserveRollbackBackup(appOutDir, productExeName = 'Hermes.exe') {
+  if (!appOutDir || typeof appOutDir !== 'string' || !existsSync(appOutDir)) {
+    return false
+  }
+  if (!existsSync(path.join(appOutDir, productExeName))) {
+    // Partial/corrupt tree (interrupted prior pack) — not rollback material.
+    return false
+  }
+  const backupDir = `${appOutDir}.bak`
+  try {
+    rmSync(backupDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    renameSync(appOutDir, backupDir)
+    return true
+  } catch {
+    return false
+  }
+}
+
 export default async function beforePack(context) {
   const appOutDir = context && context.appOutDir
+  const platformName = context && context.electronPlatformName
   try {
-    if (cleanStaleAppOutDir(appOutDir)) {
+    // Windows: keep the previous working build as rollback material for the
+    // post-build integrity gate (#69179) instead of destroying it. Falls
+    // through to the plain wipe when the old tree is partial/corrupt or the
+    // rename fails.
+    const productExe = `${(context && context.packager?.appInfo?.productFilename) || 'Hermes'}.exe`
+    if (platformName === 'win32' && preserveRollbackBackup(appOutDir, productExe)) {
+      console.log(`[before-pack] preserved previous unpacked dir for rollback: ${appOutDir}.bak`)
+    } else if (cleanStaleAppOutDir(appOutDir)) {
       console.log(`[before-pack] removed stale unpacked dir before staging: ${appOutDir}`)
     }
   } catch (err) {
@@ -102,11 +144,15 @@ export default async function beforePack(context) {
         await stageNodePty({ platform, arch: archName })
         console.log(`[before-pack] re-staged node-pty for target ${platform}-${archName}`)
       }
+      // The macOS helper is universal, while Windows bindings are arch-specific.
+      // Pass the target arch so an ARM64 package never stages an x64 binding.
+      stageGetWindows({ platform, arch: archName })
+      console.log(`[before-pack] re-staged get-windows for target ${platform}-${archName}`)
     }
   } catch (err) {
     // This one SHOULD fail the build — a missing/wrong native binary for the
     // target arch means a broken package shipped to users, which is worse
     // than a build that fails loudly here.
-    throw new Error(`[before-pack] failed to stage node-pty for this target: ${err.message}`)
+    throw new Error(`[before-pack] failed to stage native deps for this target: ${err.message}`)
   }
 }

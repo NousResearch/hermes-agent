@@ -1,9 +1,10 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesGateway } from '@/hermes'
 import { $gateway } from '@/store/gateway'
 import { $approvalRequest, clearAllPrompts, setApprovalRequest } from '@/store/prompts'
+import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 import { $activeSessionId } from '@/store/session'
 
 import { PendingApprovalFallback, PendingToolApproval } from './approval'
@@ -30,9 +31,21 @@ function part(toolName: string): ToolPart {
   return { toolName, type: `tool-${toolName}` } as unknown as ToolPart
 }
 
-function setRequest(command = 'rm -rf /tmp/x', allowPermanent?: boolean) {
+function setRequest(
+  command = 'rm -rf /tmp/x',
+  allowPermanent?: boolean,
+  extra: { choices?: string[]; requestId?: string; serverRequestId?: string; smartDenied?: boolean } = {}
+) {
   $activeSessionId.set('sess-1')
-  setApprovalRequest({ allowPermanent, command, description: 'dangerous command', sessionId: 'sess-1' })
+  setApprovalRequest({ allowPermanent, command, description: 'dangerous command', sessionId: 'sess-1', ...extra })
+}
+
+/** A live `approval` server request the card answers synchronously. */
+function liveApproval(id = 'srq-approval') {
+  const respond = vi.fn()
+  rememberServerRequest({ fail: vi.fn(), id, method: 'approval', params: {}, respond })
+
+  return respond
 }
 
 function mockGateway() {
@@ -42,9 +55,14 @@ function mockGateway() {
   return request
 }
 
+beforeEach(() => {
+  resetServerRequestsForTests()
+})
+
 afterEach(() => {
   cleanup()
   clearAllPrompts()
+  resetServerRequestsForTests()
   $activeSessionId.set(null)
   $gateway.set(null)
 })
@@ -71,15 +89,45 @@ describe('PendingToolApproval', () => {
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
   })
 
-  it('sends approval.respond {choice: "once"} and clears the request on Run', async () => {
+  it.each(['patch', 'write_file'])('renders inline approval controls for protected %s writes', toolName => {
+    setRequest('Update protected agent instructions')
+    render(<PendingToolApproval part={part(toolName)} />)
+
+    expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
+  })
+
+  it('answers the live approval request with {choice: "once"} and clears the request on Run', async () => {
     const request = mockGateway()
-    setRequest()
+    const respond = liveApproval()
+    setRequest('rm -rf /tmp/x', undefined, { requestId: 'apr-1', serverRequestId: 'srq-approval' })
     render(<PendingToolApproval part={part('terminal')} />)
 
     fireEvent.click(screen.getByRole('button', { name: /Run/ }))
 
     await waitFor(() => {
-      expect(request).toHaveBeenCalledWith('approval.respond', { choice: 'once', session_id: 'sess-1' })
+      expect(respond).toHaveBeenCalledWith({ choice: 'once' })
+    })
+    expect(hasOpenServerRequest('srq-approval')).toBe(false)
+    expect(request).not.toHaveBeenCalledWith('approval.respond', expect.anything())
+    expect($approvalRequest.get()).toBeNull()
+  })
+
+  it('falls back to the approval.respond RPC when no live server request is registered', async () => {
+    // A prompt restored from `approval.pending` (no socket carried the frame):
+    // the queue-level RPC is the only way to answer it.
+    const request = mockGateway()
+    setRequest('rm -rf /tmp/x', undefined, { requestId: 'apr-1' })
+    render(<PendingToolApproval part={part('terminal')} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Run/ }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('approval.respond', {
+        choice: 'once',
+        request_id: 'apr-1',
+        session_id: 'sess-1'
+      })
     })
     expect($approvalRequest.get()).toBeNull()
   })
@@ -97,15 +145,16 @@ describe('PendingToolApproval', () => {
     expect(screen.getByText(longCommand)).toBeTruthy()
   })
 
-  it('sends choice "deny" on Reject', async () => {
-    const request = mockGateway()
-    setRequest()
+  it('answers the live approval request with {choice: "deny"} on Reject', async () => {
+    mockGateway()
+    const respond = liveApproval()
+    setRequest('rm -rf /tmp/x', undefined, { requestId: 'apr-1', serverRequestId: 'srq-approval' })
     render(<PendingToolApproval part={part('terminal')} />)
 
     fireEvent.click(screen.getByRole('button', { name: /Reject/ }))
 
     await waitFor(() => {
-      expect(request).toHaveBeenCalledWith('approval.respond', { choice: 'deny', session_id: 'sess-1' })
+      expect(respond).toHaveBeenCalledWith({ choice: 'deny' })
     })
   })
 
@@ -129,6 +178,26 @@ describe('PendingToolApproval', () => {
     // The session + reject options still render, but never the permanent allow.
     expect(await screen.findByRole('menuitem', { name: /Allow this session/ })).toBeTruthy()
     expect(screen.queryByRole('menuitem', { name: /Always allow/ })).toBeNull()
+  })
+
+  it('renders only Once and Deny for a Smart DENY owner override', () => {
+    setRequest('rm -rf /tmp/x', true, { smartDenied: true })
+    render(<PendingToolApproval part={part('terminal')} />)
+
+    expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /More approval options/ })).toBeNull()
+    expect(screen.queryByText(/Allow this session/)).toBeNull()
+    expect(screen.queryByText(/Always allow/)).toBeNull()
+  })
+
+  it('renders only choices explicitly supplied by the gateway event', () => {
+    setRequest('rm -rf /tmp/x', true, { choices: ['once', 'deny'] })
+    render(<PendingToolApproval part={part('terminal')} />)
+
+    expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /More approval options/ })).toBeNull()
   })
 
   it('renders a floating fallback when no pending tool row is mounted', () => {

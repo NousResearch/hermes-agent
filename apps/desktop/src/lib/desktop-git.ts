@@ -1,10 +1,13 @@
 import type {
+  HermesGitBaseBranch,
   HermesGitBranch,
   HermesGitWorktree,
+  HermesRepoPullRequests,
   HermesRepoStatus,
   HermesReviewList,
   HermesReviewShipInfo
 } from '@/global'
+import { hermesApi } from '@/hermes'
 
 import { desktopFsProfile, isDesktopFsRemoteMode } from './desktop-fs'
 
@@ -23,7 +26,7 @@ function desktopApi<T>(path: string, body?: Record<string, unknown>): Promise<T>
     throw new Error('Hermes Desktop bridge is unavailable')
   }
 
-  return desktop.api<T>(
+  return hermesApi<T>(
     body ? { body, method: 'POST', path, profile: desktopFsProfile() } : { path, profile: desktopFsProfile() }
   )
 }
@@ -58,6 +61,9 @@ const remoteGit: GitBridge = {
   branchList: async repoPath =>
     (await gitGet<{ branches: HermesGitBranch[] }>('branches', { path: repoPath })).branches,
 
+  baseBranchList: async repoPath =>
+    (await gitGet<{ branches: HermesGitBaseBranch[] }>('base-branches', { path: repoPath })).branches,
+
   repoStatus: repoPath => gitGet<HermesRepoStatus | null>('status', { path: repoPath }),
 
   fileDiff: async (repoPath, filePath) =>
@@ -88,6 +94,13 @@ const remoteGit: GitBridge = {
 
     shipInfo: repoPath => gitGet<HermesReviewShipInfo>('review/ship-info', { path: repoPath }),
 
+    prList: (repoPath, branches, numbers) =>
+      gitPost<HermesRepoPullRequests>('review/pr-list', { branches, numbers: numbers ?? [], path: repoPath }),
+
+    // Remote gateways have no PR-comment route yet; resolve to null so the
+    // paste degrades to a plain URL instead of throwing mid-paste.
+    fetchPrComment: async () => null,
+
     createPr: repoPath => gitPost('review/create-pr', { path: repoPath })
   },
 
@@ -97,5 +110,9 @@ const remoteGit: GitBridge = {
 }
 
 export function desktopGit(): GitBridge | undefined {
+  if (typeof window === 'undefined') {
+    return undefined
+  }
+
   return isDesktopFsRemoteMode() ? remoteGit : window.hermesDesktop?.git
 }

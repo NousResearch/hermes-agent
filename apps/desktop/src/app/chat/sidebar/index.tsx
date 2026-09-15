@@ -51,6 +51,7 @@ import {
   $sidebarRecentsOpen,
   $sidebarSessionOrderIds,
   $sidebarSessionOrderManual,
+  $sidebarShowAllSessions,
   $sidebarShowArchived,
   $sidebarStatusFilter,
   $sidebarWorkspaceOrderIds,
@@ -383,6 +384,7 @@ export function ChatSidebar({
   // dividers; groups apply it to their own lanes.
   const sortOrderIds = useStore($sidebarSessionRankIds)
   const agentsGrouped = grouping === 'project'
+  const showAllSessions = useStore($sidebarShowAllSessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const unconfirmedPinWrites = useStore($unconfirmedPinWrites)
   const pinsOpen = useStore($sidebarPinsOpen)
@@ -788,6 +790,18 @@ export function ChatSidebar({
     return () => window.clearTimeout(warm)
   }, [activeConnectionId, worktreeGroupingActive, showAllProfiles, profileScope, gatewayReady])
 
+  // Widen the existing tree query when the user expands previews, without
+  // repeating repo discovery. Initial load/scope changes use the effect above.
+  useEffect(
+    () =>
+      $sidebarShowAllSessions.listen(() => {
+        if (gatewayReady && worktreeGroupingActive) {
+          void refreshProjectTree()
+        }
+      }),
+    [gatewayReady, worktreeGroupingActive]
+  )
+
   // Sessions the branch join can't answer for get one look at their own
   // transcript — a `gh pr create` in there names the PR outright. Backfills
   // whatever is loaded, whether or not the badge is on: gating it on the badge
@@ -1132,13 +1146,19 @@ export function ChatSidebar({
   // matching the flat Recents list. Keyed by project id for the rows.
   const overviewPreviews = useMemo<Record<string, SessionInfo[]>>(
     () =>
-      overlayLivePreviews(projectOverview ?? [], agentSessions, projects, PROJECT_PREVIEW_COUNT, {
-        removed: removedSessionIds,
-        // Rank before the trim, so "3 priciest in this project" isn't "3 most
-        // recent, priciest first".
-        rankIds: sortOrderIds
-      }),
-    [projectOverview, agentSessions, projects, removedSessionIds, sortOrderIds]
+      overlayLivePreviews(
+        projectOverview ?? [],
+        agentSessions,
+        projects,
+        showAllSessions ? Infinity : PROJECT_PREVIEW_COUNT,
+        {
+          removed: removedSessionIds,
+          // Rank before the trim, so "3 priciest in this project" isn't "3 most
+          // recent, priciest first".
+          rankIds: sortOrderIds
+        }
+      ),
+    [projectOverview, agentSessions, projects, removedSessionIds, sortOrderIds, showAllSessions]
   )
 
   const onEnterProject = useCallback(

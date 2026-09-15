@@ -11,7 +11,13 @@ import { host } from '@hermes/plugin-sdk'
 import { recordGroupActivity } from './group-activity'
 import { $groupChats, $groupClarify, appendGroupChatEntry, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
-import { followGroupChat, groupMemberKey, groupSessionOwner } from './group-membership'
+import {
+  followGroupChat,
+  groupMemberKey,
+  groupSessionKey,
+  groupSessionOwner,
+  hasThreadScopedGroupSession
+} from './group-membership'
 import { botConnectionRoute, requestForBot } from './routing'
 import type { Attachment, GroupMember, GroupPrompt, GroupPromptQuestion, ProfileRoute } from './types'
 
@@ -101,8 +107,10 @@ interface GroupSessionSnapshot {
   inflight?: boolean
   message_count?: number
   messages?: GroupTurnTranscriptMessage[]
+  /** Still-open server→client requests (`server_requests.open_requests`); the
+   *  member's blocking clarify question lives here as `{ id, method: 'clarify', params }`. */
+  open_requests?: { id: string; method: string; params: Record<string, unknown> }[]
   pending_approval?: GroupPendingApproval
-  pending_clarify?: GroupPendingClarify
   running?: boolean
   session_id?: string
   session_key?: string
@@ -116,13 +124,25 @@ interface GroupMemberSessionHandle {
   stored?: null | string | true
 }
 
-/** Ensure the member's per-group session exists and return a LIVE runtime
- *  session id for it. Gateway-native: session.create mints the session
- *  (lazy until its first message), session.resume by stored id — or by
- *  title, which also covers rehydrated rooms whose sid was lost — reopens
+/** Ensure the member's session FOR THIS THREAD exists and return a LIVE
+ *  runtime session id for it. Gateway-native: session.create mints the
+ *  session (lazy until its first message), session.resume by stored id — or
+ *  by title, which also covers rehydrated rooms whose sid was lost — reopens
  *  it after restarts. Cross-connection members route to their OWN source
- *  via requestForBot; the window's gateway never switches. */
-export async function ensureGroupChatSession(group: string, member: GroupMember): Promise<GroupMemberSessionHandle> {
+ *  via requestForBot; the window's gateway never switches.
+ *
+ *  The session is keyed and titled per THREAD (#90420, #106460). Threads are
+ *  separate conversations everywhere else in the room engine — own delta
+ *  slice, own `${thread}::${memberKey}` watermark — so a member-only session
+ *  pointer made thread B resume thread A's transcript and answer carrying
+ *  A's context. Rooms persisted before this keep ONE bare member pointer;
+ *  the first thread to ask adopts it (below) so that history continues in a
+ *  real thread instead of being orphaned by the upgrade. */
+export async function ensureGroupChatSession(
+  group: string,
+  member: GroupMember,
+  thread: string
+): Promise<GroupMemberSessionHandle> {
   const binding = followGroupChat(group, name => {
     group = name
   })
@@ -132,9 +152,15 @@ export async function ensureGroupChatSession(group: string, member: GroupMember)
     // New rooms title member sessions by their immutable roomId so a
     // same-name recreate never resumes the old room's sessions by title;
     // legacy rooms without a roomId fall back to the display name.
-    const title = `Group: ${room.roomId || group}`
-    const key = groupMemberKey(member)
-    const known = room.sessions && room.sessions[key]
+    const roomTitle = `Group: ${room.roomId || group}`
+    const title = `${roomTitle} · ${thread || 'legacy'}`
+    const memberKey = groupMemberKey(member)
+    const key = groupSessionKey(thread, member)
+    const sessions = room.sessions || {}
+    const known = sessions[key]
+    // Pre-thread pointer, adoptable only until some thread has taken it —
+    // after that the room is migrated and every other thread mints its own.
+    const legacy = hasThreadScopedGroupSession(sessions, memberKey) ? null : sessions[memberKey] || null
 
     // Try resuming what we know (stored sid first, then title lookup).
     //
@@ -146,9 +172,16 @@ export async function ensureGroupChatSession(group: string, member: GroupMember)
     // there and must not be read as "no session, mint a new one" — that
     // forks the member's real history, and the fork silently overwrites
     // room.sessions[key] so the old session becomes unreachable from the
-    // room. Only a genuine 4007 on BOTH targets means there truly is nothing
-    // to resume yet, so the loop falls through to session.create below.
-    for (const target of [known, title]) {
+    // room. Only a genuine 4007 on EVERY target means there truly is
+    // nothing to resume yet, so the loop falls through to session.create.
+    //
+    // Target order: this thread's own pointer, then — only while the room is
+    // still unmigrated — the pre-thread pointer and the pre-thread title, so
+    // an upgraded room's existing conversation continues in the first thread
+    // that speaks instead of being stranded behind an unreferenced sid.
+    const targets = [known, title, ...(legacy === null ? [] : [legacy, roomTitle])]
+
+    for (const target of targets) {
       if (!target || target === true) {
         continue
       }
@@ -172,7 +205,11 @@ export async function ensureGroupChatSession(group: string, member: GroupMember)
           // stores `true` back into room.sessions and hands `true` on as the
           // durable id, which later rides into `session_id` on the recovery
           // resume and on session.interrupt. Typed as-written.
-          const stored = res.session_key || known
+          //
+          // The fallback is the id we resumed BY, which on the adoption pass
+          // is the pre-thread pointer — the two title targets are titles, not
+          // ids, and were never eligible.
+          const stored = res.session_key || (target === title || target === roomTitle ? known : target)
 
           if (stored) {
             updateGroupChat(group, (current: GroupChatRoom) => {
@@ -430,20 +467,36 @@ async function submitGroupTurnPrompt(
 // timeout alone silently dropped long real turns: a 7-minute research run
 // timed out at 3 minutes, read as a pass, and its finished result never
 // reached the room (db's Aug 2026 report).
-const GROUP_TURN_HARD_CAP_MS = 20 * 60000
+export const GROUP_TURN_HARD_CAP_MS = 20 * 60000
 
 /** Mirror a member's pending prompt — clarify question OR command approval —
  *  from its resume snapshot into the room store, keyed
  *  `${group}::${memberKey}` (#90694). Returns true while a prompt is
  *  blocking, so the turn poll can extend its deadline — a waiting prompt
  *  must not be eaten by the group-turn timeout. Feature-detected: older
- *  backends without `pending_clarify`/`pending_approval` in the resume
+ *  backends without `open_requests`/`pending_approval` in the resume
  *  payload always sync to "no prompt". Clarify wins when both are somehow
  *  present (approvals resolve inside tool batches; clarify is the outer
  *  blocker). */
-export function syncGroupClarify(group: string, member: GroupMember, state: GroupSessionSnapshot | null): boolean {
-  const key = `${group}::${groupMemberKey(member)}`
-  const clarify = state && typeof state.pending_clarify === 'object' ? state.pending_clarify : null
+export function syncGroupClarify(
+  group: string,
+  member: GroupMember,
+  thread: string,
+  state: GroupSessionSnapshot | null
+): boolean {
+  const memberKey = groupMemberKey(member)
+  // Per-thread sessions mean one member can now be blocked in two threads at
+  // once, so the mirror is keyed by thread as well — a room-and-member key
+  // would let thread B's question silently replace thread A's card (#90694).
+  const key = `${group}::${thread || 'legacy'}::${memberKey}`
+
+  const openClarify = Array.isArray(state?.open_requests)
+    ? state.open_requests.find(entry => entry?.method === 'clarify' && typeof entry.id === 'string' && entry.id)
+    : null
+
+  const clarify: GroupPendingClarify | null = openClarify
+    ? { ...(openClarify.params as GroupPendingClarify), request_id: openClarify.id }
+    : null
 
   // The `!requestId` bail below is what makes the approval branch reachable,
   // so an approval read there is never the null arm of this ternary — a fact
@@ -480,7 +533,10 @@ export function syncGroupClarify(group: string, member: GroupMember, state: Grou
     requestId,
     group,
     member: member.name,
-    memberKey: groupMemberKey(member),
+    memberKey,
+    // The card carries its own thread so the answer/rename paths rebuild
+    // exactly this key instead of guessing one.
+    thread: thread || 'legacy',
     // approval.respond keys on the session, not just the request — carry the
     // runtime id the snapshot came from.
     sessionId: state?.session_id || null,
@@ -577,7 +633,7 @@ export function renameGroupClarify(oldName: string, newName: string) {
       // Rebuild the key from the mirror's own memberKey rather than
       // string-replacing oldName in place — a group name that happens to
       // be a substring of the member key must not corrupt the rekey.
-      next[`${newName}::${value.memberKey}`] = { ...value, group: newName }
+      next[`${newName}::${value.thread || 'legacy'}::${value.memberKey}`] = { ...value, group: newName }
     }
   }
 
@@ -586,15 +642,16 @@ export function renameGroupClarify(oldName: string, newName: string) {
   }
 }
 
-/** Answer a member's pending prompt from the room. Routes to the member's
- *  OWN source (requestForBot), so cross-connection members work.
- *  - clarify: `clarify.respond`; batch questions send one respond per
- *    question, sequentially — the LAST lock resolves the blocked tool
- *    server-side (same contract as the 1:1 batch card). allow_expired
- *    server-side makes racing the timeout harmless.
+/** Answer a member's pending prompt from the room. The prompt was mirrored
+ *  from the member's resume snapshot (`open_requests` / `pending_approval`), so
+ *  this window never held the live server request: answer through RPCs routed
+ *  to the member's OWN source (requestForBot), so cross-connection members work.
+ *  - clarify: `clarify.lock` per question, sequentially — the LAST lock
+ *    resolves the blocked server request (same contract as the 1:1 batch
+ *    card). A single question answers the open request by id through
+ *    `request.answer` (the cross-socket proxy for a response frame).
  *  - approval: `approval.respond` with the choice (once/session/always/deny),
- *    keyed by session + request_id — the same wire the 1:1 approval card
- *    and native notifications use. */
+ *    keyed by session + request_id — the queue-level wire every surface shares. */
 export async function answerGroupClarify(
   entry: GroupPrompt,
   member: GroupMember,
@@ -618,16 +675,16 @@ export async function answerGroupClarify(
         // Question ids are opaque on the wire (`GroupPrompt.questions` types
         // them `unknown`); the batch card keys its answer bag by exactly them.
         const qid = (question?.qid ?? question?.id) as string
-        await requestForBot(member, 'clarify.respond', {
+        await requestForBot(member, 'clarify.lock', {
           request_id: entry.requestId,
           question_id: qid,
           answer: (answers as Record<string, string>)?.[qid] ?? ''
         })
       }
     } else {
-      await requestForBot(member, 'clarify.respond', {
-        request_id: entry.requestId,
-        answer: typeof answers === 'string' ? answers : ''
+      await requestForBot(member, 'request.answer', {
+        id: entry.requestId,
+        result: { answer: typeof answers === 'string' ? answers : '' }
       })
     }
 
@@ -636,7 +693,7 @@ export async function answerGroupClarify(
     }
 
     const all = $groupClarify.get()
-    const key = `${group}::${entry.memberKey}`
+    const key = `${group}::${entry.thread || 'legacy'}::${entry.memberKey}`
 
     if (all[key]?.requestId === entry.requestId) {
       const next = {
@@ -685,53 +742,68 @@ export async function runGroupChatMemberTurn(
   }
 }
 
+function groupTurnAttachmentSuffix(fileRefs: string[], failed: string[]) {
+  const extras: string[] = []
+
+  if (fileRefs.length) {
+    extras.push(`Attached files staged in your session workspace:\n${fileRefs.join('\n')}`)
+  }
+
+  if (failed.length) {
+    extras.push(
+      `These attachments could not be staged into your session (filename only; the file is not available to your tools):\n${failed.join('\n')}`
+    )
+  }
+
+  return extras.join('\n\n')
+}
+
 async function stageGroupTurnAttachments(member: GroupMember, runtime: string, images?: Attachment[]) {
   // Stage this delta's attachments into the member's session so the model
   // receives the actual payload with the prompt — the same attach RPCs the
   // 1:1 chat uses (they also work cross-connection, where the member's
-  // gateway can't see this machine's files). Images queue as vision tiles,
-  // PDFs render per-page via pdf.attach, and other files materialize in the
-  // session workspace (their @file: refs are appended to the prompt so the
-  // member's file tools can read them). A failed attach degrades that
-  // member to text-only; the transcript line still names the attachment so
-  // the member knows something was shared.
+  // gateway can't see this machine's files). Images queue as vision tiles.
+  // PDFs and other files materialize in the session workspace via file.attach
+  // so file tools can read them; pdf.attach only rasterizes pages and needs
+  // pdftoppm, so a swallowed miss left the member with a filename and no file.
   const fileRefs: string[] = []
+  const failed: string[] = []
 
   for (const img of Array.isArray(images) ? images : []) {
     if (!img || typeof img.data !== 'string' || !img.data) {
       continue
     }
 
+    const label =
+      img.name || (img.kind === 'pdf' ? 'attachment.pdf' : img.kind === 'file' ? 'attachment' : 'attachment.png')
+
     try {
-      if (img.kind === 'pdf') {
-        await requestForBot(member, 'pdf.attach', {
-          session_id: runtime,
-          content_base64: img.data,
-          filename: img.name || 'attachment.pdf'
-        })
-      } else if (img.kind === 'file') {
+      if (img.kind === 'pdf' || img.kind === 'file') {
         const res = (await requestForBot(member, 'file.attach', {
           session_id: runtime,
           data_url: img.data,
-          name: img.name || 'attachment'
+          name: label
         })) as { ref_text?: string }
 
         if (res?.ref_text) {
-          fileRefs.push(`${img.name || 'attachment'} → ${res.ref_text}`)
+          fileRefs.push(`${label} → ${res.ref_text}`)
+        } else {
+          failed.push(label)
         }
       } else {
         await requestForBot(member, 'image.attach_bytes', {
           session_id: runtime,
           content_base64: img.data,
-          filename: img.name || 'attachment.png'
+          filename: label
         })
       }
-    } catch {
-      /* text-only fallback for this member */
+    } catch (error) {
+      failed.push(label)
+      host.notifyError?.(error, `Could not attach ${label} for ${member.title || member.name}`)
     }
   }
 
-  return fileRefs
+  return { failed, fileRefs }
 }
 
 interface GroupTurnPollContext {
@@ -803,7 +875,7 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
     // A clarify blocking inside the member's session is a question for the
     // HUMAN (#90694) — mirror it into the room store so a card renders, and
     // hold the turn open: the member isn't stalling, it's waiting on us.
-    const awaitingUser = syncGroupClarify(context.group, member, state)
+    const awaitingUser = syncGroupClarify(context.group, member, thread, state)
     const done = !busy && !awaitingUser
 
     if (messages.length > before && done) {
@@ -849,7 +921,7 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
     member: member.name,
     thread
   })
-  syncGroupClarify(context.group, member, null)
+  syncGroupClarify(context.group, member, thread, null)
   updateGroupChat(context.group, (r: GroupChatRoom) => {
     r.stranded = {
       ...(r.stranded || {}),
@@ -906,7 +978,7 @@ async function runGroupChatMemberTurnLeased(
   })
 
   try {
-    const { runtime, stored } = await ensureGroupChatSession(group, member)
+    const { runtime, stored } = await ensureGroupChatSession(group, member, thread)
 
     if (!runtime || !binding.isLive()) {
       return null
@@ -923,15 +995,14 @@ async function runGroupChatMemberTurnLeased(
 
     const { before, runtimeIds } = await prepareGroupTurnBaseline(member, runtime, stored)
 
-    const fileRefs = await stageGroupTurnAttachments(member, runtime, images)
+    const { failed, fileRefs } = await stageGroupTurnAttachments(member, runtime, images)
 
     if (!binding.isLive()) {
       return null
     }
 
-    const turnText = fileRefs.length
-      ? `${prompt}\n\nAttached files staged in your session workspace:\n${fileRefs.join('\n')}`
-      : prompt
+    const staged = groupTurnAttachmentSuffix(fileRefs, failed)
+    const turnText = staged ? `${prompt}\n\n${staged}` : prompt
 
     // #93602: one-shot recovery when the runtime session was reaped between
     // minting and submitting. Tracks the runtime id the submit landed on so
@@ -985,9 +1056,14 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     let state: GroupSessionSnapshot | null = null
 
     try {
-      const stored = room.sessions?.[memberKey]
+      // The marker's own thread owns the session the reply is stranded in —
+      // the harvest must not resume a sibling thread's transcript and post
+      // its answer here.
+      const sessions = room.sessions || {}
+      const scoped = sessions[groupSessionKey(strandedThread, member)]
+      const stored = scoped || (hasThreadScopedGroupSession(sessions, memberKey) ? null : sessions[memberKey])
       state = (await requestForBot(member, 'session.resume', {
-        session_id: stored || `Group: ${room.roomId || group}`,
+        session_id: stored || `Group: ${room.roomId || group} · ${strandedThread}`,
         profile: member.name
       })) as GroupSessionSnapshot
     } catch {
@@ -999,7 +1075,7 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     }
 
     // Pending prompts are authoritative even while the session is running.
-    const awaitingUser = syncGroupClarify(group, member, state)
+    const awaitingUser = syncGroupClarify(group, member, strandedThread, state)
 
     if (state?.inflight || state?.running || awaitingUser) {
       return
@@ -1045,7 +1121,11 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
         strandedThread
       )
       updateGroupChat(group, (r: GroupChatRoom) => {
-        r.watermarks[`${strandedThread}::${memberKey}`] = r.log.length
+        const markKey = `${strandedThread}::${memberKey}`
+
+        if (r.watermarks[markKey] === r.log.length - 1) {
+          r.watermarks[markKey] = r.log.length
+        }
 
         return r
       })

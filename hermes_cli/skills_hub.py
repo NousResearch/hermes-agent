@@ -419,17 +419,15 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     page_size = max(1, min(page_size, 100))
     c = console or _console
     all_results, source_counts, timed_out = _fetch_browse_results(c, source)
+    from tools.skills_hub_github import _provider_filter_of
     if not all_results:
-        c.print("[dim]No skills found in the Skills Hub.[/]\n")
-        return
-    # Provider filter (nvidia/openai/...) narrows GitHub-tap skills by their per-tap
-    # ``extra.provider`` label (the runtime index stores them all under source="github").
-    from tools.skills_hub_github import _PROVIDER_FILTER_VALUES, _filter_results_by_provider
-    if source.strip().lower() in _PROVIDER_FILTER_VALUES:
-        all_results = _filter_results_by_provider(all_results, source)
-        if not all_results:
+        # Provider narrowing happens inside parallel_search_sources; keep the
+        # provider-specific empty message.
+        if _provider_filter_of(source):
             c.print(f"[dim]No skills found for provider '{source}'.[/]\n")
-            return
+        else:
+            c.print("[dim]No skills found in the Skills Hub.[/]\n")
+        return
     deduped, page_items, page, total_pages, start = _rank_and_page(all_results, page, page_size)
     _render_browse_page(c, deduped, page_items, page, total_pages, start, source,
                         source_counts, timed_out)
@@ -585,10 +583,21 @@ def _pinned_sources(c: Console, sources, source_id: Optional[str], identifier: s
     return None
 
 
-def _print_fetch_failure(c: Console, sources, identifier: str) -> None:
+def _print_fetch_failure(c: Console, sources, identifier: str, meta=None, source=None) -> None:
     rate_limited = any(getattr(src, "is_rate_limited", False)
                        or getattr(getattr(src, "github", None), "is_rate_limited", False)
                        for src in sources)
+    # Index hit but files gone: a stale index entry, not a user typo — name it so users stop
+    # re-trying spellings (#3259). Only when no adapter was rate limited: a throttled fetch
+    # also yields meta-without-bundle, and calling that "stale" would send users away from a
+    # skill that exists.
+    if meta is not None and not rate_limited:
+        src_id = getattr(source, "source_id", lambda: "the registry")()
+        c.print(f"[bold red]Error:[/] '{identifier}' is listed in the {src_id} index, "
+                f"but its files no longer exist upstream.")
+        c.print("[dim]Stale index entry: the skill was likely renamed or removed by "
+                "its author. Try `hermes skills search` for an alternative.[/]\n")
+        return
     c.print(f"[bold red]Error:[/] Could not fetch '{identifier}' from any source.")
     if rate_limited:
         c.print("[yellow]Hint:[/] GitHub API rate limit exhausted "
@@ -663,7 +672,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     c.print(f"\n[bold]Fetching:[/] {identifier}")
     meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
     if not bundle:
-        _print_fetch_failure(c, sources, identifier)
+        _print_fetch_failure(c, sources, identifier, meta=meta, source=_matched_source)
         return
     if not _resolve_url_bundle_name(c, bundle, meta, identifier, name_override, skip_confirm):
         return

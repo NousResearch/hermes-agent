@@ -172,7 +172,7 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
     mapped gateways no status record covers."""
     supervisor = _supervisor_classifier()
     with _probe("Gateway-state inventory"):
-        from gateway.status import _pid_exists, read_runtime_status
+        from gateway.status import live_gateway_pid_for_home, read_runtime_status
         from hermes_cli.update_receipt import _socket_identity
 
         for profile, home in profile_homes:
@@ -185,13 +185,13 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
                 declared = record.get("supervisor")
                 sup = str(declared) if declared else supervisor(pid)
             else:
+                # Verified identity, not bare PID existence: a ``stopped`` record whose PID was recycled
+                # by an unrelated process fabricated a phantom gateway the restart phase could never
+                # touch, so `hermes update` exited partial (#109680).
+                pid = live_gateway_pid_for_home(home)
+                if pid is None or pid in seen:
+                    continue
                 record = read_runtime_status(home / "gateway_state.json") or {}
-                try:
-                    pid = int(record.get("pid"))
-                except (TypeError, ValueError):
-                    continue
-                if not _pid_exists(pid):
-                    continue
                 seen.add(pid)
                 sup = supervisor(pid)
             plan.runtimes.append(_runtime("gateway", profile, pid, sup, record.get("code_sha"), record.get("code_version")))

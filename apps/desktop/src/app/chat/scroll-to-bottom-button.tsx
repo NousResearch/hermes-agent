@@ -1,13 +1,13 @@
 import { useStore } from '@nanostores/react'
 import { useReducedMotion } from 'motion/react'
-import { useRef } from 'react'
+import { useMemo, useRef } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { AnimatedInt } from '@/components/ui/diff-count'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
-import { $approvalRequest } from '@/store/prompts'
+import { sessionApprovalRequest } from '@/store/prompts'
 import { $threadJumpButtonVisible, $threadMessagesBelow, requestScrollToBottom } from '@/store/thread-scroll'
 
 /**
@@ -36,11 +36,11 @@ export function ScrollToBottomButton({ sessionId }: { sessionId: string | null }
   const visible = useStore($threadJumpButtonVisible)
   const count = useStore($threadMessagesBelow)
   const reducedMotion = useReducedMotion()
-  const request = useStore($approvalRequest)
+  const request = useStore(useMemo(() => sessionApprovalRequest(sessionId), [sessionId]))
   // Scrolled away while an approval is pending → the inline Run/Reject bar is
   // below the fold. Relabel so the user knows the session needs them, not just
   // that there's more to read.
-  const approval = visible && Boolean(request)
+  const visibleApproval = Boolean(request)
   const hasShownRef = useRef(false)
 
   if (visible) {
@@ -48,10 +48,14 @@ export function ScrollToBottomButton({ sessionId }: { sessionId: string | null }
   }
 
   const state = visible ? 'in' : hasShownRef.current ? 'out' : 'idle'
-  const countLabel = t.sidebar.messageCount(count)
-  const [beforeCount, afterCount] = countLabel.split(String(count))
+  const countLabel = count > 0 ? t.sidebar.messageCount(count) : ''
+  const [beforeCount, afterCount] = countLabel ? countLabel.split(String(count)) : ['', '']
 
-  const label = approval ? t.assistant.approval.jumpToApproval : `${t.assistant.thread.scrollToBottom} · ${countLabel}`
+  const label = visibleApproval
+    ? t.assistant.approval.jumpToApproval
+    : countLabel
+      ? `${t.assistant.thread.scrollToBottom} · ${countLabel}`
+      : t.assistant.thread.scrollToBottom
 
   return (
     <button
@@ -59,7 +63,7 @@ export function ScrollToBottomButton({ sessionId }: { sessionId: string | null }
       aria-label={label}
       className={cn(
         'thread-jump-button absolute left-1/2 z-20 flex h-8 items-center gap-1.5 rounded-full border bg-(--composer-fill) px-3 text-xs font-medium backdrop-blur-[0.75rem] [-webkit-backdrop-filter:blur(0.75rem)]',
-        approval
+        visibleApproval
           ? 'border-primary/40 text-primary hover:bg-primary/10'
           : 'border-border/65 text-muted-foreground hover:text-foreground',
         !visible && 'pointer-events-none'
@@ -76,7 +80,7 @@ export function ScrollToBottomButton({ sessionId }: { sessionId: string | null }
       type="button"
     >
       <Codicon name="arrow-down" size="0.875rem" />
-      {approval ? (
+      {visibleApproval || count <= 0 ? (
         <span>{label}</span>
       ) : (
         <span aria-hidden className="whitespace-nowrap tabular-nums">

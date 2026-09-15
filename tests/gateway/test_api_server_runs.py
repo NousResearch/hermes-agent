@@ -249,6 +249,59 @@ class TestStartRun:
             "runs route must bind chat_id so delegation dispatch sees a wake target"
         )
 
+    @staticmethod
+    async def _wait_completed(cli, run_id: str) -> None:
+        for _ in range(40):
+            status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+            if status["status"] == "completed":
+                return
+            await asyncio.sleep(0.05)
+        raise AssertionError(f"run {run_id} did not complete")
+
+    @staticmethod
+    def _capturing_agent(captured):
+        agent = MagicMock()
+        agent.run_conversation.side_effect = lambda **kwargs: captured.update(kwargs) or {"final_response": "done"}
+        agent.session_prompt_tokens = agent.session_completion_tokens = agent.session_total_tokens = 0
+        return agent
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body, expected", [
+        ({"input": "hello", "author": {"id": "bot:dixie", "name": " dixie ", "is_bot": True, "role": "admin"}},
+         {"id": "bot:dixie", "name": "dixie", "is_bot": True}),
+        ({"input": "hello", "author": {"id": "bot:dixie", "name": "dixie", "is_bot": True, "origin": "cloud-1"}},
+         {"id": "bot:cloud-1/dixie", "name": "dixie", "is_bot": True}),
+        ({"input": "hello"}, "absent"),
+    ], ids=["author", "author with origin", "no author"])
+    async def test_start_passes_normalized_author_to_run_conversation(self, adapter, body, expected):
+        """A body ``author`` reaches ``run_conversation`` normalized; it labels memory only. Without one the
+        call keeps today's shape."""
+        app = _create_runs_app(adapter)
+        captured = {}
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=self._capturing_agent(captured)):
+                resp = await cli.post("/v1/runs", json=body)
+                assert resp.status == 202
+                await self._wait_completed(cli, (await resp.json())["run_id"])
+
+        assert captured["user_message"] == "hello"
+        assert captured.get("turn_author", "absent") == expected
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("author", ["dixie", ["dixie"], 7])
+    async def test_start_rejects_non_object_author(self, adapter, author):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                resp = await cli.post("/v1/runs", json={"input": "hello", "author": author})
+                assert resp.status == 400
+                body = await resp.json()
+        assert body["error"]["code"] == "invalid_author"
+        assert body["error"]["message"] == "author must be an object"
+        mock_create.assert_not_called()
+        assert adapter._run_statuses == {}
+
 
     @pytest.mark.asyncio
     async def test_start_rejects_conflicting_route_and_request_provider(self):

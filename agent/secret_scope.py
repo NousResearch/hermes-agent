@@ -7,10 +7,11 @@ context-local secret scope: ``set_secret_scope(mapping)`` installs the active
 profile's secrets for the current task (a contextvar, so it propagates into the
 agent's worker thread via ``copy_context()``); ``get_secret(name)`` reads from
 it and, when multiplexing is active with no scope set, RAISES rather than
-falling back to ``os.environ``. Design: ``docs/design/multiplexing-gateway.md``.
+falling back to ``os.environ``. Design: ``website/docs/developer-guide/multiplexing-gateway.md``.
 """
 from __future__ import annotations
 
+import codecs
 import os
 import re
 from contextvars import ContextVar, Token
@@ -22,6 +23,14 @@ from typing import Dict, Mapping, Optional
 # at gateway startup when gateway.multiplex_profiles is true.
 _MULTIPLEX_ACTIVE: bool = False
 
+# Context-local counterpart: a task serving a profile OTHER than the process's own, inside a
+# process that is not a multiplexer as a whole — the desktop backend's cron ticker firing a
+# sibling profile's job. Every isolation keyed on ``is_multiplex_active()`` (the routed-dotenv
+# guard, ``get_secret``'s fail-closed miss, subprocess scrubbing, passthrough) applies inside
+# it while the process's own turns keep single-profile semantics. A contextvar, so it reaches
+# the pool worker together with the home override via ``copy_context()``.
+_MULTIPLEX_CONTEXT: ContextVar[bool] = ContextVar("_MULTIPLEX_CONTEXT", default=False)
+
 
 def set_multiplex_active(active: bool) -> None:
     """Mark whether the process is a profile multiplexer (get_secret fails closed)."""
@@ -29,8 +38,19 @@ def set_multiplex_active(active: bool) -> None:
     _MULTIPLEX_ACTIVE = bool(active)
 
 
+def set_multiplex_context(active: bool) -> Token:
+    """Run the current task under multiplex semantics regardless of the process flag.
+    Returns a reset token; pair with :func:`reset_multiplex_context` in a ``finally``."""
+    return _MULTIPLEX_CONTEXT.set(bool(active))
+
+
+def reset_multiplex_context(token: Token) -> None:
+    _MULTIPLEX_CONTEXT.reset(token)
+
+
 def is_multiplex_active() -> bool:
-    return _MULTIPLEX_ACTIVE
+    """True in a multiplexing process, or for a task running under multiplex semantics."""
+    return _MULTIPLEX_ACTIVE or _MULTIPLEX_CONTEXT.get()
 
 
 _SECRET_SCOPE: ContextVar[Optional[Mapping[str, str]]] = ContextVar("_SECRET_SCOPE", default=None)
@@ -124,17 +144,24 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
         val = scope.get(name)
         if val is not None:
             return val
-        return default if _MULTIPLEX_ACTIVE else _environ_or(name, default)
-    if _MULTIPLEX_ACTIVE:
+        return default if is_multiplex_active() else _environ_or(name, default)
+    if is_multiplex_active():
         raise UnscopedSecretError(
             f"get_secret({name!r}) called with no profile secret scope active "
             f"while multiplexing is on. This credential read must run inside a "
             f"set_secret_scope(...) block (the per-turn / per-adapter profile "
             f"scope). Reading os.environ here would risk leaking another "
-            f"profile's value. See docs/design/multiplexing-gateway.md "
+            f"profile's value. See website/docs/developer-guide/multiplexing-gateway.md "
             f"(Workstream A)."
         )
     return _environ_or(name, default)
+
+
+def get_secret_str(name: str, default: str = "") -> str:
+    """``get_secret`` for callers that want a ``str``: ``default`` only when the secret is genuinely
+    unset. Still raises ``UnscopedSecretError`` — swallowing it hides a spawn-site bug."""
+    val = get_secret(name, default)
+    return default if val is None else val
 
 
 def _strip_inline_comment(value: str) -> str:
@@ -160,17 +187,42 @@ def _strip_inline_comment(value: str) -> str:
     return re.split(r"\s+#", value, maxsplit=1)[0].strip()
 
 
+def _parse_env_value(raw_value: str) -> str:
+    """Parse the small .env value subset Hermes writes itself (bare, 'single', or "double" with
+    ``\\"`` / ``\\\\`` escapes)."""
+    value = raw_value.strip()
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        quoted = value[1:-1]
+        parsed: list[str] = []
+        i = 0
+        while i < len(quoted):
+            escaped = quoted[i] == "\\" and quoted[i + 1:i + 2] in ('"', "\\")
+            parsed.append(quoted[i + 1] if escaped else quoted[i])
+            i += 2 if escaped else 1
+        return "".join(parsed)
+    if len(value) >= 2 and value[0] == value[-1] == "'":
+        return value[1:-1]
+    return value
+
+
 def load_env_file(env_path: Path) -> Dict[str, str]:
-    """Parse a ``.env`` file into a dict WITHOUT touching ``os.environ``: ``export``
-    prefix, ``#`` comments, and the writer's quote escapes reversed via the canonical
-    ``_parse_env_value``. ``utf-8-sig`` so a BOM doesn't prefix the first key."""
+    """THE ``.env`` tokenizer: every reader (profile scope, ``hermes_cli.config.load_env``, the dashboard
+    scrub, skill secret capture, managed .env, setup prompts) parses through here so no two boundaries
+    disagree on which keys/values a file defines. Dict only — never touches ``os.environ``. ``export``
+    prefix, ``#`` comments, quote escapes reversed; ``utf-8-sig`` so a BOM doesn't prefix the first key.
+    Invalid UTF-8 decodes as latin-1, exactly like ``env_loader._load_dotenv_with_fallback`` installs it
+    into ``os.environ``. Absent/unreadable → ``{}``."""
     secrets: Dict[str, str] = {}
     try:
-        text = env_path.read_text(encoding="utf-8-sig")
-    except (FileNotFoundError, OSError, UnicodeDecodeError):
+        raw = env_path.read_bytes()
+    except OSError:
         return secrets
-
-    from hermes_cli.config import _parse_env_value
+    if raw.startswith(codecs.BOM_UTF8):
+        raw = raw[len(codecs.BOM_UTF8):]
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("latin-1")
 
     for raw in text.splitlines():
         line = raw.strip()
@@ -196,4 +248,36 @@ def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
     except Exception:
         external_secrets = {}
     secrets.update((k, v) for k, v in external_secrets.items() if not _is_global_env(k))
+    # Administrator-managed ``.env`` LAST, with override: the launch process applies it that way
+    # (``env_loader._apply_managed_env``) so policy beats a user's own value. Under multiplex
+    # semantics ``get_secret`` never reads ``os.environ`` on a scope miss, so a scope built from
+    # the profile files alone would drop a managed-only credential and let the user's value win a
+    # managed-vs-user collision (#111187 review). Every multiplex-authoritative scope — gateway
+    # turn, routed cron fire, external worker — is built here, so managed authority is composed
+    # once, not restored by each consumer.
+    from hermes_cli.managed_scope import load_managed_env  # fail-open: {} when no managed scope
+
+    secrets.update((k, v) for k, v in load_managed_env().items() if not _is_global_env(k))
     return secrets
+
+
+def refresh_installed_secret_scope(hermes_home: Path) -> bool:
+    """Fold a fresh build of *hermes_home*'s secrets into the INSTALLED scope, in place.
+
+    A scope is frozen when installed, but a fire can learn of new values afterwards: a routed cron
+    fire's first agent build discovers plugin secret sources, and under multiplex semantics the
+    reload that follows is hydrate-only (never ``os.environ``), so nothing else would carry those
+    values into the scope this fire already holds. The caller names the home the installed scope
+    was built for. True when a scope was updated; False when none is installed."""
+    scope = _SECRET_SCOPE.get()
+    if not isinstance(scope, dict):
+        return False
+    # REPLACE, don't merge: the rebuild is the profile's current truth, so a name a source has
+    # stopped supplying (rotated, revoked, source removed) must disappear from the fire's scope
+    # rather than survive as the stale value dict.update() would keep.
+    rebuilt = build_profile_secret_scope(hermes_home)
+    # Update first, then drop what is gone: a concurrent reader never sees an emptied scope.
+    scope.update(rebuilt)
+    for name in [n for n in scope if n not in rebuilt]:
+        scope.pop(name, None)
+    return True

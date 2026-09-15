@@ -3,7 +3,13 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { requestGateway } = vi.hoisted(() => ({ requestGateway: vi.fn() }))
+// The host tab lists installed plugins on mount; only an `install` action counts as installing.
+const { requestGateway } = vi.hoisted(() => ({
+  requestGateway: vi.fn(async (_method: string, _params?: Record<string, unknown>): Promise<unknown> => ({
+    plugins: []
+  }))
+}))
+
 vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
   useGatewayRequest: () => ({ requestGateway })
 }))
@@ -21,17 +27,18 @@ import {
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, $gatewayState } from '@/store/session'
 
+import { PluginsTab } from '../skills/plugins-tab'
+
 import { PluginInstallModal } from './plugin-install-modal'
-import { PluginsSettings } from './plugins-settings'
 
 const probePluginRepo = vi.fn()
 const installDesktopPlugin = vi.fn()
 
 const renderFlow = () =>
   render(
-    <MemoryRouter initialEntries={['/settings?tab=plugins']}>
+    <MemoryRouter initialEntries={['/skills?tab=plugins']}>
       <QueryClientProvider client={queryClient}>
-        <PluginsSettings />
+        <PluginsTab profile={null} />
         <PluginInstallModal />
       </QueryClientProvider>
     </MemoryRouter>
@@ -78,8 +85,16 @@ describe('Install from Git entry flow', () => {
             : 'Installs into the default backend (~/.hermes/plugins/)'
         )
       ).toBeTruthy()
-      expect(screen.getByText("Installs into this app's local desktop-plugins folder")).toBeTruthy()
-      expect(requestGateway).not.toHaveBeenCalled()
+      // Local backend: the desktop half is copied out of the installed package
+      // (one source of truth). Remote backend: cloned separately, as before.
+      expect(
+        screen.getByText(
+          mode === 'remote'
+            ? "Installs into this app's local desktop-plugins folder"
+            : 'Loaded into this app from the package above — same for every profile'
+        )
+      ).toBeTruthy()
+      expect(requestGateway).not.toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'install' }))
       expect(installDesktopPlugin).not.toHaveBeenCalled()
       fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
       expect($pluginInstallRequest.get()).toBeNull()
@@ -106,7 +121,30 @@ describe('Install from Git entry flow', () => {
     const boxes = screen.getAllByRole('checkbox')
     expect(boxes.map(box => box.getAttribute('aria-checked'))).toEqual(['false', 'true'])
     expect(probePluginRepo).toHaveBeenCalledTimes(1)
-    expect(requestGateway).not.toHaveBeenCalled()
+    expect(requestGateway).not.toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'install' }))
     expect(installDesktopPlugin).not.toHaveBeenCalled()
+  })
+
+  it('pins a custom install to a full commit SHA and refuses anything shorter', async () => {
+    probePluginRepo.mockResolvedValue({ ok: true, agent: true, desktop: false, warnings: [] })
+    requestGateway.mockImplementation(async method =>
+      method === 'plugins.manage' ? { ok: true, plugin_name: 'plugin', plugins: [] } : { plugins: [] }
+    )
+    renderFlow()
+    act(() => openPluginInstallRequest({ repo: 'https://github.com/example/plugin' }))
+    const pin = await screen.findByRole('textbox', { name: 'Pin to commit (optional)' })
+    const install = screen.getByRole('button', { name: 'Install' }) as HTMLButtonElement
+    fireEvent.change(pin, { target: { value: 'main' } })
+    expect(install.disabled).toBe(true)
+    const sha = 'ABCDEF0123456789abcdef0123456789abcdef01'
+    fireEvent.change(pin, { target: { value: ` ${sha} ` } })
+    expect(install.disabled).toBe(false)
+    fireEvent.click(install)
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith(
+        'plugins.manage',
+        expect.objectContaining({ action: 'install', ref: sha.toLowerCase() })
+      )
+    )
   })
 })

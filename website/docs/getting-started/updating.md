@@ -41,6 +41,21 @@ When you run `hermes update`, the following steps occur:
 5. **Config migration** — detects new config options added since your version and prompts you to set them
 6. **Desktop rebuild (stage-and-swap)** — if the Hermes Desktop app was built from this checkout, it is rebuilt so the GUI matches the new code. The rebuild packs into a temporary staging directory next to `apps/desktop/release/`, verifies the staged app, and only then renames it over the previous build. A rebuild that fails at any point — corrupt Electron download, missing dependency, disk full — leaves the previous app untouched and launchable; the update reports `⚠ Update partially complete` and `hermes desktop` retries the rebuild.
 7. **Gateway auto-restart** — running gateways are refreshed after the update completes so the new code takes effect immediately. Service-managed gateways (systemd on Linux, launchd on macOS) are restarted through the service manager. Manual gateways are relaunched automatically when Hermes can map the running PID back to a profile. Manually-launched `hermes serve` / `hermes dashboard` backends (for example a network-bound serve powering a remote Desktop) are handled the same way: each backend records its bind address in the install's spawn ledger at startup, so the update stops it before the code swap and relaunches it afterward on the **same host and port** — a remote Desktop pointed at that endpoint reconnects instead of stranding. Backends owned by a running Desktop app are left to the app's own respawn.
+8. **Multiplex migration (multi-profile installs)** — once the fleet is verified on the new code, an install with two or more profiles that still run **one gateway per profile** is folded into a single multiplexed default gateway when nothing blocks it (same as `hermes gateway migrate --multiplex --yes`); if a blocker exists (a bot token shared by two profiles, a secondary profile binding a port with no `/p/<profile>/` ingress) the update prints the blockers with their fixes and changes nothing. Single-profile installs are never touched. See [Migrating from per-profile gateways](../user-guide/multi-profile-gateways.md#migrating-from-per-profile-gateways).
+
+### Why the gateway restart can take a while
+
+The restart is drain-first: the running gateway refuses new turns, then waits for in-flight work (chat turns, cron jobs, API runs) to finish before exiting, capped by `agent.restart_after_turn_timeout` (30 minutes by default) so a long-running job is never cut off mid-run. While that wait is in progress the updater prints, every 30 seconds, what the gateway is still holding for — for example:
+
+```
+  → hermes-gateway: draining (up to 1875s)...
+  ⏳ still draining — 1560s left before the forced restart
+     waiting on 1 active work unit(s):
+       • cron job 6ba19dab68df (nightly-scout) in external worker pid 573597, running 6m40s
+     finish or kill the work above to release the drain now; agent.restart_after_turn_timeout in config.yaml caps this wait
+```
+
+Chat turns show their session key, model and current tool; cron jobs show the job id, name and the process running them (an external restart-safe worker on systemd installs, otherwise the gateway itself). `hermes gateway status` lists the same units while the gateway is draining. To stop waiting, finish or kill the listed work, or lower `agent.restart_after_turn_timeout` in `config.yaml` (`0` enters the forced drain immediately).
 
 ### Missing Windows updater files
 

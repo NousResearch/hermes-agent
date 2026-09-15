@@ -15,7 +15,7 @@ from agent.skill_commands import describe_skill_invocation
 from hermes_state_common import (
     FTS_CJK_STALE_KEY, FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS,
     FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, FTS_TRIGRAM_EXCLUDED_SOURCES, FTS_TRIGRAM_SQL,
-    MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION, _FTS_CJK_TRIGGERS,
+    MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION, _FTS_CJK_TRIGGERS, _sql_json_extract,
     escape_like as _escape_like, fts_rebuild_admission, fts_trigram_session_sql, routed_sessions_setting,
 )
 
@@ -154,6 +154,12 @@ def _search_filter_clauses(
     if exclude_sources is not None:
         where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
         params.extend(exclude_sources)
+        # A delegate child spawned under a gateway turn inherits the gateway's source, so the
+        # column alone cannot hide it; the ``_delegate_from`` creation marker completes the
+        # 'subagent' boundary the same way listings and the trigram index do. Scoped to an
+        # explicit 'subagent' exclusion: bare searches keep children word-searchable (v30).
+        if "subagent" in exclude_sources:
+            where.append(f"{_sql_json_extract('s.model_config', '$._delegate_from')} IS NULL")
     if role_filter:
         where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
         params.extend(role_filter)

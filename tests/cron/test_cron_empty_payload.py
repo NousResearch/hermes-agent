@@ -528,12 +528,11 @@ def test_tool_update_still_renames_when_a_real_name_is_given(hermes_env):
 def test_tool_update_blank_scalars_still_clear_workdir_and_context_from(hermes_env):
     """KNOWN HOLE, pinned deliberately — not an endorsement.
 
-    ``workdir:""`` / ``context_from:[]`` / ``enabled_toolsets:[]`` are
-    documented clears, so a bulk-empty update that survives the payload guard
-    (because it keeps a script) still silently drops all three. Closing this
-    means changing documented semantics; recorded as a finding in
-    RECOVERY_REPORT.md instead. This test exists so the behaviour cannot change
-    unnoticed.
+    ``workdir:""`` / ``context_from:[]`` are documented clears, so a bulk-empty
+    update that survives the payload guard (because it keeps a script) still
+    silently drops those two. ``enabled_toolsets:[]`` is no longer a wipe-to
+    inherit: it persists as an explicit empty grant (H3-b). workdir /
+    context_from remain recorded as a finding in RECOVERY_REPORT.md.
     """
     from cron.jobs import create_job, get_job
 
@@ -554,5 +553,5 @@ def test_tool_update_blank_scalars_still_clear_workdir_and_context_from(hermes_e
     assert stored["name"] == "keeper"          # protected by the fix above
     assert stored["script"] == "w.sh"          # payload survives
     assert stored["workdir"] is None           # still clobbered
-    assert stored["enabled_toolsets"] is None  # still clobbered
+    assert stored["enabled_toolsets"] == []    # explicit empty, not inherit
     assert stored["context_from"] is None      # still clobbered

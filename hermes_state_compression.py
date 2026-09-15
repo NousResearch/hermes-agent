@@ -54,6 +54,67 @@ def _cooldown_row(exists: bool, cooldown_until, error) -> Dict[str, Any]:
             "cooldown_until": float(cooldown_until) if cooldown_until is not None else None, "error": error}
 
 
+# A wait is only a claim on the NEXT handoff, so a waiter row must not outlive the wait that
+# created it. Bound it by the longest legitimate wait (acquire_session_turn_lease's 1800s
+# default) plus slack: past that the row is a leak that would fence the conversation off, not a
+# queue position (measured: t_ebfd74d3).
+SESSION_TURN_WAITER_STALE_SECONDS = 1860.0
+
+
+def _session_turn_waiter_is_stale(holder: str, enqueued_at: float, now: float, stale_seconds: float) -> bool:
+    """A waiter's row is dead when its age exceeds the longest legitimate wait or its
+    ``pid=<n>`` process is provably gone."""
+    from hermes_state import _compression_lock_holder_process_is_dead
+
+    if now - float(enqueued_at) > stale_seconds:
+        return True
+    return bool(_compression_lock_holder_process_is_dead(holder))
+
+
+def _prune_session_turn_waiters(conn, conversation_id: str, now: float, *, stale_seconds: float) -> None:
+    """Drop dead waits inside the caller's transaction so they cannot fence the handoff."""
+    rows = conn.execute(
+        "SELECT holder, enqueued_at FROM session_turn_waiters WHERE conversation_id = ?",
+        (conversation_id,),
+    ).fetchall()
+    doomed = [
+        row[0] for row in rows
+        if _session_turn_waiter_is_stale(row[0], row[1], now, stale_seconds)
+    ]
+    if doomed:
+        conn.executemany(
+            "DELETE FROM session_turn_waiters WHERE conversation_id = ? AND holder = ?",
+            [(conversation_id, holder) for holder in doomed],
+        )
+
+
+def _session_turn_waiter_count_on_conn(conn, conversation_id: str) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) FROM session_turn_waiters WHERE conversation_id = ?",
+        (conversation_id,),
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def _session_turn_waiter_ahead(conn, conversation_id: str, holder: str, enqueued_at) -> bool:
+    """True when this claim must lose the handoff to a wait queued ahead of it.
+
+    ``enqueued_at`` is the caller's own queue position, or None for an ordinary claim that has
+    not been waiting: an ordinary claim never jumps a live wait, while a waiting claim is
+    admitted as soon as its wait is the oldest (measured: t_ebfd74d3).
+    """
+    row = conn.execute(
+        "SELECT holder, enqueued_at FROM session_turn_waiters "
+        "WHERE conversation_id = ? AND holder != ? ORDER BY enqueued_at ASC, holder ASC LIMIT 1",
+        (conversation_id, holder),
+    ).fetchone()
+    if not row:
+        return False
+    if enqueued_at is None:
+        return True
+    return (float(row[1]), str(row[0])) < (float(enqueued_at), str(holder))
+
+
 def _claim_lease_row(conn, table: str, key_col: str, key: str, holder: str, now: float, expires_at: float,
                      stale) -> Tuple[bool, Optional[str]]:
     """Single-transaction lease claim: DELETE a stale holder's row (``stale(holder,
@@ -525,7 +586,15 @@ class SessionCompressionMixin:
     ) -> bool:
         """Atomically acquire the cross-process turn lease for a conversation (keyed by the
         lineage root). The walk, the INSERT, and reclaim of expired or dead-local-PID leases
-        share one write transaction."""
+        share one write transaction.
+
+        Fairness is part of the same transaction: a claim that has published a wait
+        (``waiter_enqueued_at``) is admitted once its wait is the oldest, and an ordinary claim
+        is denied while a live wait is queued ahead of it, so the handoff at release goes to the
+        turn that waited instead of to whichever process polls first (measured: t_ebfd74d3).
+        Dead waits are pruned here, so a waiter that died mid-wait cannot fence the conversation
+        off.
+        """
         from hermes_state import _compression_lock_holder_process_is_dead
         if not session_id or not holder:
             return False
@@ -546,7 +615,12 @@ class SessionCompressionMixin:
     ) -> bool:
         """Wait for a cross-process turn lease without holding a SQLite lock. ``on_wait(elapsed)`` is
         best-effort: called when the first attempt fails and about every ``wait_notice_interval_seconds``
-        after. ``should_abort()`` True (e.g. ``/stop``) returns False at once."""
+        after. ``should_abort()`` True (e.g. ``/stop``) returns False at once.
+
+        The wait is published in ``session_turn_waiters`` before the first attempt and withdrawn
+        when it ends, which is what makes the handoff FIFO rather than first-poller-wins
+        (measured: t_ebfd74d3).
+        """
         from hermes_state import classify_persistence_error
         deadline = time.monotonic() + max(0.0, float(wait_seconds))
         wait_started = None

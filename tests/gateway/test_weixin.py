@@ -266,6 +266,10 @@ class TestWeixinChunkDelivery:
         adapter._token_store.get = lambda account_id, chat_id: "ctx-token"
         return adapter
 
+    def _adapter_with_store(self, tmp_path) -> WeixinAdapter:
+        adapter = self._connected_adapter()
+        adapter._token_store = weixin.ContextTokenStore(str(tmp_path))
+        return adapter
 
     @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
     @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
@@ -321,6 +325,200 @@ class TestWeixinChunkDelivery:
         # rest of the current chunk and follow-up sends fail fast.
         assert send_message_mock.await_count == 2
         assert sleep_mock.await_count == 1
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            {"errcode": -14, "errmsg": "session timeout"},
+            {"ret": -2, "errmsg": "prepare failed"},
+            {"ret": -2, "errmsg": "unknown error"},
+            {"ret": -2, "msg": "prepare failed"},
+        ],
+    )
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    @pytest.mark.asyncio
+    async def test_stale_session_is_actionable_and_does_not_open_rate_limit_circuit(
+        self, send_message_mock, sleep_mock, response,
+    ):
+        adapter = self._connected_adapter()
+        adapter._send_chunk_retries = 1
+        adapter._send_chunk_retry_delay_seconds = 0
+        send_message_mock.return_value = response
+
+        result = await adapter.send("wxid_test123", "hello")
+
+        assert result.success is False
+        assert "stale session" in (result.error or "").lower()
+        assert "message the bot" in (result.error or "").lower()
+        assert "rate limit" not in (result.error or "").lower()
+        assert adapter._rate_limit_events == []
+        assert adapter._rate_limit_cooldown_remaining() == 0
+        assert send_message_mock.await_count == 2
+        assert send_message_mock.await_args_list[0].kwargs["context_token"] == "ctx-token"
+        assert send_message_mock.await_args_list[1].kwargs["context_token"] is None
+        sleep_mock.assert_not_awaited()
+
+
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    @pytest.mark.asyncio
+    async def test_stale_context_token_recovers_with_zero_retry_budget(self, send_message_mock, tmp_path):
+        adapter = self._adapter_with_store(tmp_path)
+        adapter._send_chunk_retries = 0
+        await adapter._token_store.set(adapter._account_id, "wxid_test123", "ctx-token")
+        send_message_mock.side_effect = [
+            {"ret": -2, "errmsg": "prepare failed"},
+            {"ret": 0},
+        ]
+
+        result = await adapter.send("wxid_test123", "hello")
+
+        assert result.success is True
+        assert [
+            call.kwargs["context_token"]
+            for call in send_message_mock.await_args_list
+        ] == ["ctx-token", None]
+        assert adapter._token_store.get(adapter._account_id, "wxid_test123") is None
+
+        restored_store = weixin.ContextTokenStore(str(tmp_path))
+        restored_store.restore(adapter._account_id)
+        assert restored_store.get(adapter._account_id, "wxid_test123") is None
+
+
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    @pytest.mark.asyncio
+    async def test_stale_context_token_is_not_reused_for_later_chunks(self, send_message_mock, tmp_path):
+        adapter = self._adapter_with_store(tmp_path)
+        adapter.MAX_MESSAGE_LENGTH = 12
+        adapter._send_chunk_delay_seconds = 0
+        await adapter._token_store.set(adapter._account_id, "wxid_test123", "ctx-token")
+        send_message_mock.side_effect = [
+            {"ret": -2, "errmsg": "prepare failed"},
+            {"ret": 0},
+            {"ret": 0},
+        ]
+
+        result = await adapter.send("wxid_test123", "first\n\nsecond")
+
+        assert result.success is True
+        assert [
+            call.kwargs["context_token"]
+            for call in send_message_mock.await_args_list
+        ] == ["ctx-token", None, None]
+
+
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    @pytest.mark.asyncio
+    async def test_failed_stale_recovery_does_not_restart_with_original_token(self, send_message_mock, tmp_path):
+        adapter = self._adapter_with_store(tmp_path)
+        adapter._send_chunk_retries = 1
+        adapter._send_chunk_retry_delay_seconds = 0
+        await adapter._token_store.set(adapter._account_id, "wxid_test123", "ctx-token")
+        send_message_mock.side_effect = [
+            {"ret": -2, "errmsg": "prepare failed"},
+            RuntimeError("tokenless recovery failed"),
+            RuntimeError("tokenless retry failed"),
+            {"ret": 0},
+        ]
+
+        result = await adapter.send("wxid_test123", "hello")
+
+        assert result.success is False
+        assert [
+            call.kwargs["context_token"]
+            for call in send_message_mock.await_args_list
+        ] == ["ctx-token", None, None]
+
+
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    @pytest.mark.asyncio
+    async def test_stale_tokenless_failure_does_not_open_rate_limit_circuit(self, send_message_mock, tmp_path):
+        """#74572 follow-up: a stale session that survives the tokenless
+        recovery is not a genuine rate limit and must not trip the breaker."""
+        adapter = self._adapter_with_store(tmp_path)
+        adapter._send_chunk_retries = 1
+        adapter._send_chunk_retry_delay_seconds = 0
+        adapter._rate_limit_circuit_threshold = 1
+        adapter._rate_limit_circuit_open_seconds = 60
+        await adapter._token_store.set(adapter._account_id, "wxid_test123", "ctx-token")
+        send_message_mock.side_effect = [
+            {"ret": -2, "errmsg": "prepare failed"},
+            {"ret": -2, "errmsg": "prepare failed"},
+        ]
+
+        result = await adapter.send("wxid_test123", "hello")
+
+        assert result.success is False
+        assert "stale session" in (result.error or "").lower()
+        assert adapter._rate_limit_circuit_until == 0.0
+        assert [
+            call.kwargs["context_token"]
+            for call in send_message_mock.await_args_list
+        ] == ["ctx-token", None]
+
+
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    @pytest.mark.asyncio
+    async def test_stale_response_does_not_delete_newer_context_token(self, send_message_mock, tmp_path):
+        adapter = self._adapter_with_store(tmp_path)
+        adapter._send_chunk_retries = 0
+        await adapter._token_store.set(adapter._account_id, "wxid_test123", "ctx-token")
+
+        async def refresh_before_stale_response(*args, **kwargs):
+            if kwargs["context_token"] == "ctx-token":
+                await adapter._token_store.set(
+                    adapter._account_id,
+                    "wxid_test123",
+                    "fresh-token",
+                )
+                return {"ret": -2, "errmsg": "prepare failed"}
+            return {"ret": 0}
+
+        send_message_mock.side_effect = refresh_before_stale_response
+
+        result = await adapter.send("wxid_test123", "hello")
+
+        assert result.success is True
+        assert adapter._token_store.get(
+            adapter._account_id,
+            "wxid_test123",
+        ) == "fresh-token"
+
+        restored_store = weixin.ContextTokenStore(str(tmp_path))
+        restored_store.restore(adapter._account_id)
+        assert restored_store.get(
+            adapter._account_id,
+            "wxid_test123",
+        ) == "fresh-token"
+
+
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    @pytest.mark.asyncio
+    async def test_context_token_is_loaded_after_send_gate_is_acquired(self, send_message_mock, tmp_path):
+        adapter = self._adapter_with_store(tmp_path)
+        await adapter._token_store.set(adapter._account_id, "wxid_test123", "old-token")
+        send_message_mock.return_value = {"ret": 0}
+
+        async def send_after_refresh():
+            await adapter._send_text_gate.acquire()
+            try:
+                send_task = asyncio.create_task(
+                    adapter.send("wxid_test123", "hello")
+                )
+                await asyncio.sleep(0)
+                await adapter._token_store.set(
+                    adapter._account_id,
+                    "wxid_test123",
+                    "fresh-token",
+                )
+            finally:
+                adapter._send_text_gate.release()
+            return await send_task
+
+        result = await send_after_refresh()
+
+        assert result.success is True
+        assert send_message_mock.await_args.kwargs["context_token"] == "fresh-token"
 
 
 class TestWeixinOutboundMedia:
@@ -552,15 +750,55 @@ class TestIsStaleSessionRet:
     """Regression test for #17228: distinguish stale-session ret=-2 from rate-limit ret=-2."""
 
 
+    def test_prepare_failed_is_only_an_outbound_context_token_signal(self):
+        # ``prepare failed`` is a stale ``context_token`` variant on the
+        # outbound send path only; the shared poll-path classifier keeps
+        # the narrower ``unknown error`` semantics.
+        assert weixin._is_stale_session_ret(-2, None, "prepare failed") is False
+        assert weixin._is_stale_context_token_ret(
+            -2,
+            None,
+            "prepare failed",
+        ) is True
+
+
     def test_ret_minus_2_with_freq_limit_is_not_stale(self):
         # Genuine rate limit — must NOT be treated as stale session.
         assert weixin._is_stale_session_ret(-2, None, "freq limit") is False
 
 
-    def test_errcode_minus_14_is_not_matched_here(self):
-        # -14 is handled by the separate SESSION_EXPIRED_ERRCODE path; the
-        # helper only disambiguates -2 from a genuine rate limit.
-        assert weixin._is_stale_session_ret(-14, None, "session expired") is False
+    @pytest.mark.parametrize("ret, errcode", [(-14, None), (None, -14)])
+    def test_minus_14_is_stale_regardless_of_message(self, ret, errcode):
+        assert weixin._is_stale_session_ret(ret, errcode, "session timeout") is True
+
+    @pytest.mark.parametrize("errmsg", ["session timeout", "session expired", "context_token expired"])
+    def test_minus_2_with_unverified_session_text_is_not_stale(self, errmsg):
+        assert weixin._is_stale_session_ret(-2, None, errmsg) is False
+
+
+class TestContextTokenStore:
+    @pytest.mark.asyncio
+    async def test_delete_removes_only_matching_peer_and_persists(self, tmp_path):
+        store = weixin.ContextTokenStore(str(tmp_path))
+        await store.set("account-a", "peer-a", "stale-token")
+        await store.set("account-a", "peer-b", "fresh-token")
+        await store.set("account-b", "peer-a", "other-account-token")
+
+        assert await store.delete("account-a", "peer-a", "replacement-token") is False
+        assert store.get("account-a", "peer-a") == "stale-token"
+
+        assert await store.delete("account-a", "peer-a", "stale-token") is True
+
+        assert store.get("account-a", "peer-a") is None
+        assert store.get("account-a", "peer-b") == "fresh-token"
+        assert store.get("account-b", "peer-a") == "other-account-token"
+
+        restored_store = weixin.ContextTokenStore(str(tmp_path))
+        restored_store.restore("account-a")
+        restored_store.restore("account-b")
+        assert restored_store.get("account-a", "peer-a") is None
+        assert restored_store.get("account-a", "peer-b") == "fresh-token"
+        assert restored_store.get("account-b", "peer-a") == "other-account-token"
 
 
 class TestWeixinContentDedup:

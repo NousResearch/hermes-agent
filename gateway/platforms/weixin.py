@@ -66,12 +66,22 @@ _FENCE_RE = re.compile(r"^```([^\n`]*)\s*$")
 
 
 def _is_stale_session_ret(ret: "Optional[int]", errcode: "Optional[int]", errmsg: "Optional[str]") -> bool:
-    """ret/errcode=-2 with 'unknown error' is a stale-session signal (like -14), not a real rate limit."""
-    return (ret == RATE_LIMIT_ERRCODE or errcode == RATE_LIMIT_ERRCODE) and (errmsg or "").lower() == "unknown error"
+    """Return whether a poll response is a known stale-session signal."""
+    if SESSION_EXPIRED_ERRCODE in (ret, errcode):
+        return True
+    return (ret == RATE_LIMIT_ERRCODE or errcode == RATE_LIMIT_ERRCODE) and (errmsg or "").strip().lower() == "unknown error"
+
+
+def _is_stale_context_token_ret(ret: "Optional[int]", errcode: "Optional[int]", errmsg: "Optional[str]") -> bool:
+    """Return whether an outbound response reports a stale context token."""
+    return _is_stale_session_ret(ret, errcode, errmsg) or (
+        (ret == RATE_LIMIT_ERRCODE or errcode == RATE_LIMIT_ERRCODE)
+        and (errmsg or "").strip().lower() == "prepare failed"
+    )
 
 
 def _is_session_expired(resp: Dict[str, Any], ret: Any, errcode: Any) -> bool:
-    return SESSION_EXPIRED_ERRCODE in (ret, errcode) or _is_stale_session_ret(ret, errcode, resp.get("errmsg"))
+    return _is_stale_session_ret(ret, errcode, resp.get("errmsg") or resp.get("msg"))
 
 
 def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
@@ -202,6 +212,17 @@ class ContextTokenStore:
             prefix = f"{account_id}:"
             payload = {key[len(prefix):]: value for key, value in self._cache.items() if key.startswith(prefix)}
             await asyncio.to_thread(self._persist, account_id, payload)
+
+    async def delete(self, account_id: str, user_id: str, expected_token: str) -> bool:
+        async with self._persist_lock:
+            key = self._key(account_id, user_id)
+            if self._cache.get(key) != expected_token:
+                return False
+            self._cache.pop(key, None)
+            prefix = f"{account_id}:"
+            payload = {key[len(prefix):]: value for key, value in self._cache.items() if key.startswith(prefix)}
+            await asyncio.to_thread(self._persist, account_id, payload)
+            return True
 
     def _persist(self, account_id: str, payload: Dict[str, str]) -> None:
         try:
@@ -964,14 +985,13 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             self._rate_limit_circuit_until = max(self._rate_limit_circuit_until, time.monotonic() + self._rate_limit_circuit_open_seconds)
         return self._rate_limit_cooldown_remaining() > 0
 
-    async def _send_text_chunk(self, *, chat_id: str, chunk: str, context_token: Optional[str], client_id: str) -> None:
-        """Send one text chunk with retry/backoff under the adapter-wide text gate. On session-expired (errcode -14)
-        retry once *without* ``context_token`` — iLink accepts tokenless sends as a degraded fallback, which keeps cron
-        pushes working when no user message refreshed the session."""
+    async def _send_text_chunk(self, *, chat_id: str, chunk: str, client_id: str) -> None:
+        """Send one text chunk, retrying a stale token once outside the transient retry budget."""
         async with self._send_text_gate:
+            context_token = self._token_store.get(self._account_id, chat_id)
             last_error: Optional[Exception] = None
-            retried_without_token = False
-            for attempt in range(self._send_chunk_retries + 1):
+            attempt = 0
+            while attempt <= self._send_chunk_retries:
                 if self._rate_limit_cooldown_remaining() > 0:
                     raise RuntimeError(f"iLink sendmessage rate limited; cooldown active for {self._rate_limit_cooldown_remaining():.1f}s")
                 try:
@@ -980,12 +1000,19 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                         context_token=context_token, client_id=client_id)
                     ret, errcode = (resp.get("ret"), resp.get("errcode")) if resp and isinstance(resp, dict) else (None, None)
                     if (ret is not None and ret != 0) or (errcode is not None and errcode != 0):
-                        if _is_session_expired(resp, ret, errcode) and not retried_without_token and context_token:
-                            retried_without_token, context_token = True, None
-                            self._token_store._cache.pop(self._token_store._key(self._account_id, chat_id), None)
+                        is_stale = _is_stale_context_token_ret(ret, errcode, resp.get("errmsg") or resp.get("msg"))
+                        if is_stale and context_token:
+                            stale_token, context_token = context_token, None
+                            await self._token_store.delete(self._account_id, chat_id, stale_token)
                             logger.warning("[%s] session expired for %s; retrying without context_token", self.name, _safe_id(chat_id))
                             continue
                         errmsg = resp.get("errmsg") or resp.get("msg")
+                        if is_stale:
+                            last_error = RuntimeError(
+                                f"iLink stale session: ret={ret} errcode={errcode} errmsg={errmsg or 'unknown error'}; "
+                                "ask the user to message the bot in WeChat to refresh the session, then retry (or re-run iLink login)"
+                            )
+                            break
                         if ret != RATE_LIMIT_ERRCODE and errcode != RATE_LIMIT_ERRCODE:
                             raise RuntimeError(f"iLink sendmessage error: ret={ret} errcode={errcode} errmsg={errmsg or 'unknown error'}")
                         # Keep a descriptive error for when the loop exhausts while still limited.
@@ -999,6 +1026,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                         wait = self._send_chunk_retry_delay_seconds * 3  # 3x backoff for rate limit
                         logger.warning("[%s] rate limited for %s; backing off %.1fs before retry", self.name, _safe_id(chat_id), wait)
                         await asyncio.sleep(wait)
+                        attempt += 1
                         continue
                     self._rate_limit_events.clear()
                     self._rate_limit_circuit_until = 0.0
@@ -1012,13 +1040,13 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                                    self.name, _safe_id(chat_id), attempt + 1, self._send_chunk_retries + 1, wait, exc)
                     if wait > 0:
                         await asyncio.sleep(wait)
+                    attempt += 1
             assert last_error is not None
             raise last_error
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
-        context_token = self._token_store.get(self._account_id, chat_id)
         last_message_id: Optional[str] = None
         # Extract MEDIA: tags and bare local file paths before text delivery, under the routed
         # profile's scope: Docker MEDIA translation infers the sandbox from the active profile (#109024).
@@ -1038,7 +1066,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             chunks = [c for c in self._split_text(self.format_message(final_content)) if c and c.strip()]
             for idx, chunk in enumerate(chunks):
                 client_id = f"hermes-weixin-{uuid.uuid4().hex}"
-                await self._send_text_chunk(chat_id=chat_id, chunk=chunk, context_token=context_token, client_id=client_id)
+                await self._send_text_chunk(chat_id=chat_id, chunk=chunk, client_id=client_id)
                 last_message_id = client_id
                 if idx < len(chunks) - 1 and self._send_chunk_delay_seconds > 0:
                     await asyncio.sleep(self._send_chunk_delay_seconds)

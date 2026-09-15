@@ -316,21 +316,32 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
 def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict:
     """Truncated tool call: re-run the same call (up to 4×) with a boosted max_tokens —
     a real output-cap truncation needs it, harmless for a network stall — else refuse to
-    execute incomplete arguments."""
+    execute incomplete arguments. Retries that cannot raise the cap are not issued: they
+    re-bill the identical request to hit the ceiling it just failed at (#110126 layer 3).
+    """
     agent = st.agent
-    if st.truncated_tool_call_retries < 4:
-        st.truncated_tool_call_retries += 1
-        n = st.truncated_tool_call_retries
-        if st.is_stub:
-            agent._buffer_vprint(f"⚠️  Stream interrupted mid tool-call — retrying ({n}/4)...")
-        else:
-            agent._buffer_vprint(f"⚠️  Truncated tool call detected — retrying API call ({n}/4)...")
+    n = st.truncated_tool_call_retries + 1
+    if n <= 4:
         _tc_boost = (agent.max_tokens if agent.max_tokens else 4096) * (2 ** n)
         _tc_requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
         if _tc_requested_cap is not None:
             _tc_boost = max(_tc_boost, _tc_requested_cap)
-        agent._ephemeral_max_output_tokens = min(_tc_boost, max(32768, _tc_requested_cap or 0))
-        return st.done("continue")  # don't append the broken response
+        _tc_cap = min(_tc_boost, max(32768, _tc_requested_cap or 0))
+        # The first retry always goes out — the truncation may not be cap-driven. From
+        # there on, a cap that cannot grow means retrying this same request at this same
+        # ceiling cannot succeed either: refuse now instead of spending the rest.
+        if st.is_stub or n == 1 or _tc_cap > (_tc_requested_cap or 0):
+            st.truncated_tool_call_retries = n
+            if st.is_stub:
+                agent._buffer_vprint(f"⚠️  Stream interrupted mid tool-call — retrying ({n}/4)...")
+            else:
+                agent._buffer_vprint(f"⚠️  Truncated tool call detected — retrying API call ({n}/4)...")
+            agent._ephemeral_max_output_tokens = _tc_cap
+            return st.done("continue")  # don't append the broken response
+        if _tc_requested_cap:
+            agent._buffer_vprint(
+                f"⚠️  Output cap is already {_tc_requested_cap:,} tokens — a retry cannot raise it."
+            )
     agent._flush_status_buffer()
     if st.is_stub:
         agent._vprint(

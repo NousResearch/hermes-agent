@@ -86,22 +86,32 @@ class TestNvidiaProfileWiring:
 
 
 class TestDeepSeekProfileWiring:
-    def test_deepseek_no_forced_max_tokens(self, transport):
-        profile = get_provider_profile("deepseek")
-        kwargs = transport.build_kwargs(
-            model="deepseek-chat",
+    """#110126 layer 1 — the profile's declared output cap must reach the request."""
+
+    def _build(self, transport, **params):
+        return transport.build_kwargs(
+            model="deepseek-v4-flash",
             messages=_msgs(),
             tools=None,
-            provider_profile=profile,
-            max_tokens=None,
+            provider_profile=get_provider_profile("deepseek"),
             max_tokens_param_fn=lambda x: {"max_tokens": x} if x else {},
             timeout=300,
             reasoning_config=None,
             request_overrides=None,
             session_id="test",
             ollama_num_ctx=None,
+            **params,
         )
-        # DeepSeek has no default_max_tokens
-        assert kwargs["model"] == "deepseek-chat"
-        assert kwargs.get("max_tokens") is None or "max_tokens" not in kwargs
+
+    def test_profile_default_cap_is_sent_without_explicit_config(self, transport):
+        kwargs = self._build(transport, max_tokens=None)
+        assert kwargs["max_tokens"] == 65536
+
+    def test_explicit_max_tokens_wins_over_profile_default(self, transport):
+        kwargs = self._build(transport, max_tokens=1234)
+        assert kwargs["max_tokens"] == 1234
+
+    def test_ephemeral_retry_budget_wins_over_profile_default(self, transport):
+        kwargs = self._build(transport, max_tokens=None, ephemeral_max_output_tokens=77)
+        assert kwargs["max_tokens"] == 77
 

@@ -28,6 +28,7 @@ import type {
   ThemeSeriesColors,
   ThemeTypography,
 } from "./types";
+import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
 
 /** LocalStorage key — pre-applied before the React tree mounts to avoid
@@ -469,6 +470,22 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     _ACTIVE_FONT_OVERRIDE = fontId;
     applyTheme(resolveTheme(themeName));
   }, [themeName, resolveTheme, fontId]);
+
+  // Persian (and other RTL locales) look bad in the default Latin-first
+  // system stack. When the user hasn't picked a font themselves, auto-switch
+  // to Vazirmatn while an RTL locale is active; clearing the override on
+  // locale change back to LTR restores the theme default. An explicit user
+  // font choice always wins.
+  const { locale } = useI18n();
+  const localeIsRtl = locale === "fa" || locale === "ar";
+  useEffect(() => {
+    if (localeIsRtl && fontId === THEME_DEFAULT_FONT_ID) {
+      _ACTIVE_FONT_OVERRIDE = "vazirmatn";
+      applyTheme(resolveTheme(themeName));
+    }
+    // No cleanup — the next locale/theme/font change re-runs applyTheme,
+    // which restores the correct font for the new state.
+  }, [localeIsRtl, fontId, resolveTheme, themeName]);
 
   // Load server-side themes (built-ins + user YAMLs) once on mount.
   useEffect(() => {

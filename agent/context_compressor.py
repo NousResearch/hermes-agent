@@ -1878,6 +1878,12 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._ineffective_compression_count = 0
         # Wall-clock probe deadline; 0.0 = unarmed (durable copy re-read via _load_anti_thrash_recovery_deadline).
         self._anti_thrash_recovery_deadline = self._structural_no_op_backoff_until = 0.0
+        # #109682 fixed-point detection: last completed compaction size, continuation nudges injected
+        # since it, and the armed verdict. In-memory like the structural backoff — a session end,
+        # a moved size or a fresh user turn disarms it.
+        self._last_compaction_size: Optional[int] = None
+        self._continuation_nudges_since_compaction = 0
+        self._compaction_fixed_point = False
         # Observability only; never feeds the strike latch or the fallback streak.
         self._prellm_skip_count = 0
         # Only a healthy completed summary resets this; ordinary fitting responses do not.
@@ -2042,6 +2048,54 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 "Compression skipped (%s): retrying in %.0fs (structural no-op backoff)", reason,
                 self._STRUCTURAL_NO_OP_BACKOFF_SECONDS,
             )
+
+    def note_continuation_nudge(self) -> None:
+        """One length-truncation continuation nudge landed in the transcript (#109682)."""
+        self._continuation_nudges_since_compaction += 1
+
+    def note_fresh_user_turn(self) -> None:
+        """A genuine new turn arrived: clear the consecutive-compaction fixed point (#109682).
+        The transcript holds new input now, so auto-compaction and continuations are live again."""
+        self._continuation_nudges_since_compaction = 0
+        self._compaction_fixed_point = False
+
+    def record_compaction_size(self, size: int) -> None:
+        """Track what a completed compaction produced and arm the #109682 fixed-point guard.
+
+        Near-identical consecutive sizes alone are normal — a steady-state compaction target
+        lands in the same band pass after pass. They only prove a fixed point when a
+        continuation nudge was injected since the previous pass with no new user turn in
+        between: nothing new entered the transcript, so the next pass cannot make progress,
+        and re-compacting serves only the nudge loop it came from. Cleared by a size that
+        moved, a fresh user turn, a manual /compress, or a session reset.
+        """
+        try:
+            size = int(size)
+        except (TypeError, ValueError):
+            return
+        if size <= 0:
+            return
+        _previous = self._last_compaction_size
+        self._last_compaction_size = size
+        _nudged = self._continuation_nudges_since_compaction > 0
+        self._continuation_nudges_since_compaction = 0
+        if _previous is None:
+            return
+        if abs(size - _previous) <= max(size, _previous) * self._COMPACTION_FIXED_POINT_TOLERANCE:
+            if _nudged:
+                self._compaction_fixed_point = True
+                if not self.quiet_mode:
+                    logger.warning(
+                        "Compaction fixed point: consecutive compactions landed at ~%s tokens with only "
+                        "continuation nudges between them — deferring further compaction/continuation until "
+                        "new input or a differently-sized pass.", f"{size:,}",
+                    )
+        else:
+            self._compaction_fixed_point = False
+
+    def compaction_fixed_point_reached(self) -> bool:
+        """True while the consecutive-compaction size fixed point is armed (#109682)."""
+        return bool(self._compaction_fixed_point)
 
     def record_rejected_compaction(self) -> None:
         """One ineffective strike for a pre-commit rejection; no real-usage arming or streak change (nothing committed)."""
@@ -2229,6 +2283,11 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
 
     # Structural no-op (nothing eligible) is not an ineffective attempt: defer retries instead of striking.
     _STRUCTURAL_NO_OP_BACKOFF_SECONDS = 300.0
+
+    # #109682: consecutive compactions landing within this relative band on a transcript whose only
+    # new rows were continuation nudges are a fixed point, not slow progress — re-running the same
+    # compaction, and nudging again, can only repeat the cycle.
+    _COMPACTION_FIXED_POINT_TOLERANCE = 0.02
 
     @staticmethod
     def _coerce_max_tokens(value: Any) -> int | None:
@@ -2489,8 +2548,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
 
     def should_compress_info(self, prompt_tokens: int = None) -> "tuple[bool, str | None]":
         """Return ``(should_compress, reason)``.
-        ``reason`` is None unless compression is needed but blocked: ``"cooldown:<seconds>"`` or
-        ``"ineffective"``. Callers should surface a warning when it is non-None."""
+        ``reason`` is None unless compression is needed but blocked: ``"cooldown:<seconds>"``,
+        ``"structural_backoff:<seconds>"``, ``"fixed_point"`` or ``"ineffective"``. Callers should
+        surface a warning when it is non-None."""
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
             return False, None
@@ -2499,13 +2559,15 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         return True, None
 
     def _compression_block_reason(self) -> "str | None":
-        """Block reason: ``"cooldown:<s>"``, ``"structural_backoff:<s>"``, ``"ineffective"``, or None."""
+        """Block reason: ``"cooldown:<s>"``, ``"structural_backoff:<s>"``, ``"fixed_point"``, ``"ineffective"``, or None."""
         for label, until in (
             ("cooldown", self._summary_failure_cooldown_until), ("structural_backoff", self._structural_no_op_backoff_until),
         ):
             remaining = until - time.monotonic()
             if remaining > 0:
                 return f"{label}:{remaining:.0f}"
+        if self._compaction_fixed_point:
+            return "fixed_point"
         return "ineffective" if self._tripped() else None
 
     def _tripped(self) -> bool:
@@ -2546,6 +2608,13 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 if not self.quiet_mode:
                     logger.debug("Compression deferred — %s for %.0fs more", what, remaining)
                 return True
+        # #109682 fixed point: the last two compactions produced the same transcript size with only
+        # continuation nudges between them — re-running the same pass cannot change anything, and
+        # the nudge/compaction cycle it feeds is the bug. Cleared by fresh input or a moved size.
+        if self._compaction_fixed_point:
+            if not self.quiet_mode:
+                logger.debug("Compression deferred — consecutive compactions hit a size fixed point")
+            return True
         # Anti-thrash back-off must not be permanent: after _ANTI_THRASH_RECOVERY_SECONDS blocked, allow ONE
         # probe by dropping counters to 1 strike (persisted). Deadline is armed lazily and persisted on the row.
         if self._tripped():
@@ -4355,6 +4424,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         if force:
             self._clear_compression_failure_cooldown()
             self._structural_no_op_backoff_until = 0.0
+            # Manual /compress is explicit user intent and may re-scope; a #109682 fixed point is
+            # not a reason to refuse it (the next completed pass re-judges the sizes).
+            self._compaction_fixed_point = False
         return telemetry
 
     def _structural_no_op_result(self, telemetry: Dict[str, Any], failure_class: str, reason: str) -> None:

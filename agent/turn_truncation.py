@@ -64,6 +64,17 @@ _CEILING_NO_TEXT = (
 # Below this many free tokens the prompt itself filled the window: a continuation nudge +
 # fragment costs ~100 tokens per attempt, so retrying only shrinks the room (#106120).
 _MIN_CONTINUATION_HEADROOM = 512
+# #109682: consecutive near-identical compactions are a fixed point — continuing from there
+# only re-runs the cycle that produced them, so end the turn instead of nudging.
+_COMPACTION_FIXED_POINT_FINAL = (
+    "⚠️ **Compaction fixed point.** Consecutive compactions returned the same context size — nothing "
+    "new entered the transcript between them, so continuing would only repeat the same cycle "
+    "(compaction → truncated output → continuation nudge). The partial response above is kept.\n\n"
+    "To continue:\n"
+    "→ Send your next message — compaction and continuations resume with it\n"
+    "→ Or `/compress <topic>` to re-compact on a smaller scope\n"
+    "→ Or `/new` to start a fresh session"
+)
 _WINDOW_FILLED = (
     "⚠️ **Context window full.** The prompt used {prompt:,} of this model's {ctx:,}-token "
     "context window, leaving no room to answer in. This is a context-window limit, not an "
@@ -232,11 +243,39 @@ def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[Tru
     return None
 
 
+def _compaction_fixed_point_reached(agent: Any) -> bool:
+    """#109682: True only when the bound compressor reports an armed compaction fixed point.
+    Test doubles: only a real ``True`` verdict blocks a nudge — a Mock return is not a detection.
+    """
+    detector = getattr(getattr(agent, "context_compressor", None), "compaction_fixed_point_reached", None)
+    if not callable(detector):
+        return False
+    try:
+        return detector() is True
+    except Exception:
+        logger.debug("compaction fixed-point query failed", exc_info=True)
+        return False
+
+
+def _note_continuation_nudge(agent: Any) -> None:
+    """#109682: tell the compressor a continuation nudge entered the transcript (no new user turn)."""
+    recorder = getattr(getattr(agent, "context_compressor", None), "note_continuation_nudge", None)
+    if callable(recorder):
+        try:
+            recorder()
+        except Exception:
+            logger.debug("continuation-nudge note failed", exc_info=True)
+
+
 def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -> TruncationVerdict:
     """Text truncation (no tool calls): append the fragment + a continuation nudge (up to
     4), then the ceiling exit that drops the fragment trail and keeps the stitched partial.
     Never appends an interim assistant row with NO visible content — strict providers
-    reject it with 400 — only the nudge."""
+    reject it with 400 — only the nudge.
+
+    A #109682 compaction fixed point (consecutive compactions at ~the same size with only
+    continuation nudges in between) takes the same exit EARLY: another nudge would only feed
+    the loop that produced the fixed point."""
     from agent.conversation_loop import _get_continuation_prompt, _join_truncated_parts
 
     agent = st.agent
@@ -254,7 +293,8 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
         st.truncated_response_parts.append(_interim_content)
 
     filled = st.window_filled
-    if n < 4 and filled is None:
+    _at_fixed_point = _compaction_fixed_point_reached(agent)
+    if n < 4 and filled is None and not _at_fixed_point:
         _dropped_tools = getattr(st.response, "_dropped_tool_names", None)
         if st.is_stub and _dropped_tools:
             agent._vprint(
@@ -269,6 +309,7 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
             "role": "user", "content": _get_continuation_prompt(st.is_stub, _dropped_tools),
             "_length_continuation_nudge": True,
         })
+        _note_continuation_nudge(agent)
         agent._session_messages = messages
         _retry.restart_with_length_continuation = True
         return st.done("break")
@@ -276,14 +317,21 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     partial_response = agent._strip_think_blocks(_join_truncated_parts(st.truncated_response_parts)).strip()
     # The one-shot reasoning-off override must not leak into the next turn.
     agent._ephemeral_reasoning_off = False
-    agent._vprint(
-        f"{agent.log_prefix}⚠️  Not continuing — each attempt would only grow the prompt."
-        if filled is not None else
-        f"{agent.log_prefix}⚠️  Response still truncated after {n} continuation attempts — "
-        + ("keeping the partial response received so far." if partial_response
-           else "no visible text was produced."),
-        force=True,
-    )
+    if _at_fixed_point:
+        agent._vprint(
+            f"{agent.log_prefix}⚠️  Not continuing — consecutive compactions returned the same "
+            "transcript size (fixed point); another nudge would only repeat the cycle.",
+            force=True,
+        )
+    else:
+        agent._vprint(
+            f"{agent.log_prefix}⚠️  Not continuing — each attempt would only grow the prompt."
+            if filled is not None else
+            f"{agent.log_prefix}⚠️  Response still truncated after {n} continuation attempts — "
+            + ("keeping the partial response received so far." if partial_response
+               else "no visible text was produced."),
+            force=True,
+        )
     # Unanswered continue nudges made every later turn re-truncate: drop the trail.
     idx = st.current_turn_user_idx
     _turn_start = idx + 1 if isinstance(idx, int) and idx >= 0 else 0
@@ -303,6 +351,12 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
         return st.end_turn(
             f"{partial_response}\n\n{notice}" if partial_response else notice,
             f"Prompt used {filled[0]} of {filled[1]} context tokens; no room to answer",
+        )
+    if _at_fixed_point:
+        return st.end_turn(
+            f"{partial_response}\n\n{_COMPACTION_FIXED_POINT_FINAL}" if partial_response
+            else _COMPACTION_FIXED_POINT_FINAL,
+            "Consecutive compactions returned the same transcript size (fixed point)",
         )
     return st.end_turn(
         partial_response or _CEILING_NO_TEXT,

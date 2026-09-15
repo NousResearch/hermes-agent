@@ -181,6 +181,33 @@ class TestSlackSendClarify:
         assert mock_client.chat_update.await_count == 1
         assert not cm._entries["cid-retire"].event.is_set()
 
+    @pytest.mark.asyncio
+    async def test_other_click_keeps_the_card_retirable_until_the_clarify_ends(self):
+        """'Other' is not terminal: the clarify stays pending for typed text, so a later
+        timeout/reset must still be able to rewrite the '✏️ Awaiting typed answer' card."""
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        _attach_auth_runner(adapter)
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "1.2"})
+        mock_client.chat_update = AsyncMock()
+        cm.register("cid-other", "sk-other", "Which environment?", ["staging", "production"])
+        await adapter.send_clarify(
+            chat_id="C1", question="Which environment?", choices=["staging", "production"],
+            clarify_id="cid-other", session_key="sk-other")
+        await adapter._handle_clarify_action(AsyncMock(), {
+            "message": {"ts": "1.2", "blocks": []},
+            "channel": {"id": "C1"}, "user": {"name": "norbert", "id": "U_N"},
+        }, {"action_id": "hermes_clarify_other", "value": "cid-other|other"})
+        assert "Awaiting typed answer" in mock_client.chat_update.call_args.kwargs["text"]
+
+        cm.clear_session("sk-other")
+        await adapter.retire_clarify_card("cid-other", "⏳ expired")
+
+        assert mock_client.chat_update.await_count == 2
+        assert mock_client.chat_update.call_args.kwargs["text"] == "⏳ expired"
+
 # ===========================================================================
 # _handle_clarify_action — choice click resolves (b)
 # ===========================================================================

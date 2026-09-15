@@ -1333,10 +1333,11 @@ class TurnRunner:
         # Boundary rule (see _approval_send_outcome): a send timeout is AMBIGUOUS — the card may
         # have posted with a late ack. Only a definitive failure tears down the registration;
         # ambiguous falls through to the bounded wait so a late reply resolves.
-        response = _clarify_send_then_wait(fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod)
-        # Only re-arm typing when the user actually answered — the undeliverable sentinel and the
-        # timeout/cancellation strings start with '[' and must pass through untouched.
-        if isinstance(response, str) and response.startswith("["):
+        response, answered = _clarify_send_then_wait(
+            fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod)
+        # Branch on the explicit flag, never on the text: a real answer can start with '[' (a
+        # "[A] staging" label, "[urgent] ..." free text) and must not be mistaken for a sentinel.
+        if not answered:
             # No answer arrived (timeout, /new, run end): retire the native card so it stops
             # looking answerable. Adapters without a persistent card have no such method.
             retire = getattr(type(ctx._status_adapter), "retire_clarify_card", None)

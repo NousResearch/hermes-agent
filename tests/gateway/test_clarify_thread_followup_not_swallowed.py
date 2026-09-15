@@ -162,6 +162,23 @@ async def test_thread_prose_retires_the_native_card_before_falling_through():
 
 
 @pytest.mark.asyncio
+async def test_typed_selection_retires_the_native_card_with_the_answer():
+    """A numeric pick typed into the thread resolves the clarify AND rewrites the card."""
+    _clear_clarify_state()
+    from tools import clarify_gateway as cm
+
+    adapter = _CardAdapter()
+    runner = _make_runner(adapter)
+    entry = cm.register("cl-typed-card", SESSION_KEY, "Pick a UI variant", ["buttons", "dropdown"])
+
+    assert await _dispatch(runner, _event("2")) == ""
+
+    assert entry.response == "dropdown"
+    assert adapter.retired == [("cl-typed-card", "✅ answered: dropdown")]
+    _clear_clarify_state()
+
+
+@pytest.mark.asyncio
 async def test_thread_prose_does_not_overwrite_concurrent_button_choice():
     """A button result that wins the race remains the clarify response."""
     _clear_clarify_state()

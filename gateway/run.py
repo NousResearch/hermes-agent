@@ -775,16 +775,19 @@ def _clarify_send_disposition(fut, *, session_key: str, clarify_mod) -> "str | N
     return None
 
 
-def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_mod) -> str:
-    """Resolve a clarify prompt: send disposition, then the bounded wait."""
+def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_mod) -> tuple[str, bool]:
+    """Resolve a clarify prompt: send disposition, then the bounded wait.
+
+    Returns ``(response, answered)``. ``answered`` is the only signal that a user reply arrived;
+    callers must not infer it from the text (a real answer may start with '[' like a sentinel)."""
     abort = _clarify_send_disposition(fut, session_key=session_key, clarify_mod=clarify_mod)
     if abort is not None:
-        return abort
+        return abort, False
     timeout = clarify_mod.get_clarify_timeout()
     response = clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
     if response is None or response == "":
-        return f"[user did not respond within {int(timeout / 60)}m]"
-    return response
+        return f"[user did not respond within {int(timeout / 60)}m]", False
+    return response, True
 
 
 def _resolve_progress_thread_id(

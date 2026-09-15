@@ -5444,7 +5444,6 @@ class SlackAdapter(BasePlatformAdapter):
         # Double-click guard — atomic pop (mirrors approval).
         if self._clarify_resolved.pop(msg_ts, True):
             return
-        self._clarify_messages.pop(clarify_id, None)
         original_text = self._section_text(message, limit=None)
         from tools import clarify_gateway as _clarify_mod
         # "Other" → text-capture mode: mark_awaiting_text flips the entry and the
@@ -5453,8 +5452,11 @@ class SlackAdapter(BasePlatformAdapter):
         if action_id == "hermes_clarify_other" or token == "other":
             if not _clarify_mod.mark_awaiting_text(clarify_id):
                 # Entry evicted/gateway restarted — a typed answer would go nowhere.
+                self._clarify_messages.pop(clarify_id, None)
                 await self._update_clarify_message(channel_id, msg_ts, original_text, expired_text)
                 return
+            # Not terminal: the clarify stays pending for typed text, so keep the card entry —
+            # the gateway still has to retire it on timeout / reset / typed answer.
             await self._update_clarify_message(
                 channel_id, msg_ts, original_text, f"✏️ Awaiting typed answer from {user_name}…")
             return
@@ -5463,6 +5465,8 @@ class SlackAdapter(BasePlatformAdapter):
         except (ValueError, TypeError):
             logger.warning("[Slack] Invalid clarify choice token: %s", token)
             return
+        # A choice click is terminal either way (✅ or expired): the card no longer needs retiring.
+        self._clarify_messages.pop(clarify_id, None)
         # Canonical choice text from the entry; positional fallback on timeout/reset race.
         resolved_text: Optional[str] = None
         try:

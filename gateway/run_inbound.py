@@ -358,6 +358,15 @@ class GatewayInboundMixin:
                     _clarify_adapter.resume_typing_for_chat(source.chat_id)
                 except Exception:
                     logger.debug("Failed to resume typing after clarify response", exc_info=True)
+                # A typed answer to a native card (numeric pick, or text after "Other") never
+                # reaches the click handler, so the card would keep its buttons forever.
+                if callable(getattr(type(_clarify_adapter), "retire_clarify_card", None)):
+                    try:
+                        await _clarify_adapter.retire_clarify_card(
+                            _pending_clarify.clarify_id,
+                            f"✅ answered: {_pending_clarify.response or _raw_clarify_reply}")
+                    except Exception:
+                        logger.debug("Failed to retire clarify card after typed answer", exc_info=True)
             return ""
         if _text_outcome == _clarify_mod.TEXT_REJECTED_SELECTION:
             # Selection-shaped but invalid (out-of-range number, bad comma-list): keep the clarify

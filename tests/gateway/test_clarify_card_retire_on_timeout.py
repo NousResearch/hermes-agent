@@ -33,8 +33,9 @@ class _TextAdapter(_CardAdapter):
     retire_clarify_card = None  # type: ignore[assignment]
 
 
-def _run_clarify(adapter):
-    """Returns (clarify response, labels of every coroutine the runner scheduled)."""
+def _run_clarify(adapter, answer=None):
+    """Returns (clarify response, labels of every coroutine the runner scheduled).
+    ``answer`` resolves the pending clarify with that text instead of letting it time out."""
     from gateway.run_turn_runner import TurnRunner
 
     runner = object.__new__(TurnRunner)
@@ -53,7 +54,18 @@ def _run_clarify(adapter):
 
     runner._schedule = _schedule
     runner._close_native_stream_boundary = lambda *a, **k: None
-    with patch("tools.clarify_gateway.get_clarify_timeout", return_value=1):
+    if answer is not None:
+        from tools import clarify_gateway as cm
+        real_register = cm.register
+
+        def _register_and_answer(**kwargs):
+            entry = real_register(**kwargs)
+            cm.resolve_gateway_clarify(kwargs["clarify_id"], answer)
+            return entry
+        register_patch = patch.object(cm, "register", _register_and_answer)
+    else:
+        register_patch = patch("tools.clarify_gateway.get_clarify_timeout", return_value=1)
+    with register_patch:
         return runner._clarify_callback_sync("Pick one", ["a", "b"]), labels
 
 
@@ -67,4 +79,13 @@ def test_timeout_retires_the_native_card_with_the_expired_notice():
 
 def test_timeout_schedules_nothing_for_adapters_without_a_card():
     _response, labels = _run_clarify(_TextAdapter())
+    assert labels == ["Clarify send failed to schedule"]
+
+
+def test_real_answer_starting_with_a_bracket_is_not_mistaken_for_a_sentinel():
+    """'[A] staging' is a user answer, not a timeout: no card retirement, typing re-armed."""
+    adapter = _CardAdapter()
+    response, labels = _run_clarify(adapter, answer="[A] staging")
+    assert response == "[A] staging"
+    assert adapter.retired == []
     assert labels == ["Clarify send failed to schedule"]

@@ -1715,12 +1715,14 @@ def _rebind_fallback_credential_pool(agent, fb_provider: str, fb_model: str) -> 
             logger.debug("Fallback to %s/%s: could not attach credential pool: %s", fb_provider, fb_model, exc)
 
 
-def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
+def _fallback_chain_exhausted(agent, reason: "FailoverReason | None", chain: Optional[list] = None) -> bool:
     """Chain exhausted (always False). A non-empty chain walked on a non-rate-limit failure arms a
     short cooldown so next turn's restore_primary_runtime stays gated instead of replaying the whole
-    context across every provider again."""
+    context across every provider again. ``chain`` is the chain actually walked: a per-primary route
+    and the installed chain can differ in length (#110822)."""
     from agent.fallback_cooldown import _RATE_LIMIT_FAILOVER_REASONS
-    if agent._fallback_chain and reason not in _RATE_LIMIT_FAILOVER_REASONS:
+    walked = agent._fallback_chain if chain is None else chain
+    if walked and reason not in _RATE_LIMIT_FAILOVER_REASONS:
         agent._rate_limited_until = max(
             getattr(agent, "_rate_limited_until", 0) or 0, time.monotonic() + _FALLBACK_EXHAUSTED_COOLDOWN_S)
     return False
@@ -1828,16 +1830,65 @@ def _buffer_fallback_notice(agent, notice: str) -> None:
         agent._pending_fallback_notice = [str(pending), notice] if pending else [notice]
 
 
+def _primary_provider_ids(agent) -> list:
+    """Provider ids the current primary can be addressed by: the runtime id first, then the configured
+    one (a named ``custom_providers`` entry resolves to the bare ``custom`` runtime id)."""
+    ids: list = []
+    for raw in (getattr(agent, "provider", ""), getattr(agent, "requested_provider", "")):
+        value = str(raw or "").strip()
+        if value and value not in ids:
+            ids.append(value)
+    return ids
+
+
+def _routed_fallback_chain(agent) -> Optional[list]:
+    """Chain declared for the current primary route (#110822), or None when no route matches.
+
+    ``fallback_routes`` is per-primary: a config without routes, an unreadable config, or a primary
+    no route matches all return None so the caller keeps the installed chain — never "no fallback".
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        from hermes_cli.fallback_config import match_fallback_route
+        config = load_config_readonly() or {}
+        for provider in _primary_provider_ids(agent):
+            routed = match_fallback_route(config, provider, getattr(agent, "model", ""))
+            if routed is not None:
+                return routed
+    except Exception as exc:
+        logger.debug("Fallback route lookup failed (%s); keeping the configured chain", exc)
+    return None
+
+
+def active_fallback_chain(agent) -> list:
+    """Ordered fallback chain for the walk in progress.
+
+    A ``fallback_routes`` entry matching the primary (provider + model) wins; with no match the
+    installed chain (``fallback_providers`` + legacy ``fallback_model``) is used unchanged, so a
+    config without routes behaves exactly as before (#110822). Resolved once per walk and memoized:
+    mid-walk ``agent.provider``/``agent.model`` are the fallback's identity, so re-resolving there
+    would re-route a walk already in progress.
+    """
+    memo = getattr(agent, "_active_fallback_chain", None)
+    if isinstance(memo, list) and int(getattr(agent, "_fallback_index", 0) or 0) > 0:
+        return memo
+    routed = _routed_fallback_chain(agent)
+    chain = list(getattr(agent, "_fallback_chain", None) or []) if routed is None else routed
+    agent._active_fallback_chain = chain
+    return chain
+
+
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
     from agent.fallback_cooldown import _arm_rate_limit_cooldown
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason)
+    chain = active_fallback_chain(agent)
     while True:
-        if agent._fallback_index >= len(agent._fallback_chain):
-            return _fallback_chain_exhausted(agent, reason)
-        fb = agent._fallback_chain[agent._fallback_index]
+        if agent._fallback_index >= len(chain):
+            return _fallback_chain_exhausted(agent, reason, chain)
+        fb = chain[agent._fallback_index]
         agent._fallback_index += 1
         fb_key = _fallback_entry_key(fb)
         if getattr(agent, "_unavailable_fallback_keys", None) is None:

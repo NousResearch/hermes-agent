@@ -199,7 +199,7 @@ def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[Tru
     agent = st.agent
     if not (
         getattr(st.response, "_content_filter_terminated", False)
-        and agent._fallback_index < len(agent._fallback_chain)
+        and agent._has_pending_fallback()
     ):
         return None
     agent._vprint(

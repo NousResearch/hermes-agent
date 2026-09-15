@@ -256,7 +256,7 @@ def retry_invalid_response(
     retry_count += 1
 
     # Eager fallback: empty/malformed responses often mean rate limiting.
-    if agent._fallback_index < len(agent._fallback_chain):
+    if agent._has_pending_fallback():
         agent._buffer_status("⚠️ Empty/malformed response — switching to fallback...")
     if agent._try_activate_fallback():
         active_system_prompt = _arm_fallback_restart(

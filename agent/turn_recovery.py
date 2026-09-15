@@ -1440,7 +1440,7 @@ def route_classified_error(
         (is_rate_limited and _wrapped_output_cap_budget is None)
         or (_is_transport_failure and retry_count >= 2)
     )
-    if _should_fallback and agent._fallback_index < len(agent._fallback_chain):
+    if _should_fallback and agent._has_pending_fallback():
         # No eager fallback while credential pool rotation may recover. Exception: an
         # upstream-aggregator 429 — the pool can't help, always fall back.
         # Fixes #11314.
@@ -1458,7 +1458,7 @@ def route_classified_error(
     if (
         classified.is_auth
         and not _retry.auth_failover_attempted
-        and agent._fallback_index < len(agent._fallback_chain)
+        and agent._has_pending_fallback()
     ):
         _retry.auth_failover_attempted = True
         agent._buffer_status(

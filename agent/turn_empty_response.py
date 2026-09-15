@@ -265,7 +265,10 @@ def recover_empty_response(
         )
 
     # Exhausted retries — try the next provider in the chain before "(empty)".
-    if _truly_empty and agent._fallback_chain:
+    # The installed-chain truthiness is the historical guard, kept verbatim; `_has_pending_fallback()`
+    # additionally covers per-primary `fallback_routes` chains (#110822) that the installed chain —
+    # which may be empty — does not contain.
+    if _truly_empty and (agent._fallback_chain or agent._has_pending_fallback()):
         logger.warning(
             "Empty response after %d retries — attempting fallback (model=%s, provider=%s)",
             agent._empty_content_retries, agent.model, agent.provider,

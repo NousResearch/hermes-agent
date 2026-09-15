@@ -86,6 +86,71 @@ def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
+def _route_match_key(route: dict[str, Any]) -> tuple[str, str]:
+    """``(provider, model)`` a route's ``when`` matches, model ``""`` = any model on that provider."""
+    when = route.get("when")
+    if not isinstance(when, dict):
+        return "", ""
+    return (
+        str(when.get("provider") or "").strip().lower(),
+        str(when.get("model") or "").strip().lower(),
+    )
+
+
+def get_fallback_routes(config: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Normalized per-primary ``fallback_routes`` in config order.
+
+    Each route is ``{"provider", "model", "fallback_providers"}`` (model ``""`` = any model on that
+    provider). A route is dropped — never an error — when ``when.provider`` is missing, when
+    ``fallback_providers`` is absent or not a list/dict, or when a non-empty list yields no usable
+    entries (those degrade to the global chain). An explicitly empty ``fallback_providers: []`` is
+    kept as an empty chain: "this primary never falls back".
+    """
+    raw = (config or {}).get("fallback_routes")
+    if not isinstance(raw, list):
+        return []
+    routes: list[dict[str, Any]] = []
+    for route in raw:
+        if not isinstance(route, dict):
+            continue
+        provider, model = _route_match_key(route)
+        if not provider:
+            continue
+        declared = route.get("fallback_providers")
+        if isinstance(declared, list) and not declared:
+            entries: list[dict[str, Any]] = []
+        elif isinstance(declared, (list, dict)):
+            entries = _iter_fallback_entries(declared)
+            if not entries:
+                continue
+        else:
+            continue
+        routes.append({"provider": provider, "model": model, "fallback_providers": entries})
+    return routes
+
+
+def match_fallback_route(
+    config: dict[str, Any] | None, provider: Any, model: Any
+) -> list[dict[str, Any]] | None:
+    """``fallback_providers`` declared for the primary route ``provider``/``model``.
+
+    Returns ``None`` when no route matches (callers keep the global ``fallback_providers`` chain) and
+    an empty list when the matching route opted out of fallback. First match in config order wins;
+    matching is case-insensitive and a route without ``when.model`` matches any model on its provider.
+    """
+    primary_provider = str(provider or "").strip().lower()
+    if not primary_provider:
+        return None
+    primary_model = str(model or "").strip().lower()
+    for route in get_fallback_routes(config):
+        if route["provider"] != primary_provider:
+            continue
+        if route["model"] and route["model"] != primary_model:
+            continue
+        return [dict(entry) for entry in route["fallback_providers"]]
+    return None
+
+
 def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     """Return the effective fallback chain merged across old and new config keys.
 

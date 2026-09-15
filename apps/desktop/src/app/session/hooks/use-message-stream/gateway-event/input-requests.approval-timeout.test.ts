@@ -45,6 +45,7 @@ describe('approval request.cancel', () => {
 
   it('timeout: tears the bar down and appends a plain system line with a Safety settings action', () => {
     parkApproval()
+
     const updateSessionState = vi.fn((_: string, updater: (s: { messages: unknown[] }) => unknown) =>
       updater({ messages: [] })
     )
@@ -52,7 +53,9 @@ describe('approval request.cancel', () => {
     expect(handleInputRequestEvent(context('timeout', updateSessionState))).toBe(true)
     expect($approvalRequests.get()['s1']).toBeUndefined()
 
-    const next = updateSessionState.mock.results[0]?.value as { messages: { role: string; parts: { text: string }[] }[] }
+    const next = updateSessionState.mock.results[0]?.value as {
+      messages: { role: string; parts: { text: string }[] }[]
+    }
     expect(next.messages).toHaveLength(1)
     expect(next.messages[0].role).toBe('system')
     expect(next.messages[0].parts[0].text).toMatch(/timed out/i)

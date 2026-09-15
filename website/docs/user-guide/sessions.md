@@ -229,7 +229,7 @@ What happens:
 2. The CLI marks the session pending and **block-polls the gateway**. It refuses if the agent is mid-turn — wait for the current response to finish first.
 3. The gateway watcher claims the handoff and asks the destination adapter for a fresh thread:
    - **Telegram** — opens a new forum topic (DM topics if Bot API 9.4+ Topics mode is enabled in the chat, or a forum supergroup topic).
-   - **Discord** — creates a 1440-min auto-archive thread under the home text channel.
+   - **Discord** — creates a public, 1440-min auto-archive thread under the home text channel. Channels listed in `discord.no_thread_channels` or `discord.free_response_channels` receive the handoff directly instead; a home that is already a thread is reused.
    - **Slack** — posts a seed message and uses its `ts` as the thread anchor.
    - **WhatsApp / Signal / Matrix / SMS** — no native threads, falls back to the home channel directly.
 4. The gateway re-binds the destination key to your existing CLI session id, then forges a synthetic user turn asking the agent to confirm and summarize. The reply lands in the new thread.
@@ -243,6 +243,10 @@ What happens:
 6. From that point, the conversation lives on the platform. Reply in the new thread — anyone authorized in that channel shares the same session, and any later real user message in the thread joins seamlessly because thread sessions key without `user_id`.
 
 **Resume back to CLI:** when you want to come back to a desktop, just run `/resume <title>` (or `hermes -r "<title>"` from the shell) and pick up where the platform left off.
+
+**Direct Discord handoff:** add the home channel ID to `discord.no_thread_channels` in `config.yaml`, then run `/sethome` in that channel to record its owner. The owner's next message continues the transferred session; normal mention requirements and per-user session isolation still apply. Use this in a channel whose members may see the transferred conversation summary.
+
+**Slow transfers in Desktop:** an unclaimed request times out after one minute. Once the gateway claims it, Desktop waits up to 15 minutes for the destination response. If that wait expires, the transfer is not cancelled: check the destination before retrying. A long model prefill is not evidence that the gateway is stopped.
 
 **Failure modes:**
 - No home channel configured → CLI refuses with a `/sethome` hint.

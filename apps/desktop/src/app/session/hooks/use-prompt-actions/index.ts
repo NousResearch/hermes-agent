@@ -540,10 +540,11 @@ export function usePromptActions({
         return { ok: true }
       }
 
-      const deadline = Date.now() + 60_000
+      const pendingDeadline = Date.now() + 60_000
+      let runningDeadline: null | number = null
       let lastState = 'pending'
 
-      while (Date.now() < deadline) {
+      while (Date.now() < (runningDeadline ?? pendingDeadline)) {
         await delay(800)
 
         let record: HandoffStateResponse
@@ -555,6 +556,12 @@ export function usePromptActions({
         }
 
         const state = record.state || 'pending'
+
+        // A claimed handoff replays the transcript, which can take minutes on
+        // local models. Match the CLI's separate, bounded running phase.
+        if (state === 'running' && runningDeadline === null) {
+          runningDeadline = Date.now() + 15 * 60_000
+        }
 
         if (state !== lastState) {
           options?.onProgress?.(state)
@@ -570,6 +577,10 @@ export function usePromptActions({
         }
       }
 
+      if (runningDeadline !== null) {
+        return { error: copy.handoff.stillRunning, ok: false }
+      }
+
       const cleanup = await requestGateway<HandoffFailResponse>('handoff.fail', {
         error: copy.handoff.timedOut,
         session_id: sid
@@ -577,6 +588,10 @@ export function usePromptActions({
 
       if (cleanup?.state === 'completed') {
         return markCompleted()
+      }
+
+      if (cleanup?.state === 'running') {
+        return { error: copy.handoff.stillRunning, ok: false }
       }
 
       return { error: copy.handoff.timedOut, ok: false }

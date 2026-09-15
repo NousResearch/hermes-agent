@@ -232,7 +232,7 @@ describe('session-control store', () => {
     expect($sessionControlBySession.get().s2).toBeUndefined()
     expect(request).toHaveBeenCalledWith('session.control', {
       action: 'subgoal.add',
-      args: { index: null, profile: null, text: 'verify hydration' },
+      args: { index: null, text: 'verify hydration' },
       session_id: 's1'
     })
 

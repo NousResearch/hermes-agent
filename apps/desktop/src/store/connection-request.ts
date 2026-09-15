@@ -260,12 +260,10 @@ export async function respondToConnectionRequest(
 
   // The wire answer names every field; the card's outcome carries only what it observed.
   const result: ConnectionAnswer = {
-    profile: null,
     settled_by: outcome.settled_by ?? null,
     targets: (outcome.targets ?? []).map(target => ({
       detail: target.status === 'failed' ? (target.detail ?? null) : null,
       name: target.name,
-      profile: null,
       state: null,
       status: target.status,
       tools: target.status === 'connected' ? (target.tools ?? null) : null

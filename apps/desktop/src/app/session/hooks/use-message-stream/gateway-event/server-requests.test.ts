@@ -21,7 +21,6 @@ const previewAct = (session_id: string): PreviewActParams => ({
   full: null,
   key: null,
   max: null,
-  profile: null,
   ref: null,
   selector: null,
   session_id,
@@ -32,7 +31,6 @@ const previewAct = (session_id: string): PreviewActParams => ({
 
 const tourParams = (session_id: string): TourParams => ({
   action: 'targets',
-  profile: null,
   selector: null,
   session_id,
   side: null,

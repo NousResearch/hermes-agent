@@ -394,7 +394,6 @@ export const connectorRow = (over: Partial<ConnectorRow> = {}): ConnectorRow => 
 })
 
 export const clarifySingle = (over: Partial<ClarifySingle> = {}): ClarifySingle => ({
-  profile: null,
   session_id: '',
   kind: 'single',
   question: '',
@@ -404,7 +403,6 @@ export const clarifySingle = (over: Partial<ClarifySingle> = {}): ClarifySingle 
 })
 
 export const clarifyBatch = (over: Partial<ClarifyBatch> = {}): ClarifyBatch => ({
-  profile: null,
   session_id: '',
   kind: 'batch',
   questions: [],
@@ -413,7 +411,6 @@ export const clarifyBatch = (over: Partial<ClarifyBatch> = {}): ClarifyBatch => 
 })
 
 export const approvalParams = (over: Partial<ApprovalParams> = {}): ApprovalParams => ({
-  profile: null,
   session_id: '',
   request_id: '',
   command: '',

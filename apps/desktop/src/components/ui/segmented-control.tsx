@@ -14,6 +14,13 @@ interface SegmentedControlProps<T extends string> {
   className?: string
   /** Dims the whole track and blocks selection (e.g. gated behind a prerequisite). */
   disabled?: boolean
+  /** What this track is choosing. Without it a screen reader reads a bare run of
+   *  toggle buttons — "Light 버튼, Dark 버튼" — with nothing saying they are the
+   *  colour-mode setting (SenseReader, 2026-09-06). A settings `ListRow` supplies
+   *  `aria-labelledby` automatically by pointing at the row title, so most call
+   *  sites need no change; pass `aria-label` for a track outside a row. */
+  'aria-label'?: string
+  'aria-labelledby'?: string
 }
 
 /**
@@ -22,6 +29,8 @@ interface SegmentedControlProps<T extends string> {
  * no per-option borders, just a tinted track with a raised active pill.
  */
 export function SegmentedControl<T extends string>({
+  'aria-label': ariaLabel,
+  'aria-labelledby': ariaLabelledBy,
   className,
   disabled = false,
   onChange,
@@ -30,11 +39,17 @@ export function SegmentedControl<T extends string>({
 }: SegmentedControlProps<T>) {
   return (
     <div
+      // `group`, not `radiogroup`: these are Tab-reachable toggle buttons, and
+      // a radiogroup promises arrow-key navigation this does not implement —
+      // claiming the wrong role reads worse than claiming none.
+      aria-label={ariaLabel}
+      aria-labelledby={ariaLabelledBy}
       className={cn(
         'inline-grid w-fit auto-cols-fr grid-flow-col gap-0.5 rounded-[5px] bg-(--ui-bg-tertiary) p-0.5',
         disabled && 'opacity-50',
         className
       )}
+      role="group"
     >
       {options.map(({ id, label, icon: Icon }) => {
         const active = value === id

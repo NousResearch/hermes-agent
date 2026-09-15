@@ -1,0 +1,18 @@
+{
+  "name": "Hermes Agent",
+  "short_name": "Hermes",
+  "description": "Hermes Agent — touch-first mobile chat",
+  "start_url": "/m",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#041c1c",
+  "theme_color": "#041c1c",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "64x64 128x128 256x256",
+      "type": "image/x-icon"
+    }
+  ]
+}

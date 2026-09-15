@@ -556,6 +556,71 @@ class GatewayAuthorizationMixin:
         # The guard judges the final verdict: a chat allowlist admits a bot before the ALLOW_BOTS block runs.
         return not self._bot_loop_guard_instance().blocked(self._bot_loop_guard_conversation(source))
 
+    def is_operator_source(self, source: SessionSource) -> bool:
+        """True when the sender in `source` is an explicitly authorized operator
+        (local, matched by an ALLOWED_USERS env/config, pairing-approved, or slash admin),
+        as opposed to being admitted solely via allow_all_users.
+
+        Used to protect operator privacy (#110686): third-party callers do not receive
+        the operator's USER.md profile in their session's system prompt.
+        """
+        if getattr(source, "platform", None) == Platform.LOCAL:
+            return True
+        user_id = getattr(source, "user_id", None)
+        if not user_id:
+            return False
+
+        adapter_profile = self._adapter_profile_for_source(source)
+        is_group_or_forum = getattr(source, "chat_type", "") in _GROUP_FORUM_TYPES
+
+        pairing_store = self._pairing_store_for(source)
+        if pairing_store is not None and pairing_store.is_approved(
+            source.platform.value if getattr(source, "platform", None) else "", user_id
+        ):
+            return True
+
+        platform_allow_env = _ALLOWED_USERS_ENV.get(source.platform, "")
+        if getattr(source, "platform", None) not in _ALLOWED_USERS_ENV:
+            entry = _registry_entry(source.platform)
+            with contextlib.suppress(Exception):
+                platform_allow_env = getattr(entry, "allowed_users_env", "") or platform_allow_env
+
+        platform_allowlist = _auth_env(platform_allow_env)
+        group_user_allowlist = _auth_env(_GROUP_USER_ENV.get(source.platform, "")) if is_group_or_forum else ""
+        global_allowlist = _auth_env("GATEWAY_ALLOWED_USERS")
+
+        allowed_ids = (
+            _coerce_allow_set(platform_allowlist)
+            | _coerce_allow_set(group_user_allowlist)
+            | _coerce_allow_set(global_allowlist)
+        )
+        if _allows(allowed_ids, user_id):
+            return True
+
+        try:
+            from gateway.slash_access import resolve_slash_access_policy
+            scope = "group" if getattr(source, "chat_type", "") in _GROUP_CHAT_TYPES else "dm"
+            policy = resolve_slash_access_policy(source.platform, scope, adapter_profile)
+            if policy.enabled and policy.is_admin(user_id):
+                return True
+        except Exception:
+            pass
+
+        return False
+
+    def should_include_operator_profile(self, source: SessionSource) -> bool:
+        """Return whether the operator's USER PROFILE (USER.md) should be included
+        in the system prompt for this session.
+
+        Prevents identity disclosure (#110686): non-operator callers in per-user or
+        shared gateway sessions do not receive the operator's private profile.
+        """
+        if getattr(source, "platform", None) == Platform.LOCAL:
+            return True
+        if getattr(source, "chat_type", "") != "dm":
+            return False
+        return self.is_operator_source(source)
+
     def _principal_authorized(self, source: SessionSource, *, allow_adapter_delegation: bool) -> bool:
         """The allowlist verdict alone, before the bot loop guard."""
         # HA events are system-generated (HASS_TOKEN); webhook events are HMAC-verified.

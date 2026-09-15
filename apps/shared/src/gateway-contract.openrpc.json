@@ -21010,6 +21010,7 @@
       },
       "RoomActorInput": {
         "additionalProperties": false,
+        "description": "What ``groups.log`` returns for an actor is what ``groups.replicate`` accepts back (``profile`` included).",
         "properties": {
           "kind": {
             "enum": [
@@ -21036,6 +21037,18 @@
             ],
             "default": null,
             "title": "Display Name"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
           },
           "connection_id": {
             "anyOf": [

@@ -329,7 +329,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             current_base_url=str(getattr(state.agent, "base_url", "") or ""),
             current_api_key=str(getattr(state.agent, "api_key", "") or ""),
             user_providers=cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {},
-            custom_providers=get_compatible_custom_providers(cfg))
+            custom_providers=get_compatible_custom_providers(cfg),
+            allowed_models=(cfg.get("model_catalog", {}) or {}).get("allowed_models"))
         if not result.success:
             raise ValueError(result.error_message or f"Cannot switch to {raw_model}")
         target_provider, new_model = result.target_provider, result.new_model

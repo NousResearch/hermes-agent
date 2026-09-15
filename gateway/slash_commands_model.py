@@ -79,6 +79,7 @@ class _ModelSwitchContext:
     user_provs: Any = None
     custom_provs: Any = None
     excluded_provs: list = dataclasses.field(default_factory=list)
+    allowed_models: list = dataclasses.field(default_factory=list)
 
     def read_config(self) -> None:
         """Fill the current route from ``config_path``; fail-open to the defaults."""
@@ -101,6 +102,9 @@ class _ModelSwitchContext:
             excl = cfg.get("model_catalog", {}).get("excluded_providers")
             if isinstance(excl, list):
                 self.excluded_provs = excl
+            allowed = cfg.get("model_catalog", {}).get("allowed_models")
+            if isinstance(allowed, list):
+                self.allowed_models = allowed
         except Exception:
             pass
 
@@ -152,7 +156,7 @@ class GatewayModelCommandsMixin:
             current_model=ctx.current_model, current_base_url=ctx.current_base_url,
             current_api_key=ctx.current_api_key, is_global=ctx.persist_global,
             explicit_provider=explicit_provider, user_providers=ctx.user_provs,
-            custom_providers=ctx.custom_provs,
+            custom_providers=ctx.custom_provs, allowed_models=ctx.allowed_models,
         )
         if not result.success:
             return None, t("gateway.model.error_prefix", error=result.error_message)
@@ -367,6 +371,7 @@ class GatewayModelCommandsMixin:
             current_provider=ctx.current_provider, current_base_url=ctx.current_base_url,
             current_model=ctx.current_model, user_providers=ctx.user_provs,
             custom_providers=ctx.custom_provs, excluded_providers=ctx.excluded_provs,
+            allowed_models=ctx.allowed_models,
         )
         adapter = self._adapter_for_source(ctx.source)
         if adapter is not None and getattr(type(adapter), "send_model_picker", None) is not None:

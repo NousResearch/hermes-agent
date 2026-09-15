@@ -106,12 +106,15 @@ function disarmMarquee(event: React.PointerEvent<HTMLElement>) {
   delete event.currentTarget.dataset.marquee
 }
 
-// The last thing in the trailing slot hands its place to the ⋯ button on hover,
-// and is never narrower than the button that has to cover it. A PR chip is the
-// exception while the pointer is on it: it's a link, and the kebab sits
-// absolute over this space, so it has to stop taking clicks too, not just fade.
-const TAIL_HIDES = 'min-w-5 transition-opacity group-hover:opacity-0 group-has-[[data-pr-link]:hover]:opacity-100'
+// The last thing in the trailing slot hands its place to the hover action
+// cluster (pin / archive / ⋯) and is never narrower than the cluster that has
+// to cover it. A PR chip is the exception while the pointer is on it: it's a
+// link, and the cluster sits absolute over this space, so it has to stop
+// taking clicks too, not just fade.
+const TAIL_HIDES = 'min-w-15 transition-opacity group-hover:opacity-0 group-has-[[data-pr-link]:hover]:opacity-100'
 const KEBAB_YIELDS = 'group-has-[[data-pr-link]:hover]:pointer-events-none group-has-[[data-pr-link]:hover]:opacity-0'
+const QUICK_ACTION_BTN =
+  'size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!'
 
 function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
   const { unit, value } = coarseElapsed(Date.now() - seconds * 1000)
@@ -163,8 +166,8 @@ function SidebarSessionRowImpl({
   // rather than threaded as props: the subscription re-renders past the memo
   // below, and a toggle should repaint every row at once anyway.
   const rowMeta = useStore($sidebarRowMeta)
-  // Pinned metadata occupies the actions slot and swaps out for the kebab on
-  // hover, so the row reserves the same width either way and never reflows.
+  // Pinned metadata occupies the actions slot and swaps out for the hover
+  // action cluster, so the row reserves the same width either way and never reflows.
   const pinnedAge = rowMeta.includes('updated')
   // The default profile has no mark worth spending a row slot on — a chip on
   // every row that says "the normal one" is noise. Named profiles only.
@@ -192,8 +195,8 @@ function SidebarSessionRowImpl({
   ].filter(Boolean) as string[]
 
   // Everything the Show menu puts after the title shares ONE right-aligned
-  // slot, in reading order: identity chips, then the figures. The kebab covers
-  // the END of that slot on hover, so only the last thing in it steps aside —
+  // slot, in reading order: identity chips, then the figures. The hover cluster
+  // covers the END of that slot on hover, so only the last thing in it steps aside —
   // with tokens and age both on you lose the age and keep the number you
   // switched on, and a PR keeps its place (and its click) unless it IS the last
   // thing. Chips used to render in the body instead, which left them stranded
@@ -289,12 +292,12 @@ function SidebarSessionRowImpl({
     </SidebarRowLeadGlyph>
   ) : null
 
-  // The trailing metadata sits in normal flow and the kebab lifts out of it,
-  // so this cluster's intrinsic width IS the metadata's. In the one-line row
-  // it rides the shell's `auto` actions column and the title truncates
-  // against it. In the card it renders INSIDE the header row instead — the
-  // shell column would span the card's full height and shave every line,
-  // when only the header shares its line with the age and kebab.
+  // The trailing metadata sits in normal flow and the hover action cluster
+  // lifts out of it, so this slot's intrinsic width IS the metadata's. In the
+  // one-line row it rides the shell's `auto` actions column and the title
+  // truncates against it. In the card it renders INSIDE the header row
+  // instead — the shell column would span the card's full height and shave
+  // every line, when only the header shares its line with the age and cluster.
   const actionsNode = (
     <div className="relative z-2 flex shrink-0 items-center justify-end gap-1" data-row-actions>
       {trailing.map(({ key, node }, index) => (
@@ -307,31 +310,62 @@ function SidebarSessionRowImpl({
           {node}
         </span>
       ))}
-      <SessionActionsMenu
-        onArchive={onArchive}
-        onBranch={onBranch}
-        onDelete={onDelete}
-        onPin={onPin}
-        onToggleUnread={onToggleUnread}
-        pinned={isPinned}
-        profile={session.profile}
-        sessionId={session.id}
-        title={title}
-        unread={unread}
-      >
+      <div className={cn('flex items-center', trailing.length > 0 && 'absolute right-0', pr && KEBAB_YIELDS)}>
         <Button
-          aria-label={r.sessionActions}
-          className={cn(
-            'size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!',
-            trailing.length > 0 && 'absolute right-0',
-            pr && KEBAB_YIELDS
-          )}
+          aria-label={isPinned ? r.unpin : r.pin}
+          className={QUICK_ACTION_BTN}
+          onClick={event => {
+            event.preventDefault()
+            event.stopPropagation()
+            triggerHaptic('selection')
+            onPin()
+          }}
           size="icon"
           variant="ghost"
         >
-          <Codicon name="kebab-vertical" size="0.875rem" />
+          <Codicon name="pin" size="0.875rem" />
         </Button>
-      </SessionActionsMenu>
+        {session.archived ? null : (
+          <Button
+            aria-label={r.archive}
+            className={QUICK_ACTION_BTN}
+            onClick={event => {
+              event.preventDefault()
+              event.stopPropagation()
+              triggerHaptic('selection')
+              onArchive()
+            }}
+            size="icon"
+            variant="ghost"
+          >
+            <Codicon name="archive" size="0.875rem" />
+          </Button>
+        )}
+        <SessionActionsMenu
+          onArchive={onArchive}
+          onBranch={onBranch}
+          onDelete={onDelete}
+          onPin={onPin}
+          onToggleUnread={onToggleUnread}
+          pinned={isPinned}
+          profile={session.profile}
+          sessionId={session.id}
+          title={title}
+          unread={unread}
+        >
+          <Button
+            aria-label={r.sessionActions}
+            className={cn(
+              QUICK_ACTION_BTN,
+              'data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground'
+            )}
+            size="icon"
+            variant="ghost"
+          >
+            <Codicon name="kebab-vertical" size="0.875rem" />
+          </Button>
+        </SessionActionsMenu>
+      </div>
     </div>
   )
 

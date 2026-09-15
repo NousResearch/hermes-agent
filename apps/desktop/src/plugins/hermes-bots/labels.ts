@@ -11,6 +11,9 @@
 import { aliasIdentityFor } from './routing'
 import type { BotMeta, RosterRow } from './types'
 
+const ASCII_PROFILE_CHAR = /^[a-z0-9_-]$/
+const UNICODE_PROFILE_WORD_CHAR = /^[\p{L}\p{N}]$/u
+
 export function displayName(bot: Partial<RosterRow>, meta?: BotMeta | null): string {
   // A configured alias route claiming this row overrides source-derived
   // identity: the friendly alias name must survive hosted-session
@@ -69,6 +72,59 @@ export function slugify(value: string) {
     .replace(/[^a-z0-9_-]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 64)
+}
+
+export function slugifyProfileName(value: string) {
+  let slug = ''
+  let separatorPending = false
+
+  for (const char of value.normalize('NFKD').toLowerCase()) {
+    if (ASCII_PROFILE_CHAR.test(char)) {
+      if (char === '-') {
+        separatorPending = slug.length > 0
+
+        continue
+      }
+
+      const prefix = separatorPending && slug ? '-' : ''
+
+      if (slug.length + prefix.length + char.length > 64) {
+        break
+      }
+
+      slug += prefix + char
+      separatorPending = false
+    } else if (UNICODE_PROFILE_WORD_CHAR.test(char)) {
+      // This readable u<hex> contract can collide with the same literal ASCII
+      // name; keep it stable, but never truncate one of its tokens in half.
+      const token = `u${char.codePointAt(0)!.toString(16)}`
+      const prefix = slug ? '-' : ''
+
+      if (slug.length + prefix.length + token.length > 64) {
+        break
+      }
+
+      slug += prefix + token
+      separatorPending = true
+    } else {
+      separatorPending = slug.length > 0
+    }
+  }
+
+  return slug
+}
+
+export function botProfileIdentity(name: string, title: string) {
+  const enteredName = name.trim()
+  const slug = slugifyProfileName(enteredName)
+  const enteredTitle = title.trim()
+
+  return {
+    slug,
+    // A case-only difference is display identity too: preserve "Test" even
+    // though its backend profile is the lowercase "test".
+    title: enteredTitle || (enteredName !== slug ? enteredName : '')
+  }
 }
 
 /** Flatten markdown syntax out of a one-line roster preview so rows read

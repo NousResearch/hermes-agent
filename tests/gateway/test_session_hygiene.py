@@ -183,6 +183,27 @@ class TestSessionHygieneWarnThreshold:
         assert post_compress_tokens < warn_threshold
 
 
+@pytest.mark.asyncio
+async def test_hygiene_suppression_bounds_model_history_without_rewriting_transcript():
+    """A cooldown or in-flight attempt must not send the full transcript to the next model turn."""
+    gateway_run = importlib.import_module("gateway.run")
+    runner = object.__new__(gateway_run.GatewayRunner)
+    durable_history = _make_history(12)
+    runner._hmwa_hygiene_settings = AsyncMock(
+        return_value=SimpleNamespace(compression_enabled=True, hard_msg_limit=10)
+    )
+    runner._hmwa_hygiene_plan = AsyncMock(
+        return_value=runner._HygienePlan(False, 1_000, len(durable_history), 2_000)
+    )
+
+    history, model_history = await runner._hmwa_run_session_hygiene(
+        None, None, None, "session", durable_history, "quick", 1,
+    )
+
+    assert history is durable_history
+    assert model_history == durable_history[-10:]
+
+
 class TestEstimatedTokenThreshold:
     """Verify that hygiene thresholds are always below the model's context
     limit — for both actual and estimated token counts.
@@ -1180,7 +1201,6 @@ async def test_session_hygiene_honors_configurable_hard_message_limit(
             type(self).last_instance = self
 
         def _compress_context(self, messages, *_args, **_kwargs):
-            self.session_id = f"{self.session_id}_compressed"
             return ([{"role": "assistant", "content": "compressed"}], None)
 
     fake_run_agent = types.ModuleType("run_agent")
@@ -1215,8 +1235,9 @@ async def test_session_hygiene_honors_configurable_hard_message_limit(
         platform=Platform.TELEGRAM,
         chat_type="private",
     )
-    # 12 messages: below default → no compression without override,
-    # but above the configured limit of 10 → should compress.
+    # The compressor below cannot publish a replacement transcript.  The
+    # original history therefore remains on disk, but the model still must
+    # not receive more than this configured limit.
     runner.session_store.load_transcript.return_value = _make_history(12, content_size=40)
     runner.session_store.has_any_sessions.return_value = True
     runner.session_store.rewrite_transcript = MagicMock()
@@ -1264,11 +1285,15 @@ async def test_session_hygiene_honors_configurable_hard_message_limit(
 
     assert result == "ok"
     # The compression agent was instantiated → hard-limit fired on the
-    # configured value (10), not the hardcoded 400 default.
+    # configured value (10), not the hardcoded default.
     assert FakeCompressAgent.last_instance is not None, (
         "Expected hygiene compression to fire when message count (12) "
         "exceeds configured hygiene_hard_message_limit (10)"
     )
+    # A failed-to-publish hygiene attempt must not feed the full durable
+    # transcript to the agent. The durable transcript itself stays intact.
+    assert len(runner._run_agent.await_args.kwargs["history"]) == 10
+    assert len(runner.session_store.load_transcript.return_value) == 12
 
 
 # ---------------------------------------------------------------------------

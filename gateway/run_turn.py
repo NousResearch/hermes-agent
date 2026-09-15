@@ -519,6 +519,29 @@ class GatewayTurnMixin:
         warn_token_threshold: int
 
     @staticmethod
+    def _hmwa_hygiene_bounded_model_history(history, hard_msg_limit: int):
+        """Keep an uncompressed gateway turn within the configured message bound.
+
+        Hygiene normally replaces the durable transcript before the agent starts.  A timed-out,
+        cooldown-suppressed, or refused attempt leaves that durable transcript untouched; in that
+        case preserve a leading system/setup prefix and give the model the newest remaining turns.
+        The caller keeps ``history`` separately for persistence, so this is an in-context bound
+        rather than data loss.
+        """
+        if len(history) <= hard_msg_limit:
+            return history
+
+        setup_count = 0
+        for message in history:
+            if not isinstance(message, dict) or message.get("role") not in {"system", "developer"}:
+                break
+            setup_count += 1
+
+        setup_count = min(setup_count, hard_msg_limit)
+        tail_count = hard_msg_limit - setup_count
+        return history[:setup_count] + (history[-tail_count:] if tail_count else [])
+
+    @staticmethod
     def _hmwa_hygiene_read_config(hs, data):
         """Apply model / compression knobs from the gateway config onto ``hs`` (invalid values keep the defaults)."""
         # Resolve model name (same logic as run_sync)
@@ -1234,14 +1257,14 @@ class GatewayTurnMixin:
         prompt_tokens from the last turn, else a char/4 estimate."""
         from gateway.run import HygieneTurnHoldExceeded
         if not history or len(history) < 4:
-            return history
+            return history, history
 
         hs = await self._hmwa_hygiene_settings(source, session_key)
         if not hs.compression_enabled:
-            return history
+            return history, history
         plan = await self._hmwa_hygiene_plan(hs, history, session_entry, session_key)
         if not plan.needs_compress:
-            return history
+            return history, self._hmwa_hygiene_bounded_model_history(history, hs.hard_msg_limit)
 
         attempt = self._HygieneAttempt(agent=None, meta=self._event_thread_metadata(event, source), history=history)
         try:
@@ -1267,7 +1290,9 @@ class GatewayTurnMixin:
             pass
         except Exception as e:
             logger.warning("Session hygiene auto-compress failed: %s", e)
-        return attempt.history
+        return attempt.history, self._hmwa_hygiene_bounded_model_history(
+            attempt.history, hs.hard_msg_limit,
+        )
 
     async def _hmwa_first_contact_notes(self, source, history, turn_sidecar_notes):
         """First-ever-message onboarding note + one-time 'no home channel' prompt (both only when
@@ -1897,6 +1922,7 @@ class GatewayTurnMixin:
         """Inputs to the agent run assembled by ``_hmwa_prepare_turn``."""
 
         history: Any
+        agent_history: Any
         context_prompt: str
         message_text: Any
         persist_user_message: Any
@@ -1947,7 +1973,7 @@ class GatewayTurnMixin:
         # from []. Restore task-local context here (before the broad cleanup finally).
         try:
             history = await self.async_session_store.load_transcript(session_entry.session_id)
-            history = await self._hmwa_run_session_hygiene(
+            history, agent_history = await self._hmwa_run_session_hygiene(
                 event, source, session_entry, session_key, history, _quick_key, run_generation,
             )
         except TranscriptReadError:
@@ -1993,7 +2019,7 @@ class GatewayTurnMixin:
         owner = (str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(namespace)))
                  if event.message_id else str(uuid.uuid4()))
         return self._PreparedTurn(
-            history, context_prompt, message_text, persist_user_message, persist_user_timestamp,
+            history, agent_history, context_prompt, message_text, persist_user_message, persist_user_timestamp,
             persist_user_display_kind, session_entry.session_id, owner,
         ), _session_env_tokens
 
@@ -2018,7 +2044,7 @@ class GatewayTurnMixin:
         )
         if not isinstance(prepared, self._PreparedTurn):
             return prepared
-        history, message_text = prepared.history, prepared.message_text
+        history, agent_history, message_text = prepared.history, prepared.agent_history, prepared.message_text
 
         try:
             hook_ctx = {
@@ -2043,7 +2069,7 @@ class GatewayTurnMixin:
             # turn preparation gates have passed when the agent runner is entered.
             event._heartbeat_execution_started = True
             agent_result = await self._run_agent(
-                message=message_text, context_prompt=prepared.context_prompt, history=history, source=source,
+                message=message_text, context_prompt=prepared.context_prompt, history=agent_history, source=source,
                 session_id=_run_start_session_id, session_key=session_key,
                 run_generation=run_generation, event_message_id=self._reply_anchor_for_event(event),
                 inbound_message_id=str(event.message_id) if event.message_id else None,

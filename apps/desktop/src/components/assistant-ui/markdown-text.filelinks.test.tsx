@@ -35,6 +35,20 @@ describe('MarkdownLink filesystem hrefs', () => {
     expect(screen.getAllByRole('button', { name: 'Open preview' })).toHaveLength(2)
   })
 
+  it('routes angle-bracket file links whose path contains spaces', async () => {
+    // Regression for #102782: `<...>` destinations legitimately contain spaces
+    // (CommonMark requires brackets for them), and the old FILE_LINK_RE charset
+    // [^)\s]* could not match such targets — the link fell through to harden
+    // and rendered as "[blocked]".
+    render(
+      <MarkdownTextContent isRunning={false} text={'See [notes](<~/My Notes/todo with spaces.md>)'} />
+    )
+
+    await screen.findByText('todo with spaces.md')
+    expect(screen.getByRole('button', { name: 'Open preview' })).toBeTruthy()
+    expect(document.body.textContent).not.toContain('blocked')
+  })
+
   it('renders a media player for a media-extension path link', async () => {
     const { container } = render(<MarkdownTextContent isRunning={false} text="[clip](/tmp/demo.mp4)" />)
 

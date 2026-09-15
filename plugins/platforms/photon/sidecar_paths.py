@@ -22,7 +22,10 @@ logger = logging.getLogger(__name__)
 SOURCE_SIDECAR_DIR = Path(__file__).parent / "sidecar"
 # Files that define the sidecar; node_modules is deliberately absent (baked on managed
 # images or installed by npm in the mirror).
-_MIRROR_FILES = ("index.mjs", "package.json", "package-lock.json", "patch-spectrum-mixed-attachments.mjs")
+# Every runtime .mjs module must be listed: index.mjs statically imports
+# send-format.mjs and stream-staleness.mjs, so a mirror without them fails
+# at import (#85046).
+_MIRROR_FILES = ("index.mjs", "package.json", "package-lock.json", "patch-spectrum-mixed-attachments.mjs", "send-format.mjs", "stream-staleness.mjs")
 # Tests monkeypatch these module globals directly; the accessors honor a non-None value.
 _SIDECAR_DIR: Optional[Path] = None
 # Written by `hermes photon install-sidecar` on npm failure so check_requirements() can

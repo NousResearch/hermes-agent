@@ -1632,9 +1632,9 @@ class TestTerminateHostPidWindows:
         assert "/F" in captured["args"], "Force flag required for headless Chromium"
 
 class TestTerminateHostPidPosix:
-    """POSIX branch walks the tree via psutil and SIGTERMs children first."""
+    """POSIX branch gives a managed parent its shutdown window first."""
 
-    def test_posix_walks_tree_and_terminates_children_then_parent(self, monkeypatch):
+    def test_posix_terminates_parent_before_snapshot_descendants(self, monkeypatch):
         from tools import process_registry as pr
         import psutil
 
@@ -1659,16 +1659,15 @@ class TestTerminateHostPidPosix:
                 terminate_order.append(self.pid)
 
         monkeypatch.setattr(psutil, "Process", _FakeParent)
-        # This test covers only the SIGTERM tree-walk ordering; disable the
-        # SIGKILL-escalation step (which would call psutil.wait_procs on the
-        # fakes) by setting the grace to 0.
+        # A zero grace keeps this ordering probe deterministic while retaining
+        # the configured no-SIGKILL behavior.
         monkeypatch.setattr(pr.ProcessRegistry, "_daemon_term_grace_seconds",
                             staticmethod(lambda: 0.0))
 
         pr.ProcessRegistry._terminate_host_pid(12345)
 
-        assert terminate_order == [101, 102, 103, 12345], (
-            "Children must be terminated before the parent"
+        assert terminate_order == [12345, 101, 102, 103], (
+            "Parent must receive SIGTERM before any snapshot descendant"
         )
 
     def test_posix_oserror_falls_back_to_os_kill(self, monkeypatch):

@@ -2,6 +2,7 @@
 """
 
 import logging
+from dataclasses import replace
 import os
 from fastapi import HTTPException
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
@@ -663,8 +664,12 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     )
     # Recorded from the SUBMITTED args, before preparation fills a URL from a named entry.
     explicit_endpoint = is_explicit_custom_endpoint(provider, base_url)
+    requested_provider = provider
     base_url, result = prepared or _prepare_main_assignment(cfg, provider, model, base_url, api_key)
     provider, model = result.target_provider, result.new_model
+    if requested_provider.strip().lower().startswith("custom:"):
+        provider = requested_provider.strip()
+        result = replace(result, target_provider=provider)
     provider_entry = _provider_entry(cfg, provider)
     # Snapshot BEFORE the new assignment overwrites cfg["model"]: this is the state the user
     # (CLI setup, a prior dashboard save) already had on disk, and it decides whether the

@@ -15,16 +15,7 @@
 // after a short trailing delay (so tail flushes land at full cadence) Chromium's
 // default throttling returns and hidden windows go quiet.
 //
-// Fullscreen is the same disease with a nastier symptom (#94865): on Hyprland
-// (and other Wayland compositors) Chromium can treat a fullscreened surface as
-// occluded/backgrounded once the user goes idle. Frame submission stops, the
-// compositor keeps showing the last (or an empty) buffer — a white page —
-// until a geometry change (leaving fullscreen) forces full damage. A fullscreen
-// chat is definitionally the surface the user is looking at, so while ANY
-// tracked window is fullscreen this controller keeps its renderer unthrottled.
-// Like streaming, that state is scoped and reversible: it ends the moment the
-// window leaves fullscreen. It deliberately does NOT pin visibilityState for
-// hidden windows — only the fullscreen window itself stays live.
+// Fullscreen can be mis-throttled as occluded on Wayland idle — keep any fullscreened window unthrottled until it leaves fullscreen (#94865).
 //
 // Pure and Electron-free (timers + the WebContents surface are injected) so it
 // can be unit-tested, mirroring session-windows.ts.
@@ -139,10 +130,7 @@ export function createStreamThrottle(
         windows.delete(win)
         armRethrottleIfIdle()
       })
-      // Follow the compositor: entering fullscreen must lift throttling even
-      // when no turn is in flight, leaving it may restore throttling once the
-      // stream settles. Both events re-evaluate every window because the
-      // "any fullscreen" predicate spans the whole set.
+      // Re-evaluate every window on fullscreen enter/leave — the "any fullscreen" predicate spans the whole set.
       win.on?.('enter-full-screen', () => {
         if (trailing !== null) {
           timers.clearTimeout(trailing)

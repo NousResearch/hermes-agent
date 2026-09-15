@@ -1621,6 +1621,8 @@ Fires for a failed provider attempt with status/retry timing, an `error` object,
 
 Fires after an authoritative skill-usage state change. It is observer-only and exposes the local `skill_name`, provenance, correlation IDs, usage count, and reuse flags.
 
+Successful `skill_manage` hard deletes emit `deleted`, and successful Skills Hub removals emit `uninstalled`. Curator archive/restore keep their existing lifecycle actions. This observer covers Hermes-managed transitions only; it does not watch filesystem changes made directly by editors, Git, sync clients, or other processes.
+
 ### Kanban lifecycle observers
 
 #### `kanban_task_claimed`

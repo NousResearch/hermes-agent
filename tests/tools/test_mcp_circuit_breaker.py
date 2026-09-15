@@ -222,6 +222,34 @@ def test_circuit_breaker_reopens_on_probe_failure(monkeypatch, tmp_path):
         _cleanup(mcp_tool, "srv")
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Tool report has an output schema but did not return structured content",
+        "Invalid structured content returned by tool report: 'count' is a required property",
+    ],
+)
+def test_completed_rpc_output_validation_does_not_strike_breaker(monkeypatch, tmp_path, message):
+    """SDK output validation happens after a response and therefore proves transport health."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool_handlers import _make_tool_handler
+
+    async def _completed_rpc_validation_error(*_args, **_kwargs):
+        raise RuntimeError(message)
+
+    _install_stub_server(mcp_tool, "srv", _completed_rpc_validation_error)
+    _mcp_loop._ensure_mcp_loop()
+    mcp_tool._server_error_counts["srv"] = 2
+    try:
+        result = json.loads(_make_tool_handler("srv", "report", 10.0)({}))
+        assert "error" in result
+        assert mcp_tool._server_error_counts["srv"] == 0
+    finally:
+        _cleanup(mcp_tool, "srv")
+
+
 def test_half_open_probe_on_dead_session_requests_reconnect(monkeypatch, tmp_path):
     """A half-open probe against a server with no live session must request
     a transport reconnect and return a clean error — NOT write into a dead

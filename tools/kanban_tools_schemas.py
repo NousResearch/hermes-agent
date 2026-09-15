@@ -117,6 +117,10 @@ KANBAN_COMPLETE_SCHEMA = _schema(
                 "\"findings\": [...]}. Surfaced to downstream "
                 "workers alongside ``summary``."
         )),
+        "acceptance_evidence": _prop("object", (
+                "Optional v1 observation snapshot for the task's declared acceptance evidence. "
+                "Its required entries must exactly match the durable declaration."
+        )),
         "result": _prop("string", (
                 "Short result log line (legacy field, maps to "
                 "task.result). Use ``summary`` instead when "
@@ -479,6 +483,9 @@ KANBAN_CREATE_SCHEMA = _schema(
         "completion_contract": _prop("string", (
             "Declare at creation: local-only (default), OWNER/REPO for PR publication, or an exact GitHub PR URL. "
             "PR tasks cannot complete until repository-required exact-head CI passes. On publication pass metadata.published_pr."
+        )),
+        "acceptance_evidence": _prop("object", (
+            "Optional v1 declaration of named evidence required before completion. Legacy tasks omit it."
         )),
         "goal_max_turns": _prop("integer", (
                 "Turn budget for goal_mode workers. Caps how many "

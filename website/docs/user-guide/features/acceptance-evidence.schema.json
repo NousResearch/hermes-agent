@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.nousresearch.com/schemas/kanban/acceptance-evidence-v1.json",
+  "title": "Hermes Kanban acceptance evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "required", "observed"],
+  "properties": {
+    "version": {"const": 1},
+    "required": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/requirement"}
+    },
+    "observed": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/observation"}
+    },
+    "blocker": {"$ref": "#/$defs/blocker"}
+  },
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+    "requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "description"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "kind": {"enum": ["check", "canary", "pr", "review", "artifact", "readback", "custom"]},
+        "description": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "applicable": {"type": "boolean", "default": true}
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "status", "observed_at", "source"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "status": {"enum": ["passed", "failed", "pending", "not_applicable"]},
+        "observed_at": {"type": "integer", "minimum": 1},
+        "source": {"type": "string", "minLength": 1, "maxLength": 128},
+        "payload": {"$ref": "#/$defs/payload"}
+      }
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "pid": {"type": "integer", "minimum": 1},
+        "run_id": {"type": "integer", "minimum": 1},
+        "spawned_at": {"type": "integer", "minimum": 1},
+        "heartbeat_at": {"type": "integer", "minimum": 1},
+        "command": {"type": "string", "maxLength": 4096},
+        "exit_code": {"type": "integer"},
+        "url": {"type": "string", "maxLength": 2048},
+        "head_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    },
+    "blocker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "reason", "irreducible", "recorded_at"],
+      "properties": {
+        "kind": {"enum": ["dependency", "needs_input", "capability", "transient"]},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "irreducible": {"const": true},
+        "recorded_at": {"type": "integer", "minimum": 1},
+        "owner": {"type": "string", "maxLength": 128}
+      }
+    }
+  }
+}

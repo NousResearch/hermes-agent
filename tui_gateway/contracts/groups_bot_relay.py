@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from .base import JsonValue, Params, Result
+from .base import JsonValue, MethodParams, Params, Result
 from .common import OkResult
 from .registry import method
 from .server_requests import ApprovalChoice
@@ -86,7 +86,7 @@ class RoomEventInput(Params):
     idempotent: bool = False
 
     def as_mapping(self) -> dict[str, JsonValue]:
-        return self.model_dump(mode="json")
+        return self.model_dump(mode="json", exclude_unset=True)
 
 
 class Room(Result):
@@ -137,10 +137,10 @@ class RoomMemberInput(Params):
     target: RoomMemberInputTargetLocal | RoomMemberInputTargetPeer | None = None
 
     def as_mapping(self) -> dict[str, JsonValue]:
-        return self.model_dump(mode="json")
+        return self.model_dump(mode="json", exclude_unset=True)
 
 
-class RoomParams(Params):
+class RoomParams(MethodParams):
     """Any method addressed at one hosted room."""
 
     room_id: str
@@ -205,7 +205,7 @@ class RoomLinkCatalogInput(Params):
     endpoint: RoomLinkEndpoint | None = None
 
     def as_mapping(self) -> dict[str, JsonValue]:
-        return self.model_dump(mode="json")
+        return self.model_dump(mode="json", exclude_unset=True)
 
 
 class RoomLinkEnabled(Result):
@@ -226,7 +226,7 @@ RoomLinkStatus = RoomLinkEnabled | RoomLinkDisabled
 # ── groups.capabilities ───────────────────────────────────────────────────────────────────────
 
 
-class GroupsCapabilitiesParams(Params):
+class GroupsCapabilitiesParams(MethodParams):
     pass
 
 
@@ -248,7 +248,7 @@ method("groups.capabilities", params=GroupsCapabilitiesParams, result=GroupsCapa
 # ── groups.list / create / state ──────────────────────────────────────────────────────────────
 
 
-class GroupsListParams(Params):
+class GroupsListParams(MethodParams):
     include_disbanded: bool | None = None
     limit: int | None = None
     offset: int | None = None
@@ -263,7 +263,7 @@ method("groups.list", params=GroupsListParams, result=GroupsListResult,
        doc="List rooms hosted by this gateway, most recently changed first.")
 
 
-class GroupsCreateParams(Params):
+class GroupsCreateParams(MethodParams):
     room_id: str
     name: str
     members: list[RoomMemberInput]
@@ -392,7 +392,7 @@ class GroupsLogInput(Params):
     authority: RoomAuthority
 
     def as_mapping(self) -> dict[str, JsonValue]:
-        return self.model_dump(mode="json")
+        return self.model_dump(mode="json", exclude_unset=True)
 
 
 class GroupsReplicateParams(RoomParams):
@@ -557,7 +557,7 @@ method("groups.demote", params=GroupsDemoteParams, result=GroupsDemoteResult,
 # ── peer routes (RoomLink) ────────────────────────────────────────────────────────────────────
 
 
-class GroupsPeerInviteParams(Params):
+class GroupsPeerInviteParams(MethodParams):
     room_id: str | None = None
     home_install_id: str | None = None
     authority_gateway_id: str | None = None
@@ -578,7 +578,7 @@ method("groups.peer.invite", params=GroupsPeerInviteParams, result=GroupsPeerInv
        doc="Mint one target-issued room/profile grant for a prospective room home.")
 
 
-class GroupsPeerRevokeParams(Params):
+class GroupsPeerRevokeParams(MethodParams):
     grant: str
 
 
@@ -626,7 +626,7 @@ class RelayAgentRow(Params):
     online: bool | None = None
 
 
-class BotRelayRosterSyncParams(Params):
+class BotRelayRosterSyncParams(MethodParams):
     agents: list[RelayAgentRow] | None = None
 
 
@@ -638,7 +638,7 @@ method("bot_relay.roster.sync", params=BotRelayRosterSyncParams, result=BotRelay
        doc="Replace this gateway's view of agents on other connections; answers the accepted row count.")
 
 
-class BotRelayOutboxDrainParams(Params):
+class BotRelayOutboxDrainParams(MethodParams):
     pass
 
 
@@ -663,7 +663,7 @@ method("bot_relay.outbox.drain", params=BotRelayOutboxDrainParams, result=BotRel
        doc="Atomically claim every pending cross-connection envelope queued on this gateway.")
 
 
-class BotRelayDeliverParams(Params):
+class BotRelayDeliverParams(MethodParams):
     """``profile`` here is the TARGET profile on this gateway (also what the desktop route wrapper adds)."""
 
     profile: str
@@ -681,7 +681,7 @@ method("bot_relay.deliver", params=BotRelayDeliverParams, result=BotRelayDeliver
        doc="Deliver a relayed DM into a Bot Chat on this gateway and return the one-turn reply (blocking).")
 
 
-class BotRelayReplyParams(Params):
+class BotRelayReplyParams(MethodParams):
     id: str
     reply: str | None = None
     error: str | None = None
@@ -695,7 +695,7 @@ method("bot_relay.reply", params=BotRelayReplyParams, result=OkResult,
 # ── browser controller ────────────────────────────────────────────────────────────────────────
 
 
-class BrowserControllerParams(Params):
+class BrowserControllerParams(MethodParams):
     """Every controller call names the session the controller is attached to."""
 
     session_id: str

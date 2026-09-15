@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import Field
 
-from .base import JsonValue, Params, Payload, Result, WireEnum
+from .base import JsonValue, MethodParams, Params, Payload, Result, WireEnum
 
 
 class Usage(Result):
@@ -191,7 +191,7 @@ class MessageReaction(Result):
     seen: bool | None = None
 
 
-class SessionParams(Params):
+class SessionParams(MethodParams):
     """A method addressed at one live session."""
 
     session_id: str

@@ -32,8 +32,13 @@ class Params(BaseModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
+
+class MethodParams(Params):
+    """Top-level params of a client→server method (``registry.method`` requires this base)."""
+
     # The desktop routes any method to a named profile by injecting ``profile`` (``requestGatewayForProfile``,
-    # ``session-request-router.routeParams``) and ``server._profile_scoped`` reads it via getattr: transport, not surface.
+    # ``session-request-router.routeParams``) and ``server._profile_scoped`` reads it via getattr: transport, not
+    # surface. Nested inputs and server-request params stay on bare ``Params`` so the key never travels outbound.
     profile: str | None = None
 
 
@@ -53,4 +58,4 @@ class WireEnum(StrEnum):
     """A closed string set on the wire; renders as a TS literal union."""
 
 
-__all__ = ["JsonValue", "Params", "Payload", "Result", "WireEnum"]
+__all__ = ["JsonValue", "MethodParams", "Params", "Payload", "Result", "WireEnum"]

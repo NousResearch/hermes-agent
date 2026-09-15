@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pydantic import Field
 
-from .base import Params, Result
+from .base import MethodParams, Params, Result
 from .common import OkResult, StoredSessionRow
 from .registry import method
 
@@ -58,19 +58,19 @@ class OptionalProjectResult(Result):
     project: ProjectInfo | None = None
 
 
-class ProjectIdParams(Params):
+class ProjectIdParams(MethodParams):
     """A method addressed at one stored project (``5062`` when the id resolves to nothing)."""
 
     id: str
 
 
-method("projects.list", params=Params, result=ProjectsPayload,
+method("projects.list", params=MethodParams, result=ProjectsPayload,
        doc="Every project of the profile (archived included) plus which one is active.")
 method("projects.get", params=ProjectIdParams, result=ProjectResult,
        doc="One stored project with its folders.")
 
 
-class ProjectsCreateParams(Params):
+class ProjectsCreateParams(MethodParams):
     """``use`` also activates the new project."""
 
     name: str
@@ -132,7 +132,7 @@ method("projects.delete", params=ProjectIdParams, result=ProjectsPayload,
        doc="Delete a project and its folders; answers the full listing.")
 
 
-class ProjectsSetActiveParams(Params):
+class ProjectsSetActiveParams(MethodParams):
     """No ``id`` (or null) clears the active project."""
 
     id: str | None = None
@@ -146,7 +146,7 @@ method("projects.set_active", params=ProjectsSetActiveParams, result=ActiveIdRes
        doc="Switch (or clear) the active project for the profile.")
 
 
-class ProjectsForCwdParams(Params):
+class ProjectsForCwdParams(MethodParams):
     """Absent ``cwd`` resolves the gateway's default completion cwd."""
 
     cwd: str | None = None
@@ -193,7 +193,7 @@ class DiscoveredRepo(Result):
     last_active: float = 0.0
 
 
-class ProjectsDiscoverReposParams(Params):
+class ProjectsDiscoverReposParams(MethodParams):
     """``scan`` asks the host to walk the policy roots itself (remote-gateway desktop)."""
 
     scan: bool = False
@@ -213,7 +213,7 @@ class RecordRepoItem(Params):
     label: str | None = None
 
 
-class ProjectsRecordReposParams(Params):
+class ProjectsRecordReposParams(MethodParams):
     """Repos as ``{root, label}`` objects or bare root strings; entries without a root are skipped."""
 
     repos: list[RecordRepoItem | str] | None = None
@@ -275,7 +275,7 @@ class ProjectTreeNode(Result):
     previewSessions: list[ProjectTreeSession]
 
 
-class ProjectsTreeParams(Params):
+class ProjectsTreeParams(MethodParams):
     preview_limit: int | None = None
     session_limit: int | None = None
 
@@ -290,7 +290,7 @@ method("projects.tree", params=ProjectsTreeParams, result=ProjectsTreeResult,
        doc="Project → repo → lane overview with counts and a few preview sessions per project.")
 
 
-class ProjectsProjectSessionsParams(Params):
+class ProjectsProjectSessionsParams(MethodParams):
     project_id: str
     session_limit: int | None = None
 
@@ -306,7 +306,7 @@ method("projects.project_sessions", params=ProjectsProjectSessionsParams, result
 # ── pet: active mascot ────────────────────────────────────────────────────────────────────────
 
 
-class PetInfoParams(Params):
+class PetInfoParams(MethodParams):
     """``knownRevision``: the spritesheet revision the caller already holds (send-once bytes)."""
 
     knownRevision: str | None = None
@@ -345,11 +345,11 @@ class PetInfoMetaResult(Result):
     spritesheetRevision: str | None  # noqa: N815 - wire key
 
 
-method("pet.info.meta", params=Params, result=PetInfoMetaResult,
+method("pet.info.meta", params=MethodParams, result=PetInfoMetaResult,
        doc="Cheap active-pet metadata used to avoid full payload refreshes.")
 
 
-class PetCellsParams(Params):
+class PetCellsParams(MethodParams):
     """``graphics`` opts into the kitty payload when the TTY speaks it; ``cols`` overrides the width."""
 
     state: str | None = None
@@ -382,7 +382,7 @@ method("pet.cells", params=PetCellsParams, result=PetCellsResult,
 # ── pet: gallery / picker ─────────────────────────────────────────────────────────────────────
 
 
-class PetGalleryParams(Params):
+class PetGalleryParams(MethodParams):
     localOnly: bool = False
 
 
@@ -405,7 +405,7 @@ method("pet.gallery", params=PetGalleryParams, result=PetGalleryResult,
        doc="Petdex gallery + local install state (installed-only offline); localOnly skips the remote manifest.")
 
 
-class PetSlugParams(Params):
+class PetSlugParams(MethodParams):
     slug: str
 
 
@@ -454,11 +454,11 @@ class PetThumbResult(Result):
 method("pet.thumb", params=PetThumbParams, result=PetThumbResult,
        doc="Idle-frame PNG data URI for the picker (desktop CSP breaks CDN <img>).")
 
-method("pet.disable", params=Params, result=OkResult,
+method("pet.disable", params=MethodParams, result=OkResult,
        doc="Turn the pet display off from the desktop picker.")
 
 
-class PetScaleParams(Params):
+class PetScaleParams(MethodParams):
     scale: float | str | None = None
 
 

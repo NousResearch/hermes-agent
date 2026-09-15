@@ -13,7 +13,7 @@ from typing import Literal
 
 from pydantic import Field, StrictInt
 
-from .base import JsonValue, Params, Result, WireEnum
+from .base import JsonValue, MethodParams, Params, Result, WireEnum
 from .connectors_operation import ConnectionOperationStatus
 from .tools_commands import DispatchType
 from .registry import method
@@ -21,7 +21,7 @@ from .registry import method
 # ── config.get ────────────────────────────────────────────────────────────────────────────────
 
 
-class ConfigGetParams(Params):
+class ConfigGetParams(MethodParams):
     """``key`` selects one getter from ``_CONFIG_GETTERS``; ``cwd`` feeds the ``project`` getter,
     ``session_id`` lets ``reasoning`` / ``fast`` answer with the session's live pin."""
 
@@ -73,7 +73,7 @@ class ConfigSetScope(WireEnum):
     once = "once"
 
 
-class ConfigSetParams(Params):
+class ConfigSetParams(MethodParams):
     """``key`` picks the setter (``_CONFIG_SETTERS``, ``details_mode.<section>``, display toggles);
     ``value`` is the raw word/string the setter normalises (falsy non-strings are reported back in
     the error). ``scope`` applies to ``yolo`` / ``reasoning``; ``confirm_expensive_model`` to ``model``."""
@@ -135,11 +135,11 @@ class SetupStatusResult(Result):
     error: str | None = None
 
 
-method("setup.status", params=Params, result=SetupStatusResult,
+method("setup.status", params=MethodParams, result=SetupStatusResult,
        doc="Loose provider check: is ANY provider auth state discoverable for the (launch or named) profile.")
 
 
-class SetupRuntimeCheckParams(Params):
+class SetupRuntimeCheckParams(MethodParams):
     provider: str | None = None
 
 
@@ -163,7 +163,7 @@ method("setup.runtime_check", params=SetupRuntimeCheckParams, result=SetupRuntim
 # ── diagnostics.share_nous ────────────────────────────────────────────────────────────────────
 
 
-class DiagnosticsShareNousParams(Params):
+class DiagnosticsShareNousParams(MethodParams):
     error_context: str | None = None
     extra_files: dict[str, str] | None = None
     log_lines: int | None = None
@@ -212,7 +212,7 @@ class FreeTierStatusResult(Result):
     retry_after: int | None = None
 
 
-method("free_tier.status", params=Params, result=FreeTierStatusResult,
+method("free_tier.status", params=MethodParams, result=FreeTierStatusResult,
        doc="Pure read of the focused profile's free-tier identity state (no network, no side effects).")
 
 
@@ -227,7 +227,7 @@ class FreeTierProvisionResult(Result):
     retry_after: int | None = None
 
 
-method("free_tier.provision", params=Params, result=FreeTierProvisionResult,
+method("free_tier.provision", params=MethodParams, result=FreeTierProvisionResult,
        doc="Explicit retry of the free-tier identity mint when the boot bootstrap could not create it.")
 
 
@@ -235,14 +235,14 @@ class FreeTierAckNoticeResult(Result):
     acked: bool
 
 
-method("free_tier.ack_notice", params=Params, result=FreeTierAckNoticeResult,
+method("free_tier.ack_notice", params=MethodParams, result=FreeTierAckNoticeResult,
        doc="Mark the one-time availability notice as shown on the free-tier identity.")
 
 
 # ── model.options ─────────────────────────────────────────────────────────────────────────────
 
 
-class ModelOptionsParams(Params):
+class ModelOptionsParams(MethodParams):
     session_id: str | None = None
     explicit_only: bool = False
     include_unconfigured: bool = False
@@ -314,7 +314,7 @@ method("model.options", params=ModelOptionsParams, result=ModelOptionsResult,
 # ── connectors ────────────────────────────────────────────────────────────────────────────────
 
 
-class ConnectorsListParams(Params):
+class ConnectorsListParams(MethodParams):
     session_id: str
 
 
@@ -338,7 +338,7 @@ method("connectors.list", params=ConnectorsListParams, result=ConnectorsListResu
        doc="Connector catalog + connection state for one owned session (``available=False`` when the toolset is off).")
 
 
-class ConnectorsConnectParams(Params):
+class ConnectorsConnectParams(MethodParams):
     session_id: str
     connectors: list[str]
     reconnect: bool = False
@@ -360,7 +360,7 @@ method("connectors.connect", params=ConnectorsConnectParams, result=ConnectorsCo
 # ── image.generate ────────────────────────────────────────────────────────────────────────────
 
 
-class ImageGenerateParams(Params):
+class ImageGenerateParams(MethodParams):
     prompt: str | None = None
     aspect_ratio: str | None = None
     probe: JsonValue | None = None  # truthy word/flag: availability check only
@@ -518,7 +518,7 @@ class SessionControlSnapshot(Result):
     updated_at: float
 
 
-class SessionControlReadParams(Params):
+class SessionControlReadParams(MethodParams):
     session_id: str
 
 
@@ -554,7 +554,7 @@ class SessionControlArgs(Params):
     index: StrictInt | None = None
 
 
-class SessionControlParams(Params):
+class SessionControlParams(MethodParams):
     """``action`` is validated by the handler (unknown / gate actions answer ``4004``), so it stays a
     string on the wire; ``SessionControlAction`` lists the accepted set."""
 
@@ -585,7 +585,7 @@ method("session.control", params=SessionControlParams, result=SessionControlResu
 # ── verification.status ───────────────────────────────────────────────────────────────────────
 
 
-class VerificationStatusParams(Params):
+class VerificationStatusParams(MethodParams):
     session_id: str | None = None
     session_key: str | None = None
     cwd: str | None = None

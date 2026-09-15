@@ -17,7 +17,7 @@ from . import (  # noqa: F401
     tools_commands,
     tools_mcp_plugins,
 )
-from .base import JsonValue, Params, Payload, Result, WireEnum
+from .base import JsonValue, MethodParams, Params, Payload, Result, WireEnum
 from .registry import EVENTS, METHODS, SERVER_REQUESTS
 
-__all__ = ["EVENTS", "METHODS", "SERVER_REQUESTS", "JsonValue", "Params", "Payload", "Result", "WireEnum"]
+__all__ = ["EVENTS", "METHODS", "SERVER_REQUESTS", "JsonValue", "MethodParams", "Params", "Payload", "Result", "WireEnum"]

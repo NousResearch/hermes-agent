@@ -209,6 +209,14 @@ class TestParseSchedule:
         with pytest.raises(ValueError):
             parse_schedule("every monday 9pm pizza")
 
+    def test_zero_interval_raises(self):
+        # A "0m" interval keeps next_run_at <= now forever, so the job
+        # would fire on every tick — reject the typo at creation instead.
+        with pytest.raises(ValueError):
+            parse_schedule("0m")
+        with pytest.raises(ValueError):
+            parse_schedule("every 0h")
+
     def test_cron_expression(self):
         pytest.importorskip("croniter")
         result = parse_schedule("0 9 * * *")

@@ -27,6 +27,7 @@ class SkinConfig:
     tool_emojis: Dict[str, str] = field(default_factory=dict)  # per-tool emoji overrides
     banner_logo: str = ""    # Rich-markup ASCII art logo (replaces HERMES_AGENT_LOGO)
     banner_hero: str = ""    # Rich-markup hero art (replaces HERMES_CADUCEUS)
+    input_rule_art: str = ""    # One-line Rich markup, tiled/clipped to terminal columns; empty = plain rule
 
     def get_color(self, key: str, fallback: str = "") -> str:
         return self.colors.get(key, fallback)
@@ -397,13 +398,17 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
     # Paired palettes are NOT merged over the default skin's blocks: an empty block means
     # "no hand-tuned variant for that polarity" and consumers (the TUI) fall back to `colors`
     # + automatic adaptation, which beats the default's gold light palette under a crimson skin.
+    def skin_text(key: str) -> str:
+        value = data.get(key, "")
+        return value if isinstance(value, str) else ""
+
     return SkinConfig(
         name=skin_name, description=data.get("description", ""), colors=merged("colors"),
         light_colors=section("light_colors"), dark_colors=section("dark_colors"),
         spinner=merged("spinner"), branding=merged("branding"),
         tool_prefix=data.get("tool_prefix", default.get("tool_prefix", "┊")),
-        tool_emojis=section("tool_emojis"), banner_logo=data.get("banner_logo", ""),
-        banner_hero=data.get("banner_hero", ""))
+        tool_emojis=section("tool_emojis"), banner_logo=skin_text("banner_logo"),
+        banner_hero=skin_text("banner_hero"), input_rule_art=skin_text("input_rule_art"))
 
 
 def list_skins() -> List[Dict[str, str]]:

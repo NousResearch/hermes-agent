@@ -999,6 +999,10 @@ def _refresh_windows_gateway_launchers() -> None:
         if gateway_windows.is_installed():
             gateway_windows._write_task_script()
             print("  ✓ Refreshed Windows gateway launcher scripts")
+            # A registered task keeps executing the action it was created with, so recreating the
+            # launcher file alone does not retarget it (e.g. .vbs -> .ps1 on builds without VBScript).
+            if gateway_windows.repair_login_persistence():
+                print("  ✓ Re-pointed Windows login persistence at the current launcher")
 
 
 def _refresh_bootstrap_cache_scripts(branch: str = "main") -> None:
@@ -1124,6 +1128,8 @@ def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: lis
     with _abort_on_error("Could not load Windows gateway liveness helpers"):
         from hermes_cli import gateway_windows
     ready_pids = gateway_windows._wait_for_gateway_ready(timeout_s=30.0, all_profiles=True)
+    if not ready_pids and _retry_via_scheduled_task():
+        ready_pids = gateway_windows._wait_for_gateway_ready(timeout_s=45.0, all_profiles=True)
     if not ready_pids:
         token["profiles"] = dict(profiles)
         token["unmapped"] = list(unmapped)
@@ -1135,6 +1141,32 @@ def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: lis
         raise RuntimeError("Windows gateway relaunch after update was not verified alive")
     with suppress(Exception):
         gateway_windows._write_start_attestation(ready_pids, "post-update relaunch")
+
+
+def _retry_via_scheduled_task() -> bool:
+    """Re-launch the gateway through the Scheduled Task after a failed direct-spawn relaunch.
+
+    The spawn this updater performs is a child of the updater process, so a parent Job Object can
+    kill it on teardown (#48820) — the reason the failure message has always told the user to run
+    ``schtasks /Run``. Task Scheduler launches the gateway outside any Job Object, so when the task
+    is registered and startable it IS the reliable relaunch path; use it instead of reporting a
+    failure the user would have to fix by hand. Returns True when the task was successfully run.
+    """
+    try:
+        from hermes_cli import gateway_windows
+
+        if not gateway_windows.is_task_registered():
+            return False
+        task_name = gateway_windows.get_task_name()
+        code, _out, err = gateway_windows._exec_schtasks(["/Run", "/TN", task_name])
+        if code != 0:
+            logger.debug("Scheduled Task relaunch returned %s: %s", code, (err or "").strip())
+            return False
+        print(f"  → Direct relaunch did not verify; started the gateway via Scheduled Task {task_name!r} instead")
+        return True
+    except Exception as exc:
+        logger.debug("Scheduled Task relaunch fallback failed: %s", exc)
+        return False
 
 
 def _resume_windows_gateways_after_update(token: dict | None) -> None:

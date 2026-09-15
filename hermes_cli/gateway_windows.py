@@ -251,12 +251,20 @@ def _startup_dir() -> Path:
 
 def get_startup_entry_path() -> Path:
     _assert_windows()
-    return _startup_dir() / f"{_sanitize_filename(get_task_name())}.vbs"
+    suffix = ".ps1" if _prefer_powershell_launcher() else ".vbs"
+    return _startup_dir() / f"{_sanitize_filename(get_task_name())}{suffix}"
 
 
 def _legacy_startup_entry_path() -> Path:
     _assert_windows()
     return _startup_dir() / f"{_sanitize_filename(get_task_name())}.cmd"
+
+
+def _alternate_startup_entry_path() -> Path:
+    """The Startup entry of the OTHER launcher kind, left behind when the host switches .vbs <-> .ps1."""
+    _assert_windows()
+    suffix = ".vbs" if _prefer_powershell_launcher() else ".ps1"
+    return _startup_dir() / f"{_sanitize_filename(get_task_name())}{suffix}"
 
 
 def _stable_gateway_working_dir(project_root: Path) -> str:
@@ -371,8 +379,17 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
 
 
 def _build_startup_launcher(script_path: Path) -> str:
-    """The tiny Startup-folder .vbs that chains hidden. Quits silently if the target is gone so a
-    stale entry doesn't error on every login."""
+    """The tiny Startup-folder launcher that chains hidden. Quits silently if the target is gone so a
+    stale entry doesn't error on every login. ``.ps1`` on builds without VBScript."""
+    launcher_path = get_task_launcher_path()
+    if launcher_path.suffix.lower() == ".ps1":
+        lines = [
+            f"# {_TASK_DESCRIPTION}",
+            f"if (-not (Test-Path -LiteralPath {_quote_ps_single(str(launcher_path))})) {{ exit 0 }}",
+            f"& {_quote_ps_single(_powershell_exe() or 'powershell.exe')} -NoProfile "
+            f"-ExecutionPolicy Bypass -File {_quote_ps_single(str(launcher_path))}",
+        ]
+        return "\r\n".join(lines) + "\r\n"
     target = str(script_path.with_suffix(".vbs"))
     command = subprocess.list2cmdline(["wscript.exe", target])
     lines = [
@@ -388,6 +405,72 @@ def _build_startup_launcher(script_path: Path) -> str:
     return "\r\n".join(lines) + "\r\n"
 
 
+def _powershell_exe() -> str | None:
+    """Absolute path to powershell.exe, or None when it cannot be resolved."""
+    return shutil.which("powershell.exe") or shutil.which("powershell")
+
+
+def _vbscript_engine_available(system_root: Path | None = None) -> bool:
+    """Whether wscript.exe can actually execute a ``.vbs`` on this machine.
+
+    VBScript is no longer installed by default on current Windows 11 builds (removed as an optional
+    feature); there ``wscript.exe`` exits 1 immediately with "There is no script engine for file
+    extension .vbs", so a Task/Startup .vbs launcher silently never starts the gateway. The presence
+    of ``System32\\vbscript.dll`` is the cheap, non-executing signal.
+
+    Purely file-driven (``system_root`` defaults to the host's, overridable as DATA) so the decision
+    is testable without pretending to be another OS.
+    """
+    root = system_root or Path(
+        os.environ.get("SystemRoot") or os.environ.get("WINDIR") or r"C:\Windows")
+    return (root / "System32" / "vbscript.dll").is_file()
+
+
+def _prefer_powershell_launcher() -> bool:
+    """True when the launcher must be a ``.ps1`` because VBScript is unavailable but PowerShell is."""
+    return not _vbscript_engine_available() and _powershell_exe() is not None
+
+
+def _build_gateway_ps1_script(python_path: str, working_dir: str, hermes_home: str, profile_arg: str) -> str:
+    """Build the hidden-console ``gateway.ps1`` launcher (CRLF-terminated).
+
+    Drop-in replacement for ``_build_gateway_vbs_script`` on Windows builds where VBScript is not
+    installed (see ``_vbscript_engine_available``): same env contract, same window-style-0 hidden
+    launch, same detachment, so ``python.exe`` still runs with ONE hidden console that descendants
+    inherit instead of allocating flashing ones (#54220/#56747, #45599).
+    ``Start-Process -WindowStyle Hidden`` gives the child its own hidden console and returns
+    immediately, so the launched gateway outlives the launcher (no Job Object teardown on exit).
+    """
+    python_exe_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
+    argv = _gateway_run_argv(python_exe_path, profile_arg)
+    static_pythonpath = os.pathsep.join(_launcher_pythonpath_entries(extra_pythonpath))
+    q = _quote_ps_single
+    lines = [
+        f"# {_TASK_DESCRIPTION}",
+        "$ErrorActionPreference = 'Stop'",
+        f"$env:HERMES_HOME = {q(hermes_home)}",
+        *[f"$env:{k} = {q(v)}" for k, v in _GATEWAY_ENV],
+        f"$env:VIRTUAL_ENV = {q(_preserve_hermes_home_path(venv_dir))}",
+        # Mirror the cmd wrapper's ``PYTHONPATH=<static>;%PYTHONPATH%`` (and the .vbs builder).
+        "if ([string]::IsNullOrEmpty($env:PYTHONPATH)) {",
+        f"  $env:PYTHONPATH = {q(static_pythonpath)}",
+        "} else {",
+        f"  $env:PYTHONPATH = {q(static_pythonpath + os.pathsep)} + $env:PYTHONPATH",
+        "}",
+        f"Set-Location -LiteralPath {q(working_dir)}",
+        f"$gatewayArgv = @({', '.join(q(a) for a in argv[1:])})",
+        f"Start-Process -FilePath {q(str(argv[0]))} -ArgumentList $gatewayArgv -WindowStyle Hidden",
+    ]
+    return "\r\n".join(lines) + "\r\n"
+
+
+def _quote_ps_single(value: str) -> str:
+    """PowerShell single-quoted literal: embedded quotes doubled, newlines refused."""
+    if "\r" in value or "\n" in value:
+        raise ValueError(f"refusing to quote PowerShell value containing newline: {value!r}")
+    return "'" + value.replace("'", "''") + "'"
+
+
 def _write_task_script() -> Path:
     """Generate the gateway.cmd wrapper (kept as a compatibility artifact) and the console-less .vbs
     launcher used by the Scheduled Task and Startup fallback. Return the .cmd path."""
@@ -395,11 +478,40 @@ def _write_task_script() -> Path:
     settings = _launcher_settings()
     script_path = get_task_script_path()
     _atomic_write(script_path, _build_gateway_cmd_script(*settings), script_path.with_suffix(".tmp"))
-    # Also render the console-less .vbs launcher used by Scheduled Task and the Startup-folder fallback via
-    # wscript.exe (issue #45599 fix A). The .cmd wrapper stays as a generated helper/compatibility artifact.
-    vbs_path = script_path.with_suffix(".vbs")
-    _atomic_write(vbs_path, _build_gateway_vbs_script(*settings), vbs_path.with_name(vbs_path.name + ".tmp"))
+    # Also render the console-less launcher used by Scheduled Task and the Startup-folder fallback
+    # (issue #45599 fix A). The .cmd wrapper stays as a generated helper/compatibility artifact.
+    # Launcher kind follows the host: .vbs via wscript.exe when the VBScript engine exists, else .ps1
+    # via powershell.exe — current Windows 11 builds ship without VBScript, where a .vbs launcher
+    # exits 1 without starting anything and the gateway silently never comes up.
+    launcher_path = get_task_launcher_path()
+    if _prefer_powershell_launcher():
+        _atomic_write(launcher_path, _build_gateway_ps1_script(*settings), launcher_path.with_name(launcher_path.name + ".tmp"))
+        _remove_stale_launcher(script_path.with_suffix(".vbs"))
+    else:
+        _atomic_write(launcher_path, _build_gateway_vbs_script(*settings), launcher_path.with_name(launcher_path.name + ".tmp"))
+        _remove_stale_launcher(script_path.with_suffix(".ps1"))
     return script_path
+
+
+def get_task_launcher_path() -> Path:
+    """The launcher the Scheduled Task / Startup entry actually executes (``.ps1`` or ``.vbs``)."""
+    _assert_windows()
+    return _launcher_path_for(get_task_script_path())
+
+
+def _launcher_path_for(script_path: Path) -> Path:
+    """Launcher sibling of *script_path*, in the kind this host can actually execute."""
+    return script_path.with_suffix(".ps1" if _prefer_powershell_launcher() else ".vbs")
+
+
+def _remove_stale_launcher(path: Path) -> None:
+    """Delete the other-kind launcher so no stale artifact (or Startup entry) survives a switch."""
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.debug("Could not remove stale launcher %s: %s", path, exc)
 
 
 def _atomic_write(path: Path, content: str, tmp: Path) -> None:
@@ -421,12 +533,27 @@ def _resolve_task_user() -> str | None:
     return f"{domain}\\{username}" if domain else username
 
 
+def _launcher_command(launcher_path: Path, powershell_exe: str | None = None) -> tuple[str, str]:
+    """``(Command, Arguments)`` for the task XML / Startup entry that runs *launcher_path*.
+
+    Launcher kind is derived from the file's own suffix, so this is pure string assembly — the
+    caller resolves which kind to write, and tests can exercise both branches on any host.
+    """
+    if launcher_path.suffix.lower() == ".ps1":
+        return (powershell_exe or _powershell_exe() or "powershell.exe",
+                f"-NoProfile -ExecutionPolicy Bypass -File \"{launcher_path}\"")
+    return "wscript.exe", f"//B //Nologo \"{launcher_path}\""
+
+
 def _build_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | None) -> str:
     """Task Scheduler XML with safe long-running defaults. ``launcher_path`` is the console-less
-    ``.vbs`` run via ``wscript.exe`` (see ``_build_gateway_vbs_script`` for why not cmd.exe).
+    launcher run by its host interpreter — ``.vbs`` via ``wscript.exe``, or ``.ps1`` via
+    ``powershell.exe`` on builds without VBScript (see ``_build_gateway_vbs_script`` /
+    ``_build_gateway_ps1_script`` for why not cmd.exe).
 
     See #45599.
     """
+    command, arguments = _launcher_command(launcher_path)
     user_principal = f"\n      <UserId>{escape(user)}</UserId>" if user else ""
     return f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -470,8 +597,8 @@ def _build_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | N
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>wscript.exe</Command>
-      <Arguments>//B //Nologo "{escape(str(launcher_path))}"</Arguments>
+      <Command>{escape(command)}</Command>
+      <Arguments>{escape(arguments)}</Arguments>
     </Exec>
   </Actions>
 </Task>
@@ -489,7 +616,7 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
         return (False, f"schtasks /Delete failed (code {delete_code}): {delete_detail}")
     # Other /Delete failures are non-fatal: /Create /F may still replace it; keep the detail.
     user = _resolve_task_user()
-    launcher_path = script_path.with_suffix(".vbs")   # the task launches the console-less .vbs
+    launcher_path = _launcher_path_for(script_path)   # the task launches the console-less launcher
     xml_path = launcher_path.with_suffix(".task.xml")
     xml_path.write_text(_build_scheduled_task_xml(task_name, launcher_path, user), encoding="utf-16", newline="")
     # Immediate manual starts use _spawn_detached(). See #45599.
@@ -517,12 +644,13 @@ def _install_startup_entry(script_path: Path) -> Path:
     entry = get_startup_entry_path()
     entry.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write(entry, _build_startup_launcher(script_path), entry.with_suffix(".tmp"))
-    legacy_entry = _legacy_startup_entry_path()
-    try:
-        if legacy_entry.exists():
-            legacy_entry.unlink()
-    except OSError:
-        pass
+    for stale_entry in (_legacy_startup_entry_path(), _alternate_startup_entry_path()):
+        try:
+            stale_entry.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
     return entry
 
 
@@ -1138,7 +1266,9 @@ def uninstall() -> None:
 
     for path, label in (
         (get_startup_entry_path(), "Windows login item"), (_legacy_startup_entry_path(), "legacy Windows login item"),
+        (_alternate_startup_entry_path(), "stale Windows login item"),
         (script_path, "Task script"), (script_path.with_suffix(".vbs"), "Task launcher"),
+        (script_path.with_suffix(".ps1"), "Task launcher (PowerShell)"),
     ):
         try:
             path.unlink()
@@ -1148,6 +1278,36 @@ def uninstall() -> None:
 
     if is_task_registered() and not scheduled_task_removed:
         print(f"⚠ Scheduled Task still registered: {task_name}")
+
+
+def repair_login_persistence() -> bool:
+    """Re-point an installed Scheduled Task / Startup entry at the current launcher kind.
+
+    Launcher files are regenerated on every update, but an already-registered task keeps executing
+    whatever path it was created with: a machine that gains or loses the VBScript engine (Windows
+    removed it as a default feature) would otherwise keep launching a launcher that no longer exists
+    or no longer runs. Recreating the task is the only way to change its action.
+
+    Recreating a task needs the same privilege as creating it, so on an access-denied refusal this
+    falls back to the user-level Startup entry — login persistence still works without elevation.
+    Returns True when an existing install was reconciled; never raises.
+    """
+    try:
+        if not is_installed():
+            return False
+        script_path = get_task_script_path()
+        if is_task_registered():
+            ok, detail = _install_scheduled_task(get_task_name(), script_path)
+            if not ok:
+                logger.debug("Could not re-point Scheduled Task after launcher refresh: %s", detail)
+                _install_startup_entry(script_path)
+                return True
+            return True
+        _install_startup_entry(script_path)
+        return True
+    except Exception as exc:   # best-effort repair; the launcher refresh must not fail the update
+        logger.debug("Windows login-persistence repair failed: %s", exc)
+        return False
 
 
 # ── Status / start / stop / restart

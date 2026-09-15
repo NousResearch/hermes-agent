@@ -57,10 +57,37 @@ def _write(path: Path, payload: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("source", ["profile", "managed"])
+def test_disabled_global_fallback_inherits_no_root_credentials(profile_env, monkeypatch, source):
+    """``auth.global_fallback: false`` (the profile's own, or an administrator's pinned value over the
+    profile's ``true``) keeps every root credential out: pool entries and singleton provider state
+    alike. Unset, both still inherit."""
+    from hermes_cli import managed_scope
+    from hermes_cli.auth import get_provider_auth_state, read_credential_pool
+    import hermes_cli.config as config_module
 
+    _write(profile_env["global"] / "auth.json", _make_auth_store(
+        pool={"xai-oauth": [{"id": "global-xai", "label": "global-xai", "auth_type": "oauth", "priority": 0,
+                             "source": "manual", "access_token": "global-access", "refresh_token": "global-refresh"}]},
+        providers={"nous": {"access_token": "nous-global", "refresh_token": "rt-global"}},
+    ))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={}, providers={}))
+    assert read_credential_pool("xai-oauth") and get_provider_auth_state("nous")  # inherited by default
 
+    if source == "profile":
+        (profile_env["profile"] / "config.yaml").write_text("auth:\n  global_fallback: false\n")
+    else:
+        (profile_env["profile"] / "config.yaml").write_text("auth:\n  global_fallback: true\n")
+        managed_dir = profile_env["global"] / "managed"
+        managed_dir.mkdir()
+        (managed_dir / "config.yaml").write_text("auth:\n  global_fallback: false\n")
+        monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
+        managed_scope.invalidate_managed_cache()
+    config_module._LOAD_CONFIG_CACHE.clear()
 
-
+    assert read_credential_pool("xai-oauth") == []
+    assert read_credential_pool(None) == {}
+    assert get_provider_auth_state("nous") is None
 
 
 def test_missing_global_auth_file_is_safe(profile_env):

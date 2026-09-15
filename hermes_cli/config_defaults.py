@@ -1849,6 +1849,8 @@ DEFAULT_CONFIG = {
         # the portal sign-in every managed tool gates on.
         "connectors": {"enabled": True},
     },
+    # None keeps hosted document OCR key-gated; True opts in without a key; False disables it.
+    "file_tools": {"hosted_ocr": None},
     "logging": {  # File logging to ~/.hermes/logs/: agent.log captures INFO+, errors.log WARNING+.
         "level": "INFO",       # minimum level for agent.log: DEBUG, INFO, WARNING
         "max_size_mb": 5,      # max size per log file before rotation

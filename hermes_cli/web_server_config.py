@@ -67,6 +67,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "IANA timezone (e.g. America/New_York). Blank uses the system timezone.",
         *_timezone_options(), searchable=True, clearable=True,
     ),
+    "file_tools.hosted_ocr": {"description": "Hosted document OCR: true allows uploads without a key; false disables; auto requires a Firecrawl key."},
     "memory.provider": _select("Memory provider plugin", *_memory_provider_options()),
     "model": {
         "type": "string",
@@ -180,6 +181,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "human_delay": "display",
     "dashboard": "display",
     "code_execution": "agent",
+    "file_tools": "agent",
     "prompt_caching": "agent",
     "bot_mode": "agent",
     "goals": "agent",

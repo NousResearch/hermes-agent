@@ -10,6 +10,7 @@ from hermes_cli.auth import AuthError
 from hermes_cli import main as hermes_main
 import hermes_cli.main_provider_setup as hermes_cli_main_provider_setup
 from hermes_cli import model_setup_flows
+from hermes_cli import model_switch
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +184,56 @@ def test_explicit_model_wins_over_provider_default_model(monkeypatch):
     )
 
     assert shell.model == "explicit-id"
+
+
+
+@pytest.mark.parametrize(
+    ("explicit_base_url", "expected_base_url"),
+    [
+        (None, "http://alias.example:8000/v1"),
+        ("http://override.example:9000/v1", "http://override.example:9000/v1"),
+    ],
+)
+def test_startup_alias_base_url_reaches_runtime_resolution(
+    monkeypatch,
+    explicit_base_url,
+    expected_base_url,
+):
+    """Startup aliases keep their endpoint unless --base-url overrides it (#103933)."""
+    cli = _import_cli()
+    monkeypatch.setitem(
+        cli.CLI_CONFIG,
+        "model",
+        {
+            "default": "fallback-model",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+        },
+    )
+    monkeypatch.setattr(
+        model_switch,
+        "DIRECT_ALIASES",
+        {
+            "myalias": model_switch.DirectAlias(
+                "my-model-id",
+                "custom",
+                "http://alias.example:8000/v1",
+                api_key="not-needed",
+            ),
+        },
+    )
+
+    shell = cli.HermesCLI(
+        model="myalias",
+        base_url=explicit_base_url,
+        compact=True,
+        max_turns=1,
+    )
+
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.model == "my-model-id"
+    assert shell.provider == "custom"
+    assert shell.base_url == expected_base_url
 
 
 def test_provider_flag_logs_when_custom_default_model_cannot_resolve(monkeypatch, caplog):

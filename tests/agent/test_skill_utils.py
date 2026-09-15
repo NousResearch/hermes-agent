@@ -11,6 +11,7 @@ from agent.skill_utils import (
     get_external_skills_dirs,
     is_excluded_skill_path,
     is_external_skill_path,
+    is_inside_skill_package,
     is_skill_support_path,
     iter_skill_index_files,
     parse_config_string_list,
@@ -240,6 +241,42 @@ def test_skill_support_path_uses_explicit_discovery_root_not_cwd(tmp_path, monke
     relative = nested.relative_to(discovery_root)
     assert is_skill_support_path(relative, root=discovery_root) is True
     assert is_excluded_skill_path(relative, root=discovery_root) is True
+
+
+def test_is_inside_skill_package_ownership_follows_ancestor_skill_md(tmp_path):
+    """Package-internal Markdown is owned by its package regardless of the
+    internal directory's name; the discovery root and category dirs are not
+    owners, so root- and category-level flat skills keep resolving."""
+    package = tmp_path / "character" / "example"
+    prompts = package / "prompts"
+    prompts.mkdir(parents=True)
+    (package / "SKILL.md").write_text("---\nname: example\n---\n", encoding="utf-8")
+    internal = prompts / "research.md"
+    internal.write_text("# Internal research prompt\n", encoding="utf-8")
+
+    root_flat = tmp_path / "legacy-note.md"
+    root_flat.write_text("# Root-level legacy flat skill\n", encoding="utf-8")
+    category_flat = tmp_path / "docs" / "legacy-note.md"
+    category_flat.parent.mkdir(parents=True)
+    category_flat.write_text("# Category-level legacy flat skill\n", encoding="utf-8")
+
+    assert is_inside_skill_package(internal, root=tmp_path) is True
+    assert is_inside_skill_package(root_flat, root=tmp_path) is False
+    assert is_inside_skill_package(category_flat, root=tmp_path) is False
+
+
+def test_is_inside_skill_package_ignores_owners_above_the_discovery_root(tmp_path):
+    """An ancestor skill root ABOVE the discovery root must not swallow
+    candidates inside it (the mirror sits inside a bigger package)."""
+    outer = tmp_path / "outer-package"
+    mirror = outer / "mirror"
+    mirror.mkdir(parents=True)
+    (outer / "SKILL.md").write_text("---\nname: outer\n---\n", encoding="utf-8")
+    flat = mirror / "note.md"
+    flat.write_text("# Standalone in the mirror\n", encoding="utf-8")
+
+    assert is_inside_skill_package(flat, root=mirror) is False
+    assert is_inside_skill_package(flat, root=tmp_path) is True
 
 
 # ── skill_matches_platform on Termux ──────────────────────────────────────

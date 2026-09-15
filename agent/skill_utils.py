@@ -89,6 +89,35 @@ def is_skill_support_path(path, *, root: Optional[Path] = None) -> bool:
     )
 
 
+def is_inside_skill_package(path, *, root: Optional[Path] = None) -> bool:
+    """True if *path* is nested under a directory that is itself a skill root.
+    Ownership follows the ancestor ``SKILL.md``, not the directory name, so
+    package-internal Markdown under any directory (``prompts/``, ``docs/``, …)
+    is material of that package — never a standalone legacy flat skill.
+    Ancestors are checked strictly below *root*: the discovery root itself is
+    not an owner, so root- and category-level flat skills keep resolving."""
+    path_obj = path if isinstance(path, Path) else Path(str(path))
+    try:
+        path_obj = path_obj.resolve()
+    except OSError:
+        pass
+    stop = None
+    if root is not None:
+        stop = Path(root)
+        try:
+            stop = stop.resolve()
+        except OSError:
+            pass
+    for ancestor in path_obj.parents:
+        if stop is not None and ancestor == stop:
+            return False
+        if (ancestor / "SKILL.md").exists():
+            return True
+        if stop is None:
+            return False  # no discovery root given: only the immediate parent can own it
+    return False
+
+
 _yaml_load_fn = None
 
 

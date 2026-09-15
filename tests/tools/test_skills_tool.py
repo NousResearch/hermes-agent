@@ -948,6 +948,38 @@ class TestSkillViewCollisionDetection:
         assert "REAL SKETCH SKILL" in result["content"]
 
 
+    def test_package_internal_markdown_does_not_collide_with_real_skill(self, tmp_path):
+        """Markdown owned by another skill's package must not shadow a real
+        skill sharing the basename, whatever the internal directory is named.
+
+        Regression for the ``prompts/`` variant: the support-dir exclusion
+        only knows the hard-coded ``SKILL_SUPPORT_DIRS``, so a package's
+        ``prompts/research.md`` used to enter the legacy flat-skill candidate
+        set and make a top-level ``research`` skill refuse to load.
+        """
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(local_dir, "example", category="character")
+        internal_prompt = (
+            local_dir / "character" / "example" / "prompts" / "research.md"
+        )
+        internal_prompt.parent.mkdir(parents=True, exist_ok=True)
+        internal_prompt.write_text("# Internal research prompt\n")
+        _make_skill(local_dir, "research", body="REAL RESEARCH SKILL")
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("research")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["path"] == "research/SKILL.md"
+        assert "REAL RESEARCH SKILL" in result["content"]
+
+
     def test_two_externals_same_name_also_refuse(self, tmp_path):
         """Collision detection is symmetric — two external dirs with
         same-name skills also trigger the refusal."""

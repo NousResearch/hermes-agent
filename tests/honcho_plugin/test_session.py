@@ -382,6 +382,44 @@ class TestTruncateToBudget:
         # 1200 tokens * 4 chars = 4800 chars + " …"
         assert len(result) <= 4805
 
+    def test_oversized_early_section_does_not_evict_short_later_section(self):
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        provider = HonchoMemoryProvider()
+        provider._config = HonchoClientConfig(context_tokens=100)
+        text = "## User Representation\n" + "representation " * 500
+        text += "\n\n## User Peer Card\nimportant stable fact"
+
+        result = provider._truncate_to_budget(text)
+
+        assert len(result) <= 400
+        assert "## User Representation" in result
+        assert "## User Peer Card\nimportant stable fact" in result
+
+    def test_context_within_budget_is_returned_verbatim(self):
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        provider = HonchoMemoryProvider()
+        provider._config = HonchoClientConfig(context_tokens=100)
+        text = "## Session Summary\nshort\n\n## User Peer Card\nstable"
+
+        assert provider._truncate_to_budget(text) == text
+
+    def test_tiny_section_allocations_never_exceed_aggregate_budget(self):
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        provider = HonchoMemoryProvider()
+        provider._config = HonchoClientConfig(context_tokens=20)
+        text = "\n\n".join(f"## Section {index}\n{'word ' * 100}" for index in range(5))
+
+        assert len(provider._truncate_to_budget(text)) <= 80
+
+    def test_dialectic_is_formatted_as_its_own_budget_section(self):
+        assert HonchoMemoryProvider._format_dialectic_context("relevant insight") == (
+            "## Honcho Dialectic\nrelevant insight"
+        )
+        assert HonchoMemoryProvider._format_dialectic_context("") == ""
+
 
 # ---------------------------------------------------------------------------
 # Dialectic input guard

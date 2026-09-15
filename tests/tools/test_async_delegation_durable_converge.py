@@ -1,8 +1,9 @@
 """Invariant tests for the durable-convergence patch in ``tools/async_delegation.py``.
 
-Two defects, both unaddressed on upstream v2026.9.11, are pinned behaviourally
-here: no source-text/regex assertions, no snapshot or enumeration-count
-assertions. Each test asserts a relationship between two pieces of runtime data.
+Three defects, all unaddressed on upstream ``origin/main``, are pinned
+behaviourally here: no source-text/regex assertions on the module under test, no
+snapshot or enumeration-count assertions. Each test asserts a relationship
+between two pieces of runtime data.
 
 M1 - the bare ``_persist_completion(...)`` call site
 ---------------------------------------------------
@@ -33,11 +34,42 @@ the retained cap overflowed. Its runner then reached ``_finalize``'s
 missing-record path: a real (non-synthetic) result was silently dropped, and
 the durable row was left on ``running`` for the restart path to misreport.
 
+P1#1 - "degraded" is not the same as "settled", and the caller must be told
+--------------------------------------------------------------------------
+The converge retry covers the *transient* write failure (M1's shape). It does
+NOT cover a failure that takes every bottom-level ledger write with it -
+SQLITE_FULL, a read-only ``state.db``, a lock that outlives the retry. In that
+case ``_shield_unconverged_durable_row()``'s tombstone ``UPDATE`` raises, its
+fallback ``DELETE`` raises, and nothing in the ledger changes: the row is still
+``running``. The v2 patch discarded that verdict (``_converge_durable_completion``'s
+return value was logged and dropped) and published the result as an unqualified
+terminal success anyway, so the next process start's
+``recover_abandoned_delegations()`` still rewrote a *delivered* success to
+``unknown`` - the exact self-contradiction the PR exists to remove.
+
+Settlement authority is now explicit. ``_converge_durable_completion`` returns
+True only when the ledger can no longer contradict the in-process outcome: the
+terminal write landed, or the converge retry landed, or the shield landed its
+minimal terminal mark / removed the row. When it returns False - every
+bottom-level ledger write raised - the result is STILL delivered (dropping a
+finished child's result is the one thing that must never happen), but:
+
+  * the event carries the additive marker ``durable_settlement == "unconfirmed"``
+    ("delivered, durable settlement not confirmed - reconcile");
+  * a WARNING names the delegation and the failed durable settlement;
+  * ``recover_abandoned_delegations()`` reports ``indeterminate`` for that id
+    instead of a bare ``unknown``.
+
+The test for it below fails the BOTTOM-LEVEL writes - ``sqlite3`` ``UPDATE`` and
+``DELETE`` statements against ``async_delegations``, reached through the
+module's own ``_connect`` - so the shield UPDATE, the tombstone DELETE and the
+converge retry all raise, instead of only the first monkeypatch wrapper.
+
 Base vs patch
 -------------
-On the pre-patch base BOTH tests fail, one assertion each, on the contracts
-named in their docstrings. With the durable-convergence patch applied BOTH
-pass. Raw output for both runs: ``upstream-pr/RED-GREEN.md``.
+On the unpatched base all three tests fail, on the contracts named in their
+docstrings. With the durable-convergence patch applied all three pass. Raw
+output for both runs is pasted in ``REVISION-NOTES-v3.md``.
 
 Run with the canonical runner (not bare pytest - CI uses the per-file
 subprocess runner)::
@@ -52,6 +84,8 @@ is involved: ``runner`` is the module's own documented injection seam, and only
 the in-process state machine plus the ledger are exercised.
 """
 
+import logging
+import re
 import sqlite3
 import threading
 import time
@@ -253,3 +287,146 @@ def test_persist_failure_neither_drops_the_result_nor_invents_unknown(monkeypatc
         assert row["state"] == evt["status"], (
             "the ledger and the delivered outcome disagree: row says %r, the parent was told %r"
             % (row["state"], evt["status"]))
+
+
+class _NoLedgerWrites:
+    """A ``sqlite3`` connection wrapper whose UPDATE/DELETE on the ledger raises.
+
+    Deliberately BELOW every wrapper in ``tools/async_delegation.py``: the
+    failure is injected at ``execute`` on the connection handed out by the
+    module's own ``_connect``, so ``_persist_completion``, the converge retry
+    ``_write_durable_terminal``, ``_shield_unconverged_durable_row``'s tombstone
+    UPDATE *and* its fallback DELETE all hit it. Monkeypatching the first
+    wrapper (``_persist_completion``) proves nothing about this class of
+    failure - the retry lands on a healthy tmp db and converges.
+    """
+
+    _WRITE_ON_LEDGER = re.compile(r"\b(UPDATE|DELETE)\b", re.IGNORECASE)
+
+    def __init__(self, conn, armed):
+        self._conn = conn
+        self._armed = armed
+
+    def _maybe_fail(self, sql):
+        if self._armed[0] and "async_delegations" in sql and self._WRITE_ON_LEDGER.search(sql):
+            raise sqlite3.OperationalError("database or disk is full")
+
+    def execute(self, sql, *args, **kwargs):
+        self._maybe_fail(sql)
+        return self._conn.execute(sql, *args, **kwargs)
+
+    def executemany(self, sql, *args, **kwargs):
+        self._maybe_fail(sql)
+        return self._conn.executemany(sql, *args, **kwargs)
+
+    def __enter__(self):
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return self._conn.__exit__(exc_type, exc, tb)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def test_total_write_failure_delivers_but_flags_unsettled_and_reconciles(
+        monkeypatch, tmp_path, caplog):
+    """P1#1: when NO bottom-level ledger write lands, be honest about it.
+
+    The failure is injected under every wrapper (see ``_NoLedgerWrites``): the
+    terminal UPDATE, the converge retry, the shield's tombstone UPDATE and its
+    fallback DELETE all raise. Contracts asserted:
+
+    (a) the parent session still receives the result - a finished child's result
+        is never dropped because the ledger was unwritable;
+    (b) that result is NOT presented as an unqualified terminal success: the
+        event carries ``durable_settlement == "unconfirmed"`` and a warning names
+        the delegation and the failed durable settlement;
+    (c) the follow-up ``recover_abandoned_delegations()`` does not narrate the
+        already-delivered success as a bare ``unknown``: it reports
+        ``indeterminate`` and says to reconcile against the delivered event.
+    """
+    assert str(tmp_path) in str(ad._db_path())
+
+    real_connect = ad._connect
+    armed = [False]  # the dispatch INSERT and its prune DELETEs must still land
+    monkeypatch.setattr(ad, "_connect", lambda: _NoLedgerWrites(real_connect(), armed))
+
+    release = threading.Event()
+
+    def gated_runner():
+        # Hold the worker until the fault is armed, then succeed - the failure
+        # class under test is the TERMINAL write, not the run itself.
+        assert release.wait(timeout=30), "the runner was never released"
+        return {"status": "completed", "summary": "the child really finished",
+                "api_calls": 2, "duration_seconds": 1.5}
+
+    handle = _dispatch("child that succeeds", gated_runner, capacity=1)
+    assert handle["status"] == "dispatched"
+    delegation_id = handle["delegation_id"]
+
+    armed[0] = True
+    try:
+        with caplog.at_level(logging.WARNING, logger="tools.async_delegation"):
+            release.set()
+            evt = _drain_for(delegation_id, timeout=10.0)
+    finally:
+        armed[0] = False
+
+    # (a) delivery is unconditional.
+    assert evt is not None, (
+        "every bottom-level ledger write failed and the result was never delivered: a finished "
+        "child's result must reach the parent even when the ledger is unwritable")
+    assert evt["summary"] == "the child really finished"
+    assert evt["status"] == "completed"
+
+    # (b) ... but not as an unqualified terminal success.
+    assert evt.get("durable_settlement") == ad._DURABLE_SETTLEMENT_UNCONFIRMED, (
+        "the result was published as a clean terminal success although nothing was settled durably")
+    assert ad.is_unsettled_delivery(delegation_id), (
+        "the id was not registered, so restart recovery can still invent an 'unknown' for it")
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any(
+        delegation_id in message and "durable settlement failed" in message for message in warnings), (
+        "no WARNING named the delegation and its failed durable settlement; got: " + repr(warnings))
+
+    # The row is exactly what the defect is about: still selectable on restart.
+    row = ad.get_durable_delegation(delegation_id)
+    assert row is not None and row["state"] in ad._LIVE_STATES, (
+        "the fixture did not reproduce the failure class: the ledger row is %r"
+        % (row and row["state"],))
+
+    # (c) restart recovery must not turn a delivered success into a bare 'unknown'.
+    monkeypatch.setattr(gateway_status, "_pid_exists", lambda pid: False)
+    recovered = ad.recover_abandoned_delegations()
+    assert recovered >= 1, "restart recovery did not classify the abandoned row at all"
+
+    row = ad.get_durable_delegation(delegation_id)
+    assert row is not None
+    assert row["state"] != "unknown", (
+        "restart recovery narrated a delegation whose result the parent already had as 'unknown'")
+    assert row["state"] == "indeterminate", (
+        "expected an explicit needs-reconciliation verdict, got %r" % (row["state"],))
+    assert "reconcile" in (row["result"] or {}).get("error", "").lower(), (
+        "the indeterminate verdict does not say what to do about it")
+
+
+def test_healthy_completion_is_not_marked_unsettled(tmp_path):
+    """The marker is additive: a normal completion stays byte-for-byte the old contract."""
+    assert str(tmp_path) in str(ad._db_path())
+
+    handle = _dispatch(
+        "child that succeeds",
+        lambda: {"status": "completed", "summary": "clean", "api_calls": 1},
+        capacity=1)
+    assert handle["status"] == "dispatched"
+    delegation_id = handle["delegation_id"]
+
+    evt = _drain_for(delegation_id, timeout=5.0)
+    assert evt is not None and evt["summary"] == "clean"
+    assert "durable_settlement" not in evt, (
+        "a healthy completion carried the unsettled marker")
+    assert not ad.is_unsettled_delivery(delegation_id)
+    row = ad.get_durable_delegation(delegation_id)
+    assert row is not None and row["state"] == "completed"

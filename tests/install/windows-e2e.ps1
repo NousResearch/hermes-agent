@@ -660,6 +660,26 @@ function Invoke-PhaseInstallGui {
         if (Test-Path -LiteralPath $ahkLog) {
             Get-Content -LiteralPath $ahkLog | ForEach-Object { Write-Host "  ahk| $_" }
         }
+        # Do not trust the GUI driver's exit code alone: the failed run returned
+        # 0 even though ahk.log contained its terminal timeout. Read both logs
+        # before accepting success, and prefer the installer's root cause.
+        $bootLogForReason = Join-Path $HermesHome "logs\bootstrap-installer.log"
+        $failureReason = ""
+        if (Test-Path -LiteralPath $bootLogForReason) {
+            $failureReason = (Get-Content -LiteralPath $bootLogForReason -ErrorAction SilentlyContinue |
+                Select-String "bootstrap FAILED" | Select-Object -Last 1).Line
+        }
+        if ($failureReason) {
+            throw "E2E ASSERTION FAILED: installer reported: $failureReason"
+        }
+        $ahkFailure = ""
+        if (Test-Path -LiteralPath $ahkLog) {
+            $ahkFailure = (Get-Content -LiteralPath $ahkLog -ErrorAction SilentlyContinue |
+                Select-String "Unhandled error:" | Select-Object -Last 1).Line
+        }
+        if ($ahkFailure) {
+            throw "E2E ASSERTION FAILED: AutoHotkey driver reported: $ahkFailure"
+        }
         Assert-True ($ahk.ExitCode -eq 0) "AutoHotkey driver exited 0 (Install clicked, Launch clicked, app window seen)"
 
         Save-DesktopScreenshot (Join-Path $proof "01-app-launched.png")

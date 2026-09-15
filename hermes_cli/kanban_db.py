@@ -40,6 +40,13 @@ def _row_get(row: Any, col: str, default: Any = None) -> Any:
     return row[col]
 
 
+def _decode_text(value: Any) -> Any:
+    """Return byte-valued SQLite text as displayable UTF-8 without rejecting a row."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
 def _json_or(value: Any, default: Any = None) -> Any:
     """Decode a JSON text column; any decode failure or empty value yields ``default``."""
     if not value:
@@ -716,11 +723,14 @@ class Task:
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
-        g = lambda col, default=None: _row_get(row, col, default)  # noqa: E731
+        def g(col: str, default: Any = None) -> Any:
+            value = _row_get(row, col, default)
+            return _decode_text(value) if col in _TASK_TEXT_COLUMNS else value
+
         parsed = _json_or(g("skills"))
         skills_value = [str(s) for s in parsed if s] if isinstance(parsed, list) else None
         return cls(
-            **{col: row[col] for col in _TASK_REQUIRED_COLUMNS},
+            **{col: g(col) for col in _TASK_REQUIRED_COLUMNS},
             **{col: g(col) for col in _TASK_OPTIONAL_COLUMNS},
             **{col: g(col) or None for col in _TASK_EMPTY_IS_NULL_COLUMNS},
             # Pre-migration fallbacks (spawn_failures / last_spawn_error) are only
@@ -748,6 +758,13 @@ _TASK_OPTIONAL_COLUMNS = (
 _TASK_EMPTY_IS_NULL_COLUMNS = (
     "model_override", "provider_override", "reasoning_effort", "goal_max_turns", "block_kind",
 )
+_TASK_TEXT_COLUMNS = frozenset({
+    "id", "title", "body", "assignee", "status", "created_by", "workspace_kind",
+    "workspace_path", "claim_lock", "branch_name", "project_id", "tenant", "result",
+    "idempotency_key", "last_failure_error", "workflow_template_id", "current_step_key",
+    "skills", "model_override", "provider_override", "reasoning_effort", "block_kind",
+    "session_id", "completion_contract",
+})
 
 
 @dataclass

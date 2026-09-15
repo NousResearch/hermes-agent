@@ -59,6 +59,23 @@ def test_kanban_list_json_includes_session_id(kanban_home):
     )
 
 
+def test_kanban_list_json_replaces_invalid_utf8_task_body(kanban_home):
+    """One legacy BLOB body must not prevent the rest of a board from listing."""
+    with kbc.connect() as conn:
+        bad_id = kb.create_task(conn, title="bytes task", body="placeholder")
+        good_id = kb.create_task(conn, title="normal task", body="readable")
+        conn.execute("UPDATE tasks SET body = ? WHERE id = ?", (b"\xff\xfeABCD\x00", bad_id))
+
+    text = kc.run_slash("list")
+    payload = json.loads(kc.run_slash("list --json"))
+
+    bodies = {row["id"]: row["body"] for row in payload}
+    assert bad_id in text
+    assert good_id in text
+    assert bodies[bad_id] == "\ufffd\ufffdABCD\x00"
+    assert bodies[good_id] == "readable"
+
+
 def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     with kbc.connect_closing() as conn:
         parent_id = kb.create_task(conn, title="parent task")
@@ -180,5 +197,4 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 # /kanban help / no-args / unknown-action UX (issue #21794)
 # ---------------------------------------------------------------------------
-
 

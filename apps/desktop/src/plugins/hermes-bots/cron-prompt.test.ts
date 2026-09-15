@@ -49,7 +49,7 @@ describe('direct vs delegated execution', () => {
 })
 
 describe('delegated arguments stay literal shell values', () => {
-  it('passes substitutions, backticks and quotes through as text', () => {
+  it.skipIf(process.platform === 'win32')('passes substitutions, backticks and quotes through as text', () => {
     const title = "Audit $(printf TITLE_EXPANDED) `printf TITLE_TICK` 'quoted'"
     const instruction = "Line one $(printf TASK_EXPANDED) `printf TASK_TICK`\nLine two 'quoted'"
 

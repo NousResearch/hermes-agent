@@ -740,4 +740,33 @@ describe('the roster loop forgets a machine that left', () => {
 
     stopBotRelay()
   })
+
+  it('clears the roster of a sole connection that replaced the previous sole one', async () => {
+    const calls = respondWith(call => {
+      if (call.method === 'profiles.list') {
+        return { profiles: [{ name: call.connectionId === 'a' ? 'default' : 'ops' }] }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+    hostMock.profileRoutes = vi.fn(async () => [route('a')])
+    await vi.advanceTimersByTimeAsync(60_000)
+    calls.length = 0
+
+    // a is swapped for c between ticks — still one connection, but c's
+    // gateway has never been told the roster is empty.
+    hostMock.profileRoutes = vi.fn(async () => [route('c')])
+    await vi.advanceTimersByTimeAsync(60_000)
+
+    expect(calls.filter(call => call.method === 'bot_relay.roster.sync').map(call => call.connectionId)).toEqual([
+      'c'
+    ])
+
+    stopBotRelay()
+  })
 })

@@ -4,7 +4,8 @@ Unlock: ``op signin --raw`` with the master password on stdin (desktop-app
 integration or account-level auth) mints an ``OP_SESSION_<account>`` token.
 A configured service-account token skips the prompt entirely (headless).
 List: ``op item list --categories Login --format json`` → title, urls,
-username. Resolve: ``op item get <id> --fields label=password --reveal``.
+username. Resolve: ``op item get <id> --vault <vault-id> ...``, selecting the
+item's vault from fresh listing metadata (required for service accounts).
 """
 
 from __future__ import annotations
@@ -118,14 +119,38 @@ class OnePasswordLoginBackend(LoginBackend):
     def get_meta(self, handle: str) -> Optional[VaultItemMeta]:
         return next((m for m in self.list_items() if m.id == handle), None)
 
-    def resolve_password(self, handle: str) -> str:
+    def _item_selector(self, handle: str) -> List[str]:
+        # Keep existing op:<item-id> handles valid, including across backend instances.
+        # Resolve from fresh metadata rather than caching a vault or guessing the first one.
+        if not handle.startswith(self.prefix):
+            raise ValueError("Invalid 1Password login handle")
         item_id = handle[len(self.prefix):]
-        return self._run("item", "get", item_id, "--fields", "label=password", "--reveal").rstrip("\r\n")
+        if not item_id or not item_id[0].isalnum() or not all(
+            c.isascii() and (c.isalnum() or c == "-") for c in item_id
+        ):
+            raise ValueError("Invalid 1Password login handle")
+        raw = json.loads(self._run("item", "list", "--categories", "Login", "--format", "json") or "[]")
+        if not isinstance(raw, list):
+            raise RuntimeError("Invalid 1Password login metadata")
+        matches = [item for item in raw if isinstance(item, dict) and item.get("id") == item_id]
+        if len(matches) != 1:
+            raise RuntimeError("1Password login is missing or ambiguous; list logins again")
+        vault = matches[0].get("vault")
+        vault_id = vault.get("id") if isinstance(vault, dict) else None
+        if isinstance(vault_id, str) and vault_id:
+            return [item_id, "--vault", vault_id]
+        if self._service_token:
+            raise RuntimeError("1Password login metadata is missing its vault ID; list logins again")
+        return [item_id]
+
+    def resolve_password(self, handle: str) -> str:
+        return self._run("item", "get", *self._item_selector(handle),
+                         "--fields", "label=password", "--reveal").rstrip("\r\n")
 
     def resolve_otp(self, handle: str) -> Optional[str]:
         # `--otp` mints the current TOTP from the item's one-time-password field; items without one error out.
         try:
-            code = self._run("item", "get", handle[len(self.prefix):], "--otp").strip()
+            code = self._run("item", "get", *self._item_selector(handle), "--otp").strip()
         except Exception:
             return None
         return code if code.isdigit() else None

@@ -11,8 +11,12 @@ bare ``yield`` inside a ``return`` statement:
             return (yield _LadderStep(
                 "retry_same_provider", ...)), None   # generic credential rung
 
-``_rung()`` exists to convert a retry failure into ``(None, exc)`` so the caller can
-fall through to the next rung. Used this way no exception is caught: when the
+``_rung()`` exists to convert a retry failure into ``(None, exc)`` -- but only when the
+rung's accept predicate claims the error -- so the caller can fall through to the next
+rung. An unclaimed failure (a 500, a malformed response) re-raises on purpose, since
+``_ladder_provider_fallback`` only acts on the reasons in ``_FALLBACK_REASONS``; that
+boundary is pinned by ``test_post_refresh_retry_reraises_non_recoverable_error``.
+Used this way no exception is caught: when the
 refreshed client also fails (e.g. an out-of-credit 404 on a stale Nous runtime token),
 the error escapes ``_aux_recovery_ladder`` and ``_ladder_provider_fallback`` never
 runs -- the configured ``auxiliary.<task>.fallback_chain`` is silently skipped. The
@@ -92,9 +96,9 @@ def hermetic(monkeypatch):
     chain_calls = []
 
     def _fake_provider_fallback(first_err, route):
+        """Stands in for the last rung: a generator that performs no steps."""
         chain_calls.append(first_err)
-        if False:  # pragma: no cover - makes this a generator function
-            yield None
+        yield from ()
         return "chain-response"
 
     monkeypatch.setattr(aux, "_recoverable_pool_provider", lambda *a, **kw: None)
@@ -277,4 +281,64 @@ def test_auth_refresh_retry_failure_reaches_the_configured_chain_over_http(
     assert seen == [AUX_MODEL, AUX_MODEL, FALLBACK_MODEL], (
         "401, then the refreshed retry fails on credits, then the configured chain: %r"
         % (seen,)
+    )
+
+
+def test_post_refresh_retry_reraises_non_recoverable_error(monkeypatch, hermetic):
+    """A retry failure the rung does not claim re-raises instead of voiding the ladder.
+
+    ``_rung()`` only converts a failure into ``(None, exc)`` when the rung's accept
+    predicate claims it. The post-refresh retry claims credential and connection
+    failures; anything else (a 500, a malformed response) re-raises on purpose, because
+    ``_ladder_provider_fallback`` only acts on the reasons in ``_FALLBACK_REASONS``.
+    Pinning it here turns the boundary that lives in the lambda into a documented
+    contract: the retry's own error surfaces, and no fallback is pretended.
+    """
+    monkeypatch.setattr(aux, "_refresh_nous_auxiliary_client",
+                        lambda **kwargs: (_FakeClient(), AUX_MODEL))
+    ladder = _ladder()
+    performed = []
+
+    def perform(step):
+        performed.append(step.kind)
+        raise _ApiError("Error code: 500 - Internal Server Error", status_code=500)
+
+    with pytest.raises(_ApiError) as excinfo:
+        aux._drive_ladder(ladder, perform)
+
+    assert "500" in str(excinfo.value), "the retry's own failure must surface"
+    assert performed == ["call"], "the post-refresh retry is the only request"
+    assert hermetic == [], "an unclaimed failure has no reason to consult the chain"
+
+
+def test_post_refresh_retry_connection_error_skips_pool_rotation(monkeypatch, hermetic):
+    """A connection failure from the refresh retry skips rotation and reaches the chain.
+
+    The retry predicate accepts connection errors, the pool gate below it does not: a
+    fresh key cannot fix an unreachable endpoint, so the narrowed ``first_err`` goes
+    straight to the provider fallback. The ladder tail then evicts the poisoned route
+    client based on that narrowed error, not on the original one.
+    """
+    monkeypatch.setattr(aux, "_auth_refresh_provider_for_route", lambda *a, **kw: "codex")
+    monkeypatch.setattr(aux, "_refresh_provider_credentials", lambda *a, **kw: True)
+    monkeypatch.setattr(aux, "_evict_cached_clients", lambda *a, **kw: None)
+    rotations = []
+    monkeypatch.setattr(aux, "_recoverable_pool_provider", lambda *a, **kw: "openrouter")
+    monkeypatch.setattr(aux, "_recover_provider_pool",
+                        lambda *a, **kw: rotations.append(a) or True)
+
+    ladder = _ladder(
+        base_info="https://openrouter.ai/api/v1", resolved_provider="openrouter")
+    retry_error = ConnectionError("Connection refused by the endpoint")
+    performed = []
+
+    def perform(step):
+        performed.append(step.kind)
+        raise retry_error
+
+    assert aux._drive_ladder(ladder, perform) == "chain-response"
+    assert performed == ["retry_same_provider"], "only the post-refresh retry is attempted"
+    assert rotations == [], "a connection error must not rotate credentials"
+    assert hermetic and hermetic[0] is retry_error, (
+        "the chain sees the narrowed connection error, not the original auth error"
     )

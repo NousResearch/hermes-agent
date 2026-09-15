@@ -207,3 +207,66 @@ def test_tui_tick_noop_when_not_due(server, session):
 
     submit.assert_not_called()
     assert s["running"] is False
+
+
+# ── profile-scoped loop state ──────────────────────────────────────────
+
+
+def test_tui_tick_reads_the_session_profile_loop(server, session, tmp_path):
+    """A session bound to another profile resolves its loop there — not in the launch home.
+
+    Mismatched homes are the reported wedge: fire_tick persisted in one profile while
+    complete_tick read another, so the loop sat at awaiting_response forever.
+    """
+    sid, session_key, s = session
+    from hermes_cli.loops import LoopManager, save_loop
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    profile_home = tmp_path / "profiles" / "dev"
+    profile_home.mkdir(parents=True)
+    token = set_hermes_home_override(str(profile_home))
+    try:
+        mgr = LoopManager(session_key)
+        mgr.set("poll the profile build", interval_seconds=60)
+        mgr.state.next_due_at = time.time() - 1
+        save_loop(session_key, mgr.state)
+    finally:
+        reset_hermes_home_override(token)
+    # Only the session's profile is due: the launch home has no loop for this session.
+    assert LoopManager(session_key).state is None
+
+    s["profile_home"] = str(profile_home)
+    fired = {}
+
+    def fake_submit(rid, sid_, session_, text, **kwargs):
+        fired["text"] = text
+
+    with patch.object(server, "_run_prompt_submit", fake_submit), \
+         patch.object(server, "_emit"):
+        server._maybe_fire_tui_loop_tick(sid, s)
+
+    assert "poll the profile build" in fired.get("text", "")
+    assert s["running"] is True
+
+
+def test_tui_tick_without_profile_home_uses_the_launch_home(server, session):
+    """Legacy sessions carry no `profile_home`: the launch home stays authoritative."""
+    sid, session_key, s = session
+    from hermes_cli.loops import LoopManager, save_loop
+
+    assert "profile_home" not in s
+    mgr = LoopManager(session_key)
+    mgr.set("poll the launch build", interval_seconds=60)
+    mgr.state.next_due_at = time.time() - 1
+    save_loop(session_key, mgr.state)
+
+    fired = {}
+
+    def fake_submit(rid, sid_, session_, text, **kwargs):
+        fired["text"] = text
+
+    with patch.object(server, "_run_prompt_submit", fake_submit), \
+         patch.object(server, "_emit"):
+        server._maybe_fire_tui_loop_tick(sid, s)
+
+    assert "poll the launch build" in fired.get("text", "")

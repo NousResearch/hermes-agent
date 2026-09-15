@@ -45,4 +45,32 @@ describe('separateGluedReasoningBlocks', () => {
   it('does not split a heading that already opens the text', () => {
     expect(separateGluedReasoningBlocks('**Only one part**')).toBe('**Only one part**')
   })
+
+  it('leaves CJK mid-sentence inline bold unchanged (issue #107813)', () => {
+    const cjk = '1. **日经原因**（共同社）：指数重挫——**半导体领跌**——与美股同步。'
+
+    expect(separateGluedReasoningBlocks(cjk)).toBe(cjk)
+  })
+
+  it('leaves CJK punctuation-glued inline bold that does not close the line unchanged', () => {
+    const glued = '——**唯一解释**：后续——**破案**！'
+
+    expect(separateGluedReasoningBlocks(glued)).toBe(glued)
+  })
+
+  it('splits a line-final heading glued onto prose', () => {
+    expect(separateGluedReasoningBlocks('interaction!**Checking logs**')).toBe(
+      'interaction!\n\n**Checking logs**'
+    )
+  })
+
+  it('splits heading-onto-heading First/Second control', () => {
+    expect(separateGluedReasoningBlocks('**First****Second**')).toBe('**First**\n\n**Second**')
+  })
+
+  it('does not treat a bold pair containing inner * as a glued heading', () => {
+    const nested = 'prose!**foo *bar* baz**'
+
+    expect(separateGluedReasoningBlocks(nested)).toBe(nested)
+  })
 })

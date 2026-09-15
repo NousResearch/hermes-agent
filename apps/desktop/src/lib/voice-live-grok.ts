@@ -37,9 +37,10 @@ export interface GrokTranscriptFragment {
 
 export interface GrokVoiceHandlers {
   /** The backend judged a spoken exchange a real request — same shape as
-   *  GPT-Live's `onDelegation`, but the context comes from the SERVER (the
-   *  bridge owns the xAI ws and accumulates transcript fragments itself). */
-  onDelegation: (delegationId: string, context: string) => void
+   *  GPT-Live's `onDelegation`. `prompt` is the user's last words (the turn text
+   *  to submit); `context` the recent spoken exchange (model input only). The
+   *  RENDERER is the single submitter — the backend never calls prompt.submit. */
+  onDelegation: (delegationId: string, prompt: string, context: string) => void
   /** `voice.grok.state` event: connecting|listening|speaking|thinking|error|reconnecting|degraded|idle. */
   onState: (state: string, reason?: string) => void
   /** `voice.grok.transcript` event, for captions / live UI. */
@@ -151,6 +152,7 @@ function int16LEToFloat(bytes: Uint8Array): Float32Array {
 export class GrokVoiceSession {
   sessionId: string
   private microphone: null | MediaStream = null
+  private started = false
   private audioContext: null | AudioContext = null
   private processor: null | ScriptProcessorNode = null
   private playbackContext: null | AudioContext = null
@@ -166,18 +168,42 @@ export class GrokVoiceSession {
   }
 
   /**
-   * Adopt the real Hermes chat session id. The backend routes every
-   * `voice.grok.*` event by `params.session_id` through the owning session's
-   * transport (server.write_json), and the delegation seam looks the same id
-   * up in `_sessions` — a synthetic id never reaches the app and never
-   * becomes a Hermes turn. The composer knows the open chat's id; call this
-   * before `start()` (gpt-live gets the same guarantee server-side because
-   * its session is created by the backend with the real sid).
+   * Adopt the real Hermes chat session id when one exists. The backend prefers
+   * routing events via `_sessions[sid].transport`, and re-keying lets later
+   * audio/speak calls ride the canonical id. On a FRESH DRAFT there is no id
+   * yet — the synthetic id stands (events reach the app via the caller
+   * transport captured at start), and `rekey()` moves the bridge once the
+   * renderer's submit mints the session.
    */
   useSessionId(sessionId: string | null | undefined): void {
     if (sessionId && sessionId !== this.sessionId) {
+      const previous = this.sessionId
       this.sessionId = sessionId
+      const gateway = activeGateway()
+
+      // Post-start adoption (fresh draft whose submit minted the session): move the
+      // backend's bridge onto the real id. Before start() there is no bridge yet —
+      // setting this.sessionId is enough (start() keys the bridge by it).
+      if (this.started && gateway && previous && previous !== sessionId) {
+        void gateway
+          .request('voice.grok.rekey', { from_session_id: previous, to_session_id: sessionId })
+          .catch(() => undefined)
+      }
     }
+  }
+
+  /** Speak Hermes' finished reply verbatim (renderer-submits design: the renderer
+   *  owns turn settlement, so it pulls the spoken reply through this RPC). */
+  speak(text: string): void {
+    if (!text.trim()) {
+      return
+    }
+
+    const gateway = activeGateway()
+
+    void gateway
+      ?.request('voice.grok.speak', { session_id: this.sessionId, text })
+      .catch(() => undefined)
   }
 
   async start(): Promise<void> {
@@ -219,10 +245,10 @@ export class GrokVoiceSession {
         }
 
         case 'voice.grok.delegation': {
-          const payload = event.payload as { delegation_id?: string; context?: string } | undefined
+          const payload = event.payload as { delegation_id?: string; prompt?: string; context?: string } | undefined
 
           if (payload?.delegation_id) {
-            this.handlers.onDelegation(payload.delegation_id, payload.context ?? '')
+            this.handlers.onDelegation(payload.delegation_id, payload.prompt ?? '', payload.context ?? '')
           }
 
           return
@@ -244,6 +270,7 @@ export class GrokVoiceSession {
     })
 
     await gateway.request('voice.grok.start', { session_id: this.sessionId })
+    this.started = true
 
     this.microphone = await navigator.mediaDevices.getUserMedia({
       audio: { autoGainControl: true, echoCancellation: true, noiseSuppression: true }

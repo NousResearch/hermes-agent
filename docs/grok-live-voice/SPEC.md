@@ -40,10 +40,10 @@ apps/desktop renderer                    tui_gateway (backend, Python)          
 │ voice-live-grok.ts store │  see §4.1)   │    (tools/voice_live_grok.py)    │
 └─────────────────────────┘              └───────────────────────────────┘
               │                                          │
-              │  onDelegation(text, context)              │ submits as a NORMAL
-              ▼                                          ▼ prompt.submit (surface:
-      normal chat turn on the open session  ◄─────────── voice-live) — same seam
-      (any model, full toolset, memory)                  gpt-live already uses
+              │  onDelegation(prompt, context)             │ (never submits — the
+              ▼                                          │ renderer is the single
+      normal chat turn on the open session  ◄─────────── │ prompt.submit caller)
+      (any model, full toolset, memory)                  │ per the §5 revision
 ```
 
 Backend holds the xAI websocket exclusively (`voice.grok_live` is a **server-held connection**,
@@ -150,10 +150,13 @@ flush on `input_audio_buffer.speech_stopped` after a short settle timer, mirrori
    `prompt`, full recent exchange is `context`).
 2. Emits `voice.grok.delegation {session_id, delegation_id, context}` so the desktop transcript
    UI can render it exactly like gpt-live does today.
-3. Calls `prompt.submit` internally as a **normal Hermes turn** on the open session:
-   `surface="voice-live"` (the existing `ClientSurface` enum value, reused, not a new
-   `"grok-live"` surface — the delegation semantics are identical to gpt-live's, so the surface
-   tag stays the shared one), `voice_context=context`, `text=prompt`.
+3. **REVISION (2026-09-15, t_07a77402):** does NOT call `prompt.submit` — the RENDERER's
+   `onDelegation` handler is the single submitter, submitting exactly like a typed message
+   (`surface="voice-live"`, `voice_context=context`, `text=prompt`). The original backend-submits
+   step double-submitted on an existing chat (the renderer's `onDelegation` already submitted) and
+   no-oped on a fresh draft, whose synthetic id is not a Hermes session — so the backend can never
+   be the submitter for a fresh-draft voice start. The delegation event payload therefore carries
+   `prompt` (the user's last words) alongside `context`.
 4. The per-turn note is `tools/voice_live.py::voice_live_turn_note()` — reused verbatim (it is
    already generic "a live spoken conversation", not GPT-specific). **No new per-turn note text
    is authored for grok-live**; this is the single biggest cache-safety guarantee (t_f7cae076's
@@ -162,14 +165,14 @@ flush on `input_audio_buffer.speech_stopped` after a short settle timer, mirrori
    `session.commentary.append` seam already wired for gpt-live in `use-voice-live-conversation.ts`
    — reused for grok-live by parametrizing that hook (or a thin sibling
    `use-voice-live-grok-conversation.ts` that shares `delegationPrompt`) rather than duplicating
-   the turn-drive `useEffect`. Reply text is sent to xAI as a `conversation.item.create` (role
-   assistant, or as text via `response.create` with injected content, matching whichever xAI
-   supports for "speak this text" — confirm against the xAI realtime API reference during
-   implementation; the reference script never needed this because it let the model both hear
-   and answer in one round-trip. Grok-Live's split (xAI hears, Hermes answers, xAI must speak
-   Hermes' words) needs the "speak arbitrary text" affordance xAI's realtime API exposes for
-   function-call-output-driven responses — same pattern the reference script uses after
-   `function_call_output` + `response.create`.
+   the turn-drive `useEffect`.
+   **REVISION (2026-09-15, t_07a77402):** since the renderer now owns turn settlement, the
+   finished reply is PULLED by the renderer through the `voice.grok.speak {session_id, text}`
+   RPC when its `pendingResponse` settles (markdown stripped renderer-side), which calls
+   `bridge.speak_reply` — xAI `force_message`: speak Hermes' words verbatim, no model
+   involvement on the xAI side. (The originally sketched `conversation.item.create` /
+   `response.create` route was superseded by `force_message`, which the reference script
+   proved out after `function_call_output` + `response.create`.)
 
 Cache-safety invariant (t_f7cae076 must test this explicitly): the delegation path must never
 construct a new system prompt, must never call any context/toolset-mutating API, and the

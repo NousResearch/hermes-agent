@@ -321,7 +321,10 @@ class SessionPersistenceMixin:
             return bool(messages) and isinstance(messages[-1], dict) and messages[-1].get("role") == role
 
         dropped_scaffolding = False
-        while tail("_empty_recovery_synthetic", "_empty_terminal_sentinel"):
+        while tail(
+            "_empty_recovery_synthetic",
+            "_empty_terminal_sentinel",
+        ):
             messages.pop()
             dropped_scaffolding = True
         if not dropped_scaffolding:

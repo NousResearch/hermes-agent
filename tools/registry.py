@@ -350,9 +350,10 @@ def _check_fn_cached(fn: Callable) -> bool:
                 _fn_label(fn), outcome, _CHECK_FN_FAILURE_GRACE_SECONDS)
             return True
 
-        # No recent success (or grace expired) — honor the failure; logged so silent tool
-        # loss in quiet mode (subagents) is diagnosable.
-        logger.warning(
+        # No recent success (or grace expired) — honor the failure. A False verdict is the
+        # expected state for optional, unconfigured toolsets; only a raised probe is actionable.
+        log = logger.warning if exc_info else logger.info
+        log(
             "check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), outcome,
             exc_info=exc_info)
         _check_fn_cache[cache_key] = (now, False)

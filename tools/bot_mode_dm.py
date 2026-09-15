@@ -504,7 +504,7 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
     try:
         from tools.bot_relay import delivery_env
 
-        env = delivery_env(author)
+        env = delivery_env(author, profile_home if not stdin_file else None)
         with _delivery_lock(argv, stdin_file=stdin_file):
             if not stdin_file:
                 return _run_local_turn(argv, dm_file, env=env)

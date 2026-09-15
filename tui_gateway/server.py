@@ -233,16 +233,14 @@ class _SlashWorker:
         # slash_worker runs the Hermes agent → needs provider credentials. Tier-1 secrets
         # (gateway/GitHub/infra) are still stripped (#29157). Global-remote / multi-profile sessions: the
         # worker must resolve config/skills/state against the session's profile home, not the gateway's
-        # launch HERMES_HOME (#40677). The override goes through the build_subprocess_env factory's `extra`
-        # (applied last, always wins) instead of a hand-rolled env["HERMES_HOME"] assignment.
-        from tools.environments.local import build_subprocess_env
+        # launch HERMES_HOME (#40677).
+        from tools.environments.local import served_profile_child_env
 
         # The worker runs the agent → needs provider credentials; tier-1 secrets (gateway/GitHub/
-        # infra) are still stripped. Multi-profile sessions resolve against the session's profile
-        # home via `extra` (applied last, always wins); the base already carries the HOME contract.
-        env = _prepend_tool_paths(build_subprocess_env(
-            hermes_subprocess_env(inherit_credentials=True), scrub_secrets=False,
-            inherit_profile_home=False, extra={"HERMES_HOME": str(profile_home)} if profile_home else None))
+        # infra) are still stripped. A served profile's worker gets THAT profile's home + secrets and
+        # none of the launch profile's .env / TERMINAL_* residue, exactly what a standalone
+        # `hermes -p X` would load itself.
+        env = _prepend_tool_paths(served_profile_child_env(target_home=profile_home, inherit_credentials=True))
         # Internal slash workers must import the same checkout as their parent.
         module_root = str(Path(__file__).resolve().parent.parent)
         env["PYTHONPATH"] = os.pathsep.join(

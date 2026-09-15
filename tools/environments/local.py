@@ -337,6 +337,33 @@ def build_subprocess_env(
     return delegated_child_subprocess_env(env)
 
 
+def served_profile_child_env(
+    base: "Mapping[str, str] | None" = None, *, target_home: "str | Path | None" = None,
+    inherit_credentials: bool = False,
+) -> dict[str, str]:
+    """Child env for a process that acts FOR the active (possibly served) profile: ``hermes -p X``
+    workers, ``key_cmd`` helpers, browser drivers. The process env is the LAUNCH profile's, so its
+    ``.env`` residue and bridged ``TERMINAL_*`` are dropped (``strip_launch_profile_env``; no-op
+    outside multiplex) and the target home is pinned. ``inherit_credentials=True`` is for children
+    that legitimately run with the profile's credentials (they run the agent or mint its token): the
+    target profile's own secrets (its ``.env`` + hydrated sources, i.e. what a standalone
+    ``hermes -p X`` loads itself) are overlaid — never a sibling profile's. ``False`` keeps the
+    provider scrub; the caller re-adds the few keys the child needs via ``get_secret``.
+    ``target_home`` defaults to the active override; ``base`` replaces the ``hermes_subprocess_env``
+    snapshot."""
+    from agent.secret_scope import build_profile_secret_scope, current_secret_scope
+    from hermes_constants import get_hermes_home_override
+    env = dict(base) if base is not None else hermes_subprocess_env(inherit_credentials=inherit_credentials)
+    target = str(target_home or get_hermes_home_override() or "")
+    if target:
+        env["HERMES_HOME"] = target
+        strip_launch_profile_env(env, target)
+    if inherit_credentials:
+        secrets = build_profile_secret_scope(Path(target)) if target else (current_secret_scope() or {})
+        env.update((k, v) for k, v in secrets.items() if v is not None)
+    return env
+
+
 def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None) -> dict:
     """Drop the LAUNCH profile's residue from a child env built for another served profile.
     ``os.environ`` holds the default profile's ``.env`` and its bridged ``TERMINAL_*`` settings;

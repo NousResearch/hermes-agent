@@ -37,11 +37,20 @@ _BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
 
 def _build_browser_env() -> dict:
     """Credential-scrubbed env for an agent-browser subprocess (deferred import: test
-    harnesses stub the ``tools`` package)."""
-    from tools.environments.local import hermes_subprocess_env
+    harnesses stub the ``tools`` package). The passthrough keys are re-added from the active
+    profile's secret scope, never ``os.environ``: under multiplex that holds the LAUNCH profile's
+    Browserbase/Firecrawl keys, and a served profile's browser must run on its own (or none)."""
+    from agent.secret_scope import UnscopedSecretError, get_secret
+    from tools.environments.local import served_profile_child_env
 
-    env = hermes_subprocess_env(inherit_credentials=False)
-    env.update({k: os.environ[k] for k in _BROWSER_PASSTHROUGH_KEYS if k in os.environ})
+    env = served_profile_child_env(inherit_credentials=False)
+    for key in _BROWSER_PASSTHROUGH_KEYS:
+        try:
+            value = get_secret(key)
+        except UnscopedSecretError:
+            value = None  # multiplex, no scope bound: no key rather than a sibling profile's
+        if value is not None:
+            env[key] = value
     return env
 
 

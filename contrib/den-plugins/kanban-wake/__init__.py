@@ -1,17 +1,27 @@
-"""kanban-wake — push a Telegram ping the moment a kanban card blocks or completes.
+"""kanban-wake — wake the supervisor's *current chat session* when a kanban card
+blocks or completes.
 
-Hooks the dispatcher/worker lifecycle observers (``kanban_task_blocked``,
-``kanban_task_completed``) and POSTs a ``deliver_only`` webhook route on the
-default gateway (``platforms.webhook.extra.routes.kanban-wake``), which sends
-the text straight to Telegram with zero LLM cost.  Replaces waiting for the
-30-minute heartbeat to notice a worker asked a question.
+Two halves, one plugin (both gateways load it):
 
-Config (config.yaml):
-  kanban_wake.url        default http://127.0.0.1:8644/webhooks/kanban-wake
-  kanban_wake.secret_file default ~/.secrets/kanban-wake-secret
-  kanban_wake.debounce_s  default 60 (per task+event)
+1. Emitter (runs wherever kanban lifecycle hooks fire — dispatcher/worker
+   gateway): `kanban_task_blocked` / `kanban_task_completed` -> HMAC-signed POST
+   to the default gateway's webhook route `kanban-wake`.
 
-Fails open: any error is logged and swallowed; never breaks dispatch.
+2. Redirector (runs in the default gateway that owns the Telegram session):
+   `pre_gateway_dispatch` sees the inbound webhook MessageEvent for route
+   `kanban-wake`, SKIPs the detached webhook agent, and instead schedules the
+   event text as an inbound user-role turn in the configured supervisor
+   session (`kanban_wake.session_key`). The supervisor session therefore wakes
+   with full context and replies in the same chat. Falls back to the
+   detached webhook agent if injection is impossible (so the wake never drops).
+
+Config (config.yaml of the default profile):
+  kanban_wake:
+    session_key: agent:main:telegram:dm:1916982742:613471   # REQUIRED for redirect
+    url:    http://127.0.0.1:8644/webhooks/kanban-wake
+    secret_file: ~/.secrets/kanban-wake-secret
+    debounce_seconds: 60
+  plugins.entries.kanban-wake.allow_gateway_injection: true
 """
 from __future__ import annotations
 
@@ -25,10 +35,11 @@ import urllib.request
 
 logger = logging.getLogger(__name__)
 
-_LAST: dict[str, float] = {}
+_ROUTE = "kanban-wake"
+_last: dict[str, float] = {}
 
 
-def _cfg():
+def _cfg() -> dict:
     try:
         from hermes_cli.config import load_config
         return (load_config() or {}).get("kanban_wake", {}) or {}
@@ -36,69 +47,107 @@ def _cfg():
         return {}
 
 
-def _secret(cfg) -> str:
-    p = os.path.expanduser(cfg.get("secret_file", "~/.secrets/kanban-wake-secret"))
+def _secret() -> str:
+    p = os.path.expanduser(_cfg().get("secret_file", "~/.secrets/kanban-wake-secret"))
     try:
         return open(p).read().strip()
     except Exception:
         return ""
 
 
-def _post(text: str) -> None:
-    cfg = _cfg()
-    url = cfg.get("url", "http://127.0.0.1:8644/webhooks/kanban-wake")
-    secret = _secret(cfg)
-    if not secret:
-        logger.warning("[kanban-wake] no secret file; skipping")
-        return
-    body = json.dumps({"text": text}).encode()
+# ---------------------------------------------------------------- emitter ---
+
+def _post(text: str, task_id: str = "", event: str = "") -> None:
+    url = _cfg().get("url", f"http://127.0.0.1:8644/webhooks/{_ROUTE}")
+    body = json.dumps({"text": text, "task_id": task_id, "event": event}).encode()
     ts = str(int(time.time()))
-    sig = hmac.new(secret.encode(), f"{ts}.".encode() + body, hashlib.sha256).hexdigest()
-    req = urllib.request.Request(
-        url, data=body, method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "X-Webhook-Timestamp": ts,
-            "X-Webhook-Signature-V2": sig,
-            "X-Request-ID": f"kw-{ts}-{hashlib.sha1(body).hexdigest()[:8]}",
-        },
-    )
+    headers = {"Content-Type": "application/json"}
+    sec = _secret()
+    if sec:
+        sig = hmac.new(sec.encode(), f"{ts}.".encode() + body, hashlib.sha256).hexdigest()
+        headers.update({"X-Webhook-Timestamp": ts, "X-Webhook-Signature-V2": f"sha256={sig}"})
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=5) as r:
-        logger.info("[kanban-wake] delivered http=%s", r.status)
+        r.read()
 
 
-def _fire(event: str, task_id: str, reason: str | None, assignee, run_id) -> None:
+def _emit(event: str, task_id: str | None, **fields) -> None:
     try:
-        cfg = _cfg()
-        key = f"{task_id}:{event}"
-        now = time.time()
-        if now - _LAST.get(key, 0) < float(cfg.get("debounce_s", 60)):
+        if not task_id:
             return
-        _LAST[key] = now
-        title = ""
-        try:
-            from hermes_cli import kanban_db as kb
-            with kb.connect() as conn:
-                t = kb.get_task(conn, task_id)
-                title = (t.title or "")[:80] if t else ""
-        except Exception:
-            pass
+        now = time.time()
+        key = f"{event}:{task_id}"
+        if now - _last.get(key, 0) < float(_cfg().get("debounce_seconds", 60)):
+            return
+        _last[key] = now
+        title = fields.get("title") or ""
+        assignee = fields.get("assignee") or ""
+        reason = fields.get("reason") or fields.get("blocked_reason") or fields.get("summary") or ""
+        if not (title and reason):
+            try:
+                from hermes_cli import kanban_db as kb
+                with kb.connect() as conn:
+                    t = kb.get_task(conn, task_id)
+                    if t:
+                        title = title or (t.title or "")
+                        assignee = assignee or (t.assignee or "")
+                        if not reason:
+                            cs = kb.list_comments(conn, task_id)
+                            if cs:
+                                reason = cs[-1].body or ""
+            except Exception:
+                pass
         head = "BLOCKED" if event == "blocked" else "DONE"
-        body = (reason or "").strip().replace("\n", " ")[:400]
-        text = f"kanban {head} {task_id} ({assignee or '?'}, run {run_id or '-'}): {title}"
-        if body:
-            text += f"\n{body}"
-        _post(text)
+        text = f"KANBAN {head} {task_id} [{assignee}] {title}\n{reason[:1500]}"
+        _post(text, task_id, event)
+        logger.info("[kanban-wake] emitted %s for %s", event, task_id)
     except Exception as e:  # never break dispatch
-        logger.warning("[kanban-wake] %s", e)
+        logger.warning("[kanban-wake] emit failed: %s", e)
+
+
+def _on_blocked(task_id=None, **f):
+    _emit("blocked", task_id, **f)
+
+
+def _on_completed(task_id=None, **f):
+    _emit("completed", task_id, **f)
+
+
+# ------------------------------------------------------------- redirector ---
+
+def _pre_gateway_dispatch(event=None, gateway=None, **_):
+    """Intercept the kanban-wake webhook turn and re-inject into the supervisor session."""
+    try:
+        src = getattr(event, "source", None)
+        if src is None or str(getattr(src, "platform", "")).lower().endswith("webhook") is False:
+            return None
+        if getattr(src, "user_id", "") != f"webhook:{_ROUTE}":
+            return None
+        session_key = _cfg().get("session_key")
+        if not session_key or gateway is None:
+            return None  # fall back to detached webhook agent
+        text = getattr(event, "text", "") or ""
+        content = (
+            "[kanban-wake — event from the board, not the user. Act on it now as EM: "
+            "answer the block with a standing decision or ask Den the exact question; "
+            "on DONE verify the PR/merge/live state and drive the next hop. Reply in ≤5 sentences.]\n"
+            + text
+        )
+        sched = getattr(gateway, "_schedule_plugin_message_injection", None)
+        if not callable(sched):
+            return None
+        ok = sched(session_key=session_key, content=content, plugin_id="kanban-wake")
+        if ok:
+            logger.info("[kanban-wake] redirected event into %s", session_key)
+            return {"action": "skip", "reason": "kanban-wake redirected into supervisor session"}
+        logger.warning("[kanban-wake] injection refused for %s; falling back to webhook agent", session_key)
+        return None
+    except Exception as e:
+        logger.warning("[kanban-wake] redirect failed: %s", e)
+        return None
 
 
 def register(ctx) -> None:
-    ctx.register_hook(
-        "kanban_task_blocked",
-        lambda task_id=None, reason=None, assignee=None, run_id=None, **_: _fire("blocked", task_id, reason, assignee, run_id),
-    )
-    ctx.register_hook(
-        "kanban_task_completed",
-        lambda task_id=None, summary=None, assignee=None, run_id=None, **_: _fire("completed", task_id, summary, assignee, run_id),
-    )
+    ctx.register_hook("kanban_task_blocked", _on_blocked)
+    ctx.register_hook("kanban_task_completed", _on_completed)
+    ctx.register_hook("pre_gateway_dispatch", _pre_gateway_dispatch)

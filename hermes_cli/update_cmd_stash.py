@@ -344,6 +344,18 @@ def _restore_stashed_changes(
         if clean_import_failures.get(module) != error:
             reject(f"agent import {module or 'unknown'}", error[1])
             break
+    # Cross-file gateway config contract: the import probe can't catch an
+    # AttributeError that fires only inside GatewayRunner.__init__ (stale
+    # run.py referencing config attributes that the new GatewayConfig dropped).
+    from hermes_cli.gateway_config_contract import check_gateway_config_contract
+    missing_attrs = check_gateway_config_contract(cwd)
+    if missing_attrs:
+        reject(
+            "gateway config contract",
+            "run.py reads config attribute(s) missing from GatewayConfig: "
+            + ", ".join(f"config.{a}" for a in missing_attrs)
+            + " (restore brought run.py/config.py from different commits)",
+        )
     _drop_restored_stash(git_cmd, cwd, stash_ref)
     print("⚠ Local changes were restored on top of the updated codebase.")
     print("  Review `git diff` / `git status` if Hermes behaves unexpectedly.")

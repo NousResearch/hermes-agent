@@ -135,6 +135,7 @@ export class JsonRpcGatewayError extends Error {
 
 /** JSON-RPC "method not found" (tui_gateway/server.py::dispatch `_err(rid, -32601, …)`). */
 export const JSON_RPC_METHOD_NOT_FOUND = -32601
+export const JSON_RPC_INVALID_PARAMS = -32602
 
 /** JSON-RPC "internal error" — used when a server→client request handler throws. */
 export const JSON_RPC_INTERNAL_ERROR = -32603
@@ -472,6 +473,16 @@ export class JsonRpcRequestChannel {
         error: { code: JSON_RPC_METHOD_NOT_FOUND, message: `no handler for server request: ${method}` }
       })
       this.options.onUnhandledRequest?.({ id, method, params: isJsonObject(rawParams) ? rawParams : {} })
+
+      return false
+    }
+
+    // The one discriminated server request: a backend from before `kind` existed sends a clarify
+    // that no typed handler can read; refusing it fails the blocking tool fast instead of a silent skip.
+    if (method === 'clarify' && !(isJsonObject(rawParams) && (rawParams.kind === 'single' || rawParams.kind === 'batch'))) {
+      this.sendServerRequestResponse(id, {
+        error: { code: JSON_RPC_INVALID_PARAMS, message: 'clarify request has no kind discriminator' }
+      })
 
       return false
     }

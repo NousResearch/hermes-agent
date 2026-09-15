@@ -105,6 +105,12 @@ def test_sessions_db_open_failure_points_to_repair(monkeypatch, capsys):
             raise RuntimeError("database disk image is malformed")
 
     monkeypatch.setattr("hermes_state.SessionDB", _Boom)
+    import hermes_state
+    # `list` is read-only: a missing store prints "empty" instead; make the file exist so the
+    # open failure is the real corrupt-database case this copy is for.
+    db_path = hermes_state._default_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path.write_bytes(b"not a database")
     import argparse
     parser = argparse.ArgumentParser()
     args = argparse.Namespace(sessions_action="list", session_id=None)

@@ -151,7 +151,10 @@ def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None) 
         return False
     toolset = _registry_toolset(name)  # None (unregistered/malformed) never defers
     return toolset is not None and (
-        toolset.startswith("mcp-") or toolset not in _DIRECT_SURFACE_TOOLSETS)
+        toolset.startswith("mcp-") or (
+            toolset not in _DIRECT_SURFACE_TOOLSETS
+            and not registry.is_direct_toolset(toolset)
+        ))
 
 
 def _tool_def_names(tool_defs: Iterable[Dict[str, Any]]) -> Iterable[str]:

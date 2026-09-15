@@ -156,7 +156,11 @@ def _get_plugin_toolset_keys() -> set:
         # Non-blocking on CLI startup: while background discovery is still importing, serve last
         # launch's persisted key set instead of joining the discovery thread.
         from hermes_cli.plugins import get_plugin_toolset_keys_nowait
-        return get_plugin_toolset_keys_nowait()
+        from hermes_cli.plugin_session_toolsets import active_session_toolset_names
+        from tools.registry import registry
+        return get_plugin_toolset_keys_nowait() - active_session_toolset_names(
+            scope=registry.current_scope_key()
+        )
     except Exception:
         return set()
 

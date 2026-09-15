@@ -20,13 +20,13 @@ describe('gitRef', () => {
 })
 
 describe('slug', () => {
-  it('lowercases and kebabs runs of non-alphanumerics', () => {
+  it('normalizes profile names while preserving underscores', () => {
     expect(slug('My Profile')).toBe('my-profile')
-    expect(slug('a__b  c')).toBe('a-b-c')
+    expect(slug('si_mon')).toBe('si_mon')
   })
 
   it('strips a leading separator but keeps a trailing one while typing', () => {
-    expect(slug('--x')).toBe('x')
+    expect(slug('_-x')).toBe('x')
     expect(slug('work ')).toBe('work-')
   })
 })

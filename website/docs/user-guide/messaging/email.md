@@ -104,6 +104,10 @@ EMAIL_IMAP_PORT=993                    # Default: 993 (IMAP SSL)
 EMAIL_SMTP_PORT=587                    # Default: 587 (SMTP STARTTLS)
 EMAIL_POLL_INTERVAL=15                 # Seconds between inbox checks (default: 15)
 EMAIL_HOME_ADDRESS=your@email.com      # Default delivery target for cron jobs
+
+# Sender aliases (optional) — see "Sending as an alias" below
+EMAIL_FROM_ADDRESS=support@example.com
+EMAIL_FROM_ALIASES=hr@example.com,billing@example.com
 ```
 
 ---
@@ -146,6 +150,42 @@ Replies are sent via SMTP with proper email threading:
 - **Subject line** preserved with `Re:` prefix (no double `Re: Re:`)
 - **Message-ID** generated with the agent's domain
 - Responses are sent as plain text (UTF-8)
+
+### Sending as an alias
+
+One mailbox often owns several verified sender identities: Gmail's *Send mail as*, a Microsoft 365
+shared mailbox, a catch-all domain. By default the agent replies from `EMAIL_ADDRESS`, the mailbox
+it polls. Two optional variables separate the mailbox from the identities it may send as:
+
+- `EMAIL_FROM_ADDRESS` — the default visible sender, when it differs from the mailbox
+- `EMAIL_FROM_ALIASES` — every other identity this account may send as (comma-separated)
+
+Both default to `EMAIL_ADDRESS`, so leaving them unset keeps the previous behaviour exactly.
+
+With aliases configured, a reply goes out from the identity the sender wrote to. The adapter reads
+that identity off the recipient headers of the inbound message (`Delivered-To`, `X-Original-To`,
+`To`, `Cc`) — mail addressed to `hr@example.com` is answered from `hr@example.com`, not from the
+shared mailbox address. The generated `Message-ID` uses the domain of the visible sender.
+
+Alias resolution is fail-closed: an address outside the configured set is refused and the default
+sender is used instead, so a prompt-injected request cannot make the account send as an arbitrary
+third party. Self-detection covers every configured identity, so the agent never answers its own
+alias.
+
+`EMAIL_ADDRESS` remains the IMAP/SMTP login. Your provider must already authorise the account to
+send as each alias — Hermes sets the `From:` header, it does not grant the right to use it.
+
+The same settings are available in `config.yaml`, where `from_aliases` also accepts a YAML list:
+
+```yaml
+platforms:
+  email:
+    extra:
+      from_address: support@example.com
+      from_aliases:
+        - hr@example.com
+        - billing@example.com
+```
 
 ### File Attachments
 
@@ -211,7 +251,7 @@ Email access is stricter by default than chat-style platforms:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `EMAIL_ADDRESS` | Yes | — | Agent's email address |
+| `EMAIL_ADDRESS` | Yes | — | Mailbox the agent polls and logs in with |
 | `EMAIL_PASSWORD` | Yes | — | Email password or app password |
 | `EMAIL_IMAP_HOST` | Yes | — | IMAP server host (e.g., `imap.gmail.com`) |
 | `EMAIL_SMTP_HOST` | Yes | — | SMTP server host (e.g., `smtp.gmail.com`) |
@@ -220,4 +260,6 @@ Email access is stricter by default than chat-style platforms:
 | `EMAIL_POLL_INTERVAL` | No | `15` | Seconds between inbox checks |
 | `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |
+| `EMAIL_FROM_ADDRESS` | No | `EMAIL_ADDRESS` | Default visible sender (`From:`) |
+| `EMAIL_FROM_ALIASES` | No | — | Comma-separated additional identities this account may send as |
 | `EMAIL_ALLOW_ALL_USERS` | No | `false` | Allow all senders (not recommended) |

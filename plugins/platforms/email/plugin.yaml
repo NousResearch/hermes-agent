@@ -37,3 +37,11 @@ optional_env:
     description: "Default address for cron / notification delivery"
     prompt: "Home address"
     password: false
+  - name: EMAIL_FROM_ADDRESS
+    description: "Default visible sender (defaults to EMAIL_ADDRESS; for mailboxes that send as an alias)"
+    prompt: "Default From address (leave empty to use EMAIL_ADDRESS)"
+    password: false
+  - name: EMAIL_FROM_ALIASES
+    description: "Comma-separated additional sender identities this account may send as"
+    prompt: "Additional From aliases (comma-separated)"
+    password: false

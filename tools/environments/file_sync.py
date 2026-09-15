@@ -166,6 +166,8 @@ class FileSyncManager:
         self._transaction_lock = threading.Lock()
         self._synced_files: dict[str, tuple[float, int]] = {}  # remote_path -> (mtime, size)
         self._pushed_hashes: dict[str, str] = {}  # remote_path -> sha256 hex digest
+        self._unreadable_skipped: set[str] = set()  # host paths skipped for being unreadable
+        self._sync_back_skipped: set[str] = set()  # host paths skipped in sync-back for being unwritable
         self._upload_only_host_paths: set[str] = set()
         self._last_sync_time: float = 0.0  # monotonic; 0 ensures first sync runs
         self._sync_interval = sync_interval
@@ -174,7 +176,10 @@ class FileSyncManager:
         """Run a sync cycle: upload changed files, delete removed files. Rate-limited to once
         per ``sync_interval`` unless *force* or ``HERMES_FORCE_FILE_SYNC=1``. Transactional:
         state is committed only if ALL operations succeed; on failure it rolls back so the
-        next cycle retries everything."""
+        next cycle retries everything. Host files that cannot be read (upload) or written
+        (sync-back) are skipped with a one-time warning instead of failing the cycle, so one
+        permissions problem cannot wedge the pipeline; they are re-checked and pick up
+        automatically once usable again."""
         with self._transaction_lock:
             self._sync_transaction(force=force)
 
@@ -232,8 +237,26 @@ class FileSyncManager:
             file_key = _file_mtime_key(host_path)
             if file_key is None or self._synced_files.get(remote_path) == file_key:
                 continue
+            if not os.access(host_path, os.R_OK):
+                # Unreadable file: the transport (e.g. tar-over-SSH) would fail on it, and
+                # because a failed cycle rolls back state without advancing the rate-limit
+                # clock, a single permanently-unreadable file wedges the whole pipeline:
+                # every subsequent sync retries the full set and nothing else ever reaches
+                # the remote. Skip it (warn once per unreadable episode) and keep syncing
+                # the rest; it is re-evaluated on every cycle and picks up once readable.
+                if host_path not in self._unreadable_skipped:
+                    self._unreadable_skipped.add(host_path)
+                    logger.warning(
+                        "file_sync: skipping unreadable file %s "
+                        "(will sync once it becomes readable)",
+                        host_path,
+                    )
+                continue
+            self._unreadable_skipped.discard(host_path)
             to_upload.append((host_path, remote_path))
             new_files[remote_path] = file_key
+        # Drop skip-bookkeeping for host paths no longer in the set.
+        self._unreadable_skipped.intersection_update(host_path for host_path, _ in current_files)
         current_remote_paths = {remote for _, remote in current_files}
         to_delete = [p for p in self._synced_files if p not in current_remote_paths]
         return to_upload, new_files, to_delete
@@ -345,6 +368,8 @@ class FileSyncManager:
             file_mapping = list(self._get_files_fn())
         except Exception:
             file_mapping = []
+        # Drop sync-back skip-bookkeeping for host paths no longer in the set.
+        self._sync_back_skipped.intersection_update(host for host, _ in file_mapping)
 
         # A hard kill bypasses the finally below. Reclaim only old entries carrying our
         # prefix before allocating another full-tree download.
@@ -395,8 +420,9 @@ class FileSyncManager:
         self, staged_file: str, remote_path: str, file_mapping: list[tuple[str, str]], upload_only_host_paths: set[str],
     ) -> int:
         """Copy one extracted remote file onto the host if it changed since push. Returns 1 if
-        applied, 0 if skipped (unchanged, unmapped, or an upload-only credential). A host file
-        modified since push is overwritten with the remote version (last-write-wins) with a warning."""
+        applied, 0 if skipped (unchanged, unmapped, an upload-only credential, or a host path
+        that cannot be written). A host file modified since push is overwritten with the
+        remote version (last-write-wins) with a warning."""
         pushed_hash = self._pushed_hashes.get(remote_path)
         if pushed_hash is not None and _sha256_file(staged_file) == pushed_hash:
             return 0  # unchanged from push
@@ -418,8 +444,22 @@ class FileSyncManager:
                 "since push, remote also changed. Applying remote version (last-write-wins).",
                 remote_path)
 
-        os.makedirs(os.path.dirname(host_path), exist_ok=True)
-        shutil.copy2(staged_file, host_path)
+        try:
+            os.makedirs(os.path.dirname(host_path), exist_ok=True)
+            shutil.copy2(staged_file, host_path)
+        except OSError as exc:
+            # A host path that cannot be written (e.g. a read-only file left behind by an
+            # earlier root-owned sync) must not fail the whole sync-back transaction: the
+            # retry re-runs the full file set and every other remote change stays blocked
+            # behind it. Skip with a one-time warning; it is re-checked every cycle and
+            # applied automatically once writable.
+            if host_path not in self._sync_back_skipped:
+                self._sync_back_skipped.add(host_path)
+                logger.warning(
+                    "sync_back: skipping unwritable host file %s (%s); will apply once writable",
+                    host_path, exc)
+            return 0
+        self._sync_back_skipped.discard(host_path)
         return 1
 
     def _resolve_host_path(self, remote_path: str, file_mapping: list[tuple[str, str]] | None = None) -> str | None:

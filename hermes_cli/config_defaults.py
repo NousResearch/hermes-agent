@@ -399,6 +399,9 @@ DEFAULT_CONFIG = {
         # With a cloud provider, auto-spawn local Chromium for LAN/localhost URLs instead
         "auto_local_for_private_urls": True,
         "cdp_url": "",  # persistent CDP endpoint for attaching to an existing Chromium/Chrome
+        # Loopback-only CDP endpoints are treated as local for browser SSRF guards. Disable when
+        # localhost is an SSH tunnel to a browser on another machine.
+        "trust_loopback_cdp": True,
         # Consent to browse with the user's REAL logins locally: runs on a Hermes-managed SNAPSHOT
         # of the ACTIVE default-Chromium profile (Local State -> profile.last_used; cookies, logins,
         # prefs copied and re-synced per fresh session) driven by Hermes' packaged Chromium. The

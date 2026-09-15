@@ -165,16 +165,21 @@ def _is_local_backend() -> bool:
     """True when the browser runs locally AND the terminal is also local.
 
     SSRF protection only matters when the browser can reach networks the terminal cannot (cloud backends,
-    containerized terminals). A CDP override is never trusted as local (that Chrome may live off-host) and MUST
-    be checked before the Camofox short-circuit; ``_is_local_mode`` treats overrides the same way — keep the two
-    in agreement.
+    containerized terminals). A CDP override is local only when its endpoint resolves exclusively to loopback;
+    LAN/private overrides remain untrusted. ``browser.trust_loopback_cdp: false`` restores the conservative
+    behavior for loopback endpoints backed by an SSH tunnel.
     """
     _bt = _origin()
-    if _cdp._get_cdp_override_raw():
-        return False
+    cdp_override = _cdp._get_cdp_override_raw()
+    if cdp_override:
+        if not _bt._browser_cfg("trust_loopback_cdp", True, lambda value: is_truthy_value(value, default=True),
+                                "trust_loopback_cdp from config"):
+            return False
+        if not _cdp._is_loopback_cdp_override(cdp_override):
+            return False
     if _bt._is_camofox_mode():
         return True
-    if _get_cloud_provider() is not None:
+    if not cdp_override and _get_cloud_provider() is not None:
         return False
     # Scope-aware: under gateway multiplexing the routed profile's terminal backend lives in the per-turn scope.
     # When terminal runs in a container, browser on host can access internal networks the terminal can't →

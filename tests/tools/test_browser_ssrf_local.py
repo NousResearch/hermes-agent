@@ -185,6 +185,26 @@ class TestIsLocalBackend:
 
         assert bt_cloud._is_local_backend() is True
 
+    @pytest.mark.parametrize(
+        ("cdp_url", "config", "terminal", "expected"),
+        [
+            ("http://127.0.0.1:9222", {}, "local", True),
+            ("http://127.0.0.1:9222", {"trust_loopback_cdp": False}, "local", False),
+            ("http://127.0.0.1:9222", {}, "docker", False),
+            ("http://192.168.1.5:9222", {}, "local", False),
+        ],
+    )
+    def test_cdp_override_preserves_loopback_trust_boundaries(
+        self, monkeypatch, cdp_url, config, terminal, expected
+    ):
+        monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override_raw", lambda: cdp_url)
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config", lambda: {"browser": config}
+        )
+        monkeypatch.setenv("TERMINAL_ENV", terminal)
+
+        assert bt_cloud._is_local_backend() is expected
+
 
 # ---------------------------------------------------------------------------
 # Post-redirect SSRF check

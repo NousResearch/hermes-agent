@@ -809,4 +809,3 @@ class PeerRunsHTTPClient:
             "manifest_digest": digest,
             "count": len(manifest),
         }
-

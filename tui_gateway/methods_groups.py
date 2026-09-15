@@ -1,8 +1,8 @@
 """Hosted-room JSON-RPC contract: durable room identity, replay, and the process-owned
 same-gateway Discussion driver; ``groups.capabilities`` keeps that boundary machine-readable.
- Server-free on purpose: the gateway process imports this module for the
-hosted-room lifecycle, so the bound server is injected (``bind_server``) and module-private helpers reach
-it through keyword defaults. ``_room_method`` is the shared envelope."""
+Server-free on purpose: the gateway process imports this module for the
+hosted-room lifecycle, so error frames come from ``rpc_frames`` and module-private helpers are passed
+through keyword defaults. ``_room_method`` is the shared envelope."""
 
 from .method_ctx import HandlerRegistry
 from .rpc_frames import err_frame

@@ -218,7 +218,7 @@ def _(rid, params: BrowserControllerParams, transport, _identity, _session_id, b
 
 def register(server) -> None:
     """Publish helpers/constants onto ``server`` and install handlers."""
-    bind_module(globals(), server, skip=("_",))
+    bind_module(globals(), server)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

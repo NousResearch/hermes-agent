@@ -1,5 +1,5 @@
 """Session flush / reaping / orphan sweep / cross-backend heartbeat: exit-flush signal handlers, idle + LRU
-eviction, orphaned session-row sweep, backend heartbeat refresher. so they reference server.py globals bare — including the
+eviction, orphaned session-row sweep, backend heartbeat refresher. Reaches server.py state through ``srv`` — including the
 knobs _SESSION_TTL_S, _REAPER_SCAN_S, _EXIT_FLUSH_BUDGET_S and _INCREMENTAL_FLUSH_INTERVAL_S.
 """
 
@@ -120,7 +120,6 @@ def install_exit_flush_signal_handlers() -> bool:
     signals: its ``capture_signals()`` saves these as the "original" handlers and re-raises into them after
     graceful shutdown, so the flush also covers terminations outside uvicorn's serve window. Idempotent; False
     off-main-thread/on failure."""
-    pass  # published state is written through srv
     if srv._exit_flush_handlers_installed:
         return True
     if threading.current_thread() is not threading.main_thread():
@@ -385,7 +384,6 @@ def _start_backend_heartbeat_refresher() -> None:
     """Register this backend and start the refresher thread (once per process). The first refresh writes the row
     synchronously so this process's own sweep sees itself in the heartbeat table. ``_HEARTBEAT_REFRESH_S <= 0``
     means "register once, never refresh"."""
-    pass  # published state is written through srv
     with srv._heartbeat_refresher_lock:
         if srv._heartbeat_refresher_started:
             return
@@ -423,7 +421,6 @@ def _schedule_startup_orphan_sweep() -> None:
 
     See #65194.
     """
-    pass  # published state is written through srv
     if srv._WS_ORPHAN_REAP_GRACE_S <= 0 or srv._SESSION_TTL_S <= 0 or not srv._session_orphan_reaper_enabled():
         return
     with srv._startup_orphan_sweep_lock:
@@ -436,7 +433,7 @@ def _schedule_startup_orphan_sweep() -> None:
 
 def register(server) -> None:
     """Publish this module's helpers onto ``server`` and install its handlers."""
-    bind_module(globals(), server, skip=("_",))
+    bind_module(globals(), server)
 
 # Bound last, after every definition, so importing this module first (tests, the gateway process)
 # lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.

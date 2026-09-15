@@ -247,7 +247,7 @@ def _install_update_hook():
 
 
 def register(server):
-    bind_module(globals(), server, skip=("_",))
+    bind_module(globals(), server)
     server._LONG_HANDLERS = server._LONG_HANDLERS | srv._CONNECTOR_RPC_METHODS
     srv._install_update_hook()
 

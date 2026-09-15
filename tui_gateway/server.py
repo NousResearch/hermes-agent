@@ -21,8 +21,8 @@ from typing import Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable:
 
 from pydantic import TypeAdapter, ValidationError
 
-# Several of these look unused here but are reached as ``srv.<name>`` by the split modules through this
-# namespace (method_ctx.bind_module) — deleting one breaks a handler at call time, not import time.
+# Several of these look unused here but are reached as ``srv.<name>`` by the split modules —
+# deleting one breaks a handler at call time, not import time.
 from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope  # noqa: F401
 from hermes_constants import (
     get_hermes_home, get_hermes_home_override, profile_name_for_home,
@@ -51,7 +51,7 @@ from tui_gateway.contracts.server_requests import (
     VaultSaveLoginRequestParams, VaultUnlockRequestParams)
 from tui_gateway.turn_marker import clear_turn_marker, read_turn_marker, record_turn_start  # noqa: F401
 from tui_gateway.contracts import registry as _contracts
-# User-facing copy shared with the split method modules (they close over this namespace).
+# User-facing copy shared with the split method modules (reached as ``srv.<name>``).
 from tui_gateway.user_messages import (  # noqa: F401
     AGENT_STILL_STARTING, agent_init_failed_message, busy_message, resume_failed_message, turn_error_text)
 from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, bind_transport,
@@ -3299,11 +3299,12 @@ _paste_counter = 0
 from .mcp_rpc_helpers import summarize_server as _mcp_summarize_server  # noqa: E402, F401
 
 
-# ── Split @method handler modules (see method_ctx.py): imported last so every global the handlers close
-# over exists; register() publishes their helpers onto this namespace and installs their handlers.
-# Helpers the siblings define and this facade calls; register() publishes the same objects below.
+# ── Split modules (see method_ctx.py), imported last so every facade name they reach as ``srv.<name>``
+# exists. First the sibling helpers this facade calls or re-exports — register() below publishes the
+# same objects, so runtime and static resolution agree; then the modules themselves, to register.
 from .methods_connectors import (  # noqa: E402
     _CONNECTOR_RPC_METHODS,
+    _capture_connector_rpc_owner,
     _connection_update,
     _connector_owner_matches,
     _connector_rpc,
@@ -3396,9 +3397,6 @@ from .compute_host_bridge import (  # noqa: E402
     _session_uses_compute_host,
     _submit_prompt_to_compute_host,
     _turn_isolation_enabled,
-)
-from .methods_connectors import (  # noqa: E402
-    _capture_connector_rpc_owner,
 )
 from .methods_session import (  # noqa: E402
     _BRANCH_COPY_FIELDS,

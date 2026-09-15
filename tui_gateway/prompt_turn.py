@@ -554,7 +554,7 @@ def _invoke_agent(
     # Bot Chat mirrors gateway.stream_consumer: deltas are withheld while the streamed buffer
     # could still resolve to a silence marker ("NO"->"NO_REPLY"), so a bare marker is never
     # shown and then retracted (the client keeps streamed text when message.complete is "").
-    hold = {"buf": "", "held": ""} if _is_bot_mode_session(session) else None
+    hold = {"buf": "", "held": ""} if srv._is_bot_mode_session(session) else None
 
     def _stream(delta):
         if hold is not None and isinstance(delta, str):
@@ -956,7 +956,7 @@ def _run_prompt_submit(
 
 def register(server) -> None:
     """Publish this module's helpers onto ``server`` and install its handlers."""
-    bind_module(globals(), server, skip=("_",))
+    bind_module(globals(), server)
 
 # Bound last, after every definition, so importing this module first (tests, the gateway process)
 # lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.

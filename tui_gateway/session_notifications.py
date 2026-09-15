@@ -652,7 +652,6 @@ def _wire_desktop_sinks() -> None:
     """Idempotently wire process-registry and desktop-tool sinks to renderer events: `agent.terminal.output` and
     `terminal.close` (drops a tab without killing the process) route to the window owning the process; desktop-only
     tools pass the turn's ``HERMES_UI_SESSION_ID`` as ``sid``. `_emit` is thread-safe."""
-    pass  # published state is written through srv
     from tools.process_registry import process_registry
 
     def _owner_sid(session) -> str:
@@ -715,7 +714,7 @@ def _prepend_note(run_message: Any, note: str) -> Any:
 
 def register(server) -> None:
     """Publish this module's helpers + handlers onto ``server`` and install its handlers."""
-    bind_module(globals(), server, skip=("_",))
+    bind_module(globals(), server)
 
 # Bound last, after every definition, so importing this module first (tests, the gateway process)
 # lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.

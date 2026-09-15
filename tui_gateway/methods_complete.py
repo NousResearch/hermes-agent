@@ -1,7 +1,6 @@
 """Completion / model-key / paste JSON-RPC handlers.
 
-Rebound onto server.py's globals at install time (``method_ctx.bind_module``), so
-bodies reference server globals bare (``_ok``, ``_err``, ``_sessions``, ...).
+Reaches server.py state through ``srv`` (method_ctx.py).
 """
 
 from __future__ import annotations
@@ -58,7 +57,6 @@ def _catch(fail_code: int):
 @method("paste.collapse")
 def _(rid, params: PasteCollapseParams) -> PasteCollapseResult | dict:
     from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import PasteCollapseResult
-    pass  # (server-owned state is written through srv.)
     text = params.text
     if not text:
         return srv._err(rid, 4004, "empty paste")
@@ -363,7 +361,7 @@ def _(rid, params: ModelDisconnectParams) -> ModelDisconnectResult | dict:
 
 def register(server) -> None:
     """Rebind this module's helpers + handlers onto ``server`` and register the handlers."""
-    bind_module(globals(), server, skip=("_",))
+    bind_module(globals(), server)
 
 # Bound last, after every definition, so importing this module first (tests, the gateway process)
 # lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.

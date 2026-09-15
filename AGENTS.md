@@ -244,8 +244,9 @@ families: `hermes_state.py` (21), `gateway/run.py` (15), `tools/mcp_tool.py` (15
 - **`tui_gateway/` binds the facade at the tail.** Its `methods_*`/`session_*` siblings end with
   `from tui_gateway import server as srv` (after every definition; server.py imports them at its
   own tail, so either import order completes) and reach facade state and every published helper
-  as `srv.<name>` — including their own published functions, so `tui_gateway.server` stays the
-  one patch target. Import-time plumbing (decorator factories) is the only thing called bare.
+  as `srv.<name>` — including their own published functions and module state, so
+  `tui_gateway.server` stays the one patch target. Called bare: imported names, un-published
+  private helpers, and import-time plumbing (decorator factories run before the tail import).
   `methods_groups` is server-free on purpose (the gateway process imports it). See
   `tui_gateway/method_ctx.py`.
 - **Compat pointers are OFF LIMITS in-tree.** Old import paths kept alive for external plugins

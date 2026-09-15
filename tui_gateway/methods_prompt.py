@@ -1,5 +1,5 @@
 """Prompt / attachment / respond JSON-RPC handlers.
- Reaches server.py state through ``srv`` (method_ctx.py).
+Reaches server.py state through ``srv`` (method_ctx.py).
 """
 
 import logging
@@ -1264,7 +1264,7 @@ def _(rid, params: ApprovalRespondParams) -> ApprovalRespondResult | dict:
 
 def register(server) -> None:
     """Publish this module's helpers + handlers onto ``server`` and install its handlers."""
-    bind_module(globals(), server, skip=("_",))
+    bind_module(globals(), server)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

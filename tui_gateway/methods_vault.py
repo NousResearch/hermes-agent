@@ -20,7 +20,7 @@ JSON-RPC channel every other Settings surface uses. Contracts:
 Every handler honours ``params.profile`` (app-global remote mode serves several profiles from one
 backend): the requested profile's HERMES_HOME and secret scope are bound around the body, so the
 vault file, manager config and manager tokens all resolve to that profile.
- Reaches server.py state through ``srv`` (method_ctx.py). and may reference server module globals (``_ok``, ``_err``).
+Reaches server.py state through ``srv`` (method_ctx.py).
 """
 
 from __future__ import annotations

@@ -407,7 +407,7 @@ def _pending_switch_selection_warning(model: str, provider: str) -> str | None:
 
 def register(server) -> None:
     """Publish this module's helpers + handlers onto ``server`` and install its handlers."""
-    bind_module(globals(), server, skip=("_",))
+    bind_module(globals(), server)
 
 # Bound last, after every definition, so importing this module first (tests, the gateway process)
 # lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.

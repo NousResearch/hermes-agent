@@ -1,5 +1,5 @@
 """Session / delegation / spawn-tree / billing / pet JSON-RPC handlers.
- Reaches server.py state through ``srv`` (method_ctx.py)."""
+Reaches server.py state through ``srv`` (method_ctx.py)."""
 
 import logging
 import contextlib
@@ -2013,7 +2013,7 @@ def register(server) -> None:
     for value in tuple(globals().values()):
         if isinstance(value, type) and issubclass(value, Result):
             setattr(server, value.__name__, value)
-    bind_module(globals(), server, skip=("_",))
+    bind_module(globals(), server)
 
 # Bound last, after every definition, so importing this module first (tests, the gateway process)
 # lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.

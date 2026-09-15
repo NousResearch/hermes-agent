@@ -1,5 +1,5 @@
 """Session lifecycle: active-session slot leases, finalize/teardown/close, turn interrupt,
-WS-orphan reap scheduling, transport-scoped close. so they reference server.py globals bare.
+WS-orphan reap scheduling, transport-scoped close. Reaches server.py state through ``srv``.
 """
 
 from __future__ import annotations
@@ -694,7 +694,7 @@ def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect
 
 def register(server) -> None:
     """Publish this module's helpers onto ``server`` and install its handlers."""
-    bind_module(globals(), server, skip=("_",))
+    bind_module(globals(), server)
 
 # Bound last, after every definition, so importing this module first (tests, the gateway process)
 # lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.

@@ -72,7 +72,6 @@ def _skin_sig() -> tuple[str, float | None]:
 
 def _note_skin_broadcast() -> None:
     """Sync the baseline after the /skin RPC emits so the watcher doesn't re-broadcast it."""
-    pass  # published state is written through srv
     with contextlib.suppress(Exception):
         srv._last_skin_sig = srv._skin_sig()
 
@@ -80,7 +79,6 @@ def _note_skin_broadcast() -> None:
 def _broadcast_skin_if_changed() -> None:
     """Emit ``skin.changed`` when the active skin moved, via the SAME live path as
     ``/skin`` so every surface repaints. The check is a dict lookup + one stat."""
-    pass  # published state is written through srv
     with contextlib.suppress(Exception):
         sig = srv._skin_sig()
         if sig == srv._last_skin_sig:
@@ -161,7 +159,6 @@ def _bot_relay_outbox_sig():
     a different process that never touches this gateway's transports — so the files are the only shared
     signal, exactly like the pairing store. See #92760, #93091.
     """
-    pass  # published state is written through srv
     home = _watcher_home()
     root = home.parent.parent if home.parent.name == "profiles" else home
     with contextlib.suppress(OSError):
@@ -226,7 +223,6 @@ _skin_watcher_started = False
 def _ensure_skin_watcher() -> None:
     """Start the process's one change watcher (named for its original skin-only duty): cheap
     on-disk signatures → broadcast events, so changes go live without client polling. Idempotent."""
-    pass  # published state is written through srv
     if srv._skin_watcher_started:
         return
     srv._skin_watcher_started = True
@@ -242,7 +238,7 @@ def _ensure_skin_watcher() -> None:
 
 def register(server) -> None:
     """Publish this module's helpers + handlers onto ``server`` and install its handlers."""
-    bind_module(globals(), server, skip=("_",))
+    bind_module(globals(), server)
 
 # Bound last, after every definition, so importing this module first (tests, the gateway process)
 # lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.

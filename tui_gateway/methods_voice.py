@@ -50,7 +50,6 @@ def _voice_emit(event: str, payload: "Payload | None" = None) -> None:
 
 
 def _resume_voice_wake() -> None:
-    pass  # published state is written through srv
     with srv._voice_sid_lock:
         owner, srv._voice_wake_owner = srv._voice_wake_owner, None
     if owner is not None:
@@ -124,7 +123,6 @@ def _tts_stream_begin() -> Optional[queue.Queue]:
     text_queue: queue.Queue = queue.Queue()
     stop, done = threading.Event(), threading.Event()
     threading.Thread(target=stream_tts_to_speaker, args=(text_queue, stop, done), daemon=True).start()
-    pass  # published state is written through srv
     with srv._tts_stream_lock:
         srv._tts_stream_state = {"stop": stop, "done": done}
     srv._arm_barge_listener_if_enabled()
@@ -134,7 +132,6 @@ def _tts_stream_begin() -> Optional[queue.Queue]:
 def _tts_stream_stop(user_barge: bool = True) -> None:
     """Cut in-flight streaming TTS. *user_barge* latches the interruption for the next turn's
     model note; ``False`` for mode changes (/voice off)."""
-    pass  # published state is written through srv
     with srv._tts_stream_lock:
         state, srv._tts_stream_state = srv._tts_stream_state, None
     if state is None:
@@ -164,7 +161,6 @@ _fd_speak_pipelines: "set[tuple[threading.Event, threading.Event]]" = set()
 
 def _arm_full_duplex_listener() -> None:
     """Arm the process-global full-duplex listener (idempotent — one mic)."""
-    pass  # published state is written through srv
     with srv._fd_listener_lock:
         if srv._fd_listener_active:
             return
@@ -189,7 +185,6 @@ def _fd_tts_pending() -> bool:
 
 def _full_duplex_listener() -> None:
     """Mic live from utterance-submit to turn-complete; a trip transcribes -> ``voice.transcript``."""
-    pass  # published state is written through srv
     try:
         from tools.voice_mode import (full_duplex_listen, is_audio_output_active,
                                       transcribe_recording)
@@ -341,7 +336,6 @@ def _wake_owner_snapshot():
 
 def _release_wake_for_transport(transport: Transport) -> bool:
     """Release the wake lease iff ``transport`` is the current gateway owner."""
-    pass  # published state is written through srv
     with srv._wake_lock:
         if srv._wake_owner_transport is not transport:
             return False
@@ -374,14 +368,12 @@ def _wake_resume_if_owner(owner: Transport, *, retry_seconds: float = 15.0,
         return resume_listening(owner=owner)
     except Exception as e:
         logger.debug("wake resume failed (will retry): %s", e)
-    pass  # published state is written through srv
     with srv._wake_resume_retry_lock:
         if srv._wake_resume_retry_active:
             return False
         srv._wake_resume_retry_active = True
 
     def _retry() -> None:
-        pass  # published state is written through srv
         deadline = time.monotonic() + retry_seconds
         try:
             while time.monotonic() < deadline:
@@ -467,7 +459,6 @@ def _(rid, params: PingParams) -> PingResult | dict:
 
 @method("wake.start")
 def _(rid, params: WakeStartParams) -> WakeStartResult | dict:
-    pass  # published state is written through srv
     surface = (params.surface or "auto").strip().lower()
     transport = srv._caller_transport()
 
@@ -706,7 +697,6 @@ def _(rid, params: VoiceRecordParams) -> VoiceRecordResult | dict:
     if wake_owner is not None and wake_owner is not transport:
         return VoiceRecordResult(status="busy", reason="wake_owned")
     try:
-        pass  # published state is written through srv
         if action == "start" and not srv._voice_mode_enabled():
             return srv._err(rid, 4015, "voice mode is off — enable with /voice on")
         with srv._voice_sid_lock:
@@ -760,7 +750,7 @@ def _(rid, params: VoiceTtsParams) -> VoiceTtsResult | dict:
 
 
 def register(server) -> None:
-    bind_module(globals(), server, skip=("_",))
+    bind_module(globals(), server)
 
 # Bound last, after every definition, so importing this module first (tests, the gateway process)
 # lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.

@@ -411,13 +411,7 @@ def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
     )
 
 
-# Unit boundary between OpenRouter-style per-token pricing and providers that
-# quote USD per 1M tokens directly. Legitimate per-token prices sit near
-# 1e-7..1e-4 ($0.10-$200 per million); nothing real costs more than $0.01 for a
-# single token (that would be $10,000+/1M, two orders of magnitude above the
-# priciest known models). A raw /models price above this from a custom provider
-# is almost certainly already quoted per-million, so multiplying it by 1M again
-# would inflate the estimate ~1,000,000x. See #112018.
+# No real per-token price exceeds $0.01; above that the value is already per-million (#112018).
 _MAX_PER_TOKEN_USD = Decimal("0.01")
 
 

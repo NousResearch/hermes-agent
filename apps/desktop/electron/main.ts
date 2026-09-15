@@ -7009,11 +7009,65 @@ function sendWindowStateChanged(nextIsFullscreen?: boolean, target = mainWindow)
   webContents.send('hermes:window-state-changed', state)
 }
 
+// Application-menu copy by UI locale. The macOS menu is native chrome, so it
+// does not go through the renderer's i18n catalog — the renderer notifies main
+// of the active locale (`hermes:menu-locale`) and main rebuilds the menu with
+// these labels. Locales without an entry (and unset locales) fall back to the
+// English defaults baked into `buildApplicationMenu`.
+const MENU_COPY_BY_LOCALE: Record<string, Record<string, string>> = {
+  fa: {
+    about: 'درباره',
+    checkForUpdates: 'بررسی به‌روزرسانی…',
+    services: 'خدمات',
+    hide: 'مخفی کردن هرمس',
+    hideOthers: 'مخفی کردن سایر برنامه‌ها',
+    unhide: 'نمایش همه',
+    quit: 'خروج',
+    file: 'فایل',
+    newWindow: 'پنجره جدید',
+    openFolder: 'بازکردن پوشه…',
+    close: 'بستن',
+    edit: 'ویرایش',
+    undo: 'واگرد',
+    redo: 'ازنو',
+    cut: 'برش',
+    copy: 'کپی',
+    paste: 'چسباندن',
+    pasteAndMatchStyle: 'چسباندن با همان قالب',
+    delete: 'حذف',
+    selectAll: 'انتخاب همه',
+    view: 'نما',
+    reload: 'بازخوانی',
+    forceReload: 'بازخوانی اجباری',
+    toggleDevTools: 'نمایش/پنهان کردن ابزار توسعه‌دهنده',
+    actualSize: 'اندازه واقعی',
+    zoomIn: 'بزرگ‌نمایی',
+    zoomOut: 'کوچک‌نمایی',
+    toggleFullscreen: 'تمام‌صفحه',
+    window: 'پنجره',
+    minimize: 'کوچک کردن',
+    zoom: 'بزرگ کردن',
+    front: 'آوردن به جلو',
+    help: 'راهنما'
+  }
+}
+
+// The locale the application menu is currently rendered in. Seeded from the
+// environment so a dev run (`HERMES_MENU_LOCALE=fa npm run dev`) can exercise
+// a translated menu before the renderer's config round-trip lands.
+let menuLocale: string | null = process.env.HERMES_MENU_LOCALE || null
+
+function menuT(key: string, fallback: string): string {
+  const table = menuLocale ? MENU_COPY_BY_LOCALE[menuLocale] : undefined
+
+  return table?.[key] ?? fallback
+}
+
 function buildApplicationMenu() {
   const template = []
 
   const checkForUpdatesItem = {
-    label: 'Check for Updates…',
+    label: menuT('checkForUpdates', 'Check for Updates…'),
     click: () => sendOpenUpdatesRequested()
   }
 
@@ -7021,31 +7075,31 @@ function buildApplicationMenu() {
     template.push({
       label: APP_NAME,
       submenu: [
-        { label: `About ${APP_NAME}`, click: () => showAboutPanelFresh() },
+        { label: `${menuT('about', 'About')} ${APP_NAME}`, click: () => showAboutPanelFresh() },
         checkForUpdatesItem,
         { type: 'separator' },
-        { role: 'services' },
+        { label: menuT('services', 'Services'), role: 'services' },
         { type: 'separator' },
-        { role: 'hide' },
-        { role: 'hideOthers' },
-        { role: 'unhide' },
+        { label: menuT('hide', 'Hide'), role: 'hide' },
+        { label: menuT('hideOthers', 'Hide Others'), role: 'hideOthers' },
+        { label: menuT('unhide', 'Unhide'), role: 'unhide' },
         { type: 'separator' },
-        { role: 'quit' }
+        { label: menuT('quit', 'Quit'), role: 'quit' }
       ]
     })
   }
 
   template.push({
-    label: 'File',
+    label: menuT('file', 'File'),
     submenu: [
       // No accelerator: ⌘⇧N is a rebindable renderer keybind (session.newWindow);
       // a menu accelerator would fight the rebind panel and (on macOS) be
       // swallowed before the renderer sees it. Here purely for discoverability.
-      { click: () => createInstanceWindow(), label: 'New Window' },
+      { click: () => createInstanceWindow(), label: menuT('newWindow', 'New Window') },
       // Same no-accelerator rationale: ⌘O is the rebindable renderer keybind
       // (workspace.openFolder). Clicking runs the same open-folder-as-project
       // flow through the renderer.
-      { click: () => sendOpenFolderRequested(), label: 'Open Folder…' },
+      { click: () => sendOpenFolderRequested(), label: menuT('openFolder', 'Open Folder…') },
       { type: 'separator' },
       IS_MAC
         ? {
@@ -7056,32 +7110,32 @@ function buildApplicationMenu() {
             // renderer's close-active-tab. Clicking the item still closes the tab
             // (or window) via the same request.
             click: () => sendClosePreviewRequested(),
-            label: 'Close'
+            label: menuT('close', 'Close')
           }
         : { role: 'quit' }
     ]
   })
   template.push({
-    label: 'Edit',
+    label: menuT('edit', 'Edit'),
     submenu: [
-      { role: 'undo' },
-      { role: 'redo' },
+      { label: menuT('undo', 'Undo'), role: 'undo' },
+      { label: menuT('redo', 'Redo'), role: 'redo' },
       { type: 'separator' },
-      { role: 'cut' },
-      { role: 'copy' },
-      { role: 'paste' },
+      { label: menuT('cut', 'Cut'), role: 'cut' },
+      { label: menuT('copy', 'Copy'), role: 'copy' },
+      { label: menuT('paste', 'Paste'), role: 'paste' },
       // ⌘⇧V is only wired up by this item existing: an accelerator with no menu
       // entry is never translated into an editor command, so the chord was a
       // no-op in every input in the app. The composer inserts plain text on
       // every paste anyway, so this is the same result as ⌘V there — it's the
       // terminal, preview, and other editable surfaces that need the strip.
-      { role: 'pasteAndMatchStyle' },
-      { role: 'delete' },
-      { role: 'selectAll' }
+      { label: menuT('pasteAndMatchStyle', 'Paste and Match Style'), role: 'pasteAndMatchStyle' },
+      { label: menuT('delete', 'Delete'), role: 'delete' },
+      { label: menuT('selectAll', 'Select All'), role: 'selectAll' }
     ]
   })
   template.push({
-    label: 'View',
+    label: menuT('view', 'View'),
     submenu: [
       // Not `role: 'reload'`: that hard-reloads the RENDERER (every pane, the
       // whole shell) and a focused in-app browser needs ⌘R to mean "reload
@@ -7091,23 +7145,23 @@ function buildApplicationMenu() {
       // No accelerator: ⌘R is claimed in `installPreviewShortcut`, which works
       // on every platform (this menu exists only on macOS). Declaring it here
       // too would fire the item and the input hook for one keypress.
-      { click: () => sendPreviewNavCommand('reload'), label: 'Reload' },
-      { role: 'forceReload' },
+      { click: () => sendPreviewNavCommand('reload'), label: menuT('reload', 'Reload') },
+      { label: menuT('forceReload', 'Force Reload'), role: 'forceReload' },
       {
-        label: 'Toggle Developer Tools',
+        label: menuT('toggleDevTools', 'Toggle Developer Tools'),
         accelerator: process.platform === 'darwin' ? 'Alt+Cmd+I' : 'Ctrl+Shift+I',
         click: (_menuItem, browserWindow) => toggleDevTools(browserWindow || mainWindow)
       },
       { type: 'separator' },
       {
-        label: 'Actual Size',
+        label: menuT('actualSize', 'Actual Size'),
         accelerator: 'CommandOrControl+0',
         click: () => {
           setAndPersistZoomLevel(mainWindow, DEFAULT_ZOOM_LEVEL)
         }
       },
       {
-        label: 'Zoom In',
+        label: menuT('zoomIn', 'Zoom In'),
         accelerator: 'CommandOrControl+Plus',
         click: () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
@@ -7116,7 +7170,7 @@ function buildApplicationMenu() {
         }
       },
       {
-        label: 'Zoom Out',
+        label: menuT('zoomOut', 'Zoom Out'),
         accelerator: 'CommandOrControl+-',
         click: () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
@@ -7129,13 +7183,20 @@ function buildApplicationMenu() {
     ]
   })
   template.push({
-    label: 'Window',
+    label: menuT('window', 'Window'),
     submenu: IS_MAC
-      ? [{ role: 'minimize' }, { role: 'zoom' }, { role: 'front' }]
-      : [{ role: 'minimize' }, { role: 'close' }]
+      ? [
+          { label: menuT('minimize', 'Minimize'), role: 'minimize' },
+          { label: menuT('zoom', 'Zoom'), role: 'zoom' },
+          { label: menuT('front', 'Bring All to Front'), role: 'front' }
+        ]
+      : [
+          { label: menuT('minimize', 'Minimize'), role: 'minimize' },
+          { label: menuT('close', 'Close'), role: 'close' }
+        ]
   })
   template.push({
-    label: 'Help',
+    label: menuT('help', 'Help'),
     role: 'help',
     submenu: [checkForUpdatesItem]
   })
@@ -17511,6 +17572,23 @@ function readPersistedKeepAwake() {
     return false
   }
 }
+
+// Renderer → main notification of the active UI locale, so the native macOS
+// application menu renders in the user's language. Sent on locale change and
+// after config load; only locales with menu copy (MENU_COPY_BY_LOCALE) rebuild.
+ipcMain.on('hermes:menu-locale', (_event, locale) => {
+  const next = typeof locale === 'string' && locale ? locale : null
+
+  if (next === menuLocale) {
+    return
+  }
+
+  menuLocale = next
+
+  if (IS_MAC && Menu.getApplicationMenu()) {
+    Menu.setApplicationMenu(buildApplicationMenu())
+  }
+})
 
 ipcMain.on('hermes:keep-awake', (_event, on) => {
   const enabled = Boolean(on)

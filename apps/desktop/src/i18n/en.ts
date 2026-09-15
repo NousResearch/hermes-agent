@@ -4377,6 +4377,27 @@ export const en: Translations = {
         web_search: { done: 'Searched web', pending: 'Searching web', pendingAction: 'Searching' },
         write_file: { done: 'Edited file', pending: 'Editing file', pendingAction: 'Editing' }
       }
+    },
+
+    toolDetails: {
+      payloadDisclosure: 'Tool payload',
+      argumentsHeading: 'Arguments',
+      resultHeading: 'Result',
+      searchLabel: 'Search',
+      searchResultsLabel: 'Search results',
+      errorDetailsLabel: 'Error details',
+      webSearchDetailsLabel: 'Details',
+      browserSnapshotLabel: 'Snapshot summary'
+    },
+
+    viewer: {
+      openFullView: 'Open full view',
+      zoomIn: 'Zoom in',
+      zoomOut: 'Zoom out',
+      reset: 'Reset',
+      copied: 'Copied',
+      copy: 'Copy',
+      close: 'Close'
     }
   },
 

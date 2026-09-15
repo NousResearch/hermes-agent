@@ -61,7 +61,16 @@ class GatewayKanbanWatchersMixin:
         processes sharing the same kanban tree can each dispatch the boards
         they actually own without contending for a single lock none of them
         would ever release to each other.
+
+        A gateway with ``HERMES_KANBAN_BOARD`` pinned (isolated worker
+        profiles) never even attempts another board's lock: without this,
+        an idle worker could win the race for a board it has no business
+        dispatching and spawn that board's task workers under its own OS
+        UID, defeating the whole point of per-worker process isolation.
         """
+        pinned = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
+        if pinned and pinned != slug:
+            return False
         handles: Optional[dict] = getattr(self, "_kanban_board_lock_handles", None)
         if handles is None:
             handles = {}

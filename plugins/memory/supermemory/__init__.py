@@ -26,6 +26,9 @@ _API_KEY_URL = "http://app.supermemory.ai/integrations?connect=hermes"
 _INJECTED_BLOCK_RE = re.compile(r"<supermemory-(context|containers)>[\s\S]*?</supermemory-\1>\s*", re.DOTALL)
 _DATA_URI_RE = re.compile(r"data:[^;,\s]+;base64,[A-Za-z0-9+/=]+")  # pasted inline images are useless as memory text
 _CAPTURE_BUCKET_HOURS = 4  # one capture document per session per 4h window (matches the other Supermemory agent integrations)
+_FAILED = object()  # _quietly default for capture writes: an explicit failure marker (a client returning None still counts as success)
+_MAX_PENDING_TURNS = 50  # a down service must not accumulate an unbounded retry buffer
+_MAX_PENDING_BYTES = 256 * 1024
 _DEFAULT_ENTITY_CONTEXT = (
     "User-assistant conversation. Format: [role: user]...[user:end] and [role: assistant]...[assistant:end].\n\n"
     "Only extract things useful in future conversations. Most messages are not worth remembering.\n\n"
@@ -430,8 +433,8 @@ class SupermemoryMemoryProvider(MemoryProvider):
                 result = _quietly(lambda: self._client.add_memory(content, metadata=metadata, entity_context=self._entity_context,
                                                                   custom_id=_capture_custom_id(sid, now)),
                                   "Supermemory capture failed (%s, session=%s, %d turns pending)", mode, sid, len(batch),
-                                  level=logging.WARNING if mode != "turn" else logging.DEBUG)
-                if result is None:  # add_memory always returns a dict on success; None = it raised
+                                  level=logging.WARNING if mode != "turn" else logging.DEBUG, default=_FAILED)
+                if result is _FAILED:  # only a raised exception re-queues the batch
                     failed += batch
             self._pending_turns = failed
 
@@ -443,10 +446,34 @@ class SupermemoryMemoryProvider(MemoryProvider):
                 "session_id": session_id or self._session_id}
         if turn["user"] or turn["assistant"]:
             self._write_turns("turn", turn)
+            self._bound_pending_turns()
 
     def _flush_pending(self, mode: str) -> None:
         if self._can_write():
             self._write_turns(mode)
+            self._bound_pending_turns()
+
+    def _bound_pending_turns(self) -> None:
+        """Keep the retry buffer bounded: drop OLDEST entries past the turn/byte caps.
+
+        Without this, a persistently failing service accumulates one entry per turn for the
+        process lifetime (gateway runs never re-initialize) and every retry re-sends the
+        whole accumulated payload."""
+        with self._capture_lock:
+            if len(self._pending_turns) <= _MAX_PENDING_TURNS and \
+                    sum(len(t["user"]) + len(t["assistant"]) for t in self._pending_turns) <= _MAX_PENDING_BYTES:
+                return
+            kept: List[Dict[str, str]] = list(self._pending_turns)
+            total = sum(len(t["user"]) + len(t["assistant"]) for t in kept)
+            while len(kept) > _MAX_PENDING_TURNS or total > _MAX_PENDING_BYTES:
+                if not kept:
+                    break
+                dropped = kept.pop(0)
+                total -= len(dropped["user"]) + len(dropped["assistant"])
+            if len(kept) != len(self._pending_turns):
+                logger.warning("Supermemory: dropped %d oldest pending turn(s) to keep the retry buffer bounded",
+                               len(self._pending_turns) - len(kept))
+            self._pending_turns = kept
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         # Turns were already written as they completed; only retry what failed.

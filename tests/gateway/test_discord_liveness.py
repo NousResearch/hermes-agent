@@ -95,19 +95,18 @@ def _make_adapter(
     threshold=1,
     max_ack_age=1.0,
     max_latency=1.0,
+    max_event_silence: float | None = None,
 ) -> DiscordAdapter:
     monkeypatch.setenv("HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS", str(interval))
     monkeypatch.setenv("HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD", str(threshold))
-    return DiscordAdapter(
-        PlatformConfig(
-            enabled=True,
-            token="test-token",
-            extra={
-                "websocket_heartbeat_ack_max_age_seconds": max_ack_age,
-                "websocket_max_latency_seconds": max_latency,
-            },
-        )
-    )
+    extra = {
+        "websocket_heartbeat_ack_max_age_seconds": max_ack_age,
+        "websocket_max_latency_seconds": max_latency,
+    }
+    # Only the event-silence tests pin this knob; everyone else keeps the adapter default.
+    if max_event_silence is not None:
+        extra["websocket_event_max_silence_seconds"] = max_event_silence
+    return DiscordAdapter(PlatformConfig(enabled=True, token="test-token", extra=extra))
 
 
 class _BrokenWebSocket:

@@ -650,3 +650,26 @@ def test_duplicate_handles_on_one_path_are_reported(db, caplog):
     finally:
         for d in extra:
             d.close()
+
+
+@pytest.mark.requires_wal
+def test_read_only_handles_do_not_count_toward_the_duplicate_writer_warning(db, caplog):
+    """The warning names the cost of WRITER handles (writer connection, write lock, close-time
+    checkpoint). Read-only attaches are the sanctioned per-request shape for dashboard routers
+    and CLI lookups, so any number of them must stay silent (#100896)."""
+    import logging
+
+    from hermes_state import SessionDB
+    from hermes_state_readpool import _HANDLES_PER_PATH_WARN
+
+    extra = []
+    try:
+        with caplog.at_level(logging.WARNING, logger="hermes_state"):
+            for _ in range(_HANDLES_PER_PATH_WARN + 2):
+                extra.append(SessionDB(db_path=db.db_path, read_only=True))
+        assert not any(
+            "live SessionDB handles on" in r.getMessage() for r in caplog.records
+        ), "read-only attaches were counted as duplicate writers"
+    finally:
+        for d in extra:
+            d.close()

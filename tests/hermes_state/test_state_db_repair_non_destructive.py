@@ -81,16 +81,17 @@ def _writer_after_stage(
     """Try one real cross-process write after staging has begun.
 
     The repair process owns the SQLite exclusion for the complete
-    stage/strategy/promotion interval.  A writer is allowed to fail or to
-    wait until that interval ends and commit afterwards; what is forbidden is
-    a successful commit that promotion silently overwrites.
+    stage/strategy/promotion interval.  The writer arrives mid-repair (a
+    pre-existing foreign holder is refused up front, #103339) and is allowed to
+    fail or to wait until that interval ends and commit afterwards; what is
+    forbidden is a successful commit that promotion silently overwrites.
     """
+    ready.set()
+    if not start.wait(20):
+        result.put(("not-started", "repair did not reach staging"))
+        return
     conn = sqlite3.connect(db_path, timeout=0.75, isolation_level=None)
     try:
-        ready.set()
-        if not start.wait(20):
-            result.put(("not-started", "repair did not reach staging"))
-            return
         try:
             conn.execute(
                 "INSERT INTO messages (body) VALUES ('committed-after-stage')"

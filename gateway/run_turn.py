@@ -23,6 +23,7 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
+from gateway.response_filters import display_kind_for_event, is_machinery_display_kind
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
@@ -50,6 +51,17 @@ _CONTEXT_OVERFLOW_ERROR_PHRASES = (
     "request entity too large", "prompt is too long",
     "payload too large", "input is too long",
 )
+
+_UNEXPECTED_SILENCE_REPLY = (
+    "⚠️ The model returned only a silence marker for a message that needed a reply. "
+    "Try again or rephrase."
+)
+
+
+def _bg_prompt_preview(prompt: str, limit: int = 60) -> str:
+    """Short single-line quote of a /bg prompt for its failure notice (the task id means nothing to the user)."""
+    text = " ".join(str(prompt or "").split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> bool:
@@ -1079,11 +1091,12 @@ class GatewayTurnMixin:
                 # Force-redact: provider exception text may contain credentials; this reaches users.
                 from agent.redact import redact_sensitive_text
                 _err = redact_sensitive_text(getattr(_comp, "_last_summary_error", None) or "unknown error", force=True)
+                logger.warning("Session hygiene compression aborted: %s", _err)
                 await self._hmwa_hygiene_notify(
-                    source, attempt.meta, "⚠️ Context compression aborted "
-                    f"({_err}). No messages were dropped — "
-                    "conversation is unchanged. Run /compress to retry, /reset for a clean "
-                    "session, or check your auxiliary.compression model configuration.",
+                    source, attempt.meta,
+                    "⚠️ Shortening the conversation history failed, so I kept everything as-is. "
+                    "Run /compress to try again or /new to start fresh. If this keeps happening, "
+                    "run `hermes doctor` on the host.",
                     "compression-failure warning",
                 )
         # Configured aux model failed, recovered on the main model: only the user can fix that config.
@@ -1362,6 +1375,7 @@ class GatewayTurnMixin:
     async def _hmwa_shape_agent_response(
         self, agent_result, source, history, session_entry, session_key,
         _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
+        persist_user_display_kind: Optional[str] = None,
     ):
         """Turn the raw agent result into the outbound text: sentinel/silence handling, response
         logging, resume-pending clear, empty-response normalization, and identity-guarded
@@ -1377,13 +1391,25 @@ class GatewayTurnMixin:
         if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
             response = ""
         _intentional_silence = self._is_intentional_silence(agent_result, response)
-
-        # "(empty)" = the model produced no visible content after exhausting all retries.
-        if response == "(empty)" and not _intentional_silence:
-            response = (
-                "⚠️ The model returned no response after processing tool results. This can happen "
-                "with some models — try again or rephrase your question."
+        # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
+        # opened the chain: an internal follow-up may go silent, a human one must not.
+        _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
+        if _intentional_silence and not is_machinery_display_kind(_silence_kind):
+            logger.warning(
+                "silence marker rejected on a user turn: platform=%s chat=%s",
+                _platform_name, source.chat_id or "unknown",
             )
+            _intentional_silence = False
+            response = _UNEXPECTED_SILENCE_REPLY
+
+        # "(empty)" = the model produced no visible content after exhausting all retries. One
+        # text with the CLI explainer and the desktop (agent/turn_explainers.py) so the user
+        # reads the same words on every surface.
+        if response == "(empty)" and not _intentional_silence:
+            from agent.turn_explainers import EMPTY_RESPONSE_EXPLANATION
+
+            _model = str(agent_result.get("model") or "").strip() or "The model"
+            response = "⚠️ " + EMPTY_RESPONSE_EXPLANATION.format(model=_model)
         agent_messages = agent_result.get("messages", [])
         logger.info(
             "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",
@@ -1797,10 +1823,13 @@ class GatewayTurnMixin:
 
         return response
 
+    # Chat-side next steps keyed by HTTP status; Hermes commands only (/login is the gateway's own
+    # sign-in, `hermes auth add <provider>` the host equivalent).
     _STATUS_HINTS = {
-        401: " Check your API key or run `claude /login` to refresh OAuth credentials.",
-        402: " Your API balance or quota is exhausted. Check your provider dashboard.",
-        529: " The API is temporarily overloaded. Please try again shortly.",
+        401: (" Your sign-in to the AI model service has expired or the API key is wrong. "
+              "Use /login here, or run `hermes auth add <provider>` on the host."),
+        402: " Your AI model service balance or quota is used up. Top it up on the service's website, or use /model to switch models.",
+        529: " The AI model service is temporarily overloaded. Wait a moment, then use /retry.",
     }
 
     async def _hmwa_agent_error_reply(self, e, event, source, session_entry, session_key, prepared):
@@ -1813,10 +1842,8 @@ class GatewayTurnMixin:
         if status_code in {400, 500} and len(prepared.history) > 50:
             # Context overflow / payload too large: a deterministic rejection (#107567), and the same
             # no-grow rule as the persist path (#1630) — nothing is written into an oversized session.
-            return (
-                "⚠️ Session too large for the model's context window.\nUse /compact to "
-                "compress the conversation, or /reset to start fresh."
-            )
+            from gateway.run import _CONTEXT_OVERFLOW_REPLY
+            return _CONTEXT_OVERFLOW_REPLY
         # Replay can coalesce inputs; only this input's durable marker establishes ownership.
         try:
             if prepared.message_text is not None and session_entry is not None:
@@ -1849,10 +1876,11 @@ class GatewayTurnMixin:
             else:
                 status_hint = " Your plan's usage limit has been reached. Please wait until it resets."
         elif status_code == 400:
-            status_hint = " The request was rejected by the API."
+            status_hint = " The AI model service rejected the request."
         return self._hmwa_add_failed_turn_notice(
-            f"Sorry, I encountered an unexpected error.{status_hint}\n"
-            "Try again or use /reset to start a fresh session.",
+            f"⚠️ Something went wrong and I couldn't finish this reply.{status_hint}\n"
+            "Use /retry to try again, or /new to start a fresh conversation. "
+            "Technical details are in the gateway log (`hermes logs`).",
             self._PARTIAL_FAILED_TURN_NOTICE,
         )
 
@@ -1889,7 +1917,7 @@ class GatewayTurnMixin:
         _session_env_tokens = self._set_session_env(context)
         # Self-injected turns (MessageEvent(internal=True)) persist with a DB-only display_kind so
         # UIs render timeline notices, not user bubbles; role/content untouched.
-        persist_user_display_kind = "internal_notification" if getattr(event, "internal", False) else None
+        persist_user_display_kind = display_kind_for_event(event)
         _redact_pii = False  # privacy.redact_pii, re-read per message
         with suppress(Exception):
             _redact_pii = bool((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
@@ -2046,6 +2074,7 @@ class GatewayTurnMixin:
             response, _intentional_silence, agent_messages = await self._hmwa_shape_agent_response(
                 agent_result, source, history, session_entry, session_key,
                 _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
+                persist_user_display_kind=prepared.persist_user_display_kind,
             )
             response = self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence)
             _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)
@@ -2196,7 +2225,8 @@ class GatewayTurnMixin:
             if not runtime_kwargs.get("api_key"):
                 await adapter.send(
                     source.chat_id,
-                    f"❌ Background task {task_id} failed: no provider credentials configured.",
+                    "❌ The background task couldn't start because no AI model sign-in is "
+                    "configured. Use /login, or run `hermes setup` on the host.",
                     metadata=_thread_metadata,
                 )
                 return
@@ -2307,7 +2337,9 @@ class GatewayTurnMixin:
             logger.exception("Background task %s failed", task_id)
             with suppress(Exception):
                 await adapter.send(
-                    chat_id=source.chat_id, content=f"❌ Background task {task_id} failed: {e}",
+                    chat_id=source.chat_id,
+                    content=(f"❌ Your background task \"{_bg_prompt_preview(prompt)}\" failed before finishing. "
+                             "Send /bg again to retry, or /agents to see what is still running."),
                     metadata=_thread_metadata,
                 )
 
@@ -2704,17 +2736,12 @@ class GatewayTurnMixin:
             _gateway_platform_value, _has_platform_display_override, _load_gateway_config,
             _platform_config_key,
         )
-        from gateway.display_config import resolve_display_setting
+        from gateway.display_config import resolve_display_setting, resolve_tool_progress
         from gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
         enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
         adapter = self._adapter_for_source(source)
-        # display.platforms.<platform>.<key> → display.<key> → built-in platform defaults.
-        _display_cfg = user_config.get("display", {})
-        if not isinstance(_display_cfg, dict):
-            _display_cfg = {}
-
         # Tool preview length (0 = no limit) and friendly tool labels (default on), per-platform.
         for _setter, _setting, _default, _cast in (
             ("set_tool_preview_max_len", "tool_preview_length", 0, lambda v: int(v) if v else 0),
@@ -2725,16 +2752,10 @@ class GatewayTurnMixin:
                 _val = resolve_display_setting(user_config, platform_key, _setting, _default)
                 getattr(_agent_display, _setter)(_cast(_val))
 
-        # Tool progress mode; HERMES_TOOL_PROGRESS_MODE wins only when the config never set it.
-        _resolved_tp = resolve_display_setting(user_config, platform_key, "tool_progress")
-        _env_tp = os.getenv("HERMES_TOOL_PROGRESS_MODE")
-        _platform_cfg = (_display_cfg.get("platforms") or {}).get(platform_key) or {}
-        _legacy_tp_overrides = _display_cfg.get("tool_progress_overrides") or {}
-        _tool_progress_configured = "tool_progress" in _display_cfg or any(
-            isinstance(cfg, dict) and key in cfg
-            for cfg, key in ((_platform_cfg, "tool_progress"), (_legacy_tp_overrides, platform_key))
+        # Resolve the mode and its provenance together: null inherits, tier off is not intent.
+        progress_mode, _tool_progress_explicit = resolve_tool_progress(
+            user_config, platform_key, os.getenv("HERMES_TOOL_PROGRESS_MODE"),
         )
-        progress_mode = _env_tp if _env_tp and not _tool_progress_configured else (_resolved_tp or _env_tp or "all")
         # "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
         _generic_status_recent: List[str] = []
@@ -2792,8 +2813,16 @@ class GatewayTurnMixin:
         # native plan/task cards via chat.startStream — the progress queue is needed even though Slack keeps
         # ordinary text tool_progress off by default (requiring both flags would silently leave the native
         # feature inactive).
+        # Cards are still tool progress. Slack's TIER default (``off``) only quiets the text lane so
+        # cards stay on for unconfigured installs, but an operator who WRITES ``tool_progress: off``
+        # (global, platform override, or legacy overrides) has asked for no tool progress at all and
+        # gets no cards either. Every other explicit mode keeps the card lane.
         _native_slack_task_cards = False
-        if source.platform == Platform.SLACK and hasattr(adapter, "native_task_cards_enabled"):
+        if (
+            source.platform == Platform.SLACK
+            and hasattr(adapter, "native_task_cards_enabled")
+            and not (_tool_progress_explicit and progress_mode == "off")
+        ):
             try:
                 _native_slack_task_cards = bool(adapter.native_task_cards_enabled())
             except Exception:
@@ -3271,10 +3300,10 @@ class GatewayTurnMixin:
             return
         try:
             await _warn_adapter.send(
-                source.chat_id, f"⚠️ No activity for {int(worker.agent_warning // 60) or 1} min. "
-                "If the agent does not respond soon, it will be timed out in "
-                f"{int((worker.agent_timeout - worker.agent_warning) // 60) or 1} min. "
-                "You can continue waiting or use /reset.",
+                source.chat_id, f"⚠️ I seem to be stuck (no activity for {int(worker.agent_warning // 60) or 1} min). "
+                "If nothing happens in the next "
+                f"{int((worker.agent_timeout - worker.agent_warning) // 60) or 1} min I'll give up on this task. "
+                "You can keep waiting, send /stop to cancel it, or /new to start a fresh conversation.",
                 metadata=_interim_metadata(_status_thread_metadata),
             )
         except Exception as _warn_err:
@@ -3490,11 +3519,20 @@ class GatewayTurnMixin:
         )
         # Same silence predicate as the normal path, else this branch leaks the literal marker.
         if self._is_intentional_silence(_delivery_result, first_response):
-            logger.info(
-                "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
-                session_key or "?",
-            )
-        elif first_response:
+            if is_machinery_display_kind(turn_ctx.persist_user_display_kind):
+                logger.info(
+                    "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
+                    session_key or "?",
+                )
+                first_response = ""
+            else:
+                logger.warning(
+                    "Queued follow-up for session %s: replacing a human-turn silence marker.",
+                    session_key or "?",
+                )
+                first_response = _UNEXPECTED_SILENCE_REPLY
+                _already_streamed = False
+        if first_response:
             logger.info(
                 "Queued follow-up for session %s: final text delivery confirmed; delivering explicit media before continuing."
                 if _already_streamed else
@@ -3567,6 +3605,7 @@ class GatewayTurnMixin:
         # distinct from the reply anchor above (None in forum topics). Carry it or two chained
         # topic turns with the same text would collide on one obligation id (queued-final-ledger).
         next_inbound_id = None
+        next_display_kind = display_kind_for_event(pending_event)
         # See #60671.
         if pending_event is not None:
             next_source = getattr(pending_event, "source", None) or source
@@ -3639,6 +3678,7 @@ class GatewayTurnMixin:
                 run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
                 event_message_id=next_message_id, inbound_message_id=next_inbound_id,
                 channel_prompt=next_channel_prompt, message_type=next_message_type,
+                persist_user_display_kind=next_display_kind,
             )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(
@@ -3658,7 +3698,11 @@ class GatewayTurnMixin:
         # terminal reply, and is never redelivered. A deeper recursion has already set its own id,
         # so only fill the key while it is still absent: the innermost turn wins.
         if isinstance(merged, dict) and "queued_terminal_inbound_id" not in merged:
-            merged = {**merged, "queued_terminal_inbound_id": next_inbound_id}
+            merged = {
+                **merged,
+                "queued_terminal_inbound_id": next_inbound_id,
+                "queued_terminal_display_kind": next_display_kind,
+            }
         return merged
 
     async def _run_agent_cleanup_turn_tasks(
@@ -3799,9 +3843,11 @@ class GatewayTurnMixin:
                     ok=("Edited streamed message %s for session %s to include plugin-transformed content.", _sc.message_id, _sk),
                     fail_result=None, fail_exc="Failed to edit streamed message for session %s: %s",
                 )
-        elif _sc is not None:
-            # DUPLICATE-RISK DIAGNOSTIC: a stream consumer existed but suppression did NOT fire; log the
-            # decision inputs ("signal never set" vs "ack-pending race").
+        elif _sc is not None and getattr(_sc, "stream_deltas_enabled", True):
+            # DUPLICATE-RISK DIAGNOSTIC: a stream consumer existed but suppression did NOT fire; log
+            # the decision inputs ("signal never set" vs "ack-pending race"). Skipped for consumers
+            # never fed the final's deltas (interim-only wiring, #105341) — they cannot have raced
+            # the normal final send, so the warning would be a guaranteed false positive.
             logger.warning(
                 "Normal final-send NOT suppressed despite active stream consumer for session %s: "
                 "streamed=%s previewed=%s content_delivered=%s transformed=%s final_len=%d — "

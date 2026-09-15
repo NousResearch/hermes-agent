@@ -24,13 +24,16 @@ logger = logging.getLogger("tools.approval")
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result", "reason", "acknowledged")
+    __slots__ = ("event", "data", "result", "reason", "acknowledged", "settle")
 
     def __init__(self, data: dict):
         self.event = threading.Event()
         self.data = dict(data)
         self.data.setdefault("request_id", uuid.uuid4().hex)
         self.acknowledged = False
+        # Surface hook run once when the wait ends by ANY path (answer, timeout, interrupt, /approve from
+        # another client): the tui_gateway withdraws its open server→client request through it.
+        self.settle = None
         self.result: str | None = None  # "once"|"session"|"always"|"deny"
         # Free-text reason from ``/deny <reason>`` so the agent can adapt, not just hear "denied".
         self.reason: str | None = None
@@ -139,13 +142,19 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     with _approval._lock:
         _approval._gateway_queues.setdefault(session_key, []).append(entry)
 
-    def _drop_entry() -> None:
+    def _drop_entry(reason: str) -> None:
         with _approval._lock:
             queue = _approval._gateway_queues.get(session_key, [])
             if entry in queue:
                 queue.remove(entry)
             if not queue:
                 _approval._gateway_queues.pop(session_key, None)
+            settle, entry.settle = entry.settle, None
+        if settle is not None:
+            try:
+                settle(reason)
+            except Exception:
+                logger.debug("approval settle hook failed", exc_info=True)
 
     # Plugins hear about the request before the gateway does (real-time observers).
     _ctx._fire_approval_hook("pre_approval_request", **payload)
@@ -154,7 +163,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         notify_cb(dict(entry.data))
     except Exception as exc:
         logger.warning("Gateway approval notify failed: %s", exc)
-        _drop_entry()
+        _drop_entry("notify_failed")
         _ctx._fire_approval_hook("post_approval_response", **payload, choice="notify_failed")
         return {"resolved": False, "choice": None, "notify_failed": True}
 
@@ -163,5 +172,5 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     if state == "interrupted":
         entry.result = "deny"
         entry.event.set()
-    _drop_entry()
+    _drop_entry("answered" if state == "set" else state)
     return _finish(payload, state != "timeout", entry.result, entry.reason)

@@ -1,4 +1,4 @@
-import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
+import { mediaDisplayLabel, mediaKind, mediaMarkdownHref } from '@/lib/media'
 
 import type { ChatMessage, ChatMessagePart } from './types'
 
@@ -10,7 +10,11 @@ export function reasoningPart(text: string, timestamp?: number): ChatMessagePart
   return { type: 'reasoning', text, ...(timestamp !== undefined ? { timestamp } : {}) }
 }
 
-const MEDIA_LINE_RE = /(^|\n)[\t ]*[`"']?MEDIA:\s*(?<line>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?[\t ]*(\n|$)/g
+// A standalone MEDIA tag owns the rest of its line. Remote filesystem paths
+// commonly contain spaces and agents do not always quote them. Inline tags
+// remain token-bounded via MEDIA_TAG_RE below so surrounding prose is kept.
+const MEDIA_LINE_RE = /(^|\n)[\t ]*(?<wrapper>[`"']?)MEDIA:\s*(?<line>[^\n]+)[\t ]*(\n|$)/g
+const TRAILING_MEDIA_LINE_RE = /(?:^|\n)[\t ]*(?<wrapper>[`"']?)MEDIA:\s*(?<line>[^\n]+)$/
 
 const MEDIA_TAG_RE = /[`"']?MEDIA:\s*(?<inline>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?/g
 
@@ -27,11 +31,19 @@ function mediaLink(value: string): string {
   return `[${mediaDisplayLabel(path)}](${mediaMarkdownHref(path)})`
 }
 
+function standaloneMediaPath(wrapper: string, value: string): string {
+  const trimmed = value.trim()
+
+  return wrapper && trimmed.endsWith(wrapper) ? trimmed.slice(0, -1) : trimmed
+}
+
 export function renderMediaTags(text: string): string {
   return text
     .replace(
       MEDIA_LINE_RE,
-      (_match, lead: string, value: string, trailer: string) => `${lead}${mediaLink(value)}${trailer}`
+      (_match, lead: string, wrapper: string, value: string, trailer: string) => {
+        return `${lead}${mediaLink(standaloneMediaPath(wrapper, value))}${trailer}`
+      }
     )
     .replace(MEDIA_TAG_RE, (_match, value: string) => mediaLink(value))
 }
@@ -293,6 +305,19 @@ export function appendAssistantTextPart(
     delta.includes('MEDIA:') || delta.includes('DIA:') || delta.includes('EDIA:') || delta.includes('IA:')
 
   if (mayContainMedia || part.text.includes('MEDIA:')) {
+    const trailing = part.text.match(TRAILING_MEDIA_LINE_RE)
+
+    const trailingPath = trailing?.groups
+      ? standaloneMediaPath(trailing.groups.wrapper || '', trailing.groups.line || '')
+      : ''
+
+    // A streaming chunk ending mid-path is indistinguishable from a complete
+    // unquoted line. Wait for a recognizable media extension (or a later
+    // newline/final response) before replacing it with immutable Markdown.
+    if (trailingPath && mediaKind(unquoteMediaPath(trailingPath)) === 'file') {
+      return next
+    }
+
     const rendered = renderMediaTags(part.text)
 
     if (rendered !== part.text) {

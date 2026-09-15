@@ -29,6 +29,7 @@ export interface ArtifactLoadResult {
 
 const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(([^)\s]+)\)/g
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g
+const MEDIA_LINE_RE = /(^|\n)[\t ]*(?<wrapper>[`"']?)MEDIA:\s*(?<line>[^\n]+)[\t ]*(\n|$)/g
 const MEDIA_RE = /[`"']?MEDIA:\s*(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?/g
 const URL_RE = /https?:\/\/[^\s<>"')]+/g
 const PATH_RE = /(^|[\s("'`])((?:\/|~[\\/]|\.\.?[\\/]|\\\\)[^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
@@ -73,7 +74,19 @@ function unquoteMediaValue(value: string): string {
 }
 
 function collectMediaValues(text: string, pushValue: (value: string) => void): void {
-  for (const match of text.matchAll(MEDIA_RE)) {
+  const inlineText = text.replace(
+    MEDIA_LINE_RE,
+    (match, _lead: string, wrapper: string, value: string) => {
+      const trimmed = value.trim()
+      const path = wrapper && trimmed.endsWith(wrapper) ? trimmed.slice(0, -1) : trimmed
+
+      pushValue(unquoteMediaValue(path))
+
+      return match.replace(/[^\n]/g, ' ')
+    }
+  )
+
+  for (const match of inlineText.matchAll(MEDIA_RE)) {
     pushValue(unquoteMediaValue(match[1] || ''))
   }
 }

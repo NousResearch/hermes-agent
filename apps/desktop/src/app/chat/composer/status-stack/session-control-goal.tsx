@@ -172,9 +172,12 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
 
   const headerLabel =
     visibleState === 'done'
-      ? `${stateLabel} · ${ctrl.goalDoneTurns(goal.turns_used)}`
-      : goal.max_turns > 0
-        ? `${stateLabel} · ${ctrl.goalActiveTurns(goal.turns_used, goal.max_turns)}`
+      ? `${stateLabel} · ${ctrl.goalDoneTurns(goal.total_turns_used ?? goal.turns_used)}`
+      : (goal.max_total_turns ?? goal.max_turns) > 0
+        ? `${stateLabel} · ${ctrl.goalActiveTurns(
+            goal.total_turns_used ?? goal.turns_used,
+            goal.max_total_turns ?? goal.max_turns
+          )}`
         : goal.turns_used > 0
           ? `${stateLabel} · ${ctrl.goalTurn(goal.turns_used)}`
           : stateLabel
@@ -288,41 +291,49 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
           <div data-slot="session-control-goal">
             <StatusSection
               accessory={
-                <DropdownMenu onOpenChange={setMenuOpen} open={menuOpen}>
-                  <Tip label={ctrl.goalActions}>
-                    <span className="inline-flex">
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          aria-haspopup="menu"
-                          aria-label={ctrl.goalActions}
-                          className="size-6 rounded-md text-muted-foreground/70 hover:text-foreground/90"
-                          disabled={isBusy}
-                          onClick={event => {
-                            // Radix opens pointer interactions from pointerdown. Keyboard,
-                            // assistive-tech, and programmatic clicks have no pointer sequence.
-                            if (event.detail === 0) {
-                              setMenuOpen(true)
-                            }
-                          }}
-                          onKeyDown={e => {
-                            if (e.key === 'F10' && e.shiftKey) {
-                              e.preventDefault()
-                              setMenuOpen(true)
-                            }
-                          }}
-                          size="icon-xs"
-                          type="button"
-                          variant="ghost"
-                        >
-                          <Codicon name="ellipsis" size="0.8rem" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                    </span>
-                  </Tip>
-                  <DropdownMenuContent align="end" className="w-44">
-                    {renderMenuItems(false)}
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                <div className="flex items-center gap-1">
+                  {visibleState === 'paused' && (
+                    <Button disabled={isBusy} onClick={() => void handleAction('goal.resume')} size="xs" type="button">
+                      <Codicon name="play" size="0.8rem" />
+                      {ctrl.resumeGoal}
+                    </Button>
+                  )}
+                  <DropdownMenu onOpenChange={setMenuOpen} open={menuOpen}>
+                    <Tip label={ctrl.goalActions}>
+                      <span className="inline-flex">
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            aria-haspopup="menu"
+                            aria-label={ctrl.goalActions}
+                            className="size-6 rounded-md text-muted-foreground/70 hover:text-foreground/90"
+                            disabled={isBusy}
+                            onClick={event => {
+                              // Radix opens pointer interactions from pointerdown. Keyboard,
+                              // assistive-tech, and programmatic clicks have no pointer sequence.
+                              if (event.detail === 0) {
+                                setMenuOpen(true)
+                              }
+                            }}
+                            onKeyDown={e => {
+                              if (e.key === 'F10' && e.shiftKey) {
+                                e.preventDefault()
+                                setMenuOpen(true)
+                              }
+                            }}
+                            size="icon-xs"
+                            type="button"
+                            variant="ghost"
+                          >
+                            <Codicon name="ellipsis" size="0.8rem" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                      </span>
+                    </Tip>
+                    <DropdownMenuContent align="end" className="w-44">
+                      {renderMenuItems(false)}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
               }
               icon={<Codicon className={iconClass} name="target" size="0.8rem" />}
               label={headerLabel}

@@ -174,3 +174,40 @@ async def test_goal_verdict_budget_exhausted_sends_pause(hermes_home):
     assert not adapter._pending_messages
 
 
+@pytest.mark.asyncio
+async def test_goal_progress_review_extends_and_enqueues_without_manual_resume(hermes_home):
+    """The gateway consumes the shared positive checkpoint decision in the same session."""
+    runner, adapter, session_entry, src = _make_runner_with_adapter()
+
+    from hermes_cli.goals import GoalManager, save_goal
+
+    mgr = GoalManager(
+        session_entry.session_id, default_max_turns=2, default_max_total_turns=4,
+    )
+    state = mgr.set("finish the integration", max_turns=2, max_total_turns=4)
+    state.turns_used = 1
+    state.total_turns_used = 1
+    save_goal(session_entry.session_id, state)
+
+    with patch(
+        "hermes_cli.goals.judge_goal",
+        return_value=("continue", "work remains", False, None, False),
+    ), patch(
+        "hermes_cli.goals.review_goal_progress",
+        return_value=("progress", "integration tests advanced", False),
+    ):
+        await runner._post_turn_goal_continuation(
+            session_entry=session_entry,
+            source=src,
+            final_response="implemented the next integration step",
+        )
+        await _drain_until(lambda: adapter.sends and adapter._pending_messages)
+
+    assert len(adapter.sends) == 1
+    assert "budget extended" in adapter.sends[0]["content"].lower()
+    assert adapter._pending_messages
+    reloaded = GoalManager(session_entry.session_id).state
+    assert reloaded.status == "active"
+    assert reloaded.turns_used == 0
+    assert reloaded.total_turns_used == 2
+

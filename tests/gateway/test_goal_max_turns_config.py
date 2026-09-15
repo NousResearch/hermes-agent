@@ -56,7 +56,9 @@ async def test_gateway_goal_uses_goals_max_turns_from_full_config(tmp_path, monk
     """Gateway /goal should honor top-level goals.max_turns from config.yaml."""
     home = tmp_path / ".hermes"
     home.mkdir()
-    (home / "config.yaml").write_text("goals:\n  max_turns: 7\n", encoding="utf-8")
+    (home / "config.yaml").write_text(
+        "goals:\n  max_turns: 7\n  max_total_turns: 21\n", encoding="utf-8"
+    )
     monkeypatch.setenv("HERMES_HOME", str(home))
     goals._DB_CACHE.clear()
     # Pre-warm from sync context: the /goal handler runs on the event loop,
@@ -75,6 +77,7 @@ async def test_gateway_goal_uses_goals_max_turns_from_full_config(tmp_path, monk
         state = goals.GoalManager("sid-gateway-goal-config").state
         assert state is not None
         assert state.max_turns == 7
+        assert state.max_total_turns == 21
     finally:
         goals._DB_CACHE.clear()
 

@@ -193,13 +193,21 @@ If the judge errors (network blip, malformed response, unavailable aux client), 
 
 ### Turn budget
 
-Default is 20 continuation turns (`goals.max_turns` in `config.yaml`). When the budget is hit, Hermes auto-pauses and tells you exactly how to proceed:
+Default is a 20-turn window (`goals.max_turns` in `config.yaml`). With no overall cap configured,
+Hermes auto-pauses when that window is used and tells you exactly how to proceed:
 
 ```
 ⏸ Goal paused — 20/20 turns used. Use /goal resume to keep going, or /goal clear to stop.
 ```
 
-`/goal resume` resets the counter to zero, so you can keep going in measured chunks.
+Set `goals.max_total_turns` to a larger number to opt into progress-based continuation. At each
+window boundary Hermes reviews a bounded tail of recent responses: verified completion marks the
+goal done, meaningful concrete progress grants another window in the same session, and a stalled,
+blocked, or failed review pauses with its reason. Cumulative use is shown alongside the current
+window and never exceeds the approved cap.
+
+`/goal resume` resets the window counter while retaining cumulative usage. If the overall cap was
+already reached, the explicit resume approves exactly one additional window.
 
 ### User messages always preempt
 
@@ -223,10 +231,11 @@ Add to `~/.hermes/config.yaml`:
 
 ```yaml
 goals:
-  # Max continuation turns before Hermes auto-pauses and asks you to
-  # /goal resume. Default 20. Lower this if you want tighter loops;
-  # raise it for long-running refactors.
+  # Size of each continuation window. Default 20.
   max_turns: 20
+  # Optional user-approved cumulative cap. Zero disables automatic
+  # progress extensions and preserves pause-at-window behavior.
+  max_total_turns: 100
 ```
 
 ### Choosing the judge model

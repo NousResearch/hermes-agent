@@ -36,13 +36,15 @@ export interface SessionControlGoal {
   contract: SessionControlGoalContract
   gates: SessionControlGate[]
   last_reason?: string
-  last_verdict?: 'blocked' | 'continue' | 'done' | 'skipped' | 'wait'
+  last_verdict?: 'blocked' | 'continue' | 'done' | 'progress' | 'skipped' | 'stalled' | 'wait'
   max_turns: number
+  max_total_turns?: number
   paused_reason?: string
   status: SessionControlGoalStatus
   subgoals: string[]
   title: string
   turns_used: number
+  total_turns_used?: number
   updated_at?: number
   wait_barrier?: SessionControlWaitBarrier
   created_at?: number
@@ -129,7 +131,9 @@ const GOAL_VERDICTS = new Set<NonNullable<SessionControlGoal['last_verdict']>>([
   'blocked',
   'continue',
   'done',
+  'progress',
   'skipped',
+  'stalled',
   'wait'
 ])
 
@@ -270,7 +274,17 @@ function parseWaitBarrier(value: unknown): SessionControlWaitBarrier | null {
 
 function parseGoal(value: unknown): SessionControlGoal | null {
   const required = ['title', 'status', 'turns_used', 'max_turns', 'contract', 'subgoals', 'gates']
-  const optional = ['created_at', 'updated_at', 'paused_reason', 'last_verdict', 'last_reason', 'wait_barrier']
+
+  const optional = [
+    'created_at',
+    'updated_at',
+    'paused_reason',
+    'last_verdict',
+    'last_reason',
+    'wait_barrier',
+    'total_turns_used',
+    'max_total_turns'
+  ]
 
   if (!isRecord(value) || !hasExactFields(value, required, optional)) {
     return null
@@ -282,6 +296,8 @@ function parseGoal(value: unknown): SessionControlGoal | null {
     !GOAL_STATUSES.has(value.status as SessionControlGoalStatus) ||
     !isInteger(value.turns_used) ||
     !isInteger(value.max_turns) ||
+    (hasOwn(value, 'total_turns_used') && !isInteger(value.total_turns_used)) ||
+    (hasOwn(value, 'max_total_turns') && !isInteger(value.max_total_turns)) ||
     !Array.isArray(value.subgoals) ||
     !value.subgoals.every(subgoal => typeof subgoal === 'string') ||
     !Array.isArray(value.gates) ||
@@ -317,6 +333,14 @@ function parseGoal(value: unknown): SessionControlGoal | null {
 
   if (hasOwn(value, 'created_at')) {
     goal.created_at = value.created_at as number
+  }
+
+  if (hasOwn(value, 'total_turns_used')) {
+    goal.total_turns_used = value.total_turns_used as number
+  }
+
+  if (hasOwn(value, 'max_total_turns')) {
+    goal.max_total_turns = value.max_total_turns as number
   }
 
   if (hasOwn(value, 'updated_at')) {

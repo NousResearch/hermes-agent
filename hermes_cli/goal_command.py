@@ -138,6 +138,9 @@ def _set(mgr, arg, *, drafting, last_user_message, render, progress):
     state = mgr.set(headline or arg, contract=contract)
     output = render("gateway.goal.set", "⊙ Goal set ({budget}-turn budget): {goal}",
                     budget=state.max_turns, goal=state.goal)
+    if state.max_total_turns > state.max_turns:
+        output += (f"\nProgress checkpoints may extend it in {state.max_turns}-turn windows "
+                   f"up to the approved {state.max_total_turns}-turn overall cap.")
     if state.has_contract():
         label = "Drafted completion contract:" if drafting else "Completion contract:"
         output += f"\n{label}\n{state.contract.render_block()}"

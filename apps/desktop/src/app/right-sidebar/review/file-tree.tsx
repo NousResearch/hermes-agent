@@ -22,6 +22,7 @@ import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import {
   $renamingPath,
+  copyFileContent,
   copyFilePath,
   downloadRemoteFile,
   revealFile,
@@ -521,6 +522,7 @@ function ReviewFileContextMenu({
             {m.copyRelativePath}
           </ContextMenuItem>
         )}
+        <ContextMenuItem onSelect={() => void copyFileContent(dragPath)}>{m.copyContent}</ContextMenuItem>
         {shouldOfferRemoteFileDownload(false) && (
           <>
             <ContextMenuSeparator />

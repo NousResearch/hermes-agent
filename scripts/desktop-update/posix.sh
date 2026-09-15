@@ -675,12 +675,40 @@ if [ "$HANDOFF_DAEMONIZED" -ne 1 ]; then
   # as a flag. Appending here previously left HANDOFF_DAEMONIZED unset on
   # every re-exec, causing this block to re-fire forever (self-exec loop,
   # unbounded argv growth) whenever relaunch args were present.
+  # __PYVENV_LAUNCHER__ (and the PYTHONHOME/PYTHONPATH/PYTHONSTARTUP prefix-hijack family) MUST
+  # be dropped from the re-exec'd env. macOS's /usr/bin/python3 SETS __PYVENV_LAUNCHER__ to
+  # itself, and execve'd children inherit it; a venv interpreter that inherits it resolves its
+  # base prefix to /install and dies at init:
+  #   Fatal Python error: init_fs_encoding ... No module named 'encodings'
+  #   stdlib dir = '/install/lib/python3.11'
+  # Because the daemonizer runs /usr/bin/python3 -- the one process that creates the variable --
+  # every child of the daemonized orchestrator inherits it: venv/bin/hermes (shebang python3), the
+  # `hermes update` it runs, and the retry. The hand-off therefore always failed even though the
+  # venv was healthy and a terminal `hermes update` worked. The daemonizer is the only place that
+  # can fix this: the failure is invisible from inside the launcher. Do NOT re-anchor the venv --
+  # the interpreter is fine, the ENV is not.
   /usr/bin/nohup /usr/bin/python3 -c '
 import os, sys
 env = os.environ.copy()
 os.setsid()
+for _k in ("__PYVENV_LAUNCHER__", "PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP"):
+    env.pop(_k, None)
 os.execve("/bin/bash", ["/bin/bash", sys.argv[1], *sys.argv[2:]], env)
 ' "$SCRIPT_DIR/posix.sh" --daemonized "${ORIGINAL_ARGS[@]}" >/dev/null 2>&1 &
+  exit 0
+fi
+
+# Self-test: report the interpreter-poisoning env this daemonized shell inherited. The
+# __PYVENV_LAUNCHER__ regression is invisible from inside the launcher (the launcher itself runs
+# /usr/bin/python3, which is where the variable comes from) — only the re-exec'd child can see it.
+# The daemonizer sends this child's stdout to /dev/null, so the report goes to the file named by
+# HERMES_SELFTEST_PYVENV_ENV. tests/scripts/desktop_update/test_desktop_update_pyvenv_env.py
+# drives this through the REAL hand-off entry point.
+if [ -n "${HERMES_SELFTEST_PYVENV_ENV:-}" ]; then
+  trap - EXIT
+  printf 'launcher=%s\npythonhome=%s\npythonpath=%s\n' \
+    "${__PYVENV_LAUNCHER__-<unset>}" "${PYTHONHOME-<unset>}" "${PYTHONPATH-<unset>}" \
+    > "$HERMES_SELFTEST_PYVENV_ENV" 2>/dev/null || true
   exit 0
 fi
 

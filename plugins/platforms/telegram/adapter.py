@@ -1953,6 +1953,21 @@ class TelegramAdapter(BasePlatformAdapter):
         cap) up to MAX_NETWORK_RETRIES, then retryable-fatal so the supervisor restarts the gateway."""
         if self._teardown_started or self.has_fatal_error:
             return
+        # A TCP connect timeout invalidates the adapter's complete network path after a route change. Do not
+        # reuse the existing Application/request pools: handing off the retryable fatal lets the gateway
+        # create a fresh adapter, which resets both pools and re-runs fallback-path discovery.
+        if self._looks_like_connect_timeout(error):
+            message = (
+                "Telegram polling could not establish a fresh TCP connection; "
+                "the adapter must be rebuilt before retrying.")
+            await self._go_fatal_network(
+                message,
+                "[%s] %s Last error: %s",
+                self.name,
+                message,
+                _redact_telegram_error_text(error),
+            )
+            return
         MAX_NETWORK_RETRIES = 10
         BASE_DELAY = 5
         MAX_DELAY = 60

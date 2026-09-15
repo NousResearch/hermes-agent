@@ -345,22 +345,27 @@ def _kill_stale_dashboard_processes(
     # Snapshot systemd unit/cgroup and argv BEFORE killing (the cgroup dies with the process).
     pid_cgroup: dict[int, str | None] = {}
     pid_service: dict[int, str | None] = {}
-    pid_launchd: dict[int, tuple[str, str]] = {}
+    pid_launchd: dict[int, tuple[str, str, int | None]] = {}
     pid_cmdline: dict[int, list[str]] = {}
     pid_home: dict[int, str | None] = {}
+    # macOS: a backend supervised by a launchd job (LaunchAgent / LaunchDaemon) must come back
+    # through launchd, never as a detached argv respawn — the respawn holds the job's port, the
+    # job then fails every KeepAlive restart with "port already in use", and the running backend
+    # is left unsupervised. Snapshot the loaded jobs once, before the kill; ``--stop`` reads them
+    # too, so it can say that a KeepAlive job will undo the stop.
+    launchd_jobs = _dash._loaded_launchd_backend_jobs() if sys.platform != "win32" else []
+
+    def _launchd_owner(pid: int, cmdline: list[str] | None):
+        return _dash._launchd_job_owning_backend(pid, cmdline, launchd_jobs, ancestors=_process_ancestors(pid))
+
     if restart_managed and sys.platform != "win32":
-        # macOS: a backend supervised by a launchd job (LaunchAgent / LaunchDaemon) must come back
-        # through launchd, never as a detached argv respawn — the respawn holds the job's port, the
-        # job then fails every KeepAlive restart with "port already in use", and the running
-        # backend is left unsupervised. Snapshot the loaded jobs once, before the kill.
-        launchd_jobs = _dash._loaded_launchd_backend_jobs()
         for pid in pids:
             pid_cgroup[pid] = _dash._get_pid_cgroup_path(pid)
             pid_service[pid] = _dash._get_systemd_service_for_pid(pid)
             if pid_service[pid]:
                 continue
             cmdline = _dash._dashboard_cmdline_for_pid(pid)
-            if launchd_jobs and (job := _dash._launchd_job_owning_backend(pid, cmdline, launchd_jobs)):
+            if launchd_jobs and (job := _launchd_owner(pid, cmdline)):
                 pid_launchd[pid] = job
             elif cmdline:
                 # Manual process: exact argv + HERMES_HOME for the respawn and its profile cap.
@@ -374,6 +379,10 @@ def _kill_stale_dashboard_processes(
                     not in already_restarted_units]
             if not pids:
                 return _empty_result()
+    elif launchd_jobs:
+        for pid in pids:
+            if job := _launchd_owner(pid, _dash._dashboard_cmdline_for_pid(pid)):
+                pid_launchd[pid] = job
     print(f"\n⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
     killed: list[int] = []
     failed: list[tuple[int, str]] = []
@@ -387,7 +396,12 @@ def _kill_stale_dashboard_processes(
             killed, pid_service, pid_cgroup, pid_cmdline, pid_home, pid_launchd=pid_launchd)
     else:
         unrecovered = list(killed)
-        if killed:
+        # A stopped launchd job with KeepAlive restarts itself: say so instead of a misleading
+        # "restart it yourself" hint, and give the command that actually keeps it down.
+        for target in sorted({f"{d}/{l}" for p in killed if (j := pid_launchd.get(p)) for d, l, _ in (j,)}):
+            print(f"  ⚠ PID(s) supervised by launchd job {target}: a KeepAlive job restarts itself.\n"
+                  f"    To keep it down: launchctl bootout {target}")
+        if any(p not in pid_launchd for p in killed):
             print("  Restart the dashboard when you're ready:\n    hermes dashboard --port <port>")
     return {"matched": list(pids), "killed": list(killed), "failed": list(failed),
             "unrecovered": list(unrecovered)}
@@ -396,7 +410,7 @@ def _kill_stale_dashboard_processes(
 def _restart_killed_backends(
     killed: list[int], pid_service: dict[int, str | None], pid_cgroup: dict[int, str | None],
     pid_cmdline: dict[int, list[str]], pid_home: dict[int, str | None], *,
-    pid_launchd: dict[int, tuple[str, str]] | None = None) -> list[int]:
+    pid_launchd: dict[int, tuple[str, str, int | None]] | None = None) -> list[int]:
     """Update path: restart systemd units, kickstart launchd jobs (macOS), respawn manual argv
     (detached, headless, logged to logs/dashboard-restart.log; one per profile, no ``--port 0``).
     Returns PIDs not brought back."""
@@ -422,17 +436,19 @@ def _restart_killed_backends(
                 failed_restarts.append((svc_name, "systemctl restart returned non-zero"))
                 unrecovered.append(pid)
         elif launchd_job:
-            # launchd owns the backend: the job brings it back (KeepAlive, or the kickstart below);
-            # an argv respawn would sit on the job's port and leave it failing forever.
-            domain, label = launchd_job
+            # launchd owns the backend: the job brings it back (KeepAlive, or the kickstart below),
+            # and success means launchd reports a fresh supervised PID — an argv respawn would sit
+            # on the job's port and leave it failing forever.
+            domain, label, old_pid = launchd_job
             target = f"{domain}/{label}"
             if target in seen_services:
                 continue
             seen_services.add(target)
-            if _dash._try_kickstart_launchd_job(domain, label):
+            if _dash._restart_launchd_job(domain, label, old_pid):
                 print(f"    ✓ restarted launchd job {target}")
             else:
-                failed_restarts.append((target, f"launchctl kickstart failed; run: launchctl kickstart -k {target}"))
+                failed_restarts.append(
+                    (target, f"launchd is not supervising a fresh process; run: launchctl kickstart -k {target}"))
                 unrecovered.append(pid)
         elif pid in pid_cmdline:
             respawn_candidates.append((pid, pid_cmdline[pid], pid_home.get(pid)))
@@ -538,6 +554,19 @@ def _flag_value(tokens: list[str], flag: str) -> str | None:
         if tok.startswith(flag + "="):
             return tok.partition("=")[2]
     return None
+
+
+def _process_ancestors(pid: int, *, max_depth: int = 8) -> list[int]:
+    """Parent chain of *pid* (nearest first), stopping at init / a lookup failure / *max_depth*."""
+    chain: list[int] = []
+    current = pid
+    while len(chain) < max_depth:
+        parent = _process_ppid(current)
+        if parent is None or parent <= 1 or parent == pid or parent in chain:
+            break
+        chain.append(parent)
+        current = parent
+    return chain
 
 
 def _process_ppid(pid: int) -> int | None:

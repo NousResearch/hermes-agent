@@ -270,23 +270,32 @@ def _loaded_launchd_backend_jobs(
 
 def _launchd_job_owning_backend(
     pid: int, cmdline: list[str] | None, jobs: list[tuple[str, str, list[str], int | None]],
-) -> tuple[str, str] | None:
-    """``(domain, label)`` of the loaded launchd job that owns *pid*: launchd reports *pid* as the
-    job's live process, OR the process runs the job's exact ``ProgramArguments`` — a detached copy of
-    a supervised backend (an earlier respawn) holds the port the job needs, and respawning it again
-    would only re-create that conflict. None when no loaded job claims the process."""
+    ancestors: "list[int] | tuple[int, ...]" = (),
+) -> tuple[str, str, int | None] | None:
+    """``(domain, label, live_pid)`` of the loaded launchd job that owns *pid*: launchd reports *pid*
+    (or one of its *ancestors* — a plist may wrap the backend in ``/bin/sh -c …`` without ``exec``)
+    as the job's live process, OR the process runs the job's exact ``ProgramArguments`` — a detached
+    copy of a supervised backend (an earlier respawn) holds the port the job needs, and respawning it
+    again would only re-create that conflict. None when no loaded job claims the process."""
     for domain, label, argv, live_pid in jobs:
-        if live_pid == pid or (cmdline is not None and list(cmdline) == argv):
-            return (domain, label)
+        if live_pid is not None and (live_pid == pid or live_pid in ancestors):
+            return (domain, label, live_pid)
+        if cmdline is not None and list(cmdline) == argv:
+            return (domain, label, live_pid)
     return None
 
 
-def _try_kickstart_launchd_job(domain: str, label: str) -> bool:
-    """``launchctl kickstart <domain>/<label>`` (no ``-k``: the process was already stopped, and a
-    KeepAlive job may have respawned it — a kill would take that fresh process down). True on
-    success; False on a non-zero exit or when launchctl is unavailable / wedged."""
+def _restart_launchd_job(domain: str, label: str, old_pid: int | None, *, timeout: float = 15.0) -> bool:
+    """Bring a launchd-supervised backend back after its process was stopped: ``launchctl kickstart
+    <domain>/<label>`` (no ``-k`` — a KeepAlive job may already have respawned it, and a kill would
+    take that fresh process down), then require launchd to report a live PID other than *old_pid*
+    within *timeout*. A kickstart that returns 0 only means "restart requested"; a job that is loaded
+    but never comes back on a fresh PID is a failure the operator must hear about."""
+    from hermes_cli.gateway import _wait_for_launchd_service_pid
     try:
-        return _run_probe(["launchctl", "kickstart", f"{domain}/{label}"], timeout=30).returncode == 0
+        if _run_probe(["launchctl", "kickstart", f"{domain}/{label}"], timeout=30).returncode != 0:
+            return False
+        return _wait_for_launchd_service_pid(label, old_pid=old_pid, timeout=timeout, domain=domain)
     except _SYSTEMCTL_ERRORS:
         return False
 

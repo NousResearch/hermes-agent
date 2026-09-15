@@ -169,14 +169,44 @@ class TestUnreadableDescriptorsWithReadableArgv:
 
         assert self._gaps(db_path) == [(-1, "open-file scan incomplete: 1 process(es) could not be inspected")]
 
-    def test_non_hermes_argv_on_another_homes_db_is_proven_quiet(self, tmp_path, monkeypatch):
-        """The argv positively places the process on ANOTHER home's database: no gap, no holder."""
+    def test_hermes_argv_on_another_homes_db_is_proven_quiet(self, tmp_path, monkeypatch):
+        """The exemption this rule exists for (#92401): a SECOND HERMES instance, positively placed
+        on another home's database, is neither a holder nor a gap."""
+        db_path = tmp_path / "state.db"
+        db_path.write_bytes(b"")
+        _install_fake_proc(monkeypatch, tmp_path, unreadable_pids=(222,))
+        _install_fake_argv(monkeypatch, {222: ["hermes", "--db=/home/demo/.hermes/state.db", "gateway"]})
+
+        assert self._gaps(db_path) == []
+
+    def test_non_hermes_argv_on_another_homes_db_is_still_a_scan_gap(self, tmp_path, monkeypatch):
+        """#104714 review round 5: the other-home exemption is for a second Hermes instance, and
+        applying it to ANY argv silently dropped an external process whose descriptors were never
+        read. Naming another home does not tell us what this process has open."""
         db_path = tmp_path / "state.db"
         db_path.write_bytes(b"")
         _install_fake_proc(monkeypatch, tmp_path, unreadable_pids=(222,))
         _install_fake_argv(monkeypatch, {222: [t.format(db="/home/demo/.hermes/state.db") for t in self.SQLITE_BACKUP]})
 
-        assert self._gaps(db_path) == []
+        assert self._gaps(db_path) == [(-1, "open-file scan incomplete: 1 process(es) could not be inspected")]
+
+    def test_external_process_attached_to_both_homes_is_a_scan_gap(self, tmp_path, monkeypatch):
+        """The reported repro: one sqlite3 naming ANOTHER home's database on argv while ATTACHing
+        OURS inside the SQL string. Only tokens starting with "/" are read as paths, so the
+        reference to ours never registers and the other-home token used to exempt the whole
+        process — doctor then reported nothing held this database and sent the operator into the
+        offline PRAGMA while it was still attached."""
+        db_path = tmp_path / "state.db"
+        db_path.write_bytes(b"")
+        _install_fake_proc(monkeypatch, tmp_path, unreadable_pids=(222,))
+        _install_fake_argv(monkeypatch, {222: [
+            "/usr/bin/sqlite3",
+            "/home/demo/.hermes/state.db",
+            f"ATTACH DATABASE '{db_path}' AS current_profile",
+        ]})
+
+        assert hermes_state_holders.foreign_state_db_holders(db_path) == []
+        assert self._gaps(db_path) == [(-1, "open-file scan incomplete: 1 process(es) could not be inspected")]
 
     def test_hermes_argv_on_our_home_is_still_a_holder_not_a_gap(self, tmp_path, monkeypatch):
         db_path = tmp_path / "state.db"

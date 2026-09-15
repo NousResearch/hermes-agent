@@ -232,10 +232,17 @@ def foreign_state_db_holders(db_path: Path, *, include_scan_gaps: bool = False) 
         process holds this database" over a holder it never inspected)."""
         nonlocal uninspectable
         argv = _read_proc_argv(pid)
-        if argv is not None and _argv_scoped_to_other_home(argv, db_path):
-            return None
+        # The other-home exemption is ONLY for a second HERMES instance, so it is applied
+        # inside the Hermes branch. Applied to any argv it silently drops an external process
+        # that merely MENTIONS another home -- and mentioning one is ordinary for the exact
+        # tools that hold this database: `sqlite3 /home/demo/.hermes/state.db "ATTACH DATABASE
+        # '<ours>' AS current_profile"` names both homes, and only tokens starting with "/" are
+        # read as paths, so the reference to ours inside the SQL string never registers. That
+        # process had its descriptors go unread, so it must stay a scan gap; dropping it let
+        # doctor report "no other process holds this database" and send the operator into the
+        # offline PRAGMA while it still had ours attached (#104714 review, round 5).
         if argv is not None and _looks_like_hermes(argv):
-            return argv
+            return None if _argv_scoped_to_other_home(argv, db_path) else argv
         uninspectable += 1
         return None
 

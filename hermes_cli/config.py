@@ -945,13 +945,23 @@ _ENV_CONFIG_KEYS = frozenset({
     'GITHUB_TOKEN', 'HONCHO_API_KEY'})
 
 
+def _is_platform_env_config_key(key: str) -> bool:
+    """Return whether a platform setup value is owned by ``.env``."""
+    if "." in key:
+        return False
+    from hermes_cli.setup_hidden_env import is_setup_hidden_env
+
+    return is_setup_hidden_env(key.upper())
+
+
 def _is_env_config_key(key: str) -> bool:
     """Return whether `hermes config set` routes this key to .env."""
     if "." in key:
         return False
     key_upper = key.upper()
     return (
-        key_upper in _ENV_CONFIG_KEYS
+        _is_platform_env_config_key(key)
+        or key_upper in _ENV_CONFIG_KEYS
         or key_upper.endswith(('_API_KEY', '_TOKEN', '_SECRET'))
         or key_upper.startswith('TERMINAL_SSH'))
 
@@ -3465,6 +3475,10 @@ def set_config_value(key: str, value: str, force: bool = False):
             "(leading, trailing, or doubled '.').")
     _exit_if_key_managed(key, "set")
     if _is_env_config_key(key):
+        if _is_platform_env_config_key(key):
+            save_env_value(key.upper(), value)
+            print(f"✓ Set {key} in {get_env_path()}")
+            return
         # Unified lifecycle: also rotates any config.yaml mirror of the old value.
         from hermes_cli.credential_lifecycle import save_provider_env_credential
 
@@ -3558,6 +3572,11 @@ def unset_config_value(key: str):
     _exit_if_key_managed(key, "unset")
 
     if _is_env_config_key(key):
+        if _is_platform_env_config_key(key):
+            if not remove_env_value(key.upper()):
+                _exit_invalid(f"Config key not set: {key}")
+            print(f"✓ Unset {key} from {get_env_path()}")
+            return
         # Unified lifecycle: also prunes env-seeded credential_pool entries and model-cache rows so
         # the provider is fully removed instead of left resurrectable.
         # See #51071.

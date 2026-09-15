@@ -371,12 +371,14 @@ def _is_aws_sdk(pconfig) -> bool:
     return bool(pconfig) and getattr(pconfig, "auth_type", "") == "aws_sdk"
 
 
-def _live_or_curated_ids(slug: str, curated: dict, *fallback_keys: str, merge_models_dev: bool = True) -> list:
+def _live_or_curated_ids(slug: str, curated: dict, *fallback_keys: str, merge_models_dev: bool = True,
+                         allow_curated: bool = True) -> list:
     """``cached_provider_model_ids`` (the SAME disk-cached list ``hermes model`` builds), falling
-    back to the curated list (merged with models.dev for preferred providers) when live is empty."""
+    back to the curated list (merged with models.dev for preferred providers) when live is empty.
+    ``allow_curated=False`` keeps an empty live catalog empty (see ``_aws_live_or_curated_ids``)."""
     from hermes_cli.models import _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids
     model_ids = cached_provider_model_ids(slug)
-    if not model_ids:
+    if not model_ids and allow_curated:
         model_ids = _first_curated(curated, fallback_keys or (slug,))
         if merge_models_dev and slug in _MODELS_DEV_PREFERRED:
             model_ids = _merge_with_models_dev(slug, model_ids)
@@ -393,13 +395,29 @@ def _first_curated(curated: dict, keys) -> list:
     return model_ids
 
 
+def _bedrock_allowlist_hides_curated(slug: str) -> bool:
+    """True when ``bedrock.discovery.model_allowlist`` is set. The curated us.* list is then not a
+    safe fallback: it names the very ids the allowlist exists to hide. Imported lazily so this
+    module keeps no import-time dependency on the AWS adapter."""
+    if str(slug or "").strip().lower() != "bedrock":
+        return False
+    try:
+        from agent.bedrock_adapter import configured_bedrock_model_allowlist
+        return bool(configured_bedrock_model_allowlist())
+    except Exception:
+        return False
+
+
 def _aws_live_or_curated_ids(slug: str, curated: dict, *fallback_keys: str) -> list:
     """Bedrock: live discovery reflects the active region (eu.*, ap.*) rather than the static
-    us.* list; any failure falls back to the curated list."""
+    us.* list; any failure falls back to the curated list — unless an allowlist is in force, in
+    which case an empty catalog is the honest answer and the row is left with no models."""
+    hide_curated = _bedrock_allowlist_hides_curated(slug)
     try:
-        return _live_or_curated_ids(slug, curated, *fallback_keys, merge_models_dev=False) or []
+        return _live_or_curated_ids(slug, curated, *fallback_keys, merge_models_dev=False,
+                                    allow_curated=not hide_curated) or []
     except Exception:
-        return _first_curated(curated, fallback_keys or (slug,)) or []
+        return [] if hide_curated else (_first_curated(curated, fallback_keys or (slug,)) or [])
 
 
 def _nous_picker_model_ids(curated: dict, force_fresh_nous_tier: bool) -> list:

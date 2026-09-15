@@ -213,6 +213,7 @@ hermes skills uninstall <skill-name>
 | [**canvas**](/docs/user-guide/skills/optional/productivity/productivity-canvas) | Fetch Canvas LMS courses and assignments via API token. |
 | [**decision-questionnaire**](/docs/user-guide/skills/optional/productivity/productivity-decision-questionnaire) | Turn an unanswerable decision into a questionnaire doc. |
 | [**here-now**](/docs/user-guide/skills/optional/productivity/productivity-here-now) | Publish sites to &#123;slug&#125;.here.now and store files in Drives. |
+| [**live-dashboard**](/docs/user-guide/skills/optional/productivity/productivity-live-dashboard) | Build self-updating dashboards from live sources. |
 | [**memento-flashcards**](/docs/user-guide/skills/optional/productivity/productivity-memento-flashcards) | Spaced-repetition flashcards: create, review, quiz, export. |
 | [**property-listings**](/docs/user-guide/skills/optional/productivity/productivity-property-listings) | Present property and rental listings as desktop cards. |
 | [**shop**](/docs/user-guide/skills/optional/productivity/productivity-shop) | Shop catalog search, checkout, order tracking, returns. |

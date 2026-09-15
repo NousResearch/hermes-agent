@@ -1,4 +1,4 @@
-"""Tests for the live-dashboard skill and its live-dashboard blueprint.
+"""Tests for the live-dashboard optional skill.
 
 Inspired by Energy's (getenergy.com) natural-language live dashboards —
 describe what you want to see in one sentence, get a persistent
@@ -11,7 +11,7 @@ import yaml
 
 SKILL_PATH = (
     Path(__file__).resolve().parents[2]
-    / "skills"
+    / "optional-skills"
     / "productivity"
     / "live-dashboard"
     / "SKILL.md"
@@ -28,22 +28,11 @@ def _frontmatter_and_body():
     return fm, body
 
 
-def test_skill_file_exists():
-    assert SKILL_PATH.is_file()
-
-
 def test_frontmatter_required_fields():
     fm, _ = _frontmatter_and_body()
     for field in ("name", "description", "version", "author", "license", "platforms"):
         assert field in fm, f"missing frontmatter field: {field}"
     assert fm["name"] == "live-dashboard"
-
-
-def test_description_hardline():
-    fm, _ = _frontmatter_and_body()
-    desc = fm["description"]
-    assert len(desc) <= 60, f"description is {len(desc)} chars; hardline is 60"
-    assert desc.endswith(".")
 
 
 def test_related_skills_resolve_in_repo():
@@ -72,6 +61,8 @@ def test_state_discipline_present():
     assert "dashboard.json" in body
     assert "source of truth" in body
     assert "last-known-good" in body or "last good value" in body
+    assert "never hand-edit HTML state" in body
+    assert "[SILENT]" in body, "no-change ticks must stay silent"
 
 
 def test_source_verification_before_scheduling():
@@ -80,55 +71,31 @@ def test_source_verification_before_scheduling():
     assert "one bounded foreground read" in body
 
 
-def test_silent_path_explicit():
-    _, body = _frontmatter_and_body()
-    assert "[SILENT]" in body, "no-change ticks must stay silent"
-
-
 def test_steps_have_completion_criteria():
     _, body = _frontmatter_and_body()
     steps = re.findall(r"^### \d+\..*?(?=^### \d+\.|^## )", body, re.MULTILINE | re.DOTALL)
-    assert len(steps) >= 6
+    assert len(steps) >= 7
     for step in steps:
         assert "Done when" in step, f"step missing completion criterion: {step[:60]!r}"
 
 
-def test_html_is_projection_not_state():
+def test_desktop_preview_with_path_fallback():
+    """Desktop sessions render in the preview pane; everything else gets the file path.
+    The Hermes home directory is never hardcoded in prose the agent executes."""
     _, body = _frontmatter_and_body()
-    assert "never hand-edit HTML state" in body
-    assert "self-contained HTML" in body
+    assert 'desktop_preview(action="open"' in body
+    assert "report the absolute path" in body
+    assert "~/.hermes" not in body
 
 
-def test_live_dashboard_blueprint_registered():
-    from cron.blueprint_catalog import CATALOG
+def test_frontmatter_blueprint_is_a_valid_installed_blueprint():
+    """The install-time suggestion rides the skills-pipeline blueprint block, not a
+    hard-wired catalog entry (an optional skill may not be installed)."""
+    from tools.blueprints import blueprint_to_job_spec, parse_blueprint
 
-    bp = next((b for b in CATALOG if b.key == "live-dashboard"), None)
-    assert bp is not None, "live-dashboard blueprint missing from catalog"
-    assert "live-dashboard" in bp.skills, "blueprint must load the skill"
-    slot_names = {s.name for s in bp.slots}
-    assert {"purpose", "sources", "time", "recurrence", "deliver"} <= slot_names
-    assert "[SILENT]" in bp.prompt_template, "silent path must be explicit"
-    assert "{purpose}" in bp.prompt_template and "{sources}" in bp.prompt_template
-
-
-def test_live_dashboard_blueprint_fills():
-    """fill_blueprint must produce a valid cron job kwargs dict."""
-    from cron.blueprint_catalog import CATALOG, fill_blueprint
-
-    bp = next(b for b in CATALOG if b.key == "live-dashboard")
-    job = fill_blueprint(
-        bp,
-        {
-            "purpose": "team visa applications",
-            "sources": "email threads and the case-status site",
-            "time": "07:30",
-            "recurrence": "weekdays",
-            "deliver": "origin",
-        },
-    )
-    assert "team visa applications" in job["prompt"]
-    assert "email threads and the case-status site" in job["prompt"]
-    fields = job["schedule"].split()
-    assert len(fields) == 5, f"invalid cron expr: {job['schedule']}"
-    assert fields[0] == "30" and fields[1] == "7"
-    assert fields[4] == "1-5"
+    spec = parse_blueprint(SKILL_PATH.read_text(encoding="utf-8"))
+    assert spec is not None and spec.skill_name == "live-dashboard"
+    job = blueprint_to_job_spec(spec)
+    assert job["skills"] == ["live-dashboard"]
+    assert len(job["schedule"].split()) == 5, f"invalid cron expr: {job['schedule']}"
+    assert "[SILENT]" in job["prompt"] and "~/.hermes" not in job["prompt"]

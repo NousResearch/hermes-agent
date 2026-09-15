@@ -14,9 +14,9 @@ Build self-updating dashboards from live sources.
 
 | | |
 |---|---|
-| Source | Bundled (installed by default) |
-| Path | `skills/productivity/live-dashboard` |
-| Version | `0.1.0` |
+| Source | Optional — install with `hermes skills install official/productivity/live-dashboard` |
+| Path | `optional-skills/productivity/live-dashboard` |
+| Version | `0.2.0` |
 | Author | Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
@@ -33,16 +33,23 @@ The following is the complete skill definition that Hermes loads when this skill
 
 Turn one sentence — "make a dashboard for our visa applications, update it daily from the email threads and the case-status site" — into a persistent, self-refreshing status page. The user describes what they want to see; you define the data contract, build a self-contained HTML dashboard, verify one live refresh, then schedule the recurring tick. Inspired by Energy's (getenergy.com) natural-language live dashboards, adapted to Hermes's cron + connector architecture.
 
-Setup runs once in the foreground; the recurring refresh runs as a `cronjob` tick (the `live-dashboard` automation blueprint scaffolds this).
+Setup runs once in the foreground; the recurring refresh runs as a `cronjob` tick. Installing this skill offers a daily all-dashboards sweep via `/suggestions` (the frontmatter blueprint).
 
 ## When to Use
 
 - "Make a dashboard for &lt;project/process> and keep it updated."
 - "I want one place to see the status of &lt;deals / applications / bugs / shipments>."
 - "Track &lt;thing> across my email and &lt;website> and show me where it stands."
+- "Show me the &lt;slug> dashboard." (re-render/preview an existing one)
 - A cron tick fires for an existing dashboard (steps 5-7).
 
 Don't use for: one-off status questions (answer directly), price/availability thresholds on a single item (use `product-price-monitor`), or company news tracking (use `competitor-news-monitor`).
+
+## Prerequisites
+
+- At least one source connector the dashboard will read from: email/calendar via `himalaya` or `google-workspace`, websites via `web_extract` or `browser_navigate`, local files via `read_file`. If none is configured, renegotiate the sources in step 1 before writing any artifact.
+- `cronjob` for the recurring tick.
+- Optional: the `desktop_preview` tool (Hermes desktop app sessions). When it is in the toolset, dashboards render in the in-app preview pane; otherwise the user is given the file path.
 
 ## Procedure — Setup (foreground, once)
 
@@ -56,39 +63,48 @@ For each source, do one bounded foreground read now: email/calendar via the conn
 
 ### 3. Build the dashboard artifact
 
-Write two files under `~/.hermes/dashboards/<slug>/`:
+Write two files under the Hermes home directory's `dashboards/<slug>/` (the same directory that holds `config.yaml`; never assume a fixed location):
 
 - `dashboard.json` — the contract plus current state: purpose, entities, per-field values, per-field source + retrieval timestamp, a `needs_attention` list, and a change log (append-only, most recent first).
 - `index.html` — a single self-contained HTML page (inline CSS, no external requests) rendering the state: a header with purpose and last-updated time, a "Needs attention" section on top, the entity table, and the recent-changes list. Regenerate it from `dashboard.json` on every refresh; never hand-edit HTML state.
 
-Populate both from the step-2 reads and tell the user the file path (and open it where the platform allows). Done when the page renders the live data and every value on it carries a retrieval timestamp in `dashboard.json`.
+Populate both from the step-2 reads, then show the result (step 8). Done when the page renders the live data and every value on it carries a retrieval timestamp in `dashboard.json`.
 
 ### 4. Schedule the refresh
 
-Only after step 3 succeeded, create the job:
+Only after step 3 succeeded, schedule the tick. If the daily all-dashboards sweep from `/suggestions` is already scheduled and its cadence suits, it will pick this dashboard up — say so and stop. Otherwise create a per-dashboard job whose prompt names the state file:
 
 ```
 cronjob(action="create",
         schedule=<cadence from the contract, e.g. "0 8 * * *">,
-        prompt="Load the live-dashboard skill and run the refresh tick for the dashboard at ~/.hermes/dashboards/<slug>/dashboard.json.",
+        prompt="Load the live-dashboard skill and run the refresh tick for the dashboard at <absolute path to dashboards/<slug>/dashboard.json>.",
         deliver=<user's destination>)
 ```
 
-Pick a cadence that respects source rate limits. Done when the job exists and its prompt names the state-file path.
+Pick a cadence that respects source rate limits. Done when a job covering this dashboard exists and its prompt names the state-file path (or the sweep).
 
 ## Procedure — Tick (each scheduled run)
 
 ### 5. Re-read sources and diff
 
-Load `dashboard.json`, re-read each field from its named source, and compute a field-level diff against the stored state. A failed source read means unknown state: keep the last good value, mark the field stale with the failure time, and never overwrite good data with an error. Done when every field is either updated, unchanged, or explicitly marked stale.
+Load `dashboard.json` (for the sweep: every `dashboards/*/dashboard.json`, one at a time), re-read each field from its named source, and compute a field-level diff against the stored state. A failed source read means unknown state: keep the last good value, mark the field stale with the failure time, and never overwrite good data with an error. Done when every field is either updated, unchanged, or explicitly marked stale.
 
 ### 6. Update state and re-render
 
-Apply the diff to `dashboard.json`: update values and timestamps, append material changes to the change log, and recompute `needs_attention` against the contract's attention rules. Regenerate `index.html` from the updated state. Done when the JSON and HTML agree and the change log entry for this run exists (or the run is recorded as no-change).
+Apply the diff to `dashboard.json`: update values and timestamps, append material changes to the change log, and recompute `needs_attention` against the contract's attention rules. Regenerate `index.html` from the updated state, then show the result (step 8). Done when the JSON and HTML agree and the change log entry for this run exists (or the run is recorded as no-change).
 
 ### 7. Deliver on material change, else stay silent
 
-If the diff contains material changes or new needs-attention items, deliver a short summary: what changed, what needs attention, and the dashboard path. Otherwise respond with `[SILENT]` — no "still watching" noise unless the user asked for a periodic digest. Done when delivery matches the diff.
+If the diff contains material changes or new needs-attention items, deliver a short summary: what changed, what needs attention, and where the dashboard is. Otherwise respond with `[SILENT]` — no "still watching" noise unless the user asked for a periodic digest. Done when delivery matches the diff.
+
+## Procedure — Show the dashboard (after every build or re-render, and on request)
+
+### 8. Render where the user can see it
+
+- Desktop/GUI session (`desktop_preview` is in the toolset): `desktop_preview(action="open", url=<absolute path to index.html>, label=<dashboard purpose>)` so the page renders live in the preview pane beside the chat; re-open after each re-render so the pane shows the new state.
+- Any other session (CLI, messenger, cron tick without a GUI): report the absolute path of `index.html` and offer to open it where the platform allows.
+
+Done when the user has either seen the rendered page or been told exactly where it lives.
 
 ## Pitfalls
 
@@ -97,6 +113,8 @@ If the diff contains material changes or new needs-attention items, deliver a sh
 - Rendering state into HTML only — `dashboard.json` is the source of truth; HTML is a projection.
 - Alerting on every refresh instead of on material change.
 - Tracking the wrong grain (per-thread when the user thinks per-application).
+- Hardcoding the Hermes home path — resolve it from the running install (the directory holding `config.yaml`) and write absolute paths into cron prompts.
+- Calling `desktop_preview` outside a desktop session — it is only in the toolset for GUI sessions; fall back to the path.
 
 ## Verification
 
@@ -105,3 +123,4 @@ If the diff contains material changes or new needs-attention items, deliver a sh
 - [ ] Failed reads marked fields stale without destroying last-known-good state.
 - [ ] Ticks deliver only on material change; no-change runs were `[SILENT]`.
 - [ ] The change log replays the dashboard's history from the state file alone.
+- [ ] The dashboard was shown in the preview pane (desktop) or its path reported (elsewhere).

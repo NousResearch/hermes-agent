@@ -262,7 +262,15 @@ def _default_exclude(args):
 
 def _cmd_list(db, args):
     from hermes_state_sessions import workspace_key as _ws_key
-    sessions = db.list_sessions_rich(source=args.source, exclude_sources=_default_exclude(args), limit=args.limit)
+    limit = args.limit
+    sessions = db.list_sessions_rich(
+        source=args.source,
+        exclude_sources=_default_exclude(args),
+        limit=limit + 1 if limit else limit,
+    )
+    truncated = bool(limit and len(sessions) > limit)
+    if truncated:
+        sessions = sessions[:limit]
 
     # Workspace filter: workspace key (git repo root, else cwd) — path substring or exact basename.
     _ws_filter = (getattr(args, "workspace", None) or "").strip()
@@ -300,6 +308,8 @@ def _cmd_list(db, args):
     print(header + "\n" + "─" * rule)
     for s in sessions:
         print(fmt(s))
+    if truncated:
+        print("\n… at least 1 more (use --limit 0 or --query to filter)")
 
 
 # -- export -----------------------------------------------------------------

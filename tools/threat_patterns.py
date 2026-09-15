@@ -117,9 +117,31 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     (r'\bcommand\s+and\s+control\b', "c2_explicit_long", "context"),
 
     # ── Exfiltration via curl/wget/cat with secrets (applies everywhere) ──
-    (r'curl\s+[^\n]{0,2048}\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl", "all"),
-    (r'wget\s+[^\n]{0,2048}\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_wget", "all"),
-    (r'cat\s+[^\n]{0,2048}(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)', "read_secrets", "all"),
+    # `[^\S\n]` (horizontal whitespace) NOT `\s`: `\s` matches newlines, so
+    # `curl\s+...` spanned lines and paired a curl on one line with a `$SECRET`
+    # on a LATER, unrelated line.
+    #
+    # The `(?!...)` allowlist covers the legitimate opposite of exfiltration:
+    # sending a secret TO THE SERVICE THAT ISSUED IT. AgentPod's AGENTS.md was
+    # blocked outright over `curl -H "Authorization: Bearer $ADMIN_SECRET"
+    # https://api.agentpod.agentlabs.cc/...` — an ops runbook calling its own
+    # admin API, not a leak. Exfiltration is defined by the DESTINATION, so
+    # allowlist first-party hosts rather than weakening the secret match.
+    #
+    # Two subtleties, both regression-tested:
+    #  - The host is followed by `(?![\w.-])` so it must END there. Without it,
+    #    `api.agentpod.agentlabs.cc.evil.com` — an attacker-controlled lookalike
+    #    domain — silently inherited the allowlist and exfil went undetected.
+    #  - The lookahead scans `[\s\S]{0,200}` (newlines included) because these
+    #    runbooks wrap with a trailing backslash, putting the URL on the NEXT
+    #    line. The secret match itself stays line-bounded via `[^\n]`.
+    #
+    # NOTE FOR FUTURE EDITORS: when testing, read files with raw Python I/O. The
+    # agent's file-read path REDACTS secrets to `***`, which makes these exact
+    # lines look like false positives when they are genuine matches.
+    (r'curl[^\S\n]+(?![\s\S]{0,200}(?:api\.agentpod\.agentlabs\.cc|litellm:4000)(?![\w.-]))[^\n]{0,2048}\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl", "all"),
+    (r'wget[^\S\n]+(?![\s\S]{0,200}(?:api\.agentpod\.agentlabs\.cc|litellm:4000)(?![\w.-]))[^\n]{0,2048}\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_wget", "all"),
+    (r'cat[^\S\n]+[^\n]{0,2048}(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)', "read_secrets", "all"),
     (r'(send|post|upload|transmit)\s+[^\n]{0,2048}\s+(to|at)\s+https?://', "send_to_url", "strict"),
     (rf'(include|output|print|share)\s+{_FILLER}(conversation|chat\s+history|previous\s+messages|full\s+context|entire\s+context)', "context_exfil", "strict"),
 

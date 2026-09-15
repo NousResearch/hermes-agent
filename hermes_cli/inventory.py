@@ -144,6 +144,7 @@ def build_models_payload(
     if featured:
         _apply_featured(rows)
     _apply_custom_aliases(rows)
+    _apply_quantization(rows)
 
     return {"providers": rows, "model": ctx.current_model, "provider": ctx.current_provider}
 
@@ -376,6 +377,56 @@ def _apply_custom_aliases(rows: list[dict]) -> None:
                 custom_provider_aliases(str(row.get("name", "")), str(row.get("slug", ""))))
         except Exception:
             continue
+
+
+def _row_accepts_ollama_quantization(row: dict) -> bool:
+    """True for local/Ollama-like inventory rows. Cloud slugs never attach metadata quant."""
+    from hermes_cli.models_local import (
+        _LOCAL_LIKE_PROVIDERS,
+        _NEVER_OLLAMA_PROVIDERS,
+        should_use_ollama_native_catalog,
+    )
+
+    slug = str(row.get("slug") or "").strip().lower()
+    if not slug or slug in _NEVER_OLLAMA_PROVIDERS:
+        return False
+    if slug == "ollama" or slug in _LOCAL_LIKE_PROVIDERS or slug.startswith("custom:") or slug.endswith("-ollama"):
+        return True
+    api_url = str(row.get("api_url") or "").strip()
+    if row.get("is_user_defined") and api_url:
+        try:
+            return should_use_ollama_native_catalog(slug, api_url)
+        except Exception:
+            return False
+    return False
+
+
+def _apply_quantization(rows: list[dict]) -> None:
+    """Attach ``quantization: {model_id: raw_level}`` from the Ollama tags cache.
+
+    Never invents a level from the model id (the desktop already parses GGUF suffixes).
+    Cache miss / cloud / non-Ollama → leave the row unchanged.
+    """
+    from hermes_cli.models_local import (
+        _get_ollama_base_url,
+        _get_ollama_native_headers,
+        ollama_local_quantization_map,
+    )
+
+    for row in rows:
+        if not _row_accepts_ollama_quantization(row):
+            continue
+        base = str(row.get("api_url") or "").strip() or _get_ollama_base_url()
+        try:
+            headers = _get_ollama_native_headers(base) or None
+        except Exception:
+            headers = None
+        try:
+            quant = ollama_local_quantization_map(base, headers=headers)
+        except Exception:
+            continue
+        if quant:
+            row["quantization"] = quant
 
 
 # ─── Internal: row post-processing ──────────────────────────────────────

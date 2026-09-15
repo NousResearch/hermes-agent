@@ -6981,7 +6981,10 @@ def _ladder_nous_rungs(
         step = _refreshed_nous_step(
             route, kwargs, "Auxiliary %s%s: refreshed Nous runtime credentials after 401, retrying")
         if step is not None:
-            return (yield step), None
+            resp, first_err = yield from _rung(
+                step, lambda exc: _credential_rung_accepts(exc) or _is_connection_error(exc))
+            if first_err is None:
+                return resp, None
     return None, first_err
 
 
@@ -7003,9 +7006,13 @@ def _ladder_credential_rungs(
                 _evict_cached_clients(resolved_provider)
             logger.info("Auxiliary %s%s: refreshed %s credentials after auth error, retrying",
                         task or "call", tag, auth_refresh_provider)
-            return (yield _LadderStep(
+            step = _LadderStep(
                 "retry_same_provider",
-                (auth_refresh_provider, route.resolved_model or route.final_model))), None
+                (auth_refresh_provider, route.resolved_model or route.final_model))
+            resp, first_err = yield from _rung(
+                step, lambda exc: _credential_rung_accepts(exc) or _is_connection_error(exc))
+            if first_err is None:
+                return resp, None
     pool_provider = _recoverable_pool_provider(resolved_provider, client, main_runtime=route.main_runtime)
     # Capture the exact key used so recovery finds the right pool entry even if another
     # process rotated the pool meanwhile (current() would be None).

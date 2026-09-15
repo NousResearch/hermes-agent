@@ -523,6 +523,58 @@ def hybrid_move_card(card_id: str, payload: HybridCardMove, board: Optional[str]
         conn.close()
 
 
+@router.delete("/hybrid/cards/{card_id}")
+def hybrid_delete_card(card_id: str, board: Optional[str] = Query(None)):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        ok = hybrid_kanban.delete_card(conn, card_id=card_id, source="dashboard", actor_id="dashboard")
+        return {"ok": ok}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
+@router.delete("/hybrid/columns/{column_id}")
+def hybrid_delete_column(column_id: str, board: Optional[str] = Query(None)):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        ok = hybrid_kanban.delete_column(conn, column_id=column_id, source="dashboard", actor_id="dashboard")
+        return {"ok": ok}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
+@router.delete("/hybrid/boards/{board_id}")
+def hybrid_delete_board(board_id: str, board: Optional[str] = Query(None)):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        ok = hybrid_kanban.delete_board(conn, board_id=board_id, source="dashboard", actor_id="dashboard")
+        return {"ok": ok}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
+@router.get("/hybrid/boards/{board_id}/activity")
+def hybrid_get_board_activity(board_id: str, board: Optional[str] = Query(None), limit: int = 100):
+    resolved = _resolve_board(board)
+    conn = _conn(board=resolved)
+    try:
+        return {"activity": hybrid_kanban.get_board_activity(conn, board_id=board_id, limit=limit)}
+    except hybrid_kanban.HybridKanbanError as exc:
+        raise _hybrid_error(exc)
+    finally:
+        conn.close()
+
+
+
 # ---------------------------------------------------------------------------
 # GET /board
 # ---------------------------------------------------------------------------
@@ -3072,6 +3124,12 @@ async def stream_events(ws: WebSocket):
         except ValueError:
             cursor = 0
 
+        hybrid_since_raw = ws.query_params.get("hybrid_since", "0")
+        try:
+            hybrid_cursor = int(hybrid_since_raw)
+        except ValueError:
+            hybrid_cursor = 0
+
         # Board selection — pinned at the WS handshake; re-subscribe to
         # switch boards. Changing boards mid-stream would require
         # reconciling two cursors, so the UI just opens a new WS on
@@ -3082,7 +3140,7 @@ async def stream_events(ws: WebSocket):
         except ValueError:
             ws_board = None
 
-        def _fetch_new(cursor_val: int) -> tuple[int, list[dict]]:
+        def _fetch_new(cursor_val: int, hybrid_cursor_val: int) -> tuple[int, list[dict], int, list[dict]]:
             nonlocal event_conn
             if event_conn is None:
                 event_conn = kanban_db.connect(board=ws_board)
@@ -3107,7 +3165,35 @@ async def stream_events(ws: WebSocket):
                     "created_at": r["created_at"],
                 })
                 new_cursor = r["id"]
-            return new_cursor, out
+
+            h_rows = event_conn.execute(
+                "SELECT id, board_id, card_id, column_id, kind, actor_type, actor_id, session_id, source, payload, created_at "
+                "FROM hybrid_activity WHERE id > ? ORDER BY id ASC LIMIT 200",
+                (hybrid_cursor_val,),
+            ).fetchall()
+            h_out: list[dict] = []
+            new_h_cursor = hybrid_cursor_val
+            for r in h_rows:
+                try:
+                    payload = json.loads(r["payload"]) if r["payload"] else None
+                except Exception:
+                    payload = None
+                h_out.append({
+                    "id": r["id"],
+                    "board_id": r["board_id"],
+                    "card_id": r["card_id"],
+                    "column_id": r["column_id"],
+                    "kind": r["kind"],
+                    "actor_type": r["actor_type"],
+                    "actor_id": r["actor_id"],
+                    "session_id": r["session_id"],
+                    "source": r["source"],
+                    "payload": payload,
+                    "created_at": r["created_at"],
+                })
+                new_h_cursor = r["id"]
+
+            return new_cursor, out, new_h_cursor, h_out
 
         while True:
             # Race receive() against the poll interval to detect client
@@ -3130,13 +3216,21 @@ async def stream_events(ws: WebSocket):
                     max_workers=1,
                     thread_name_prefix="kanban-events",
                 )
-            cursor, events = await asyncio.get_running_loop().run_in_executor(
+            cursor, events, hybrid_cursor, hybrid_events = await asyncio.get_running_loop().run_in_executor(
                 event_executor,
                 _fetch_new,
                 cursor,
+                hybrid_cursor,
             )
+            frame: dict[str, Any] = {}
             if events:
-                await ws.send_json({"events": events, "cursor": cursor})
+                frame["events"] = events
+                frame["cursor"] = cursor
+            if hybrid_events:
+                frame["hybrid_events"] = hybrid_events
+                frame["hybrid_cursor"] = hybrid_cursor
+            if frame:
+                await ws.send_json(frame)
     except WebSocketDisconnect:
         return
     except asyncio.CancelledError:

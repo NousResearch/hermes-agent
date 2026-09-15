@@ -163,6 +163,20 @@ export interface BoardsResponse {
   current: string
 }
 
+export interface HybridActivityItem {
+  id: number
+  board_id: string
+  card_id?: string | null
+  column_id?: string | null
+  kind: string
+  actor_type: 'human' | 'agent' | 'system'
+  actor_id?: string | null
+  session_id?: string | null
+  source?: string | null
+  payload?: Record<string, unknown> | null
+  created_at: number
+}
+
 /** Human+agent shared workspaces. These are deliberately separate from the
  * agentic ``KanbanTask.status`` state machine. */
 export interface HybridCard {
@@ -175,6 +189,7 @@ export interface HybridCard {
   revision: number
   metadata: Record<string, unknown>
   updated_at: number
+  activity?: HybridActivityItem[]
 }
 
 export interface HybridColumn {

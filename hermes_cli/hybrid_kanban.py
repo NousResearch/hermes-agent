@@ -269,3 +269,102 @@ def move_card(conn: sqlite3.Connection, *, card_id: str, target_column_id: str, 
         _reindex(conn, "hybrid_cards", "column_id", target_column_id, destination_ids)
         _activity(conn, board_id=card["board_id"], card_id=card_id, column_id=target_column_id, kind="card_moved", actor_type=actor_type, actor_id=actor_id, session_id=session_id, source=source, payload={"from_column_id": old_column_id, "to_column_id": target_column_id, "before_id": before_id, "after_id": after_id})
     return get_card(conn, card_id)
+
+
+def delete_card(
+    conn: sqlite3.Connection,
+    *,
+    card_id: str,
+    actor_type: str = "human",
+    actor_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    source: Optional[str] = None,
+) -> bool:
+    actor_type = _require_actor(actor_type)
+    with kanban_db.write_txn(conn):
+        card = _require_card(conn, card_id, include_archived=True)
+        column_id = card["column_id"]
+        board_id = card["board_id"]
+        conn.execute("DELETE FROM hybrid_cards WHERE id = ?", (card_id,))
+        remaining = _ordered_ids(conn, "hybrid_cards", "column_id", column_id)
+        _reindex(conn, "hybrid_cards", "column_id", column_id, remaining)
+        _activity(
+            conn,
+            board_id=board_id,
+            card_id=card_id,
+            column_id=column_id,
+            kind="card_deleted",
+            actor_type=actor_type,
+            actor_id=actor_id,
+            session_id=session_id,
+            source=source,
+            payload={"title": card["title"]},
+        )
+    return True
+
+
+def delete_column(
+    conn: sqlite3.Connection,
+    *,
+    column_id: str,
+    actor_type: str = "human",
+    actor_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    source: Optional[str] = None,
+) -> bool:
+    actor_type = _require_actor(actor_type)
+    with kanban_db.write_txn(conn):
+        column = _require_column(conn, column_id, include_archived=True)
+        board_id = column["board_id"]
+        conn.execute("DELETE FROM hybrid_cards WHERE column_id = ?", (column_id,))
+        conn.execute("DELETE FROM hybrid_columns WHERE id = ?", (column_id,))
+        remaining = _ordered_ids(conn, "hybrid_columns", "board_id", board_id)
+        _reindex(conn, "hybrid_columns", "board_id", board_id, remaining)
+        _activity(
+            conn,
+            board_id=board_id,
+            column_id=column_id,
+            kind="column_deleted",
+            actor_type=actor_type,
+            actor_id=actor_id,
+            session_id=session_id,
+            source=source,
+            payload={"name": column["name"]},
+        )
+    return True
+
+
+def delete_board(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    actor_type: str = "human",
+    actor_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    source: Optional[str] = None,
+) -> bool:
+    actor_type = _require_actor(actor_type)
+    with kanban_db.write_txn(conn):
+        _require_board(conn, board_id, include_archived=True)
+        conn.execute("DELETE FROM hybrid_cards WHERE board_id = ?", (board_id,))
+        conn.execute("DELETE FROM hybrid_columns WHERE board_id = ?", (board_id,))
+        conn.execute("DELETE FROM hybrid_activity WHERE board_id = ?", (board_id,))
+        conn.execute("DELETE FROM hybrid_boards WHERE id = ?", (board_id,))
+    return True
+
+
+def get_board_activity(
+    conn: sqlite3.Connection,
+    board_id: str,
+    *,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    _require_board(conn, board_id, include_archived=True)
+    rows = conn.execute(
+        "SELECT * FROM hybrid_activity WHERE board_id = ? ORDER BY id DESC LIMIT ?",
+        (board_id, max(1, min(limit, 500))),
+    ).fetchall()
+    items = [_row(r) for r in rows]
+    for item in items:
+        item["payload"] = _decode(item.get("payload"))
+    return items

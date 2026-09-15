@@ -20,9 +20,7 @@ JSON-RPC channel every other Settings surface uses. Contracts:
 Every handler honours ``params.profile`` (app-global remote mode serves several profiles from one
 backend): the requested profile's HERMES_HOME and secret scope are bound around the body, so the
 vault file, manager config and manager tokens all resolve to that profile.
-
-Handlers are rebound onto server.py's globals at install time (see
-method_ctx.py) and may reference server module globals (``_ok``, ``_err``).
+ Reaches server.py state through ``srv`` (method_ctx.py). and may reference server module globals (``_ok``, ``_err``).
 """
 
 from __future__ import annotations
@@ -44,6 +42,8 @@ from .contracts.profiles_vault_complete_foreign_subagents import (
     VaultUnlockResult,
 )
 
+_VAULT_ERROR = 5095  # JSON-RPC error code: vault failure (validation + store errors)
+
 _registry = HandlerRegistry()
 
 
@@ -52,19 +52,16 @@ def method(name: str):
     def deco(fn):
         def scoped(rid, params):
             try:
-                home = _profile_home(params.profile)
+                home = srv._profile_home(params.profile)
             except FileNotFoundError as e:
-                return _err(rid, 5095, str(e))
+                return srv._err(rid, _VAULT_ERROR, str(e))
             if home is None:
                 return fn(rid, params)
-            with _session_profile_runtime_scope({"profile_home": str(home)}):
+            with srv._session_profile_runtime_scope({"profile_home": str(home)}):
                 return fn(rid, params)
         return _registry.method(name)(scoped)
     return deco
 
-# JSON-RPC error code 5095 = vault failure (validation + store errors).
-# Kept as a literal inside handler bodies: handlers are rebound onto
-# server.py's globals, so module-level constants are not reachable there.
 
 
 @method("vault.list")
@@ -82,7 +79,7 @@ def _(rid, params: Params) -> VaultListResult | dict:
         from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import VaultListResult
         return VaultListResult(items=items)
     except Exception as e:
-        return _err(rid, 5095, str(e))
+        return srv._err(rid, _VAULT_ERROR, str(e))
 
 
 @method("vault.sources")
@@ -112,7 +109,7 @@ def _(rid, params: VaultSourceSetParams) -> VaultSourceSetResult | dict:
 
     name = params.name
     if name not in {cls.name for cls in external_backend_classes()}:
-        return _err(rid, 5095, f"unknown vault source: {name}")
+        return srv._err(rid, _VAULT_ERROR, f"unknown vault source: {name}")
     enabled = params.enabled
     cfg = load_config()
     section = cfg.setdefault("vault", {}).setdefault(name, {})
@@ -136,13 +133,13 @@ def _(rid, params: VaultUnlockParams) -> VaultUnlockResult | dict:
     password = params.password
     backend = next((b for b in enabled_backends() if b.name == name and b.needs_unlock), None)
     if backend is None:
-        return _err(rid, 5095, f"{name} is not an enabled password manager")
+        return srv._err(rid, _VAULT_ERROR, f"{name} is not an enabled password manager")
     if not password:
-        return _err(rid, 5095, "master password is required")
+        return srv._err(rid, _VAULT_ERROR, "master password is required")
     try:
         backend.unlock(password)  # type: ignore[attr-defined]
     except Exception as e:
-        return _err(rid, 5095, str(e).replace(password, "[REDACTED]"))
+        return srv._err(rid, _VAULT_ERROR, str(e).replace(password, "[REDACTED]"))
     finally:
         del password
     from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import VaultUnlockResult
@@ -176,7 +173,7 @@ def _(rid, params: VaultAddParams) -> VaultAddResult | dict:
 
     secret = params.secret
     if not isinstance(secret, dict) or not secret:
-        return _err(rid, 5095, "secret payload is required")
+        return srv._err(rid, _VAULT_ERROR, "secret payload is required")
     try:
         meta = get_vault_store().add_item(
             kind=params.kind.value,
@@ -188,9 +185,9 @@ def _(rid, params: VaultAddParams) -> VaultAddResult | dict:
         return VaultAddResult(id=meta.id)
     except VaultError as e:
         # VaultError messages are metadata-safe by contract, but scrub anyway.
-        return _err(rid, 5095, scrub_secret_from_text(str(e), secret))
+        return srv._err(rid, _VAULT_ERROR, scrub_secret_from_text(str(e), secret))
     except Exception as e:
-        return _err(rid, 5095, scrub_secret_from_text(str(e), secret))
+        return srv._err(rid, _VAULT_ERROR, scrub_secret_from_text(str(e), secret))
 
 
 @method("vault.remove")
@@ -201,13 +198,17 @@ def _(rid, params: VaultRemoveParams) -> VaultRemoveResult | dict:
 
         item_id = params.id
         if not item_id:
-            return _err(rid, 5095, "id is required")
+            return srv._err(rid, _VAULT_ERROR, "id is required")
         from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import VaultRemoveResult
         return VaultRemoveResult(removed=get_vault_store().remove_item(item_id))
     except Exception as e:
-        return _err(rid, 5095, str(e))
+        return srv._err(rid, _VAULT_ERROR, str(e))
 
 
 def register(server) -> None:
     """Bind this module's handlers onto ``server``'s globals and registry."""
     _registry.install(server, globals())
+
+# Bound last, after every definition, so importing this module first (tests, the gateway process)
+# lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.
+from tui_gateway import server as srv  # noqa: E402

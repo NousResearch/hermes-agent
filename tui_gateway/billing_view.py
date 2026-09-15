@@ -3,7 +3,7 @@
 STRUCTURED envelopes (result.ok / result.error) rather than JSON-RPC errors, so
 rpc() always resolves and the client branches on the typed billing code.
 Data-building lives in agent/billing_view.py + hermes_cli/nous_billing.py.
-Bodies are rebound onto server.py's globals at install time (method_ctx.bind_module),
+
 so tests may still monkeypatch e.g. ``server._usage_payload``.
 """
 
@@ -65,9 +65,9 @@ def _serialize_auto_reload(ar, format_money) -> dict | None:
             card_out.update(payment_method_id=ar.card.payment_method_id, brand=ar.card.brand,
                             last4=ar.card.last4)
     return {
-        "enabled": ar.enabled, "threshold_usd": _wire_str(ar.threshold_usd),
+        "enabled": ar.enabled, "threshold_usd": srv._wire_str(ar.threshold_usd),
         "threshold_display": format_money(ar.threshold_usd),
-        "reload_to_usd": _wire_str(ar.reload_to_usd),
+        "reload_to_usd": srv._wire_str(ar.reload_to_usd),
         "reload_to_display": format_money(ar.reload_to_usd), "card": card_out}
 
 
@@ -86,8 +86,8 @@ def _serialize_billing_state(state, *, free_tier: bool = False) -> dict:
             "display": state.card.display, "resolved_via": state.card.resolved_via}
     if state.monthly_cap is not None:
         m = state.monthly_cap
-        mc = {"limit_usd": _wire_str(m.limit_usd), "limit_display": format_money(m.limit_usd),
-              "spent_this_month_usd": _wire_str(m.spent_this_month_usd),
+        mc = {"limit_usd": srv._wire_str(m.limit_usd), "limit_display": format_money(m.limit_usd),
+              "spent_this_month_usd": srv._wire_str(m.spent_this_month_usd),
               "spent_display": format_money(m.spent_this_month_usd),
               "is_default_ceiling": m.is_default_ceiling}
     return {
@@ -96,17 +96,17 @@ def _serialize_billing_state(state, *, free_tier: bool = False) -> dict:
         "org_name": state.org_name,
         "org_slug": state.org_slug, "role": state.role, "is_admin": state.is_admin,
         "can_change_plan": state.can_change_plan, "can_charge": state.can_charge,
-        "balance_usd": _wire_str(state.balance_usd),
+        "balance_usd": srv._wire_str(state.balance_usd),
         "balance_display": format_money(state.balance_usd),
         "cli_billing_enabled": state.cli_billing_enabled,
-        "charge_presets": [_wire_str(p) for p in state.charge_presets],
+        "charge_presets": [srv._wire_str(p) for p in state.charge_presets],
         "charge_presets_display": [format_money(p) for p in state.charge_presets],
-        "min_usd": _wire_str(state.min_usd), "max_usd": _wire_str(state.max_usd),
-        "card": card, "payment_method": _serialize_payment_method(state.payment_method),
-        "monthly_cap": mc, "auto_reload": _serialize_auto_reload(state.auto_reload, format_money),
+        "min_usd": srv._wire_str(state.min_usd), "max_usd": srv._wire_str(state.max_usd),
+        "card": card, "payment_method": srv._serialize_payment_method(state.payment_method),
+        "monthly_cap": mc, "auto_reload": srv._serialize_auto_reload(state.auto_reload, format_money),
         "portal_url": state.portal_url, "error": state.error,
         # Shared two-bar dollar usage model so /topup matches /usage and /subscription; fail-open.
-        "usage": _usage_payload(state)}
+        "usage": srv._usage_payload(state)}
 
 
 def _usage_payload(state) -> dict:
@@ -115,7 +115,7 @@ def _usage_payload(state) -> dict:
         return {"available": False}
     try:
         from agent.billing_usage import build_usage_model
-        return _serialize_usage_model(build_usage_model())
+        return srv._serialize_usage_model(build_usage_model())
     except Exception:
         return {"available": False}
 
@@ -146,8 +146,8 @@ def _serialize_usage_model(model) -> dict:
         "subscription_remaining_display": _usd(model.subscription_remaining_usd),
         "topup_remaining_display": _usd(model.topup_remaining_usd),
         "total_spendable_display": _usd(model.total_spendable_usd),
-        "has_topup": model.has_topup, "plan_bar": _serialize_usage_bar(model.plan_bar),
-        "topup_bar": _serialize_usage_bar(model.topup_bar)}
+        "has_topup": model.has_topup, "plan_bar": srv._serialize_usage_bar(model.plan_bar),
+        "topup_bar": srv._serialize_usage_bar(model.topup_bar)}
 
 
 def _serialize_subscription_state(state) -> dict:
@@ -160,8 +160,8 @@ def _serialize_subscription_state(state) -> dict:
         c = state.current
         current = {
             "tier_id": c.tier_id, "tier_name": c.tier_name,
-            "monthly_credits": _wire_str(c.monthly_credits),
-            "credits_remaining": _wire_str(c.credits_remaining), "cycle_ends_at": c.cycle_ends_at,
+            "monthly_credits": srv._wire_str(c.monthly_credits),
+            "credits_remaining": srv._wire_str(c.credits_remaining), "cycle_ends_at": c.cycle_ends_at,
             "pending_downgrade_tier_name": c.pending_downgrade_tier_name,
             "pending_downgrade_at": c.pending_downgrade_at,
             "pending_downgrade_display": format_renews(c.pending_downgrade_at),
@@ -172,7 +172,7 @@ def _serialize_subscription_state(state) -> dict:
     tiers = [
         {"tier_id": t.tier_id, "name": t.name, "tier_order": t.tier_order,
          "dollars_per_month_display": format_money(t.dollars_per_month),
-         "monthly_credits": _wire_str(t.monthly_credits), "is_current": t.is_current,
+         "monthly_credits": srv._wire_str(t.monthly_credits), "is_current": t.is_current,
          "is_enabled": t.is_enabled}
         for t in state.tiers]
     return {
@@ -183,7 +183,7 @@ def _serialize_subscription_state(state) -> dict:
         "portal_url": state.portal_url, "error": state.error,
         # Shared two-bar usage model (account-info is the only source with top-up dollars);
         # fail-open → {available:false}; lazy when logged out.
-        "usage": _usage_payload(state)}
+        "usage": srv._usage_payload(state)}
 
 
 def _serialize_subscription_preview(p) -> dict:
@@ -192,10 +192,14 @@ def _serialize_subscription_preview(p) -> dict:
         "ok": True, "effect": p.effect, "reason": p.reason,
         "current_tier_id": p.current_tier_id, "current_tier_name": p.current_tier_name,
         "target_tier_id": p.target_tier_id, "target_tier_name": p.target_tier_name,
-        "monthly_credits_delta": _wire_str(p.monthly_credits_delta),
+        "monthly_credits_delta": srv._wire_str(p.monthly_credits_delta),
         "amount_due_now_cents": p.amount_due_now_cents, "effective_at": p.effective_at}
 
 
 def register(server) -> None:
-    """Publish this module's serializers onto ``server``, rebound to its globals."""
+    """Publish this module's serializers onto ``server`` and install its handlers."""
     bind_module(globals(), server, skip=("_",))
+
+# Bound last, after every definition, so importing this module first (tests, the gateway process)
+# lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.
+from tui_gateway import server as srv  # noqa: E402

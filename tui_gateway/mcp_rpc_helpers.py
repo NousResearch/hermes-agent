@@ -1,6 +1,6 @@
 """Shared helpers for the per-profile MCP lifecycle RPCs (mcp.servers.*).
 
-Published onto ``tui_gateway.server`` as ``_mcp_summarize_server`` so the rebound handler
+Published onto ``tui_gateway.server`` as ``_mcp_summarize_server`` so the handler
 bodies in methods_tools resolve it.
 """
 

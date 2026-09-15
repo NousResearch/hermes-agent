@@ -1,5 +1,4 @@
-"""Config / projects / setup JSON-RPC handlers. Bodies are rebound onto server.py's globals
-(method_ctx.bind_module) and reference them bare. ``config.set`` lives in methods_config_set.
+"""Config / projects / setup JSON-RPC handlers. Reaches server.py state through ``srv`` (method_ctx.py). ``config.set`` lives in methods_config_set.
 """
 
 from .contracts.base import Params
@@ -35,14 +34,14 @@ def _projects_handler(name: str):
             try:
                 return fn(rid, params)
             except Exception as e:
-                return _err(rid, 5061, str(e))
+                return srv._err(rid, 5061, str(e))
         return method(name)(_profile_scoped(handler))
     return deco
 
 
 def _reconcile_repo_discovery(pdb, conn, policy, policy_key):
     pdb.reconcile_discovered_repos_policy(conn, policy_key,
-                                          preserve_unversioned=_repo_discovery_policy_is_default(policy))
+                                          preserve_unversioned=srv._repo_discovery_policy_is_default(policy))
 
 
 @_projects_handler("projects.discover_repos")
@@ -51,16 +50,16 @@ def _(rid, params) -> "ProjectsDiscoverReposResult | dict":
         DiscoveredRepo, ProjectsDiscoverReposParams, ProjectsDiscoverReposResult, RepoDiscoveryPolicy,
     )
     assert isinstance(params, ProjectsDiscoverReposParams)
-    with _profile_db(params) as db:
+    with srv._profile_db(params) as db:
         if db is None:
             return ProjectsDiscoverReposResult(repos=[], discovery_policy=None)
         from hermes_cli import projects_db as pdb
-        policy = _repo_discovery_policy()
+        policy = srv._repo_discovery_policy()
         with pdb.connect_closing() as conn:
-            _reconcile_repo_discovery(pdb, conn, policy, _repo_discovery_policy_key(policy))
+            srv._reconcile_repo_discovery(pdb, conn, policy, srv._repo_discovery_policy_key(policy))
             if params.scan and policy["enabled"]:
-                _scan_discovered_repos_remote(conn, policy)
-            repos = _discover_repos_payload(db, conn=conn, include_cached=policy["enabled"])
+                srv._scan_discovered_repos_remote(conn, policy)
+            repos = srv._discover_repos_payload(db, conn=conn, include_cached=policy["enabled"])
         return ProjectsDiscoverReposResult(
             repos=[DiscoveredRepo.model_validate(repo) for repo in repos],
             discovery_policy=RepoDiscoveryPolicy.model_validate(policy),
@@ -74,22 +73,22 @@ def _(rid, params) -> "ProjectsRecordReposResult | dict":
     )
     assert isinstance(params, ProjectsRecordReposParams)
     from hermes_cli import projects_db as pdb
-    policy = _repo_discovery_policy()
-    policy_key = _repo_discovery_policy_key(policy)
+    policy = srv._repo_discovery_policy()
+    policy_key = srv._repo_discovery_policy_key(policy)
     incoming = params.discovery_policy
     accepted = (
-        _repo_discovery_policy_key(_repo_discovery_policy(incoming.model_dump(mode="json"))) == policy_key
-        if incoming is not None else _repo_discovery_policy_is_default(policy))
+        srv._repo_discovery_policy_key(srv._repo_discovery_policy(incoming.model_dump(mode="json"))) == policy_key
+        if incoming is not None else srv._repo_discovery_policy_is_default(policy))
     accepted = bool(policy["enabled"] and accepted)
     pairs = [(repo, None) if isinstance(repo, str) else (repo.root, repo.label) for repo in params.repos or []]
     with pdb.connect_closing() as conn:
-        _reconcile_repo_discovery(pdb, conn, policy, policy_key)
+        srv._reconcile_repo_discovery(pdb, conn, policy, policy_key)
         if accepted:
             pdb.record_discovered_repos(conn, pairs, replace=True, policy_key=policy_key)
         elif not policy["enabled"]:
             pdb.clear_discovered_repos(conn, policy_key=policy_key)
-    with _profile_db(params) as db:
-        repos = [] if db is None else _discover_repos_payload(db, include_cached=policy["enabled"])
+    with srv._profile_db(params) as db:
+        repos = [] if db is None else srv._discover_repos_payload(db, include_cached=policy["enabled"])
         return ProjectsRecordReposResult(
             repos=[DiscoveredRepo.model_validate(repo) for repo in repos], accepted=accepted,
             discovery_policy=RepoDiscoveryPolicy.model_validate(policy),
@@ -99,8 +98,8 @@ def _(rid, params) -> "ProjectsRecordReposResult | dict":
 def _stamped_project_tree(db, params, **kwargs):
     """``_build_project_tree`` + profile stamping shared by the two tree RPCs."""
     from tui_gateway.project_tree import stamp_profile
-    tree, active_id = _build_project_tree(db, **kwargs)
-    stamp_profile(tree["projects"], _response_profile_name(params.profile))
+    tree, active_id = srv._build_project_tree(db, **kwargs)
+    stamp_profile(tree["projects"], srv._response_profile_name(params.profile))
     return tree, active_id
 
 
@@ -108,10 +107,10 @@ def _stamped_project_tree(db, params, **kwargs):
 def _(rid, params) -> "ProjectsTreeResult | dict":
     from tui_gateway.contracts.projects_pets import ProjectTreeNode, ProjectsTreeParams, ProjectsTreeResult
     assert isinstance(params, ProjectsTreeParams)
-    with _profile_db(params) as db:
+    with srv._profile_db(params) as db:
         if db is None:
             return ProjectsTreeResult(projects=[], active_id=None, scoped_session_ids=[])
-        tree, active_id = _stamped_project_tree(
+        tree, active_id = srv._stamped_project_tree(
             db, params, preview_limit=params.preview_limit or 3, hydrate=True,
             session_limit=params.session_limit or 2000, include_discovered=True)
         return ProjectsTreeResult(
@@ -126,10 +125,10 @@ def _(rid, params) -> "ProjectsProjectSessionsResult | dict":
         ProjectsProjectSessionsParams, ProjectsProjectSessionsResult, ProjectTreeNode,
     )
     assert isinstance(params, ProjectsProjectSessionsParams)
-    with _profile_db(params) as db:
+    with srv._profile_db(params) as db:
         if db is None:
             return ProjectsProjectSessionsResult(project=None)
-        tree, _active = _stamped_project_tree(
+        tree, _active = srv._stamped_project_tree(
             db, params, preview_limit=0, hydrate=True,
             session_limit=params.session_limit or 5000, include_discovered=False)
         project = next((item for item in tree["projects"] if item["id"] == params.project_id), None)
@@ -140,7 +139,7 @@ def _(rid, params) -> "ProjectsProjectSessionsResult | dict":
 # ── config.get — one getter per key returning the result payload.
 
 def _display_raw() -> dict:
-    return _load_cfg().get("display") or {}
+    return srv._load_cfg().get("display") or {}
 
 
 def _display_word(key: str, default: str, allowed) -> str:
@@ -154,27 +153,27 @@ _THINKING_MODES = frozenset({"collapsed", "truncated", "full"})
 
 def _cfg_get_provider(params):
     from hermes_cli.models import list_available_providers, normalize_provider
-    model = _resolve_model()
+    model = srv._resolve_model()
     parts = model.split("/", 1)
     return {"model": model, "provider": normalize_provider(parts[0]) if len(parts) > 1 else "unknown",
             "providers": list_available_providers()}
 
 
 def _cfg_get_project(params: ConfigGetParams):
-    raw = str(params.cwd or (_load_cfg().get("terminal") or {}).get("cwd", "") or "").strip()
-    cwd = _completion_cwd({"cwd": raw} if raw else {})
-    return {"cwd": cwd, "branch": git_probe.branch(cwd)}
+    raw = str(params.cwd or (srv._load_cfg().get("terminal") or {}).get("cwd", "") or "").strip()
+    cwd = srv._completion_cwd({"cwd": raw} if raw else {})
+    return {"cwd": cwd, "branch": srv.git_probe.branch(cwd)}
 
 
 def _cfg_get_personality(params):
     # EFFECTIVE personality via the single owner — a stale/unknown name must not show as active.
     from hermes_cli.personality import active_personality_name
-    return {"value": active_personality_name(_load_cfg()) or "none"}
+    return {"value": active_personality_name(srv._load_cfg()) or "none"}
 
 
 def _cfg_get_reasoning(params: ConfigGetParams):
-    cfg = _load_cfg()
-    session = _sessions.get(params.session_id) or {}
+    cfg = srv._load_cfg()
+    session = srv._sessions.get(params.session_id) or {}
     reasoning_config = session.get("create_reasoning_override")
     if session and not isinstance(reasoning_config, dict):
         reasoning_config = getattr(session.get("agent"), "reasoning_config", None)
@@ -192,40 +191,40 @@ def _cfg_get_reasoning(params: ConfigGetParams):
 def _cfg_get_fast(params: ConfigGetParams):
     # `config.set fast` is session-scoped: prefer the session's live/pinned value over the
     # global key (a pre-build session keeps its pin in create_service_tier_override).
-    session = _sessions.get(params.session_id) or {}
+    session = srv._sessions.get(params.session_id) or {}
     agent = session.get("agent")
     tier = (getattr(agent, "service_tier", None) if agent is not None
             else session.get("create_service_tier_override"))
     if tier is None:
-        tier = _load_service_tier()
+        tier = srv._load_service_tier()
     return {"value": "fast" if tier == "priority" else "normal"}
 
 
 def _cfg_get_thinking_mode(params):
-    raw = _display_word("thinking_mode", "", _THINKING_MODES)
+    raw = _display_word("thinking_mode", "", srv._THINKING_MODES)
     if not raw:  # legacy details_mode fallback
-        raw = "full" if _display_word("details_mode", "collapsed", _DETAIL_MODES) == "expanded" else "collapsed"
+        raw = "full" if _display_word("details_mode", "collapsed", srv._DETAIL_MODES) == "expanded" else "collapsed"
     return {"value": raw}
 
 
 def _cfg_get_mtime(params):
-    cfg_path = _hermes_home / "config.yaml"
+    cfg_path = srv._hermes_home / "config.yaml"
     try:
         mtime = cfg_path.stat().st_mtime if cfg_path.exists() else 0
     except Exception:
         return {"mtime": 0}
     # mcp_rev: hash of the MCP-relevant sections so the poller reloads MCP servers only when
     # their config changed — a /skin write bumps mtime but must not cost an MCP reconnect.
-    return {"mtime": mtime, "mcp_rev": _compute_mcp_rev()}
+    return {"mtime": mtime, "mcp_rev": srv._compute_mcp_rev()}
 
 
-# key -> getter(params); bind_module rebinds the table's functions onto server.py's globals.
+# key -> getter(params); bind_module publishes the table onto server.py.
 _CONFIG_GETTERS = {
     "provider": _cfg_get_provider,
-    "profile": lambda params: {"home": str(_hermes_home), "display": _display_hermes_home()},
+    "profile": lambda params: {"home": str(srv._hermes_home), "display": _display_hermes_home()},
     "project": _cfg_get_project,
-    "full": lambda params: {"config": _load_cfg()},
-    "prompt": lambda params: {"prompt": _load_cfg().get("custom_prompt", "")},
+    "full": lambda params: {"config": srv._load_cfg()},
+    "prompt": lambda params: {"prompt": srv._load_cfg().get("custom_prompt", "")},
     "skin": lambda params: {"value": _display_raw().get("skin", "default")},
     # Normalised like the TUI renders it (frontend falls back to the default for the same inputs).
     "indicator": lambda params: {
@@ -233,17 +232,17 @@ _CONFIG_GETTERS = {
     "personality": _cfg_get_personality,
     "reasoning": _cfg_get_reasoning,
     "fast": _cfg_get_fast,
-    "busy": lambda params: {"value": _load_busy_input_mode()},
-    "approval_mode": lambda params: {"value": _load_approval_mode()},
-    "approvals.mode": lambda params: {"value": _load_approval_mode()},
-    "details_mode": lambda params: {"value": _display_word("details_mode", "collapsed", _DETAIL_MODES)},
+    "busy": lambda params: {"value": srv._load_busy_input_mode()},
+    "approval_mode": lambda params: {"value": srv._load_approval_mode()},
+    "approvals.mode": lambda params: {"value": srv._load_approval_mode()},
+    "details_mode": lambda params: {"value": _display_word("details_mode", "collapsed", srv._DETAIL_MODES)},
     "thinking_mode": _cfg_get_thinking_mode,
     "density": lambda params: {"value": "on" if bool(_display_raw().get("tui_compact", False)) else "off"},
     "theme": lambda params: {"value": _display_word("tui_theme", "auto", {"auto", "light", "dark"})},
-    "statusbar": lambda params: {"value": _coerce_statusbar(_display_cfg().get("tui_statusbar", "top"))},
-    "focus": lambda params: {"value": "on" if bool(_display_cfg().get("focus_view", False)) else "off",
-                             "tool_progress": _load_tool_progress_mode()},
-    "mouse": lambda params: {"value": _display_mouse_tracking(_load_cfg().get("display"))},
+    "statusbar": lambda params: {"value": srv._coerce_statusbar(srv._display_cfg().get("tui_statusbar", "top"))},
+    "focus": lambda params: {"value": "on" if bool(srv._display_cfg().get("focus_view", False)) else "off",
+                             "tool_progress": srv._load_tool_progress_mode()},
+    "mouse": lambda params: {"value": srv._display_mouse_tracking(srv._load_cfg().get("display"))},
     "mtime": _cfg_get_mtime}
 # Getters whose failure is a JSON-RPC error of this code (others propagate to dispatch).
 _CONFIG_GET_ERR = {"provider": 5013, "approval_mode": 5001, "approvals.mode": 5001}
@@ -253,15 +252,15 @@ _CONFIG_GET_ERR = {"provider": 5013, "approval_mode": 5001, "approvals.mode": 50
 @_profile_scoped
 def _(rid, params: ConfigGetParams) -> ConfigGetResult | dict:
     key = params.key
-    getter = _CONFIG_GETTERS.get(key)
+    getter = srv._CONFIG_GETTERS.get(key)
     if getter is None:
-        return _err(rid, 4002, f"unknown config key: {key}")
+        return srv._err(rid, 4002, f"unknown config key: {key}")
     try:
         return ConfigGetResult(**getter(params))
     except Exception as e:
-        if key not in _CONFIG_GET_ERR:
+        if key not in srv._CONFIG_GET_ERR:
             raise
-        return _err(rid, _CONFIG_GET_ERR[key], str(e))
+        return srv._err(rid, srv._CONFIG_GET_ERR[key], str(e))
 
 
 # ── setup readiness
@@ -279,12 +278,12 @@ def _readiness_check(rid, params, probe, result_type):
         if not profiles_mod.profile_exists(profile):
             return result_type(ok=False, profile=params.profile,
                                error=f"Profile '{profile}' does not exist on this backend.")
-        home = _profile_home(profile)
+        home = srv._profile_home(profile)
     # ``profile_home=None`` is the launch profile: once this process multiplexes its probe must
     # run under its own frozen secret scope too (``_profile_runtime_scope_tokens`` binds nothing in
     # a single-profile process), or the first profile-scoped read inside the resolver
     # (``HERMES_CODEX_BASE_URL`` for openai-codex) fails closed and the UI shows onboarding.
-    with _session_profile_runtime_scope({"profile_home": str(home) if home is not None else None}):
+    with srv._session_profile_runtime_scope({"profile_home": str(home) if home is not None else None}):
         return result_type(**probe(profile, {"profile": profile} if profile else {}))
 
 
@@ -311,9 +310,9 @@ def _(rid, params: Params) -> SetupStatusResult | dict:
             return {"provider_configured": record.provider_configured, "ready": True,
                     "free_tier": record.free_tier, "other_providers": record.other_providers,
                     "inference_provider": record.inference_provider, **record.failure_fields(), **scoped}
-        return _readiness_check(rid, params, probe, SetupStatusResult)
+        return srv._readiness_check(rid, params, probe, SetupStatusResult)
     except Exception as e:
-        return _err(rid, 5016, str(e))
+        return srv._err(rid, 5016, str(e))
 
 
 @method("setup.runtime_check")
@@ -321,7 +320,7 @@ def _(rid, params: SetupRuntimeCheckParams) -> SetupRuntimeCheckResult | dict:
     """Readiness probe for the session a client is about to open (setup.status is True if ANY
     provider auth state is discoverable): ok=False + the auth error when the model can't be served,
     so UIs surface onboarding before a doomed prompt. Without ``provider`` it runs the SAME
-    resolver as session creation (``_resolve_agent_model_runtime``: startup model + provider pin,
+    resolver as session creation (``srv._resolve_agent_model_runtime``: startup model + provider pin,
     then the configured fallback chain) — a probe that ignores the chain shows onboarding for a
     backend whose sessions build fine. An explicit ``provider`` stays a strict single-provider
     check so onboarding can verify the provider just connected without another provider's
@@ -335,10 +334,10 @@ def _(rid, params: SetupRuntimeCheckParams) -> SetupRuntimeCheckResult | dict:
 
         def probe(profile, scoped):
             if requested:
-                model, _startup_provider = _resolve_startup_runtime()
+                model, _startup_provider = srv._resolve_startup_runtime()
                 runtime = resolve_runtime_provider(requested=requested, target_model=model or None)
             else:
-                model, runtime = _resolve_agent_model_runtime(None, None)
+                model, runtime = srv._resolve_agent_model_runtime(None, None)
             provider_configured = bool(_has_any_provider_configured(strict_profile_scope=bool(profile)))
             provider = runtime.get("provider") or "provider"
             source = str(runtime.get("source") or "")
@@ -361,7 +360,7 @@ def _(rid, params: SetupRuntimeCheckParams) -> SetupRuntimeCheckResult | dict:
                     "source": runtime.get("source"),
                     "free_tier": provider == "nous" and route_is_welcome_host(runtime.get("base_url")),
                     **scoped}
-        return _readiness_check(rid, params, probe, SetupRuntimeCheckResult)
+        return srv._readiness_check(rid, params, probe, SetupRuntimeCheckResult)
     except Exception as e:
         return SetupRuntimeCheckResult(ok=False, error=str(e))
 
@@ -395,7 +394,7 @@ def _(rid, params: DiagnosticsShareNousParams) -> DiagnosticsShareNousResult | d
             bundle["error-context.txt"] = _redact_log_text(error_context.strip()[:8_000])
         # Bounded: at most 4 files, 512KB each, sanitized labels — not an arbitrary upload surface.
         for label, text in list((params.extra_files or {}).items())[:4]:
-            safe_label = _safe_client_label(label) if isinstance(label, str) else ""
+            safe_label = srv._safe_client_label(label) if isinstance(label, str) else ""
             if safe_label and isinstance(text, str) and text.strip():
                 bundle[f"client/{safe_label}"] = _redact_log_text(text[:524_288])
         res = share_to_nous(build_nous_bundle(bundle, redact=True))
@@ -411,5 +410,9 @@ def _(rid, params: DiagnosticsShareNousParams) -> DiagnosticsShareNousResult | d
 
 
 def register(server) -> None:
-    """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
+    """Publish this module's helpers + handlers onto ``server`` and install its handlers."""
     bind_module(globals(), server, skip=("_",))
+
+# Bound last, after every definition, so importing this module first (tests, the gateway process)
+# lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.
+from tui_gateway import server as srv  # noqa: E402

@@ -1,12 +1,16 @@
 """Live compression: config hot-reload onto a running agent, pending model switch apply, /compress
-(CompressionLockHeld when a turn holds the lock), session-key sync after compress. Bodies are rebound
-onto server.py's globals (method_ctx.bind_module) and reference them bare."""
+(CompressionLockHeld when a turn holds the lock), session-key sync after compress. Reaches server.py state through ``srv`` (method_ctx.py)."""
 
 from __future__ import annotations
 
 import contextlib
 
 from .method_ctx import bind_module
+from typing import Any
+from utils import is_truthy_value
+import logging
+
+logger = logging.getLogger("tui_gateway.server")  # siblings log as the gateway facade (operators and caplog filter on it)
 
 
 def _tui_compression_config_signature(cfg: dict | None) -> tuple:
@@ -42,7 +46,7 @@ def _derived_default_threshold_percent(agent: Any, compression: dict) -> float:
     global default, then per-model resolution (Codex autoraise etc.) via the SAME
     ``_resolve_compression_threshold`` — removing the key restores the model-derived value."""
     try:
-        pct = float(_compressor_ctor_default("threshold_percent", 0.50))
+        pct = float(srv._compressor_ctor_default("threshold_percent", 0.50))
     except (TypeError, ValueError):
         pct = 0.50
     try:
@@ -101,16 +105,16 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     if cc is None:
         return
     # tail_mode: unknown/absent values land on the ctor default ("lean"), matching agent_init.
-    default_tail = str(_compressor_ctor_default("tail_mode", "lean"))
+    default_tail = str(srv._compressor_ctor_default("tail_mode", "lean"))
     mode = str(compression.get("tail_mode", default_tail) or default_tail).strip().lower()
     cc.tail_mode = mode if mode in ("legacy", "lean") else default_tail
-    for key, fallback, min_value in _COMPRESSION_INT_KEYS:
-        default = int(_compressor_ctor_default(key, fallback))
+    for key, fallback, min_value in srv._COMPRESSION_INT_KEYS:
+        default = int(srv._compressor_ctor_default(key, fallback))
         raw = compression.get(key, default)
         with contextlib.suppress(TypeError, ValueError):
             setattr(cc, key, max(min_value, default if raw is None else int(raw)))
     with contextlib.suppress(TypeError, ValueError):
-        ratio_raw = compression.get("target_ratio", _compressor_ctor_default("summary_target_ratio", 0.20))
+        ratio_raw = compression.get("target_ratio", srv._compressor_ctor_default("summary_target_ratio", 0.20))
         cc.summary_target_ratio = max(0.10, min(float(ratio_raw), 0.80))
     # Absent or invalid shape (agent_init treats both as empty): stale overrides must stop steering.
     raw_thresholds = compression.get("model_thresholds")
@@ -125,7 +129,7 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
         with contextlib.suppress(TypeError, ValueError):
             pct = float(compression["threshold"])
     if pct is None:
-        pct = _derived_default_threshold_percent(agent, compression)
+        pct = srv._derived_default_threshold_percent(agent, compression)
     cc._config_threshold_percent = cc._configured_threshold_percent = pct
     base = cc._base_threshold_percent = resolve_model_threshold(
         getattr(agent, "model", "") or "", cc.model_thresholds, pct, getattr(agent, "provider", "") or "",
@@ -160,14 +164,14 @@ def _sync_agent_compression_with_config(sid: str, session: dict) -> None:
     agent = session.get("agent")
     if agent is None:
         return
-    cfg = _load_cfg() or {}
-    signature = _tui_compression_config_signature(cfg)
+    cfg = srv._load_cfg() or {}
+    signature = srv._tui_compression_config_signature(cfg)
     seen = session.get("config_compression_seen")
     session["config_compression_seen"] = signature
     if signature == seen:
         return
     try:
-        _apply_live_compression_config(agent, cfg)
+        srv._apply_live_compression_config(agent, cfg)
     except Exception as e:
         logger.warning("Could not apply live compression config for %s: %s", sid, e)
 
@@ -180,13 +184,13 @@ def _apply_pending_model_switch(sid: str, session: dict) -> None:
     if not pending or session.get("agent") is None:
         return
     try:
-        result = _apply_model_switch(sid, session, pending["raw"], confirm_expensive_model=bool(pending.get("confirm_expensive_model")))
+        result = srv._apply_model_switch(sid, session, pending["raw"], confirm_expensive_model=bool(pending.get("confirm_expensive_model")))
         # Honour the expensive-model confirm: surface the warning and drop the switch rather than spend
         # on a model the user never confirmed.
         if result.get("confirm_required"):
-            _emit("error", sid, {"message": result.get("confirm_message") or result.get("warning") or ""})
+            srv._emit("error", sid, {"message": result.get("confirm_message") or result.get("warning") or ""})
     except Exception as e:
-        _emit("error", sid, {"message": f"Could not switch model: {e}"})
+        srv._emit("error", sid, {"message": f"Could not switch model: {e}"})
 
 
 class CompressionLockHeld(Exception):
@@ -215,26 +219,26 @@ def _compress_session_history(
         with session["history_lock"]:
             before_messages, history_version = list(session.get("history", [])), int(session.get("history_version", 0))
     if len(before_messages) < MIN_MESSAGES:
-        return 0, _get_usage(agent)
+        return 0, srv._get_usage(agent)
     request = parse_compress_args(focus_topic or "")
     if request.aggressive:
         raise ValueError(AGGRESSIVE_UNSUPPORTED)
     result = compress_now(agent, before_messages, request, task_id=session.get("session_key") or "default")
     if result.status == "preview":
-        return 0, _get_usage(agent)
+        return 0, srv._get_usage(agent)
     # Lock-skipped: raise so callers surface a clear message instead of "No changes from compression".
     if result.status == "lock_skipped":
         raise CompressionLockHeld(result.lock_holder)
     if result.status != "compressed":
-        return 0, _get_usage(agent)
+        return 0, srv._get_usage(agent)
     with session["history_lock"]:
         if int(session.get("history_version", 0)) != history_version:
             # External mutation during compaction — drop the result so we don't clobber concurrent edits.
             finalize_context_engine_compression_notification(agent, committed=False)
-            return 0, _get_usage(agent)
+            return 0, srv._get_usage(agent)
         session["history"] = result.after_messages
         session["history_version"] = history_version + 1
-    return result.removed, _get_usage(agent)
+    return result.removed, srv._get_usage(agent)
 
 
 def _sync_session_key_after_compress(
@@ -249,7 +253,7 @@ def _sync_session_key_after_compress(
     old_key = session.get("session_key", "") or ""
     if not new_session_id or new_session_id == old_key:
         return
-    if not _transfer_active_session_slot(sid, session, new_session_id=new_session_id):
+    if not srv._transfer_active_session_slot(sid, session, new_session_id=new_session_id):
         logger.warning(
             "Compression session lease did not re-anchor: sid=%s old_session_id=%s new_session_id=%s",
             sid, old_key, new_session_id,
@@ -265,7 +269,7 @@ def _sync_session_key_after_compress(
                 approval.enable_session_yolo(new_session_id)
                 approval.disable_session_yolo(old_key)
         with contextlib.suppress(Exception):
-            approval.register_gateway_notify(new_session_id, lambda data: _emit_approval_request(sid, data))
+            approval.register_gateway_notify(new_session_id, lambda data: srv._emit_approval_request(sid, data))
     # Invalidate any in-flight ``_drain_queued_prompt`` claim taken under the pre-rotation key: a raced
     # drain must not dispatch on the continuation (its envelope is restored to the queue).
     session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
@@ -273,9 +277,13 @@ def _sync_session_key_after_compress(
         session["pending_title"] = None
     if restart_slash_worker:
         with contextlib.suppress(Exception):
-            _restart_slash_worker(sid, session)
+            srv._restart_slash_worker(sid, session)
 
 
 def register(server) -> None:
-    """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
+    """Publish this module's helpers + handlers onto ``server`` and install its handlers."""
     bind_module(globals(), server, skip=("_",))
+
+# Bound last, after every definition, so importing this module first (tests, the gateway process)
+# lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.
+from tui_gateway import server as srv  # noqa: E402

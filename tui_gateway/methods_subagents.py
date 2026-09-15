@@ -14,6 +14,9 @@ from .contracts.profiles_vault_complete_foreign_subagents import (
     SubagentListResult,
     SubagentTailResult,
 )
+import logging
+
+logger = logging.getLogger("tui_gateway.server")  # siblings log as the gateway facade (operators and caplog filter on it)
 
 _registry = HandlerRegistry()
 method = _registry.method
@@ -39,12 +42,12 @@ def _owned_subagent_records(session_id, transport, owner):
 def _(rid, params: SessionParams) -> SubagentListResult | dict:
     from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import SubagentListResult
     session_id = params.session_id
-    transport, owner = _current_session_steer_authority(session_id)
+    transport, owner = srv._current_session_steer_authority(session_id)
     if transport is None or owner is None:
-        return _err(rid, 4001, "session not found or not owned by this transport")
-    live = _owned_subagent_records(session_id, transport, owner)
+        return srv._err(rid, 4001, "session not found or not owned by this transport")
+    live = srv._owned_subagent_records(session_id, transport, owner)
     return SubagentListResult(
-        subagents=[{key: r.get(key) for key in _SUBAGENT_SNAPSHOT_FIELDS} for r in live], delegations=[])
+        subagents=[{key: r.get(key) for key in srv._SUBAGENT_SNAPSHOT_FIELDS} for r in live], delegations=[])
 
 
 @method("subagent.interrupt")
@@ -54,12 +57,12 @@ def _(rid, params: SubagentIdParams) -> SubagentInterruptResult | dict:
 
     subagent_id = params.subagent_id
     if not subagent_id:
-        return _err(rid, 4000, "subagent_id required")
+        return srv._err(rid, 4000, "subagent_id required")
     session_id = params.session_id
-    transport, owner = _current_session_steer_authority(session_id)
+    transport, owner = srv._current_session_steer_authority(session_id)
     if transport is None or owner is None:
-        return _err(rid, 4001, "session not found or not owned by this transport")
-    record = next((r for r in _owned_subagent_records(session_id, transport, owner)
+        return srv._err(rid, 4001, "session not found or not owned by this transport")
+    record = next((r for r in srv._owned_subagent_records(session_id, transport, owner)
                    if r.get("subagent_id") == subagent_id), None)
     agent = record.get("agent") if record else None
     # Interrupt the authorized object, never re-resolve a globally recyclable id.
@@ -78,12 +81,12 @@ def _(rid, params: SubagentIdParams) -> SubagentTailResult | dict:
     session_id = params.session_id
     subagent_id = params.subagent_id
     if not subagent_id:
-        return _err(rid, 4000, "subagent_id required")
-    transport, owner = _current_session_steer_authority(session_id)
+        return srv._err(rid, 4000, "subagent_id required")
+    transport, owner = srv._current_session_steer_authority(session_id)
     if transport is None or owner is None:
-        return _err(rid, 4001, "session not found or not owned by this transport")
+        return srv._err(rid, 4001, "session not found or not owned by this transport")
     result = SubagentTailResult(subagent_id=subagent_id, available=False, text="", truncated=False)
-    record = next((r for r in _owned_subagent_records(session_id, transport, owner)
+    record = next((r for r in srv._owned_subagent_records(session_id, transport, owner)
                    if r.get("subagent_id") == subagent_id), None)
     path = getattr(record.get("agent"), "_live_transcript_path", None) if record else None
     if not path:
@@ -91,13 +94,17 @@ def _(rid, params: SubagentIdParams) -> SubagentTailResult | dict:
     try:
         with open(path, "rb") as stream:
             size = stream.seek(0, 2)
-            stream.seek(max(0, size - _SUBAGENT_TAIL_BYTES))
-            text = stream.read(_SUBAGENT_TAIL_BYTES).decode("utf-8", errors="ignore")
+            stream.seek(max(0, size - srv._SUBAGENT_TAIL_BYTES))
+            text = stream.read(srv._SUBAGENT_TAIL_BYTES).decode("utf-8", errors="ignore")
     except OSError:
         # Creation/cleanup races are normal while a child starts or ends.
         return result
-    return SubagentTailResult(subagent_id=subagent_id, available=True, text=text, truncated=size > _SUBAGENT_TAIL_BYTES)
+    return SubagentTailResult(subagent_id=subagent_id, available=True, text=text, truncated=size > srv._SUBAGENT_TAIL_BYTES)
 
 
 def register(server):
     bind_module(globals(), server)
+
+# Bound last, after every definition, so importing this module first (tests, the gateway process)
+# lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.
+from tui_gateway import server as srv  # noqa: E402

@@ -1,8 +1,13 @@
-"""JSON-RPC admission and worker dispatch. Rebound onto the server namespace."""
+"""JSON-RPC admission and worker dispatch. Published onto the server namespace (``srv.dispatch``)."""
 
 from __future__ import annotations
 
+import contextvars
+import logging
 from .method_ctx import bind_module
+from .transport import bind_transport, reset_transport
+
+logger = logging.getLogger("tui_gateway.server")  # siblings log as the gateway facade (operators and caplog filter on it)
 
 
 def handle_request(req: dict) -> dict | None:
@@ -10,64 +15,64 @@ def handle_request(req: dict) -> dict | None:
 
     with retirement.work() as admitted:
         if not admitted:
-            return _err(req.get("id"), 5035, "backend is retiring; reconnect to continue")
-        return _handle_admitted_request(req)
+            return srv._err(req.get("id"), 5035, "backend is retiring; reconnect to continue")
+        return srv._handle_admitted_request(req)
 
 
 def _handle_admitted_request(req: dict) -> dict | None:
-    normalized = _normalize_request(req)
+    normalized = srv._normalize_request(req)
     if isinstance(normalized, dict):
         return normalized
     rid, method, params = normalized
-    if not (fn := _methods.get(method)):
-        return _err(rid, -32601, f"unknown method: {method} — the client and the Hermes backend are out of sync "
+    if not (fn := srv._methods.get(method)):
+        return srv._err(rid, -32601, f"unknown method: {method} — the client and the Hermes backend are out of sync "
                     "(different versions); run `hermes update` and restart both")
-    token = _current_rpc_method.set(method)
+    token = srv._current_rpc_method.set(method)
     try:
         return fn(rid, params)
-    except ProfileUnavailableError as exc:
-        return _err(rid, 4064, str(exc))
+    except srv.ProfileUnavailableError as exc:
+        return srv._err(rid, 4064, str(exc))
     finally:
-        _current_rpc_method.reset(token)
+        srv._current_rpc_method.reset(token)
 
 
-def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
+def dispatch(req: dict, transport: srv.Transport | None = None) -> dict | None:
     """Route inbound RPCs — long handlers to the pool (returns None; the worker writes its own
     response via the bound transport), everything else inline (returns the response dict).
     *transport* pins every write of this request — events included — to that transport;
     omitted → the module stdio transport (``tui_gateway.entry`` behaviour)."""
-    t = transport or _stdio_transport
+    t = transport or srv._stdio_transport
     token = bind_transport(t)
     try:
         from tui_gateway import server_requests
         if server_requests.is_response_frame(req):
             # The renderer answering one of OUR requests (clarify, approval, …): no response frame goes back.
-            if not server_requests.resolve_response(req) and not _relay_compute_host_response(req):
+            if not server_requests.resolve_response(req) and not srv._relay_compute_host_response(req):
                 logger.debug("dropping response for unknown server request id=%r", req.get("id"))
             return None
-        normalized = _normalize_request(req)
+        normalized = srv._normalize_request(req)
         if isinstance(normalized, dict):
             return normalized
-        if normalized[1] not in _LONG_HANDLERS:
-            return handle_request(req)
+        if normalized[1] not in srv._LONG_HANDLERS:
+            return srv.handle_request(req)
         from hermes_cli.backend_retirement import retirement
 
         # Reserve BEFORE enqueueing: a queued handler has accepted work even though no worker runs yet.
         if not retirement.acquire():
-            return _err(req.get("id"), 5035, "backend is retiring; reconnect to continue")
+            return srv._err(req.get("id"), 5035, "backend is retiring; reconnect to continue")
         try:
             ctx = contextvars.copy_context()  # the pool worker must see the bound transport
-            if normalized[1] in _CONNECTOR_RPC_METHODS:
-                ctx.run(_capture_connector_rpc_owner, normalized[2])
+            if normalized[1] in srv._CONNECTOR_RPC_METHODS:
+                ctx.run(srv._capture_connector_rpc_owner, normalized[2])
 
             def run():
                 try:
-                    resp = _handle_admitted_request(req)
+                    resp = srv._handle_admitted_request(req)
                 except Exception as exc:
-                    resp = _err(req.get("id"), -32000, f"handler error: {exc}")
+                    resp = srv._err(req.get("id"), -32000, f"handler error: {exc}")
                 if resp is not None:
                     t.write(resp)
-            future = _pool.submit(lambda: ctx.run(run))
+            future = srv._pool.submit(lambda: ctx.run(run))
         except BaseException:
             retirement.release()
             raise
@@ -80,3 +85,7 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
 
 def register(server):
     bind_module(globals(), server)
+
+# Bound last, after every definition, so importing this module first (tests, the gateway process)
+# lets server.py's own tail import see a complete module — the same tail-import idiom server.py uses.
+from tui_gateway import server as srv  # noqa: E402

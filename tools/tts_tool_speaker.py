@@ -11,6 +11,7 @@ playback). Origin seams are resolved through :func:`_origin` at call time.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import platform
@@ -105,8 +106,22 @@ class _SyncSentencePipeline:
         try:
             fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
             os.close(fd)
-            _origin().text_to_speech_tool(text=cleaned, output_path=tmp_path)
-            return tmp_path
+            raw = _origin().text_to_speech_tool(text=cleaned, output_path=tmp_path)
+            # The tool is authoritative about the final path: providers can container-convert
+            # and rename (e.g. command providers with voice_compatible=True end up as .ogg).
+            # Returning the requested .mp3 stub would leave 0 bytes there and the drain's
+            # size guard would silently drop playback. Parse the result envelope first;
+            # if it isn't parseable (tests, unknown wrappers), fall back to the requested
+            # path only when it actually holds audio.
+            try:
+                result = json.loads(raw) if isinstance(raw, str) else {}
+            except json.JSONDecodeError:
+                result = {}
+            if result.get("success") and result.get("file_path"):
+                return result["file_path"]
+            if tmp_path and os.path.isfile(tmp_path) and os.path.getsize(tmp_path) > 0:
+                return tmp_path
+            return None
         except Exception as exc:
             logger.warning("Sync per-sentence TTS synthesis failed: %s", exc)
             _unlink_quietly(tmp_path)

@@ -71,6 +71,9 @@ class PlatformEntry:
     source: str = "plugin"  # "builtin" or "plugin"
     plugin_name: str = ""  # owning manifest so ``hermes gateway setup`` can auto-enable it
     allowed_users_env: str = ""  # comma-separated allowed user IDs (_is_user_authorized)
+    # Optional chat-scoped group allowlist env var. Generic authz consumes
+    # this instead of hardcoding plugin platform names.
+    group_allowed_chats_env: str = ""
     allow_all_env: str = ""  # truthy "allow everyone" switch
     max_message_length: int = 0  # smart-chunking cap; 0 = no limit
     pii_safe: bool = False  # session descriptions redact PII (phone numbers, etc.)

@@ -126,6 +126,8 @@ export interface Translations {
     diskCriticalBanner?: string;
     diskElevatedBanner?: string;
     dismiss?: string;
+    dashboardOffline?: string;
+    dashboardRetrying?: string;
   };
 
   // ── Status page ──

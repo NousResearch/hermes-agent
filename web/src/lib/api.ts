@@ -3,6 +3,17 @@ import {
   type ModelOptionProvider,
   type ModelOptionsResult,
 } from "@hermes/shared";
+import {
+  DashboardUnreachableError,
+  markDashboardReachable,
+  markDashboardUnreachable,
+} from "@/lib/dashboard-reachability";
+
+export {
+  DASHBOARD_UNREACHABLE_CODE,
+  DashboardUnreachableError,
+  isDashboardUnreachableError,
+} from "@/lib/dashboard-reachability";
 
 // The dashboard can be served either at the root of its host (e.g.
 // https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
@@ -28,7 +39,7 @@ import {
   attemptDashboardTokenReloadOnce,
   clearDashboardTokenReloadAttempt,
 } from "@/lib/dashboard-auth-reload";
-import { apiErrorFromNetworkFailure, apiErrorFromResponse } from "@/lib/api-error";
+import { apiErrorFromResponse } from "@/lib/api-error";
 
 // Ephemeral session token for protected endpoints.
 // Injected into index.html by the server — never fetched via API.
@@ -131,15 +142,15 @@ export async function fetchJSON<T>(
       // already attached above.
       credentials: init?.credentials ?? "include",
     });
-  } catch (cause) {
-    // fetch() only rejects when the request never got a response: the
-    // backend is down, the port is closed, or the network dropped. Tell the
-    // user that in words instead of `TypeError: Failed to fetch`.
-    const err = apiErrorFromNetworkFailure(cause, url);
-    // The toast shows only the sentence; keep status/path/body in the console for bug reports.
-    console.warn("[api]", err.details);
-    throw err;
+  } catch (error) {
+    if (init?.signal?.aborted || isAbortError(error)) throw error;
+    markDashboardUnreachable();
+    throw new DashboardUnreachableError(getDashboardBaseUrl(), { cause: error });
   }
+
+  // Any HTTP response proves the backend is reachable. Status/auth/body
+  // failures below retain their existing handling and are not outages.
+  markDashboardReachable();
   if (res.status === 401) {
     // Phase 6: the gated middleware emits a structured envelope so the
     // SPA can full-page-navigate to /login on session expiry. Parse it,
@@ -202,6 +213,19 @@ export async function fetchJSON<T>(
     throw err;
   }
   return res.json();
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { name?: unknown }).name === "AbortError"
+  );
+}
+
+function getDashboardBaseUrl(): string {
+  const origin = typeof window === "undefined" ? "" : window.location?.origin;
+  return origin ? `${origin}${BASE}` : BASE || "/";
 }
 
 /** Encode a plugin registry key for URL paths (preserves `/` segment separators). */

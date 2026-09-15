@@ -45,7 +45,9 @@ import type { ComponentType } from "react";
  * JSON ``fetch`` for dashboard ``/api/...`` endpoints. Handles auth in both
  * modes (loopback session-token header / gated cookie), throws
  * ``Error("<status>: <body>")`` on non-2xx, and triggers the global
- * 401 → /login redirect in gated mode. Use for all JSON plugin endpoints.
+ * 401 → /login redirect in gated mode. Transport failures reject with an
+ * error whose ``code`` is ``DASHBOARD_UNREACHABLE``. Use for all JSON plugin
+ * endpoints.
  */
 export type FetchJSON = <T = unknown>(
   url: string,

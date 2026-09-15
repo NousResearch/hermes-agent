@@ -24,6 +24,12 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
             "profiles with its supervisor and running code version, and how "
             "each will be restarted. Read-only; safe on a live fleet.")
     update_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="With --plan, print the update plan as JSON instead of prose.",
+    )
+    update_parser.add_argument(
         "--no-backup", action="store_true", default=False,
         help="Skip ALL pre-update backups for this run (both the quick state snapshot and the full zip; overrides updates.pre_update_backup)",
     )

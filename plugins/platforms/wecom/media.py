@@ -53,7 +53,7 @@ def _media_body(media_type: str, media_id: str) -> Dict[str, Any]:
 class WeComMediaMixin:
     """Media helpers mixed into WeComAdapter (uses its transport, req_id cache and stream registry)."""
 
-    async def _extract_media(self, body: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+    async def _extract_media(self, body: Dict[str, Any]) -> Tuple[List[str], List[str], List[str]]:
         refs: List[Tuple[str, Dict[str, Any]]] = []
         msgtype = str(body.get("msgtype") or "").lower()
 
@@ -78,8 +78,15 @@ class WeComMediaMixin:
         quote_type = str(quote.get("msgtype") or "").lower()
         if quote_type in ("image", "file"):
             _ref(quote_type, quote)
-        cached = [c for c in [await self._cache_media(kind, ref) for kind, ref in refs] if c]
-        return [c[0] for c in cached], [c[1] for c in cached]
+        cached, errors = [], []
+        for index, (kind, ref) in enumerate(refs, 1):
+            item = await self._cache_media(kind, ref)
+            if item:
+                cached.append(item)
+            else:
+                label = "图片" if kind == "image" else "文件"
+                errors.append(f"{label} #{index} 读取失败，请重新发送。")
+        return [c[0] for c in cached], [c[1] for c in cached], errors
 
     async def _cache_media(self, kind: str, media: Dict[str, Any]) -> Optional[Tuple[str, str]]:
         """Cache an inbound image/file reference (inline base64 or URL) to local storage."""

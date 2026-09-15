@@ -19,6 +19,7 @@ import { $sidebarShowAllSessions, setSidebarAgentsGrouped } from '@/store/layout
 import { notify } from '@/store/notifications'
 import {
   $activeGatewayProfile,
+  $profiles,
   $profileScope,
   ALL_PROFILES,
   normalizeProfileKey,
@@ -279,10 +280,14 @@ async function gatewayRequest<T>(method: string, params: Record<string, unknown>
   return gateway.request<T>(method, params)
 }
 
+function viewingAllProfiles(): boolean {
+  return $profileScope.get() === ALL_PROFILES && $profiles.get().length > 1
+}
+
 export function projectProfile(): null | string {
   const profile = normalizeProfileKey($activeGatewayProfile.get())
 
-  return $profileScope.get() === ALL_PROFILES || profile === ALL_PROFILES ? null : profile
+  return viewingAllProfiles() || profile === ALL_PROFILES ? null : profile
 }
 
 function projectParams(
@@ -462,7 +467,7 @@ async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<voi
 // sessions + the scoped-session-id set). Best-effort: a failure leaves the
 // cached tree intact so the sidebar doesn't flicker.
 export async function refreshProjectTree(): Promise<void> {
-  if ($profileScope.get() === ALL_PROFILES) {
+  if (viewingAllProfiles()) {
     await refreshProjectTreeAcrossProfiles()
 
     return
@@ -491,7 +496,7 @@ async function refreshProjectTreeAcrossProfiles(): Promise<void> {
 
     // A profile switch mid-flight leaves this payload describing the wrong
     // scope; the newer refresh owns the tree.
-    if (generation !== projectTreeRefreshGeneration || $profileScope.get() !== ALL_PROFILES) {
+    if (generation !== projectTreeRefreshGeneration || !viewingAllProfiles()) {
       return
     }
 

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import { $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
-import { $activeGatewayProfile, $profileScope, ALL_PROFILES, setShowAllProfiles } from '@/store/profile'
+import { $activeGatewayProfile, $profiles, $profileScope, ALL_PROFILES, setShowAllProfiles } from '@/store/profile'
 import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
 
 import {
@@ -144,6 +144,7 @@ describe('projects RPC profile forwarding', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     $activeGatewayProfile.set('default')
+    $profiles.set([{ is_default: true, name: 'default' } as never])
     $activeProjectId.set(null)
     $projectTree.set([])
     setShowAllProfiles(false)
@@ -173,6 +174,7 @@ describe('projects RPC profile forwarding', () => {
     const gateway = { connectionState: 'open', request }
     activeGateway.mockReturnValue(gateway as never)
     gatewayAtom.set(gateway as never)
+    $profiles.set([{ is_default: true, name: 'default' } as never, { is_default: false, name: 'work' } as never])
     setShowAllProfiles(true)
 
     await refreshProjects()
@@ -180,6 +182,32 @@ describe('projects RPC profile forwarding', () => {
     await fetchProjectSessions('p_123')
 
     expect(request).not.toHaveBeenCalled()
+    setShowAllProfiles(false)
+  })
+
+  it('uses the active profile when a persisted all-profiles preference is hidden for one profile', async () => {
+    const project = { id: 'p_123' } as SidebarProjectTree
+
+    const request = vi.fn(async (method: string) =>
+      method === 'projects.project_sessions' ? { project } : { active_id: null, projects: [], scoped_session_ids: [] }
+    )
+
+    const gateway = { connectionState: 'open', request }
+
+    activeGateway.mockReturnValue(gateway as never)
+    gatewayAtom.set(gateway as never)
+    setShowAllProfiles(true)
+
+    await refreshProjects()
+    await refreshProjectTree()
+    await expect(fetchProjectSessions('p_123')).resolves.toBe(project)
+
+    expect(request).toHaveBeenNthCalledWith(1, 'projects.list', { profile: 'default' })
+    expect(request).toHaveBeenNthCalledWith(2, 'projects.tree', { preview_limit: 3, profile: 'default' })
+    expect(request).toHaveBeenNthCalledWith(3, 'projects.project_sessions', {
+      profile: 'default',
+      project_id: 'p_123'
+    })
     setShowAllProfiles(false)
   })
 })
@@ -415,6 +443,7 @@ describe('createProject', () => {
     $projects.set([])
     $projectTree.set([])
     $activeGatewayProfile.set('default')
+    $profiles.set([{ is_default: true, name: 'default' } as never, { is_default: false, name: 'work' } as never])
     setShowAllProfiles(false)
   })
 

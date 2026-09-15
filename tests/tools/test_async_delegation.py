@@ -777,6 +777,22 @@ def test_gateway_formatter_renders_async_block():
     assert "Investigate flaky test" in txt
 
 
+def test_empty_delegation_id_envelope_never_rendered(caplog):
+    """A completion with an empty/absent delegation_id has no real delegation
+    behind it (synthetic/echo lane) and must never render an envelope."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="tools.process_registry"):
+        assert format_process_notification(_make_async_evt(delegation_id="")) == ""
+    assert "empty delegation_id" in caplog.text
+    evt = _make_async_evt()
+    del evt["delegation_id"]
+    assert format_process_notification(evt) == ""
+    assert format_process_notification(
+        _make_async_evt(delegation_id="", is_batch=True, results=[])
+    ) == ""
+
+
 def test_gateway_cli_origin_event_left_unrouted():
     """An empty session_key (CLI origin) is left without routing fields."""
     from gateway.run import GatewayRunner

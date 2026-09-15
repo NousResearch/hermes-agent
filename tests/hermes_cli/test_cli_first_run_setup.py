@@ -104,6 +104,42 @@ def test_credentials_ready_true_with_key(monkeypatch):
     assert shell._runtime_credentials_ready() is True
 
 
+def test_credentials_ready_true_for_external_agent_loop(monkeypatch):
+    """External runtimes own auth and intentionally have no HTTP base URL."""
+    cli = _import_cli()
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kw: {
+            "provider": "claude-agent-sdk",
+            "api_mode": "claude_agent_sdk",
+            "api_key": "claude-subscription-oauth",
+            "base_url": "",
+            "source": "claude-agent-sdk",
+        },
+    )
+    shell = _make_shell(cli, monkeypatch)
+    assert shell._runtime_credentials_ready() is True
+
+
+def test_credentials_ready_false_for_http_provider_without_base_url(monkeypatch):
+    """The external-loop exemption must not weaken normal HTTP validation."""
+    cli = _import_cli()
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kw: {
+            "provider": "openrouter",
+            "api_mode": "chat_completions",
+            "api_key": "sk-test",
+            "base_url": "",
+            "source": "env/config",
+        },
+    )
+    shell = _make_shell(cli, monkeypatch)
+    assert shell._runtime_credentials_ready() is False
+
+
 def test_credentials_ready_true_for_keyless_local_endpoint(monkeypatch):
     """ollama/llama.cpp-style custom endpoints need no key."""
     cli = _import_cli()

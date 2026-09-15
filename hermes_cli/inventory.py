@@ -118,14 +118,18 @@ def build_models_payload(
 
     if explicit_only:
         rows = _filter_explicit_provider_rows(rows, ctx)
-        # If the current provider lost its credential, list_authenticated_providers() omits it; keep
-        # that one row so the UI shows the saved selection + a re-auth affordance instead of appearing
-        # to jump providers. Exception: a "custom" current on the managed local server is already
-        # represented by the Local row — the skeleton would resurrect the duplicate removed above.
-        _local_owns_current = bool(local_row and local_row.get("is_current")
-                                   and (ctx.current_provider or "").lower() == "custom")
-        if not _local_owns_current:
-            rows = list(rows) + _append_unconfigured_rows(rows, ctx, current_only=True)
+    # If the configured current provider is missing from the rows, keep one row so pickers show the
+    # saved selection (+ a re-auth affordance where re-authenticatable) instead of appearing to jump
+    # providers. Every payload, not just the explicit-only desktop subset: self-authenticating runtimes
+    # (auth_type "oauth_external", e.g. claude-agent-sdk on a Keychain-only login) hold no
+    # Hermes-inspectable credential by design, so list_authenticated_providers() omits them and the
+    # interactive TUI picker would otherwise hide the very provider serving turns. Exception: a
+    # "custom" current on the managed local server is already represented by the Local row — the
+    # skeleton would resurrect the duplicate removed above.
+    _local_owns_current = bool(local_row and local_row.get("is_current")
+                               and (ctx.current_provider or "").lower() == "custom")
+    if not _local_owns_current:
+        rows = list(rows) + _append_unconfigured_rows(rows, ctx, current_only=True)
 
     # A local proxy serving a model also in an aggregator's catalog would show under both, and picking
     # the aggregator row silently breaks the call — aggregators only list models no specific provider has.
@@ -382,11 +386,21 @@ def _apply_custom_aliases(rows: list[dict]) -> None:
 
 
 def _provider_auth_hint(slug: str) -> tuple[str, str]:
-    """``(auth_type, key_env)`` for a canonical provider (``("api_key", "")`` when unregistered)."""
+    """``(auth_type, key_env)`` for a canonical provider (``("api_key", "")`` when unknown). PROVIDER_REGISTRY
+    only covers providers with a Hermes-managed credential; plugin-registered self-authenticating runtimes
+    (claude-agent-sdk) declare auth_type in their provider PROFILE instead, and a bare "api_key" fallback
+    would make the picker hunt for a key they are designed never to have (#25267)."""
     from hermes_cli.auth import PROVIDER_REGISTRY
 
     cfg = PROVIDER_REGISTRY.get(slug)
-    auth_type = cfg.auth_type if cfg else "api_key"
+    auth_type = cfg.auth_type if cfg else ""
+    if not auth_type:
+        try:
+            from providers import get_provider_profile
+
+            auth_type = getattr(get_provider_profile(slug), "auth_type", "") or "api_key"
+        except Exception:
+            auth_type = "api_key"
     key_env = cfg.api_key_env_vars[0] if (cfg and cfg.api_key_env_vars) else ""
     return auth_type, key_env
 
@@ -399,6 +413,45 @@ def _canonical_row(entry, cur: str, **extra: Any) -> dict:
     from hermes_cli.models import _PROVIDER_LABELS
 
     return _row(entry.slug, _PROVIDER_LABELS.get(entry.slug, entry.label), entry.slug.lower() == cur, **extra)
+
+
+def _configured_current_row(entry, cur: str, cur_model: str) -> dict:
+    """Row for the configured current provider when discovery omitted it.
+
+    A provider that serves a delegate catalog (``_PROVIDER_CATALOG_DELEGATES``, e.g. claude-agent-sdk ->
+    anthropic) has no discoverable model list and its runtime holds the credential (``oauth_external``): it
+    is authenticated and warning-free, and the picker offers the delegate catalog with the saved model first
+    so the current config stays selectable (#25267) — treating it as unauthenticated hid it from the picker
+    entirely. Every other provider keeps the saved-only row: no inspectable credential, ``authenticated=False``,
+    and never an entitlement-gated model (Astra) that only account-scoped discovery may inject."""
+    from hermes_cli.models import _model_requires_account_discovery, _provider_catalog_names
+    from hermes_cli.models_catalog_static import _PROVIDER_CATALOG_DELEGATES
+
+    auth_type, key_env = _provider_auth_hint(entry.slug)
+    delegated_self_auth = auth_type == "oauth_external" and entry.slug in _PROVIDER_CATALOG_DELEGATES
+    saved_model = "" if _model_requires_account_discovery(entry.slug, cur_model) else cur_model
+    if delegated_self_auth:
+        catalog = list(_provider_catalog_names(entry.slug))
+        if not catalog:
+            catalog = [saved_model] if saved_model else []
+        elif saved_model:
+            catalog = [saved_model] + [m for m in catalog if m != saved_model]
+    else:
+        catalog = [saved_model] if saved_model else []
+    tail = (
+        "Astra requires successful account-scoped model discovery."
+        if cur_model and not saved_model else "Showing the saved model only."
+    )
+    warning = (
+        "" if delegated_self_auth
+        else f"Configured provider missing usable credentials; paste {key_env} to reactivate. {tail}"
+        if auth_type == "api_key" and key_env
+        else f"Configured provider is not authenticated; run `hermes model` to reactivate. {tail}"
+    )
+    return _canonical_row(
+        entry, cur, models=catalog, total_models=len(catalog), source="configured-current",
+        authenticated=delegated_self_auth, auth_type=auth_type, key_env=key_env, warning=warning,
+    )
 
 
 def _append_unconfigured_rows(
@@ -419,22 +472,7 @@ def _append_unconfigured_rows(
         if current_only and entry.slug.lower() != cur:
             continue
         if entry.slug.lower() == cur:
-            saved_model = "" if _model_requires_account_discovery(entry.slug, cur_model) else cur_model
-            auth_type, key_env = _provider_auth_hint(entry.slug)
-            tail = (
-                "Astra requires successful account-scoped model discovery."
-                if cur_model and not saved_model else "Showing the saved model only."
-            )
-            warning = (
-                f"Configured provider missing usable credentials; paste {key_env} to reactivate. {tail}"
-                if auth_type == "api_key" and key_env
-                else f"Configured provider is not authenticated; run `hermes model` to reactivate. {tail}"
-            )
-            extras.append(_canonical_row(
-                entry, cur, models=[saved_model] if saved_model else [], total_models=1 if saved_model else 0,
-                source="configured-current", authenticated=False, auth_type=auth_type, key_env=key_env,
-                warning=warning,
-            ))
+            extras.append(_configured_current_row(entry, cur, cur_model))
             continue
         extras.append(_canonical_row(entry, cur, models=[], total_models=0, source="canonical"))
     return extras

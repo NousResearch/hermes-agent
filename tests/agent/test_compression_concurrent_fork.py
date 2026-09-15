@@ -273,7 +273,10 @@ def test_lock_contender_preserves_terminal_compaction_lifecycle(tmp_path: Path) 
     unless ``compression.progress_notices`` is enabled.  The low-level event
     must remain available so the desktop can retire its compaction phase.
     """
-    from agent.conversation_compression import COMPACTION_DONE_STATUS
+    from agent.conversation_compression import (
+        COMPACTION_DONE_STATUS,
+        COMPACTION_STATUS_KEY,
+    )
 
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "LOCK_CONTENDER_STATUS_TEST"
@@ -297,12 +300,15 @@ def test_lock_contender_preserves_terminal_compaction_lifecycle(tmp_path: Path) 
 
     assert returned is messages
     assert getattr(agent, "_compression_skipped_due_to_lock", None) == "winner"
-    assert status_events.count(("compacted", COMPACTION_DONE_STATUS)) == 1
+    assert status_events.count((COMPACTION_STATUS_KEY, COMPACTION_DONE_STATUS)) == 1
 
 
 def test_failed_session_split_does_not_announce_compaction_complete(tmp_path: Path) -> None:
     """A failed durable split must not emit a successful completion edge."""
-    from agent.conversation_compression import COMPACTION_DONE_STATUS
+    from agent.conversation_compression import (
+        COMPACTION_DONE_STATUS,
+        COMPACTION_STATUS_KEY,
+    )
 
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "FAILED_SPLIT_STATUS_TEST"
@@ -326,13 +332,16 @@ def test_failed_session_split_does_not_announce_compaction_complete(tmp_path: Pa
     )
 
     db.publish_compression_child.assert_called_once()
-    assert ("compacted", COMPACTION_DONE_STATUS) not in status_events
+    assert (COMPACTION_STATUS_KEY, COMPACTION_DONE_STATUS) not in status_events
     assert db.get_compression_lock_holder(session_id) is None
 
 
 def test_failed_in_place_split_does_not_announce_compaction_complete(tmp_path: Path) -> None:
     """An in-place persistence failure must not emit a completion edge."""
-    from agent.conversation_compression import COMPACTION_DONE_STATUS
+    from agent.conversation_compression import (
+        COMPACTION_DONE_STATUS,
+        COMPACTION_STATUS_KEY,
+    )
 
     db = SessionDB(db_path=tmp_path / "state.db")
     session_id = "FAILED_IN_PLACE_STATUS_TEST"
@@ -356,7 +365,7 @@ def test_failed_in_place_split_does_not_announce_compaction_complete(tmp_path: P
     )
 
     db.archive_and_compact.assert_called_once()
-    assert ("compacted", COMPACTION_DONE_STATUS) not in status_events
+    assert (COMPACTION_STATUS_KEY, COMPACTION_DONE_STATUS) not in status_events
     assert getattr(agent, "session_id", None) == session_id
     assert db.get_compression_lock_holder(session_id) is None
 

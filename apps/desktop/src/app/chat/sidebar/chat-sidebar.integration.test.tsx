@@ -8,6 +8,7 @@ import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/s
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { registry } from '@/contrib/registry'
 import { $selectedStoredSessionId, $sessions } from '@/store/session'
+import { $sessionFolderStore } from '@/store/session-folders'
 import { $removedSessionIds } from '@/store/session-removal'
 import { makeSessionInfo } from '@/test/session-info'
 
@@ -96,6 +97,7 @@ describe('ChatSidebar navigation activity', () => {
     $selectedStoredSessionId.set(null)
     $sessions.set([])
     $removedSessionIds.set(new Set())
+    $sessionFolderStore.set({})
     $layoutTree.set(null)
     noteActiveTreeGroup(null)
   })
@@ -160,5 +162,22 @@ describe('ChatSidebar navigation activity', () => {
     expect(screen.queryByRole('button', { name: 'Kanban' })).toBeNull()
     expectOnlyCurrent(null)
     expectOnlySelectedSession(null)
+  })
+
+  it('groups a filed session under its folder, out of the flat list', () => {
+    $sessionFolderStore.set({
+      default: { filed: { 'tile-one': 'f_work' }, folders: [{ collapsed: false, id: 'f_work', name: 'Work' }] }
+    })
+
+    const { container } = renderSidebar('/kanban', 'extension')
+    const folder = container.querySelector('[data-session-folder-id="f_work"]') as HTMLElement
+
+    // The flat Sessions list carries the strip, and the filed row lives in it.
+    expect(container.querySelector('[data-session-folders]')).not.toBeNull()
+    expect(folder.textContent).toContain('Work')
+    expect(folder.textContent).toContain('Tile one')
+    expect(folder.textContent).not.toContain('Tile two')
+    // Filed once: it is not also listed in the flat list below its folder.
+    expect(screen.getAllByText('Tile one')).toHaveLength(1)
   })
 })

@@ -1713,6 +1713,10 @@ export function ChatSidebar({
                     </div>
                   )
                 }
+                // Only the flat Sessions list groups by folder: the archived and
+                // magnitude-ranked views are not "the sessions you organize",
+                // and the grouped project views already group by workspace.
+                enableFolders={sessionsMode === 'flat'}
                 footer={
                   // Hidden only when workspace-grouped — those groups page
                   // themselves. Profile groups don't: this one footer fetches the

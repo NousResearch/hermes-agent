@@ -257,6 +257,39 @@ to fully quit the browser — it won't loop or kill again on its own.
   Browser Profile** (the switch sits above the backend options), or in
   Settings → Config under the `browser` section.
 
+#### Scheduled and unattended runs
+
+A real-profile session lets a `cronjob` drive a site you're already signed into.
+The snapshot runs headless by default, and the auth files (`Cookies`,
+`Login Data`, …) are re-synced from your real profile on every fresh session —
+an already-open session is reused as-is, so the sync happens when a new one is
+launched. Without saved vault credentials, an expired session on that site
+surfaces as a login page that the unattended tick reports rather than hanging on.
+
+Three things to set up before scheduling one:
+
+- **Turn the toggle on.** `browser.use_real_profile` defaults to `false`, and
+  without it the job gets a clean, unauthenticated profile — see above.
+- **Give the job the browser toolset:**
+  `cronjob(action="create", enabled_toolsets=["browser", ...], ...)` — a per-job
+  list wins over the cron-platform config
+  ([details](./cron.md#toolsets-available-to-cron-jobs)).
+- **Assume nothing can be prompted for.** A cron, webhook, API or
+  `hermes chat -q` session has nobody to answer a prompt, so a site that is not
+  usable on the synced cookies alone — a login form, a fresh 2FA challenge —
+  needs its credentials saved ahead of time, authenticator key included. That is
+  the [credential vault's](./credential-vault.md#headless-sessions) job, and it
+  is what carries a run after your own session has expired.
+
+**Windows prerequisite:** the browser has to be fully quit before a snapshot can
+be taken at all, so a scheduled tick needs it closed beforehand — Hermes never
+closes it without asking you first (see the note above).
+
+The bundled `product-price-monitor` skill is a worked example of the recurring
+shape — a JSON watch contract written during setup, then one scheduled tick that
+re-reads it, compares, and alerts on change — though it covers the scheduling
+half, not logins.
+
 ### Camofox local mode
 
 [Camofox](https://github.com/jo-inc/camofox-browser) is a self-hosted Node.js server wrapping Camoufox (a Firefox fork with C++ fingerprint spoofing). It provides local anti-detection browsing without cloud dependencies.

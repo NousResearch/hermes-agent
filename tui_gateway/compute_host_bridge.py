@@ -157,7 +157,7 @@ def _relay_compute_host_response(frame: dict) -> bool:
     return True
 
 
-def _lock_compute_host_clarify(rid: str, request_id: str, question_id: str, answer: str) -> dict | None:
+def _lock_compute_host_clarify(rid: str, request_id: str, question_id: str, answer: str) -> ClarifyLockResult | dict | None:
     """Proxy a batch-clarify lock into the child that owns the request; keeps the parent mirror's locked
     answers current for reconnect snapshots. None when the request is not host-owned."""
     located = _compute_host_request_session(request_id)
@@ -217,7 +217,7 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
     _apply_compute_host_metadata_mirror(session, frame)
     info = _compute_host_session_info(session)
     if not frame.get("session_info_emitted"):
-        _emit("session.info", sid, SessionInfoPayload(**info.model_dump(mode="json")))
+        _emit("session.info", sid, SessionInfoPayload.of(info))
     _drain_queued_prompt(rid, sid, session)
 
 

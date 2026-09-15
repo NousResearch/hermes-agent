@@ -27,6 +27,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from pydantic import BaseModel
+
 # _resolve_request_profile result for a /p/<profile>/ prefix this gateway does not serve (-> 404);
 # distinct from None (no prefix / multiplexing off -> default profile).
 _PROFILE_REJECTED = object()
@@ -153,7 +155,7 @@ def _browser_controller_ws_sender(ws, loop, *, wait_timeout: float = 10.0):
         if ws.closed:
             raise ConnectionError("browser-control websocket is closed")
         params = frame.get("params")
-        if hasattr(params, "model_dump"):  # broker frames carry BrowserController*Payload models
+        if isinstance(params, BaseModel):  # broker frames carry BrowserController*Payload models
             frame = {**frame, "params": params.model_dump(mode="json")}
         try:
             on_loop = asyncio.get_running_loop() is loop

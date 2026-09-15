@@ -1213,9 +1213,9 @@ def _pet_cells_off() -> PetCellsResult:
 @_pet_method("pet.info", fail_open=lambda _p: _pet_info_off())
 def _(rid, params: PetInfoParams) -> PetInfoResult | dict:
     if (active := _active_pet()) is None: return _pet_info_off()
-    pet, scale = active; payload = {"enabled": True, **_pet_sprite_payload(pet, scale=scale)}
+    pet, scale = active; payload = {"enabled": True, "spritesheetUnchanged": None, **_pet_sprite_payload(pet, scale=scale)}
     if params.knownRevision and params.knownRevision == payload.get("spritesheetRevision"):
-        payload.pop("spritesheetBase64", None); payload["spritesheetUnchanged"] = True
+        payload["spritesheetBase64"] = None; payload["spritesheetUnchanged"] = True
     return PetInfoResult.model_validate(payload)
 
 @_pet_method("pet.info.meta", fail_open=lambda _p: _pet_meta_off())

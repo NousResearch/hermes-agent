@@ -64,6 +64,8 @@ def method(name: str, *, params: type[MethodParams], result: ResultType, doc: st
 
 def server_request(name: str, *, params: type[Params], result: ResultType,
                    doc: str = "") -> ServerRequestContract:
+    if isinstance(params, type) and issubclass(params, MethodParams):  # clarify passes a union alias
+        raise TypeError(f"{name}: server-request params must not carry the client-only ``profile`` key")
     entry = ServerRequestContract(name, params, result, doc)
     _declare(SERVER_REQUESTS, entry)
     return entry

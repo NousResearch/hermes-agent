@@ -104,6 +104,29 @@ class TestRefreshTools:
             assert "mcp__live_srv__new_tool" in resolve_toolset("live_srv")
             assert server._registered_tool_names == ["mcp__live_srv__new_tool"]
 
+    @pytest.mark.asyncio
+    async def test_refresh_without_session_is_a_noop(self, mock_registry):
+        """A refresh fired before the server connects (session is None) must be a no-op.
+
+        Regression (#109824): the dynamic-refresh health loop fires before a
+        configured MCP server is ready, and _refresh_tools called
+        ``self.session.list_tools`` unconditionally, crashing with
+        ``AttributeError: 'NoneType' object has no attribute 'list_tools'``
+        once per profile on startup. The reconnect path owns recovery; the
+        refresh must silently skip until the next notification.
+        """
+        server = MCPServerTask("parked_srv")
+        server._refresh_lock = asyncio.Lock()
+        server._config = {}
+        server._registered_tool_names = []
+        server.session = None
+
+        with patch("tools.registry.registry", mock_registry):
+            await server._refresh_tools()  # must not raise
+
+        assert mock_registry.get_all_tool_names() == []
+        assert server.session is None
+
 
 class TestMessageHandler:
     """Tests for MCPServerTask._make_message_handler dispatch."""

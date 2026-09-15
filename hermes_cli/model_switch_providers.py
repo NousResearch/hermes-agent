@@ -193,8 +193,8 @@ def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
     """Fetch stale/missing provider catalogs in parallel before the serial picker loop.
 
     On a cold cache the serial loop would block 1-8s per provider; after the prefetch the wait is
-    the slowest single provider. Each worker re-persists through the thread-safe
-    ``update_provider_cache_entry`` so concurrent writes cannot clobber each other."""
+    the slowest single provider. Each worker uses the thread-safe cache writer inside
+    ``cached_provider_model_ids`` so concurrent writes cannot clobber each other."""
     from hermes_cli.models import (
         _PROVIDER_MODELS_CACHE_TTL, _credential_fingerprint, _load_provider_models_cache,
         cached_provider_model_ids, normalize_provider)
@@ -222,12 +222,7 @@ def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
     import concurrent.futures
     def _fetch_one(slug: str) -> None:
         try:
-            models = cached_provider_model_ids(slug, force_refresh=True)
-            # cached_provider_model_ids persists via a non-locked read-modify-write; re-persist
-            # through the locked path so no write is lost under concurrency.
-            if models:
-                from hermes_cli.models import update_provider_cache_entry
-                update_provider_cache_entry(slug, models)
+            cached_provider_model_ids(slug, force_refresh=True)
         except Exception:
             pass  # best-effort; picker falls back to curated list
 

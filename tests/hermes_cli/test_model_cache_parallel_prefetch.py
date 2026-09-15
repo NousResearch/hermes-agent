@@ -100,6 +100,19 @@ class TestUpdateProviderCacheEntry:
 class TestPrefetchProviderModelsParallel:
     """Verify ``_prefetch_provider_models_parallel`` fetches concurrently."""
 
+    def test_failed_copilot_fetch_does_not_persist_static_fallback(self, tmp_path, monkeypatch):
+        import hermes_cli.models as models_mod
+
+        cache_path = tmp_path / "provider_models_cache.json"
+        monkeypatch.setattr(models_mod, "_provider_models_cache_path", lambda: cache_path)
+        monkeypatch.setattr(models_mod, "_fetch_github_models", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(models_mod, "_credential_fingerprint", lambda _provider: "fp")
+
+        assert models_mod.cached_provider_model_ids("copilot-acp", force_refresh=True)
+        model_switch_providers._prefetch_provider_models_parallel(["copilot-acp"])
+
+        assert "copilot-acp" not in models_mod._load_provider_models_cache()
+
     def test_skips_all_fresh_entries(self, monkeypatch):
         """When all cache entries are fresh, no fetch is made."""
         from hermes_cli.model_switch_providers import _prefetch_provider_models_parallel

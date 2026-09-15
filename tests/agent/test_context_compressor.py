@@ -2378,6 +2378,72 @@ class TestTruncateToolCallArgsJson:
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
 
+    def test_unexecuted_tool_calls_never_truncated(self):
+        """Fix #105574: Pending/unexecuted tool call arguments must never be truncated."""
+        import json as _json
+        huge_content = "important instruction payload: " + "step " * 200
+        args_payload = _json.dumps({
+            "task": "deploy_subagent",
+            "instructions": huge_content,
+        })
+        assert len(args_payload) > 500
+        messages = [
+            {"role": "user", "content": "run subtask"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_pending_1", "type": "function",
+                 "function": {"name": "delegate_task", "arguments": args_payload}},
+            ]},
+            # No tool response message following — this call is pending execution
+        ]
+        modified = ContextCompressor._truncate_tool_call_args_at(messages, 1)
+        assert not modified
+        assert messages[1]["tool_calls"][0]["function"]["arguments"] == args_payload
+
+    def test_pass4_pressure_demote_tail_preserves_pending_tool_calls(self):
+        """Fix #105574: Under pressure demotion, Pass 4 must preserve pending unexecuted tool calls."""
+        import json as _json
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                protect_first_n=1,
+                protect_last_n=1,
+                quiet_mode=True,
+            )
+        huge_instructions = "subagent directive: " + "details " * 300
+        pending_args = _json.dumps({
+            "subagent": "worker",
+            "prompt": huge_instructions,
+        })
+        assert len(pending_args) > 500
+
+        # Create a conversation under extreme tail pressure:
+        # A huge executed tool result in tail + a pending assistant dispatch tool call at the end
+        executed_args = _json.dumps({"file": "data.txt", "content": "foo " * 200})
+        messages = [
+            {"role": "user", "content": "analyze data"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_exec_1", "type": "function",
+                 "function": {"name": "read_file", "arguments": executed_args}},
+            ]},
+            {"role": "tool", "tool_call_id": "call_exec_1", "content": "huge data output " * 500},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_pending_2", "type": "function",
+                 "function": {"name": "delegate_task", "arguments": pending_args}},
+            ]},
+        ]
+        # Run prune with low token budget to trigger Pass 4 tail demotion
+        result, _ = c._prune_old_tool_results(messages, protect_tail_count=2, protect_tail_tokens=50)
+
+        # Executed tool call arguments in the tail can be truncated under pressure
+        # But the pending tool call MUST remain completely intact
+        last_msg = result[-1]
+        assert last_msg["role"] == "assistant"
+        assert last_msg["tool_calls"][0]["id"] == "call_pending_2"
+        assert last_msg["tool_calls"][0]["function"]["arguments"] == pending_args
+        assert "...[truncated]" not in last_msg["tool_calls"][0]["function"]["arguments"]
+
+
 
 class TestLazyContextResolution:
     """Verify that ContextCompressor defers get_model_context_length until

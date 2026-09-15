@@ -45,7 +45,11 @@ class SetupRecord:
     finished_at: float = field(default_factory=time.time)
 
     def as_payload(self) -> Dict[str, Any]:
-        return asdict(self)
+        # The broadcast carries the failure block flat, the same shape ``setup.status`` spreads,
+        # so a client keys on ``error_code`` identically whichever surface it read.
+        payload = asdict(self)
+        payload.update(payload.pop("failure"))
+        return payload
 
     def failure_fields(self) -> Dict[str, Any]:
         return dict(self.failure)

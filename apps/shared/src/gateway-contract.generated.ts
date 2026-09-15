@@ -3838,6 +3838,9 @@ export interface SetupReadyPayload {
   has_identity: boolean
   other_providers: boolean
   error?: string
+  error_code?: string | null
+  retryable?: boolean | null
+  retry_after?: number | null
   finished_at: number
   [key: string]: unknown
 }

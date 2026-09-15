@@ -76,17 +76,25 @@ def is_excluded_skill_path(path, *, root: Optional[Path] = None) -> bool:
 
 
 def is_skill_support_path(path, *, root: Optional[Path] = None) -> bool:
-    """True if *path* is under a support dir sitting directly inside a skill root
-    (``skills/scripts/foo`` stays discoverable: no ``SKILL.md`` above ``scripts``)."""
+    """True if *path* is under a support dir owned by an ancestor skill root.
+
+    Topic directories may sit between ``SKILL.md`` and the support directory;
+    top-level support-named categories remain discoverable because they have no
+    owning skill above them.
+    """
     path_obj = path if isinstance(path, Path) else Path(str(path))
-    parts = path_obj.parts
-    base = root if root is not None and not path_obj.is_absolute() else Path()
+    candidate = Path(root) / path_obj if root is not None and not path_obj.is_absolute() else path_obj
+    boundary = Path(root) if root is not None else Path(candidate.anchor)
     # Only components before the leaf can be containing support directories.
-    return any(
-        part in SKILL_SUPPORT_DIRS and (base / Path(*parts[:idx]) / "SKILL.md").exists()
-        for idx, part in enumerate(parts[:-1])
-        if idx > 0
-    )
+    for support_dir in candidate.parents:
+        if support_dir.name not in SKILL_SUPPORT_DIRS:
+            continue
+        for owner in support_dir.parents:
+            if (owner / "SKILL.md").exists():
+                return True
+            if owner == boundary:
+                break
+    return False
 
 
 _yaml_load_fn = None
@@ -768,12 +776,15 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     org_root = os.path.join(skills_dir_str, ORG_MIRROR_DIR_NAME)
     matches: list[str] = []
     for root, dirs, files in os.walk(skills_dir_str, followlinks=True):
-        has_skill_md = "SKILL.md" in files
         if root == skills_dir_str and ORG_MIRROR_DIR_NAME in dirs and active_org is None:
             dirs.remove(ORG_MIRROR_DIR_NAME)
         elif root == org_root:
             dirs[:] = [d for d in dirs if d == active_org]
-        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS and not (has_skill_md and d in SKILL_SUPPORT_DIRS)]
+        dirs[:] = [
+            d for d in dirs
+            if d not in EXCLUDED_SKILL_DIRS
+            and not is_skill_support_path(Path(root) / d / filename, root=skills_dir)
+        ]
         if filename in files:
             matches.append(os.path.join(root, filename))
     yield from map(Path, sorted(matches))

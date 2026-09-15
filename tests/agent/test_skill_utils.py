@@ -196,12 +196,19 @@ def test_iter_skill_index_files_prunes_skill_support_dirs(tmp_path):
     script_package.mkdir(parents=True)
     (script_package / "SKILL.md").write_text("---\nname: helper\n---\n", encoding="utf-8")
 
+    nested_package = real / "creative" / "design" / "references" / "nested-skill"
+    nested_package.mkdir(parents=True)
+    (nested_package / "SKILL.md").write_text(
+        "---\nname: nested\n---\n", encoding="utf-8"
+    )
+
     found = list(iter_skill_index_files(tmp_path, "SKILL.md"))
     desc_found = list(iter_skill_index_files(tmp_path, "DESCRIPTION.md"))
 
     assert found == [real / "SKILL.md"]
     assert desc_found == []
     assert is_skill_support_path(package / "SKILL.md") is True
+    assert is_skill_support_path(nested_package / "SKILL.md") is True
     assert is_excluded_skill_path(package / "SKILL.md") is True
 
 

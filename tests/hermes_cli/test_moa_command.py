@@ -73,6 +73,27 @@ def test_moa_non_preset_is_one_shot_prompt():
     assert cli._pending_moa_restore_model["provider"] != "moa"
 
 
+def test_moa_one_shot_uses_active_preset_over_default():
+    """#88681: with moa.active_preset set, /moa must run THAT preset, not default_preset."""
+    cli = _make_cli()
+    cli.config["moa"]["active_preset"] = "review"
+    with patch("cli._cprint"):
+        cli.process_command("/moa inspect the flaky test")
+    assert cli.provider == "moa"
+    assert cli.model == "review"
+
+
+def test_moa_one_shot_ignores_active_preset_naming_nothing():
+    """A stale active_preset falls back to default_preset instead of running no preset."""
+    cli = _make_cli()
+    cli.config["moa"]["active_preset"] = "deleted-preset"
+    with patch("cli._cprint"):
+        cli.process_command("/moa inspect the flaky test")
+    assert cli.provider == "moa"
+    assert cli.model == "default"
+
+
+
 
 
 class TestNormalizeMoaModel:

@@ -42,6 +42,7 @@ def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, m
         "kanban": {
             "max_in_progress": 3,
             "max_spawn": 5,
+            "failure_retry_seconds": 7200,
             "default_assignee": "default",
             "max_in_progress_per_profile": 2,
         }
@@ -68,8 +69,80 @@ def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, m
     assert captured.get("max_spawn") == 5, (
         f"CLI must pass kanban.max_spawn from config when --max is not provided; got {captured.get('max_spawn')!r}"
     )
+    assert captured.get("failure_retry_seconds") == 7200
     assert captured.get("default_assignee") == "default"
     assert captured.get("max_in_progress_per_profile") == 2
+
+
+def test_invalid_failure_retry_preserves_other_dispatch_config(
+    isolated_kanban_home, monkeypatch
+):
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    fake_config = {
+        "kanban": {
+            "max_in_progress": 3,
+            "max_spawn": 7,
+            "failure_retry_seconds": "bad",
+            "default_assignee": "dev",
+            "max_in_progress_per_profile": 2,
+        }
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: fake_config)
+
+    captured = {}
+    monkeypatch.setattr(
+        kbd,
+        "dispatch_once",
+        lambda conn, **kw: (captured.update(kw), kanban_db.DispatchResult())[1],
+    )
+
+    args = argparse.Namespace(dry_run=True, max=None, failure_limit=2, json=False)
+    kb_cli._cmd_dispatch(args)
+
+    assert captured["failure_retry_seconds"] == kbd.DEFAULT_FAILURE_RETRY_SECONDS
+    assert captured["max_spawn"] == 7
+    assert captured["max_in_progress"] == 3
+    assert captured["default_assignee"] == "dev"
+    assert captured["max_in_progress_per_profile"] == 2
+
+
+@pytest.mark.parametrize("failure_retry_seconds", [-1, None, ""])
+def test_nonpositive_failure_retry_matches_other_dispatch_paths(
+    isolated_kanban_home, monkeypatch, failure_retry_seconds
+):
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    fake_config = {
+        "kanban": {
+            "max_in_progress": 3,
+            "max_spawn": 7,
+            "failure_retry_seconds": failure_retry_seconds,
+            "default_assignee": "dev",
+            "max_in_progress_per_profile": 2,
+        }
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: fake_config)
+
+    captured = {}
+    monkeypatch.setattr(
+        kbd,
+        "dispatch_once",
+        lambda conn, **kw: (captured.update(kw), kanban_db.DispatchResult())[1],
+    )
+
+    args = argparse.Namespace(dry_run=True, max=None, failure_limit=2, json=False)
+    kb_cli._cmd_dispatch(args)
+
+    assert captured["failure_retry_seconds"] == 0
+    assert captured["max_spawn"] == 7
+    assert captured["max_in_progress"] == 3
+    assert captured["default_assignee"] == "dev"
+    assert captured["max_in_progress_per_profile"] == 2
 
 
 def test_cli_max_flag_overrides_config_max_spawn(isolated_kanban_home, monkeypatch):

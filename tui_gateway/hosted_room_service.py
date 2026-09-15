@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import threading
 import time
@@ -30,6 +31,8 @@ from tui_gateway.hosted_room_peer_transport import (
 _HOSTED_ROOM_IDLE_FALLBACK_SECONDS = 5.0
 _HOSTED_ROOM_ACTIVE_POLL_SECONDS = 0.25
 _HOSTED_ROOM_TERMINAL_GRACE_SECONDS = 30.0
+
+logger = logging.getLogger(__name__)
 
 _TERMINAL_STATUSES = ("deferred", "settled", "failed", "cancelled")
 _LIVE_STATUSES = ("queued", "running", "stopping")
@@ -376,14 +379,23 @@ class HostedRoomService:
                 room_id=room_id, task_id=task["identity"].task_id, status=status,
                 execution_generation=execution_generation):
                 continue
-            task_events = self.policy_checkpoint.events_for_task(
-                room_id=room_id, source_event_seq=int(task["payload"]["source_event_seq"]))
-            plan = discussion.reconstruct_task_plan(
-                room, task_events, task, local_profiles=local_profiles)
-            publication = discussion.plan_publication(
-                room, task_events, plan, status=status, result=task.get("result"),
-                execution_generation=execution_generation if status == "deferred" else None,
-                local_profiles=local_profiles)
+            try:
+                task_events = self.policy_checkpoint.events_for_task(
+                    room_id=room_id, source_event_seq=int(task["payload"]["source_event_seq"]))
+                plan = discussion.reconstruct_task_plan(
+                    room, task_events, task, local_profiles=local_profiles)
+                publication = discussion.plan_publication(
+                    room, task_events, plan, status=status, result=task.get("result"),
+                    execution_generation=execution_generation if status == "deferred" else None,
+                    local_profiles=local_profiles)
+            except discussion.DiscussionPolicyError as exc:
+                # One unreconstructable task must not brick the whole room:
+                # quarantine it and keep publishing the rest so new user
+                # events can still start fresh rounds (issue #104007).
+                logger.warning(
+                    "skipping terminal publication for room task %s: %s",
+                    task["identity"].task_id, exc)
+                continue
             for event in publication.events:
                 hosted_rooms.append_event(self.db_path, **event.append_kwargs(room_id))
             changed = True
@@ -491,7 +503,37 @@ class HostedRoomService:
         task = next((c for c in candidates if c["identity"].task_id == task_id), None)
         if task is None:
             raise driver.InvalidTaskTransitionError("no retryable room task matches task_id")
+        if self._discussion_is_settled(room_id, task):
+            raise driver.InvalidTaskTransitionError(
+                "room task cannot be retried: its discussion already settled; "
+                "send a new message to start a fresh round")
         return self.runtime.retry_indeterminate(task["identity"])
+
+    def _discussion_is_settled(self, room_id: str, task: Mapping[str, Any]) -> bool:
+        """Return whether the task's source discussion already closed."""
+        payload = task.get("payload")
+        try:
+            source_seq = int((payload or {}).get("source_event_seq") or 0)
+        except (TypeError, ValueError):
+            return False
+        if source_seq < 1:
+            return False
+        discussion_event_id = None
+        for event in self._events(room_id):
+            if not isinstance(event, Mapping):
+                continue
+            if event.get("seq") == source_seq and event.get("kind") == "message.user":
+                discussion_event_id = event.get("event_id")
+            event_payload = event.get("payload")
+            if (
+                discussion_event_id is not None
+                and event.get("kind") == "room.activity"
+                and isinstance(event_payload, Mapping)
+                and event_payload.get("discussion_event_id") == discussion_event_id
+                and event_payload.get("status") in {"settled", "bounded"}
+            ):
+                return True
+        return False
 
     def approve_room_task(
         self, room_id: str, *, member_id: str, task_id: str, execution_generation: int,

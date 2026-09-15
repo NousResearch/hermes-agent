@@ -782,25 +782,33 @@ def test_service_publishes_deferred_turn_continues_and_retries_new_generation(
     deferred = next(event for event in events if event["kind"] == "turn.deferred")
     assert deferred["payload"]["task_id"] == first["identity"].task_id
     assert deferred["payload"]["execution_generation"] == 1
+    assert old_attempt.execution_generation == 1
     assert any(
         event["kind"] == "message.member" and event["payload"]["member_id"] == "ops"
         for event in events
     )
 
-    requeued = service.retry_room_task(
-        "room-1",
-        task_id=first["identity"].task_id,
+    # The round closed (silent_round) while the turn was deferred, so the
+    # retry is refused instead of silently dropping the work; the room stays
+    # usable for a fresh round (issue #104007).
+    assert any(
+        event["kind"] == "room.activity"
+        and event["payload"].get("discussion_event_id") == "user-resilience"
+        for event in events
     )
-    assert requeued["status"] == "queued"
-    lease = service.runtime._leases["room-1"]
-    retried = driver.start_task(
-        db,
-        first["identity"],
-        lease,
-        expected_cancel_generation=0,
-        clock=clock,
+    with pytest.raises(
+        driver.InvalidTaskTransitionError, match="already settled"
+    ):
+        service.retry_room_task(
+            "room-1",
+            task_id=first["identity"].task_id,
+        )
+    event = service.send(
+        room_id="room-1",
+        event_id="user-2",
+        payload={"text": "Start over", "thread_id": "thread-1"},
     )
-    assert retried.execution_generation == old_attempt.execution_generation + 1
+    assert event["event_id"] == "user-2"
 
 
 def test_stop_fence_prevents_the_next_room_member_from_starting(
@@ -2091,3 +2099,146 @@ def test_local_profiles_skips_delete_tombstones_and_dot_dirs(tmp_path: Path):
     service = HostedRoomService(_server(), db_path=tmp_path / "shared-state.db")
 
     assert service.local_profiles() == ("default", "ops")
+
+
+def _deferred_room(tmp_path: Path, now):
+    """Drive one room to a deferred driver task (issue #104007)."""
+    clock = lambda: now[0]
+    db = tmp_path / "state.db"
+    service = HostedRoomService(_server(), db_path=db)
+    service.local_profiles = lambda: ("solo", "critic")
+    service.create_room(
+        room_id="room-1",
+        name="Solo room",
+        members=[
+            {"member_id": "m-solo", "profile": "solo", "handle": "solo"},
+            {"member_id": "m-critic", "profile": "critic", "handle": "critic"},
+        ],
+    )
+    service.send(
+        room_id="room-1",
+        event_id="user-1",
+        payload={"text": "@solo Do the long task", "thread_id": "thread-1"},
+    )
+    binding = service.bindings()[0]
+    task = driver.list_tasks(db, room_id="room-1", status="queued")[0]
+    lease = driver.acquire_lease(
+        db,
+        room_id="room-1",
+        gateway_id=binding.gateway_id,
+        authority_epoch=binding.authority_epoch,
+        process_generation="proc-1",
+        ttl_seconds=30,
+        clock=clock,
+    )
+    driver.start_task(
+        db, task["identity"], lease, expected_cancel_generation=0, clock=clock
+    )
+    now[0] += 31.0
+    lease2 = driver.acquire_lease(
+        db,
+        room_id="room-1",
+        gateway_id=binding.gateway_id,
+        authority_epoch=binding.authority_epoch,
+        process_generation="proc-2",
+        ttl_seconds=30,
+        clock=clock,
+    )
+    driver.recover_room(db, lease2, clock=clock)
+    deferred = driver.defer_indeterminate_task(
+        db,
+        task["identity"],
+        lease2,
+        expected_execution_generation=1,
+        expected_cancel_generation=0,
+        reason="member_unavailable",
+        clock=clock,
+    )
+    assert deferred["status"] == "deferred"
+    return service, db, binding, task, lease2
+
+
+def test_retry_refused_once_discussion_settled_and_room_stays_usable(tmp_path: Path):
+    """A deferred turn whose round already closed cannot be retried (issue #104007)."""
+    now = [1000.0]
+    service, db, binding, task, _lease = _deferred_room(tmp_path, now)
+    service.prepare_room(binding)
+    kinds = [event["kind"] for event in service._events("room-1")]
+    assert kinds == ["message.user", "turn.deferred", "room.activity"]
+
+    with pytest.raises(
+        driver.InvalidTaskTransitionError, match="already settled"
+    ):
+        service.retry_room_task("room-1", task_id=task["identity"].task_id)
+
+    event = service.send(
+        room_id="room-1",
+        event_id="user-2",
+        payload={"text": "Start over", "thread_id": "thread-1"},
+    )
+    assert event["event_id"] == "user-2"
+    assert driver.list_tasks(db, room_id="room-1", status="queued")
+
+
+def test_late_terminal_task_publishes_after_settle_without_bricking_room(
+    tmp_path: Path,
+):
+    """A retried turn that settles after its round closed still lands (issue #104007)."""
+    now = [2000.0]
+    clock = lambda: now[0]
+    service, db, binding, task, lease = _deferred_room(tmp_path, now)
+    retried = service.retry_room_task("room-1", task_id=task["identity"].task_id)
+    assert retried["status"] == "queued"
+
+    # The round closes (reviewer pass -> silent_round) before the retried
+    # turn finishes: the same room.activity event _append_room_status writes.
+    room = hosted_rooms.room_state(db, room_id="room-1")
+    hosted_rooms.append_event(
+        db,
+        room_id="room-1",
+        event_id="dactivity:user-1:silent_round",
+        kind="room.activity",
+        actor={"kind": "gateway", "id": str(room["authority_gateway_id"])},
+        payload={
+            "status": "settled",
+            "reason_code": "silent_round",
+            "thread_id": "thread-1",
+            "discussion_event_id": "user-1",
+        },
+        authority_gateway_id=str(room["authority_gateway_id"]),
+        authority_epoch=int(room["authority_epoch"]),
+    )
+
+    attempt = driver.start_task(
+        db,
+        task["identity"],
+        service.runtime._ensure_lease(binding),
+        expected_cancel_generation=0,
+        clock=time.time,
+    )
+    assert attempt.execution_generation == 2
+    driver.settle_task(
+        db,
+        attempt,
+        settlement_id="late-1",
+        status="settled",
+        result={"text": "late result from solo"},
+        clock=time.time,
+    )
+
+    service.prepare_room(binding)
+    events = service._events("room-1")
+    member_texts = [
+        event["payload"]["text"]
+        for event in events
+        if event["kind"] == "message.member"
+    ]
+    assert member_texts == ["late result from solo"]
+    assert sum(1 for event in events if event["kind"] == "turn.settled") == 1
+
+    event = service.send(
+        room_id="room-1",
+        event_id="user-2",
+        payload={"text": "Start over", "thread_id": "thread-1"},
+    )
+    assert event["event_id"] == "user-2"

@@ -1003,7 +1003,9 @@ def _commit_tool_result(
             logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, success_log_chars)
         if not blocked:
             try:
-                agent._record_file_mutation_result(function_name, function_args, function_result, is_error)
+                agent._record_file_mutation_result(
+                    function_name, function_args, function_result, is_error, task_id=effective_task_id,
+                )
             except Exception as _ver_err:
                 logging.debug("file-mutation verifier record failed: %s", _ver_err)
         if agent.verbose_logging:

@@ -28,7 +28,7 @@ function fontFamilyFromConfig(config: HermesConfigRecord): string {
 export function TerminalFontSetting() {
   const { t } = useI18n()
   const copy = t.settings.appearance
-  const { data: loadedConfig } = useHermesConfigRecord()
+  const { data: loadedConfig, refetch: refetchConfig } = useHermesConfigRecord()
   // draft === null ⇔ unseeded: nothing painted yet for this profile. The
   // profile-switch handler resets it to null and records the config object
   // it was looking at (`staleConfig`) — the seed effect refuses to re-seed
@@ -38,7 +38,15 @@ export function TerminalFontSetting() {
   const [draft, setDraft] = useState<string | null>(null)
   const [staleConfig, setStaleConfig] = useState<HermesConfigRecord | null>(null)
   const [saveVersion, setSaveVersion] = useState(0)
+  const profileLoadVersionRef = useRef(0)
   const saveVersionRef = useRef(0)
+
+  useEffect(
+    () => () => {
+      profileLoadVersionRef.current += 1
+    },
+    []
+  )
 
   // Lexically outside every useEffect so async save callbacks can cancel the
   // in-flight version without assigning to a ref inside an effect body.
@@ -57,12 +65,23 @@ export function TerminalFontSetting() {
   }, [draft, loadedConfig, staleConfig])
 
   useOnProfileSwitch(() => {
+    const switchVersion = profileLoadVersionRef.current + 1
+    profileLoadVersionRef.current = switchVersion
     saveVersionRef.current += 1
     setDraft(null)
     setStaleConfig(loadedConfig ?? null)
     setSaveVersion(0)
     // Do not show the previous profile's font while the new profile loads.
     setTerminalFontFamilyFromConfig('')
+    void refetchConfig({ cancelRefetch: false }).then(result => {
+      if (!result.isSuccess || !result.data || profileLoadVersionRef.current !== switchVersion) {
+        return
+      }
+
+      const value = fontFamilyFromConfig(result.data)
+      setDraft(value)
+      setTerminalFontFamilyFromConfig(value)
+    })
   })
 
   useEffect(() => {

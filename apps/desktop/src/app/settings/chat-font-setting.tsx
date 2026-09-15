@@ -29,11 +29,19 @@ function fontFamilyFromConfig(config: HermesConfigRecord): string {
 export function ChatFontSetting() {
   const { t } = useI18n()
   const copy = t.settings.appearance
-  const { data: loadedConfig } = useHermesConfigRecord()
+  const { data: loadedConfig, refetch: refetchConfig } = useHermesConfigRecord()
   const [draft, setDraft] = useState<string | null>(null)
   const [staleConfig, setStaleConfig] = useState<HermesConfigRecord | null>(null)
   const [saveVersion, setSaveVersion] = useState(0)
+  const profileLoadVersionRef = useRef(0)
   const saveVersionRef = useRef(0)
+
+  useEffect(
+    () => () => {
+      profileLoadVersionRef.current += 1
+    },
+    []
+  )
 
   const cancelPendingSave = () => {
     saveVersionRef.current = 0
@@ -50,11 +58,22 @@ export function ChatFontSetting() {
   }, [draft, loadedConfig, staleConfig])
 
   useOnProfileSwitch(() => {
+    const switchVersion = profileLoadVersionRef.current + 1
+    profileLoadVersionRef.current = switchVersion
     saveVersionRef.current += 1
     setDraft(null)
     setStaleConfig(loadedConfig ?? null)
     setSaveVersion(0)
     setChatFontFamilyFromConfig('')
+    void refetchConfig({ cancelRefetch: false }).then(result => {
+      if (!result.isSuccess || !result.data || profileLoadVersionRef.current !== switchVersion) {
+        return
+      }
+
+      const value = fontFamilyFromConfig(result.data)
+      setDraft(value)
+      setChatFontFamilyFromConfig(value)
+    })
   })
 
   useEffect(() => {
@@ -137,7 +156,10 @@ export function ChatFontSetting() {
             ))}
           </datalist>
           {/* Inherits --dt-font-sans, so it IS the live result, not a simulation. */}
-          <div aria-label={copy.chatFontPreview} className="overflow-hidden px-1 py-2 text-sm text-(--ui-text-secondary)">
+          <div
+            aria-label={copy.chatFontPreview}
+            className="overflow-hidden px-1 py-2 text-sm text-(--ui-text-secondary)"
+          >
             <span className="mr-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
               {copy.chatFontPreview}
             </span>

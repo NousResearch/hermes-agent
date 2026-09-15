@@ -32,6 +32,15 @@ if TYPE_CHECKING:
 # dispatcher parks the task in ``blocked`` with a reason — prevents retry storms.
 DEFAULT_FAILURE_LIMIT = 2
 
+# Rule 4 (no-infinite-retry): once a task's consecutive_failures counter
+# reaches this threshold, dispatch escalates to a PO via a decision-hud
+# missing_constraint card instead of retrying it again — independent of
+# (and enforced in addition to) DEFAULT_FAILURE_LIMIT/max_retries above,
+# which may trip the ordinary breaker earlier or later than this. Owner
+# decision: N=3 ("1 retry with the missing constraint, escalate to PO on
+# the 2nd consecutive failure" — i.e. at exactly 3 consecutive failures).
+RETRY_CAP_ESCALATION_THRESHOLD = 3
+
 # Worker log files larger than this at spawn time are rotated.
 DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
 DEFAULT_LOG_BACKUP_COUNT = 1
@@ -128,6 +137,15 @@ class DispatchResult:
     """``(task_id, reason)`` skipped by the respawn guard: ``"blocker_auth"``
     (quota/auth error — also auto-blocked), ``"recent_success"`` (completed run
     within guard window), ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    retry_cap_blocked: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, reason)`` refused by Rule 4 (no-infinite-retry): the task
+    hit ``consecutive_failures >= RETRY_CAP_ESCALATION_THRESHOLD`` (3) and has
+    an unresolved decision-hud ``missing_constraint`` card open for it (either
+    just pushed this tick, or pushed on an earlier tick and still pending PO
+    resolution). Distinct from ``respawn_guarded`` (a different, always-on
+    mechanism) so telemetry can tell the two apart. Fails CLOSED: a
+    decision-hud error/unavailability at or above the threshold also lands
+    here, never a silent dispatch."""
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
@@ -1589,6 +1607,67 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _retry_cap_gate_ok(board: Optional[str], task_id: str, consecutive_failures: int) -> tuple[bool, str]:
+    """Rule 4 (no-infinite-retry) per-task gate. Returns ``(True, "")`` when
+    the task is clear to dispatch; ``(False, reason)`` when it must be
+    refused this tick.
+
+    Below :data:`RETRY_CAP_ESCALATION_THRESHOLD` this is always a no-op
+    ``(True, "")`` — the ordinary breaker (``_record_task_failure`` /
+    ``DEFAULT_FAILURE_LIMIT`` / per-task ``max_retries``) is the only
+    mechanism that applies there, unchanged.
+
+    At or above the threshold: check whether a decision-hud
+    ``missing_constraint`` card is already resolved for this exact
+    ``(project, task_id)`` FIRST — a resolved row must re-enable dispatch,
+    not trigger a fresh push-then-recheck that would re-open a brand-new
+    unresolved row every tick. Only when still unresolved do we push a
+    ``missing_constraint`` card via ``push_task_missing_constraint`` (a
+    no-op, not an error, when one is already open per the bridge's
+    documented duplicate handling).
+
+    Same fail-closed contract as ``check_batch_approval``: a ``project``
+    that cannot be resolved, or any decision-hud error/unavailability, is
+    treated as NOT resolved (refuse), never as "skip the check".
+    """
+    if consecutive_failures < RETRY_CAP_ESCALATION_THRESHOLD:
+        return True, ""
+    project = _kb._slug_or_default(board)
+    try:
+        from hermes_cli.plugin_bridges import decision_hud as _dh_bridge
+    except Exception as exc:
+        return False, f"decision-hud bridge unavailable: {exc}"
+    # Check resolution FIRST: decision-hud allows a fresh push once the
+    # existing row is resolved (a task can legitimately hit an independent
+    # 2nd escalation later), so pushing unconditionally here would re-open a
+    # brand-new unresolved row on every tick after the PO already resolved
+    # it, re-blocking a task that should now be clear to dispatch.
+    try:
+        if _dh_bridge.check_constraint_resolved(project=project, task_id=task_id):
+            return True, ""
+    except Exception as exc:
+        return False, f"missing_constraint resolution check failed: {exc}"
+    question = (
+        f"Task {task_id!r} has failed {consecutive_failures} consecutive times. "
+        "What constraint/spec is missing, or how should it proceed?"
+    )
+    try:
+        pushed, push_reason = _dh_bridge.push_task_missing_constraint(
+            project=project, task_id=task_id, question=question,
+        )
+    except Exception as exc:
+        return False, f"missing_constraint push failed: {exc}"
+    if pushed:
+        return False, (
+            f"task {task_id!r} hit {consecutive_failures} consecutive failures; "
+            "pushed a decision-hud missing_constraint card, awaiting PO resolution"
+        )
+    return False, (
+        f"task {task_id!r} hit {consecutive_failures} consecutive failures; "
+        f"missing_constraint still unresolved ({push_reason})"
+    )
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -1651,6 +1730,25 @@ def _dispatch_lane_task(
             if precheck["status"] == _gate_precheck.STATUS_BLOCKED:
                 result.skipped_gate_precheck.append((task_id, precheck["reason"]))
                 return False
+
+    # Rule 4 (no-infinite-retry): once consecutive_failures hits
+    # RETRY_CAP_ESCALATION_THRESHOLD, escalate to a PO via decision-hud
+    # instead of letting the ordinary breaker's retry budget keep respawning
+    # it. Same fail-closed contract as batch_approval_gate: an error
+    # anywhere in this check refuses the task, never dispatches it anyway.
+    # Read fresh from the DB each tick — this per-tick lane query is a
+    # narrow id/assignee projection that doesn't carry consecutive_failures.
+    failures_row = conn.execute(
+        "SELECT consecutive_failures FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    consecutive_failures = int(failures_row["consecutive_failures"]) if failures_row is not None else 0
+    retry_ok, retry_reason = _retry_cap_gate_ok(board, task_id, consecutive_failures)
+    if not retry_ok:
+        result.retry_cap_blocked.append((task_id, retry_reason))
+        if not dry_run:
+            with _kb.write_txn(conn):
+                _kb._append_event(conn, task_id, "retry_cap_blocked", {"reason": retry_reason})
+        return False
 
     def _count_spawn(name: str) -> None:
         # Later rows in this tick respect the per-profile cap; subsequent

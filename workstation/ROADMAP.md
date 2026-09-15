@@ -871,6 +871,26 @@ Hermes Workstation bridges human personal knowledge management and autonomous ag
    - Continuous agent synthesis: converting browser research, conversation takeaways, and project decisions into connected notes.
    - Map of Content (MOC) generator for automated knowledge clustering.
 
+## V3.5 — Browser Automation Ergonomics & Autonomous Web Operations
+
+Evolved from real dogfood observation across complex web properties (Google Maps SPAs, Amazon product grids, GitHub Turbopack filters, Mercado Livre verification walls).
+
+1. **Input Hygiene & Reliable Value Replacement (`browser_type`)**:
+   - Support `clear: true` (default `true` for input/searchbox elements) with multi-strategy CDP clearing: Ctrl+A with explicit `windowsVirtualKeyCode: 65`, `execCommand('selectAll')`, Backspace sequence, and direct DOM fallback.
+   - Prevents search token duplication (e.g., `is:issue state:open is:issue state:open label:...`) across hotwired / auto-completing search inputs.
+
+2. **Proactive Human Handoff & Auth/Verification Wall Detection**:
+   - Pattern-based detection for account verification gates (`/gz/account-verification`, `/challenge`, Cloudflare Turnstile, CAPTCHA, Auth0, Google Sign-In).
+   - Triggers proactive Human Takeover alert in Hermes Desktop with persistent session benefit: human logs in once in the dedicated Workstation profile, agent resumes seamlessly.
+
+3. **Canvas / WebGL SPA Awareness & Adaptive DOM Settlement**:
+   - Detects empty accessibility trees (`element_count <= 2` with active canvas or dynamic feed loaders) on rich web apps (Google Maps, Figma, web dashboards).
+   - Implements adaptive DOM settling and feed detection (`div[role="feed"]`, main articles, etc.) before snapshot generation, preventing 0-element blindness.
+
+4. **Batch Structured Extraction (`browser_extract_items`)**:
+   - First-class structured extraction tool/primitive that collects repetitive items (cards, products, issues, articles) with selectors, attributes, text, and URLs in a single agent step.
+   - Eliminates excessive token consumption and 10+ consecutive `browser_console` JS injection cycles for table/grid scraping.
+
 ## V4 radar — optional / evidence-gated explorations
 
 These are research-backed directions worth preserving without making them near-term

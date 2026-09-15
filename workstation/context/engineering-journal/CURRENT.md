@@ -10,6 +10,37 @@ Journal entries:
 - `v3-runtime-hardening-closure.md` (V3.1–V3.4 contract-layer closure)
 Status: 175/175 Workstation Pytest passing, Desktop typecheck passing.
 
+## H-049 — Workstation Browser Automation Ergonomics: Input Hygiene, Proactive Human Handoff, Canvas Awareness, and Batch Extraction
+
+Status: PLANNED & SPECIFIED — dogfood evidence recorded; roadmap promoted; implementation staged
+Origin: workstation browser real-world dogfood session (session `20260914_223624_261d02`)
+Date / ref: 2026-09-14 / `feat/workstation-hybrid-kanban`
+
+### Claim and decision
+
+Real-world dogfooding of the Hermes Workstation Browser across 5 diverse web paradigms (Python.org documentation, G1 news portal, Mercado Livre & Amazon e-commerce, GitHub issue tracker, and Google Maps SPA) demonstrated that while the Chromium runtime and agent task decomposition are robust, agentic web automation encounters four specific friction points:
+
+1. **Input Hygiene (`browser_type`)**: Typing into inputs with pre-existing values (e.g. GitHub's issue search prefilled with `is:issue state:open `) resulted in duplicated/malformed queries (`is:issue state:open is:issue state:open label:...`) because CDP key events lacked explicit selection/clearing guarantees across platforms.
+2. **Auth & Verification Wall Handoff**: When encountering account verification gates (Mercado Livre `/gz/account-verification`), the agent spent turns trying URL workarounds before abandoning the site. A proactive Human Handoff banner in the UI should invite the user to complete verification in the persistent profile once and yield control back to the agent.
+3. **Canvas / WebGL SPA Settlement (Google Maps)**: Canvas-rendered applications yielded an initial accessibility snapshot with `total_text_chars: 1, element_count: 0`. The agent was forced to inject 10+ raw `browser_console` JS scripts to scroll and inspect feed cards. The browser runtime should detect canvas/sparse trees and perform adaptive DOM feed settling before returning snapshots.
+4. **Batch Extraction Overhead**: Extracting product grids (Amazon) and opening hours tables (Maps) required 9–15 sequential tool calls and large token context budgets. Introducing a high-level `browser_extract_items` primitive allows one-step extraction of structured cards/tables without custom scripts.
+
+### Observed evidence (Session `20260914_223624_261d02`)
+
+- **Python.org**: Successfully extracted Python 3.14.7 and synthesized changelog in 2 turns.
+- **G1 Tecnologia**: Successfully navigated, clicked lead article (`@e5`), and summarized deepfake investigation.
+- **Mercado Livre**: Blocked by `/gz/account-verification` (trace ID `cff34157-597e-425d-818c-b3d1c2acfb6a`); agent pivoted to Amazon.
+- **Amazon.com.br**: Extracted 47 items via raw console script; required 3 subsequent scans to map ASINs and filter 27" 144Hz monitors, demonstrating the need for structured extraction.
+- **GitHub**: Search combobox `@e18` duplicated query strings upon `browser_type`.
+- **Google Maps**: Initial snapshot was empty (0 elements); agent successfully used `browser_console` with DOM feed queries and `feed.scrollTop = feed.scrollHeight` to map 21 cafeterias and extract weekly schedules.
+
+### Subsystem roadmap (V3.5)
+
+- **Step 1: Input Clearing in `workstation-browser-runtime.ts`**: Make `typeRef` ensure complete input clearing (`Ctrl/Cmd+A` with explicit `windowsVirtualKeyCode: 65`, `select()`, and DOM value reset) before typing.
+- **Step 2: Verification Wall Detection & Takeover Event**: Detect auth/challenge URL patterns and emit human-takeover prompt.
+- **Step 3: Adaptive DOM Settlement for SPAs**: Heuristic wait for feed containers (`div[role="feed"]`, `main`, etc.) when canvas is detected and accessibility count is <= 2.
+- **Step 4: `browser_extract_items` Tool**: First-class structured card/table extractor returning clean JSON with titles, prices, ratings, and links in one call.
+
 ## H-048 — Hybrid Kanban must extend canonical Kanban without inheriting Agentic status semantics
 
 Status: EXPERIMENTAL VERTICAL SLICE IMPLEMENTED

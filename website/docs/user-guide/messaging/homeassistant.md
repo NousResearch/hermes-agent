@@ -178,7 +178,7 @@ State changes are formatted as human-readable messages based on domain:
 
 ### Agent Responses
 
-Outbound messages from the agent are delivered as **Home Assistant persistent notifications** (via `persistent_notification.create`). These appear in the HA notification panel with the title "Hermes Agent".
+Outbound messages from the agent are delivered as **Home Assistant persistent notifications** (via `persistent_notification.create`). By default, Hermes reuses one notification with the ID `hermes_agent`, so routine messages update it instead of creating a growing list. Set `platforms.homeassistant.extra.notification_id` to use a distinct persistent notification, or set it to an empty string to preserve Home Assistant's default create-a-new-notification behavior.
 
 ### Connection Management
 

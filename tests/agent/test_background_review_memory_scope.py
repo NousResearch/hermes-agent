@@ -197,3 +197,22 @@ class TestConsolidationProposalSurfaces:
         ]
         actions = bg.summarize_background_review_actions(review_messages, [])
         assert any("staged for your approval" in a for a in actions)
+
+
+class TestMemoryReviewBudgetGuidance:
+    """The staging gate refuses an over-budget proposal instead of queueing it — so the fork has
+    to hear about the budget BEFORE it writes: the shared budget rule must be wired into every
+    prompt that grants the memory tool, or the review rediscovers the wall on every pass."""
+
+    def test_budget_rule_present_in_both_memory_prompts(self):
+        assert bg._MEMORY_BUDGET_BLOCK.strip()
+        assert bg._MEMORY_BUDGET_BLOCK in bg._MEMORY_REVIEW_PROMPT
+        assert bg._MEMORY_BUDGET_BLOCK in bg._COMBINED_REVIEW_PROMPT
+
+    def test_spawned_memory_review_prompt_carries_the_rule(self):
+        # Module-level prompt (no per-agent override on this stub), so this is the wire-up an
+        # automatic review actually sends.
+        for review_memory, review_skills in ((True, False), (True, True)):
+            _target, prompt = bg.spawn_background_review_thread(
+                SimpleNamespace(), [], review_memory=review_memory, review_skills=review_skills, task_cfg={})
+            assert bg._MEMORY_BUDGET_BLOCK in prompt

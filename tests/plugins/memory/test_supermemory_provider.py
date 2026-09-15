@@ -259,6 +259,37 @@ def test_failed_switch_flush_is_retried_at_shutdown(provider, frozen_capture_clo
     assert provider._pending_turns == []
 
 
+def test_shutdown_waits_for_inflight_write_and_does_not_resend(provider, monkeypatch):
+    """A hung remote write bounds the shutdown flush: it waits for the in-flight owner (the SDK call
+    is timeout-bounded, never an unconditioned wait) and never re-sends a batch another thread owns.
+    Regression for the review ask on #109359: without the lock, a concurrent flush re-snapshots the
+    same pending batch and duplicates the remote append."""
+    entered, release = threading.Event(), threading.Event()
+    real_add = provider._client.add_memory
+
+    def slow_add(content, metadata=None, **kwargs):
+        entered.set()
+        assert release.wait(timeout=2)
+        return real_add(content, metadata=metadata, **kwargs)
+
+    monkeypatch.setattr(provider._client, "add_memory", slow_add)
+    worker = threading.Thread(target=provider.sync_turn, args=("A", "a"), kwargs={"session_id": "session-1"})
+    worker.start()
+    assert entered.wait(timeout=2)  # worker owns the write and is blocked inside add_memory
+
+    flusher = threading.Thread(target=provider.shutdown, name="shutdown-flusher")
+    flusher.start()
+    flusher.join(timeout=0.2)
+    assert flusher.is_alive()  # shutdown's flush waits for the capture lock, it does not duplicate the write
+
+    release.set()
+    worker.join(timeout=2)
+    flusher.join(timeout=2)
+    assert not worker.is_alive() and not flusher.is_alive()
+    assert len(provider._client.add_calls) == 1  # A went out exactly once despite the concurrent shutdown
+    assert provider._pending_turns == []
+
+
 def test_sync_turn_drops_inline_image_payloads(provider, frozen_capture_clock):
     blob = "A" * 4096
     provider.sync_turn(f"describe this data:image/png;base64,{blob}", "a screenshot", session_id="session-1")

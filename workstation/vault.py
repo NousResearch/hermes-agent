@@ -13,9 +13,11 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import yaml
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_config_path, get_hermes_home
+from utils import atomic_roundtrip_yaml_update
 
 _log = logging.getLogger(__name__)
+VAULT_ROOT_CONFIG_KEY = "workstation.vault.root"
 
 # Regular expressions for wikilinks and tags
 # Matches [[Target]], [[Target#Heading]], [[Target|Alias]], [[Target#Heading|Alias]]
@@ -661,12 +663,68 @@ _default_vault_manager: Optional[VaultManager] = None
 _default_vault_lock = threading.Lock()
 
 
+def configured_vault_dir() -> Path:
+    """Resolve the configured Vault root, falling back to HERMES_HOME/vault."""
+    config_path = get_config_path()
+    configured: Optional[str] = None
+    try:
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        if isinstance(raw, dict):
+            workstation = raw.get("workstation")
+            vault = workstation.get("vault") if isinstance(workstation, dict) else None
+            value = vault.get("root") if isinstance(vault, dict) else None
+            if isinstance(value, str) and value.strip():
+                configured = value.strip()
+    except FileNotFoundError:
+        pass
+    except (OSError, yaml.YAMLError) as exc:
+        raise RuntimeError(f"Cannot read Vault root from {config_path}: {exc}") from exc
+
+    if configured is None:
+        return (Path(get_hermes_home()) / "vault").resolve()
+    candidate = Path(configured).expanduser()
+    if not candidate.is_absolute():
+        raise ValueError(f"{VAULT_ROOT_CONFIG_KEY} must be an absolute path")
+    return candidate.resolve()
+
+
+def configure_vault_dir(vault_dir: str) -> Path:
+    """Persist a custom root in config.yaml and switch the canonical manager."""
+    if not isinstance(vault_dir, str) or not vault_dir.strip() or "\x00" in vault_dir:
+        raise ValueError("vault root must be a non-empty absolute path")
+    candidate = Path(vault_dir.strip()).expanduser()
+    if not candidate.is_absolute():
+        raise ValueError("vault root must be an absolute path")
+    candidate.mkdir(parents=True, exist_ok=True)
+    resolved = candidate.resolve(strict=True)
+    if not resolved.is_dir():
+        raise ValueError("vault root must be a directory")
+    config_path = get_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_roundtrip_yaml_update(config_path, VAULT_ROOT_CONFIG_KEY, str(resolved))
+    replace_default_vault_manager(resolved)
+    return resolved
+
+
+def replace_default_vault_manager(vault_dir: Path) -> VaultManager:
+    """Atomically replace the canonical manager and stop its old watcher."""
+    global _default_vault_manager
+    replacement = VaultManager(str(vault_dir))
+    replacement.start_watcher()
+    with _default_vault_lock:
+        previous = _default_vault_manager
+        _default_vault_manager = replacement
+    if previous is not None:
+        previous.stop_watcher()
+    return replacement
+
+
 def get_default_vault_manager() -> VaultManager:
     """Return the process-wide canonical Vault owner used by tools and UI RPC."""
     global _default_vault_manager
     with _default_vault_lock:
         if _default_vault_manager is None:
-            _default_vault_manager = VaultManager()
+            _default_vault_manager = VaultManager(str(configured_vault_dir()))
             _default_vault_manager.start_watcher()
         return _default_vault_manager
 

@@ -5,13 +5,17 @@ import threading
 import time
 from pathlib import Path
 import pytest
+import yaml
 
 from workstation.vault import (
     VaultManager,
     canonicalize_title,
+    configure_vault_dir,
+    configured_vault_dir,
     extract_tags,
     extract_wikilinks,
     parse_frontmatter_and_content,
+    stop_default_vault_manager,
 )
 
 
@@ -239,3 +243,31 @@ def test_external_change_watcher_coalesces_and_stops(tmp_path: Path):
         manager.stop_watcher()
 
     assert manager._watch_thread is None
+
+
+def test_custom_vault_root_persists_in_existing_config(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "hermes-home" / "config.yaml"
+    config_path.parent.mkdir()
+    config_path.write_text("model:\n  default: test-model\n", encoding="utf-8")
+    custom = tmp_path / "obsidian" / "Knowledge"
+    monkeypatch.setattr("workstation.vault.get_config_path", lambda: config_path)
+    monkeypatch.setattr("workstation.vault.get_hermes_home", lambda: config_path.parent)
+    stop_default_vault_manager()
+    try:
+        resolved = configure_vault_dir(str(custom))
+        persisted = config_path.read_text(encoding="utf-8")
+        parsed = yaml.safe_load(persisted)
+        assert resolved == custom.resolve()
+        assert configured_vault_dir() == resolved
+        assert "test-model" in persisted
+        assert parsed["workstation"]["vault"]["root"] == str(resolved)
+    finally:
+        stop_default_vault_manager()
+
+
+def test_configured_vault_root_rejects_relative_path(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("workstation:\n  vault:\n    root: relative/vault\n", encoding="utf-8")
+    monkeypatch.setattr("workstation.vault.get_config_path", lambda: config_path)
+    with pytest.raises(ValueError, match="absolute path"):
+        configured_vault_dir()

@@ -18,6 +18,17 @@ function req<T>(path: string, opts?: PluginRestOptions): Promise<T> {
 
 export const $selectedNoteTitle = atom<string>('')
 
+export async function fetchVaultStatus(): Promise<{ status: string; root: string; notes_count: number }> {
+  return req<{ status: string; root: string; notes_count: number }>('/status')
+}
+
+export async function configureVaultRoot(root: string): Promise<{ status: string; root: string; notes_count: number }> {
+  return req<{ status: string; root: string; notes_count: number }>('/root', {
+    method: 'PUT',
+    body: { root }
+  })
+}
+
 export async function fetchVaultNotes(): Promise<{ notes: VaultNoteSummary[]; count: number }> {
   return req<{ notes: VaultNoteSummary[]; count: number }>('/notes')
 }
@@ -52,8 +63,16 @@ export async function deleteVaultNote(title: string): Promise<{ status: string; 
   })
 }
 
-export async function searchVault(q: string): Promise<{ results: Array<{ score: number; title: string; rel_path: string; tags: string[]; preview: string }>; count: number }> {
-  return req<{ results: Array<{ score: number; title: string; rel_path: string; tags: string[]; preview: string }>; count: number }>(`/search?q=${encodeURIComponent(q)}`)
+export async function searchVault(
+  q: string
+): Promise<{
+  results: Array<{ score: number; title: string; rel_path: string; tags: string[]; preview: string }>
+  count: number
+}> {
+  return req<{
+    results: Array<{ score: number; title: string; rel_path: string; tags: string[]; preview: string }>
+    count: number
+  }>(`/search?q=${encodeURIComponent(q)}`)
 }
 
 export async function fetchVaultGraph(): Promise<{ graph: VaultGraph }> {

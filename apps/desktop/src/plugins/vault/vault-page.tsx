@@ -17,10 +17,12 @@ import { useMemo, useState } from 'react'
 
 import {
   $selectedNoteTitle,
+  configureVaultRoot,
   deleteVaultNote,
   fetchVaultGraph,
   fetchVaultNote,
   fetchVaultNotes,
+  fetchVaultStatus,
   saveVaultNote
 } from './api'
 import { VaultGraphView } from './graph-view'
@@ -39,6 +41,13 @@ export function VaultPage() {
   const [draftContent, setDraftContent] = useState('')
   const [draftTags, setDraftTags] = useState('')
   const [isCreatingNew, setIsCreatingNew] = useState(false)
+  const [vaultRootDraft, setVaultRootDraft] = useState('')
+  const [showVaultSettings, setShowVaultSettings] = useState(false)
+
+  const { data: vaultStatus } = useQuery({
+    queryKey: ['vault', 'status'],
+    queryFn: fetchVaultStatus
+  })
 
   // 1. Fetch notes list
   const { data: notesData, isLoading: isNotesLoading } = useQuery({
@@ -107,6 +116,16 @@ export function VaultPage() {
     }
   })
 
+  const rootMutation = useMutation({
+    mutationFn: (root: string) => configureVaultRoot(root),
+    onSuccess: result => {
+      setVaultRootDraft(result.root)
+      setShowVaultSettings(false)
+      $selectedNoteTitle.set('')
+      void qc.invalidateQueries({ queryKey: ['vault'] })
+    }
+  })
+
   // Filter notes
   const filteredNotes = useMemo(() => {
     return notes.filter(n => {
@@ -157,7 +176,40 @@ export function VaultPage() {
           <Button onClick={handleStartNewNote} size="xs">
             <Codicon name="add" size="0.875rem" /> Nova
           </Button>
+          <Button
+            aria-label="Configurar diretório do Vault"
+            onClick={() => {
+              setVaultRootDraft(vaultStatus?.root ?? '')
+              setShowVaultSettings(value => !value)
+            }}
+            size="xs"
+            variant="ghost"
+          >
+            <Codicon name="settings-gear" size="0.875rem" />
+          </Button>
         </div>
+
+        {showVaultSettings && (
+          <div className="flex flex-col gap-2 border-b border-(--ui-stroke-secondary) p-2">
+            <label className="text-[10px] text-(--ui-text-tertiary)" htmlFor="vault-root-input">
+              Diretório absoluto do Vault/Obsidian
+            </label>
+            <Input
+              id="vault-root-input"
+              onChange={event => setVaultRootDraft(event.target.value)}
+              placeholder={vaultStatus?.root ?? 'Caminho absoluto'}
+              value={vaultRootDraft}
+            />
+            {rootMutation.isError && <div className="text-[10px] text-(--ui-danger)">{String(rootMutation.error)}</div>}
+            <Button
+              disabled={!vaultRootDraft.trim() || rootMutation.isPending}
+              onClick={() => rootMutation.mutate(vaultRootDraft.trim())}
+              size="xs"
+            >
+              {rootMutation.isPending ? 'Alterando...' : 'Usar este Vault'}
+            </Button>
+          </div>
+        )}
 
         {/* Search */}
         <div className="p-2">
@@ -251,7 +303,9 @@ export function VaultPage() {
             <div className="flex rounded bg-(--ui-bg-tertiary) p-0.5">
               <button
                 className={`rounded px-2.5 py-1 text-xs font-medium transition-all ${
-                  viewMode === 'editor' ? 'bg-(--ui-bg-primary) text-(--ui-text-primary) shadow-xs' : 'text-(--ui-text-tertiary)'
+                  viewMode === 'editor'
+                    ? 'bg-(--ui-bg-primary) text-(--ui-text-primary) shadow-xs'
+                    : 'text-(--ui-text-tertiary)'
                 }`}
                 onClick={() => setViewMode('editor')}
                 type="button"
@@ -260,7 +314,9 @@ export function VaultPage() {
               </button>
               <button
                 className={`rounded px-2.5 py-1 text-xs font-medium transition-all ${
-                  viewMode === 'preview' ? 'bg-(--ui-bg-primary) text-(--ui-text-primary) shadow-xs' : 'text-(--ui-text-tertiary)'
+                  viewMode === 'preview'
+                    ? 'bg-(--ui-bg-primary) text-(--ui-text-primary) shadow-xs'
+                    : 'text-(--ui-text-tertiary)'
                 }`}
                 onClick={() => setViewMode('preview')}
                 type="button"
@@ -269,7 +325,9 @@ export function VaultPage() {
               </button>
               <button
                 className={`rounded px-2.5 py-1 text-xs font-medium transition-all ${
-                  viewMode === 'graph' ? 'bg-(--ui-bg-primary) text-(--ui-text-primary) shadow-xs' : 'text-(--ui-text-tertiary)'
+                  viewMode === 'graph'
+                    ? 'bg-(--ui-bg-primary) text-(--ui-text-primary) shadow-xs'
+                    : 'text-(--ui-text-tertiary)'
                 }`}
                 onClick={() => setViewMode('graph')}
                 type="button"
@@ -282,11 +340,7 @@ export function VaultPage() {
           <div className="flex items-center gap-2">
             {viewMode !== 'graph' && (
               <>
-                <Button
-                  disabled={saveMutation.isPending}
-                  onClick={() => void saveMutation.mutate()}
-                  size="xs"
-                >
+                <Button disabled={saveMutation.isPending} onClick={() => void saveMutation.mutate()} size="xs">
                   <Codicon name="save" size="0.875rem" /> {saveMutation.isPending ? 'Salvando...' : 'Salvar'}
                 </Button>
                 {!isCreatingNew && activeTitle && (
@@ -343,7 +397,9 @@ export function VaultPage() {
             {/* Note Body */}
             {viewMode === 'preview' ? (
               <ScrollArea className="flex-1 rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-primary) p-4">
-                <Streamdown controls={false} mode="static">{draftContent}</Streamdown>
+                <Streamdown controls={false} mode="static">
+                  {draftContent}
+                </Streamdown>
               </ScrollArea>
             ) : (
               <Textarea

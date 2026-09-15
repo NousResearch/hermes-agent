@@ -15,11 +15,12 @@ def client(monkeypatch):
     monkeypatch.setattr(v_api, "_vault_manager", mgr)
     app = FastAPI()
     app.include_router(v_api.router)
-    yield TestClient(app)
+    yield TestClient(app), mgr
     shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def test_vault_plugin_api_crud_and_links(client):
+    client, _mgr = client
     # 1. Initially empty
     resp = client.get("/notes")
     assert resp.status_code == 200
@@ -77,3 +78,11 @@ def test_vault_plugin_api_crud_and_links(client):
     assert resp_del.status_code == 200
     resp_read_after = client.get("/notes/Hermes Work")
     assert resp_read_after.status_code == 404
+
+
+def test_vault_status_uses_the_bound_canonical_manager(client):
+    client, mgr = client
+    mgr.write_note("Status", "visible")
+    response = client.get("/status")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "root": str(mgr.vault_dir), "notes_count": 1}

@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from workstation.vault import VaultManager, get_default_vault_manager
+from workstation.vault import VaultManager, configure_vault_dir, get_default_vault_manager
 
 _log = logging.getLogger(__name__)
 
@@ -20,10 +20,7 @@ _vault_manager: Optional[VaultManager] = None
 
 
 def _get_vault() -> VaultManager:
-    global _vault_manager
-    if _vault_manager is None:
-        _vault_manager = get_default_vault_manager()
-    return _vault_manager
+    return _vault_manager or get_default_vault_manager()
 
 
 # ---------------------------------------------------------------------------
@@ -42,9 +39,31 @@ class AppendNoteRequest(BaseModel):
     content: str = Field(..., description="Content to append to note")
 
 
+class VaultRootRequest(BaseModel):
+    root: str = Field(..., min_length=1, description="Absolute path to a local Vault/Obsidian directory")
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+@router.get("/status")
+def vault_status():
+    mgr = _get_vault()
+    return {"status": "ok", "root": str(mgr.vault_dir), "notes_count": len(mgr.index.notes)}
+
+
+@router.put("/root")
+def set_vault_root(payload: VaultRootRequest):
+    global _vault_manager
+    try:
+        resolved = configure_vault_dir(payload.root)
+        _vault_manager = None
+        mgr = _get_vault()
+        return {"status": "ok", "root": str(resolved), "notes_count": len(mgr.index.notes)}
+    except Exception as exc:
+        _log.exception("Failed to configure Vault root")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 @router.get("/notes")
 def list_notes():

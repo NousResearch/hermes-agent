@@ -18,10 +18,7 @@ _vault_manager: Optional[VaultManager] = None
 
 
 def get_vault_manager() -> VaultManager:
-    global _vault_manager
-    if _vault_manager is None:
-        _vault_manager = get_default_vault_manager()
-    return _vault_manager
+    return _vault_manager or get_default_vault_manager()
 
 
 def _ok(**data: Any) -> str:

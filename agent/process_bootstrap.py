@@ -18,7 +18,11 @@ import time
 from typing import Any, Optional
 
 from utils import base_url_hostname, normalize_proxy_url
-from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy
+from agent.proxy_bypass import (
+    first_proxy_env_value,
+    proxy_endpoint_alive,
+    should_bypass_proxy,
+)
 
 
 _OPENAI_CLS_CACHE = None
@@ -292,14 +296,36 @@ def _get_proxy_from_env() -> Optional[str]:
     return normalize_proxy_url(value) if value else None
 
 
+def _proxy_fallback_direct_enabled() -> bool:
+    """``agent.proxy_fallback_direct`` from config.yaml (default True): fall back to a DIRECT
+    connection when a loopback proxy is dead. Read-only, fail-open to True. Mirrors
+    ``gateway_trust_env``'s section reader. Disabling restores the legacy always-route-through-proxy
+    behaviour for operators who want the old symptom on a deliberately-dead loopback proxy."""
+    try:
+        from hermes_cli.config import load_config_readonly as _load_config
+        section = _load_config().get("agent")
+        value = section.get("proxy_fallback_direct", True) if isinstance(section, dict) else True
+    except Exception:
+        return True
+    return bool(value)
+
+
 def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
     """Env-configured proxy unless NO_PROXY excludes this base URL (same matcher as the
-    gateway adapters: CIDR, ``*.`` wildcards and host:port entries all count)."""
+    gateway adapters: CIDR, ``*.`` wildcards and host:port entries all count), or the
+    configured proxy is a dead loopback endpoint (a local Clash/mihomo that has exited),
+    in which case a direct connection is returned so a stale ``127.0.0.1:<port>`` does not
+    freeze every LLM call with ECONNREFUSED. ``None`` means "no proxy, dial directly"."""
     proxy = _get_proxy_from_env()
-    if not (proxy and base_url):
-        return proxy
-    raw = base_url.strip()
-    return None if should_bypass_proxy(raw if "://" in raw else f"//{raw}") else proxy
+    if not proxy:
+        return None
+    if base_url:
+        raw = base_url.strip()
+        if should_bypass_proxy(raw if "://" in raw else f"//{raw}"):
+            return None
+    if not proxy_endpoint_alive(proxy, enabled=_proxy_fallback_direct_enabled()):
+        return None
+    return proxy
 
 
 def _shared_transport_cls():

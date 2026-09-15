@@ -259,6 +259,9 @@ TOOL_CATEGORIES = {
             # Mistral Voxtral STT intentionally omitted — mistralai PyPI package quarantined (malicious 2.4.6
             # release, 2026-05-12). Restore alongside the dashboard stt.provider option.
             _row("DeepInfra", "paid", "Live STT catalog from api.deepinfra.com", [_DEEPINFRA_KEY], stt_provider="deepinfra"),
+            _row("OpenRouter", "paid", "Whisper / GPT-4o transcribe / Voxtral via your OpenRouter key",
+                 [_key("OPENROUTER_API_KEY", "OpenRouter API key", "https://openrouter.ai/keys")],
+                 stt_provider="openrouter"),
         ],
     },
     "web": {

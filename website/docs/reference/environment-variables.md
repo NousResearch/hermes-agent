@@ -182,6 +182,8 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `GROQ_BASE_URL` | Override the Groq OpenAI-compatible STT endpoint |
 | `STT_OPENAI_MODEL` | Override the OpenAI STT model (default: `whisper-1`) |
 | `STT_OPENAI_BASE_URL` | Override the OpenAI-compatible STT endpoint |
+| `STT_OPENROUTER_BASE_URL` | Override the OpenRouter STT endpoint (`stt.provider: openrouter`, default `https://openrouter.ai/api/v1`) |
+| `STT_OPENROUTER_MODEL` | Default OpenRouter STT model slug (default `openai/whisper-large-v3`) |
 | `GITHUB_TOKEN` | GitHub token for Skills Hub (higher API rate limits, skill publish) |
 | `HONCHO_API_KEY` | Cross-session user modeling ([honcho.dev](https://honcho.dev/)) |
 | `HONCHO_BASE_URL` | Base URL for self-hosted Honcho instances (default: Honcho cloud). No API key required for local instances |

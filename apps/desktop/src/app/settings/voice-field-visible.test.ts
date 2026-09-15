@@ -45,4 +45,12 @@ describe('voiceFieldVisible', () => {
     expect(voiceFieldVisible('tts.openai.voice', cfg({ tts: { provider: 'openai', openai: {} } }))).toBe(true)
     expect(voiceFieldVisible('tts.edge.voice', cfg({ tts: { provider: 'openai', openai: {} } }))).toBe(false)
   })
+
+  it('shows the OpenRouter STT options only under OpenRouter', () => {
+    const openrouter = cfg({ stt: { enabled: true, provider: 'openrouter', openrouter: {} } })
+    expect(voiceFieldVisible('stt.openrouter.model', openrouter)).toBe(true)
+    expect(voiceFieldVisible('stt.openai.model', openrouter)).toBe(false)
+    // ...and not while another STT provider is selected.
+    expect(voiceFieldVisible('stt.openrouter.model', cfg())).toBe(false)
+  })
 })

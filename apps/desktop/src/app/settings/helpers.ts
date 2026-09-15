@@ -276,6 +276,7 @@ const BUILTIN_STT_PROVIDERS = new Set([
   'local_command',
   'groq',
   'openai',
+  'openrouter',
   'mistral',
   'xai',
   'elevenlabs',

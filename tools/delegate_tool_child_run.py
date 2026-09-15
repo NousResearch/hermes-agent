@@ -892,6 +892,11 @@ class _ChildRun:
         # processes, httpx clients) so subagent subprocesses don't outlive the delegation.
         if not close_deferred:
             _close_child(child, "Failed to close child agent after delegation")
+        # The child's execute_code kernels live exactly as long as the child (pinned against the LRU
+        # cap while it runs); dispose them here so they never squat the cap after the child is gone.
+        with _quiet("Failed to dispose child execute_code kernels: %s"):
+            from tools.code_kernel import shutdown_kernels_for_delegated_child
+            shutdown_kernels_for_delegated_child(str(getattr(child, "session_id", "") or ""))
 
         # The AIAgent turn boundary normally closes the child scope itself. This fallback covers failures before that
         # boundary starts, but must not pop a scope while a timed-out child worker is still unwinding.

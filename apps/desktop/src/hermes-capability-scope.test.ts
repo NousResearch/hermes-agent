@@ -38,7 +38,7 @@ describe('capability helpers are connection-scoped', () => {
     delete (window as { hermesDesktop?: unknown }).hermesDesktop
   })
 
-  const last = () => api.mock.calls.at(-1)?.[0] as { connectionId?: string; profile?: string }
+  const last = () => api.mock.calls.at(-1)?.[0] as { connectionId?: string; profile?: string; priority?: string }
 
   it('omits both scopes when none are active (single-source users unaffected)', () => {
     void getSkills()
@@ -72,6 +72,18 @@ describe('capability helpers are connection-scoped', () => {
 
     expect(last().profile).toBe('coder')
     expect(last().connectionId).toBe('gw-tailscale')
+  })
+
+  it('marks an explicitly scoped Settings config read as foreground', () => {
+    getHermesConfigRecord('coder')
+
+    expect(last()).toMatchObject({ profile: 'coder', priority: 'foreground' })
+  })
+
+  it('keeps ambient config reads unprioritized for background hydration', () => {
+    getHermesConfigRecord()
+
+    expect(last()).not.toHaveProperty('priority')
   })
 
   it('object scopes pin every read and write to the named connection', () => {

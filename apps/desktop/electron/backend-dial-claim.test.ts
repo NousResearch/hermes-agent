@@ -135,7 +135,7 @@ describe('main.ts wiring for #90812', () => {
   it('routes the registry-scoped dial IPC through the claim keyed by backendScopeKey(connectionId, profile)', () => {
     const handlerStart = mainSource.indexOf("ipcMain.handle('hermes:connection:for', ")
     expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 1_200)
+    const body = mainSource.slice(handlerStart, handlerStart + 1_600)
 
     expect(body).toContain('const scopeKey = backendScopeKey(id, profile)')
     expect(body).toContain('backendDialClaims.run(scopeKey, ')
@@ -162,7 +162,7 @@ describe('main.ts wiring for #90812', () => {
   it('routes a terminal-pane backend resolve through the single-owner claim on both the registry and local branches', () => {
     const handlerStart = mainSource.indexOf('async function ensureTerminalBackend(webContentsId: number) {')
     expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 900)
+    const body = mainSource.slice(handlerStart, handlerStart + 1_200)
 
     expect(body).toContain('backendDialClaims.run(backendScopeKey(windowRoute.connectionId, windowRoute.profile)')
     expect(body).toContain('ensureRegistryBackend(windowRoute.connectionId, windowRoute.profile)')
@@ -195,9 +195,21 @@ describe('main.ts wiring for #90812', () => {
   it('routes every registry-scoped REST dispatch (hermes:api) through the single-owner claim', () => {
     const handlerStart = mainSource.indexOf('async function dispatchRegistryApiRequest(')
     expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 900)
+    const body = mainSource.slice(handlerStart, handlerStart + 1_600)
 
     expect(body).toContain('backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile)')
-    expect(body).toContain('ensureRegistryBackend(registryConnectionId, routeProfile)')
+    expect(body).toContain("ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })")
+  })
+
+  it('forwards foreground API intent through both local and registry backend resolution', () => {
+    const registryStart = mainSource.indexOf('async function dispatchRegistryApiRequest(')
+    const registryBody = mainSource.slice(registryStart, registryStart + 1_300)
+    const apiStart = mainSource.indexOf('async function handleHermesApiRequest(request)')
+    const apiBody = mainSource.slice(apiStart, apiStart + 3_500)
+
+    expect(registryBody).toContain('const spawnPriority = spawnPriorityFrom(request?.priority)')
+    expect(registryBody).toContain("ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })")
+    expect(apiBody).toContain('const spawnPriority = spawnPriorityFrom(request?.priority)')
+    expect(apiBody).toContain('ensureBackend(routeProfile, { passive: request?.passive, spawnPriority })')
   })
 })

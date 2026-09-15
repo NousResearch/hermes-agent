@@ -16617,10 +16617,11 @@ async function dispatchRegistryApiRequest(
   // SSH tunnel / remote dashboard. A passive read never dials, so it stays
   // OUT of the claim: an interactive open coalescing onto an in-flight
   // passive read would otherwise inherit its "no warm backend" rejection.
+  const spawnPriority = spawnPriorityFrom(request?.priority)
   const connection: any = request?.passive
     ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
     : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
-        ensureRegistryBackend(registryConnectionId, routeProfile)
+        ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })
       )
 
   const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)
@@ -16685,6 +16686,7 @@ async function handleHermesApiRequest(request) {
   const tornDownProfile = await prepareProfileDeleteRequest(request)
 
   const profile = request?.profile
+  const spawnPriority = spawnPriorityFrom(request?.priority)
   // After tearing down a backend for profile deletion, route to the primary
   // backend instead of spawning a fresh pool backend.  A freshly spawned
   // backend calls ensure_hermes_home() which recreates the profile directory,
@@ -16706,7 +16708,7 @@ async function handleHermesApiRequest(request) {
   let response
 
   try {
-    const connection = await ensureBackend(routeProfile, { passive: request?.passive })
+    const connection = await ensureBackend(routeProfile, { passive: request?.passive, spawnPriority })
     const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
     response = await fetchJsonForBackend(connection, apiRoute.requestPath, {

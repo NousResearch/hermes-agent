@@ -208,9 +208,10 @@ def build_request(
 
 def build_retry_message(feedback: str) -> str:
     """The bounded correction turn. The feedback is quoted as UNTRUSTED diagnostic text inside hard delimiters
-    (a delimiter appearing inside it is defused) with an explicit instruction not to obey anything it asks."""
-    body = (feedback or "").strip()[:_MAX_FEEDBACK_CHARS].replace(FEEDBACK_CLOSE, "QUALITY_GATE_FEEDBACK>>").replace(
-        FEEDBACK_OPEN, "<<QUALITY_GATE_FEEDBACK"
+    (the marker token is stripped from any occurrence inside it, so neither delimiter can be re-formed by
+    extra `<`/`>` characters) with an explicit instruction not to obey anything it asks."""
+    body = (feedback or "").strip()[:_MAX_FEEDBACK_CHARS].replace(
+        "QUALITY_GATE_FEEDBACK", "QUALITY-GATE-FEEDBACK"
     ) or "(no feedback text was provided)"
     return (
         "Your final response was reviewed by an automated quality gate and returned for one correction.\n"

@@ -128,13 +128,21 @@ class _KanbanDispatcher:
 
     CORRUPT_BOARD_RETRY_AFTER_SECONDS = 300
 
-    def __init__(self, kb: Any, settings: _DispatcherSettings) -> None:
+    def __init__(self, kb: Any, settings: _DispatcherSettings, lock_gate: Optional[Any] = None) -> None:
         self.kb = kb
         self.settings = settings
         self.disabled_corrupt_boards: dict[str, tuple[tuple[str, int | None, int | None], float]] = {}
+        # Per-board singleton-lock gate: ``slug -> bool``, True when THIS
+        # gateway owns (or has acquired) that board's dispatcher lock.
+        # Defaults to "own everything" for callers that don't scope locks
+        # (tests, single-gateway installs without the embedded lock wired up).
+        self.lock_gate = lock_gate or (lambda slug: True)
 
     def _board_slugs(self) -> list:
-        return _board_slugs(self.kb)
+        """Boards this dispatcher may act on: all live boards, minus any this
+        gateway does not hold the per-board dispatcher lock for (another
+        gateway process owns that board's dispatch)."""
+        return [slug for slug in _board_slugs(self.kb) if self.lock_gate(slug)]
 
     def board_db_fingerprint(self, slug: str) -> tuple[str, int | None, int | None]:
         path = self.kb.kanban_db_path(slug)

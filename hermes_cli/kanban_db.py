@@ -493,6 +493,19 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
     return _board_path("HERMES_KANBAN_DB", board, ("kanban.db",), "kanban.db")
 
 
+def dispatcher_lock_path(board: Optional[str] = None) -> Path:
+    """Per-board singleton dispatcher lock: ``<root>/kanban/boards/<slug>/.dispatcher.lock``.
+
+    ``default`` gets its own file under the boards tree too (``boards/default/``)
+    even though its DB stays at the legacy ``<root>/kanban.db`` — the lock only
+    needs a stable, board-scoped path, not DB co-location. Scoping per board
+    (instead of one machine-global ``kanban/.dispatcher.lock``) lets independent
+    gateways each dispatch their own board concurrently, which the old global
+    lock forbade even when the boards never touch the same connection.
+    """
+    return board_dir(board) / ".dispatcher.lock"
+
+
 def workspaces_root(board: Optional[str] = None) -> Path:
     """Per-board scratch workspace root (``HERMES_KANBAN_WORKSPACES_ROOT`` wins);
     ``default`` keeps the legacy ``<root>/kanban/workspaces/``."""

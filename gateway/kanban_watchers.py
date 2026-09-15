@@ -41,13 +41,72 @@ class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
 
     def _owns_kanban_dispatcher_lock(self) -> bool:
-        return getattr(self, "_kanban_dispatcher_lock_handle", None) is not None
+        """True once this gateway holds at least one board's dispatcher lock.
+
+        Kept as a single boolean (rather than per-board) for the notifier's
+        legacy-subscription visibility check, which predates per-board
+        locking and only needs "is this gateway A dispatcher owner at all".
+        Checks the legacy single-lock attr too so stubs that only set
+        ``_kanban_dispatcher_lock_handle`` (tests, older callers) keep working.
+        """
+        if getattr(self, "_kanban_dispatcher_lock_handle", None) is not None:
+            return True
+        return bool(getattr(self, "_kanban_board_lock_handles", None))
+
+    def _kanban_board_lock_gate(self, kb_module: Any, slug: str) -> bool:
+        """Acquire (or confirm already-held) the dispatcher lock for *slug*.
+
+        Boards are locked independently (``kanban/boards/<slug>/.dispatcher.lock``)
+        instead of one machine-global lock, so multiple isolated gateway
+        processes sharing the same kanban tree can each dispatch the boards
+        they actually own without contending for a single lock none of them
+        would ever release to each other.
+        """
+        handles: Optional[dict] = getattr(self, "_kanban_board_lock_handles", None)
+        if handles is None:
+            handles = {}
+            self._kanban_board_lock_handles = handles
+        if slug in handles:
+            return True
+        lock_path = kb_module.dispatcher_lock_path(slug)
+        handle, state = _acquire_singleton_lock(lock_path)
+        if state == "held":
+            handles[slug] = handle
+            logger.info("kanban dispatcher [%s]: holding board dispatcher lock (%s)", slug, lock_path)
+            return True
+        if state == "unavailable":
+            # No handle to release later, but proceed on config control alone
+            # (matches the old single-lock fallback behaviour).
+            handles[slug] = None
+            logger.warning("kanban dispatcher [%s]: advisory lock unavailable at %s; "
+                            "proceeding on config control alone.", slug, lock_path)
+            return True
+        warned: Optional[set] = getattr(self, "_kanban_board_lock_warned", None)
+        if warned is None:
+            warned = set()
+            self._kanban_board_lock_warned = warned
+        if slug not in warned:
+            warned.add(slug)
+            logger.info("kanban dispatcher [%s]: another gateway already holds this board's "
+                        "dispatcher lock (%s); this gateway will NOT dispatch it.", slug, lock_path)
+        return False
 
     def _release_kanban_dispatcher_lock(self) -> None:
-        """Clear notifier-visible ownership before releasing the OS lock."""
-        handle = getattr(self, "_kanban_dispatcher_lock_handle", None)
+        """Release every board lock this gateway holds (plus the legacy
+        single-lock attr, cleared for callers still setting only that)."""
+        legacy_handle = getattr(self, "_kanban_dispatcher_lock_handle", None)
         self._kanban_dispatcher_lock_handle = None
-        _release_singleton_lock(handle)
+        if legacy_handle is not None:
+            _release_singleton_lock(legacy_handle)
+        handles = getattr(self, "_kanban_board_lock_handles", None)
+        if handles:
+            for handle in handles.values():
+                if handle is not None:
+                    _release_singleton_lock(handle)
+            handles.clear()
+        warned = getattr(self, "_kanban_board_lock_warned", None)
+        if warned:
+            warned.clear()
 
     async def _sleep_between_ticks(self, interval: float) -> None:
         """Sleep *interval* (floored to 1s) in 1s slices so stop() never waits a full interval."""
@@ -183,11 +242,16 @@ class GatewayKanbanWatchersMixin:
                 logger.warning("kanban notifier: artifact upload (%s) failed: %s", path, exc)
 
     def _kanban_dispatcher_boot(self) -> Optional[tuple]:
-        """Resolve config, kanban_db and the singleton lock; None when the dispatcher must not run.
+        """Resolve config and kanban_db; None when the dispatcher must not run.
 
         Config is read once at boot (restart to apply), except the auto-decompose
         toggle which is re-read every tick. The env var is an escape hatch to
-        disable without editing YAML.
+        disable without editing YAML. The singleton lock is no longer acquired
+        here — it is scoped per board (see ``_kanban_board_lock_gate``) and
+        acquired lazily as each board is enumerated during a tick, so several
+        independent gateways sharing one kanban tree can each dispatch the
+        boards they actually own instead of contending for one machine-global
+        lock.
         """
         try:
             from hermes_cli.config import load_config as _load_config
@@ -212,22 +276,6 @@ class GatewayKanbanWatchersMixin:
         except Exception:
             logger.warning("kanban dispatcher: kanban_db not importable; dispatcher disabled")
             return None
-
-        # Single-dispatcher backstop (see _acquire_singleton_lock). The lock
-        # lives at the machine-global kanban root, so it serialises ALL gateways.
-        self._kanban_dispatcher_lock_handle = None
-        _lock_path = _kb.kanban_home() / "kanban" / ".dispatcher.lock"
-        _lock_handle, _lock_state = _acquire_singleton_lock(_lock_path)
-        if _lock_state == "contended":
-            logger.info("kanban dispatcher: another gateway already holds the dispatcher "
-                        "lock (%s); this gateway will NOT dispatch.", _lock_path)
-            return None
-        if _lock_state == "held":
-            self._kanban_dispatcher_lock_handle = _lock_handle  # hold for process lifetime
-            logger.info("kanban dispatcher: holding singleton dispatcher lock (%s)", _lock_path)
-        else:
-            logger.warning("kanban dispatcher: advisory lock unavailable at %s; proceeding "
-                           "on config control alone.", _lock_path)
         return _load_config, _kb, kanban_cfg
 
     async def _kanban_dispatcher_watcher(self) -> None:
@@ -254,7 +302,7 @@ class GatewayKanbanWatchersMixin:
         # broken PATH, missing venv, or credential loss.
         bad_ticks = 0
         last_warn_at = 0
-        dispatcher = _KanbanDispatcher(_kb, settings)
+        dispatcher = _KanbanDispatcher(_kb, settings, lock_gate=lambda slug: self._kanban_board_lock_gate(_kb, slug))
 
         logger.info("kanban dispatcher: embedded in gateway (interval=%.1fs)", interval)
         while self._running:

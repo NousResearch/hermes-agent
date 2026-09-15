@@ -469,4 +469,4 @@ _passthrough(
 
 
 def register(server) -> None:
-    _registry.install(server)
+    _registry.install(server, globals())

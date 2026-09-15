@@ -195,4 +195,4 @@ def _(rid, params: VaultRemoveParams) -> VaultRemoveResult | dict:
 
 def register(server) -> None:
     """Bind this module's handlers onto ``server``'s globals and registry."""
-    _registry.install(server)
+    _registry.install(server, globals())

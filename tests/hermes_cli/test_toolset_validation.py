@@ -197,3 +197,18 @@ def test_populated_platforms_produce_no_empty_list_warning():
     cfg = {"cli": ["hermes-cli"], "telegram": ["hermes-telegram"]}
     warnings = validate_platform_toolsets(cfg, _is_valid)
     assert warnings == []
+
+
+def test_hint_never_suggests_the_identical_invalid_name(monkeypatch):
+    # Regression for the 'did you mean \'X\' — X?' loop: a plugin platform is
+    # registry-registered (so its default is "valid" via the registry branch)
+    # while the static predicate rejects the same synthesized `hermes-<platform>`
+    # name. The hint must be suppressed rather than echo the invalid name.
+    from gateway import platform_registry
+    monkeypatch.setattr(platform_registry.platform_registry, "is_registered", lambda p: p == "teams")
+    warnings = validate_platform_toolsets({"teams": ["hermes-teams"]}, _is_valid)
+    unknown = [w for w in warnings if "unknown toolset 'hermes-teams'" in w]
+    assert len(unknown) == 1
+    assert "did you mean" not in unknown[0]
+    # The zero-valid-toolsets safety net still fires.
+    assert any("no valid toolsets" in w for w in warnings)

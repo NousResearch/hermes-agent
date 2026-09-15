@@ -21,7 +21,7 @@ Hermetic: the model-resolution chain is fully mocked (no network), mirroring
 
 from unittest.mock import patch
 
-from hermes_cli.model_switch import switch_model
+from hermes_cli.model_switch import _configured_provider_matches, switch_model
 
 _ACCEPTED = {"accepted": True, "persist": True, "recognized": True, "message": None}
 _REJECTED = {"accepted": False, "persist": False, "recognized": False, "message": "not found"}
@@ -82,6 +82,43 @@ def _run_switch(
         )
 
 
+
+
+def test_compatibility_view_deduplicates_mirrored_provider():
+    """A providers.<slug> entry mirrored into custom_providers is one match."""
+    from hermes_cli.config import get_compatible_custom_providers
+
+    user_providers = {
+        "OAI": {
+            "name": "OpenAI",
+            "api": "https://api.example.com/v1",
+            "models": ["deepseek-v4-flash"],
+        }
+    }
+    compatible_custom = get_compatible_custom_providers({"providers": user_providers})
+
+    assert _configured_provider_matches(
+        "deepseek-v4-flash", user_providers, compatible_custom
+    ) == {"OAI": "deepseek-v4-flash"}
+
+
+def test_distinct_custom_provider_is_not_hidden_by_deduplication():
+    """Only a custom entry mirroring a matched user provider is skipped."""
+    user_providers = {"oai": {"models": ["deepseek-v4-flash"]}}
+    custom_providers = [
+        {
+            "name": "relay",
+            "provider_key": "different-provider",
+            "models": ["deepseek-v4-flash"],
+        }
+    ]
+
+    assert _configured_provider_matches(
+        "deepseek-v4-flash", user_providers, custom_providers
+    ) == {
+        "oai": "deepseek-v4-flash",
+        "custom:relay": "deepseek-v4-flash",
+    }
 
 
 def test_default_model_only_declaration_routes():

@@ -146,3 +146,33 @@ def is_partial_silence_marker(text: Any) -> bool:
         c and any(marker.startswith(c) for marker in LIVE_GATEWAY_SILENT_MARKERS)
         for c in _canonical_silence_candidates(text)
     )
+
+
+# Notification-dump detection (used by the per-chat outbound filter below).
+# Incident: a woken agent pasted ~11K chars of supervisor notification backlog
+# into a group chat (one streaming edit frame at a time). Heuristic: >=3 lines
+# matching the pipeline-notification shape `[tag] <emoji> ...` count as a dump;
+# quoting 1-2 lines in a normal reply does not trip it.
+import re as _re
+
+_NOTIFICATION_LINE_RE = _re.compile(
+    r"^\s*[【\[][^\]】\n]{1,60}[】\]]\s*(⏳|✅|❌|⚠️|🔍|✨|📦|🗑️|▶️)"
+)
+NOTIFICATION_DUMP_MIN_LINES = 3
+
+
+def is_notification_dump(text: Any) -> bool:
+    """Return True when ``text`` is a dump of supervisor-style notifications.
+
+    Counts lines matching the pipeline-notification shape
+    ``[tag] <emoji> …`` (⏳/✅/❌/⚠️/🔍/✨/📦/🗑️/▶️); at least
+    ``NOTIFICATION_DUMP_MIN_LINES`` such lines means the agent regurgitated
+    its notification backlog instead of answering. Non-strings, blanks, and
+    ordinary prose quoting one or two notification lines return False.
+    """
+    if not isinstance(text, str):
+        return False
+    hits = sum(
+        1 for line in text.splitlines() if _NOTIFICATION_LINE_RE.match(line)
+    )
+    return hits >= NOTIFICATION_DUMP_MIN_LINES

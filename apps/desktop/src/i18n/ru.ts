@@ -3223,6 +3223,8 @@ export const ru = defineLocale({
       fast: 'Быстрая'
     },
     modelOptions: {
+      dynamicThinking: 'Динамическое',
+      thinkingBudget: 'Бюджет размышлений (токены)',
       noOptions: 'Для этой модели нет опций',
       options: 'Опции',
       thinking: 'Размышление',

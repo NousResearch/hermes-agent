@@ -24,6 +24,10 @@ afterEach(() => {
 
 // Render the submenu inside an open menu/sub so its content (switches) mounts.
 function renderSubmenu(opts: {
+  reasoningControl?: 'adjustable' | 'default' | 'unsupported' | 'unknown'
+  canDisableReasoning?: boolean
+  reasoningEfforts?: string[]
+  reasoningBudget?: { min: number; max: number; dynamic?: boolean }
   defaultEffort?: string
   effort?: string
   fastControl: FastControl
@@ -38,6 +42,7 @@ function renderSubmenu(opts: {
         <DropdownMenuSub open>
           <DropdownMenuSubTrigger>edit</DropdownMenuSubTrigger>
           <ModelEditSubmenu
+            canDisableReasoning={opts.canDisableReasoning}
             defaultEffort={opts.defaultEffort ?? 'medium'}
             effort={opts.effort ?? 'medium'}
             fastControl={opts.fastControl}
@@ -47,6 +52,9 @@ function renderSubmenu(opts: {
             onSetOptions={opts.onSetOptions}
             provider="p1"
             reasoning={opts.reasoning}
+            reasoningControl={opts.reasoningControl}
+            reasoningEfforts={opts.reasoningEfforts}
+            reasoningBudget={opts.reasoningBudget}
           />
         </DropdownMenuSub>
       </DropdownMenuContent>
@@ -60,6 +68,89 @@ function renderSubmenu(opts: {
 // ever writes directly again, picking an effort for a kanban card would reach
 // over and change the user's live chat.
 describe('ModelEditSubmenu reports edits without performing them', () => {
+  it('validates a token budget separately from effort and reports only Apply', () => {
+    const onSetOptions = vi.fn()
+    const onSelectModel = vi.fn()
+    renderSubmenu({
+      reasoning: true,
+      reasoningControl: 'adjustable',
+      reasoningEfforts: ['none'],
+      reasoningBudget: { min: 512, max: 24576, dynamic: true },
+      effort: 'auto',
+      fastControl: { kind: 'none' },
+      onSetOptions,
+      onSelectModel
+    })
+    const input = screen.getByRole('spinbutton', { name: 'Thinking budget (tokens)' })
+    fireEvent.change(input, { target: { value: '511' } })
+    expect(screen.getByRole('button', { name: 'Apply' }).hasAttribute('disabled')).toBe(true)
+    fireEvent.change(input, { target: { value: '4096' } })
+    expect(onSetOptions).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+    expect(onSetOptions).toHaveBeenCalledWith({ effort: 'budget:4096' })
+    expect(onSelectModel).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Dynamic' }))
+    expect(onSetOptions).toHaveBeenLastCalledWith({ effort: 'budget:-1' })
+    expect(screen.queryByRole('switch')).toBeNull() // default is not falsely displayed as On
+  })
+  it.each([
+    ['default', true, [], true],
+    ['adjustable', true, ['low', 'high'], true],
+    ['unsupported', false, [], false]
+  ] as const)('shows the locked thinking state for %s', (reasoningControl, reasoning, levels, checked) => {
+    const onSetOptions = vi.fn()
+    renderSubmenu({
+      reasoningControl,
+      reasoning,
+      reasoningEfforts: [...levels],
+      canDisableReasoning: false,
+      effort: 'auto',
+      fastControl: { kind: 'none' },
+      onSetOptions
+    })
+    const toggle = screen.getByRole('switch')
+    expect(toggle.hasAttribute('disabled')).toBe(true)
+    expect(toggle.getAttribute('aria-checked')).toBe(String(checked))
+    fireEvent.click(toggle)
+    expect(onSetOptions).not.toHaveBeenCalled()
+  })
+
+  it('does not present an unknown thinking state as Off', () => {
+    renderSubmenu({
+      reasoningControl: 'unknown',
+      reasoning: false,
+      reasoningEfforts: [],
+      canDisableReasoning: false,
+      fastControl: { kind: 'none' },
+      onSetOptions: vi.fn()
+    })
+    expect(screen.queryByRole('switch')).toBeNull()
+    expect(screen.getByText('Thinking controls unverified')).toBeTruthy()
+  })
+
+  it('offers only declared effort levels and resolves its checked value against them', () => {
+    const onSetOptions = vi.fn()
+    renderSubmenu({
+      reasoning: true,
+      reasoningEfforts: ['low', 'high'],
+      effort: 'ultra',
+      defaultEffort: 'medium',
+      fastControl: { kind: 'none' },
+      onSetOptions
+    })
+    expect(screen.getAllByRole('menuitemradio').map(row => row.textContent)).toEqual(['Low', 'High'])
+    expect(screen.getAllByRole('menuitemradio').every(row => row.getAttribute('aria-checked') === 'false')).toBe(true)
+    expect(screen.queryByRole('switch')).toBeNull()
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'High' }))
+    expect(onSetOptions).toHaveBeenCalledWith({ effort: 'high' })
+  })
+
+  it('does not offer a synthetic effort or thinking toggle when the declared list is empty', () => {
+    renderSubmenu({ reasoning: true, reasoningEfforts: [], fastControl: { kind: 'none' }, onSetOptions: vi.fn() })
+    expect(screen.queryAllByRole('menuitemradio')).toEqual([])
+    expect(screen.queryByText('Provider default')).toBeNull()
+    expect(screen.queryByRole('switch')).toBeNull()
+  })
   it('param fast: reports the toggle', () => {
     const onSetOptions = vi.fn()
     renderSubmenu({ fastControl: { kind: 'param', on: true }, onSetOptions, reasoning: false })
@@ -128,4 +219,45 @@ describe('ModelEditSubmenu reports edits without performing them', () => {
 
     expect(onSelectModel).toHaveBeenCalledWith('m1-fast')
   })
+})
+
+it.each([['low', 'high'], ['low', 'medium', 'high'], []])(
+  'declared choices produce only their corresponding edits (%j)',
+  (...levels: string[]) => {
+    const onSetOptions = vi.fn()
+    renderSubmenu({
+      reasoningEfforts: levels,
+      canDisableReasoning: false,
+      effort: 'auto',
+      fastControl: { kind: 'none' },
+      onSetOptions,
+      reasoning: true
+    })
+    expect(screen.queryByRole('switch')).toBeNull()
+    const items = screen.queryAllByRole('menuitemradio')
+    expect(items).toHaveLength(levels.length)
+    expect(items.every(item => item.getAttribute('aria-checked') === 'false')).toBe(true)
+    expect(screen.queryByText('Provider default')).toBeNull()
+
+    for (const [index, value] of levels.entries()) {
+      fireEvent.click(items[index])
+      expect(onSetOptions).toHaveBeenLastCalledWith({ effort: value })
+    }
+  }
+)
+
+it('does not check a different level for an unsupported saved setting', () => {
+  renderSubmenu({
+    reasoningEfforts: ['low', 'high'],
+    canDisableReasoning: false,
+    effort: 'medium',
+    defaultEffort: 'high',
+    fastControl: { kind: 'none' },
+    onSetOptions: vi.fn(),
+    reasoning: true
+  })
+
+  for (const item of screen.getAllByRole('menuitemradio')) {
+    expect(item.getAttribute('aria-checked')).toBe('false')
+  }
 })

@@ -39,6 +39,16 @@ afterEach(() => {
 })
 
 describe('ReasoningPill', () => {
+  it('offers the effort menu without inventing a level for an unset override', () => {
+    $defaultReasoningEffort.set('high')
+    render(
+      <SessionViewProvider value={tileView('auto')}>
+        <ReasoningPill disabled={false} model={modelState()} />
+      </SessionViewProvider>
+    )
+    expect(screen.getByTestId('reasoning-pill').textContent).toBe('Effort')
+    expect(screen.getByTestId('reasoning-pill').getAttribute('aria-label')).toBe('Effort')
+  })
   it("shows THIS surface's live effort, falling back to the profile default when the session has none", () => {
     $defaultReasoningEffort.set('high')
 

@@ -8,6 +8,39 @@ description: "Use Hermes Agent with Google Gemini — native AI Studio API, API-
 
 Hermes Agent supports Google Gemini as a native provider using the **Google AI Studio / Gemini API** — not the OpenAI-compatible endpoint. This lets Hermes translate its internal OpenAI-shaped message and tool loop into Gemini's native `generateContent` API while preserving tool calling, streaming, multimodal inputs, and Gemini-specific response metadata.
 
+## Model catalog and thinking controls
+
+The model picker reads Google's native model list, including pagination, and
+uses Hermes' cached [models.dev](https://models.dev) metadata to keep text-output
+models with function calling. A successful discovery replaces the curated list;
+on failure Hermes retains its existing fallback behavior. Models that require
+the dedicated Computer Use tool are excluded from this general chat picker.
+Being listed does not guarantee that your project has access to a model.
+
+Desktop shows the thinking controls described for each model:
+
+- **Effort:** only the model's declared levels.
+- **Thinking off:** only when disabling thinking is declared.
+- **Thinking budget:** a token count within the model's bounds, with **Dynamic**
+  for Google's `thinkingBudget: -1` mode.
+
+When no explicit level or budget is set, the picker leaves the options
+unselected rather than displaying a synthetic "Provider default" effort.
+Omitting the override differs from Dynamic, particularly for models whose
+default is to leave thinking off.
+
+Missing or unrecognized metadata leaves control to Google and is shown as
+unverified. A model's name containing “Flash” does not enable a Fast switch.
+The picker and the AI Studio request adapter use the same cached description;
+catalog refreshes do not make generation requests.
+
+For configuration, `agent.reasoning_effort` additionally accepts `auto` and
+`budget:N` (including `budget:-1`). Explicit unsupported session choices are
+rejected before saving. Inherited settings from another model are normalized
+to a supported level or provider default. These controls apply to AI Studio;
+Vertex retains its separate policy. See Google's
+[generateContent thinking guide](https://ai.google.dev/gemini-api/docs/generate-content/thinking).
+
 ## Prerequisites
 
 - **Google AI Studio API key** — create one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)

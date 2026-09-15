@@ -740,6 +740,14 @@ export interface ModelCapabilities {
   fast: boolean
   reasoning: boolean
   can_disable_reasoning?: boolean | null
+  reasoning_control?: 'adjustable' | 'default' | 'unsupported' | 'unknown' | null
+  reasoning_efforts?: string[] | null
+  reasoning_budget?: ReasoningBudget | null
+}
+export interface ReasoningBudget {
+  min: number
+  max: number
+  dynamic?: boolean
 }
 /** ``hermes_cli/inventory.py::_apply_pricing`` — formatted $/Mtok strings (``""`` unknown, ``"free"``); the sale fields are Nous Portal-only. */
 export interface ModelPricing {

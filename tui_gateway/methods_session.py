@@ -330,6 +330,15 @@ def _(rid, params: dict) -> dict:
     # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
     profile_home = _profile_home(profile := (params.get("profile") or "").strip() or None)
     session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
+    if session_model_override and create_reasoning_override is not None:
+        from providers.reasoning import resolve_provider_reasoning_config
+        try:
+            with _profile_build_scope(profile_home):
+                create_reasoning_override = resolve_provider_reasoning_config(
+                    session_model_override.get("provider") or "", session_model_override["model"],
+                    create_reasoning_override, explicit=True)
+        except ValueError as exc:
+            return _err(rid, 4002, str(exc))
     now = time.time()
     with _sessions_lock:
         _sessions[sid] = {

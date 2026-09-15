@@ -42,7 +42,7 @@ export function ReasoningPill({ disabled, model }: { disabled: boolean; model: C
   }
 
   const label = reasoningEffortLabel(reasoningEffort || defaultEffort || DEFAULT_REASONING_EFFORT)
-  const title = `${copy.effort}: ${label}`
+  const title = label ? `${copy.effort}: ${label}` : copy.effort
 
   // Closing the menu ends its claim on the keyboard: Radix restores focus to
   // this pill (a toolbar button), so without the release the Enter that
@@ -67,7 +67,7 @@ export function ReasoningPill({ disabled, model }: { disabled: boolean; model: C
             type="button"
             variant="ghost"
           >
-            <span>{label}</span>
+            <span>{label || copy.effort}</span>
             <ChevronDown className="size-2.5 shrink-0 opacity-50" />
           </Button>
         </DropdownMenuTrigger>

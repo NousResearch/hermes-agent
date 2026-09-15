@@ -3472,6 +3472,10 @@ export const en: Translations = {
       fast: 'Fast'
     },
     modelOptions: {
+      dynamicThinking: 'Dynamic',
+      thinkingBudget: 'Thinking budget (tokens)',
+      unverified: 'Unverified setting',
+      unknownThinking: 'Thinking controls unverified',
       noOptions: 'No options for this model',
       options: 'Options',
       thinking: 'Thinking',

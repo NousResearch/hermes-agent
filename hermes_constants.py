@@ -932,14 +932,19 @@ def parse_reasoning_effort(effort) -> dict | None:
 
     ``None`` for empty/unrecognized input (caller uses the default); ``{"enabled": False}`` for
     "none"/"false"/"disabled"/YAML False — ``reasoning_effort: false`` must mean disabled.
+    "auto" returns ``{"enabled": True}``, explicitly leaving the level to the provider.
     """
     if effort is None or effort is True:
         return None
     effort = str(effort).strip().lower()  # False -> "false" -> disabled; "" matches neither set
+    if effort == "auto":
+        return {"enabled": True}
     if effort in {"none", "false", "disabled"}:
         return {"enabled": False}
     if effort in VALID_REASONING_EFFORTS:
         return {"enabled": True, "effort": effort}
+    if effort.startswith("budget:") and len(effort[7:]) <= 10 and (effort[7:] == "-1" or (effort[7:].isascii() and effort[7:].isdigit())):
+        return {"enabled": True, "effort": f"budget:{int(effort[7:])}"}
     return None
 
 

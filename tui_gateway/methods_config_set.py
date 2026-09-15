@@ -307,6 +307,20 @@ def _set_reasoning(rid, params, key, value, session):
     parsed = parse_reasoning_effort(arg)
     if parsed is None:
         return _err(rid, 4002, f"unknown reasoning value: {value}")
+    if session is not None:
+        from providers import get_provider_profile
+        from providers.reasoning import resolve_provider_reasoning_config
+        agent = session.get("agent")
+        target = session.get("pending_model_switch") or session.get("model_override") or {}
+        model = target.get("display_model") or target.get("model") or getattr(agent, "model", "")
+        provider = target.get("display_provider") or target.get("provider") or getattr(agent, "provider", "")
+        try:
+            parsed = resolve_provider_reasoning_config(provider, model, parsed, explicit=True)
+        except ValueError as exc:
+            return _err(rid, 4002, str(exc))
+        profile = get_provider_profile(provider)
+        if profile and profile.validate_reasoning_selection and session.get("running"):
+            return _err(rid, 4009, "Wait for the current turn before changing reasoning controls.")
     if scope == "global" or session is None:
         _write_config_key("agent.reasoning_effort", arg)
         if session is not None:
@@ -320,6 +334,8 @@ def _set_reasoning(rid, params, key, value, session):
         session["create_reasoning_override"] = parsed
     if session and session.get("agent") is not None:
         session["agent"].reasoning_config = parsed
+        from providers.reasoning import sync_primary_reasoning
+        sync_primary_reasoning(session["agent"])
         _persist_live_session_runtime(session)
         _emit_session_info(params.get("session_id", ""), session)
     return _kv(rid, key, arg)

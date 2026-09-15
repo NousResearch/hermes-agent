@@ -1803,3 +1803,27 @@ def _moa_caches_isolated():
     yield
     moa._preset_cache.clear()
     moa._runtime_cache.clear()
+
+
+@pytest.fixture
+def gemini_reasoning_catalog(monkeypatch):
+    """Hermetic models.dev fixture for tests of Gemini's catalog-dependent wire."""
+    from agent import models_dev
+    levels = {
+        "gemini-3-pro-preview": ["low", "high"],
+        "gemini-3.1-pro": ["low", "medium", "high"],
+        "gemini-3.1-pro-preview": ["low", "medium", "high"],
+        "gemini-3.1-pro-preview-customtools": ["low", "medium", "high"],
+        "gemini-3-flash-preview": ["minimal", "low", "medium", "high"],
+        "gemini-3.6-flash": ["minimal", "low", "medium", "high"],
+        "gemini-3.7-flash": ["low", "medium", "high"],
+        "gemini-3.8-flash": ["low", "medium", "high"],
+        "gemini-flash-latest": ["low", "medium", "high"],
+        "gemini-3-pro-image-preview": ["high"],
+    }
+    models = {key: {"reasoning": True, "reasoning_options": [{"type": "effort", "values": value}]}
+              for key, value in levels.items()}
+    models["gemini-2.5-flash"] = {"reasoning": True, "reasoning_options": [
+        {"type": "toggle"}, {"type": "budget_tokens", "min": 0, "max": 24576}]}
+    monkeypatch.setattr(models_dev, "fetch_models_dev", lambda **kwargs: {"google": {"models": models}})
+    return models

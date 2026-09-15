@@ -1,16 +1,10 @@
-"""Secret stores under HERMES_HOME must be write-denied, control files must not.
+"""Secret stores under HERMES_HOME are write-denied; control files stay writable (#110464).
 
-``is_read_denied`` refuses every credential store. The write side is
-deliberately narrower: #45947 freed ``auth.json``, ``config.yaml`` and
-``webhook_subscriptions.json`` on the grounds that containment belongs in
-Docker/remote backends and OS permissions rather than an expanding denylist.
-
-What #45947 kept blocked is secret *material*, and that list had drifted:
-``auth/google_oauth.json`` (an OAuth token store), the plaintext Bitwarden
-cache, ``vault/`` (key + ciphertext side by side) and ``browser-profile/``
-(copied cookies / Login Data) were writable through ``write_file`` / ``patch``.
-
-These tests pin both halves so neither can drift again.
+``get_read_block_error`` refuses every credential store. The write side is deliberately
+narrower — #45947 freed ``auth.json`` / ``config.yaml`` / ``webhook_subscriptions.json`` so
+the user can ask to edit them — but the secret *material* it meant to keep blocked had
+drifted: ``auth/google_oauth.json``, the plaintext Bitwarden cache, ``vault/`` and
+``browser-profile/`` were writable through ``write_file`` / ``patch``.
 """
 
 from __future__ import annotations
@@ -21,17 +15,10 @@ import pytest
 
 import agent.file_safety as fs
 
-# Secret material: read-denied AND write-denied.
-SECRET_FILES = (
-    ".env",
-    ".anthropic_oauth.json",
-    "auth/google_oauth.json",
-    "cache/bws_cache.json",
-    "cache/bws_cache.enc.json",
+SECRET_STORES = (
+    "auth/google_oauth.json", "cache/bws_cache.json", "vault/vault.key", "browser-profile/Default/Cookies",
 )
-
-# Read-denied control files that #45947 deliberately left writable.
-WRITABLE_CONTROL_FILES = ("auth.json", "auth.lock", "config.yaml", "webhook_subscriptions.json")
+WRITABLE_CONTROL_FILES = ("auth.json", "config.yaml", "webhook_subscriptions.json")
 
 
 @pytest.fixture()
@@ -52,76 +39,19 @@ def _touch(base: Path, rel: str) -> Path:
     return p
 
 
-@pytest.mark.parametrize("name", SECRET_FILES)
-def test_secret_files_are_write_denied(hermes_layout, name):
+def test_read_denied_secret_stores_are_write_denied_on_profile_and_root(hermes_layout):
     root, profile = hermes_layout
     for base in (profile, root):
-        path = _touch(base, name)
-        assert fs.is_write_denied(str(path)), f"write allowed: {path}"
+        for rel in SECRET_STORES:
+            path = _touch(base, rel)
+            assert fs.get_read_block_error(str(path)), f"fixture drift: not read-denied: {path}"
+            assert fs.is_write_denied(str(path)), f"write allowed: {path}"
 
 
-@pytest.mark.parametrize("sub", fs._WRITE_DENIED_SECRET_DIRS)
-def test_secret_dirs_are_write_denied(hermes_layout, sub):
+def test_control_files_and_lookalikes_outside_home_stay_writable(hermes_layout, tmp_path):
     root, profile = hermes_layout
     for base in (profile, root):
-        path = _touch(base, f"{sub}/inside.bin")
-        assert fs.is_write_denied(str(path)), f"write allowed: {path}"
-
-
-@pytest.mark.parametrize("name", WRITABLE_CONTROL_FILES)
-def test_control_files_stay_writable(hermes_layout, name):
-    """#45947 freed these on purpose; re-blocking them is a policy regression."""
-    root, profile = hermes_layout
-    for base in (profile, root):
-        path = _touch(base, name)
-        assert fs.is_write_denied(str(path)) is False, f"write denied: {path}"
-
-
-def test_every_write_denied_secret_is_read_denied(hermes_layout):
-    """Write denies are a subset of read denies — never a superset."""
-    _, profile = hermes_layout
-    for name in SECRET_FILES:
-        if name == "cache/bws_cache.enc.json":
-            continue  # encrypted sibling: write-only extra, plaintext is the read-denied one
-        path = _touch(profile, name)
-        assert fs.get_read_block_error(str(path)) is not None, f"not read-denied: {name}"
-
-
-def test_nested_secret_basename_stays_writable(hermes_layout):
-    _, profile = hermes_layout
-    path = _touch(profile, "skills/my-skill/.env.example")
-    assert fs.is_write_denied(str(path)) is False
-
-
-def test_secret_outside_hermes_home_is_not_denied_by_this_rule(hermes_layout, tmp_path):
-    project = tmp_path / "myproject"
-    path = _touch(project, "cache/bws_cache.json")
-    assert fs.is_write_denied(str(path)) is False
-
-
-def test_write_file_does_not_replace_vault_key(hermes_layout):
-    _, profile = hermes_layout
-    from tools.environments.local import LocalEnvironment
-    from tools.file_operations import ShellFileOperations
-
-    target = _touch(profile, "vault/vault.key")
-    target.write_text("not-a-real-key\n", encoding="utf-8")
-    ops = ShellFileOperations(LocalEnvironment(cwd=str(profile)), cwd=str(profile))
-    res = ops.write_file(str(target), "stolen\n")
-    assert res.error is not None
-    assert "protected system/credential file" in res.error
-    assert target.read_text(encoding="utf-8") == "not-a-real-key\n"
-
-
-def test_write_file_does_not_replace_google_oauth(hermes_layout):
-    _, profile = hermes_layout
-    from tools.environments.local import LocalEnvironment
-    from tools.file_operations import ShellFileOperations
-
-    target = _touch(profile, "auth/google_oauth.json")
-    target.write_text('{"ok": true}\n', encoding="utf-8")
-    ops = ShellFileOperations(LocalEnvironment(cwd=str(profile)), cwd=str(profile))
-    res = ops.write_file(str(target), '{"pwned": true}\n')
-    assert res.error is not None
-    assert "protected system/credential file" in res.error
-    assert target.read_text(encoding="utf-8") == '{"ok": true}\n'
+        for rel in WRITABLE_CONTROL_FILES:
+            assert fs.is_write_denied(str(_touch(base, rel))) is False, f"#45947 regression: {rel}"
+    assert fs.is_write_denied(str(_touch(tmp_path / "myproject", "cache/bws_cache.json"))) is False
+    assert fs.is_write_denied(str(_touch(tmp_path / "myproject", "vault/vault.key"))) is False

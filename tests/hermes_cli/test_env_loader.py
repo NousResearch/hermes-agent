@@ -1,9 +1,69 @@
 import codecs
 import importlib
 import os
+import subprocess
 import sys
+from pathlib import Path
 
 from hermes_cli.env_loader import load_hermes_dotenv
+
+
+def test_dotenv_sanitization_loads_before_provider_entry_point_import(tmp_path):
+    """A provider import at the config boundary must run after dotenv loading.
+
+    This uses a fresh interpreter and an import hook because the broken path is
+    an *actual* import of ``hermes_cli.config`` inside
+    ``_sanitize_env_file_if_needed``.  The hook invokes a controlled provider
+    entry point whenever that module is first imported.  On origin/main the
+    sanitizer imports config before python-dotenv applies the value, so the
+    entry point writes ``missing``.  With the helper decoupled from config,
+    the explicit post-load config import observes the dotenv value instead.
+    """
+    home = tmp_path / "hermes"
+    site_dir = tmp_path / "site"
+    site_dir.mkdir()
+    observed = tmp_path / "provider-observed.txt"
+    home.mkdir()
+    # Leading whitespace makes sanitization take its actual rewrite path.
+    (home / ".env").write_text("  DOTENV_DISCOVERY_PROBE=loaded-before-discovery\r\n", encoding="utf-8")
+    (site_dir / "provider_entrypoint.py").write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "Path(os.environ['DOTENV_DISCOVERY_RESULT']).write_text(\n"
+        "    os.environ.get('DOTENV_DISCOVERY_PROBE', 'missing'), encoding='utf-8'\n"
+        ")\n",
+        encoding="utf-8",
+    )
+
+    env = dict(os.environ)
+    env["HERMES_HOME"] = str(home)
+    env["DOTENV_DISCOVERY_RESULT"] = str(observed)
+    env["PYTHONPATH"] = str(site_dir) + os.pathsep + env.get("PYTHONPATH", "")
+    env.pop("DOTENV_DISCOVERY_PROBE", None)
+    script = (
+        "import importlib\n"
+        "import sys\n"
+        "from hermes_cli.env_loader import load_hermes_dotenv\n"
+        "class _ProviderEntryPointOnConfigImport:\n"
+        "    def find_spec(self, fullname, path=None, target=None):\n"
+        "        if fullname == 'hermes_cli.config':\n"
+        "            importlib.import_module('provider_entrypoint')\n"
+        "        return None\n"
+        "sys.meta_path.insert(0, _ProviderEntryPointOnConfigImport())\n"
+        f"load_hermes_dotenv(hermes_home={str(home)!r}, load_external_secrets=False)\n"
+        "import hermes_cli.config\n"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert observed.read_text(encoding="utf-8") == "loaded-before-discovery"
 
 
 def test_recovered_update_retry_skips_external_secret_sources(tmp_path, monkeypatch):

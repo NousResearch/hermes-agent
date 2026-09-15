@@ -30,7 +30,7 @@ from plugins.platforms.telegram.adapter import TelegramAdapter
 async def delivery_system(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
-    (home / "config.yaml").write_text("gateway:\n  delivery_ledger: true\n")
+    (home / "config.yaml").write_text("gateway:\n  delivery_ledger: true\n", encoding="utf-8")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)

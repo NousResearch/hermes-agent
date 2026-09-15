@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   loadedConfig: {} as Record<string, unknown>,
   notifyError: vi.fn(),
   profileSwitch: null as null | (() => void),
+  refetch: vi.fn(),
   save: vi.fn()
 }))
 
@@ -41,7 +42,7 @@ vi.mock('@/store/notifications', () => ({
 
 vi.mock('../hooks/use-config-record', () => ({
   setHermesConfigCache: (config: Record<string, unknown>) => mocks.cache(config),
-  useHermesConfigRecord: () => ({ data: mocks.loadedConfig })
+  useHermesConfigRecord: () => ({ data: mocks.loadedConfig, refetch: mocks.refetch })
 }))
 
 vi.mock('../hooks/use-on-profile-switch', () => ({
@@ -65,6 +66,7 @@ describe('TerminalFontSetting', () => {
       display: { skin: 'hermes' },
       terminal: { backend: 'local', cwd: '/workspace', font_family: '' }
     }
+    mocks.refetch.mockResolvedValue({ data: mocks.loadedConfig, isSuccess: true })
     mocks.save.mockResolvedValue({ ok: true })
     mocks.profileSwitch = null
     $terminalFontFamily.set('')
@@ -132,6 +134,65 @@ describe('TerminalFontSetting', () => {
     expect((input as HTMLInputElement).value).toBe('MesloLGS NF')
     expect($terminalFontFamily.get()).toBe('MesloLGS NF')
     expect(mocks.notifyError).toHaveBeenCalledWith(expect.any(Error), 'Autosave failed')
+  })
+
+  it('reseeds when a profile refetch returns the same config object', async () => {
+    const config = { terminal: { font_family: 'Avenir' } }
+    mocks.loadedConfig = config
+    mocks.refetch.mockResolvedValue({ data: config, isSuccess: true })
+    render(<TerminalFontSetting />)
+
+    expect((screen.getByRole('combobox', { name: 'Terminal Font' }) as HTMLInputElement).value).toBe('Avenir')
+
+    await act(async () => {
+      mocks.profileSwitch?.()
+      await Promise.resolve()
+    })
+
+    const input = screen.getByRole('combobox', { name: 'Terminal Font' }) as HTMLInputElement
+    expect(mocks.refetch).toHaveBeenCalledWith({ cancelRefetch: false })
+    expect(input.disabled).toBe(false)
+    expect(input.value).toBe('Avenir')
+    expect($terminalFontFamily.get()).toBe('Avenir')
+  })
+
+  it('stays reset when a failed refetch retains stale data', async () => {
+    const config = { terminal: { font_family: 'Avenir' } }
+    mocks.loadedConfig = config
+    mocks.refetch.mockResolvedValue({ data: config, isSuccess: false })
+    render(<TerminalFontSetting />)
+
+    await act(async () => {
+      mocks.profileSwitch?.()
+      await Promise.resolve()
+    })
+
+    const input = screen.getByRole('combobox', { name: 'Terminal Font' }) as HTMLInputElement
+    expect(input.disabled).toBe(true)
+    expect(input.value).toBe('')
+    expect($terminalFontFamily.get()).toBe('')
+  })
+
+  it('ignores a profile refetch that completes after unmount', async () => {
+    const config = { terminal: { font_family: 'Avenir' } }
+    let resolveRefetch!: (value: { data: typeof config; isSuccess: true }) => void
+    mocks.loadedConfig = config
+    mocks.refetch.mockReturnValue(
+      new Promise(resolve => {
+        resolveRefetch = resolve
+      })
+    )
+    const view = render(<TerminalFontSetting />)
+
+    act(() => mocks.profileSwitch?.())
+    view.unmount()
+    $terminalFontFamily.set('Lexend')
+    await act(async () => {
+      resolveRefetch({ data: config, isSuccess: true })
+      await Promise.resolve()
+    })
+
+    expect($terminalFontFamily.get()).toBe('Lexend')
   })
 
   it('drops the prior profile font and reseeds from the next profile', () => {

@@ -10,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   cache: vi.fn(),
   loadedConfig: {} as Record<string, unknown>,
   notifyError: vi.fn(),
+  profileSwitch: null as null | (() => void),
+  refetch: vi.fn(),
   save: vi.fn()
 }))
 
@@ -41,11 +43,13 @@ vi.mock('@/store/notifications', () => ({
 
 vi.mock('../hooks/use-config-record', () => ({
   setHermesConfigCache: (config: Record<string, unknown>) => mocks.cache(config),
-  useHermesConfigRecord: () => ({ data: mocks.loadedConfig })
+  useHermesConfigRecord: () => ({ data: mocks.loadedConfig, refetch: mocks.refetch })
 }))
 
 vi.mock('../hooks/use-on-profile-switch', () => ({
-  useOnProfileSwitch: () => {}
+  useOnProfileSwitch: (callback: () => void) => {
+    mocks.profileSwitch = callback
+  }
 }))
 
 async function flushAutosave() {
@@ -60,7 +64,9 @@ describe('ChatFontSetting', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     mocks.loadedConfig = { desktop: { font_family: '', repo_scan_enabled: true } }
+    mocks.refetch.mockResolvedValue({ data: mocks.loadedConfig, isSuccess: true })
     mocks.save.mockResolvedValue({ ok: true })
+    mocks.profileSwitch = null
     $chatFontFamily.set('')
   })
 
@@ -80,6 +86,100 @@ describe('ChatFontSetting', () => {
 
     expect(mocks.save).toHaveBeenCalledWith({ desktop: { font_family: 'OpenDyslexic' } })
     expect(mocks.cache).toHaveBeenCalledWith({ desktop: { font_family: 'OpenDyslexic', repo_scan_enabled: true } })
+  })
+
+  it('reseeds when a profile refetch returns the same config object', async () => {
+    const config = { desktop: { font_family: 'Avenir' } }
+    mocks.loadedConfig = config
+    mocks.refetch.mockResolvedValue({ data: config, isSuccess: true })
+    render(<ChatFontSetting />)
+
+    expect((screen.getByRole('combobox', { name: 'Chat Font' }) as HTMLInputElement).value).toBe('Avenir')
+
+    await act(async () => {
+      mocks.profileSwitch?.()
+      await Promise.resolve()
+    })
+
+    const input = screen.getByRole('combobox', { name: 'Chat Font' }) as HTMLInputElement
+    expect(mocks.refetch).toHaveBeenCalledWith({ cancelRefetch: false })
+    expect(input.disabled).toBe(false)
+    expect(input.value).toBe('Avenir')
+    expect($chatFontFamily.get()).toBe('Avenir')
+  })
+
+  it('stays reset when a failed refetch retains stale data', async () => {
+    const config = { desktop: { font_family: 'Avenir' } }
+    mocks.loadedConfig = config
+    mocks.refetch.mockResolvedValue({ data: config, isSuccess: false })
+    render(<ChatFontSetting />)
+
+    await act(async () => {
+      mocks.profileSwitch?.()
+      await Promise.resolve()
+    })
+
+    const input = screen.getByRole('combobox', { name: 'Chat Font' }) as HTMLInputElement
+    expect(input.disabled).toBe(true)
+    expect(input.value).toBe('')
+    expect($chatFontFamily.get()).toBe('')
+  })
+
+  it('ignores a profile refetch that completes after unmount', async () => {
+    const config = { desktop: { font_family: 'Avenir' } }
+    let resolveRefetch!: (value: { data: typeof config; isSuccess: true }) => void
+    mocks.loadedConfig = config
+    mocks.refetch.mockReturnValue(
+      new Promise(resolve => {
+        resolveRefetch = resolve
+      })
+    )
+    const view = render(<ChatFontSetting />)
+
+    act(() => mocks.profileSwitch?.())
+    view.unmount()
+    $chatFontFamily.set('Lexend')
+    await act(async () => {
+      resolveRefetch({ data: config, isSuccess: true })
+      await Promise.resolve()
+    })
+
+    expect($chatFontFamily.get()).toBe('Lexend')
+  })
+
+  it('ignores a late refetch from an older profile switch', async () => {
+    const firstProfile = { desktop: { font_family: 'Avenir' } }
+    const secondProfile = { desktop: { font_family: 'Lexend' } }
+    let resolveFirst!: (value: { data: typeof firstProfile; isSuccess: true }) => void
+    let resolveSecond!: (value: { data: typeof secondProfile; isSuccess: true }) => void
+    mocks.refetch
+      .mockReturnValueOnce(
+        new Promise(resolve => {
+          resolveFirst = resolve
+        })
+      )
+      .mockReturnValueOnce(
+        new Promise(resolve => {
+          resolveSecond = resolve
+        })
+      )
+    render(<ChatFontSetting />)
+
+    act(() => mocks.profileSwitch?.())
+    act(() => mocks.profileSwitch?.())
+
+    await act(async () => {
+      resolveSecond({ data: secondProfile, isSuccess: true })
+      await Promise.resolve()
+    })
+    expect($chatFontFamily.get()).toBe('Lexend')
+
+    await act(async () => {
+      resolveFirst({ data: firstProfile, isSuccess: true })
+      await Promise.resolve()
+    })
+    expect($chatFontFamily.get()).toBe('Lexend')
+    expect((screen.getByRole('combobox', { name: 'Chat Font' }) as HTMLInputElement).value).toBe('Lexend')
   })
 
   it('rolls back the optimistic family when autosave fails', async () => {
@@ -104,6 +204,8 @@ describe('resolveChatFontFamily', () => {
     expect(resolveChatFontFamily('', theme)).toBe(theme)
     expect(resolveChatFontFamily('  ', theme)).toBe(theme)
     expect(resolveChatFontFamily('OpenDyslexic', theme)).toBe(`'OpenDyslexic', ${theme}`)
-    expect(resolveChatFontFamily("'Atkinson Hyperlegible', serif", theme)).toBe(`'Atkinson Hyperlegible', serif, ${theme}`)
+    expect(resolveChatFontFamily("'Atkinson Hyperlegible', serif", theme)).toBe(
+      `'Atkinson Hyperlegible', serif, ${theme}`
+    )
   })
 })

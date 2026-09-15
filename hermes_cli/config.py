@@ -2769,6 +2769,42 @@ _SHOW_CONFIG_API_KEYS = (
     ("FAL_KEY", "FAL"))
 
 
+def _provider_key_label(description: str, env_key: str) -> str:
+    """Short row label for a provider credential entry in ``config show``.
+
+    ``"Google AI Studio API key (alias for GOOGLE_API_KEY)"`` -> ``"Google AI Studio"``.
+    Falls back to the env var name when the description yields no usable label.
+    """
+    label = re.split(r"\s*(?:\(|\u2014|\u2013)\s*", (description or "").strip(), maxsplit=1)[0]
+    label = re.split(r"\s+for\s+", label.strip(), maxsplit=1)[0].strip()
+    label = label.replace("<redacted>", "").strip()
+    low = label.lower()
+    for suffix in (" api key", " api secret", " bearer token", " token", " key"):
+        if low.endswith(suffix):
+            label = label[: -len(suffix)].rstrip()
+            break
+    return label or env_key
+
+
+def _provider_key_rows(exclude: Set[str] = frozenset()) -> List[Tuple[str, str]]:
+    """``(env_key, label)`` rows for the real provider key set in ``config show``.
+
+    Surfaces every credential in ``OPTIONAL_ENV_VARS`` with ``category == "provider"``
+    and the ``password`` flag — including everything ``_inject_profile_env_vars()``
+    registers from providers/ — instead of only the 10 hardcoded keys. Base-URL
+    overrides and other non-credential entries stay out. Sorted for stable output.
+    """
+    rows: List[Tuple[str, str]] = []
+    for env_key in sorted(OPTIONAL_ENV_VARS):
+        meta = OPTIONAL_ENV_VARS[env_key]
+        if meta.get("category") != "provider" or not meta.get("password"):
+            continue
+        if env_key in exclude:
+            continue
+        rows.append((env_key, _provider_key_label(meta.get("description"), env_key)))
+    return rows
+
+
 def _show_model_section(config: Dict[str, Any]) -> None:
     _section("Model")
     print(f"  Model:        {redact_config_value(config.get('model', 'not set'))}")
@@ -2904,10 +2940,18 @@ def show_config():
     print(f"  Install:      {get_project_root()}")
 
     _section("API Keys")
+    shown_env_keys = {env_key for env_key, _ in _SHOW_CONFIG_API_KEYS}
     for env_key, name in _SHOW_CONFIG_API_KEYS:
         print(f"  {name:<14} {redact_key(get_env_value(env_key))}")
-    from hermes_cli.auth import get_anthropic_key
+    from hermes_cli.auth import get_anthropic_key, PROVIDER_REGISTRY
     print(f"  {'Anthropic':<14} {redact_key(get_anthropic_key())}")
+    # The real provider key set from _inject_profile_env_vars(): show the ones that
+    # are actually configured (masked), skipping rows already covered above.
+    anthropic_vars = set(getattr(PROVIDER_REGISTRY.get("anthropic"), "api_key_env_vars", ()) or ())
+    for env_key, label in _provider_key_rows(shown_env_keys | anthropic_vars):
+        value = get_env_value(env_key)
+        if value:
+            print(f"  {label:<14} {redact_key(value)}")
 
     _show_model_section(config)
     _show_display_section(config)

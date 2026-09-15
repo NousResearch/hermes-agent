@@ -860,7 +860,31 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     OpenCode Zen/Go where different models route through different API surfaces)."""
     requested_provider = resolve_requested_provider(requested)
     _raise_if_provider_disabled(requested_provider)
-    return next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
+    runtime = next(r for r in _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model) if r)
+    _raise_for_credentialless_bare_custom(requested_provider, runtime)
+    return runtime
+
+
+def _raise_for_credentialless_bare_custom(requested_provider: str, runtime: Dict[str, Any]) -> None:
+    """Reject a stale bare ``custom`` placeholder before agent construction.
+
+    Named custom providers and local OpenAI-compatible servers retain their existing resolution
+    paths. A bare placeholder that reaches a remote endpoint without a credential, however, would
+    otherwise fail later with the unrelated ``No LLM provider configured`` diagnostic.
+    """
+    if requested_provider != "custom":
+        return
+    api_key = runtime.get("api_key")
+    if callable(api_key) or has_usable_secret(api_key):
+        return
+    if _loopback_hostname(base_url_hostname(str(runtime.get("base_url") or ""))):
+        return
+    raise AuthError(
+        "provider 'custom' resolved without usable credentials. If this is a named custom provider, "
+        "use its real name (see providers: in config.yaml).",
+        provider=requested_provider,
+        code="missing_api_key",
+    )
 
 
 def _ladder_rungs(requested_provider, explicit_api_key, explicit_base_url, target_model):

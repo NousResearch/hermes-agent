@@ -758,6 +758,50 @@ def test_bare_custom_resolves_providers_dict_entry_named_custom(monkeypatch):
     assert resolved["requested_provider"] == "custom"
 
 
+def test_bare_custom_without_credentials_for_remote_endpoint_fails_fast(monkeypatch):
+    """A stale bare placeholder must name the bad request at resolution time."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "volcano": {
+                    "api": "https://ark.example.com/v1",
+                    "key_env": "ARK_API_KEY",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "volcano"})
+
+    with pytest.raises(rp.AuthError, match="provider 'custom'.*credentials.*real name") as error:
+        rp.resolve_runtime_provider(requested="custom")
+
+    assert error.value.provider == "custom"
+    assert error.value.code == "missing_api_key"
+
+
+def test_bare_custom_without_credentials_keeps_loopback_noauth(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "custom": {
+                    "api": "http://localhost:11434/v1",
+                }
+            }
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["base_url"] == "http://localhost:11434/v1"
+    assert resolved["api_key"] == "no-key-required"
+
+
 
 
 def test_named_custom_provider_same_url_uses_matching_key_env_and_api_mode(monkeypatch):

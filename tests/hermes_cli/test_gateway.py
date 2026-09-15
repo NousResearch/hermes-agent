@@ -10,6 +10,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 import hermes_cli.gateway as gateway
+from hermes_constants import venv_python_path
 
 
 _BREAKAWAY_MARKER = "_HERMES_GATEWAY_BREAKAWAY"
@@ -1103,7 +1104,6 @@ def test_find_windows_gateway_services_maps_verified_pid_tree(monkeypatch):
     """Only an SCM service whose subtree contains a validated gateway PID is returned."""
     monkeypatch.setattr(gateway.sys, "platform", "win32")
     profile = SimpleNamespace(profile="default", pid=300, create_time=300.0)
-
     class FakeService:
         def __init__(self, name, pid, status="running"):
             self.name = name
@@ -1116,22 +1116,17 @@ def test_find_windows_gateway_services_maps_verified_pid_tree(monkeypatch):
                 "pid": self.pid,
                 "status": self.status,
             }
-
     class FakeProcess:
         def __init__(self, pid):
             self.pid = pid
-
         def parents(self):
             return [FakeProcess(200), FakeProcess(100)]
-
         def children(self, recursive=False):
             assert self.pid == 100
             assert recursive is True
             return [FakeProcess(200), FakeProcess(300)]
-
         def create_time(self):
             return float(self.pid)
-
     fake_psutil = SimpleNamespace(
         win_service_iter=lambda: [
             FakeService("HermesGateway", 100),
@@ -1139,12 +1134,10 @@ def test_find_windows_gateway_services_maps_verified_pid_tree(monkeypatch):
         ],
         Process=FakeProcess,
     )
-
     result = gateway.find_windows_gateway_services(
         psutil_module=fake_psutil,
         profile_processes=[profile],
     )
-
     assert result == [
         gateway.WindowsGatewayService(
             name="HermesGateway",
@@ -1194,60 +1187,45 @@ def test_find_windows_gateway_services_rejects_shared_service_host_pid(monkeypat
     """A shared host PID cannot prove which service owns the gateway subtree."""
     monkeypatch.setattr(gateway.sys, "platform", "win32")
     profile = SimpleNamespace(profile="default", pid=300, create_time=300.0)
-
     class FakeService:
         def __init__(self, name):
             self.name = name
-
         def as_dict(self):
             return {"name": self.name, "pid": 100, "status": "running"}
-
     class FakeProcess:
         def __init__(self, pid):
             self.pid = pid
-
         def parents(self):
             return [FakeProcess(100)]
-
         def children(self, recursive=False):
             return [FakeProcess(300)]
-
         def create_time(self):
             return float(self.pid)
-
     fake_psutil = SimpleNamespace(
         win_service_iter=lambda: [FakeService("ServiceA"), FakeService("ServiceB")],
         Process=FakeProcess,
     )
-
     with pytest.raises(RuntimeError, match="shared SCM host"):
         gateway.find_windows_gateway_services(
             psutil_module=fake_psutil,
             profile_processes=[profile],
         )
-
-
 def test_find_windows_gateway_services_fails_closed_on_service_access_error(
     monkeypatch,
 ):
     monkeypatch.setattr(gateway.sys, "platform", "win32")
     profile = SimpleNamespace(profile="default", pid=300, create_time=300.0)
-
     class InaccessibleService:
         def as_dict(self):
             raise PermissionError("access denied")
-
     fake_psutil = SimpleNamespace(
         win_service_iter=lambda: [InaccessibleService()],
     )
-
     with pytest.raises(RuntimeError, match="SCM"):
         gateway.find_windows_gateway_services(
             psutil_module=fake_psutil,
             profile_processes=[profile],
         )
-
-
 def test_find_windows_gateway_services_fails_closed_when_scm_scan_is_indeterminate(
     monkeypatch,
 ):
@@ -1256,24 +1234,104 @@ def test_find_windows_gateway_services_fails_closed_when_scm_scan_is_indetermina
     fake_psutil = SimpleNamespace(
         win_service_iter=lambda: (_ for _ in ()).throw(OSError("SCM unavailable")),
     )
-
     with pytest.raises(RuntimeError, match="SCM"):
         gateway.find_windows_gateway_services(
             psutil_module=fake_psutil,
             profile_processes=[profile],
         )
-
-
 def test_find_profile_gateway_processes_strict_propagates_profile_listing_failure(
     monkeypatch,
 ):
     import hermes_cli.profiles as profiles_mod
-
     monkeypatch.setattr(
         profiles_mod,
         "list_profiles",
         lambda: (_ for _ in ()).throw(RuntimeError("profile listing failed")),
     )
-
     with pytest.raises(RuntimeError, match="profile listing failed"):
         gateway.find_profile_gateway_processes(strict=True)
+
+class TestGetPythonPathVenvMissingSurface:
+    """Regression: ``get_python_path()`` must NOT silently fall back to ``sys.executable``.
+    Background — issue #95169: when Hermes' managed ``.hermes-runtime/python``
+    store is missing or the venv symlink that points at it is broken, the
+    venv's ``python[.exe]`` entry is absent.  Pre-fix, ``get_python_path()``
+    silently returned ``sys.executable`` (often a uv-managed Python under
+    ``~/.local/bin`` with a different SQLite version — 3.50.4 vs the
+    design/tested 3.53.1) which corrupted WAL state.db.  Post-fix, the
+    resolver must surface an explicit error naming the missing venv python
+    so the operator can repair the runtime instead of inheriting an
+    unreported version drift.
+    """
+    def test_raises_when_venv_dir_detected_but_python_missing(self, monkeypatch, tmp_path):
+        """Detected venv dir + missing interpreter => explicit RuntimeError.
+        No silent ``return sys.executable`` — the operator MUST learn that
+        the venv python is gone before Hermes starts using a different one.
+        """
+        venv_dir = tmp_path / "venv"
+        venv_dir.mkdir()
+        # bin/ exists but python is absent (e.g. symlink target was deleted)
+        (venv_dir / "bin").mkdir()
+        monkeypatch.setattr(gateway, "_detect_venv_dir", lambda: venv_dir)
+        # Capture any silent fallback attempt.
+        sys_executable_sentinel = "/usr/bin/fallback-system-python"
+        monkeypatch.setattr(sys, "executable", sys_executable_sentinel)
+        with pytest.raises(RuntimeError) as excinfo:
+            gateway.get_python_path()
+        # The error must NAME what is missing (the venv python path) AND
+        # mention the issue / repair path so the operator can act.
+        msg = str(excinfo.value).lower()
+        assert "venv" in msg or "python" in msg
+        assert "95169" in msg or "update" in msg or "recreate" in msg or "repair" in msg
+    def test_does_not_silently_return_sys_executable(self, monkeypatch, tmp_path):
+        """The function MUST NOT silently return sys.executable when the
+        venv was detected but its python is missing.  Pre-fix code did
+        exactly that; post-fix it raises.
+        """
+        venv_dir = tmp_path / "venv"
+        venv_dir.mkdir()
+        (venv_dir / "bin").mkdir()
+        sys_executable_sentinel = "/usr/bin/fallback-system-python"
+        monkeypatch.setattr(gateway, "_detect_venv_dir", lambda: venv_dir)
+        monkeypatch.setattr(sys, "executable", sys_executable_sentinel)
+        # Must NOT equal sys.executable — that's the bug.
+        try:
+            result = gateway.get_python_path()
+        except RuntimeError:
+            return  # correct post-fix behavior
+        pytest.fail(
+            f"get_python_path() silently returned {result!r}; expected it to "
+            f"raise RuntimeError because the venv python is missing "
+            f"(issue #95169). Falling back to sys.executable={sys_executable_sentinel!r} "
+            f"is exactly the silent-drift bug we are fixing."
+        )
+    def test_no_venv_detected_still_returns_sys_executable(self, monkeypatch):
+        """When no venv can be detected at all, falling back to sys.executable
+        is the legitimate path (e.g. `python -m hermes_cli.main` ad-hoc).
+        Only the *detected-but-missing* case must raise."""
+        monkeypatch.setattr(gateway, "_detect_venv_dir", lambda: None)
+        sentinel = "/usr/bin/legit-system-python"
+        monkeypatch.setattr(sys, "executable", sentinel)
+        assert gateway.get_python_path() == sentinel
+    def test_raises_with_venv_python_path_in_message(self, monkeypatch, tmp_path):
+        """The error message must include the missing venv python path so
+        the operator can verify it on disk.  A bare ``RuntimeError("missing")``
+        fails this contract."""
+        venv_dir = tmp_path / "myvenv"
+        venv_dir.mkdir()
+        # Compute the expectation with the same helper the production code
+        # uses (``hermes_constants.venv_python_path`` via ``get_python_path``),
+        # so the assertion holds on both layouts — ``Scripts/python.exe`` on
+        # Windows and ``bin/python`` on POSIX. Hard-coding one layout here
+        # made this test fail on the other platform (#95233 review).
+        missing = venv_python_path(venv_dir, windows=gateway.is_windows())
+        monkeypatch.setattr(gateway, "_detect_venv_dir", lambda: venv_dir)
+        monkeypatch.setattr(sys, "executable", "/nope/sys/exec")
+        with pytest.raises(RuntimeError) as excinfo:
+            gateway.get_python_path()
+
+        assert str(missing) in str(excinfo.value)
+        # The same raise fires when the PROJECT_ROOT probe merely finds a
+        # stray/partial ``.venv``/``venv`` dir while running from a different
+        # interpreter — the message must warn about that possibility too.
+        assert "stray or partial" in str(excinfo.value)

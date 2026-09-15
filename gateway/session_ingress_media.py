@@ -5,6 +5,7 @@ and upload limits. Its flat age-based cleanup skips this retained subdirectory:
 native bytes are released by ``release_admission_media`` once their row is
 terminal and no live native input or retained API image context still holds them.
 """
+from contextvars import ContextVar
 import hashlib
 import json
 import os
@@ -26,6 +27,9 @@ def _media_root():
 # cleanup of the staging file can change what executes.
 _ATTACHMENT_MIMES = frozenset({'image/png', 'image/jpeg', 'image/gif', 'image/webp'})
 _ATTACHMENT_LIMIT = 10
+
+# Trusted preparation scope; never populated from public payload fields.
+_preparation_capture = ContextVar('native_input_preparation_capture', default=None)
 
 
 def admit_attachments(attachments):
@@ -88,22 +92,32 @@ def capture_native_media(paths):
         for value in paths:
             _capture_file(Path(value), limit, total, references, staged)
             total = sum(reference['size'] for reference in references)
-        for temporary, reference in zip(staged, references):
-            target = Path(reference['path'])
-            root = target.parent.parent
-            if target.parent.resolve() != target.parent:
-                raise RuntimeStoreError('invalid_params')
-            target.parent.mkdir(mode=0o700, exist_ok=True)
-            if target.exists() or target.is_symlink():
-                restore_native_media([reference])
-            else:
-                os.replace(temporary, target)
-            for directory in (target.parent, root, root.parent, root.parent.parent, root.parent.parent.parent):
-                _sync_directory(directory)
+        publish = lambda: _publish_native_media(staged, references)
+        custody = _preparation_capture.get()
+        if custody is None:
+            publish()
+        else:
+            custody(staged, references, publish)
     finally:
         for temporary in staged:
             temporary.unlink(missing_ok=True)
     return references
+
+
+def _publish_native_media(staged, references):
+    for temporary, reference in zip(staged, references):
+        target = Path(reference['path'])
+        root = target.parent.parent
+        if target.parent.resolve() != target.parent:
+            raise RuntimeStoreError('invalid_params')
+        target.parent.mkdir(mode=0o700, exist_ok=True)
+        try:
+            # No replacement: concurrent captures must not change physical custody.
+            os.link(temporary, target)
+        except FileExistsError:
+            restore_native_media([reference])
+        for directory in (target.parent, root, root.parent, root.parent.parent, root.parent.parent.parent):
+            _sync_directory(directory)
 
 
 def _capture_file(path, limit, total, references, staged):
@@ -171,6 +185,12 @@ def _held_media_paths(conn):
             references.extend(attachments or ())
             references.extend(native or ())
         held.update(reference['path'] for reference in references)
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='input_custody_native_items'").fetchone():
+        import time
+        held.update(str(_media_root() / row[0] / row[1]) for row in conn.execute('''SELECT c.digest,c.name
+            FROM input_custody_native_items i JOIN input_custody_copies c USING(copy_id)
+            JOIN input_custody_preparations p USING(preparation_id)
+            WHERE c.generation=i.generation AND p.state IN ('preparing','ready') AND p.expires_at>?''', (time.time(),)))
     return held
 
 

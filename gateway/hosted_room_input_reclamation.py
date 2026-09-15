@@ -26,9 +26,9 @@ def owned_home(db):
 
 
 def copy_path(db, copy):
-    root = _media_root() if copy['namespace'] == 'alias' else default_attachment_root(db.db_path) / (
+    root = _media_root() if copy['namespace'] in {'alias', 'native'} else default_attachment_root(db.db_path) / (
         'working-documents-v3' if copy['namespace'] == 'v3' else 'working-documents-v2')
-    if copy['namespace'] not in {'v3', 'v2', 'alias'} or not _DIGEST.fullmatch(copy['digest']):
+    if copy['namespace'] not in {'v3', 'v2', 'alias', 'native'} or not _DIGEST.fullmatch(copy['digest']):
         raise RuntimeStoreError('storage_unavailable')
     name = copy['name']
     if not name or Path(name).name != name or name in {'.', '..'}:
@@ -71,6 +71,8 @@ def initialize_working_copies(db, *, epoch):
         if marker is not None:
             require_initialized(conn, db)
             conn.execute('SELECT copy_id,state,generation FROM input_custody_copies LIMIT 0')
+            create_schema(conn)
+            _inventory_native_paths(conn, db)
             return
         create_schema(conn)
         if conn.execute('SELECT 1 FROM input_custody_copies LIMIT 1').fetchone():
@@ -103,9 +105,35 @@ def initialize_working_copies(db, *, epoch):
         # hold to these existing branches, not arbitrary future conversations.
         conn.execute('''INSERT INTO input_custody_legacy_branches
             SELECT id FROM sessions WHERE json_extract(model_config,'$._branched_from') IS NOT NULL''')
+        _inventory_native_paths(conn, db)
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
                      (READY_KEY, _json({'version': 3, 'home': str(home)})))
     db._execute_write(initialize)
+
+
+def _inventory_native_paths(conn, db):
+    """Convert the fixed pre-v3 cohort, including databases with a v3 marker.
+
+    Never scan future files or replace the saved physical identity on reopen.
+    Uncertain inventory stays available for a later bounded safe opportunity.
+    """
+    for row in conn.execute('SELECT * FROM gateway_legacy_input_paths').fetchall():
+        path = _media_root() / row['path']
+        if path.parent != _media_root() / row['digest'] or path.name in {'', '.', '..'}:
+            continue
+        try:
+            saved = path.stat(follow_symlinks=False)
+            identity = verified_identity(path, row['digest'], saved.st_size)
+            if identity != (row['device'], row['inode']):
+                continue
+        except FileNotFoundError:
+            if not _legacy_active(conn):
+                conn.execute('DELETE FROM gateway_legacy_input_paths WHERE path=?', (row['path'],))
+            continue
+        except (OSError, ValueError, RuntimeStoreError):
+            continue
+        conn.execute('INSERT OR IGNORE INTO input_custody_copies VALUES(?,?,?,?,?,?,?,?,?)',
+            (uuid.uuid4().hex, 'alias', path.name, row['digest'], saved.st_size, 1, 'ready', *identity))
 
 
 def _legacy_holds(conn, path, copy):
@@ -131,8 +159,8 @@ def _external_holds(conn, db, copy, path, now):
         return True
     try:
         identity = _file_identity(path)
-        if copy['namespace'] == 'v3' and path.stat(follow_symlinks=False).st_nlink != 1:
-            return True  # V3 never creates hardlinks; an extra owner is untracked.
+        if path.stat(follow_symlinks=False).st_nlink != 1:
+            return True  # Extra physical owners are not deletion authority.
     except FileNotFoundError:
         return False
     if identity in identities or _legacy_holds(conn, path, copy):
@@ -166,10 +194,10 @@ def _collect(db, *, epoch, limit, aliases):
         previous = conn.execute('SELECT value FROM state_meta WHERE key=?', (cursor_key,)).fetchone()
         cursor = previous[0] if previous else ''
         rows = conn.execute('''SELECT * FROM input_custody_copies WHERE state!='removed'
-            AND (namespace='alias')=? AND copy_id>? ORDER BY copy_id LIMIT ?''', (int(aliases), cursor, limit)).fetchall()
+            AND (namespace IN ('alias','native'))=? AND copy_id>? ORDER BY copy_id LIMIT ?''', (int(aliases), cursor, limit)).fetchall()
         if not rows and cursor:
             rows = conn.execute('''SELECT * FROM input_custody_copies WHERE state!='removed'
-                AND (namespace='alias')=? ORDER BY copy_id LIMIT ?''', (int(aliases), limit)).fetchall()
+                AND (namespace IN ('alias','native'))=? ORDER BY copy_id LIMIT ?''', (int(aliases), limit)).fetchall()
         conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)',
                      (cursor_key, rows[-1]['copy_id'] if rows else ''))
         selected = []
@@ -209,6 +237,9 @@ def _collect(db, *, epoch, limit, aliases):
                 path.unlink()
                 _sync_directory(path.parent)
             conn.execute("UPDATE input_custody_copies SET state='removed' WHERE copy_id=?", (copy_id,))
+            if row['namespace'] == 'alias':
+                conn.execute('DELETE FROM gateway_legacy_input_paths WHERE path=? AND device=? AND inode=?',
+                    (str(path.relative_to(_media_root())), row['device'], row['inode']))
             return 1
         try:
             removed += db._execute_write(unlink)

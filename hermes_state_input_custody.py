@@ -42,6 +42,9 @@ def create_schema(conn):
         '''CREATE TABLE IF NOT EXISTS input_custody_items(
             preparation_id TEXT NOT NULL, ordinal INTEGER NOT NULL, copy_id TEXT NOT NULL,
             generation INTEGER NOT NULL, PRIMARY KEY(preparation_id,ordinal))''',
+        '''CREATE TABLE IF NOT EXISTS input_custody_native_items(
+            preparation_id TEXT NOT NULL, copy_id TEXT NOT NULL, generation INTEGER NOT NULL,
+            PRIMARY KEY(preparation_id,copy_id,generation))''',
         '''CREATE TABLE IF NOT EXISTS input_custody_refs(
             admission_id TEXT NOT NULL, ordinal INTEGER NOT NULL, copy_id TEXT NOT NULL,
             generation INTEGER NOT NULL, principal_id TEXT NOT NULL, target_session_id TEXT NOT NULL,
@@ -130,7 +133,7 @@ def _same_identity(saved, admission):
     return all(saved[field] == admission[field] for field in IDENTITY_FIELDS)
 
 
-def admission_input_refs(conn, admission):
+def admission_input_refs(conn, admission, *, require_ready=True):
     refs = conn.execute('SELECT * FROM input_custody_refs WHERE admission_id=? ORDER BY ordinal',
                         (admission['admission_id'],)).fetchall()
     if not refs:
@@ -140,7 +143,7 @@ def admission_input_refs(conn, admission):
     result = []
     for ref in refs:
         copy = conn.execute('SELECT * FROM input_custody_copies WHERE copy_id=?', (ref['copy_id'],)).fetchone()
-        if copy is None or copy['generation'] != ref['generation'] or copy['state'] != 'ready':
+        if copy is None or (require_ready and (copy['generation'] != ref['generation'] or copy['state'] != 'ready')):
             raise RuntimeStoreError('storage_unavailable')
         result.append(dict(copy))
     return result
@@ -200,7 +203,7 @@ def copy_is_held(conn, copy, now):
     from hermes_state_mutation_retirement import RETIRED_PREFIX
     branches = conn.execute('SELECT branch_id FROM input_custody_branch_refs WHERE copy_id=? AND generation=?',
                             (copy['copy_id'], copy['generation'])).fetchall()
-    if copy['namespace'] != 'v3':
+    if copy['namespace'] in {'v2', 'alias'}:
         branches += conn.execute('SELECT branch_id FROM input_custody_legacy_branches').fetchall()
     if any(not conn.execute('SELECT 1 FROM state_meta WHERE key=?', (RETIRED_PREFIX + row[0],)).fetchone()
            or conn.execute('SELECT 1 FROM sessions WHERE id=?', (row[0],)).fetchone() for row in branches):
@@ -209,9 +212,21 @@ def copy_is_held(conn, copy, now):
             WHERE i.copy_id=? AND i.generation=? AND p.state IN ('preparing','ready')
             AND p.expires_at>? LIMIT 1''', (copy['copy_id'], copy['generation'], now)).fetchone():
         return True
-    if copy['namespace'] != 'v3':
+    if native_preparation_holds(conn, copy['copy_id'], copy['generation'], now):
+        return True
+    if copy['namespace'] in {'v2', 'alias'}:
         return any(not positively_retired(conn, row) for row in conn.execute('SELECT * FROM input_custody_legacy_ids'))
     return False
+
+
+def native_preparation_holds(conn, copy_id, generation, now):
+    # Older initialized databases acquire this additive table on explicit reopen.
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='input_custody_native_items'").fetchone():
+        return False
+    return conn.execute('''SELECT 1 FROM input_custody_native_items i
+        JOIN input_custody_preparations p USING(preparation_id)
+        WHERE i.copy_id=? AND i.generation=? AND p.state IN ('preparing','ready')
+        AND p.expires_at>? LIMIT 1''', (copy_id, generation, now)).fetchone() is not None
 
 
 def copy_branch_input_refs(conn, source_session, child_session, *, physical_session=None):

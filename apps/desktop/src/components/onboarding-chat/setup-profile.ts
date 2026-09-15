@@ -164,7 +164,7 @@ export function buildFirstTaskRunbook(
       ? `Apps they said they use: ${tools.map(connectorTitle).join(', ')}. Some may already be connected from onboarding; check with manage_connections action="status" before assuming either way, and never require an unconnected one for this first build.`
       : '',
     connectFirst
-      ? 'Their next message is the go signal. Before any plan and before any other tool, connect their apps as the CONNECT FIRST section says; the work itself starts the moment the wait returns or they tell you to start.'
+      ? 'Their next message is the go signal. Before any plan and before any other tool, connect their apps as the CONNECT FIRST section says; the work itself starts the moment that call returns.'
       : 'Their next message is the go signal: really begin the work — plan briefly, then build (scaffold, research, first artifact).',
     "As you start, tell them in one short sentence: you'll ask for permissions as you go, and they can say no to anything or redirect you.",
     ...planRunbook(plan, pluginRoot, connectFirst),
@@ -180,17 +180,16 @@ export function buildFirstTaskRunbook(
 const NO_AUTH_RULE =
   'CRITICAL: this first build must be finishable with NO external account or OAuth (no Gmail, no Slack, no Google sign-in) — connectors get wired only with their consent, and an app that is already connected may be used, one that is not may be offered. Everything else is fair game and the more visible the better: web research with the browser shown to the user as you work, scripts, computer use, a small app, a file-based tracker, a scheduled reminder, a generated page. If the idea needs an account that is not connected, build the no-auth core first and offer the connection as the next step. NEVER route around a connector: an unconnected Gmail is not a cue to install an IMAP client, ask for an app password, or find another way into the same account. The connector IS the way in; if they decline it, the app is out of this build.'
 
-/** The picks are gateway slugs the user chose during setup. The agent, rather than the app, waits for the connection
- *  result, as decided in D85. */
+/** The picks are gateway slugs the user chose during setup. The connection operation owns the wait: one call, one
+ *  card, and the settled result is the go signal (D85). The card carries Try again and Continue, so neither is a model
+ *  action. */
 function connectFirstRunbook(picks: string[]): string[] {
   const named = picks.map(slug => `${slug} (${connectorTitle(slug)})`).join(', ')
 
   return [
     `CONNECT FIRST. During setup the user picked these apps, given here as exact gateway slugs: ${named}. Your first action in this session, before any plan and before any other tool call, is ONE manage_connections call with action="connect" and connectors set to every one of those slugs. Do not call action="status" first; the slugs are exact and the catalog check is already done.`,
-    'If every result comes back already active, there is nothing to wait for: begin the task at once.',
-    'That one call shows the user a card with one row per app and blocks until every app is connected, skipped, or the deadline passes; never paste links, never call "connect" again while the card is up. Its result lists each app as connected, skipped or not_connected.',
-    'The user can start early. A message from them that begins with "Start with" or "Start without" names the apps that are connected and the ones they skipped; treat it as the go signal and begin with the connected apps only.',
-    'When the result shows every app connected, begin the task at once. When some are skipped or not_connected, stop and ask in one line: which apps did not connect, and whether they want you to continue without them or try again (a fresh action="connect" mints new links). Wait for their answer. If they choose to continue without an app, build the version of the task that needs no account for that part and say in one line what the connection would have added.',
+    'That one call shows the user one card with a row per app and blocks until every app is connected, or the user presses Continue, or the deadline passes. Never paste links, and never call "connect" again while the card is up. Its result lists each app as connected, skipped or not_connected.',
+    'When the result shows every app connected, begin the task at once. When some are skipped or not_connected, the user moved on: begin with the connected apps only, build the version of the task that needs no account for the rest, and say in one line what each missing connection would have added. Do not offer to connect again; the user asks when they want that.',
     'Account data comes from the connected apps first. Tools already signed in on this machine, like a logged-in gh, are fair to use when the task benefits; say so in one line when you do.',
     "Discover a connected app's tools with tool_search and use real results for the task; never fabricate account data. Reading is separate from sending, deleting or scheduling: ask before those. No recurring job unless that is what they asked for.",
     'Make the result something they can open: a single HTML page when the idea allows it, and at least one real reading or action through a connected app.'

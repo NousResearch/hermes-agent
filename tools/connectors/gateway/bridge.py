@@ -122,9 +122,13 @@ def run_remote(
         )
         for plan in planned
     ]
+    from tools.connectors.gateway.client import return_to_args
+
     try:
         client = (client_factory or _default_client_factory)()
-        remote_results = client.execute(wire_planned)
+        # A CONNECTION_REQUIRED link minted by this call is the user's next click, so the call names
+        # the surface that browser should come back to.
+        remote_results = client.execute(wire_planned, **return_to_args())
         entries = splice_remote_results(planned, remote_results)
     except ToolGatewayError as exc:
         logger.debug(
@@ -163,7 +167,7 @@ def run_remote(
 
     # Retry confirmed misses once without disturbing successful sibling slots.
     try:
-        fallback_results = client.execute(fallback_planned)
+        fallback_results = client.execute(fallback_planned, **return_to_args())
         fallback_entries = splice_remote_results(fallback_planned, fallback_results)
     except ToolGatewayError as exc:
         logger.debug(

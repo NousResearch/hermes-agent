@@ -9,6 +9,7 @@ export interface DeepLinkPayload {
 export type DeepLinkAction =
   | { type: 'plugin-install'; repo: string; enable: boolean; force: boolean; legacyHint: PluginInstallLegacyHint }
   | { type: 'composer-blueprint'; name: string; params: Record<string, string> }
+  | { type: 'connection-done'; op: string; status: string }
   | { type: 'ignore' }
 
 function truthyParam(value: string | undefined, defaultValue = false): boolean {
@@ -28,6 +29,15 @@ export function resolveDeepLinkAction(payload: DeepLinkPayload | null | undefine
 
   if (payload.kind === 'blueprint' && payload.name) {
     return { type: 'composer-blueprint', name: payload.name, params: payload.params || {} }
+  }
+
+  // The browser leg of a connection came back (hermes://connections/done?op=…&status=…). The op id
+  // names the operation to show; the status is carried but never moves a row, because the link is
+  // whatever the user's browser was pointed at.
+  if (payload.kind === 'connections' && payload.name === 'done') {
+    const op = (payload.params?.op || '').trim()
+
+    return op ? { type: 'connection-done', op, status: (payload.params?.status || '').trim() } : { type: 'ignore' }
   }
 
   const repo = (payload.params?.repo || payload.params?.identifier || payload.name || '').trim()

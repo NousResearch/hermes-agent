@@ -79,7 +79,7 @@ class FakeConnectorClient:
         self._connected = set()
         self._lock = threading.Lock()
 
-    def list_connectors(self):
+    def list_connectors(self, **_):
         with self._lock:
             connected = set(self._connected)
         return [
@@ -87,17 +87,33 @@ class FakeConnectorClient:
             for name in ("gmail", "notion")
         ]
 
-    def connections(self, connectors, *, reinitiate=False):
+    def connections(self, connectors, *, reinitiate=False, **_):
         return {
             "results": [
                 {
                     "connector": name,
                     "status": "initiated",
                     "connect_url": f"https://connect.example/{name}",
+                    "connection_id": f"ca_{name}",
                     "reinitiated": reinitiate,
                 }
                 for name in connectors
             ]
+        }
+
+    def account_status(self, connection_id, *, timeout=None):
+        """The one route the watcher reads: the account the mint named."""
+        name = connection_id.split("ca_", 1)[-1]
+        with self._lock:
+            active = name in self._connected
+        return {
+            "connectionId": connection_id,
+            "connector": name,
+            "status": "active" if active else "pending",
+            "label": f"{name}_a",
+            "active": active,
+            "createdAt": "2026-09-14T10:00:00.000Z",
+            "updatedAt": "2026-09-14T10:00:00.000Z",
         }
 
     def set_connected(self, name):
@@ -149,7 +165,7 @@ def test_desktop_connect_settles_through_callback_response(owned_session, monkey
     """The actual tool thread waits for the gateway card outcome, not a fake callback."""
     owner, _ = owned_session
     client = FakeConnectorClient()
-    monkeypatch.setattr("tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.05)
+    monkeypatch.setattr("tools.connectors.managed.WATCH_TICK_SECONDS", 0.05)
     result = {}
     finished = threading.Event()
 
@@ -250,19 +266,19 @@ def test_cli_connect_returns_urls_without_emitting_a_card(owned_session):
     assert live.current(SID) is None
 
 
-def test_connection_respond_rejects_managed_connected_claims_and_strangers(owned_session):
+def test_connection_respond_ignores_outcome_claims_and_rejects_strangers(owned_session):
     owner, stranger = owned_session
     operation = ConnectionOperation([Target("gmail", "connector", "connect")], session_key=SID)
     live.open(operation)
     operation.transition("gmail", TargetState.initiated, Actor.backend_watcher)
 
-    rejected = _rpc(
+    refused = _rpc(
         owner,
         "connection.respond",
         op_id=operation.op_id,
         result={"targets": [{"name": "gmail", "status": "connected"}]},
     )
-    assert rejected["error"]["code"] == 4002
+    assert refused["error"]["code"] == 4002, refused
     assert operation.target("gmail").state == TargetState.initiated
 
     foreign = _rpc(

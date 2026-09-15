@@ -16,6 +16,7 @@ from tools.connectors.gateway.errors import (
     GatewayAuthError,
     GatewayUnavailable,
     IdempotencyConflict,
+    RateLimited,
     ToolGatewayError,
 )
 from tools.connectors.gateway.names import vendor_slug_candidates
@@ -40,7 +41,7 @@ class FakeTransport:
 
     def request(self, method, url, *, headers=None, json=None, timeout=None):
         self.requests.append(
-            {"method": method, "url": url, "headers": dict(headers or {}), "json": json}
+            {"method": method, "url": url, "headers": dict(headers or {}), "json": json, "timeout": timeout}
         )
         outcome = self.responses.pop(0)
         if isinstance(outcome, Exception):
@@ -219,6 +220,7 @@ def test_connection_required_stays_inside_the_200_envelope():
                             "message": "connect gmail",
                             "connector": "gmail",
                             "connectUrl": "https://example.test/connect/1",
+                            "connectionId": "ca_1",
                         },
                     }
                 ]
@@ -228,6 +230,7 @@ def test_connection_required_stays_inside_the_200_envelope():
     (result,) = make_client(transport).execute(planned(PLAN_CALLS[:1]))
     assert result["error"]["code"] == "CONNECTION_REQUIRED"
     assert result["error"]["connect_url"] == "https://example.test/connect/1"
+    assert result["error"]["connection_id"] == "ca_1"
 
 
 # ---------------------------------------------------------------------------
@@ -329,3 +332,84 @@ def test_default_resolver_ignores_the_media_host_override():
 
 def test_default_resolver_is_none_on_a_misconfigured_scheme():
     assert _resolve_with_env(TOOL_GATEWAY_SCHEME="ftp") is None
+
+
+# ---------------------------------------------------------------------------
+# contract: list query, execute account, account status route
+# ---------------------------------------------------------------------------
+
+
+LIST_ITEM = {"connector": "gmail", "enabled": True, "connected": False, "disabledTools": []}
+
+
+def test_list_parses_the_whole_page_and_fails_loud_on_a_malformed_item():
+    transport = FakeTransport(FakeResponse(200, {"items": [LIST_ITEM], "nextCursor": None}))
+    rows = make_client(transport).list_connectors()
+    assert transport.requests[0]["url"].endswith("v1/connectors?limit=50")
+    assert rows[0]["connector"] == "gmail" and rows[0]["connectionStatus"] is None
+    with pytest.raises(ToolGatewayError):
+        make_client(FakeTransport(FakeResponse(200, {"items": [{"connected": False}], "nextCursor": None}))).list_connectors()
+
+
+def test_execute_never_sends_account_until_multi_account_is_on():
+    transport = FakeTransport(FakeResponse(200, execute_envelope([{"data": 1}, {"data": 2}])))
+    make_client(transport).execute(planned())
+    assert all("account" not in call for call in transport.requests[0]["json"]["tools"])
+
+
+def test_account_status_answers_none_on_404_and_rate_limited_on_429():
+    row = {"connectionId": "ca_1", "connector": "gmail", "status": "pending", "label": "gmail_a", "active": False,
+           "createdAt": "2026-09-14T10:00:00.000Z", "updatedAt": "2026-09-14T10:00:00.000Z"}
+    transport = FakeTransport(
+        FakeResponse(200, row),
+        FakeResponse(404, {"error": "connection_not_found"}),
+        FakeResponse(429, {"code": "PROVIDER_RATE_LIMITED", "message": "slow down", "requestId": "r1", "retryAfterMs": 1500}),
+    )
+    client = make_client(transport)
+    assert client.account_status("ca_1")["status"] == "pending"
+    assert transport.requests[0]["url"].endswith("v1/connectors/accounts/ca_1")
+    assert client.account_status("ca_1") is None
+    with pytest.raises(RateLimited) as caught:
+        client.account_status("ca_1")
+    assert caught.value.retry_after == 1.5
+    assert len(transport.requests) == 3  # a 429 is never retried by the client
+
+
+def test_list_honours_a_caller_timeout_per_page():
+    transport = FakeTransport(FakeResponse(200, {"items": [LIST_ITEM], "nextCursor": None}))
+    make_client(transport).list_connectors(timeout=2.5)
+    assert transport.requests[0]["timeout"] == 2.5
+
+
+# ---------------------------------------------------------------------------
+# return to the surface that asked (portal PR 2.6)
+# ---------------------------------------------------------------------------
+
+
+def test_a_desktop_execute_rides_the_return_target_home(monkeypatch):
+    """A CONNECTION_REQUIRED link minted during an execute must come back to the app, so the call
+    names the return target. It names no operation: an execute has none to return to."""
+    from tools.connectors.gateway import bridge, client
+
+    monkeypatch.setattr(client, "session_platform", lambda: "desktop")
+    monkeypatch.delenv("HERMES_DESKTOP_DEV_SERVER", raising=False)
+    transport = FakeTransport(FakeResponse(200, execute_envelope([{"data": 1}, {"data": 2}])))
+    bridge.run_remote(
+        [plan for plan in planned()], "dispatch-1",
+        availability=lambda: True, client_factory=lambda: make_client(transport),
+    )
+    body = transport.requests[0]["json"]
+    assert body["returnTo"] == "hermes-desktop"
+    assert "op" not in body
+
+
+def test_an_execute_off_the_desktop_names_no_return_target(monkeypatch):
+    from tools.connectors.gateway import bridge, client
+
+    monkeypatch.setattr(client, "session_platform", lambda: "cli")
+    transport = FakeTransport(FakeResponse(200, execute_envelope([{"data": 1}, {"data": 2}])))
+    bridge.run_remote(
+        [plan for plan in planned()], "dispatch-1",
+        availability=lambda: True, client_factory=lambda: make_client(transport),
+    )
+    assert "returnTo" not in transport.requests[0]["json"]

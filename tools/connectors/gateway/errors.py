@@ -48,19 +48,38 @@ class IdempotencyConflict(ToolGatewayError):
     """Never retry a reused idempotency key with a different body."""
 
 
-def parse_gateway_error(status: int, body: Any) -> ToolGatewayError:
-    """Parse every gateway error envelope without raising on a malformed body."""
+class RateLimited(ToolGatewayError):
+    """429 with the gateway's retry hint in seconds; the caller decides whether to wait."""
+
+    def __init__(self, message: str, *, retry_after: float, **kwargs: Any) -> None:
+        super().__init__(message, **kwargs)
+        self.retry_after = retry_after
+
+
+def parse_gateway_error(status: int, body: Any, headers: Optional[Mapping[str, Any]] = None) -> ToolGatewayError:
+    """Parse every gateway error envelope without raising on a malformed body.
+
+    Three envelope shapes exist: ``{error: {code, message}}`` on most routes, ``{error: "<code>"}``
+    on the account routes, and a flat ``{code, message, requestId, retryAfterMs}`` on a 429."""
     code = f"HTTP_{status}"
     message = ""
     request_id = None
+    retry_after_ms: Optional[float] = None
     if isinstance(body, Mapping):
         envelope = body.get("error")
         if isinstance(envelope, Mapping):
             code = str(envelope.get("code") or code)
             message = str(envelope.get("message") or "")
+        elif isinstance(envelope, str) and envelope:
+            code = envelope
+        elif body.get("code"):
+            code = str(body["code"])
+            message = str(body.get("message") or "")
         raw_request_id = body.get("requestId")
         if raw_request_id is not None:
             request_id = str(raw_request_id)
+        if isinstance(body.get("retryAfterMs"), (int, float)):
+            retry_after_ms = float(body["retryAfterMs"])
     elif body:
         message = str(body)[:500]
     if not message:
@@ -77,6 +96,10 @@ def parse_gateway_error(status: int, body: Any) -> ToolGatewayError:
         return GatewayUnavailable(message, **kwargs)
     if status == 409:
         return IdempotencyConflict(message, **kwargs)
+    if status == 429:
+        header = (headers or {}).get("Retry-After") if headers else None
+        retry_after = float(header) if header not in (None, "") else (retry_after_ms or 1000.0) / 1000.0
+        return RateLimited(message, retry_after=retry_after, **kwargs)
     return ToolGatewayError(message, retryable=status >= 500, **kwargs)
 
 

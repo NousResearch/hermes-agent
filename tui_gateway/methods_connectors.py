@@ -102,7 +102,8 @@ def _dispatch_connector_rpc(rid, sid, owner, profile_home, args):
         return _connector_rpc_error(rid, 4031, "CONNECTORS_UNAVAILABLE", "Connectors are not available in this session.")
     if not _connector_owner_matches(sid, owner, profile_home):
         return _connector_rpc_error(rid, 4001, "NOT_OWNER", "session ownership changed")
-    if args["action"] != "status" and (operation := live.current(owner["session_key"])) is not None:
+    if args["action"] != "status" and (
+            operation := live.current(owner["session_key"], profile_home=owner.get("profile_home"))) is not None:
         # The card's Try again / Connect while the model's operation is open: reissue on that op.
         return _reissue(rid, operation, args)
     raw = model_tools.handle_function_call(
@@ -124,23 +125,52 @@ def _dispatch_connector_rpc(rid, sid, owner, profile_home, args):
 
 
 def _reissue(rid, operation, args):
-    """Re-mint links for the named targets on the open operation (user actor)."""
-    from tools.connectors.contract import Actor, TargetState
-    from tools.connectors.gateway.client import ConnectorClient
-    from tools.connectors.managed import mint
+    """The card's Try again on the open operation: a managed target is re-minted at the gateway, an
+    MCP target re-runs its own install / enable / OAuth. Dead rows only — a waiting target already
+    holds the link the card reopens, and never calls here."""
+    from tools.connectors.contract import TargetState, allowed
     from tui_gateway.connector_payload import connector_ui_payload
 
-    # Only a dead link is re-minted. A waiting target already holds its link (minted up front);
-    # the card re-opens that one and never calls here for it.
     targets = [operation.target(n) for n in args["connectors"]]
     if any(t is None for t in targets):
         return _connector_rpc_error(rid, 4004, "UNKNOWN_TARGET", "no such target on the open operation")
+    if len({t.kind for t in targets}) != 1:
+        return _connector_rpc_error(rid, 4000, "INVALID_PARAMS", "one target kind per request")
     stale = [t.name for t in targets if t.state in (TargetState.failed, TargetState.expired)]
     if len(stale) != len(targets):
         return _connector_rpc_error(rid, 4002, "LINK_STILL_VALID",
-                                    "only a failed or expired target can be re-minted; reopen the stored link")
-    mint(ConnectorClient(), operation, stale, reinitiate=True, actor=Actor.user)
+                                    "only a failed or expired target can be re-run; reopen the stored link")
+    if operation.settled:
+        # Continue can land between the state read above and the re-run: the result is frozen and
+        # a fresh mint or flow would have no row to report into.
+        return _connector_rpc_error(rid, 4002, "REISSUE_REFUSED", "the operation has settled")
+    # The contract says which dead state a kind can leave: an MCP target has no move out of expired.
+    frozen = [t.name for t in targets if allowed(t.kind, t.state, TargetState.initiated) is None]
+    if frozen:
+        return _connector_rpc_error(rid, 4002, "REISSUE_REFUSED",
+                                    f"this target cannot be run again: {', '.join(frozen)}")
+    error = _REISSUE_BY_KIND[targets[0].kind](operation, stale)
+    if error:
+        return _connector_rpc_error(rid, 4002, "REISSUE_REFUSED", error)
     return _ok(rid, connector_ui_payload(_operation_view(operation)))
+
+
+def _remint_managed(operation, names):
+    from tools.connectors.contract import Actor
+    from tools.connectors.gateway.client import ConnectorClient
+    from tools.connectors.managed import mint
+
+    mint(ConnectorClient(), operation, names, reinitiate=True, actor=Actor.user)
+    return None
+
+
+def _rerun_mcp(operation, names):
+    from tools.connectors.mcp import retry
+
+    return retry(operation, names)
+
+
+_REISSUE_BY_KIND = {"connector": _remint_managed, "mcp": _rerun_mcp}
 
 
 def _live_operation(rid, params, owner):
@@ -149,7 +179,7 @@ def _live_operation(rid, params, owner):
     op_id = params.get("op_id")
     if not isinstance(op_id, str) or not op_id:
         return None, _connector_rpc_error(rid, 4000, "INVALID_PARAMS", "op_id required")
-    operation = live.get(owner["session_key"], op_id)
+    operation = live.get(owner["session_key"], op_id, profile_home=owner.get("profile_home"))
     if operation is None:
         return None, _connector_rpc_error(rid, 4004, "UNKNOWN_OPERATION", "no open operation with that op_id in this session")
     return operation, None
@@ -178,14 +208,32 @@ def _(rid, params):
     return _ok(rid, connector_ui_payload(_operation_view(operation)))
 
 
+@method("connectors.operation.wake")
+def _(rid, params):
+    """The desktop came back from the vendor's done page: read the accounts now instead of at the
+    next tick. The link is not trusted for anything else; this only shortens the wait."""
+    owner, error = _owned_session(rid, params)
+    if error:
+        return error
+    operation, error = _live_operation(rid, params, owner)
+    if error:
+        return error
+    operation.wake.set()
+    return _ok(rid, {"status": "ok"})
+
+
 @method("connection.respond")
 def _(rid, params):
-    """The card's answer for the operation named by ``op_id``: per-target user / renderer-flow
-    transitions and an optional Continue. The contract decides what the card may claim."""
+    """The card's answer for the operation named by ``op_id``: per target an approval that starts
+    the backend's work or a skip, plus an optional Continue. The card never witnesses an outcome,
+    so any other claim moves nothing."""
+    from pydantic import ValidationError
+
     from tools.connectors import live
     from tools.connectors.contract import SettleReason
     from tools.connectors.mcp import apply_answer
     from tools.connectors.operation import IllegalTransition
+    from tui_gateway.contracts.connectors_operation import ConnectionAnswer
 
     owner, error = _owned_session(rid, params)
     if error:
@@ -193,31 +241,48 @@ def _(rid, params):
     operation, error = _live_operation(rid, params, owner)
     if error:
         return error
+    # The wire check refuses unknown keys only; the closed answer vocabulary (approved / skipped) is
+    # this handler's refusal, so a card claiming ``connected`` is answered, not logged.
     try:
-        apply_answer(operation, json.dumps(params["result"]))
-    except IllegalTransition as exc:
-        return _connector_rpc_error(rid, 4002, "ILLEGAL_TRANSITION", str(exc))
-    if not operation.settled and operation.all_resolved:
-        operation.settle(SettleReason.all_resolved)
+        answer = ConnectionAnswer.model_validate(params["result"])
+    except ValidationError as exc:
+        return _connector_rpc_error(rid, 4002, "INVALID_ANSWER", exc.errors()[0].get("msg", "invalid answer"))
+    # An approval runs the backend's work on this thread (an enable writes config.yaml, an install
+    # stores credentials), so the answer is applied under the session's profile the way
+    # ``_connector_rpc`` binds it; the RPC thread carries no profile of its own.
+    scope = {"profile_home": owner.get("profile_home") or str(_hermes_home)}
+    with _session_profile_runtime_scope(scope):
+        try:
+            apply_answer(operation, answer.model_dump_json(exclude_none=True))
+        except IllegalTransition as exc:
+            return _connector_rpc_error(rid, 4002, "ILLEGAL_TRANSITION", str(exc))
+        if not operation.settled and operation.all_resolved:
+            operation.settle(SettleReason.all_resolved)
     if operation.settled:
         live.close(operation)
     return _ok(rid, {"status": "ok", "settled": operation.settled})
 
 
+def _snapshot_view(snapshot):
+    return {**snapshot, "settled": snapshot.get("settled_at") is not None}
+
+
 def _operation_view(operation):
-    return {**operation.result(), "settled": operation.settled}
+    return _snapshot_view(operation.result())
 
 
-def _connection_update(operation, change=None):
+def _connection_update(operation, change, snapshot):
     """Emit ``connection.update`` for one transition, a link refresh, or settlement. Every frame
-    carries the full target snapshot so the renderer never reconstructs state from deltas."""
+    carries the full target snapshot so the renderer never reconstructs state from deltas. The
+    snapshot was taken under the operation's lock with the ``seq`` it carries, so a frame can never
+    show a state newer than its own seq names."""
     from tui_gateway import server
 
     with server._sessions_lock:
         sid = next((s for s, c in server._sessions.items() if c.get("session_key") == operation.session_key), None)
     if sid is None:
         return
-    payload = _operation_view(operation)
+    payload = _snapshot_view(snapshot)
     if change:
         payload.update(change)
     server._emit("connection.update", sid, payload)

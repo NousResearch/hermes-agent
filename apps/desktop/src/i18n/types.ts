@@ -60,11 +60,7 @@ export interface Translations {
     grant: string
     connected: string
     checking: string
-    waitingSignIn: string
     notConnected: string
-    notAvailable: string
-    startWith: (count: number) => string
-    startWithout: string
     skipped: string
     disabled: string
     failed: string
@@ -73,7 +69,6 @@ export interface Translations {
     waiting: string
     timeout: string
     refresh: string
-    statusError: string
     connectError: string
     connectErrorFor: (app: string) => string
     unavailable: string
@@ -3472,7 +3467,6 @@ export interface Translations {
       authorized: (server: string) => string
       failed: (server: string) => string
       toolCount: (count: number) => string
-      notInCatalog: (server: string) => string
       envRequired: string
       sendFailed: string
       reloadFailed: string

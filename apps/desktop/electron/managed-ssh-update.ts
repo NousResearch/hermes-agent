@@ -913,15 +913,53 @@ function refusedManagedSshUpdate(connectionId: string, correlationId: string, er
   }
 }
 
+/**
+ * Bound a promise so a self-replacing hand-off can never be parked by it.
+ *
+ * A budget of 0 (the default at every existing call site) returns the work
+ * unchanged — only callers that have a hard deadline pass one.
+ */
+export function raceWithBudget<T>(work: Promise<T>, budgetMs: number): Promise<T | void> {
+  if (!(budgetMs > 0)) {
+    return work
+  }
+
+  return Promise.race([work, new Promise<void>(resolve => setTimeout(resolve, budgetMs))])
+}
+
 // before-quit uses this to join remote update transactions before it starts
 // tearing down their SSH transports. Re-read after every batch so an operation
 // registered while the first batch settles is joined too.
-async function waitForManagedUpdateOperations(getOperations: () => Iterable<Promise<unknown>>): Promise<void> {
+//
+// `budgetMs` bounds the join for callers that MUST finish (a hand-off is
+// waiting on this process to exit — see main.ts armHandoffQuitWatchdog). Real
+// remote UPDATE transactions are still joined unbounded: cutting one short
+// would strand a remote install. Connection RECOVERIES are safe to abandon —
+// they are re-registered and replayed from their durable records on the next
+// launch — so a hand-off quit bounds those and lets the script proceed.
+async function waitForManagedUpdateOperations(
+  getOperations: () => Iterable<Promise<unknown>>,
+  budgetMs = 0
+): Promise<void> {
+  const deadline = budgetMs > 0 ? Date.now() + budgetMs : 0
+
   for (;;) {
     const pending = [...getOperations()]
 
     if (pending.length === 0) {
       return
+    }
+
+    if (deadline > 0) {
+      const remaining = deadline - Date.now()
+
+      if (remaining <= 0) {
+        return
+      }
+
+      await raceWithBudget(Promise.allSettled(pending), remaining)
+
+      continue
     }
 
     await Promise.allSettled(pending)

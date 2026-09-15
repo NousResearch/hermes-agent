@@ -132,6 +132,30 @@ def test_clearing_threshold_tokens_restores_ratio_trigger(monkeypatch):
     assert compressor.threshold_tokens_cap is None
 
 
+def test_live_summary_instructions_applies_on_next_turn_without_rebuild(monkeypatch):
+    session, compressor = _session_with_compressor()
+    custom = "Preserve ticket IDs. Omit {prices}."
+    assert compressor.summary_instructions == ""
+
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"compression": {"summary_instructions": custom}},
+    )
+
+    server._sync_agent_compression_with_config("sid-95151", session)
+
+    assert compressor.summary_instructions == custom
+
+
+def test_removing_summary_instructions_restores_empty_default(monkeypatch):
+    session, compressor = _session_with_compressor(
+        summary_instructions="Preserve ticket IDs."
+    )
+    _sync_with_cfg(monkeypatch, session, {"compression": {}})
+    assert compressor.summary_instructions == ""
+
+
 def test_prompt_submit_calls_compression_sync_after_model_sync():
     # Read the module that actually defines the turn (it moved out of server.py).
     source = open(server._run_prompt_submit.__code__.co_filename, encoding="utf-8").read()

@@ -28,6 +28,7 @@ from gateway.config import (
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
     DEFAULT_STREAMING_CURSOR as _DEFAULT_STREAMING_CURSOR)
 from gateway.response_filters import (
+    is_invisible_only_response as _is_invisible_only_response,
     is_intentional_silence_response as _is_intentional_silence_response,
     is_partial_silence_marker as _is_partial_silence_marker)
 from gateway.stream_consumer_fences import ensure_closed_code_fences
@@ -556,8 +557,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                     # A bare intentional-silence marker (NO_REPLY / [SILENT]): the
                     # gateway's whole-response filter runs too late for a streamed
                     # preview, so retract it here instead of finalizing.
-                    if _is_intentional_silence_response(self._clean_for_display(self._accumulated)):
-                        await self._suppress_silence_marker()
+                    _clean_accumulated = self._clean_for_display(self._accumulated)
+                    _invisible_only = _is_invisible_only_response(_clean_accumulated)
+                    if _is_intentional_silence_response(_clean_accumulated) or _invisible_only:
+                        await self._suppress_silence_marker(segment_only=_invisible_only)
                         return
 
                 if self._should_edit(tick) and (
@@ -705,6 +708,12 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
 
     def _should_edit(self, tick: "_Tick") -> bool:
         """Decide whether this tick flushes an edit/frame."""
+        # Segment boundaries are interim flushes even though ``tick.is_interim`` is false. Hold any
+        # buffer that could still resolve to silence so tool boundaries cannot leak a blank/marker.
+        if (tick.is_interim or tick.got_segment_break) and _is_partial_silence_marker(
+            self._clean_for_display(self._accumulated)
+        ):
+            return False
         if not tick.is_interim:
             return True
         if self.cfg.buffer_only:

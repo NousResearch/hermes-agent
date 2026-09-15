@@ -109,6 +109,40 @@ def _sent_and_edited(adapter):
 
 class TestStreamedSilenceSuppression:
     @pytest.mark.asyncio
+    async def test_invisible_only_stream_is_fully_suppressed(self):
+        """Format-only output must never become a blank platform message."""
+        adapter = _make_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_1",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1),
+        )
+        consumer.on_delta("\u200b\ufeff")
+        consumer.on_segment_break()
+        consumer.finish()
+        await consumer.run()
+
+        assert _sent_and_edited(adapter) == []
+        assert consumer.final_response_sent is False
+        assert consumer.final_content_delivered is False
+        assert consumer.already_sent is False
+
+    @pytest.mark.asyncio
+    async def test_invisible_final_segment_preserves_visible_preamble(self):
+        adapter = _make_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_1",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1),
+        )
+        consumer.on_delta("Visible preamble")
+        consumer.on_segment_break()
+        consumer.on_delta("\u200b")
+        consumer.finish()
+        await consumer.run()
+
+        assert _sent_and_edited(adapter) == ["Visible preamble"]
+        adapter.delete_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_no_reply_only_stream_is_fully_suppressed(self):
         """A stream whose entire content is NO_REPLY sends nothing visible."""
         adapter = _make_adapter()

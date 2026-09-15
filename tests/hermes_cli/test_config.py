@@ -1958,3 +1958,11 @@ def test_empty_dict_default_sections_are_open_containers():
     known, suggestion = _validate_config_key("compression.model_threshold.gpt-5")
     assert known is False
     assert suggestion == "compression.model_thresholds"
+
+
+def test_gateway_human_silence_key_is_recognized():
+    from hermes_cli.config import _validate_config_key
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["gateway"].get("allow_human_silence_markers") is False
+    assert _validate_config_key("gateway.allow_human_silence_markers") == (True, None)

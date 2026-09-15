@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Write-approval gate + pending store for memory and skill writes.
+"""Write-approval gate + pending store for memory, skill, and control-file writes.
 
 A per-subsystem boolean ``write_approval`` gates the agent's cross-session writes —
-**memory** (MEMORY.md / USER.md) and **skills** (SKILL.md + files) — from either
-origin (**foreground** turn or **background_review** fork). ``false`` (default)
-writes freely; ``true`` never commits directly: it prompts inline (memory,
-interactive CLI only) or **stages** the write under
-``<HERMES_HOME>/pending/{memory,skills}/<id>.json`` for out-of-band review.
+**memory** (MEMORY.md / USER.md), **skills** (SKILL.md + files) and **config**
+(config.yaml values) — from either origin (**foreground** turn or
+**background_review** fork). One opt-in switch,
+``agent.require_persistent_change_approval`` (#110429), turns the gate on for
+EVERY subsystem at once. ``false`` (default) writes freely; effectively ``true``
+never commits directly: it prompts inline (memory, interactive CLI only) or
+**stages** the write under ``<HERMES_HOME>/pending/{memory,skills,config}/<id>.json``
+for out-of-band review (``hermes pending``, ``/memory pending``, ``/skills pending``).
 """
 
 from __future__ import annotations
@@ -30,20 +33,52 @@ logger = logging.getLogger(__name__)
 # Subsystem identifiers
 MEMORY = "memory"
 SKILLS = "skills"
-_SUBSYSTEMS = (MEMORY, SKILLS)
+CONFIG = "config"
+_SUBSYSTEMS = (MEMORY, SKILLS, CONFIG)
 
 # Per-subsystem config key. Intentionally a single boolean with no "block all writes"
 # state — to disable a subsystem use its own enable flag (e.g. ``memory.memory_enabled``).
 CONFIG_KEY = "write_approval"
 _TRUTHY_STRINGS = frozenset({"on", "true", "yes", "1", "approve", "enabled"})
 
+# One switch that arms every subsystem at once (#110429) instead of opting in one at a
+# time. Off by default: when it is unset/false the per-subsystem booleans stay the only
+# authority, so a default install behaves byte-for-byte as it did before.
+GLOBAL_SECTION = "agent"
+GLOBAL_KEY = "require_persistent_change_approval"
+GLOBAL_SWITCH = f"{GLOBAL_SECTION}.{GLOBAL_KEY}"
+
+# Where a staged write is reviewed, per subsystem (message text only).
+_REVIEW_SURFACE = {
+    MEMORY: "/memory pending (or `hermes pending`)",
+    SKILLS: "/skills pending (or `hermes pending`)",
+    CONFIG: "`hermes pending`",
+}
+
 
 # --- Config resolution ---
 
+def persistent_change_approval_required() -> bool:
+    """Read the global opt-in switch ``agent.require_persistent_change_approval``.
+
+    Resolved per call (not frozen at import) so flipping it takes effect without a restart;
+    any unset/invalid/unreadable value means OFF — the safe direction, since ON changes
+    behavior for every subsystem."""
+    try:
+        from hermes_cli.config import load_config, cfg_get
+        return _normalize_enabled(cfg_get(load_config(), GLOBAL_SECTION, GLOBAL_KEY, default=False))
+    except Exception:
+        return False
+
+
 def write_approval_enabled(subsystem: str) -> bool:
-    """Read ``<subsystem>.write_approval``; any unset/invalid value means gate off."""
+    """True when ``subsystem``'s writes need approval: the global switch
+    (``agent.require_persistent_change_approval``) OR ``<subsystem>.write_approval``.
+    Any unset/invalid value means gate off."""
     if subsystem not in _SUBSYSTEMS:
         return False
+    if persistent_change_approval_required():
+        return True
     try:
         from hermes_cli.config import load_config, cfg_get
         return _normalize_enabled(cfg_get(load_config(), subsystem, CONFIG_KEY, default=False))
@@ -82,7 +117,9 @@ def stage_write(subsystem: str, payload: Dict[str, Any], *, summary: str, origin
         "created_at": time.time(), "payload": payload,
     }
     try:
-        atomic_json_write(_pending_path(subsystem, pid), record)
+        # 0600: a pending record can carry memory text, a skill body, or a config value that is
+        # a credential, so it must not be umask-readable before it is reviewed.
+        atomic_json_write(_pending_path(subsystem, pid), record, mode=0o600)
     except Exception as e:  # pragma: no cover - disk failure path
         logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
     return record
@@ -132,6 +169,83 @@ def pending_count(subsystem: str) -> int:
     return 0
 
 
+def all_pending() -> List[Dict[str, Any]]:
+    """Every pending record across every subsystem, oldest first — the whole review queue.
+    Each record carries its own ``subsystem`` key (stamped by ``stage_write``)."""
+    records: List[Dict[str, Any]] = []
+    for sub in _SUBSYSTEMS:
+        records.extend(list_pending(sub))
+    records.sort(key=lambda r: r.get("created_at", 0))
+    return records
+
+
+def find_pending(pending_id: str) -> Optional[Dict[str, Any]]:
+    """Look a pending record up by id across all subsystems (ids are unique hex)."""
+    for sub in _SUBSYSTEMS:
+        rec = get_pending(sub, pending_id)
+        if rec is not None:
+            return rec
+    return None
+
+
+# --- Approval replay (the ONLY path that applies a gated write) ---
+
+def apply_control_pending(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Replay a staged ``config`` write (``hermes pending approve <id>``), bypassing the gate.
+
+    ``set_config_value`` / ``unset_config_value`` still own validation and coercion, so an
+    approved change goes through exactly the same code path a direct ``hermes config set``
+    would have."""
+    key = str(payload.get("key") or "").strip()
+    if not key:
+        return {"success": False, "error": "Staged config write has no key."}
+    from hermes_cli.config import set_config_value, unset_config_value
+
+    if payload.get("unset"):
+        unset_config_value(key, _approved=True)
+        return {"success": True, "message": f"Unset {key}."}
+    set_config_value(key, str(payload.get("value") or ""), force=bool(payload.get("force")), _approved=True)
+    return {"success": True, "message": f"Set {key}."}
+
+
+def apply_pending(subsystem: str, record: Dict[str, Any], *, memory_store=None) -> Dict[str, Any]:
+    """Apply ONE already-approved pending record, bypassing the gate; ``{"success", "error"?}``.
+
+    The shared replay dispatcher behind every review surface (``/memory approve``,
+    ``/skills approve``, ``hermes pending approve``), so adding a subsystem means adding a
+    branch here rather than a second apply path. ``_exit_invalid`` inside ``hermes_cli.config``
+    raises ``SystemExit``; that is caught and reported as a failure so one bad record cannot
+    kill the batch."""
+    payload = record.get("payload") or {}
+    try:
+        if subsystem == MEMORY:
+            if memory_store is None:
+                return {"success": False, "error": "memory store unavailable"}
+            from tools.memory_tool import apply_memory_pending
+            return apply_memory_pending(payload, memory_store)
+        if subsystem == SKILLS:
+            from tools.skill_manager_tool import apply_skill_pending
+            return json.loads(apply_skill_pending(payload))
+        if subsystem == CONFIG:
+            return apply_control_pending(payload)
+        return {"success": False, "error": f"Unknown subsystem '{subsystem}'."}
+    except SystemExit as exc:  # hermes_cli.config._exit_invalid on a rejected write
+        return {"success": False, "error": f"config write rejected (exit {exc.code})"}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+def approve_pending(subsystem: str, pending_id: str, *, memory_store=None) -> Dict[str, Any]:
+    """Approve one record: apply it and drop it from the queue only on success."""
+    record = get_pending(subsystem, pending_id)
+    if record is None:
+        return {"success": False, "error": f"No pending {subsystem} write with id '{pending_id}'."}
+    result = apply_pending(subsystem, record, memory_store=memory_store)
+    if result.get("success"):
+        discard_pending(subsystem, pending_id)
+    return result
+
+
 # --- Write origin ---
 
 def current_origin() -> str:
@@ -158,20 +272,25 @@ class GateDecision:
 
 
 def _staged(subsystem: str) -> GateDecision:
-    where = "/skills pending" if subsystem == SKILLS else "/memory pending"
-    return GateDecision(stage=True, message=(f"Staged for approval ({subsystem}.write_approval is on). "
-                                             f"Not yet saved — review with {where}."))
+    source = GLOBAL_SWITCH if persistent_change_approval_required() else f"{subsystem}.{CONFIG_KEY}"
+    where = _REVIEW_SURFACE.get(subsystem, "`hermes pending`")
+    return GateDecision(stage=True, message=(
+        f"Staged for approval ({source} is on). Not yet saved — review with {where}: "
+        f"approve <id> to apply, reject <id> to drop."))
 
 
 def evaluate_gate(subsystem: str, *, inline_summary: str = "", inline_detail: str = "") -> GateDecision:
-    """Decide what to do with a pending write: gate off → allow; gate on + skills (any origin) or
-    background → stage; gate on + memory + foreground → inline prompt when an interactive channel
-    exists, else stage. The gate only ever delays a write, never silently refuses it; ``blocked``
-    is produced only when the user actively denies the inline prompt."""
+    """Decide what to do with a pending write: gate off → allow; gate on + memory + foreground
+    → inline prompt when an interactive channel exists, else stage; any other subsystem (skills,
+    config) or a background origin → stage. Skill/config writes are staged rather than prompted
+    inline: skills are too big to review inline, and a config write is frequently issued from a
+    non-interactive process (``hermes config set``) with no approval channel to answer a prompt.
+    The gate only ever delays a write, never silently refuses it; ``blocked`` is produced only
+    when the user actively denies the inline prompt."""
     if not write_approval_enabled(subsystem):
         return GateDecision(allow=True)
-    # Skills are too big to review inline; a background write runs in a daemon thread with no user.
-    if subsystem == SKILLS or current_origin() == "background_review":
+    # A background write runs in a daemon thread with no user to prompt.
+    if subsystem != MEMORY or current_origin() == "background_review":
         return _staged(subsystem)
     granted = _prompt_inline_memory_approval(inline_summary, inline_detail)
     if granted is None:
@@ -179,6 +298,23 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "", inline_detail: st
     if granted:
         return GateDecision(allow=True)
     return GateDecision(blocked=True, message="Memory write denied by user. The change was not saved.")
+
+
+def gate_or_stage(subsystem: str, payload: Dict[str, Any], *, summary: str,
+                  inline_detail: str = "") -> Optional[str]:
+    """Gate + stage in one call: ``None`` when the write may proceed, else the user/model-facing
+    message for the blocked or staged outcome (and the payload is in the pending store).
+
+    The single call-site shape for non-memory subsystems, so adding a control-file surface
+    costs one line at the write point instead of a copy of the staging dance."""
+    decision = evaluate_gate(subsystem, inline_summary=summary, inline_detail=inline_detail)
+    if decision.allow:
+        return None
+    if decision.blocked:
+        return decision.message
+    detail = f"{summary}: {inline_detail[:120]}" if inline_detail else summary
+    stage_write(subsystem, payload, summary=detail, origin=current_origin())
+    return decision.message
 
 
 def _prompt_inline_memory_approval(summary: str, detail: str) -> Optional[bool]:

@@ -159,6 +159,86 @@ def test_load_routing_falls_back_to_defaults_when_config_unreadable(kanban_home,
     assert routing.default_assignee == "default" and routing.auto_promote is True
 
 
+def test_decompose_fanout_populates_task_mode_on_every_child(kanban_home):
+    """Rule 2: every fan-out child gets a task_mode assigned at creation time,
+    derived from ITS OWN title/body — not left NULL, and not identical
+    across children carrying different signals."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="ship a feature", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test split",
+        "tasks": [
+            {
+                "title": "Why does the retry breaker trip?",
+                "body": "", "assignee": "researcher", "parents": [],
+            },
+            {
+                "title": "Fix typo in docstring",
+                "body": "Fix the typo in kanban_db.py's docstring.",
+                "assignee": "engineer", "parents": [],
+            },
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "researcher", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    with kbc.connect() as conn:
+        c0 = kb.get_task(conn, outcome.child_ids[0])
+        c1 = kb.get_task(conn, outcome.child_ids[1])
+    # Both children got SOME task_mode populated (schema-population only,
+    # never left unset by the decomposer).
+    assert c0.task_mode is not None
+    assert c1.task_mode is not None
+    # And the two children, carrying different signals, land in different
+    # modes — proving classification runs per-child, not a constant fill.
+    assert c0.task_mode == "chat"
+    assert c1.task_mode == "autocomplete"
+
+
+def test_decompose_single_task_promotion_populates_task_mode(kanban_home):
+    """Rule 2: the fanout=false single-task promotion path also classifies
+    and persists task_mode (not only the fan-out children path)."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="explain the breaker", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "single unit",
+        "title": "Why does the circuit breaker trip so often?",
+        "body": "",
+        "assignee": None,
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "fallback"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"kanban": {"default_assignee": "fallback"}},
+        ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.task_mode == "chat"
+
+
 def test_decompose_returns_false_when_task_not_triage(kanban_home):
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="x")  # ready, not triage

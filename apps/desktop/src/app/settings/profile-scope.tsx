@@ -82,6 +82,8 @@ export function SettingsProfileScope({ className }: { className?: string }) {
             'text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height)',
             editingNonDefault ? 'font-medium text-(--ui-accent)' : 'text-(--ui-text-tertiary)'
           )}
+          data-scope-loud={editingNonDefault ? 'true' : undefined}
+          role="status"
         >
           {scope.editsProfile(selected)}
         </p>

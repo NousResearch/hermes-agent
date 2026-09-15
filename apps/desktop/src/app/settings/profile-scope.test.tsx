@@ -78,10 +78,10 @@ describe('SettingsProfileScope', () => {
 
     expect($settingsScopeOverride.get()).toBeNull()
     expect(container.textContent).toContain('scout')
-    // The note paragraph is present and accented (font-medium marks the loud variant).
-    const note = container.querySelector('p')
+    // The note is present and flagged loud (data-scope-loud marks the accented variant).
+    const note = container.querySelector('[role="status"]')
     expect(note).toBeTruthy()
-    expect(note?.className).toContain('font-medium')
+    expect(note?.getAttribute('data-scope-loud')).toBe('true')
   })
 
   it('shows no note when following the active DEFAULT profile', () => {
@@ -90,7 +90,7 @@ describe('SettingsProfileScope', () => {
 
     const { container } = render(<SettingsProfileScope />)
 
-    expect(container.querySelector('p')).toBeNull()
+    expect(container.querySelector('[role="status"]')).toBeNull()
   })
 
   it('keeps the quiet note style for an explicit override onto the default profile', () => {
@@ -102,8 +102,8 @@ describe('SettingsProfileScope', () => {
     fireEvent.click(screen.getByRole('button', { name: 'default' }))
     expect($settingsScopeOverride.get()).toBe('default')
 
-    const note = document.querySelector('p')
+    const note = document.querySelector('[role="status"]')
     expect(note).toBeTruthy()
-    expect(note?.className).not.toContain('font-medium')
+    expect(note?.hasAttribute('data-scope-loud')).toBe(false)
   })
 })

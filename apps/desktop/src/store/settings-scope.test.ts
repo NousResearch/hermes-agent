@@ -85,6 +85,7 @@ describe('settings scope store', () => {
       { is_default: true, name: 'default' },
       { is_default: false, name: 'scout' }
     ] as unknown as ProfileInfo[]
+
     $profiles.set(roster)
 
     // Following the active DEFAULT profile → editing the default.

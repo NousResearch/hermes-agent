@@ -68,9 +68,18 @@ try_github() {
 
   # verify checksum when the sidecar exists (upstream publishes .sha256 for every asset)
   if [ -s "$tmp/$asset.sha256" ]; then
-    ( cd "$tmp" && sha256sum -c "$asset.sha256" >/dev/null 2>&1 ) \
-      || { err "sha256 mismatch for $asset"; rm -rf "$tmp"; return 3; }
-    log "sha256 verified"
+    if command -v sha256sum >/dev/null 2>&1; then
+      ( cd "$tmp" && sha256sum -c "$asset.sha256" >/dev/null 2>&1 ) || VERIFY_RC=$?
+    elif command -v shasum >/dev/null 2>&1; then
+      # macOS ships shasum, not sha256sum (brew-less default)
+      ( cd "$tmp" && shasum -a 256 -c "$asset.sha256" >/dev/null 2>&1 ) || VERIFY_RC=$?
+    else
+      err "no sha256 tool found (sha256sum/shasum) — skipping verification for $asset"
+    fi
+    if [ "${VERIFY_RC:-0}" -ne 0 ]; then
+      err "sha256 mismatch for $asset"; rm -rf "$tmp"; return 3
+    fi
+    [ "${VERIFY_RC:-0}" -eq 0 ] && log "sha256 verified"
   fi
 
   mkdir -p "$CACHE_BIN_DIR"

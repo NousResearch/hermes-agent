@@ -1738,6 +1738,25 @@ class GatewayNotificationsMixin:
         header = "⏳ Background task still running" + (f" — `{short_cmd}`" if short_cmd else "")
         return f"{header}\n\nRecent output:\n```\n{new_output.strip()}\n```" if new_output.strip() else header
 
+    def _schedule_live_process_watcher(self, watcher: dict) -> bool:
+        """Schedule a watcher registered during an active gateway turn.
+
+        Terminal tools may run in executor threads, so submit through the
+        gateway loop rather than calling ``create_task`` from the caller.
+        Returning false lets the registry retain the descriptor for the normal
+        startup/post-turn recovery path.
+        """
+        if not getattr(self, "_running", False):
+            return False
+        from gateway.run import safe_schedule_threadsafe
+        future = safe_schedule_threadsafe(
+            self._run_process_watcher(watcher),
+            getattr(self, "_process_watcher_loop", None),
+            logger=logger,
+            log_message="Live process watcher setup failed",
+        )
+        return future is not None
+
     async def _run_process_watcher(self, watcher: dict) -> None:
         """Poll a background process and push updates until it exits. Mode
         (``display.background_process_notifications``): concise (default one-liner; failures append
@@ -1785,6 +1804,17 @@ class GatewayNotificationsMixin:
                         # The process remains terminal; retry after failed adapter injection instead
                         # of suppressing the result.
                         continue
+                    # Agent delivery is queued while its launching turn is
+                    # active.  Give the chat its concise completion receipt
+                    # now as well; this is deliberately not the raw-output
+                    # fallback used by non-agent-notify watchers.
+                    if delivered is True and (notify_mode in {"concise", "all", "result"} or (
+                        notify_mode == "error" and session.exit_code not in {0, None}
+                    )):
+                        message_text = self._format_process_final_message(session_id, session, "concise")
+                        await self._send_watcher_message(
+                            platform_name, chat_id, thread_id, message_text, watcher,
+                        )
                     break
                 # Text-only notification; skip when already consumed via wait/log (the agent_notify branch
                 # FALLS THROUGH here, hence the re-check).

@@ -541,6 +541,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         self._lock = threading.Lock()
         # Side-channel for check_interval watchers (gateway reads after agent run)
         self.pending_watchers: List[Dict[str, Any]] = []
+        # The gateway installs this once its event loop is accepting work.  Before
+        # that (including checkpoint recovery), watcher descriptors stay in the
+        # durable startup queue below.
+        self._watcher_scheduler = None
         # Unified queue for all background events (distinguished by "type"); the CLI
         # process_loop and the gateway drain it after each agent turn to trigger new turns.
         import queue as _queue_mod
@@ -570,6 +574,45 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # a read-only terminal tab without killing the process.
         self.on_output = None
         self.on_close = None
+
+    def set_watcher_scheduler(self, scheduler) -> None:
+        """Install the live gateway scheduler for newly registered watchers."""
+        with self._lock:
+            self._watcher_scheduler = scheduler
+
+    def clear_watcher_scheduler(self, scheduler) -> None:
+        """Remove *scheduler* without disconnecting a newer gateway instance."""
+        with self._lock:
+            if self._watcher_scheduler == scheduler:
+                self._watcher_scheduler = None
+
+    def register_watcher(self, watcher: Dict[str, Any]) -> bool:
+        """Arm a watcher immediately when a live gateway can schedule it.
+
+        Startup and recovery intentionally retain the pending-list path.  A
+        scheduler failure falls back to that list, so a process completion is
+        never lost while the gateway is stopping or its loop is unavailable.
+        """
+        with self._lock:
+            scheduler = self._watcher_scheduler
+            if scheduler is None:
+                self.pending_watchers.append(watcher)
+                return False
+        try:
+            if scheduler(watcher):
+                return True
+        except Exception:
+            logger.warning("Could not arm process watcher immediately", exc_info=True)
+        with self._lock:
+            self.pending_watchers.append(watcher)
+        return False
+
+    def take_pending_watchers(self) -> List[Dict[str, Any]]:
+        """Atomically detach queued startup/post-turn watchers."""
+        with self._lock:
+            watchers = self.pending_watchers
+            self.pending_watchers = []
+        return watchers
 
     @staticmethod
     def _clean_shell_noise(text: str) -> str:

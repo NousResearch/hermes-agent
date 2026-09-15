@@ -117,7 +117,7 @@ def _register_completion_watcher(process_registry, proc_session, session_key) ->
     """Gateway mode: register a fast watcher so completion triggers a new
     agent turn (CLI mode uses the completion_queue directly)."""
     proc_session.watcher_interval = 5
-    process_registry.pending_watchers.append({
+    process_registry.register_watcher({
         "session_id": proc_session.id, "check_interval": 5, "session_key": session_key,
         "platform": proc_session.watcher_platform,
         **{attr.removeprefix("watcher_"): getattr(proc_session, attr)

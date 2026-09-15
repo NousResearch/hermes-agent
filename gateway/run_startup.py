@@ -1311,8 +1311,7 @@ class GatewayStartupMixin:
         # concurrent append during the yield must not be lost); yield every 100 to keep the loop live.
         with _log_suppressed(logging.ERROR, "Recovered watcher setup error: %s"):
             from tools.process_registry import process_registry
-            watchers = process_registry.pending_watchers
-            process_registry.pending_watchers = []
+            watchers = process_registry.take_pending_watchers()
             for i, watcher in enumerate(watchers):
                 self._spawn_supervised(
                     lambda w=watcher: self._run_process_watcher(w),
@@ -1418,6 +1417,9 @@ class GatewayStartupMixin:
         self.delivery_router.adapters = self.adapters
         self._wire_teams_pipeline_runtime()
         self._running = True
+        self._process_watcher_loop = asyncio.get_running_loop()
+        from tools.process_registry import process_registry
+        process_registry.set_watcher_scheduler(self._schedule_live_process_watcher)
         self._install_plugin_message_injector()
         self._update_runtime_status("running")
         await self._start_finish_wiring(connected_count)

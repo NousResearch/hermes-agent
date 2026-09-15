@@ -1623,6 +1623,8 @@ class GatewayShutdownMixin:
         logger.info("Stopping gateway%s...", " for restart" if self._restart_requested else "")
         ctx.started_at = time.monotonic()
         self._running = False
+        from tools.process_registry import process_registry
+        process_registry.clear_watcher_scheduler(self._schedule_live_process_watcher)
         self._clear_plugin_message_injector()
         self._draining = True
         # getattr-guards: shutdown-path test doubles may lack the room worker / systemd watchdog.

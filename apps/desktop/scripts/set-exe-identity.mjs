@@ -20,19 +20,19 @@
 //
 // HOW IT RUNS
 // -----------
-// Primarily as an electron-builder `afterPack` hook (scripts/after-pack.mjs),
+// Primarily as an electron-builder `afterExtract` hook (scripts/after-extract.mjs),
 // so EVERY packed build — first install, `hermes desktop`, the installer's
 // --update rebuild, or a dev's manual `npm run pack` — gets a branded exe from
 // one place. Previously this stamp lived only in install.ps1, so the update
 // path (which rebuilds via `hermes desktop --build-only`, never install.ps1)
-// shipped a stock "Electron" exe. Keeping it in afterPack closes that gap.
+// shipped a stock "Electron" exe. Keeping it in afterExtract closes that gap.
 //
 // Also runnable standalone for ad-hoc re-stamping:
 //   node scripts/set-exe-identity.mjs <path-to-Hermes.exe>
 //
 // Exits 0 on success, non-zero on failure when run as a CLI. As a hook,
 // stampExeIdentity() resolves on success and rejects on failure; the caller
-// (after-pack.mjs) swallows the rejection so a stamp failure never fails an
+// (after-extract.mjs) swallows the rejection so a stamp failure never fails an
 // otherwise-good build (worst case: stock icon, not a broken app).
 
 import { resolve, join } from 'node:path'

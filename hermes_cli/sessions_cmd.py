@@ -998,7 +998,7 @@ def cmd_sessions(args, sessions_parser=None):
         try:
             return handler(db, args)
         except sqlite3.OperationalError as e:
-            if not observational:
+            if not observational or not str(e).lower().startswith("no such "):
                 raise
             # A read-only opener skips schema migration, so a store from an older release can lack a column.
             print(f"Error: session database needs migration — run any writing hermes command first ({e})")

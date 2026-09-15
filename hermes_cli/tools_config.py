@@ -584,7 +584,9 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
 
     # Explicit non-configurable entries (custom toolsets, MCP server names) pass through.
     explicit_passthrough = {ts for ts in toolset_names if ts not in explicit_known_keys and ts not in platform_default_keys}
-    enabled_toolsets |= _merge_mcp_servers(config, toolset_names, explicit_passthrough, include_default_mcp_servers)
+    enabled_toolsets |= _merge_mcp_servers(
+        config, platform, toolset_names, explicit_passthrough, include_default_mcp_servers
+    )
 
     # Legacy profile opt-in is a fallback only. A saved platform list (even
     # empty) is authoritative, so a later disable cannot silently re-enable it.
@@ -648,12 +650,34 @@ def _recover_platform_native_toolsets(enabled_toolsets: Set[str], platform: str,
 
 
 def _merge_mcp_servers(
-    config: dict, toolset_names: List[str], explicit_passthrough: Set[str], include_default_mcp_servers: bool
+    config: dict, platform: str, toolset_names: List[str], explicit_passthrough: Set[str],
+    include_default_mcp_servers: bool,
 ) -> Set[str]:
     """Explicit passthrough entries plus this platform's MCP servers: listed names form an allowlist, else every
-    globally enabled server (when ``include_default_mcp_servers``); the ``no_mcp`` sentinel disables all."""
-    enabled_mcp_servers = enabled_mcp_server_names(config)
+    globally enabled server (when ``include_default_mcp_servers``); the ``no_mcp`` sentinel disables all.
+
+    A server may use ``platforms`` as an allowlist and ``exclude_platforms`` as a denylist. Unscoped servers
+    retain the historical global behavior, and an explicit platform_toolsets entry never bypasses server scope.
+    """
+    globally_enabled_mcp_servers = enabled_mcp_server_names(config)
+    configured_servers = {
+        str(name): server_cfg for name, server_cfg in ((config or {}).get("mcp_servers") or {}).items()
+    }
+
+    def allowed_on_platform(name: str) -> bool:
+        server_cfg = configured_servers.get(name)
+        if not isinstance(server_cfg, dict):
+            return True  # Portable plugin servers have no per-server config to scope.
+        allowed = server_cfg.get("platforms")
+        excluded = server_cfg.get("exclude_platforms")
+        if isinstance(allowed, (list, tuple, set)) and platform not in {str(p) for p in allowed}:
+            return False
+        return not (isinstance(excluded, (list, tuple, set)) and platform in {str(p) for p in excluded})
+
+    enabled_mcp_servers = {name for name in globally_enabled_mcp_servers if allowed_on_platform(name)}
+    scoped_out_mcp_servers = globally_enabled_mcp_servers - enabled_mcp_servers
     result = explicit_passthrough - enabled_mcp_servers
+    result -= scoped_out_mcp_servers
     if "no_mcp" in toolset_names:
         return result - {"no_mcp"}
     explicit_mcp_servers = explicit_passthrough & enabled_mcp_servers

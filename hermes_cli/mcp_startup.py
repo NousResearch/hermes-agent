@@ -66,17 +66,28 @@ def _has_configured_mcp_servers() -> bool:
 
 
 def _discovery_registered_servers(status) -> bool:
-    """True when discovery actually registered something usable.
+    """True when discovery did what was asked of it.
 
-    A lazily registered server never connects until first use, so counting only
-    ``connected`` makes an ALL-LAZY config — the memory-saving setup the feature exists
-    for — look like a discovery run that achieved nothing, and the retry path then
-    re-runs discovery on every call.
+    Two ways that happens, and counting only ``connected`` misses both:
+
+    * A lazily registered server never connects until first use, so an ALL-LAZY config —
+      the memory-saving setup the feature exists for — looked like a run that achieved
+      nothing, and the retry path then re-ran discovery on every call.
+    * ``-t/--toolsets`` can deliberately exclude every configured server. Discovery then
+      returns before importing the SDK and spawns nothing on purpose, while
+      ``get_mcp_status()`` still reports the full config as ``configured``. That is the
+      filter working, not a failed run, so it must not warn or arm the retry either.
     """
-    for entry in status or []:
-        if not isinstance(entry, dict):
-            continue
+    entries = [entry for entry in (status or []) if isinstance(entry, dict)]
+    for entry in entries:
         if entry.get("connected") or entry.get("status") == "lazy":
+            return True
+    allowed = get_mcp_server_filter()
+    if allowed is not None and entries:
+        # Only when the filter excluded EVERY configured server. If it named one that is
+        # configured and that server still did not come up, the run really did fail and
+        # keeps its warning and its retry.
+        if not ({str(entry.get("name") or "") for entry in entries} & set(allowed)):
             return True
     return False
 

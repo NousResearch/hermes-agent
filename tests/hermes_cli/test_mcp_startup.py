@@ -531,3 +531,40 @@ def test_configured_only_run_still_logs_zero_connected(monkeypatch):
 
     assert calls["mcp"] == 1
     assert any("zero connected" in w for w in warnings)
+
+
+def _status(*names):
+    return [{"name": n, "connected": False, "status": "configured"} for n in names]
+
+
+def test_a_toolsets_filter_that_excludes_every_server_is_not_a_failed_run(_reset_mcp_server_filter):
+    """`hermes -t terminal` with MCP servers configured: discovery intentionally spawns nothing
+    and every server still reports `configured`. That is the filter doing its job — warning and
+    retrying on it re-ran discovery on every call (#100648 review, @andrexibiza)."""
+    from hermes_cli.mcp_startup import _discovery_registered_servers, set_mcp_server_filter
+
+    assert _discovery_registered_servers(_status("linear", "mem0")) is False  # no filter: a real miss
+    set_mcp_server_filter("terminal")
+    assert _discovery_registered_servers(_status("linear", "mem0")) is True
+
+
+def test_a_filter_naming_a_configured_server_still_reports_a_failed_run(_reset_mcp_server_filter):
+    """The filter asked for a server that IS configured and it did not come up: still a failure."""
+    from hermes_cli.mcp_startup import _discovery_registered_servers, set_mcp_server_filter
+
+    set_mcp_server_filter("terminal,linear")
+    assert _discovery_registered_servers(_status("linear", "mem0")) is False
+
+
+def test_a_filtered_out_run_neither_warns_nor_retries(monkeypatch, caplog, _reset_mcp_server_filter):
+    """End to end through the two consumers: no zero-connected warning, no re-entry."""
+    import logging
+
+    from hermes_cli import mcp_startup
+
+    mcp_startup.set_mcp_server_filter("terminal")
+    monkeypatch.setattr("tools.mcp_tool_discovery.get_mcp_status", lambda *a, **k: _status("linear"))
+
+    with caplog.at_level(logging.WARNING):
+        assert mcp_startup._any_mcp_connected() is True
+    assert "zero connected servers" not in caplog.text

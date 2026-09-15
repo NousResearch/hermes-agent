@@ -165,25 +165,25 @@ def _hook_uses_callback_timeout(hook_name: str, timeout: float) -> bool:
 
 class PluginDispatchMixin:
     @staticmethod
-    def _invoke_hook_callback(callback: Callable, payload: Dict[str, Any]) -> Any:
-        """Invoke a hook while withholding additive fields from narrow legacy callbacks.
-
-        An ``async def`` callback returns a coroutine; resolve it the way plugin slash commands
-        are (loop-safe), otherwise the bare coroutine object is appended to the results and the
-        plugin's body never runs (#12449).
-        """
-        from hermes_cli.plugins import resolve_plugin_command_result
+    def _call_hook_callback(callback: Callable, payload: Dict[str, Any]) -> Any:
+        """Call a hook while withholding additive fields from narrow legacy callbacks."""
         try:
             parameters = inspect.signature(callback).parameters
         except (TypeError, ValueError):
-            return resolve_plugin_command_result(callback(**payload))  # no introspectable signature
+            return callback(**payload)  # no introspectable signature
         if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
-            return resolve_plugin_command_result(callback(**payload))
+            return callback(**payload)
         keyword_kinds = {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
-        return resolve_plugin_command_result(callback(**{
+        return callback(**{
             name: value for name, value in payload.items()
             if name in parameters and parameters[name].kind in keyword_kinds
-        }))
+        })
+
+    @staticmethod
+    def _invoke_hook_callback(callback: Callable, payload: Dict[str, Any]) -> Any:
+        """Invoke a hook and resolve async callbacks for synchronous dispatch surfaces."""
+        from hermes_cli.plugins import resolve_plugin_command_result
+        return resolve_plugin_command_result(PluginDispatchMixin._call_hook_callback(callback, payload))
 
     def invoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
         """Call all callbacks for *hook_name*; return their non-``None`` results.
@@ -215,6 +215,28 @@ class PluginDispatchMixin:
                     ret = self._invoke_hook_callback(cb, kwargs)
                 if ret is not None:
                     results.append(ret)
+            except Exception as exc:
+                logger.warning(
+                    "Hook '%s' callback %s raised: %s", hook_name, getattr(cb, "__name__", repr(cb)), exc)
+        return results
+
+    async def invoke_hook_async(self, hook_name: str, **kwargs: Any) -> List[Any]:
+        """Await callbacks in order on the caller loop, preserving narrow signatures.
+
+        For async policy gates such as pre_gateway_dispatch: completion or an
+        exception must precede dispatch; no worker-thread timeout is introduced.
+        The synchronous dispatcher's bounded-hook policy is unchanged.
+        """
+        if hook_name != "gateway_platform_event":
+            kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
+        results: List[Any] = []
+        for cb in self._hooks.get(hook_name, []):
+            try:
+                result = self._call_hook_callback(cb, kwargs)
+                if inspect.isawaitable(result):
+                    result = await result
+                if result is not None:
+                    results.append(result)
             except Exception as exc:
                 logger.warning(
                     "Hook '%s' callback %s raised: %s", hook_name, getattr(cb, "__name__", repr(cb)), exc)

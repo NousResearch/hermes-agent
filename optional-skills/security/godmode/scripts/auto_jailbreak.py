@@ -52,6 +52,13 @@ if _parseltongue_path.exists():
     exec(compile(open(_parseltongue_path).read(), str(_parseltongue_path), 'exec'), _caller_globals)
 if _race_path.exists():
     exec(compile(open(_race_path).read(), str(_race_path), 'exec'), _caller_globals)
+# The two exec'd scripts provide these; bind them explicitly so a missing script fails here, at
+# import, with a clear message instead of a NameError deep inside a run.
+try:
+    escalate_encoding = _caller_globals["escalate_encoding"]  # parseltongue.py
+    score_response = _caller_globals["score_response"]  # godmode_race.py
+except KeyError as _missing:
+    raise ImportError(f"auto_jailbreak needs {_missing.args[0]} from parseltongue.py / godmode_race.py next to it") from None
 
 # ═══════════════════════════════════════════════════════════════════
 # Hermes config paths

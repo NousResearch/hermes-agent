@@ -74,7 +74,32 @@ _LARK_SDK_IMPORTS = (
     ("lark_oapi.event.dispatcher_handler", ("EventDispatcherHandler",)),
 )
 lark = FeishuWSClient = None  # type: ignore[assignment]
-globals().update({name: None for _, names in _LARK_SDK_IMPORTS for name in names})
+# One explicit slot per SDK name (kept in step with _LARK_SDK_IMPORTS) so the names resolve lexically
+# for readers and linters; _load_lark_oapi fills them in.
+GetApplicationRequest = None  # type: ignore[assignment]
+CreateFileRequest = None  # type: ignore[assignment]
+CreateFileRequestBody = None  # type: ignore[assignment]
+CreateImageRequest = None  # type: ignore[assignment]
+CreateImageRequestBody = None  # type: ignore[assignment]
+CreateMessageRequest = None  # type: ignore[assignment]
+CreateMessageRequestBody = None  # type: ignore[assignment]
+GetChatRequest = None  # type: ignore[assignment]
+GetMessageRequest = None  # type: ignore[assignment]
+GetMessageResourceRequest = None  # type: ignore[assignment]
+P2ImMessageMessageReadV1 = None  # type: ignore[assignment]
+ReplyMessageRequest = None  # type: ignore[assignment]
+ReplyMessageRequestBody = None  # type: ignore[assignment]
+UpdateMessageRequest = None  # type: ignore[assignment]
+UpdateMessageRequestBody = None  # type: ignore[assignment]
+AccessTokenType = None  # type: ignore[assignment]
+HttpMethod = None  # type: ignore[assignment]
+FEISHU_DOMAIN = None  # type: ignore[assignment]
+LARK_DOMAIN = None  # type: ignore[assignment]
+BaseRequest = None  # type: ignore[assignment]
+CallBackCard = None  # type: ignore[assignment]
+P2CardActionTriggerResponse = None  # type: ignore[assignment]
+EventDispatcherHandler = None  # type: ignore[assignment]
+assert all(n in globals() for _, ns in _LARK_SDK_IMPORTS for n in ns), "_LARK_SDK_IMPORTS gained a name without a module slot"
 FEISHU_AVAILABLE = False
 _lark_import_lock = threading.Lock()
 

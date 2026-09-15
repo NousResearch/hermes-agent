@@ -9,6 +9,7 @@ caching, keyless rescue, and the truncate-and-store result pipeline.
 Debug: ``WEB_TOOLS_DEBUG=true`` writes ``logs/web_tools_debug_<UUID>.json``.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -26,6 +27,7 @@ from tools.web_tools_extract import (
     _extract_safe_urls, _merge_in_order, _no_provider_error, _resolve_extract_provider, _result_entry,
     _strict_selection_error, _validate_extract_urls,
 )
+from tools.web_tools_routing import SpecialRouteBlocked, SpecialRouteUnavailable, extract_special_url
 
 logger = logging.getLogger(__name__)
 
@@ -371,19 +373,37 @@ async def web_extract_tool(urls: List[Any], format: str = None, char_limit: Opti
                     url, "Blocked: URL targets a private or internal network address"
                 )
 
+        routed_results: dict[int, dict[str, Any]] = {}
+        provider_urls: list[str] = []
+        provider_indices: list[int] = []
+        for index, url in zip(safe_indices, safe_urls):
+            try:
+                routed = await asyncio.to_thread(extract_special_url, url, format=format)
+            except SpecialRouteBlocked as exc:
+                routed_results[index] = _result_entry(exc.url, exc.message)
+                continue
+            except SpecialRouteUnavailable:
+                provider_urls.append(url)
+                provider_indices.append(index)
+                continue
+            if routed is None:
+                provider_urls.append(url)
+                provider_indices.append(index)
+            else:
+                routed_results[index] = routed
+
         results = []
-        if safe_urls:
+        if provider_urls:
             backend = _get_extract_backend()
             _ensure_web_plugins_loaded()
             provider, error_json = _resolve_extract_provider(backend)
             if error_json is not None:
                 return error_json
-            results = await _extract_safe_urls(provider, safe_urls, format)
-        # Reconstruct input order across invalid, blocked, and provider entries (providers preserve
-        # the order of the safe URL list they receive).
-        if invalid_urls or ssrf_blocked:
-            fixed = {**ssrf_blocked, **invalid_urls}
-            results = _merge_in_order(len(urls), fixed, safe_indices, safe_urls, results)
+            results = await _extract_safe_urls(provider, provider_urls, format)
+        # Reconstruct input order across invalid, blocked, routed, and provider entries.
+        if invalid_urls or ssrf_blocked or routed_results:
+            fixed = {**ssrf_blocked, **invalid_urls, **routed_results}
+            results = _merge_in_order(len(urls), fixed, provider_indices, provider_urls, results)
 
         logger.info("Extracted content from %d pages", len(results))
         debug_call_data["pages_extracted"] = len(results)
@@ -446,6 +466,15 @@ def check_web_api_key() -> bool:
         return False
 
 
+def check_web_extract_available() -> bool:
+    """Keep ``web_extract`` registered for public direct routes without a configured vendor.
+
+    The handler still emits the normal provider-selection error for ordinary URLs when no extract
+    backend is available. GitHub file and X status routes are self-contained and can succeed without one.
+    """
+    return True
+
+
 # ─── Registry ─────────────────────────────────────────────────────────────────
 from tools.registry import registry, tool_error
 
@@ -505,7 +534,7 @@ registry.register(
         args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown",
         char_limit=args.get("char_limit"),
     ),
-    check_fn=check_web_api_key, requires_env=_web_requires_env(), is_async=True, emoji="📄",
+    check_fn=check_web_extract_available, requires_env=_web_requires_env(), is_async=True, emoji="📄",
     max_result_size_chars=100_000,
 )
 

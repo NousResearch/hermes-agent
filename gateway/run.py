@@ -311,6 +311,38 @@ def _record_hygiene_cooldown(
         logger.debug("session hygiene cooldown persist failed: %s", exc)
 
 
+def _cooldown_is_active(
+    gateway,
+    session_id: str,
+) -> Optional[bool]:
+    """Return True if a compression-failure cooldown is active for session_id,
+    False if not, None if the check could not be performed (fail-open).
+
+    Fail-open is intentional: suppression is an optimisation that must never
+    prevent the user-facing notice from being sent if the check is unavailable.
+    """
+    _session_db = getattr(gateway, "_session_db", None)
+    if _session_db is None:
+        return None
+    _session_db = getattr(_session_db, "_db", _session_db)
+    _getter = getattr(_session_db, "get_compression_failure_cooldown", None)
+    if _getter is None:
+        return None
+    try:
+        _cd = _getter(session_id)
+        if _cd and _cd.get("remaining_seconds", 0) > 0:
+            logger.debug(
+                "compression-failure cooldown active for session %s (%.1fs remaining)",
+                session_id,
+                _cd["remaining_seconds"],
+            )
+            return True
+        return False
+    except Exception as _cd_err:
+        logger.debug("compression-failure cooldown check failed for %s: %s", session_id, _cd_err)
+        return None
+
+
 def _status_template_to_regex(template: str) -> str:
     """Compile a compression status template constant into a regex source.
 

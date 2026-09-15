@@ -2667,6 +2667,17 @@ class TestAuxiliaryTaskExtraBody:
         assert not any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
             "Should NOT warn when provider is 'custom'"
 
+    def test_bare_custom_auth_error_does_not_fall_back_to_env_base_url(self, monkeypatch):
+        """Bare 'custom' with nothing configured: the main resolver raises AuthError; aux must
+        return no endpoint rather than route to a stale env OPENAI_BASE_URL with a placeholder key."""
+        from hermes_cli.auth import AuthError
+        from agent.auxiliary_client import _resolve_custom_runtime
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://old-proxy.example/v1")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   side_effect=AuthError("no creds", provider="custom", code="missing_api_key")):
+            assert _resolve_custom_runtime() == (None, None, None)
+
 
 
 # ---------------------------------------------------------------------------

@@ -42,6 +42,12 @@ _SET_COUNTERS_SQL = "UPDATE sessions SET message_count = ?, tool_call_count = ?"
 _RESET_COUNTERS_SQL = "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?"
 _SET_DISPLAY_META_SQL = "UPDATE messages SET display_metadata = ? WHERE id = ?"
 _ARCHIVE_ACTIVE_SQL = "UPDATE messages SET active = 0, compacted = 1 WHERE session_id = ? AND active = 1"
+# Idempotent-write probe (#111996): ACTIVE rows of this session carrying the same display
+# identity. display_identity omits platform_message_id, so differing non-null platform ids
+# must never match (two same-text gateway events in the same second are distinct).
+_ACTIVE_DISPLAY_IDENTITY_SQL = (
+    "SELECT id, platform_message_id FROM messages WHERE session_id = ? AND active = 1 AND display_identity = ? "
+    "ORDER BY id DESC")
 _INVALID = object()  # _json_or sentinel where the fallback must be distinguishable from JSON null
 
 
@@ -476,17 +482,64 @@ class SessionMessagesMixin:
 
     def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
         """Insert *messages* as fresh active rows in the caller's txn -> ``(inserted, tool_call_count)``.
-        Never touches sessions.* counters (callers reconcile differently); reasoning kept for assistant rows."""
+        Never touches sessions.* counters (callers reconcile differently); reasoning kept for assistant rows.
+
+        Idempotent on logical identity (#111996): a message whose row is ALREADY active in this session
+        is reconciled with that row (``_row_id`` stamped on the dict, no second row) instead of being
+        appended as a physical copy. Repair and compaction re-materialize the transcript — merged or
+        superseded repair dicts, marker-swept compaction assembly, a reload that lost identity — and
+        with no guard here each pass re-INSERTed the whole block: one assistant row ended up as N
+        copies sharing a ``display_identity`` (6 live in the report) and a single failed compaction
+        grew the session by an entire duplicate generation. Only ACTIVE rows match, so the designed
+        re-inserts (``archive_and_compact`` archives first, ``replace_messages`` deletes first, the
+        rewind replacement inserts after archiving its targets) still land normally.
+        """
         now_ts = time.time()
         inserted = tool_calls_total = 0
+        # Repair-merged survivors name the ACTIVE rows they replace (#112044 P1): archive them in
+        # this same txn so a fused re-insert never stacks on top of its predecessors (3 -> 4).
+        superseded: set = set()
+        for msg in messages:
+            for rid in (msg.get("_superseded_row_ids") or ()):
+                if isinstance(rid, bool) or not isinstance(rid, int) or rid <= 0:
+                    continue
+                superseded.add(rid)
+            msg.pop("_superseded_row_ids", None)
+        if superseded:
+            conn.execute(
+                f"UPDATE messages SET active = 0 WHERE session_id = ? AND active = 1 AND id IN "
+                f"({','.join('?' * len(superseded))})",
+                (session_id, *sorted(superseded)))
+        # Rows written by THIS call: same-batch copies (branch seeds) must not match each other —
+        # only rows that pre-date the batch prove a re-materialized duplicate (#112044 P1).
+        inserted_ids: set = set()
         for msg in messages:
             role = msg.get("role", "unknown")
             tool_calls = _parse_tool_calls(msg.get("tool_calls"))
             message_timestamp = _coerce_timestamp(msg.get("timestamp"), now_ts)
-            cur = conn.execute(_INSERT_MESSAGE_SQL, self._message_row_params(
-                session_id, role, msg, tool_calls, message_timestamp, keep_reasoning=role == "assistant"))
+            params = self._message_row_params(
+                session_id, role, msg, tool_calls, message_timestamp, keep_reasoning=role == "assistant")
+            existing = conn.execute(_ACTIVE_DISPLAY_IDENTITY_SQL, (session_id, params[-1])).fetchall() \
+                if params[-1] is not None else []
+            if existing and inserted_ids:
+                existing = [row for row in existing if int(row[0]) not in inserted_ids]
+            incoming_pid = msg.get("platform_message_id") or msg.get("message_id") or None
+            match_id = None
+            if existing:
+                if incoming_pid is not None:
+                    for row in existing:
+                        if (row[1] or None) == incoming_pid:
+                            match_id = int(row[0])
+                            break
+                else:
+                    match_id = int(existing[0][0])
+            if match_id is not None:
+                msg["_row_id"] = match_id
+                continue
+            cur = conn.execute(_INSERT_MESSAGE_SQL, params)
             if cur.lastrowid is not None:
                 msg["_row_id"] = cur.lastrowid
+                inserted_ids.add(int(cur.lastrowid))
             inserted += 1
             tool_calls_total += _tool_calls_count(tool_calls)
             now_ts = max(now_ts, message_timestamp) + 1e-6

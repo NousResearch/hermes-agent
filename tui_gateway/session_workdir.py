@@ -299,9 +299,12 @@ def _workdir_reraise_disk_full(exc: BaseException, log_msg: str) -> None:
 
 # Seed row fields copied from the parent transcript. display_kind/metadata: timeline markers ride as role=user;
 # dropping the tag re-plants them as bare user turns after a restart and corrupts the truncate ordinal address space.
+# platform_message_id/message_id: durable identity survives the copy so the batch writer never collapses
+# distinct same-text gateway events (#112044 P1).
 _WORKDIR_SEED_FIELDS = (
     "content", "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items",
-    "codex_message_items", "display_kind", "display_metadata", "timestamp")
+    "codex_message_items", "display_kind", "display_metadata", "timestamp",
+    "platform_message_id", "message_id")
 
 
 def _persist_branch_seed(session: dict) -> None:

@@ -1952,6 +1952,9 @@ _BRANCH_COPY_FIELDS = (
     # Timeline markers ride as role=user; untagged they become bare user turns after a restart, corrupting
     # the truncate ordinal address space.
     "display_kind", "display_metadata",
+    # Durable identity survives the copy: same-text gateway events in the same second are distinct
+    # rows, and the batch writer must not collapse them (#112044 P1).
+    "platform_message_id", "message_id",
     # Branch copies are history, not new activity: keep the parent's timestamps.
     "timestamp")
 

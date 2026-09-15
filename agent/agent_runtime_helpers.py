@@ -423,6 +423,23 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
         drop_stale_api_content(prev)
 
 
+def _record_repair_superseded(prev: Dict, msg: Dict) -> None:
+    """A repair merge replaces durable rows with one fused dict: name every replaced row id on the
+    survivor (the batch writer archives them in the same txn) and pop its persisted marker — the
+    fused content is NOT what the old rows store, so a flush must re-persist it, not skip it.
+    No ids (both dicts fresh) -> nothing recorded, marker kept: today's behavior, unchanged."""
+    ids = set(prev.get("_superseded_row_ids") or ())
+    for candidate in (prev, msg):
+        rid = candidate.get("_row_id")
+        if isinstance(rid, bool) or not isinstance(rid, int) or rid <= 0:
+            continue
+        ids.add(rid)
+    if ids:
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+        prev["_superseded_row_ids"] = sorted(ids)
+        prev.pop(_DB_PERSISTED_MARKER, None)
+
+
 def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int]:
     """Pass 0: merge consecutive assistant turns (codex interims exempt)."""
     repairs = 0
@@ -436,8 +453,10 @@ def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int
         ):
             # A provisional verification candidate is superseded, not unioned.
             if prev.get("finish_reason") in {"verification_required", "verify_hook_continue"}:
+                _record_repair_superseded(msg, prev)
                 collapsed[-1] = msg
             else:
+                _record_repair_superseded(prev, msg)
                 _merge_assistant_into(prev, msg)
             repairs += 1
             continue
@@ -542,6 +561,7 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             and isinstance(prev.get("content", ""), str) and isinstance(msg.get("content", ""), str)
         ):
             prev_content, new_content = prev.get("content", ""), msg.get("content", "")
+            _record_repair_superseded(prev, msg)
             prev["content"] = (
                 (prev_content + "\n\n" + new_content) if prev_content and new_content else (prev_content or new_content)
             )

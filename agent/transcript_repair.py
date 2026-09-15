@@ -36,7 +36,13 @@ def resolve_and_repair_transcript_batch(
     for msg in messages:
         existing_row_id = msg.get("_row_id") if isinstance(msg, dict) else None
         target_row = None
-        if isinstance(existing_row_id, int) and msg.get("role", "unknown") == "assistant":
+        # A repair-merged survivor replaces its own target row — it is not a concurrent winner,
+        # so skip the blank-update/adopt path and let it insert fresh (predecessors are archived
+        # in the same txn by the batch writer).
+        superseded = msg.get("_superseded_row_ids") if isinstance(msg, dict) else None
+        if (isinstance(existing_row_id, int) and not isinstance(existing_row_id, bool)
+                and msg.get("role", "unknown") == "assistant"
+                and existing_row_id not in (superseded or ())):
             target_row = _active_assistant_row(conn, session_id, existing_row_id)
         if target_row is None:
             inserted_rows.append(msg)

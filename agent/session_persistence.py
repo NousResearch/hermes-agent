@@ -178,10 +178,15 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
         "_compressed_summary": bool(msg.get(COMPRESSED_SUMMARY_METADATA_KEY)),
         "timestamp": timestamp, "api_content": api_content,
         "display_kind": _summary_display_kind(msg), "display_metadata": msg.get("display_metadata"),
-        "platform_message_id": msg.get("platform_message_id"),  # load-bearing for restart drain-window recovery dedup
+        "platform_message_id": msg.get("platform_message_id") or msg.get("message_id"),
     }
-    if isinstance(msg.get("_row_id"), int):
+    if isinstance(msg.get("_row_id"), int) and not isinstance(msg.get("_row_id"), bool):
         row["_row_id"] = msg["_row_id"]
+    # A repair-merged survivor's replaced rows ride to the batch writer (archived in the same txn).
+    superseded = msg.get("_superseded_row_ids")
+    if isinstance(superseded, (list, tuple)) and superseded:
+        row["_superseded_row_ids"] = [
+            rid for rid in superseded if isinstance(rid, int) and not isinstance(rid, bool) and rid > 0]
     return row
 
 

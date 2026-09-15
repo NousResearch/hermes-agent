@@ -138,6 +138,7 @@ class LlamaServerSupervisor:
         self._watchdog: threading.Thread | None = None
         self._log_handle = None
         self._idle_since: dict[str, float] = {}
+        self._idle_probe_failed_since: dict[str, float] = {}
 
     # ── endpoints ────────────────────────────────────────────
 
@@ -383,15 +384,31 @@ class LlamaServerSupervisor:
         except Exception:  # noqa: BLE001
             return unloaded
         for model_id, status in statuses.items():
-            if status not in _RESIDENT or not self.is_idle(model_id):
+            if status not in _RESIDENT:
                 self._idle_since.pop(model_id, None)
+                self._idle_probe_failed_since.pop(model_id, None)
                 continue
+            idle = self._probe_idle(model_id)
+            if idle is None:
+                if model_id in self._idle_since:
+                    self._idle_probe_failed_since.setdefault(model_id, now)
+                logger.info(
+                    "idle probe failed for %s; pausing prior idle clock", model_id)
+                continue
+            if not idle:
+                self._idle_since.pop(model_id, None)
+                self._idle_probe_failed_since.pop(model_id, None)
+                continue
+            probe_failed_since = self._idle_probe_failed_since.pop(model_id, None)
+            if probe_failed_since is not None and model_id in self._idle_since:
+                self._idle_since[model_id] += now - probe_failed_since
             first_idle = self._idle_since.setdefault(model_id, now)
             if now - first_idle < self.IDLE_UNLOAD_S:
                 continue
             try:
                 self.unload_model(model_id)
                 self._idle_since.pop(model_id, None)
+                self._idle_probe_failed_since.pop(model_id, None)
                 unloaded.append(model_id)
                 logger.info("idle-unloaded %s (idle %ds)", model_id, int(now - first_idle))
             except Exception as exc:  # noqa: BLE001
@@ -427,6 +444,10 @@ class LlamaServerSupervisor:
         """No processing requests and no busy slots. Router quirk: /slots and /metrics are
         per-child and require ?model= (bare calls 400). With ``model_id`` checks that one child;
         without, every loaded child."""
+        return self._probe_idle(model_id) is True
+
+    def _probe_idle(self, model_id: str | None = None) -> bool | None:
+        """Return confirmed idle/busy, or ``None`` when telemetry could not be read."""
         try:
             loaded = ([model_id] if model_id is not None
                       else [m for m, status in self.models().items() if status in _RESIDENT])
@@ -442,4 +463,4 @@ class LlamaServerSupervisor:
                         return False
             return True
         except Exception:  # noqa: BLE001
-            return False
+            return None

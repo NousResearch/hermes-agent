@@ -1427,6 +1427,13 @@ DEFAULT_CONFIG = {
         # Env: SLACK_IGNORE_OTHER_USER_MENTIONS.
         "ignore_other_user_mentions": False,
         "thread_require_mention": False,  # require @mention in thread replies too
+        "missed_message_backfill": {
+            "enabled": False,
+            "channels": [],
+            "window_seconds": 21600,
+            "limit": 100,
+            "max_dispatches": 10,
+        },
         "channel_prompts": {},  # per-channel ephemeral system prompts
     },
 

@@ -854,6 +854,27 @@ Behavior:
 
 See also: [admin/user slash command split](../../reference/slash-commands.md#permissions-and-adminuser-split).
 
+### Missed-message recovery
+
+Slack Socket Mode does not replay messages posted while Hermes is offline. Enable a bounded
+history scan for channels where missing an explicit mention is unacceptable:
+
+```yaml
+slack:
+  missed_message_backfill:
+    enabled: true
+    channels: ["C0123456789"]
+    window_seconds: 3600
+    limit: 100
+    max_dispatches: 10
+```
+
+Recovered messages pass through the same authorization, bot-message, channel, mention, and
+deduplication gates as live events. Hermes also checks for an existing thread reply and keeps a
+profile-scoped completion ledger under `gateway/slack_message_recovery.db`, so handled messages
+are not replayed after later restarts. Recovery is disabled by default and an empty channel list
+scans nothing.
+
 ### Unauthorized User Handling
 
 ```yaml
@@ -893,6 +914,9 @@ stt_enabled: true
 slack:
   require_mention: true
   unauthorized_dm_behavior: "pair"
+  missed_message_backfill:
+    enabled: false
+    channels: []
 
 # Platform config
 platforms:

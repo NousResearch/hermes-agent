@@ -30,7 +30,7 @@ from gateway.platforms.base import (
     SendResult,
     is_host_excluded_by_no_proxy,
 )
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +97,7 @@ import plugins.platforms.slack.adapter as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
 
 from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.recovery import SlackRecoveryStore  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -214,6 +215,100 @@ def adapter():
     # Capture events instead of processing them
     a.handle_message = AsyncMock()
     return a
+
+
+def _recovery_adapter(tmp_path):
+    config = PlatformConfig(
+        enabled=True,
+        token="***",
+        extra={
+            "missed_message_backfill": {
+                "enabled": True,
+                "channels": ["C_ALERTS"],
+                "window_seconds": 3600,
+                "limit": 20,
+                "max_dispatches": 5,
+            }
+        },
+    )
+    recovered = SlackAdapter(config)
+    recovered._slack_recovery_store = SlackRecoveryStore(tmp_path)
+    recovered._team_clients = {"T_OPMED": AsyncMock()}
+    recovered._team_bot_user_ids = {"T_OPMED": "U_HERMES"}
+    recovered._bot_user_id = "U_HERMES"
+    return recovered
+
+
+@pytest.mark.asyncio
+async def test_missed_slack_message_is_replayed_once_after_restart(tmp_path):
+    message_ts = f"{time.time():.6f}"
+    message = {
+        "type": "message",
+        "subtype": "bot_message",
+        "user": "U_GRAFANA",
+        "bot_id": "B_GRAFANA",
+        "text": "<@U_HERMES> firing alert",
+        "ts": message_ts,
+    }
+
+    first = _recovery_adapter(tmp_path)
+    first._team_clients["T_OPMED"].conversations_history.return_value = {
+        "ok": True, "messages": [message], "response_metadata": {"next_cursor": ""}}
+    admitted = MessageEvent(
+        text="firing alert",
+        source=SimpleNamespace(scope_id="T_OPMED", chat_id="C_ALERTS"),
+        message_id=message["ts"],
+    )
+    admitted._gateway_accepted = True
+    first._handle_slack_message = AsyncMock(return_value=admitted)
+
+    await first._run_missed_message_backfill()
+
+    first._handle_slack_message.assert_awaited_once()
+    replayed_event, replayed_payload = first._handle_slack_message.await_args.args
+    assert replayed_event["_hermes_recovered"] is True
+    assert replayed_event["_hermes_recovery_claimed"] is True
+    assert replayed_event["channel"] == "C_ALERTS"
+    assert replayed_payload == {"team_id": "T_OPMED"}
+    await first.on_processing_complete(admitted, ProcessingOutcome.SUCCESS)
+
+    restarted = _recovery_adapter(tmp_path)
+    restarted._team_clients["T_OPMED"].conversations_history.return_value = {
+        "ok": True, "messages": [message], "response_metadata": {"next_cursor": ""}}
+    restarted._handle_slack_message = AsyncMock(return_value=admitted)
+
+    await restarted._run_missed_message_backfill()
+
+    restarted._handle_slack_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_missed_slack_message_with_existing_reply_is_not_replayed(tmp_path):
+    message_ts = f"{time.time():.6f}"
+    message = {
+        "type": "message",
+        "user": "U_GRAFANA",
+        "text": "<@U_HERMES> firing alert",
+        "ts": message_ts,
+        "reply_count": 1,
+    }
+
+    recovered = _recovery_adapter(tmp_path)
+    client = recovered._team_clients["T_OPMED"]
+    client.conversations_history.return_value = {
+        "ok": True, "messages": [message], "response_metadata": {"next_cursor": ""}}
+    client.conversations_replies.return_value = {
+        "ok": True,
+        "messages": [message, {"user": "U_HERMES", "ts": f"{time.time() + 1:.6f}"}],
+    }
+    recovered._dispatch_recovered_slack_message = AsyncMock()
+
+    await recovered._run_missed_message_backfill()
+
+    recovered._dispatch_recovered_slack_message.assert_not_awaited()
+    assert recovered._slack_message_is_persistently_complete(
+        "T_OPMED", "C_ALERTS", message["ts"])
+    assert recovered._slack_recovery_cursor("T_OPMED", "C_ALERTS") == message["ts"]
 
 
 @pytest.fixture(autouse=True)

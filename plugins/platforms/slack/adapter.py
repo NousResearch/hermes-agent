@@ -2,6 +2,7 @@
 
 import asyncio
 import contextvars
+import datetime as dt
 import functools
 import inspect
 import json
@@ -1105,6 +1106,10 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_handler_started_monotonic: Optional[float] = None
+        self._missed_message_backfill_task: Optional[asyncio.Task] = None
+        from hermes_constants import get_hermes_home
+        from plugins.platforms.slack.recovery import SlackRecoveryStore
+        self._slack_recovery_store = SlackRecoveryStore(get_hermes_home())
 
     async def _close_workspace_clients(self) -> None:
         """Close any Slack SDK clients that may own aiohttp sessions."""
@@ -1287,9 +1292,12 @@ class SlackAdapter(BasePlatformAdapter):
             if not self._running or not self._app or not self._app_token:
                 return
             logger.warning("[Slack] Socket Mode unhealthy (%s); reconnecting", reason)
+            await self._cancel_missed_message_backfill_task()
             await self._stop_socket_mode_handler()
             try:
                 self._start_socket_mode_handler()
+                if self._missed_message_backfill_enabled():
+                    self._ensure_missed_message_backfill_task()
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.error("[Slack] Socket Mode reconnect failed: %s", exc, exc_info=True)
 
@@ -1357,6 +1365,352 @@ class SlackAdapter(BasePlatformAdapter):
             task = asyncio.create_task(self._socket_watchdog_loop())
             self._socket_watchdog_task = task
             task.add_done_callback(self._on_socket_watchdog_done)
+
+    def _missed_message_backfill_config(self) -> Dict[str, Any]:
+        configured = self.config.extra.get("missed_message_backfill")
+        return configured if isinstance(configured, dict) else {}
+
+    def _missed_message_backfill_enabled(self) -> bool:
+        value = self._missed_message_backfill_config().get("enabled", False)
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1", "yes", "on"}
+        return bool(value)
+
+    def _missed_message_backfill_channels(self) -> set[str]:
+        raw = self._missed_message_backfill_config().get("channels", [])
+        if isinstance(raw, list):
+            return {str(item).strip() for item in raw if str(item).strip()}
+        return {item.strip() for item in str(raw or "").split(",") if item.strip()}
+
+    def _missed_message_backfill_number(
+        self, key: str, default: Any, cast: Callable, lower: Any, upper: Any = None,
+    ) -> Any:
+        raw = self._missed_message_backfill_config().get(key, default)
+        try:
+            value = cast(raw)
+        except (TypeError, ValueError):
+            value = cast(default)
+        return max(lower, value) if upper is None else max(lower, min(value, upper))
+
+    def _missed_message_backfill_window_seconds(self) -> float:
+        return self._missed_message_backfill_number("window_seconds", 21600, float, 60.0)
+
+    def _missed_message_backfill_limit(self) -> int:
+        return self._missed_message_backfill_number("limit", 100, int, 1, 500)
+
+    def _missed_message_backfill_max_dispatches(self) -> int:
+        return self._missed_message_backfill_number("max_dispatches", 10, int, 1, 100)
+
+    def _ensure_missed_message_backfill_task(self) -> asyncio.Task:
+        task = self._missed_message_backfill_task
+        if task is not None and not task.done():
+            return task
+        task = asyncio.create_task(self._run_missed_message_backfill())
+        self._missed_message_backfill_task = task
+        runner = getattr(self, "gateway_runner", None)
+        if runner is not None and getattr(runner, "_startup_restore_in_progress", False):
+            tasks = getattr(runner, "_startup_restore_tasks", None)
+            if tasks is None:
+                tasks = []
+                runner._startup_restore_tasks = tasks
+            tasks.append(task)
+        return task
+
+    async def _cancel_missed_message_backfill_task(self) -> None:
+        task = self._missed_message_backfill_task
+        self._missed_message_backfill_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    def _with_slack_recovery_db(self, fn, default=None):
+        return self._slack_recovery_store.call(fn, default)
+
+    async def _with_slack_recovery_db_async(self, fn, default=None):
+        return await asyncio.to_thread(self._slack_recovery_store.call, fn, default)
+
+    @staticmethod
+    def _slack_recovery_now() -> str:
+        return dt.datetime.now(dt.timezone.utc).isoformat()
+
+    def _record_slack_recovery_state(
+        self, team_id: str, channel_id: str, message_ts: str, status: str, *,
+        attempt: bool = False, error: Optional[str] = None,
+    ) -> None:
+        if not self._missed_message_backfill_enabled() or not message_ts:
+            return
+        channels = self._missed_message_backfill_channels()
+        if channel_id not in channels:
+            return
+        now = self._slack_recovery_now()
+
+        def _op(conn):
+            existing = conn.execute(
+                "SELECT status FROM slack_messages WHERE team_id=? AND channel_id=? AND message_ts=?",
+                (team_id, channel_id, message_ts),
+            ).fetchone()
+            final_status = "responded" if status == "responded" else (
+                existing[0] if existing and existing[0] == "responded" else status)
+            conn.execute(
+                """
+                INSERT INTO slack_messages
+                    (team_id, channel_id, message_ts, status, attempts, last_attempt_at,
+                     last_error, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(team_id, channel_id, message_ts) DO UPDATE SET
+                    status=excluded.status,
+                    attempts=slack_messages.attempts + excluded.attempts,
+                    last_attempt_at=COALESCE(excluded.last_attempt_at, slack_messages.last_attempt_at),
+                    last_error=excluded.last_error,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    team_id, channel_id, message_ts, final_status, 1 if attempt else 0,
+                    now if attempt else None, error, now,
+                ),
+            )
+
+        self._with_slack_recovery_db(_op)
+
+    def _record_slack_event_recovery_state(self, event: MessageEvent, status: str) -> None:
+        source = getattr(event, "source", None)
+        team_id = str(getattr(source, "scope_id", "") or "")
+        channel_id = str(getattr(source, "chat_id", "") or "")
+        message_ts = str(getattr(event, "ledger_message_id", None)
+                         or getattr(event, "message_id", None) or "")
+        self._record_slack_recovery_state(team_id, channel_id, message_ts, status)
+
+    def _slack_message_is_persistently_complete(
+        self, team_id: str, channel_id: str, message_ts: str,
+    ) -> bool:
+        def _op(conn):
+            row = conn.execute(
+                "SELECT status FROM slack_messages WHERE team_id=? AND channel_id=? AND message_ts=?",
+                (team_id, channel_id, message_ts),
+            ).fetchone()
+            return bool(row and row[0] == "responded")
+
+        return bool(self._with_slack_recovery_db(_op, default=False))
+
+    def _slack_message_has_active_claim(
+        self, team_id: str, channel_id: str, message_ts: str,
+    ) -> bool:
+        cutoff = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)).isoformat()
+
+        def _op(conn):
+            row = conn.execute(
+                "SELECT status, updated_at FROM slack_messages "
+                "WHERE team_id=? AND channel_id=? AND message_ts=?",
+                (team_id, channel_id, message_ts),
+            ).fetchone()
+            return bool(row and row[0] in {"queued", "processing"} and row[1] >= cutoff)
+
+        return bool(self._with_slack_recovery_db(_op, default=True))
+
+    def _slack_recovery_cursor(self, team_id: str, channel_id: str) -> Optional[str]:
+        def _op(conn):
+            row = conn.execute(
+                "SELECT last_message_ts FROM slack_recovery_cursors "
+                "WHERE team_id=? AND channel_id=?",
+                (team_id, channel_id),
+            ).fetchone()
+            return str(row[0]) if row else None
+
+        return self._with_slack_recovery_db(_op)
+
+    def _advance_slack_recovery_cursor(
+        self, team_id: str, channel_id: str, message_ts: str,
+    ) -> None:
+        if not message_ts:
+            return
+        now = self._slack_recovery_now()
+
+        def _op(conn):
+            conn.execute(
+                """
+                INSERT INTO slack_recovery_cursors
+                    (team_id, channel_id, last_message_ts, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(team_id, channel_id) DO UPDATE SET
+                    last_message_ts=excluded.last_message_ts,
+                    updated_at=excluded.updated_at
+                WHERE excluded.last_message_ts > slack_recovery_cursors.last_message_ts
+                """,
+                (team_id, channel_id, message_ts, now),
+            )
+
+        self._with_slack_recovery_db(_op)
+
+    async def _iter_slack_recovery_candidates(
+        self, client: Any, team_id: str, channel_id: str, limit: int,
+    ):
+        cursor_ts = self._slack_recovery_cursor(team_id, channel_id)
+        oldest = time.time() - self._missed_message_backfill_window_seconds()
+        if cursor_ts:
+            try:
+                oldest = max(oldest, float(cursor_ts))
+            except ValueError:
+                pass
+        messages: List[dict] = []
+        page_cursor = ""
+        while len(messages) < limit:
+            kwargs = {
+                "channel": channel_id,
+                "oldest": str(oldest),
+                "inclusive": False,
+                "limit": min(200, limit - len(messages)),
+            }
+            if page_cursor:
+                kwargs["cursor"] = page_cursor
+            response = await client.conversations_history(**kwargs)
+            payload = _slack_response_payload(response)
+            page = payload.get("messages") or []
+            messages.extend(message for message in page if isinstance(message, dict))
+            page_cursor = str((payload.get("response_metadata") or {}).get("next_cursor") or "")
+            if not page_cursor or not page:
+                break
+        for message in sorted(
+            messages[:limit], key=lambda item: self._slack_timestamp_sort_key(item.get("ts", "")),
+        ):
+            yield message
+
+    async def _slack_message_has_bot_response(
+        self, client: Any, team_id: str, channel_id: str, message: dict,
+    ) -> bool:
+        message_ts = str(message.get("ts") or "")
+        if not message_ts or not message.get("reply_count"):
+            return False
+        try:
+            response = await client.conversations_replies(
+                channel=channel_id, ts=message_ts, limit=100)
+        except Exception as exc:
+            logger.debug(
+                "[Slack] Cannot inspect replies for recovery candidate %s: %s",
+                message_ts, exc)
+            return False
+        bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id) or ""
+        return any(
+            str(reply.get("ts") or "") != message_ts
+            and str(reply.get("user") or "") == bot_uid
+            for reply in (_slack_response_payload(response).get("messages") or [])
+            if isinstance(reply, dict)
+        )
+
+    async def _dispatch_recovered_slack_message(
+        self, message: dict, team_id: str, channel_id: str,
+    ) -> Optional[MessageEvent]:
+        event = dict(message)
+        event.setdefault("type", "message")
+        event["team"] = team_id
+        event["channel"] = channel_id
+        event["_hermes_recovered"] = True
+        event["_hermes_recovery_claimed"] = True
+        return await self._handle_slack_message(event, {"team_id": team_id})
+
+    async def _run_missed_message_backfill(self) -> None:
+        channels = self._missed_message_backfill_channels()
+        ledger_ok = await self._with_slack_recovery_db_async(
+            lambda conn: conn.execute("SELECT 1").fetchone() is not None, False)
+        if not ledger_ok:
+            logger.error("[Slack] Missed-message recovery aborted: durable ledger unavailable")
+            return
+        if not channels:
+            logger.info("[Slack] Missed-message backfill enabled but no channels configured")
+            return
+        counts = {"scanned": 0, "missed": 0, "dispatched": 0}
+        scan_limit = self._missed_message_backfill_limit()
+        max_dispatches = self._missed_message_backfill_max_dispatches()
+        try:
+            for team_id, client in sorted(self._team_clients.items()):
+                for channel_id in sorted(channels):
+                    cursor_blocked = False
+                    remaining = scan_limit - counts["scanned"]
+                    if remaining <= 0:
+                        break
+                    async for message in self._iter_slack_recovery_candidates(
+                        client, team_id, channel_id, remaining):
+                        counts["scanned"] += 1
+                        message_ts = str(message.get("ts") or "")
+                        if not message_ts:
+                            continue
+                        if self._slack_message_is_persistently_complete(
+                            team_id, channel_id, message_ts):
+                            if not cursor_blocked:
+                                self._advance_slack_recovery_cursor(
+                                    team_id, channel_id, message_ts)
+                            continue
+                        if self._slack_message_has_active_claim(team_id, channel_id, message_ts):
+                            cursor_blocked = True
+                            continue
+                        bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id) or ""
+                        if str(message.get("user") or "") == bot_uid:
+                            self._record_slack_recovery_state(
+                                team_id, channel_id, message_ts, "ignored")
+                            if not cursor_blocked:
+                                self._advance_slack_recovery_cursor(
+                                    team_id, channel_id, message_ts)
+                            continue
+                        if await self._slack_message_has_bot_response(
+                            client, team_id, channel_id, message):
+                            self._record_slack_recovery_state(
+                                team_id, channel_id, message_ts, "responded")
+                            if not cursor_blocked:
+                                self._advance_slack_recovery_cursor(
+                                    team_id, channel_id, message_ts)
+                            continue
+                        event_key = self._workspace_event_id(team_id, message_ts)
+                        if self._dedup.is_duplicate(event_key):
+                            cursor_blocked = True
+                            continue
+                        self._record_slack_recovery_state(
+                            team_id, channel_id, message_ts, "queued", attempt=True)
+                        try:
+                            recovered = await self._dispatch_recovered_slack_message(
+                                message, team_id, channel_id)
+                        except asyncio.CancelledError:
+                            self._dedup.discard(event_key)
+                            self._record_slack_recovery_state(
+                                team_id, channel_id, message_ts, "cancelled")
+                            raise
+                        except Exception as exc:
+                            self._dedup.discard(event_key)
+                            self._record_slack_recovery_state(
+                                team_id, channel_id, message_ts, "failed", error=str(exc))
+                            cursor_blocked = True
+                            logger.warning(
+                                "[Slack] Failed to dispatch recovered message %s: %s",
+                                message_ts, exc, exc_info=True)
+                            continue
+                        if recovered is not None and recovered._gateway_accepted:
+                            counts["missed"] += 1
+                            counts["dispatched"] += 1
+                            cursor_blocked = True
+                            logger.info(
+                                "[Slack] Backfilled missed message %s in channel %s",
+                                message_ts, channel_id)
+                        else:
+                            self._record_slack_recovery_state(
+                                team_id, channel_id, message_ts, "ignored")
+                            if not cursor_blocked:
+                                self._advance_slack_recovery_cursor(
+                                    team_id, channel_id, message_ts)
+                        if counts["dispatched"] >= max_dispatches:
+                            break
+                    if counts["dispatched"] >= max_dispatches or counts["scanned"] >= scan_limit:
+                        break
+                if counts["dispatched"] >= max_dispatches or counts["scanned"] >= scan_limit:
+                    break
+            logger.info(
+                "[Slack] Missed-message backfill complete: scanned=%d missed=%d dispatched=%d",
+                counts["scanned"], counts["missed"], counts["dispatched"])
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.warning("[Slack] Missed-message backfill failed: %s", exc, exc_info=True)
 
     def _on_socket_mode_task_done(self, task: asyncio.Task) -> None:
         # Ignore stale tasks from intentional reconnect/shutdown.
@@ -1758,6 +2112,7 @@ class SlackAdapter(BasePlatformAdapter):
             # Cancel AND await the old watchdog so it can't see _running=False,
             # exit, and leave no monitor behind.
             await self._cancel_socket_watchdog("[Slack] Prior watchdog task failed while stopping")
+            await self._cancel_missed_message_backfill_task()
             # A zombie Socket Mode handler would double-respond to every event.
             await self._stop_socket_mode_handler()
             await self._close_workspace_clients()
@@ -1794,6 +2149,8 @@ class SlackAdapter(BasePlatformAdapter):
                 raise
             logger.info("[Slack] Socket Mode connected (%d workspace(s))", len(self._team_clients))
             self._hint_allow_bots()
+            if self._missed_message_backfill_enabled():
+                self._ensure_missed_message_backfill_task()
             return True
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[Slack] Connection failed: %s", e, exc_info=True)
@@ -1858,6 +2215,7 @@ class SlackAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from Slack."""
         self._running = False
+        await self._cancel_missed_message_backfill_task()
         # Seal dangling native streams so no live-typing indicator survives a restart.
         for chat_id, stream in list(self._active_streams.items()):
             await self._seal_stream(chat_id, stream)
@@ -3077,6 +3435,7 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction when message processing begins."""
+        await asyncio.to_thread(self._record_slack_event_recovery_state, event, "processing")
         target = self._reacting_target(event)
         if target is None:
             return
@@ -3087,6 +3446,9 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for a final success/failure reaction."""
+        status = "responded" if outcome == ProcessingOutcome.SUCCESS else (
+            "cancelled" if outcome == ProcessingOutcome.CANCELLED else "failed")
+        await asyncio.to_thread(self._record_slack_event_recovery_state, event, status)
         target = self._reacting_target(event)
         if target is None:
             return
@@ -4220,7 +4582,9 @@ class SlackAdapter(BasePlatformAdapter):
         self._reacting_message_ids.add(self._workspace_message_marker(team_id, ts))
         self._evict_oldest_by_ts(self._reacting_message_ids, self._REACTING_MESSAGE_IDS_MAX)
 
-    async def _handle_slack_message(self, event: dict, payload: Optional[dict] = None) -> None:
+    async def _handle_slack_message(
+        self, event: dict, payload: Optional[dict] = None,
+    ) -> Optional[MessageEvent]:
         """Guard around :meth:`_handle_slack_message_impl`: the impl claims the ts early (no second
         turn from a mid-flight unfurl); if THIS call newly claimed it and raises, release the claim
         so a retry/edit can re-drive it. Pre-existing claims stay."""
@@ -4293,7 +4657,11 @@ class SlackAdapter(BasePlatformAdapter):
         # the same ts must not suppress each other.
         event_ts = event.get("_slack_changed_event_ts") or event.get("ts", "")
         dedup_team_id = self._event_team_id(event, payload)
-        if event_ts and self._dedup.is_duplicate(self._workspace_event_id(dedup_team_id, event_ts)):
+        recovery_claimed = bool(event.get("_hermes_recovery_claimed"))
+        if (
+            event_ts and not recovery_claimed
+            and self._dedup.is_duplicate(self._workspace_event_id(dedup_team_id, event_ts))
+        ):
             return None
         channel_id = event.get("channel", "")
         if self._is_ignored_channel(channel_id):
@@ -4368,7 +4736,9 @@ class SlackAdapter(BasePlatformAdapter):
             self._register_mentioned_thread(thread_ts, team_id=team_id)
         return text, original_text, command_probe_text, is_command_text
 
-    async def _handle_slack_message_impl(self, event: dict, payload: Optional[dict] = None) -> None:
+    async def _handle_slack_message_impl(
+        self, event: dict, payload: Optional[dict] = None,
+    ) -> Optional[MessageEvent]:
         """Handle an incoming Slack message event."""
         accepted = await self._prefilter_inbound(event, payload)
         if accepted is None:
@@ -4481,6 +4851,7 @@ class SlackAdapter(BasePlatformAdapter):
         if ts:
             self._remember_processed_message_ts(ts)
         await self.handle_message(msg_event)
+        return msg_event
 
     async def _build_message_event(
         self, event: dict, *, text: str, original_text: str, command_probe_text: str,
@@ -4531,7 +4902,8 @@ class SlackAdapter(BasePlatformAdapter):
             auto_skill=resolve_channel_skills(self.config.extra, channel_id, None),
             metadata={
                 "slack_team_id": team_id, "slack_channel_id": channel_id,
-                "slack_thread_ts": thread_ts})
+                "slack_thread_ts": thread_ts,
+                "slack_recovered": bool(event.get("_hermes_recovered"))})
 
     def _note_attachment_failure(
         self, notices: List[str], detail: Optional[str], fallback_msg: str, *fallback_args: Any,

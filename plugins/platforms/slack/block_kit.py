@@ -94,42 +94,56 @@ def _inline_elements(text: str) -> List[Dict[str, Any]]:
             el["style"] = style
         elements.append(el)
 
-    # Tokenize by the highest-priority markers first using a single scan.
-    # We recursively split on code, then links, then emphasis to keep spans
-    # from overlapping incorrectly.
-    def walk(s: str, style: Dict[str, bool]) -> None:
+    # Protect opaque spans without splitting surrounding emphasis. Use a
+    # sentinel absent from the input so literal user text cannot become a token.
+    sentinel = "\x00"
+    while sentinel in text:
+        sentinel += "\x00"
+    tokens: List[Dict[str, Any]] = []
+    opaque_re = re.compile(f"(?:{_INLINE_CODE_RE.pattern})|(?:{_LINK_RE.pattern})")
+
+    def protect(m: re.Match) -> str:
+        code = _INLINE_CODE_RE.fullmatch(m.group(0))
+        if code:
+            token = {"type": "text", "text": code.group(1), "style": {"code": True}}
+        else:
+            link = _LINK_RE.fullmatch(m.group(0))
+            token = {"type": "link", "url": link.group(2), "text": link.group(1)}
+        tokens.append(token)
+        return f"{sentinel}{len(tokens) - 1}{sentinel}"
+
+    protected = opaque_re.sub(protect, text)
+    token_re = re.compile(re.escape(sentinel) + r"(\d+)" + re.escape(sentinel))
+
+    def emit_protected(s: str, style: Dict[str, bool]) -> None:
         pos = 0
-        # inline code is opaque — no nested styling
-        for m in _INLINE_CODE_RE.finditer(s):
-            _walk_links(s[pos : m.start()], style)
-            emit_text(m.group(1), {**style, "code": True})
+        for m in token_re.finditer(s):
+            emit_text(s[pos:m.start()], dict(style) if style else None)
+            token = dict(tokens[int(m.group(1))])
+            combined = {**style, **token.get("style", {})}
+            if combined:
+                token["style"] = combined
+            elements.append(token)
             pos = m.end()
-        _walk_links(s[pos:], style)
-    def _walk_links(s: str, style: Dict[str, bool]) -> None:
-        pos = 0
-        for m in _LINK_RE.finditer(s):
-            _walk_emphasis(s[pos : m.start()], style)
-            link_el: Dict[str, Any] = {"type": "link", "url": m.group(2), "text": m.group(1)}
-            if style:
-                link_el["style"] = dict(style)
-            elements.append(link_el)
-            pos = m.end()
-        _walk_emphasis(s[pos:], style)
+        emit_text(s[pos:], dict(style) if style else None)
+
     def _walk_emphasis(s: str, style: Dict[str, bool]) -> None:
         if not s:
             return
-        # Try bold, then strike, then italic, recursing into the inner span.
-        for rx, key in ((_BOLD_RE, "bold"), (_STRIKE_RE, "strike"), (_ITALIC_RE, "italic")):
-            m = rx.search(s)
-            if m:
-                _walk_emphasis(s[: m.start()], style)
-                inner_style = dict(style)
-                inner_style[key] = True
-                _walk_emphasis(m.group(1), inner_style)
-                _walk_emphasis(s[m.end() :], style)
-                return
-        emit_text(s, dict(style) if style else None)
-    walk(text, {})
+        # The earliest opening span owns nested styling, regardless of kind.
+        matches = [(m.start(), key, m) for rx, key in
+                   ((_BOLD_RE, "bold"), (_STRIKE_RE, "strike"), (_ITALIC_RE, "italic"))
+                   if (m := rx.search(s))]
+        if matches:
+            _, key, m = min(matches, key=lambda item: item[0])
+            _walk_emphasis(s[: m.start()], style)
+            inner_style = dict(style)
+            inner_style[key] = True
+            _walk_emphasis(m.group(1), inner_style)
+            _walk_emphasis(s[m.end() :], style)
+            return
+        emit_protected(s, style)
+    _walk_emphasis(protected, {})
     return elements or [{"type": "text", "text": text}]
 
 

@@ -46,6 +46,45 @@ class TestOpenRouterModels:
 class TestFetchOpenRouterModels:
 
 
+    def test_appends_authenticated_presets_to_live_catalog(self, monkeypatch):
+        """Regression for #110587: account presets are selectable beside public models."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        monkeypatch.setattr(
+            _models_mod,
+            "_fetch_live_catalog_index",
+            lambda *_args: ([{"id": "vendor/model", "supported_parameters": ["tools"]}],
+                            {"vendor/model": {"id": "vendor/model", "supported_parameters": ["tools"]}}),
+        )
+        with patch("hermes_cli.model_catalog.get_curated_openrouter_models", return_value=[("vendor/model", "")]), \
+             patch("hermes_cli.models._get_json", return_value={"data": [{"slug": "cheap-route"}]}):
+            models = fetch_openrouter_models(force_refresh=True)
+
+        assert ("@preset/cheap-route", "OpenRouter preset") in models
+
+    def test_preset_discovery_follows_pagination_with_bearer_auth(self, monkeypatch):
+        monkeypatch.setattr(_models_mod, "_openrouter_preset_connection",
+                            lambda: ("sk-or-test", "https://openrouter.test/api/v1"))
+        calls = []
+
+        def get_json(url, **kwargs):
+            calls.append((url, kwargs["headers"]))
+            return ({"data": [{"slug": "first"}], "pagination": {"next": "/api/v1/presets?page=2"}}
+                    if len(calls) == 1 else {"data": [{"slug": "second"}]})
+
+        monkeypatch.setattr(_models_mod, "_get_json", get_json)
+        assert _models_mod._fetch_openrouter_preset_ids() == ["@preset/first", "@preset/second"]
+        assert calls[0][1]["Authorization"] == "Bearer sk-or-test"
+        assert calls[1][0] == "https://openrouter.test/api/v1/presets?page=2"
+
+    def test_preset_fetch_failure_keeps_same_credential_cache(self, monkeypatch):
+        cached = {"openrouter_presets": {"fp": "current", "at": time.time(), "models": ["@preset/known"]}}
+        monkeypatch.setattr(_models_mod, "_credential_fingerprint", lambda _provider: "current")
+        monkeypatch.setattr(_models_mod, "_load_provider_models_cache", lambda: cached)
+        monkeypatch.setattr(_models_mod, "_fetch_openrouter_preset_ids", lambda: None)
+        assert _models_mod._cached_openrouter_preset_ids(force_refresh=True) == ["@preset/known"]
+
+
     def test_falls_back_to_static_snapshot_on_fetch_failure(self, monkeypatch):
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
         # Pin the remote manifest out too — otherwise the fallback silently

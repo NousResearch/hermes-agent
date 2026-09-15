@@ -259,14 +259,20 @@ def clear_session(session_key: str) -> int:
 def resolve_clarify_timeout(config: dict) -> int:
     """Clarify timeout (seconds): legacy ``clarify.timeout`` if explicitly set, else
     ``agent.clarify_timeout``, else 3600 — the single source of truth for every surface
-    (gateway, CLI, TUI). ``<= 0`` is kept verbatim (unlimited); non-numeric -> 3600."""
+    (gateway, CLI, TUI). ``<= 0`` is kept verbatim (unlimited); non-numeric -> 3600.
+    Positive values are capped for platform thread waits."""
     raw = (config.get("clarify") or {}).get("timeout")
     if raw is None:
         raw = (config.get("agent") or {}).get("clarify_timeout", 3600)
     try:
-        return int(raw)
-    except (TypeError, ValueError):
+        value = int(raw)
+    except (OverflowError, TypeError, ValueError):
         return 3600
+    if value <= 0:
+        return value
+    from agent.deadline import MAX_SAFE_TIMEOUT_S
+
+    return min(value, int(MAX_SAFE_TIMEOUT_S))
 
 
 def get_clarify_timeout() -> int:

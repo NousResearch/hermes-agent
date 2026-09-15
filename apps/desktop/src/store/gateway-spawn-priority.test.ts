@@ -19,6 +19,7 @@ vi.mock('@/hermes', () => ({
     }
     onEvent = vi.fn(() => () => {})
     onState = vi.fn(() => () => {})
+    request = vi.fn(async () => ({}))
   }
 }))
 vi.mock('@/store/session', () => ({ setConnection: vi.fn(), setGatewayState: vi.fn() }))
@@ -31,6 +32,8 @@ const {
   ensureGatewayForProfile,
   openGatewayForAgent,
   openGatewayForProfile,
+  requestGatewayForAgent,
+  retainGatewayForAgent,
   setPrimaryGateway
 } = await import('./gateway')
 
@@ -108,5 +111,59 @@ describe('user opens dial main as foreground from the first IPC (#102281)', () =
     const seen = priorities(desktop.getConnectionFor, args => (args[0] as { priority?: string }).priority)
     expect(seen.length).toBeGreaterThanOrEqual(1)
     expect(seen.every(priority => priority === 'foreground')).toBe(true)
+  })
+
+  // requestGatewayForAgent/retainGatewayForAgent are the session-scoped RPC
+  // lease pair createBackendSessionForSend/openNewSessionTile dial through for
+  // a user's first message / "New session" click on a not-yet-open registry
+  // route — the same user-initiated-open contract as the activation doors
+  // above, just reached through a different pair of functions. Unlike those
+  // doors, neither of these hardcodes 'foreground' or forwarded a caller's
+  // priority before, so a saturated pool queued the click behind background
+  // roster hydration exactly like the pre-#102281 bug.
+  it('requestGatewayForAgent forwards spawnPriority to the registry dial', async () => {
+    const desktop = installDesktop()
+    setPrimaryGateway({ connectionState: 'open' } as never, 'default')
+
+    await requestGatewayForAgent('homelab', 'research', 'session.create', {}, undefined, undefined, 'foreground')
+
+    const seen = priorities(desktop.getConnectionFor, args => (args[0] as { priority?: string }).priority)
+    expect(seen.length).toBeGreaterThanOrEqual(1)
+    expect(seen.every(priority => priority === 'foreground')).toBe(true)
+  })
+
+  it('requestGatewayForAgent without a priority never tags the registry dial as foreground', async () => {
+    const desktop = installDesktop()
+    setPrimaryGateway({ connectionState: 'open' } as never, 'default')
+
+    await requestGatewayForAgent('homelab', 'research', 'session.create', {})
+
+    const seen = priorities(desktop.getConnectionFor, args => (args[0] as { priority?: string }).priority)
+    expect(seen.length).toBeGreaterThanOrEqual(1)
+    expect(seen.every(priority => priority === undefined)).toBe(true)
+  })
+
+  it('retainGatewayForAgent forwards spawnPriority to the registry dial', async () => {
+    const desktop = installDesktop()
+    setPrimaryGateway({ connectionState: 'open' } as never, 'default')
+
+    const release = await retainGatewayForAgent('homelab', 'research', 'foreground')
+    release()
+
+    const seen = priorities(desktop.getConnectionFor, args => (args[0] as { priority?: string }).priority)
+    expect(seen.length).toBeGreaterThanOrEqual(1)
+    expect(seen.every(priority => priority === 'foreground')).toBe(true)
+  })
+
+  it('retainGatewayForAgent without a priority never tags the registry dial as foreground', async () => {
+    const desktop = installDesktop()
+    setPrimaryGateway({ connectionState: 'open' } as never, 'default')
+
+    const release = await retainGatewayForAgent('homelab', 'research')
+    release()
+
+    const seen = priorities(desktop.getConnectionFor, args => (args[0] as { priority?: string }).priority)
+    expect(seen.length).toBeGreaterThanOrEqual(1)
+    expect(seen.every(priority => priority === undefined)).toBe(true)
   })
 })

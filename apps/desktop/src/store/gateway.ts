@@ -1025,7 +1025,8 @@ export async function requestGatewayForAgent<T>(
   method: string,
   params: Record<string, unknown> = {},
   timeoutMs?: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  spawnPriority: SpawnPriority = 'background'
 ): Promise<T> {
   const key = normKey(profile)
   const scope = registryBackendScopeKey(connectionId, key)
@@ -1046,7 +1047,7 @@ export async function requestGatewayForAgent<T>(
     return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal)
   }
 
-  if (await isAttachedSharedRemote(connectionId, key)) {
+  if (await isAttachedSharedRemote(connectionId, key, spawnPriority)) {
     return requestOnPrimaryGateway<T>(method, { ...params, profile: key }, timeoutMs, signal)
   }
 
@@ -1070,7 +1071,7 @@ export async function requestGatewayForAgent<T>(
 
   try {
     if (!isOpen(entry.gateway)) {
-      await openSecondary(entry)
+      await openSecondary(entry, spawnPriority)
     }
 
     return await (timeoutMs === undefined && signal === undefined
@@ -1222,7 +1223,11 @@ export function retainGatewayForRelay(connectionId: null | string, profile: stri
  * `finally`; the refcount keeps the socket (and the session it minted) alive
  * for the whole sequence. Primary/shared-primary routes return a no-op release.
  */
-export async function retainGatewayForAgent(connectionId: null | string, profile: string): Promise<() => void> {
+export async function retainGatewayForAgent(
+  connectionId: null | string,
+  profile: string,
+  spawnPriority: SpawnPriority = 'background'
+): Promise<() => void> {
   const key = normKey(profile)
   const scope = registryBackendScopeKey(connectionId, key)
 
@@ -1234,7 +1239,7 @@ export async function retainGatewayForAgent(connectionId: null | string, profile
     return route.release
   }
 
-  if (isPrimaryRegistryRoute(connectionId, key) || (await isAttachedSharedRemote(connectionId, key))) {
+  if (isPrimaryRegistryRoute(connectionId, key) || (await isAttachedSharedRemote(connectionId, key, spawnPriority))) {
     // Primary socket stays open for the window lifetime — no secondary to hold.
     return () => undefined
   }
@@ -1290,7 +1295,7 @@ export async function retainGatewayForAgent(connectionId: null | string, profile
 
   try {
     if (!isOpen(entry.gateway)) {
-      await openSecondary(entry)
+      await openSecondary(entry, spawnPriority)
     }
   } catch (error) {
     release()

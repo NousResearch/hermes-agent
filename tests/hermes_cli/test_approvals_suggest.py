@@ -157,6 +157,15 @@ class TestNormalizeAndGlob:
         assert "~/project/file.txt" in normalized
         assert home not in normalized
 
+    def test_normalize_folds_depth_one_home_prefix(self, monkeypatch):
+        # `/root` (root's own default HOME) is a single path component, so the fold must
+        # not require two. Host-independent: pins the same rule on CI (HOME=/home/runner),
+        # where the assertion above only ever exercises the depth-2 branch.
+        monkeypatch.setenv("HOME", "/root")
+        normalized = normalize_command("git checkout -- /root/project/file.txt")
+        assert "~/project/file.txt" in normalized
+        assert "/root" not in normalized
+
     def test_derive_glob_uses_first_two_tokens(self):
         assert derive_glob("git push --force origin main") == "git push *"
         assert derive_glob("docker restart web") == "docker restart *"

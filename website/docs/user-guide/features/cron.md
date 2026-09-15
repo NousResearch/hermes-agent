@@ -313,8 +313,9 @@ cadence, or run a "cron librarian" job that reconciles the whole table
 - **A job may remove itself and still report.** The "watch for X, tell me
   once, then stop" pattern — a recurring job whose run calls
   `cronjob(action="remove", job_id=<its own id>)` and then answers — delivers
-  that final response and records the run as `completed`; only the job record
-  is gone afterwards. Deleting the record from *outside* the run (another
+  that final response and records the run as `completed`; the job record and
+  its `cron/output/<job_id>/` directory are gone afterwards and the final run
+  is not written there. Deleting the record from *outside* the run (another
   process, or a replacement job reusing the id) still discards the stale
   run's output, as before.
 

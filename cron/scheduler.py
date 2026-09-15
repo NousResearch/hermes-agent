@@ -2686,8 +2686,11 @@ def _save_compose_deliver(
     with fence.side_effect_fence() as owns_output:
         if not owns_output:
             raise _FireClaimLostDuringSideEffect
-        output_file = save_job_output(job["id"], output)
-    if verbose:
+        # remove_job() already deleted this job's output dir; saving would re-create an orphan.
+        output_file = (
+            None if self_removal_delivery_allowed(job["id"])
+            else save_job_output(job["id"], output))
+    if verbose and output_file is not None:
         logger.info("Output saved to: %s", output_file)
 
     # A shutdown-killed tool subprocess can leave a plausible final_response from truncated
@@ -3021,7 +3024,10 @@ def _run_one_job_body(
             delivery_error, delivery_outcome = _deliver_crash_failure(
                 job, _err_text, adapters=adapters, loop=loop)
         try:
-            if not _consume_interrupted_flag(job["id"], execution_token):
+            if (
+                not _consume_interrupted_flag(job["id"], execution_token)
+                and not self_removal_delivery_allowed(job["id"])  # no record left to mark
+            ):
                 mark_kwargs = {}
                 if fire_owner is not None:
                     mark_kwargs["expected_fire_owner"] = fire_owner

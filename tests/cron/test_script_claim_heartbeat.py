@@ -418,15 +418,21 @@ def test_lost_fire_claim_stops_stale_delivery(monkeypatch):
     mark_run.assert_not_called()
 
 
-def _run_claimed_job_with_mid_run_action(tmp_path, monkeypatch, mid_run, *, execution_id):
+def _run_claimed_job_with_mid_run_action(
+    tmp_path, monkeypatch, mid_run, *, execution_id, stub_output=True, crash=None,
+    expect_result=True,
+):
     """Fire a claimed job through run_one_job with a stubbed agent run that performs ``mid_run``
-    on its own record, keeps working past one fire-claim heartbeat tick, then completes."""
+    on its own record, keeps working past one fire-claim heartbeat tick, then completes (or
+    raises ``crash``)."""
     import cron.jobs as jobs
     import cron.scheduler as scheduler
 
     def _run_job(job, **_kwargs):
         mid_run(jobs, job)
         time.sleep(0.3)
+        if crash is not None:
+            raise crash
         return True, "saved output", "D1 is promoting", None
 
     delivered = MagicMock(return_value=None)
@@ -436,7 +442,8 @@ def _run_claimed_job_with_mid_run_action(tmp_path, monkeypatch, mid_run, *, exec
     monkeypatch.setattr(scheduler, "claim_dispatch", lambda *_args: True)
     monkeypatch.setattr(scheduler, "mark_execution_running", lambda *_args: {})
     monkeypatch.setattr(scheduler, "finish_execution", finished)
-    monkeypatch.setattr(scheduler, "save_job_output", lambda *_args: "output.md")
+    if stub_output:
+        monkeypatch.setattr(scheduler, "save_job_output", lambda *_args: "output.md")
     monkeypatch.setattr(scheduler, "_deliver_result", delivered)
 
     with jobs.use_cron_store(tmp_path):
@@ -449,7 +456,7 @@ def _run_claimed_job_with_mid_run_action(tmp_path, monkeypatch, mid_run, *, exec
         with patch("agent.secret_scope.set_secret_scope", return_value=None), \
              patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
              patch("agent.secret_scope.reset_secret_scope"):
-            assert scheduler.run_one_job(claimed) is True
+            assert scheduler.run_one_job(claimed) is expect_result
     return delivered, finished
 
 
@@ -469,6 +476,41 @@ def test_self_removed_job_still_delivers_after_post_removal_heartbeat(tmp_path, 
         success=True, error=None, delivery_outcome="delivered")
     with jobs.use_cron_store(tmp_path):
         assert jobs.load_jobs() == []
+
+
+def test_self_removed_job_leaves_no_output_directory(tmp_path, monkeypatch):
+    """remove_job() deletes <cron>/output/<job_id>/; the finishing run must not re-create it
+    (an orphan directory per self-removing job), so 'only the job record is gone' stays true."""
+    import cron.jobs as jobs
+
+    delivered, _finished = _run_claimed_job_with_mid_run_action(
+        tmp_path, monkeypatch,
+        lambda jobs_mod, job: jobs_mod.remove_job(job["id"]),
+        execution_id="self-removal-output-execution", stub_output=False)
+
+    delivered.assert_called_once()
+    with jobs.use_cron_store(tmp_path):
+        assert jobs.load_jobs() == []
+    assert list((tmp_path / "cron" / "output").glob("*")) == []
+
+
+def test_self_removed_job_crash_skips_mark_job_run(tmp_path, monkeypatch):
+    """A run that crashes after removing its own record has no record to mark: the crash path
+    must skip mark_job_run like the completion path does, not probe a missing record."""
+    import cron.scheduler as scheduler
+
+    marked = MagicMock(return_value=True)
+    monkeypatch.setattr(scheduler, "mark_job_run", marked)
+    _delivered, finished = _run_claimed_job_with_mid_run_action(
+        tmp_path, monkeypatch,
+        lambda jobs_mod, job: jobs_mod.remove_job(job["id"]),
+        execution_id="self-removal-crash-execution",
+        crash=RuntimeError("boom after self-removal"), expect_result=False)
+
+    marked.assert_not_called()
+    finished.assert_called_once_with(
+        "self-removal-crash-execution", success=False,
+        error="boom after self-removal", delivery_outcome="delivered")
 
 
 def test_self_removal_followed_by_replacement_record_stays_fail_closed(tmp_path, monkeypatch):

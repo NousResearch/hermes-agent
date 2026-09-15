@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from contextvars import ContextVar
 from typing import Iterable
-from hermes_cli.config import cfg_get, read_raw_config
+from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +96,11 @@ def _load_config_passthrough() -> frozenset[str]:
         return cached
     result: set[str] = set()
     try:
-        passthrough = cfg_get(read_raw_config(), "terminal", "env_passthrough")
+        # Effective user config: operator policy may come from the managed scope
+        # (/etc/hermes/config.yaml), which read_raw_config() does not see.
+        from hermes_cli.config_effective import load_user_config_effective
+
+        passthrough = cfg_get(load_user_config_effective(), "terminal", "env_passthrough")
         items = passthrough if isinstance(passthrough, list) else ()
         result.update(_accepted((i.strip() for i in items if isinstance(i, str)), (
             "env passthrough: refusing to register Hermes "

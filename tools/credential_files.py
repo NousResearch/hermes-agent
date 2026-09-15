@@ -129,9 +129,11 @@ def _load_config_files() -> List[Dict[str, str]]:
 
     result: List[Dict[str, str]] = []
     try:
-        from hermes_cli.config import read_raw_config
+        # Effective user config: an administrator may pin the mount list in the managed
+        # scope (/etc/hermes/config.yaml), which read_raw_config() does not see.
+        from hermes_cli.config_effective import load_user_config_effective
         hermes_home = get_hermes_home()
-        cred_files = cfg_get(read_raw_config(), "terminal", "credential_files")
+        cred_files = cfg_get(load_user_config_effective(), "terminal", "credential_files")
         for item in cred_files if isinstance(cred_files, list) else []:
             rel = item.strip() if isinstance(item, str) else ""
             if not rel:

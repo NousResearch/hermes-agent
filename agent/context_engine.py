@@ -10,6 +10,8 @@ should_compress() / compress() -> on_session_end() at real session boundaries on
 
 import json
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from agent.redact import redact_sensitive_text
@@ -19,6 +21,147 @@ MEMORY_CONTEXT_MAX_CHARS = 6_000
 _MEMORY_CONTEXT_HEAD_CHARS = 4_000
 _MEMORY_CONTEXT_TAIL_CHARS = 1_500
 _MEMORY_CONTEXT_TRUNCATION_MARKER = "\n...[memory provider context truncated]...\n"
+
+
+class ContextDecisionKind(str, Enum):
+    """The distinct context operations a host may request from an engine."""
+
+    NONE = "none"
+    DEFERRED = "deferred"
+    SANITIZE = "sanitize"
+    COMPACT = "compact"
+    OVERFLOW_RECOVER = "overflow_recover"
+
+
+class ContextOutcomeKind(str, Enum):
+    """Terminal results for one context-engine decision attempt."""
+
+    NOOP = "noop"
+    SANITIZED = "sanitized"
+    REASSEMBLED = "reassembled"
+    COMPACTED = "compacted"
+    REJECTED = "rejected"
+    FAILED = "failed"
+
+
+def _validate_context_reason(reason: str) -> str:
+    """Keep cross-engine reasons low-cardinality and safe for shared telemetry."""
+    if not isinstance(reason, str) or not reason or len(reason) > 96:
+        raise ValueError("context-engine reason must be a non-empty identifier of at most 96 characters")
+    if not all(character.islower() or character.isdigit() or character in "._-" for character in reason):
+        raise ValueError("context-engine reason must contain only lowercase letters, digits, '.', '_' or '-'")
+    return reason
+
+
+@dataclass(frozen=True)
+class ContextDecision:
+    """Immutable request for one context operation.
+
+    A decision intentionally has no truth value. Hosts must branch on ``kind`` so a
+    new operation can never be accidentally treated as the legacy compression boolean.
+    ``sanitation_diff`` contains only stable ``(message_index, field_class)`` pairs;
+    it never carries prompt content.
+    """
+
+    kind: ContextDecisionKind
+    reason: str
+    attempt_id: str = ""
+    observed_tokens: int | None = None
+    threshold_tokens: int | None = None
+    effective_floor: int | None = None
+    sanitation_diff: tuple[tuple[int, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        _validate_context_reason(self.reason)
+        if not isinstance(self.kind, ContextDecisionKind):
+            raise TypeError("kind must be a ContextDecisionKind")
+        if not isinstance(self.attempt_id, str):
+            raise TypeError("attempt_id must be a string")
+        for value in (self.observed_tokens, self.threshold_tokens, self.effective_floor):
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+                raise ValueError("context-engine token measurements must be non-negative integers or None")
+        for message_index, field_class in self.sanitation_diff:
+            if isinstance(message_index, bool) or not isinstance(message_index, int) or message_index < 0:
+                raise ValueError("sanitation diff message indexes must be non-negative integers")
+            _validate_context_reason(field_class)
+
+    def __bool__(self) -> bool:
+        raise TypeError("ContextDecision must be checked explicitly via .kind")
+
+
+@dataclass(frozen=True)
+class ContextOutcome:
+    """Immutable terminal result paired with a typed context decision."""
+
+    kind: ContextOutcomeKind
+    reason: str
+    attempt_id: str = ""
+
+    def __post_init__(self) -> None:
+        _validate_context_reason(self.reason)
+        if not isinstance(self.kind, ContextOutcomeKind):
+            raise TypeError("kind must be a ContextOutcomeKind")
+        if not isinstance(self.attempt_id, str):
+            raise TypeError("attempt_id must be a string")
+
+
+def context_engine_decision(
+    engine: Any, *, operation: str, attempt_id: str = "", observed_tokens: int | None = None,
+    threshold_tokens: int | None = None, effective_floor: int | None = None,
+) -> ContextDecision:
+    """Ask a typed engine for an operation, with the legacy boolean bridge.
+
+    Engines which predate this protocol retain their exact ``should_compress``
+    behavior for compression phases. Invalid typed responses fail open as ``NONE``.
+    """
+    hook = getattr(engine, "decide_context_operation", None)
+    if getattr(hook, "__func__", None) is ContextEngine.decide_context_operation:
+        hook = None
+    if callable(hook):
+        try:
+            decision = hook(
+                operation=operation, attempt_id=attempt_id, observed_tokens=observed_tokens,
+                threshold_tokens=threshold_tokens, effective_floor=effective_floor,
+            )
+        except Exception:
+            return ContextDecision(ContextDecisionKind.NONE, "typed_decision_failed", attempt_id)
+        if isinstance(decision, ContextDecision):
+            return decision
+        return ContextDecision(ContextDecisionKind.NONE, "typed_decision_invalid", attempt_id)
+
+    if operation == "overflow" and engine is not None:
+        return ContextDecision(
+            ContextDecisionKind.OVERFLOW_RECOVER, "legacy_overflow_recover", attempt_id,
+            observed_tokens, threshold_tokens, effective_floor,
+        )
+
+    if operation in {"preflight", "post_tool"} and engine is not None:
+        should_compress = getattr(engine, "should_compress", None)
+        if callable(should_compress):
+            try:
+                if should_compress(observed_tokens):
+                    return ContextDecision(
+                        ContextDecisionKind.COMPACT, "legacy_should_compress", attempt_id,
+                        observed_tokens, threshold_tokens, effective_floor,
+                    )
+            except Exception:
+                return ContextDecision(ContextDecisionKind.NONE, "legacy_decision_failed", attempt_id)
+    return ContextDecision(
+        ContextDecisionKind.NONE, "legacy_noop", attempt_id,
+        observed_tokens, threshold_tokens, effective_floor,
+    )
+
+
+def notify_context_outcome(engine: Any, outcome: ContextOutcome) -> None:
+    """Best-effort typed terminal notification; legacy engines remain untouched."""
+    hook = getattr(engine, "on_context_outcome", None)
+    if getattr(hook, "__func__", None) is ContextEngine.on_context_outcome:
+        return
+    if callable(hook):
+        try:
+            hook(outcome)
+        except Exception:
+            pass
 
 
 def sanitize_memory_context(memory_context: str) -> str:
@@ -160,6 +303,23 @@ class ContextEngine(ABC):
         """True when preflight should trust recent real usage over the noisy rough
         estimate (avoids re-compacting after a compressed request already fit)."""
         return False
+
+    def decide_context_operation(
+        self, *, operation: str, attempt_id: str = "", observed_tokens: int | None = None,
+        threshold_tokens: int | None = None, effective_floor: int | None = None,
+    ) -> ContextDecision:
+        """Optionally choose a typed operation for a host phase.
+
+        The default returns ``NONE`` so host code can use
+        :func:`context_engine_decision` to preserve the legacy
+        ``should_compress`` bridge. Implementations must return a
+        :class:`ContextDecision`, never a boolean.
+        """
+        return ContextDecision(ContextDecisionKind.NONE, "engine_noop", attempt_id)
+
+    def on_context_outcome(self, outcome: ContextOutcome) -> None:
+        """Observe a terminal typed context operation outcome (best effort)."""
+        return None
 
     def get_automatic_compaction_status_message(
         self, *, phase: str, default_message: str, **context: Any,

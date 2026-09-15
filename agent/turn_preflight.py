@@ -13,7 +13,14 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from agent.context_engine import automatic_compaction_status_message
+from agent.context_engine import (
+    ContextDecisionKind,
+    ContextOutcome,
+    ContextOutcomeKind,
+    automatic_compaction_status_message,
+    context_engine_decision,
+    notify_context_outcome,
+)
 from agent.conversation_compression import (
     PRE_API_COMPRESSION_STATUS_TEMPLATE, compression_blocked_transiently,
     compression_skipped_due_to_lock, context_compression_timed_out,
@@ -90,14 +97,22 @@ def run_preflight_compression(
         and len(v.messages) > 1
         and v.compression_attempts < max_compression_attempts
     )
+    _preflight_decision = None
     if (
         _eligible
         and not _review_fork_first_request_pending(agent)
         and (not v._preflight_compression_blocked or provider_overflow_preflight)
         and (not defer_preflight(request_pressure_tokens) or provider_overflow_preflight)
         and not _compression_cooldown
-        and compressor.should_compress(request_pressure_tokens)
     ):
+        _preflight_decision = context_engine_decision(
+            compressor,
+            operation="preflight",
+            attempt_id=f"preflight-{v.compression_attempts + 1}",
+            observed_tokens=request_pressure_tokens,
+            threshold_tokens=int(getattr(compressor, "threshold_tokens", 0) or 0),
+        )
+    if _preflight_decision is not None and _preflight_decision.kind is ContextDecisionKind.COMPACT:
         # Managed local runtime: grow the context window before compressing (last
         # resort). Only for a llamacpp provider at the supervised base_url.
         _grown_window = _maybe_grow_local_window(agent, compressor, request_pressure_tokens)
@@ -153,6 +168,9 @@ def run_preflight_compression(
             v.failed = True
             v._compression_timeout_exhausted = True
             v._turn_exit_reason = "context_compression_timeout"
+            notify_context_outcome(
+                compressor, ContextOutcome(ContextOutcomeKind.FAILED, "compression_timeout", _preflight_decision.attempt_id)
+            )
             return _done("break")
         if v.messages is _pre_api_input and (
             compression_skipped_due_to_lock(agent) or compression_blocked_transiently(agent)
@@ -163,7 +181,13 @@ def run_preflight_compression(
             v._last_preflight_pressure = None
             if v.pending_moa_prepared_request is moa_prepared_request:
                 v.pending_moa_prepared_request = None
+            notify_context_outcome(
+                compressor, ContextOutcome(ContextOutcomeKind.REJECTED, "compression_deferred", _preflight_decision.attempt_id)
+            )
         else:
+            notify_context_outcome(
+                compressor, ContextOutcome(ContextOutcomeKind.COMPACTED, "compression_completed", _preflight_decision.attempt_id)
+            )
             _reset_retry_state_after_compaction(agent)
             # Re-baseline the flush cursor: rotation returns None (child flushes
             # whole); in-place returns list(messages) — None would re-append
@@ -285,14 +309,22 @@ def compress_after_tool_results(
             estimate_request_tokens_rough(messages, tools=agent.tools or None),
         )
 
+    _post_tool_decision = None
     if (
         agent.compression_enabled
         and compression_attempts < max_compression_attempts
         and not bool(
             getattr(_compressor, "awaiting_real_usage_after_compression", False)
         )
-        and _compressor.should_compress(_real_tokens)
     ):
+        _post_tool_decision = context_engine_decision(
+            _compressor,
+            operation="post_tool",
+            attempt_id=f"post-tool-{compression_attempts + 1}",
+            observed_tokens=_real_tokens,
+            threshold_tokens=int(getattr(_compressor, "threshold_tokens", 0) or 0),
+        )
+    if _post_tool_decision is not None and _post_tool_decision.kind is ContextDecisionKind.COMPACT:
         compression_attempts += 1
         # Compression is running: reset blocked-overflow warning dedup so a
         # future blocked turn can warn again.
@@ -332,7 +364,13 @@ def compress_after_tool_results(
             # #69870 lock-skip: this pass no-oped because another path holds the session's compression lock
             # — a temporary defer, not evidence about compressibility.
             compression_attempts -= 1
+            notify_context_outcome(
+                _compressor, ContextOutcome(ContextOutcomeKind.REJECTED, "compression_deferred", _post_tool_decision.attempt_id)
+            )
         else:
+            notify_context_outcome(
+                _compressor, ContextOutcome(ContextOutcomeKind.COMPACTED, "compression_completed", _post_tool_decision.attempt_id)
+            )
             conversation_history = conversation_history_after_compression(
                 agent, messages, conversation_history
             )

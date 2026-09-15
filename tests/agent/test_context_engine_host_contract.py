@@ -26,9 +26,19 @@ engine plugins (e.g. hermes-lcm) rely on:
 
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
 from unittest.mock import MagicMock
 
+import pytest
+
 from agent.context_compressor import ContextCompressor
+from agent.context_engine import (
+    ContextDecision,
+    ContextDecisionKind,
+    ContextOutcome,
+    ContextOutcomeKind,
+    context_engine_decision,
+)
 from hermes_state import SessionDB
 from run_agent import AIAgent
 
@@ -40,6 +50,53 @@ def _bare_agent() -> AIAgent:
     agent.platform = "telegram"
     agent._gateway_session_key = "agent:main:telegram:dm:42"
     return agent
+
+
+def test_typed_context_decisions_are_immutable_and_cannot_be_used_as_booleans():
+    """Operation classes must not collapse into the old preflight boolean."""
+    decision = ContextDecision(
+        kind=ContextDecisionKind.SANITIZE,
+        reason="unsafe_memory_context",
+        attempt_id="turn-3",
+        observed_tokens=100,
+        threshold_tokens=80,
+        effective_floor=64,
+        sanitation_diff=((2, "content"),),
+    )
+
+    with pytest.raises(TypeError, match="explicitly"):
+        bool(decision)
+    with pytest.raises(FrozenInstanceError):
+        decision.reason = "changed"  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("kind", list(ContextDecisionKind))
+def test_context_decision_kinds_cover_each_host_operation(kind):
+    assert ContextDecision(kind=kind, reason="test").kind is kind
+
+
+@pytest.mark.parametrize("kind", list(ContextOutcomeKind))
+def test_context_outcome_kinds_cover_each_terminal_result(kind):
+    outcome = ContextOutcome(kind=kind, reason="test")
+    assert outcome.kind is kind
+
+
+def test_legacy_engine_maps_boolean_preflight_to_typed_compact_or_noop():
+    class LegacyEngine:
+        def should_compress(self, _tokens):
+            return True
+
+    compact = context_engine_decision(
+        LegacyEngine(), operation="preflight", observed_tokens=90, threshold_tokens=80,
+    )
+    noop = context_engine_decision(
+        None, operation="preflight", observed_tokens=70, threshold_tokens=80,
+    )
+
+    assert compact.kind is ContextDecisionKind.COMPACT
+    assert compact.reason == "legacy_should_compress"
+    assert noop.kind is ContextDecisionKind.NONE
+    assert noop.reason == "legacy_noop"
 
 
 
@@ -189,5 +246,4 @@ def test_engine_collector_forwards_register_command_to_plugin_manager():
     finally:
         # Clean up so we don't leak the registration across tests.
         manager._plugin_commands.pop("my-lcm-test-cmd", None)
-
 

@@ -19,6 +19,7 @@ from agent.conversation_compression import (
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, compression_blocked_transiently,
     compression_skipped_due_to_lock, context_compression_timed_out,
 )
+from agent.context_engine import ContextDecisionKind, context_engine_decision
 from agent.error_classifier import FailoverReason
 from agent.message_sanitization import serialized_messages_bytes
 from agent.model_metadata import (
@@ -450,6 +451,15 @@ def recover_from_overflow(
             agent._vprint(f"{agent.log_prefix}{line}", force=True)
 
     if classified.reason == FailoverReason.payload_too_large:
+        decision = context_engine_decision(
+            agent.context_compressor,
+            operation="overflow",
+            attempt_id=f"overflow-{compression_attempts + 1}",
+            observed_tokens=approx_tokens,
+            threshold_tokens=int(getattr(agent.context_compressor, "threshold_tokens", 0) or 0),
+        )
+        if decision.kind is not ContextDecisionKind.OVERFLOW_RECOVER:
+            return st.done("fallthrough")
         return _recover_payload_too_large(st, _retry)
 
     # Relay-wrapped output-cap 429s (parsed by the caller) go to the clamp, not
@@ -463,5 +473,14 @@ def recover_from_overflow(
         or wrapped_output_cap_budget is not None
     )
     if st.is_context_length_error:
+        decision = context_engine_decision(
+            agent.context_compressor,
+            operation="overflow",
+            attempt_id=f"overflow-{compression_attempts + 1}",
+            observed_tokens=approx_tokens,
+            threshold_tokens=int(getattr(agent.context_compressor, "threshold_tokens", 0) or 0),
+        )
+        if decision.kind is not ContextDecisionKind.OVERFLOW_RECOVER:
+            return st.done("fallthrough")
         return _recover_context_length(st, _retry, error_msg)
     return st.done("fallthrough")

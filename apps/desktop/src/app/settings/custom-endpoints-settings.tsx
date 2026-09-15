@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -17,9 +17,11 @@ import { Check, Globe, Loader2, Plus, Save, Trash2, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
+import { $settingsOwner, $settingsScopeOverride } from '@/store/settings-scope'
 import type { CustomEndpoint, CustomEndpointUpdate } from '@/types/hermes'
 
 import { EmptyState, Pill, SectionHeading, SettingsContent, SettingsSkeleton } from './primitives'
+import { SettingsProfileScope } from './profile-scope'
 
 interface CustomEndpointsSettingsProps {
   onConfigSaved?: () => void
@@ -88,6 +90,19 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
   const [endpoints, setEndpoints] = useState<CustomEndpoint[]>([])
   const [form, setForm] = useState<EndpointForm>(EMPTY_FORM)
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([])
+  const mounted = useRef(true)
+
+  // eslint-disable-next-line no-restricted-syntax -- lifecycle guard, not a reactive-value mirror
+  useEffect(() => {
+    mounted.current = true
+
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+
+  const isForegroundOwner = () =>
+    mounted.current && $settingsOwner.get() === scope && $settingsScopeOverride.get() == null
 
   async function refresh() {
     const data = await getCustomEndpoints(scope)
@@ -140,12 +155,16 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
         setDiscoveredModels(saved.models)
       }
 
-      if (saved && saved.is_current) {
+      if (saved?.is_current && isForegroundOwner()) {
         onMainModelChanged?.(saved.id, saved.model)
       }
 
       triggerHaptic('success')
-      onConfigSaved?.()
+
+      if (isForegroundOwner()) {
+        onConfigSaved?.()
+      }
+
       notify({ kind: 'success', message: 'Custom endpoint saved.' })
     } catch (err) {
       notifyError(err, 'Save failed')
@@ -189,8 +208,12 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
       setActivating(endpoint.id)
       const response = await activateCustomEndpoint(endpoint.id, scope)
       await refresh()
-      onConfigSaved?.()
-      onMainModelChanged?.(response.provider, response.model)
+
+      if (isForegroundOwner()) {
+        onConfigSaved?.()
+        onMainModelChanged?.(response.provider, response.model)
+      }
+
       triggerHaptic('success')
     } catch (err) {
       notifyError(err, 'Activation failed')
@@ -215,7 +238,10 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
         setDiscoveredModels([])
       }
 
-      onConfigSaved?.()
+      if (isForegroundOwner()) {
+        onConfigSaved?.()
+      }
+
       triggerHaptic('success')
     } catch (err) {
       notifyError(err, 'Delete failed')
@@ -233,6 +259,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged, sco
 
   return (
     <SettingsContent>
+      <SettingsProfileScope className="mb-5" />
       <div className="space-y-6">
         <section>
           <SectionHeading icon={Globe} meta={`${endpoints.length}`} title={t.settings.customEndpoints.title} />

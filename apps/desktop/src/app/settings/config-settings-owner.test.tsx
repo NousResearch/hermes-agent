@@ -88,7 +88,11 @@ function page(section = 'model') {
 
 function setApiRequestConnection(connectionId: string) {
   setRequestConnection(connectionId)
-  $connection.set({ ...$connection.get(), connectionId } as NonNullable<ReturnType<typeof $connection.get>>)
+  $connection.set({
+    connectionId,
+    mode: connectionId === 'local' ? 'local' : 'remote',
+    ...(connectionId === 'local' ? {} : { baseUrl: `https://${connectionId}.invalid` })
+  } as NonNullable<ReturnType<typeof $connection.get>>)
 }
 
 function setup() {
@@ -96,6 +100,8 @@ function setup() {
   queryClient.clear()
   queryClient.setDefaultOptions({ queries: { retry: false, refetchOnWindowFocus: false } })
   setApiRequestProfile('default')
+  setRequestConnection(null)
+  $connection.set(null)
   $settingsScopeOverride.set(null)
 }
 
@@ -188,7 +194,8 @@ it('keeps a pending autosave mounted across an equivalent legacy reconnect', asy
 
 it('the production pinned model child can restart its exact owner after code skew', async () => {
   setup()
-  const owner = { connectionId: 'local', profile: 'default' }
+  setApiRequestConnection('local')
+  const owner = $settingsOwner.get()!
   const recycleBackend = vi.fn(async () => ({ ok: true }))
 
   const api = vi.fn(async (request: HermesApiRequest) => {
@@ -208,7 +215,6 @@ it('the production pinned model child can restart its exact owner after code ske
   })
 
   vi.stubGlobal('hermesDesktop', { api, recycleBackend })
-  setApiRequestConnection('local')
   render(page())
   await flush()
   await flush()
@@ -490,7 +496,7 @@ it('model confirmation keeps its originating HTTP owner after switching hosts', 
       { owner: 'local', profile: 'other' }
     ])
     expect(received[1].body).toMatchObject({ scope: 'main', confirm_expensive_model: true })
-    expect(queryClient.getQueryData(hermesConfigKey({ connectionId: 'cloud-test', profile: 'other' }))).toEqual({})
+    expect(queryClient.getQueryData(hermesConfigKey($settingsOwner.get()!))).toEqual({})
   } finally {
     cleanup()
 

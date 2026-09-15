@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $cronReviewRequest } from '@/store/cron'
+import { syncCronModelImpactConnection } from '@/store/cron-model-impact-scope'
 import { $notifications, clearNotifications, dismissNotification } from '@/store/notifications'
 import type { ModelAssignmentResponse } from '@/types/hermes'
 
@@ -72,6 +73,19 @@ describe('setMainModelAssignment', () => {
         profile: 'default',
         legacyConnection: { mode: 'remote', baseUrl: 'https://legacy.invalid', token: 'fixture' }
       }
+    )
+
+    expect($notifications.get().some(item => item.id === CRON_MODEL_IMPACT_NOTIFICATION_ID)).toBe(true)
+  })
+
+  it('publishes cron impact for the active legacy-local owner normalized by Settings', async () => {
+    setModelAssignment.mockResolvedValue(response(positive()))
+    getApiRequestConnection.mockReturnValue(null)
+    syncCronModelImpactConnection({ mode: 'local' } as never)
+
+    await setMainModelAssignment(
+      { provider: 'nous', model: 'new/model' },
+      { connectionId: 'local', profile: 'default' }
     )
 
     expect($notifications.get().some(item => item.id === CRON_MODEL_IMPACT_NOTIFICATION_ID)).toBe(true)

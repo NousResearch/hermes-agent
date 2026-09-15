@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { getGlobalModelOptions } from '@/hermes'
+import { getGlobalModelOptions, type ProfileScope, profileScopeKey } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Plus, X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -68,17 +68,19 @@ function entriesEqual(a: FallbackEntry[], b: FallbackEntry[]): boolean {
  */
 export function FallbackModelsField({
   value,
-  onChange
+  onChange,
+  scope
 }: {
   value: unknown
   onChange: (next: FallbackEntry[]) => void
+  scope?: ProfileScope
 }) {
   const { t } = useI18n()
   const m = t.settings.model
 
   const modelOptions = useQuery({
-    queryKey: ['model-options', 'global'],
-    queryFn: () => getGlobalModelOptions()
+    queryKey: ['model-options', 'fallbacks', scope === undefined ? 'ambient' : profileScopeKey(scope)],
+    queryFn: () => (scope === undefined ? getGlobalModelOptions() : getGlobalModelOptions(undefined, scope))
   })
 
   const providers = (modelOptions.data?.providers ?? []).filter(provider => provider.slug)

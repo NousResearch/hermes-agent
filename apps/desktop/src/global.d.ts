@@ -1305,10 +1305,12 @@ export type DesktopBootstrapEvent =
       docsUrl: string
     }
 
-export type LegacyConnectionOwner = Pick<
+export type ConnectionOwner = Pick<
   HermesConnection,
-  'baseUrl' | 'token' | 'mode' | 'authMode' | 'remoteIdentity' | 'remoteKind' | 'headers'
+  'baseUrl' | 'token' | 'mode' | 'authMode' | 'remoteHost' | 'remoteIdentity' | 'remoteKind' | 'headers'
 >
+
+export type LegacyConnectionOwner = ConnectionOwner
 
 export interface HermesApiRequest {
   path: string
@@ -1338,6 +1340,9 @@ export interface HermesApiRequest {
   // Keep that intent separate from passive hydration so the pool can reserve a
   // slot for the user's visible request.
   priority?: 'foreground'
+  // Expected resolved registered route. Electron still resolves the id itself,
+  // then rejects if that id now names a different URL/auth/SSH destination.
+  connectionOwner?: ConnectionOwner
   // Expected resolved legacy route, not an address the renderer may dial.
   legacyConnection?: LegacyConnectionOwner
 }

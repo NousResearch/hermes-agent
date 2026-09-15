@@ -162,24 +162,48 @@ describe('requestModelOptions', () => {
     expect(gateway.request).not.toHaveBeenCalled()
   })
 
-  it('does not recover an owner-routed failure through the ambient REST connection', async () => {
+  it('recovers an owner-routed failure through REST pinned to the captured scope', async () => {
     const ownerError = new Error('owner gateway unavailable')
     const request = vi.fn(() => Promise.reject(ownerError))
+    const scope = { connectionId: 'gateway-a', profile: 'berry' }
 
-    await expect(requestModelOptions({ profile: 'berry', request, sessionId: 'tile-1' })).rejects.toBe(ownerError)
-    expect(getGlobalModelOptions).not.toHaveBeenCalled()
+    const restPayload = {
+      model: 'berry-model',
+      provider: 'openai',
+      providers: [{ models: ['berry-model'], name: 'OpenAI', slug: 'openai' }]
+    }
+
+    vi.mocked(getGlobalModelOptions).mockResolvedValueOnce(restPayload)
+
+    await expect(requestModelOptions({ profile: 'berry', request, scope, sessionId: 'tile-1' })).resolves.toEqual(
+      restPayload
+    )
+    expect(getGlobalModelOptions).toHaveBeenCalledWith({ explicitOnly: true }, scope)
   })
 
-  it('keeps an empty owner-routed catalog instead of replacing it from ambient REST', async () => {
+  it('recovers an empty owner-routed catalog without replacing its reported selection', async () => {
     const ownerPayload = { model: 'berry-local', provider: 'hermes-local', providers: [] }
+    const scope = { connectionId: 'gateway-a', profile: 'berry' }
+
+    const restPayload = {
+      model: 'rest-default',
+      provider: 'openai',
+      providers: [{ models: ['berry-local'], name: 'Hermes Local', slug: 'hermes-local' }]
+    }
 
     const request = vi.fn(() => Promise.resolve(ownerPayload)) as unknown as <T>(
       method: string,
       params?: Record<string, unknown>
     ) => Promise<T>
 
-    await expect(requestModelOptions({ profile: 'berry', request, sessionId: 'tile-1' })).resolves.toBe(ownerPayload)
-    expect(getGlobalModelOptions).not.toHaveBeenCalled()
+    vi.mocked(getGlobalModelOptions).mockResolvedValueOnce(restPayload)
+
+    await expect(requestModelOptions({ profile: 'berry', request, scope, sessionId: 'tile-1' })).resolves.toEqual({
+      ...restPayload,
+      model: 'berry-local',
+      provider: 'hermes-local'
+    })
+    expect(getGlobalModelOptions).toHaveBeenCalledWith({ explicitOnly: true }, scope)
   })
 })
 

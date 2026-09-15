@@ -6,7 +6,7 @@ import { useModelControls } from '@/app/session/hooks/use-model-controls'
 import type { ModelSelection } from '@/app/shell/model-menu-panel'
 import { ModelPickerDialog } from '@/components/model-picker'
 import type { HermesGateway } from '@/hermes'
-import { resolveModelPickerOwner } from '@/lib/model-picker-owner'
+import { resolveModelPickerOwner, resolveModelPickerProviderSetupScope } from '@/lib/model-picker-owner'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import {
   $activeSessionId,
@@ -19,6 +19,7 @@ import {
 } from '@/store/session'
 import { requestForSessionProfile } from '@/store/session-request-router'
 import { $focusedRuntimeId, $focusedSessionState, $focusedStoredSessionId, $sessionTiles } from '@/store/session-states'
+import { $settingsOwner } from '@/store/settings-scope'
 
 interface ModelPickerOverlayProps {
   gateway?: HermesGateway
@@ -53,6 +54,7 @@ export function ModelPickerOverlay({
   const focusedProvider = useStoreSelector($focusedSessionState, state => state?.provider ?? null)
   const gatewayOpen = useStore($gatewayState) === 'open'
   const open = useStore($modelPickerOpen)
+  const settingsOwner = useStore($settingsOwner)
 
   const pickerOwner = resolveModelPickerOwner({
     ambientConnectionId: ownerConnectionId,
@@ -95,11 +97,7 @@ export function ModelPickerOverlay({
       open={open}
       ownerConnectionId={pickerOwner.connectionId}
       profile={pickerOwner.profile}
-      providerSetupScope={
-        pickerOwner.connectionId
-          ? { connectionId: pickerOwner.connectionId, profile: pickerOwner.profile }
-          : pickerOwner.profile
-      }
+      providerSetupScope={resolveModelPickerProviderSetupScope(pickerOwner, settingsOwner ?? undefined)}
       request={pickerOwner.route ? requestPickerGateway : undefined}
       sessionId={sessionId}
     />

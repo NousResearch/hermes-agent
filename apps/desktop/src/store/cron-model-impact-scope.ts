@@ -9,6 +9,10 @@ export interface CronModelImpactScopeSnapshot {
   generation: number
 }
 
+export function cronModelImpactScopeIsLocal(): boolean {
+  return connectionIdentity.startsWith('local\u0000')
+}
+
 export function getCronModelImpactScope(): CronModelImpactScopeSnapshot {
   return { connection: connectionIdentity, generation }
 }

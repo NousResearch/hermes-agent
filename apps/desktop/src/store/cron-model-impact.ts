@@ -3,6 +3,7 @@ import { translateNow } from '@/i18n'
 import { requestCronReview } from '@/store/cron'
 import {
   beginCronModelImpactAssignment,
+  cronModelImpactScopeIsLocal,
   getCronModelImpactScope,
   invalidateCronModelImpactScopeState,
   onCronModelImpactScopeInvalidated
@@ -108,6 +109,19 @@ function currentActionScope(profile: string, connection: string): boolean {
   return profileIdentity() === profile && getCronModelImpactScope().connection === connection
 }
 
+function scopeTargetsActiveOwner(scope: Exclude<ProfileScope, null | string | undefined>, profile: string): boolean {
+  if (scope.profile !== profile) {
+    return false
+  }
+
+  const connectionId = scope.connectionId ?? null
+
+  return (
+    connectionId === (getApiRequestConnection() ?? null) ||
+    (connectionId === 'local' && cronModelImpactScopeIsLocal())
+  )
+}
+
 function detailFor(impact: CronModelImpact): string {
   const visible = impact.jobs.slice(0, 3).map(job => job.name)
   const remaining = impact.affected_count - visible.length
@@ -190,14 +204,7 @@ export async function setMainModelAssignment(
 
   // Explicit Settings pins can target the active owner too. Only that owner's
   // impact can offer a review action into the active cron view.
-  if (
-    scopeProfile != null &&
-    !(
-      typeof scopeProfile === 'object' &&
-      scopeProfile.profile === profile &&
-      scopeProfile.connectionId === (getApiRequestConnection() || null)
-    )
-  ) {
+  if (scopeProfile != null && !(typeof scopeProfile === 'object' && scopeTargetsActiveOwner(scopeProfile, profile))) {
     return result
   }
 

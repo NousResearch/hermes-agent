@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { resolveModelPickerOwner } from './model-picker-owner'
+import { resolveModelPickerOwner, resolveModelPickerProviderSetupScope } from './model-picker-owner'
 
 describe('resolveModelPickerOwner', () => {
   it('keeps an active-A focused-B picker on the focused tile owner', () => {
@@ -42,5 +42,19 @@ describe('resolveModelPickerOwner', () => {
         sessionTiles: []
       })
     ).toEqual({ connectionId: 'connection-a', profile: 'profile-a', route: undefined })
+  })
+
+  it('preserves an ambient legacy descriptor through nested provider setup', () => {
+    const legacyConnection = {
+      mode: 'remote' as const,
+      baseUrl: 'https://legacy.example',
+      token: 'private-token',
+      headers: { Authorization: 'private-header' }
+    }
+
+    const ambientScope = { connectionId: null, profile: 'profile-a', legacyConnection }
+    const owner = { profile: 'profile-a' }
+
+    expect(resolveModelPickerProviderSetupScope(owner, ambientScope)).toBe(ambientScope)
   })
 })

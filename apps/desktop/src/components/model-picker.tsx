@@ -71,7 +71,14 @@ export function ModelPickerDialog({
 
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, sessionId, ownerConnectionId),
-    queryFn: () => requestModelOptions({ gateway: gw, profile, request, sessionId }),
+    queryFn: () =>
+      requestModelOptions({
+        gateway: gw,
+        profile,
+        request,
+        scope: providerSetupScope ?? (ownerConnectionId ? { connectionId: ownerConnectionId, profile } : profile),
+        sessionId
+      }),
     enabled: open
   })
 

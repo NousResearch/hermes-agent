@@ -165,6 +165,28 @@ describe('capability helpers are connection-scoped', () => {
     expect(last().connectionId).toBe('local')
   })
 
+  it('registered owner descriptors partition cache keys without exposing credentials', () => {
+    const original = {
+      baseUrl: 'https://gateway.example',
+      headers: { 'Cf-Access-Client-Id': 'private-client' },
+      mode: 'remote' as const,
+      token: 'private-token'
+    }
+
+    const replacement = { ...original, token: 'replacement-token' }
+    const originalScope = { connectionId: 'homelab', connectionOwner: original, profile: 'coder' }
+    const replacementScope = { connectionId: 'homelab', connectionOwner: replacement, profile: 'coder' }
+
+    const originalKey = profileScopeKey(originalScope)
+    const replacementKey = profileScopeKey(replacementScope)
+
+    expect(originalKey).not.toBe(replacementKey)
+    expect(originalKey).not.toContain('private-token')
+    expect(originalKey).not.toContain('private-client')
+    void getSkills(originalScope)
+    expect(api.mock.calls.at(-1)?.[0]).toMatchObject({ connectionId: 'homelab', connectionOwner: original })
+  })
+
   it('profileScopeKey keeps legacy keys byte-identical and namespaces every explicit pin', () => {
     expect(profileScopeKey()).toBe('default')
     expect(profileScopeKey(null)).toBe('default')

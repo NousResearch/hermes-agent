@@ -1,6 +1,6 @@
 import { atom, computed } from 'nanostores'
 
-import type { LegacyConnectionOwner } from '@/global'
+import type { ConnectionOwner } from '@/global'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $connection } from '@/store/session'
 
@@ -48,7 +48,7 @@ const $settingsConnectionId = computed($connection, connection => {
   return connection.mode === 'local' ? 'local' : null
 })
 
-let previousLegacyConnection: LegacyConnectionOwner | null = null
+let previousConnectionOwner: ConnectionOwner | null = null
 
 function sameHeaders(left?: Record<string, string>, right?: Record<string, string>): boolean {
   const leftEntries = Object.entries(left ?? {})
@@ -57,48 +57,56 @@ function sameHeaders(left?: Record<string, string>, right?: Record<string, strin
   return leftEntries.length === rightEntries.length && leftEntries.every(([key, value]) => right?.[key] === value)
 }
 
-const $settingsLegacyConnection = computed($connection, connection => {
-  if (connection?.mode !== 'remote' || Object.hasOwn(connection, 'connectionId') || !connection.baseUrl) {
-    previousLegacyConnection = null
+function sameConnectionOwner(left: ConnectionOwner, right: ConnectionOwner): boolean {
+  return (
+    left.mode === right.mode &&
+    left.baseUrl === right.baseUrl &&
+    left.token === right.token &&
+    left.authMode === right.authMode &&
+    left.remoteHost === right.remoteHost &&
+    left.remoteIdentity === right.remoteIdentity &&
+    left.remoteKind === right.remoteKind &&
+    sameHeaders(left.headers, right.headers)
+  )
+}
+
+const $settingsConnectionOwner = computed($connection, connection => {
+  const hasRegisteredClaim = Boolean(connection && Object.hasOwn(connection, 'connectionId'))
+  const registeredId = hasRegisteredClaim && typeof connection?.connectionId === 'string' ? connection.connectionId.trim() : ''
+
+  if (!connection?.mode || (hasRegisteredClaim && !registeredId)) {
+    previousConnectionOwner = null
 
     return null
   }
 
-  const next: LegacyConnectionOwner = {
+  const next: ConnectionOwner = {
     mode: connection.mode,
     baseUrl: connection.baseUrl,
     token: connection.token,
     authMode: connection.authMode,
+    remoteHost: connection.remoteHost,
     remoteIdentity: connection.remoteIdentity,
     remoteKind: connection.remoteKind,
     headers: connection.headers
   }
 
-  if (
-    previousLegacyConnection &&
-    previousLegacyConnection.mode === next.mode &&
-    previousLegacyConnection.baseUrl === next.baseUrl &&
-    previousLegacyConnection.token === next.token &&
-    previousLegacyConnection.authMode === next.authMode &&
-    previousLegacyConnection.remoteIdentity === next.remoteIdentity &&
-    previousLegacyConnection.remoteKind === next.remoteKind &&
-    sameHeaders(previousLegacyConnection.headers, next.headers)
-  ) {
-    return previousLegacyConnection
+  if (previousConnectionOwner && sameConnectionOwner(previousConnectionOwner, next)) {
+    return previousConnectionOwner
   }
 
-  previousLegacyConnection = next
+  previousConnectionOwner = next
 
   return next
 })
 
 export const $settingsOwner = computed(
-  [$settingsConnectionId, $settingsScopeProfile, $settingsLegacyConnection],
-  (connectionId, profile, legacyConnection) =>
-    connectionId
-      ? { connectionId, profile }
-      : legacyConnection
-        ? { connectionId: null, profile, legacyConnection }
+  [$settingsConnectionId, $settingsScopeProfile, $settingsConnectionOwner],
+  (connectionId, profile, connectionOwner) =>
+    connectionId && connectionOwner
+      ? { connectionId, profile, connectionOwner }
+      : connectionOwner?.mode === 'remote' && connectionOwner.baseUrl
+        ? { connectionId: null, profile, legacyConnection: connectionOwner }
         : null
 )
 

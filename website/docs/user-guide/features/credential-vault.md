@@ -67,6 +67,16 @@ origins; nothing is inferred beyond the URLs saved on the item.
 Prefer not to use a detected manager? `hermes vault sources --disable bitwarden`,
 or the switch in **Settings → Passwords & Logins**.
 
+## Third-party password managers
+
+Other password-manager CLIs, including Proton Pass, are installed as plugins so
+they can define and maintain their own CLI and authentication contract. Hermes
+discovers a plugin backend from `vault.<backend-name>`, checks its
+non-interactive availability probe, and routes handles using its unique prefix.
+Plugin names and prefixes cannot shadow the built-in backends. See the
+[login-backend plugin guide](/developer-guide/login-backend-plugin/) for the
+complete contract and implementation outline.
+
 ## Paying and filling addresses
 
 Cards and addresses work the same way as logins: saved once (**Settings →

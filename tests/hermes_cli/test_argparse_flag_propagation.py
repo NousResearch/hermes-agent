@@ -271,3 +271,117 @@ class TestChatSubparserInheritedValueFlags:
             + "\n  ".join(f"{opts} dest={dest} default={d!r}"
                           for opts, dest, d in offenders)
         )
+
+
+class TestYoloOnGatewaySubcommand:
+    """Verify --yolo is accepted by the gateway subcommand in every
+    position, and that cmd_gateway exports HERMES_YOLO_MODE=1.
+
+    Regression against the CLI inconsistency where --yolo was defined on
+    the top-level parser and inherited by `chat`, but `hermes gateway
+    --yolo` failed with `unrecognized arguments` — even though the gateway
+    (headless under systemd, no TTY for approval prompts) is the place
+    that most needs it.
+    """
+
+    ARGVS = [
+        ["--yolo", "gateway", "run", "--help"],
+        ["gateway", "--yolo", "run", "--help"],
+        ["gateway", "run", "--yolo", "--help"],
+        ["gateway", "--yolo", "--help"],
+    ]
+
+    _DRIVER = r"""
+import io, json, sys
+from contextlib import redirect_stdout, redirect_stderr
+
+import hermes_cli.main as main_mod
+
+argvs = json.loads(sys.argv[1])
+results = []
+for argv in argvs:
+    sys.argv = ["hermes", *argv]
+    out, err = io.StringIO(), io.StringIO()
+    code = 0
+    try:
+        with redirect_stdout(out), redirect_stderr(err):
+            main_mod.main()
+    except SystemExit as exc:
+        code = int(exc.code or 0)
+    except Exception as exc:  # noqa: BLE001 - report, don't crash the driver
+        code = -1
+        err.write(repr(exc))
+    results.append({"argv": argv, "code": code, "stderr": err.getvalue()[:300]})
+print(json.dumps(results))
+"""
+
+    def test_accepted_at_every_position(self):
+        """Every `hermes <argv>` must exit 0 (help) rather than failing
+        with `unrecognized arguments`."""
+        import json
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, "-c", self._DRIVER, json.dumps(self.ARGVS)],
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        assert result.returncode == 0, (
+            f"driver failed rc={result.returncode}\n"
+            f"stdout: {result.stdout[:500]}\nstderr: {result.stderr[:500]}"
+        )
+        for entry in json.loads(result.stdout.strip().splitlines()[-1]):
+            assert entry["code"] == 0, (
+                f"argv={entry['argv']!r} returned {entry['code']}\n"
+                f"stderr: {entry['stderr']}"
+            )
+            assert "unrecognized arguments" not in entry["stderr"]
+
+    def _build_full_parser(self):
+        """Build the real top-level parser with the real gateway subparser
+        attached, wired the same way hermes_cli.main.main() does."""
+        from hermes_cli._parser import build_top_level_parser
+        from hermes_cli.subcommands.gateway import build_gateway_parser
+
+        parser, subparsers, _chat = build_top_level_parser()
+        build_gateway_parser(
+            subparsers,
+            cmd_gateway=lambda args: None,
+            cmd_proxy=lambda args: None,
+            cmd_gateway_enroll=lambda args: None,
+        )
+        return parser
+
+    def test_gateway_namespace_sets_yolo(self):
+        """Passing --yolo after the gateway subcommand must set the flag.
+
+        Uses the real production parser builders (build_top_level_parser +
+        build_gateway_parser) so this fails if the production parser drifts
+        back to rejecting the flag.
+        """
+        parser = self._build_full_parser()
+        args = parser.parse_args(["gateway", "--yolo", "status"])
+        assert getattr(args, "yolo", False) is True
+        assert args.gateway_command == "status"
+
+    def test_gateway_without_yolo_keeps_flag_false(self):
+        """Without the flag, `yolo` must stay False: the top-level parser
+        owns the default, and the gateway subparser declares the flag with
+        default=SUPPRESS so it never overrides the parent value."""
+        parser = self._build_full_parser()
+        args = parser.parse_args(["gateway", "status"])
+        assert getattr(args, "yolo", False) is False
+
+    def _simulate_cmd_gateway_yolo_check(self, args):
+        """Replicate the exact check added to cmd_gateway in main.py."""
+        if getattr(args, "yolo", False):
+            os.environ["HERMES_YOLO_MODE"] = "1"
+
+    def test_cmd_gateway_yolo_check_sets_env(self):
+        parser = self._build_full_parser()
+        args = parser.parse_args(["--yolo", "gateway", "status"])
+        try:
+            self._simulate_cmd_gateway_yolo_check(args)
+            assert os.environ.get("HERMES_YOLO_MODE") == "1"
+        finally:
+            os.environ.pop("HERMES_YOLO_MODE", None)

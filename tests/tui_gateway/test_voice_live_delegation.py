@@ -88,6 +88,26 @@ class TestSessionCreation:
         assert voice_live.resolve_gpt_live_status()["available"] is False
 
 
+class TestIdleHangupSeconds:
+    def test_default_is_five_minutes(self, monkeypatch):
+        monkeypatch.setattr(voice_live, "_voice_section", lambda: {"voice_chat_mode": "gpt-live"})
+        monkeypatch.setattr(voice_live, "_resolve_credentials", lambda live: ("sk-test", "https://api.openai.com/v1"))
+        status = voice_live.resolve_gpt_live_status()
+        assert status["idle_hangup_seconds"] == 300
+
+    def test_zero_disables(self, monkeypatch):
+        monkeypatch.setattr(
+            voice_live, "_voice_section", lambda: {"voice_chat_mode": "gpt-live", "gpt_live": {"idle_hangup_seconds": 0}}
+        )
+        monkeypatch.setattr(voice_live, "_resolve_credentials", lambda live: ("sk-test", "https://api.openai.com/v1"))
+        assert voice_live.resolve_gpt_live_status()["idle_hangup_seconds"] == 0
+
+    def test_parse_rejects_negatives_and_junk(self):
+        assert voice_live.parse_idle_hangup_seconds({"idle_hangup_seconds": -1}) == 0
+        assert voice_live.parse_idle_hangup_seconds({"idle_hangup_seconds": "nope"}) == 300
+        assert voice_live.parse_idle_hangup_seconds({}) == 300
+
+
 class TestVoiceLiveTurnNote:
     @pytest.fixture
     def busy_session(self):

@@ -35,6 +35,9 @@ CHAINED_MODE = "chained"
 DEFAULT_LIVE_MODEL = "gpt-live-1"
 DEFAULT_LIVE_VOICE = "marin"
 DEFAULT_LIVE_BASE_URL = "https://api.openai.com/v1"
+# Desktop GPT-Live bills $0.05/min including silence. Hang up after this many
+# quiet seconds unless a Hermes delegation is in flight. 0 disables.
+DEFAULT_IDLE_HANGUP_SECONDS = 300
 # Voices the vendor lists for gpt-live-1 (live-conversations guide) plus the realtime defaults it
 # accepts; free text stays allowed for custom voices.
 GPT_LIVE_VOICES = (
@@ -128,6 +131,21 @@ def live_instructions(live: Optional[Dict[str, Any]] = None) -> str:
     return f"{LIVE_PERSONA}\n\n{extra}" if extra else LIVE_PERSONA
 
 
+def parse_idle_hangup_seconds(live: Optional[Dict[str, Any]] = None) -> int:
+    """``voice.gpt_live.idle_hangup_seconds``: default 300, ``0`` disables, negatives clamp to 0."""
+    section = live if isinstance(live, dict) else {}
+    if "idle_hangup_seconds" not in section:
+        return DEFAULT_IDLE_HANGUP_SECONDS
+    raw = section.get("idle_hangup_seconds")
+    if raw is None:
+        return DEFAULT_IDLE_HANGUP_SECONDS
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_IDLE_HANGUP_SECONDS
+    return max(0, value)
+
+
 def resolve_gpt_live_status() -> Dict[str, Any]:
     """Non-secret readiness verdict for the client: which mode is selected and whether GPT-Live
     can start (a key resolves). Never returns the key."""
@@ -141,6 +159,7 @@ def resolve_gpt_live_status() -> Dict[str, Any]:
         "reason": None if api_key else "no OpenAI API key (set OPENAI_API_KEY or voice.gpt_live.api_key)",
         "model": str(live.get("model") or DEFAULT_LIVE_MODEL),
         "voice": str(live.get("voice") or DEFAULT_LIVE_VOICE),
+        "idle_hangup_seconds": parse_idle_hangup_seconds(live),
     }
 
 

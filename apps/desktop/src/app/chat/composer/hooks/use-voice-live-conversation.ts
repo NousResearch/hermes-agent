@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { sanitizeTextForSpeech } from '@/lib/speech-text'
-import { type LiveHistoryMessage, type LiveTranscriptFragment, VoiceLiveSession } from '@/lib/voice-live'
+import { type LiveHistoryMessage, type LiveTranscriptFragment, DEFAULT_IDLE_HANGUP_SECONDS, VoiceLiveSession } from '@/lib/voice-live'
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import { notify, notifyError } from '@/store/notifications'
+import { $voiceLiveStatus } from '@/store/voice-live'
 
 import type { ConversationStatus } from './use-voice-conversation'
 
@@ -154,6 +155,7 @@ export function useVoiceLiveConversation({
   const setDelegation = useCallback((id: null | string) => {
     delegationRef.current = id
     setActiveDelegation(id)
+    sessionRef.current?.markDelegation(id)
   }, [])
 
   const refreshStatus = useCallback(() => {
@@ -249,6 +251,17 @@ export function useVoiceLiveConversation({
         setDelegation(null)
         setStatus('idle')
 
+        if (reason === 'idle_timeout') {
+          notify({
+            kind: 'info',
+            message: voiceCopy.liveEndedIdle,
+            title: voiceCopy.liveEnded
+          })
+          latest.current.onFatalError?.()
+
+          return
+        }
+
         if (reason !== 'close_requested') {
           notify({
             kind: 'warning',
@@ -302,7 +315,7 @@ export function useVoiceLiveConversation({
         setLevel(speaking ? 0.6 : 0)
         refreshStatus()
       }
-    })
+    }, $voiceLiveStatus.get()?.idleHangupSeconds ?? DEFAULT_IDLE_HANGUP_SECONDS)
 
     sessionRef.current = session
     startingRef.current = false
@@ -341,6 +354,7 @@ export function useVoiceLiveConversation({
     voiceCopy.couldNotStartSession,
     voiceCopy.liveDelegationFailed,
     voiceCopy.liveEnded,
+    voiceCopy.liveEndedIdle,
     voiceCopy.liveError
   ])
 

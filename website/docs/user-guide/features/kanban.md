@@ -929,6 +929,15 @@ hermes kanban create "nightly backup audit" \
 
 The dispatcher refuses to re-spawn a ready task when it hit a quota/auth/429 error on the previous run (`blocker_auth`), or completed a run successfully within the guard window (`recent_success`), or a recent task comment links to a GitHub PR (`active_pr`). This prevents repeat worker storms on the same bug or task while a human catches up. See the `respawn_guarded` row in the [event reference](#event-reference).
 
+`active_pr` is scoped to *implementation* work: its rationale is "don't spawn a second worker that opens a duplicate PR". Authorized recovery assignees (default: `closer`, configurable via `kanban.active_pr_recovery_assignees`) are exempt from it — their job is to act on the PR that already exists (stuck-PR repair, merge/acceptance chase), not duplicate it. Every other guard (`recent_success`, `blocker_auth`, rate-limit cooldown) still applies to a recovery assignee unchanged. Configuring the list REPLACES the default rather than extending it.
+
+```yaml
+kanban:
+  active_pr_recovery_assignees: ["closer"]   # default
+```
+
+`hermes kanban dispatch --json` and the embedded gateway dispatcher's health log both expose which reason(s) suppressed the queue (`respawn_guarded`, `rate_limited`, `skipped_locked`, `memory_pressure`) instead of a bare zero-spawn count, so a "stuck" alert names the cause.
+
 ### Drag-to-delete and bulk delete (dashboard)
 
 The dashboard exposes a **trash drop zone** on the kanban page — drag any card into it to delete the task (cascades through `task_events`, child links, and subscriptions). A confirmation prompt protects against accidents. Bulk delete is also reachable via `DELETE /api/plugins/kanban/tasks` with a JSON body `{"ids": ["t_abc", "t_def", ...]}`.

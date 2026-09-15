@@ -438,6 +438,13 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
     return None, fields
 
 
+def _finish_submit_acceptance(session):
+    """Under ``history_lock``, release submits waiting for this acceptance decision."""
+    gate = session.pop("_submit_acceptance_gate", None)
+    if gate is not None:
+        gate.set()
+
+
 def _persist_session_row_for_submit(rid, session):
     """Lazily persist the DB row now that the user sent a message (a branch becomes real
     here); the error reply is the only user-visible signal (desktop maps it to a toast)."""
@@ -468,6 +475,7 @@ def _persist_session_row_for_submit(rid, session):
         session.pop("_hosted_room_task", None)
         _clear_inflight_turn(session)
         _release_active_session_slot(session)
+        _finish_submit_acceptance(session)
     return error
 
 
@@ -534,6 +542,7 @@ def _lock_in_submit_turn(
         if hosted_task is not None:
             session["_hosted_room_task"] = dict(hosted_task)
         _start_inflight_turn(session, text)
+        session["_submit_acceptance_gate"] = threading.Event()
     return None, fields
 
 
@@ -633,6 +642,8 @@ def _(rid, params: dict) -> dict:
         isolated_response = _submit_prompt_to_compute_host(
             rid, sid, session, text, display_kind=display_kind)
         if not isolated_response.get("error"):
+            with session["history_lock"]:
+                _finish_submit_acceptance(session)
             # The truncation already happened inline above (memory + DB).
             isolated_response["result"].update(survivor_fields)
             return isolated_response
@@ -659,6 +670,8 @@ def _(rid, params: dict) -> dict:
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread
     run_thread.start()
+    with session["history_lock"]:
+        _finish_submit_acceptance(session)
     return _ok(rid, {"status": "streaming", **survivor_fields})
 
 

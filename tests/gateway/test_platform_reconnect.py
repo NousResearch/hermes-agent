@@ -927,7 +927,12 @@ class TestVoiceInputCallbackWiring:
 
         def fake_create_task(coro):
             coro.close()
-            return MagicMock()
+            # Startup now awaits the boot-send handle. A MagicMock accepts
+            # add_done_callback without ever firing it, hanging asyncio.wait.
+            # Keep background work suppressed, but satisfy the Future contract.
+            completed = asyncio.get_running_loop().create_future()
+            completed.set_result(None)
+            return completed
 
         with patch.object(runner, "_create_adapter", return_value=adapter):
             with patch("gateway.status.write_runtime_status"):

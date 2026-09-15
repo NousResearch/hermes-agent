@@ -24,6 +24,7 @@ from agent.secret_sources.base import (
     SECRET_SOURCE_API_VERSION, ErrorKind, FetchResult, SecretSource, is_valid_env_name,
     reset_source_environment, set_source_environment,
 )
+from agent.secret_sources.tool_credentials import should_apply_to_environ
 from hermes_constants import hermes_home_key
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,18 @@ _BUILTIN_SOURCES = (
     ("agent.secret_sources.onepassword", "OnePasswordSource", "1Password"),
     ("agent.secret_sources.command", "CommandSource", "command"),
 )
+
+
+@dataclass(frozen=True)
+class CredentialHandle:
+    """Name + provenance for a tool-facing secret withheld from environ.
+
+    Value is intentionally absent: handles are a capability ticket, not a
+    second copy of the secret in the apply report.
+    """
+
+    name: str
+    source: str          # SecretSource.name
 
 
 @dataclass
@@ -75,6 +88,7 @@ class ApplyReport:
     sources: List[SourceReport] = field(default_factory=list)
     provenance: Dict[str, AppliedVar] = field(default_factory=dict)
     conflicts: List[str] = field(default_factory=list)  # human-readable warnings
+    handles: List[CredentialHandle] = field(default_factory=list)
 
     @property
     def applied_any(self) -> bool:
@@ -312,8 +326,10 @@ class _Applier:
     """Apply phase state for one orchestrated pass: sequential, first-wins, attributed."""
 
     def __init__(self, env: MutableMapping[str, str], report: ApplyReport,
-                 protected: Dict[str, str], preserve: frozenset) -> None:
+                 protected: Dict[str, str], preserve: frozenset,
+                 secrets_cfg: dict) -> None:
         self.env, self.report, self.protected, self.preserve = env, report, protected, preserve
+        self.secrets_cfg = secrets_cfg
         self.claimed: Dict[str, str] = {}  # var → source name that won it
 
     def apply_source(self, source: SecretSource, cfg: dict, result: FetchResult,
@@ -356,6 +372,11 @@ class _Applier:
         if existed and (var in self.preserve or not override):
             sr.skipped_existing.append(var)
             return False
+        if not should_apply_to_environ(var, self.secrets_cfg):
+            # First-wins: claim so a later source cannot hydrate environ.
+            self.claimed[var] = source.name
+            self.report.handles.append(CredentialHandle(name=var, source=source.name))
+            return False
         self.env[var] = value
         self.claimed[var] = source.name
         sr.applied.append(var)
@@ -379,6 +400,11 @@ def apply_all(secrets_cfg: dict, home_path: Path,
     Profile aliasing: under a named profile an applied ``FOO_<PROFILE>``
     (credential-shaped suffixes only) also hydrates canonical ``FOO``, under the
     same guards; disabled with ``secrets.profile_alias: false``.
+
+    ``secrets.tool_credentials: handles`` withholds an explicit GitHub/AWS
+    tool-facing set from ``environ`` (recorded on ``ApplyReport.handles``);
+    provider and bootstrap keys still apply. Default (missing / ``env`` /
+    unknown) is the old hydrate-everything path.
 
     1. 2. 3. 4. See #58073.
     See #51447.
@@ -413,7 +439,7 @@ def apply_all(secrets_cfg: dict, home_path: Path,
     # An alias never shadows a var some source supplies by its real name.
     supplied_directly = {v for _, _, r in fetches if r.ok for v in r.secrets if isinstance(v, str)}
 
-    applier = _Applier(env, report, protected, preserve)
+    applier = _Applier(env, report, protected, preserve, secrets_cfg)
     for source, cfg, result in fetches:
         applier.apply_source(source, cfg, result, profile, supplied_directly)
     return report

@@ -120,6 +120,20 @@ def _receipt_reports_stale_runtime(expected_sha: str | None = None) -> bool:
     if not expected_sha:
         return False
 
+    # A successful receipt records the fleet at that update's target, not at
+    # whatever HEAD a later manual Git integration installs. Keep incomplete and
+    # legacy receipts on the existing current-checkout comparison; explicit stale
+    # rows below remain restart evidence even in a nominally successful receipt.
+    post_update = receipt.get("post_update")
+    if (
+        (receipt.get("outcome") == "success" or receipt.get("exit_code") == 0)
+        and not _receipt_looks_unfinished(receipt)
+        and isinstance(post_update, dict)
+        and isinstance(post_update.get("sha"), str)
+        and post_update["sha"]
+    ):
+        expected_sha = post_update["sha"]
+
     def _sha_mismatch(code_sha) -> bool:
         return bool(code_sha) and str(code_sha) != str(expected_sha)
 

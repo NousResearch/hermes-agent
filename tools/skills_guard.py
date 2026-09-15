@@ -197,8 +197,11 @@ THREAT_PATTERNS = [
      "hidden_div", "high", "injection", "hidden HTML div (invisible instructions)"),
     # ── Destructive operations ──
     # Cleanup under the standard temp roots (/tmp, /var/tmp, /dev/shm, /run) is routine in
-    # test/smoke scripts and CI; anything else rooted at "/" stays critical.
-    (r'rm\s+-rf\s+/(?!tmp(?:\b|/)|var/tmp(?:\b|/)|dev/shm(?:\b|/)|run(?:\b|/))',
+    # test/smoke scripts and CI. A parent segment inside an exempted root can escape it,
+    # so it remains destructive along with every other path rooted at "/".
+    (r'rm\s+-rf\s+/(?:'
+     r'(?!tmp(?:\b|/)|var/tmp(?:\b|/)|dev/shm(?:\b|/)|run(?:\b|/))'
+     r'|(?:tmp|var/tmp|dev/shm|run)/(?:[^/\s]+/)*\.\.(?=/|\s|$))',
      "destructive_root_rm", "critical", "destructive", "recursive delete from root"),
     (r'rm\s+(-[^\s]*)?r.*\$HOME|\brmdir\s+.*\$HOME',
      "destructive_home_rm", "critical", "destructive", "recursive delete targeting home directory"),

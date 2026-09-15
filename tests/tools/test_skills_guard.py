@@ -253,6 +253,20 @@ class TestScanFile:
         bad.write_text("rm -rf /etc/hosts\nrm -rf /home/user\nrm -rf /\n", encoding="utf-8")
         assert len([fi for fi in scan_file(bad, "bad.sh") if fi.pattern_id == "destructive_root_rm"]) == 3
 
+    def test_rm_rf_temp_root_traversal_is_destructive_root_rm(self, tmp_path):
+        """#111335: a temp-root exemption must not hide a parent traversal."""
+        bypasses = tmp_path / "temp-root-traversal.sh"
+        bypasses.write_text(
+            "rm -rf /tmp/../etc\n"
+            "rm -rf /tmp/cache/../../etc\n"
+            "rm -rf /var/tmp/../etc\n"
+            "rm -rf /dev/shm/../etc\n"
+            "rm -rf /run/../etc\n",
+            encoding="utf-8",
+        )
+        findings = scan_file(bypasses, "temp-root-traversal.sh")
+        assert len([fi for fi in findings if fi.pattern_id == "destructive_root_rm"]) == 5
+
 
 # ---------------------------------------------------------------------------
 # scan_skill — directory scanning

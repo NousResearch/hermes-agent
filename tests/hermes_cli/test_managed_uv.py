@@ -599,6 +599,26 @@ class TestRuntimeRepair:
         assert leftovers == [], f"no stale markers may remain: {leftovers}"
 
 
+def _make_candidate_layout(tmp_path):
+    """The minimal checkout + pinned generation python `_stage_candidate_venv` needs."""
+    root = tmp_path / "checkout"
+    root.mkdir()
+    (root / "uv.lock").write_text("# lock\n", encoding="utf-8")
+    generation = root / ".hermes-runtime" / "python" / "gen"
+    python = generation / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("py", encoding="utf-8")
+    return root, generation, python
+
+
+def _fake_sync_proc(lines, returncode=0):
+    """``subprocess.Popen`` stand-in for the candidate sync: text lines on stdout."""
+    proc = MagicMock()
+    proc.stdout = iter(lines)
+    proc.wait.return_value = returncode
+    return proc
+
+
 class TestStageCandidateVenvCrossPlatform:
     """Candidate sync preserves project config and streams progress on every host."""
 
@@ -607,21 +627,20 @@ class TestStageCandidateVenvCrossPlatform:
 
         from hermes_cli.managed_uv import _stage_candidate_venv
 
-        root = tmp_path / "checkout"
-        root.mkdir()
-        (root / "uv.lock").write_text("# lock\n", encoding="utf-8")
-        generation = root / ".hermes-runtime" / "python" / "gen"
-        python = generation / "bin" / "python"
-        python.parent.mkdir(parents=True)
-        python.write_text("py", encoding="utf-8")
-
-        calls = []
+        root, generation, python = _make_candidate_layout(tmp_path)
+        created = []
+        synced = []
 
         def fake_run(argv, **kwargs):
-            calls.append((list(argv), kwargs))
+            created.append((list(argv), kwargs))
             return MagicMock(returncode=0)
 
+        def fake_popen(argv, **kwargs):
+            synced.append((list(argv), kwargs))
+            return _fake_sync_proc([])
+
         with patch("hermes_cli.managed_uv.subprocess.run", side_effect=fake_run), \
+             patch("hermes_cli.managed_uv.subprocess.Popen", side_effect=fake_popen), \
              patch(
                  "hermes_cli.managed_uv._smoke_candidate_venv",
                  return_value=(True, "", None),
@@ -634,17 +653,60 @@ class TestStageCandidateVenvCrossPlatform:
             )
 
         assert candidate is not None
-        assert len(calls) == 2
-        venv_argv, venv_kwargs = calls[0]
-        sync_argv, sync_kwargs = calls[1]
+        assert len(created) == 1
+        venv_argv, venv_kwargs = created[0]
         assert venv_argv[:2] == ["uv", "venv"]
         assert "--no-config" in venv_argv
         assert venv_kwargs["env"].get("UV_NO_CONFIG") == "1"
+        sync_argv, sync_kwargs = synced[0]
         assert sync_argv[:2] == ["uv", "sync"]
         assert "--locked" in sync_argv
         assert "--no-config" not in sync_argv
         assert "UV_NO_CONFIG" not in sync_kwargs["env"]
         assert sync_kwargs["stderr"] == subprocess.STDOUT
+
+    def test_sync_failure_reports_the_child_reason(self, tmp_path, capsys, caplog):
+        """A rejected candidate must say WHY — the child's own diagnosis, not a bare rc."""
+        import logging
+
+        from hermes_cli.managed_uv import _stage_candidate_venv
+
+        root, generation, python = _make_candidate_layout(tmp_path)
+        lock_error = [
+            "Resolving despite existing lockfile due to addition of exclude newer exclusion\n",
+            "error: The lockfile at `uv.lock` needs to be updated, but `--locked` was provided.\n",
+            "\n",
+            "hint: To update the lockfile, run `uv lock`.\n",
+        ]
+
+        with caplog.at_level(logging.WARNING), \
+             patch("hermes_cli.managed_uv.subprocess.run", return_value=MagicMock(returncode=0)), \
+             patch(
+                 "hermes_cli.managed_uv.subprocess.Popen",
+                 return_value=_fake_sync_proc(lock_error, returncode=1),
+             ), \
+             patch(
+                 "hermes_cli.managed_uv._smoke_candidate_venv",
+                 return_value=(True, "", None),
+             ):
+            candidate = _stage_candidate_venv(
+                "uv",
+                project_root=root,
+                generation=generation,
+                python=python,
+            )
+
+        assert candidate is None
+        console = capsys.readouterr().out
+        # The reason is the child's own diagnosis: the error + hint, without the progress noise
+        # that precedes them. It reaches the console AND the rejection the updater logs.
+        reason_line = next(
+            line for line in console.splitlines() if "dependency sync failed" in line)
+        assert "error: The lockfile at `uv.lock` needs to be updated" in reason_line
+        assert "hint: To update the lockfile, run `uv lock`." in reason_line
+        assert "Resolving despite existing lockfile" not in reason_line
+        assert "candidate dependency sync failed (rc=1)" in caplog.text
+        assert "needs to be updated" in caplog.text
 
 
 class TestRuntimeCutover:

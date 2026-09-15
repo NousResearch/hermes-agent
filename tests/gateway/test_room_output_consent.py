@@ -11,12 +11,21 @@ import pytest
 from gateway import hosted_room_peer as peer
 from tests.gateway.test_hosted_room_attachment_wire import SECRET, signed, TEXT_RIGHTS, STAGE_RIGHTS
 from tests.gateway.test_hosted_room_peer import _dispatch
-from tests.gateway.test_canonical_peer_target_setup import target, invite, invitation, request  # noqa: F401
+from tests.gateway.test_canonical_peer_target_setup import target as base_target, invite, invitation, request  # noqa: F401
 from tests.gateway.test_canonical_peer_invitation_permissions import receipts
 
 
 OUTPUT_RIGHTS = ('artifact.ack', 'artifact.read')
 PROVIDER = '_room_output_invitation_permissions'
+
+
+@pytest.fixture
+def target(base_target, monkeypatch):
+    # Codec helper imports load gateway.run before the temporary root exists.
+    # Bind its process config home to the actual root, never fake the policy.
+    from gateway import run
+    monkeypatch.setattr(run, '_hermes_home', base_target.home)
+    return base_target
 
 
 @pytest.mark.parametrize('right', OUTPUT_RIGHTS)

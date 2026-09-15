@@ -439,6 +439,75 @@ class TestTranscribeLocalExtended:
         assert "CUDA out of memory" in result["error"]
 
 
+class TestWindowsCudaDllRegistration:
+    """Windows + pip CUDA wheels: ``site-packages/nvidia/<pkg>/bin`` is not on
+    PATH, so ctranslate2 cannot load cuBLAS and faster-whisper silently drops
+    to the CPU (int8) fallback.  The directories must be registered before the
+    model is created, and the returned handles kept alive.
+    """
+
+    def _fresh(self, monkeypatch):
+        import tools.transcription_local as T
+        monkeypatch.setattr(T, "_cuda_dll_dirs_registered", False)
+        monkeypatch.setattr(T, "_cuda_dll_directory_handles", [])
+        return T
+
+    def test_off_windows_is_a_noop(self, monkeypatch):
+        T = self._fresh(monkeypatch)
+        monkeypatch.setattr(T.platform, "system", lambda: "Linux")
+        add_dll = MagicMock()
+        monkeypatch.setattr(T.os, "add_dll_directory", add_dll, raising=False)
+
+        T._register_windows_cuda_dll_dirs()
+
+        add_dll.assert_not_called()
+
+    def test_registers_present_nvidia_bin_dirs(self, tmp_path, monkeypatch):
+        T = self._fresh(monkeypatch)
+        monkeypatch.setattr(T.platform, "system", lambda: "Windows")
+        for sub in ("cublas", "cudnn"):
+            (tmp_path / "nvidia" / sub / "bin").mkdir(parents=True)
+        monkeypatch.setattr(T.site, "getsitepackages", lambda: [str(tmp_path)])
+        add_dll = MagicMock(side_effect=lambda directory: object())
+        monkeypatch.setattr(T.os, "add_dll_directory", add_dll, raising=False)
+        monkeypatch.setenv("PATH", "/usr/bin")
+
+        T._register_windows_cuda_dll_dirs()
+
+        assert [c.args[0] for c in add_dll.call_args_list] == [
+            str(tmp_path / "nvidia" / "cublas" / "bin"),
+            str(tmp_path / "nvidia" / "cudnn" / "bin"),
+        ]
+        # Handles are retained: add_dll_directory unregisters the dir on GC.
+        assert len(T._cuda_dll_directory_handles) == 2
+        # PATH is augmented too, for loader paths that ignore the DLL-dir list.
+        assert T.os.environ["PATH"].startswith(str(tmp_path / "nvidia" / "cublas" / "bin"))
+
+    def test_absent_nvidia_packages_are_ignored(self, tmp_path, monkeypatch):
+        T = self._fresh(monkeypatch)
+        monkeypatch.setattr(T.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(T.site, "getsitepackages", lambda: [str(tmp_path)])
+        add_dll = MagicMock()
+        monkeypatch.setattr(T.os, "add_dll_directory", add_dll, raising=False)
+
+        T._register_windows_cuda_dll_dirs()
+
+        add_dll.assert_not_called()
+
+    def test_idempotent(self, tmp_path, monkeypatch):
+        T = self._fresh(monkeypatch)
+        monkeypatch.setattr(T.platform, "system", lambda: "Windows")
+        (tmp_path / "nvidia" / "cublas" / "bin").mkdir(parents=True)
+        monkeypatch.setattr(T.site, "getsitepackages", lambda: [str(tmp_path)])
+        add_dll = MagicMock(side_effect=lambda directory: object())
+        monkeypatch.setattr(T.os, "add_dll_directory", add_dll, raising=False)
+
+        T._register_windows_cuda_dll_dirs()
+        T._register_windows_cuda_dll_dirs()
+
+        assert add_dll.call_count == 1
+
+
 # ============================================================================
 # Model auto-correction
 # ============================================================================

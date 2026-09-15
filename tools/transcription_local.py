@@ -12,6 +12,7 @@ import logging
 import os
 import platform
 import shlex
+import site
 import subprocess
 import tempfile
 import importlib.util as _ilu
@@ -120,6 +121,58 @@ def _get_idle_unload_seconds(local_cfg: Dict[str, Any]) -> int:
     return max(_config_number(local_cfg, "unload_after_idle_seconds", 0, int), 0)
 
 
+# ``pip install nvidia-cublas-cu12`` / ``nvidia-cudnn-cu12`` (pulled in by
+# faster-whisper on Windows) unpack cuBLAS/cuDNN under
+# ``site-packages/nvidia/<pkg>/bin``, which is NOT on PATH.  ctranslate2 loads
+# cuBLAS lazily via ``LoadLibrary``; with the directory unregistered the CUDA
+# backend fails — frequently only at the first ``transcribe()`` call rather
+# than at model load — and Hermes silently falls back to CPU (int8), running
+# roughly an order of magnitude slower.  Register the directories process-wide
+# before the model is created.  ``os.add_dll_directory`` unregisters a
+# directory when its return value is garbage-collected, so the handles are
+# retained for the life of the process.
+_cuda_dll_directory_handles: list = []
+_cuda_dll_dirs_registered = False
+
+# NVIDIA pip wheels that ship a ``bin/`` directory of loadable libraries.
+_NVIDIA_DLL_SUBDIRS = ("cublas", "cudnn", "cuda_nvrtc", "cufft", "curand")
+
+
+def _register_windows_cuda_dll_dirs() -> None:
+    """Make pip-installed NVIDIA CUDA libraries discoverable on Windows.
+
+    No-op on non-Windows hosts and after the first successful call
+    (idempotent).  Registers every ``site-packages/nvidia/<pkg>/bin`` found
+    both with :func:`os.add_dll_directory` and on ``PATH`` — the two
+    mechanisms cover the different loader flags ctranslate2 may use.
+    """
+    global _cuda_dll_dirs_registered
+    if _cuda_dll_dirs_registered or platform.system() != "Windows":
+        return
+    _cuda_dll_dirs_registered = True
+
+    try:
+        site_roots = list(site.getsitepackages())
+    except Exception:  # pragma: no cover - exotic deployments
+        site_roots = []
+
+    found: list = []
+    for root in site_roots:
+        for sub in _NVIDIA_DLL_SUBDIRS:
+            candidate = os.path.join(root, "nvidia", sub, "bin")
+            if os.path.isdir(candidate) and candidate not in found:
+                found.append(candidate)
+
+    for directory in found:
+        try:
+            _cuda_dll_directory_handles.append(os.add_dll_directory(directory))
+        except Exception:  # pragma: no cover - add_dll_directory is Windows-only
+            pass
+
+    if found:
+        os.environ["PATH"] = os.pathsep.join(found + [os.environ.get("PATH", "")])
+
+
 def _load_local_whisper_model(model_name: str, device: str = "auto", compute_type: str = "auto"):
     """Load faster-whisper with graceful CUDA → CPU fallback. ``device="auto"`` picks CUDA
     whenever the ctranslate2 wheel ships CUDA libs, even on hosts without the NVIDIA runtime (WSL2,
@@ -129,6 +182,10 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
     ``device`` / ``compute_type`` default to ``"auto"`` so the historical behaviour is unchanged; pass
     explicit values from ``stt.local.device`` / ``stt.local.compute_type`` to pin a configuration (#9088).
     """
+    # Expose pip-installed CUDA libraries before ctranslate2 tries to load
+    # them, otherwise the CUDA backend fails and we silently drop to CPU.
+    _register_windows_cuda_dll_dirs()
+
     force_cpu = _should_force_faster_whisper_cpu()
     if force_cpu:
         # Importing ctranslate2 can itself abort on Apple Silicon/Rosetta when

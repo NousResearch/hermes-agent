@@ -67,7 +67,16 @@ def _chain_ending_at(boots: List[float], ts: float, gap: float) -> List[float]:
     chain: List[float] = []
     prev = ts
     for t in sorted(boots, reverse=True):
-        if t > ts:  # clock moved backwards (NTP step, restored file): future entry is adjacent, not a break
+        if t > ts:
+            # Clock moved backwards (NTP step, restored RTC/file): a *small* future entry is
+            # adjacent to `ts`, not a break. An arbitrary distant one is not — admitting it
+            # would chain boots from an unrelated episode weeks ago into "now" and trip the
+            # breaker, violating this module's fail-open contract (#93427). Bound the
+            # adjacency by the same `gap` every other link uses, and `continue` rather than
+            # `break`: the walk is sorted descending, so a distant future entry is visited
+            # FIRST and breaking there would silently drop an otherwise valid chain.
+            if t - ts > gap:
+                continue
             chain.append(t)
             continue
         if prev - t > gap:

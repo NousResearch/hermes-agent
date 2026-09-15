@@ -334,6 +334,24 @@ async function reviewDiff(repoPath, filePath, scope, baseRef, staged, gitBin) {
     return ''
   }
 
+  let resolvedFilePath
+
+  try {
+    resolvedFilePath = resolveRequestedPathForIpc(filePath, { baseDir: cwd, purpose: 'Review diff file' })
+  } catch {
+    return ''
+  }
+
+  const relativeFilePath = path.relative(cwd, resolvedFilePath)
+
+  if (
+    relativeFilePath === '..' ||
+    relativeFilePath.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relativeFilePath)
+  ) {
+    return ''
+  }
+
   const git = gitFor(cwd, gitBin)
   const safe = args => git.diff(args).catch(() => '')
 

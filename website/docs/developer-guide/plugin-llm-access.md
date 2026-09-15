@@ -224,6 +224,7 @@ result = ctx.llm.complete(
     profile=None,          # optional, gated — explicit auth-profile name
     purpose="optional-audit-string",
     task=None,             # optional — a plugin-registered auxiliary slot
+    inherit_turn=False,    # opt in to the current turn's exact route
 )
 # → PluginLlmCompleteResult(text, provider, model, agent_id, usage, audit)
 ```
@@ -262,6 +263,7 @@ result = ctx.llm.complete_structured(
     profile=None,
     purpose=None,
     task=None,             # optional — a plugin-registered auxiliary slot
+    inherit_turn=False,    # opt in to the current turn's exact route
 )
 # → PluginLlmStructuredResult(text, provider, model, agent_id,
 #                             usage, parsed, content_type, audit)
@@ -290,6 +292,22 @@ result = await ctx.llm.acomplete_structured(
 Same arguments and result types as their sync counterparts. Use
 these from gateway adapters, async hooks, or any plugin code
 already running on an asyncio loop.
+
+### Turn-bound calls
+
+Pass `inherit_turn=True` from a turn hook to reuse that turn's exact
+provider, model, endpoint, credentials, and client. Hermes makes one request
+on the captured route and fails closed instead of retrying or falling back to
+another provider. Because this mode inherits an already-authorized route, it
+does not require provider/model override grants; it cannot be combined with
+`provider`, `model`, `agent_id`, `profile`, or `task`.
+
+The option is unavailable outside an active conversation turn. Commands or
+background work without a turn scope should use the normal `ctx.llm` routing
+or a plugin-owned auxiliary `task` instead; requesting it there raises
+`PluginLlmInvocationError`. Turn inheritance supports Chat Completions,
+Anthropic Messages, and Codex Responses routes; other transport modes fail
+closed with the same error.
 
 ### Task-routed auxiliary calls
 

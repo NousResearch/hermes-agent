@@ -114,6 +114,7 @@ class PeerMemberRoute:
     trace_id: str
     grant: str
     execution_policy_digest: str = ""
+    attachments: bool = False
 
 
 def build_member_dispatch(

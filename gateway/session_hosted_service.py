@@ -100,7 +100,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def _turn_lock(self, profile):
         return nullcontext()
 
-    def authorize_room(self, actor_subject, room_id, *, create=False):
+    def authorize_room(self, actor_subject, room_id, *, create=False, conn=None):
         from gateway.hosted_rooms_common import IDENTIFIER_RE
         if (not isinstance(actor_subject, str) or not actor_subject
                 or not isinstance(room_id, str) or len(room_id) > 128
@@ -121,7 +121,8 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             if row is None or row[0] != actor_subject:
                 raise RuntimeStoreError('permission_denied')
             return True
-        return self.authority.db._execute_write(write)
+        # Setup's route writer reuses this check inside its existing transaction.
+        return write(conn) if conn is not None else self.authority.db._execute_write(write)
 
     def _owner(self, room_id):
         with self.authority.db._read_ctx() as conn:

@@ -1093,12 +1093,15 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       const detail = event as Event & {
         errorCode?: number
         errorDescription?: string
+        isMainFrame?: boolean
         validatedURL?: string
       }
 
       const errorCode = detail.errorCode
 
-      if (errorCode === -3) {
+      // Electron emits did-fail-load for subframes too. A blocked ad or
+      // tracking iframe must not replace an otherwise healthy top-level page.
+      if (detail.isMainFrame === false || errorCode === -3) {
         return
       }
 

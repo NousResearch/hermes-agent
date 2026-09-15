@@ -81,7 +81,7 @@ else:
 print(json.dumps(out))
 """
 STDERR_JUDGE = "import sys; sys.stderr.write('SECRET-STDERR-a1b2'); sys.exit(3)"
-# The judge explicitly declining to judge (Hermes Gate delegate-judge emits this when its backend is down).
+# The judge explicitly declining to judge (a judge emits this when its backend is down).
 REPORTED_ERROR_JUDGE = (
     'import json; print(json.dumps({"verdict": "error", "feedback": "SECRET-FEEDBACK-2b7c backend unavailable", '
     '"note": "SECRET-DETAIL-c4d1"}))'
@@ -697,7 +697,7 @@ class TestGateErrors:
         assert gate.command[0] == resolved
 
     def test_missing_executable_is_a_gate_error(self):
-        child = _StubChild([GOOD], gate=load_gate_config({"quality_gate": {"command": ["/nonexistent/hermes-gate"]}}))
+        child = _StubChild([GOOD], gate=load_gate_config({"quality_gate": {"command": ["/nonexistent/my-judge"]}}))
         entry = _run(child)
         assert entry["status"] == "completed"
         assert entry["quality_gate"]["verdict"] == "error"

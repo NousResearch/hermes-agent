@@ -77,7 +77,7 @@ Keep schemas forgiving: require only the fields you will actually read. Tasks wi
 
 ## Quality Gate (opt-in)
 
-`delegation.quality_gate` runs an external **judge** on every finished child before its result reaches the parent — a second opinion on the child's self-report (any executable that reads the result on stdin and prints a verdict on stdout, per the contract below). Off unless `command` is set; with it unset every result entry is byte-identical to today. The section is validated and **frozen onto each child at spawn**, so a running child cannot edit `config.yaml` to weaken or disable its own gate.
+`delegation.quality_gate` runs an external **judge** on every finished child before its result reaches the parent — a second opinion on the child's self-report (any executable that reads the result on stdin and prints a verdict on stdout, per the contract below). Off when the section is absent or empty; a present section with a missing or invalid `command` is misconfigured (every child is judged `error`, so `on_error: closed` quarantines); with the section absent or empty every result entry is byte-identical to today. The section is validated and **frozen onto each child at spawn**, so a running child cannot edit `config.yaml` to weaken or disable its own gate.
 
 ```yaml
 delegation:

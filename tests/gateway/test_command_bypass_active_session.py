@@ -384,6 +384,35 @@ class TestNonBypassStillQueued:
             "Regular text should not produce a direct response"
         )
 
+    @pytest.mark.asyncio
+    async def test_legacy_plugin_without_busy_policy_remains_queued(
+        self, monkeypatch
+    ):
+        """Omitting new metadata must not change existing active-turn behavior."""
+        from hermes_cli.plugins import (
+            PluginContext,
+            PluginManager,
+            PluginManifest,
+        )
+
+        manager = PluginManager()
+        context = PluginContext(
+            PluginManifest(name="legacy-fixture", source="user"), manager
+        )
+        context.register_command("legacy-plugin", lambda raw_args: raw_args)
+        monkeypatch.setattr(
+            "hermes_cli.plugins._ensure_plugins_discovered",
+            lambda force=False: manager,
+        )
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("/legacy-plugin keep this"))
+
+        assert sk in adapter._pending_messages
+        assert adapter.sent_responses == []
+
 
 # ---------------------------------------------------------------------------
 # Tests: no active session — commands go through normally
@@ -455,4 +484,3 @@ class TestBypassWithBotnameSuffix:
             "/stop@MyHermesBot was queued instead of bypassing"
         )
         assert any("handled:stop" in r for r in adapter.sent_responses)
-

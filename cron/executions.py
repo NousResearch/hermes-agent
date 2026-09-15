@@ -121,6 +121,19 @@ def _process_start_time(pid: int) -> Optional[int]:
         return None
 
 
+# A start-time fingerprint is a PID-reuse guard, not an identity proof. What the kernel
+# reports for a *live, unchanged* process can move: on macOS it is re-derived across a
+# sleep/wake clock correction, and the running gateway's value was observed to shift by
+# exactly 1.00s for 2h21m (2026-09-14 16:27:01 -> 18:47:53, matching every pmset sleep
+# transition). Requiring exact equality then declared a live owner dead -- 134 ledger rows
+# carried the drifted value and every row still in flight when a recovery pass ran was
+# reclassified ``unknown``, silently dropping its real terminal state (``finish_execution``
+# only rewrites ``claimed``/``running`` rows). Only a *gross* mismatch proves reuse: the pid
+# must be recycled first and allocation is sequential, so a reused pid's start time lands
+# minutes-to-hours away, never a second.
+_FINGERPRINT_DRIFT_TOLERANCE = 500  # centiseconds (5s), same units as _process_start_time
+
+
 def _owner_is_live(pid: int, started_at: Optional[int]) -> bool:
     try:
         from gateway.status import _pid_exists
@@ -131,7 +144,11 @@ def _owner_is_live(pid: int, started_at: Optional[int]) -> bool:
     if started_at is None:
         return pid == os.getpid()
     current = _process_start_time(pid)
-    return current is not None and current == started_at
+    if current is None:
+        # Unreadable fingerprint is unknown, never proof of death -- the sibling gate
+        # (gateway.status._scoped_lock_owner_state) treats it the same way.
+        return True
+    return abs(current - started_at) <= _FINGERPRINT_DRIFT_TOLERANCE
 
 
 def _prune_unlocked(conn: sqlite3.Connection) -> None:

@@ -239,25 +239,38 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
         return
     if not (sid_key := session.get("session_key") or ""):
         return
-    mgr = LoopManager(session_id=sid_key)
-    if not mgr.is_due() or goal_blocks_loop_tick(sid_key) or not _notif_claim_turn(session):
-        return  # busy — stays due, next poll retries
-    if not (wakeup := mgr.fire_tick()):
-        _notif_release_turn(session)
-        return
-    rid = f"__loop__{int(time.time() * 1000)}"
+    # Loop state lives in the SESSION's profile (a dashboard/Desktop session may be bound to another
+    # profile than the launch home), so bind it for this read+write half: fire_tick must persist where
+    # the completion half reads. The turn thread rebinds the same profile itself
+    # (prompt_turn._prepare_turn_input → _finish_turn), so complete_tick agrees; without this binding the
+    # tick lands in the launch profile while complete_tick reads the session profile, and the loop wedges
+    # at awaiting_response=True forever (wakeup #1 fires, no further ticks).
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home_token = set_hermes_home_override(session["profile_home"]) if session.get("profile_home") else None
     try:
-        _notif_loop_status(sid, f"↻ /loop wakeup #{mgr.state.ticks_fired if mgr.state else '?'} firing…")
-        if wakeup.lstrip().startswith("/"):
-            _notif_slash_loop_tick(rid, sid, session, mgr, wakeup)
-        else:
-            _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, wakeup)
-    except Exception as exc:
-        _notif_log_failure("loop wakeup dispatch failed", exc)
-        _notif_release_turn(session)
-        with contextlib.suppress(Exception):
-            mgr.abandon_tick()
+        mgr = LoopManager(session_id=sid_key)
+        if not mgr.is_due() or goal_blocks_loop_tick(sid_key) or not _notif_claim_turn(session):
+            return  # busy — stays due, next poll retries
+        if not (wakeup := mgr.fire_tick()):
+            _notif_release_turn(session)
+            return
+        rid = f"__loop__{int(time.time() * 1000)}"
+        try:
+            _notif_loop_status(sid, f"↻ /loop wakeup #{mgr.state.ticks_fired if mgr.state else '?'} firing…")
+            if wakeup.lstrip().startswith("/"):
+                _notif_slash_loop_tick(rid, sid, session, mgr, wakeup)
+            else:
+                _emit("message.start", sid)
+                _run_prompt_submit(rid, sid, session, wakeup)
+        except Exception as exc:
+            _notif_log_failure("loop wakeup dispatch failed", exc)
+            _notif_release_turn(session)
+            with contextlib.suppress(Exception):
+                mgr.abandon_tick()
+    finally:
+        if home_token is not None:
+            reset_hermes_home_override(home_token)
 
 
 def _kb_first_line(value: Any, limit: int) -> str:

@@ -3965,11 +3965,27 @@ function Restore-ElectronDist {
     $prevMirror = $env:ELECTRON_MIRROR
     if ($Mirror) { $env:ELECTRON_MIRROR = $Mirror }
     try {
-        # Out-Host so the downloader's progress shows on the console WITHOUT
-        # leaking into this function's return value (PowerShell returns every
-        # object left on the output stream, so a bare pipe here would make the
-        # boolean below ambiguous).
-        & $node.Source $installer 2>&1 | ForEach-Object { "$_" } | Out-Host
+        # Run install.js with a hard wall-clock timeout.
+        # On networks with poor GitHub connectivity (e.g. mainland China) the
+        # Electron binary download can stall silently for 20+ minutes (#98049).
+        # Use the same run_with_timeout pattern as the node-deps stage (600s
+        # default, overridable via ELECTRON_DOWNLOAD_TIMEOUT env var).
+        $electronDlTimeoutSec = 600
+        if ($env:ELECTRON_DOWNLOAD_TIMEOUT -match '^\d+$') {
+            $electronDlTimeoutSec = [int]$env:ELECTRON_DOWNLOAD_TIMEOUT
+        }
+        $job = Start-Job -ScriptBlock {
+            param($nodeSrc, $inst)
+            & $nodeSrc $inst 2>&1
+        } -ArgumentList $node.Source, $installer
+        $finished = Wait-Job -Job $job -Timeout $electronDlTimeoutSec
+        if ($finished) {
+            Receive-Job -Job $job | ForEach-Object { "$_" } | Out-Host
+        } else {
+            Stop-Job -Job $job
+            Write-Warn "Electron download timed out after ${electronDlTimeoutSec}s — will retry with mirror."
+        }
+        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
     } catch {
     } finally {
         $env:ELECTRON_MIRROR = $prevMirror

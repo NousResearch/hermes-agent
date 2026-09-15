@@ -735,7 +735,11 @@ class MemoryManager:
 
     # Actions mirrored to external providers; non-mutating results (errors, staged) are
     # filtered by ``notify_memory_tool_write`` first.
-    _MIRRORED_MEMORY_ACTIONS = {"add", "replace", "remove"}
+    _MIRRORED_MEMORY_ACTIONS = {"add", "replace", "remove", "patch"}
+    # Providers filter on the three documented action names, so a literal
+    # "patch" would be dropped. Mirror it as replace with source_action/pattern
+    # in metadata and the full rewritten entry as content.
+    _MIRRORED_ACTION_ALIASES = {"patch": "replace"}
 
     @staticmethod
     def _memory_tool_result_succeeded(result: Any) -> bool:
@@ -760,6 +764,7 @@ class MemoryManager:
             return
         target = str(tool_args.get("target") or "memory")
         operations = tool_args.get("operations")
+        patched_entry = self._patched_entry(tool_result)
         for op in operations if isinstance(operations, list) and operations else [tool_args]:
             action = str(op.get("action") or "") if isinstance(op, dict) else ""
             if action not in self._MIRRORED_MEMORY_ACTIONS:
@@ -769,9 +774,30 @@ class MemoryManager:
                 old_text = op.get("old_text")
                 if old_text:
                     metadata["old_text"] = str(old_text)
-                self.on_memory_write(action, target, str(op.get("content") or op.get("new_text") or ""), metadata=metadata)
+                content = str(op.get("content") or op.get("new_text") or "")
+                if action == "patch":
+                    metadata["source_action"] = "patch"
+                    pattern = op.get("pattern")
+                    if pattern:
+                        metadata["pattern"] = str(pattern)
+                    content = patched_entry or content
+                self.on_memory_write(
+                    self._MIRRORED_ACTION_ALIASES.get(action, action),
+                    target, content, metadata=metadata)
             except Exception as e:
                 logger.debug("notify_memory_tool_write failed for op %s: %s", action, e)
+
+    @staticmethod
+    def _patched_entry(result: Any) -> str:
+        """Pull ``patched_entry`` out of a built-in memory tool result, if present."""
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except Exception:
+                return ""
+        if not isinstance(result, dict):
+            return ""
+        return str(result.get("patched_entry") or "")
 
     def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:
         self._each_provider(

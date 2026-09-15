@@ -355,6 +355,11 @@ def _pi_model_for_parent(parent_agent: Any) -> str:
     # pi provider ids strip the "custom:" prefix Hermes uses for custom
     # providers; the models.json provider key is the bare name.
     provider_id = provider.split(":", 1)[-1] if provider else ""
+    if provider_id and not _pi_provider_exists(provider_id):
+        # "custom" (and similar Hermes-internal prefixes) are not pi provider
+        # ids; passing e.g. "custom/glm-4.7" makes pi's binary wrapper reject
+        # the model. Resolve against pi's own provider registry instead.
+        provider_id = ""
     if not provider_id:
         # The runtime said nothing about the provider.  Resolve the model id
         # against pi's own provider registry so a bare model name (which pi
@@ -363,6 +368,24 @@ def _pi_model_for_parent(parent_agent: Any) -> str:
     if provider_id and provider_id.lower() not in {"anthropic", "openai"}:
         return f"{provider_id}/{model}"
     return model
+
+
+def _pi_provider_exists(provider_id: str) -> bool:
+    """True when ``provider_id`` is a known pi provider in models(.store).json."""
+    import json as _json
+
+    for candidates in (
+        Path.home() / ".pi" / "agent" / "models.json",
+        Path.home() / ".pi" / "agent" / "models-store.json",
+    ):
+        try:
+            data = _json.loads(candidates.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        providers = data.get("providers") if isinstance(data, dict) else None
+        if isinstance(providers, dict) and provider_id in providers:
+            return True
+    return provider_id in ("anthropic", "openai")
 
 
 def _pi_provider_serving_model(model: str) -> str:

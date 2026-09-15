@@ -1577,13 +1577,28 @@ def planned_stop_stopper_alive() -> bool:
     stopper_pid = parsed[0].get("stopper_pid")
     if not isinstance(stopper_pid, int) or stopper_pid <= 0 or stopper_pid == os.getpid():
         return True
-    # _pid_exists (same module) is the sanctioned cross-platform liveness probe:
-    # os.kill(pid, 0) sends CTRL_C_EVENT to the console group on Windows (bpo-14484).
-    # False only when the stopper is truly gone (a zombie stopper can never revive
-    # the gateway either); any doubt still reports alive so a live stop is never cancelled.
-    if not _pid_exists(stopper_pid):
+    if _pid_exists(stopper_pid):
+        return True
+    return False
+
+
+def live_planned_stop_marker_present() -> bool:
+    """True when a TTL-valid planned-stop marker exists, regardless of its stopper.
+
+    Companion to :func:`planned_stop_stopper_alive` for request kinds whose requester does not
+    itself perform the restart (``via_service``): a *live* marker still names a concrete stopper
+    process that took responsibility for the pending stop, so its presence opts those requests
+    back into the orphan probe. Absent/stale/malformed markers report False.
+    """
+    try:
+        return (
+            _read_live_pid_marker(
+                _get_planned_stop_marker_path(), _PLANNED_STOP_MARKER_TTL_S
+            )
+            is not None
+        )
+    except Exception:  # noqa: BLE001 - a probe failure must never cancel a live restart
         return False
-    return True
 
 
 def get_running_pid(

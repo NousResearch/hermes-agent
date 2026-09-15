@@ -1417,16 +1417,35 @@ class GatewayShutdownMixin:
         return units
 
     def _raise_if_restart_requester_gone(self) -> None:
-        """Abort a plain planned-stop restart whose requesting process died mid-drain.
+        """Abort a planned-stop restart whose requesting process died mid-wait.
 
         Only the CLI process that wrote the planned-stop marker performs a plain (non-service,
         non-detached) restart: it waits out this drain, then starts the replacement. If it is
         gone (terminal timeout, SSH drop) nothing will ever restart the gateway — the drain
         would shed new runs for the full cap and then exit cleanly, which service managers
         treat as deliberate. Cancelling resumes serving instead.
+
+        ``via_service`` restarts are completed by the service manager itself and their usual
+        requesters (updater SIGUSR1, control-socket pause-for-update) write no marker — so with
+        no live marker they never cancel. A *live* marker, though, names a concrete stopper
+        process that took responsibility for this pending stop; when that process dies the
+        restart is orphaned in the plain-restart sense even under a via_service request:
+        nobody performs the service restart, and the surviving marker would classify the
+        eventual exit as operator-initiated — a clean exit nothing revives. So a via_service
+        request opts back into this probe exactly when a live marker exists. Detached restarts
+        keep the unconditional skip: the detached helper performs them and no stopper waits
+        out the drain (2026-09-15: via_service request + marker stopper killed by a terminal
+        timeout shed 503s for the whole drain cap).
         """
         if self._restart_via_service or self._restart_detached:
-            return
+            if self._restart_detached:
+                return
+            from gateway.status import live_planned_stop_marker_present
+            try:
+                if not live_planned_stop_marker_present():
+                    return
+            except Exception:  # noqa: BLE001 - a probe failure must never cancel a live restart
+                return
         from gateway.status import planned_stop_stopper_alive
         try:
             gone = not planned_stop_stopper_alive()

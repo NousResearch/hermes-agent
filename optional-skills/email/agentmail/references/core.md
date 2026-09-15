@@ -1,5 +1,9 @@
 # AgentMail Core
 
+Subcommands are space-separated (`agentmail inboxes messages send`). `agentmail-cli`
+1.0 renamed them from the pre-1.0 colon form (`agentmail inboxes:messages send`);
+1.x builds reject that form with `unrecognized subcommand`.
+
 Common CLI path: create inboxes, send mail, read incoming mail, reply in
 threads, label work, and fetch attachments. Need a key first? Use
 [signup.md](signup.md). Need realtime delivery? Use [webhooks.md](webhooks.md)
@@ -31,7 +35,7 @@ retried create commands.
 ## Send
 
 ```bash
-agentmail inboxes:messages send \
+agentmail inboxes messages send \
   --inbox-id support@agentmail.to \
   --to customer@example.com \
   --subject "Hello" \
@@ -47,28 +51,28 @@ Send both `text` and `html` when possible. Recipient limit is 50 total across
 ## Read and Reply
 
 ```bash
-agentmail inboxes:messages list --inbox-id support@agentmail.to --label unread --format json
-agentmail inboxes:messages get --inbox-id support@agentmail.to --message-id <message_id> --format json
-agentmail inboxes:threads get --inbox-id support@agentmail.to --thread-id <thread_id> --format json
+agentmail inboxes messages list --inbox-id support@agentmail.to --label unread --format json
+agentmail inboxes messages get --inbox-id support@agentmail.to --message-id <message_id> --format json
+agentmail inboxes threads get --inbox-id support@agentmail.to --thread-id <thread_id> --format json
 ```
 
 For LLM input, prefer `extracted_text` or `extracted_html`. Some email has
 `html` but no `text`.
 
 ```bash
-agentmail inboxes:messages reply \
+agentmail inboxes messages reply \
   --inbox-id support@agentmail.to \
   --message-id <message_id> \
   --text "Thanks, I will take a look." \
   --format json
 
-agentmail inboxes:messages reply-all \
+agentmail inboxes messages reply-all \
   --inbox-id support@agentmail.to \
   --message-id <message_id> \
   --text "Thanks, everyone." \
   --format json
 
-agentmail inboxes:messages forward \
+agentmail inboxes messages forward \
   --inbox-id support@agentmail.to \
   --message-id <message_id> \
   --to teammate@example.com \
@@ -80,7 +84,7 @@ agentmail inboxes:messages forward \
 Use labels as lightweight state: `unread`, `handled`, `needs-review`.
 
 ```bash
-agentmail inboxes:messages update \
+agentmail inboxes messages update \
   --inbox-id support@agentmail.to \
   --message-id <message_id> \
   --add-labels handled \
@@ -91,7 +95,7 @@ agentmail inboxes:messages update \
 ## Attachments
 
 ```bash
-agentmail inboxes:messages get-attachment \
+agentmail inboxes messages get-attachment \
   --inbox-id support@agentmail.to \
   --message-id <message_id> \
   --attachment-id <attachment_id> \
@@ -99,7 +103,7 @@ agentmail inboxes:messages get-attachment \
 ```
 
 Fetch the returned download URL before it expires. Check
-`agentmail inboxes:messages send --help` for attachment-send flags.
+`agentmail inboxes messages send --help` for attachment-send flags.
 
 ## REST Notes
 

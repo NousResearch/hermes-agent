@@ -964,9 +964,17 @@ def _print_post_update_notices_and_self_heals() -> None:
         ('Windows bin launcher migration failed: %s', _migrate_windows_bin_path),
         ('cua-driver refresh failed: %s', _refresh_cua_driver_after_update),
         ('Plugin compat notice failed: %s', _print_plugin_compat_notice),
+        # Legacy HERMES_NEMO_RELAY_ATIF_*/ATOF_* vars produce no traces since the Relay cutover;
+        # generate each profile's relay-plugins.toml instead of leaving exports silently dead.
+        ('Relay exporter migration failed: %s', _migrate_relay_exporter_env),
     ):
         with _best_effort(message):
             step()
+
+
+def _migrate_relay_exporter_env() -> None:
+    from hermes_cli.relay_plugin_migrate import run_relay_migration_after_update
+    run_relay_migration_after_update()
 
 
 def _run_post_update_maintenance(

@@ -29,7 +29,7 @@ HERMES_NEMO_RELAY_ATIF_SUBAGENT_EXPORT_MODE=all
 
 def _parse_env(path: Path) -> dict[str, str]:
     out = {}
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         if line.strip() and not line.startswith("#") and "=" in line:
             k, _, v = line.partition("=")
             out[k.strip()] = v.strip().strip('"')
@@ -46,14 +46,14 @@ def profile_env(tmp_path, monkeypatch):
 
 
 def test_legacy_env_becomes_validated_toml_selected_from_env(profile_env):
-    (profile_env / ".env").write_text(LEGACY_ENV.format(home=profile_env))
+    (profile_env / ".env").write_text(LEGACY_ENV.format(home=profile_env), encoding="utf-8")
 
     result = migrate_profile_relay_env(profile_env)
 
     assert result.migrated, (result.skipped_reason, result.validation_error)
     assert result.diagnostics == []
     toml_path = profile_env / RELAY_PLUGINS_TOML_NAME
-    document = tomllib.loads(toml_path.read_text())
+    document = tomllib.loads(toml_path.read_text(encoding="utf-8"))
     sink = document["components"][0]["config"]["atof"]["sinks"][0]
     assert sink["type"] == "file" and sink["filename"] == "hermes-atof.jsonl"
     assert document["components"][0]["config"]["atif"]["filename_template"] == "trajectory-{session_id}.json"
@@ -67,19 +67,19 @@ def test_legacy_env_becomes_validated_toml_selected_from_env(profile_env):
     assert env[RELAY_PLUGINS_CONFIG_ENV] == str(toml_path)
     assert env["OPENAI_API_KEY"] == "sk-test"
     assert configured_legacy_relay_env_vars(env) == ()
-    assert "# migrated to relay-plugins.toml: HERMES_NEMO_RELAY_ATOF_ENABLED=1" in (profile_env / ".env").read_text()
+    assert "# migrated to relay-plugins.toml: HERMES_NEMO_RELAY_ATOF_ENABLED=1" in (profile_env / ".env").read_text(encoding="utf-8")
     assert migrate_profile_relay_env(profile_env).skipped_reason == "no legacy exporter variables"
 
 
 def test_update_migrates_every_profile_home_separately(profile_env):
     """Multiplex: each profile keeps its own TOML; a profile without legacy vars is untouched."""
-    (profile_env / ".env").write_text("OPENAI_API_KEY=x\n")
+    (profile_env / ".env").write_text("OPENAI_API_KEY=x\n", encoding="utf-8")
     work = profile_env / "profiles" / "work"
     idle = profile_env / "profiles" / "idle"
     for p in (work, idle):
         p.mkdir(parents=True)
-    (work / ".env").write_text(LEGACY_ENV.format(home=work))
-    (idle / ".env").write_text("SLACK_BOT_TOKEN=y\n")
+    (work / ".env").write_text(LEGACY_ENV.format(home=work), encoding="utf-8")
+    (idle / ".env").write_text("SLACK_BOT_TOKEN=y\n", encoding="utf-8")
 
     results = {r.home: r for r in migrate_all_profile_relay_envs(validate=False)}
 
@@ -87,4 +87,4 @@ def test_update_migrates_every_profile_home_separately(profile_env):
     assert not results[idle].migrated and not (idle / RELAY_PLUGINS_TOML_NAME).exists()
     assert not results[profile_env].migrated and not (profile_env / RELAY_PLUGINS_TOML_NAME).exists()
     assert _parse_env(work / ".env")[RELAY_PLUGINS_CONFIG_ENV] == str(work / RELAY_PLUGINS_TOML_NAME)
-    assert (idle / ".env").read_text() == "SLACK_BOT_TOKEN=y\n"
+    assert (idle / ".env").read_text(encoding="utf-8") == "SLACK_BOT_TOKEN=y\n"

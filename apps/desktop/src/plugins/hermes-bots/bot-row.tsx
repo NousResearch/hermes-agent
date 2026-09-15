@@ -480,14 +480,14 @@ export function GroupRow({ active, group, members, needsYou, onOpen, onDisband }
 
   const preview = last
     ? `${last.from?.kind === 'user' ? 'You' : `@${lastHandle}`}: ${stripPreviewMarkdown(last.text) || '…'}`
-    : `${members.length} bots`
+    : b.group.memberCount(members.length)
 
   const availableMembers = members.filter(member => botSourceStatus(member).available).length
-  const availabilityLabel = `${availableMembers} of ${members.length} available`
+  const availabilityLabel = b.group.availableCount(availableMembers, members.length)
 
   const row = (
     <RowButton
-      aria-label={`${group}, ${members.length} bots, ${availabilityLabel}`}
+      aria-label={`${group}, ${b.group.memberCount(members.length)}, ${availabilityLabel}`}
       className={cn(
         'flex w-full min-w-0 max-w-full items-center gap-2.5 overflow-hidden rounded-md px-2 py-2 text-left transition-colors',
         'hover:bg-(--chrome-action-hover)',

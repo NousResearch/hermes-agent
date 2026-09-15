@@ -91,3 +91,14 @@ def test_memory_writes_match_memory_tool_format(home):
 
     assert entries == ["alpha rewritten", "beta note"]
     assert path.read_text(encoding="utf-8") == ENTRY_DELIMITER.join(entries)
+
+
+def test_provider_memory_cards_are_read_only(home):
+    """Cards the active memory provider contributes to the graph carry the
+    provider's name as ``source``; the journey editors must refuse them with a
+    message that points at the provider and leave the memory files untouched."""
+    before = (home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
+    for res in (lm.node_detail("memory:demo:0"), lm.edit_node("memory:demo:0", "x"), lm.delete_node("memory:demo:0")):
+        assert not res["ok"]
+        assert "read-only" in res["message"] and "'demo'" in res["message"]
+    assert (home / "memories" / "MEMORY.md").read_text(encoding="utf-8") == before

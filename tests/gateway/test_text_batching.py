@@ -265,7 +265,7 @@ def _make_whatsapp_adapter():
 
     config = PlatformConfig(enabled=True, token="test-token")
     adapter = object.__new__(WhatsAppAdapter)
-    adapter._platform = Platform.WHATSAPP
+    adapter._platform = adapter.platform = Platform.WHATSAPP
     adapter.config = config
     adapter._pending_text_batches = {}
     adapter._pending_text_batch_tasks = {}

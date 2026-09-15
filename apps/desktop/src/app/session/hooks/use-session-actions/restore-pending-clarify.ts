@@ -20,13 +20,31 @@ export interface PendingClarifyResumeState {
  * authoritative for requests that already existed when the RPC began — a
  * newer request that arrived while the response was in flight is left alone.
  */
+/**
+ * Backwards compat: a v0.21.2 backend predates `open_requests` and reports a
+ * still-pending clarify on resume as `pending_clarify` (old shape). Synthesize
+ * the `open_requests` entry the reconciler below already understands so a resume
+ * from an old backend still restores the parked card instead of clearing it
+ * ("Result unavailable" on the sealed transcript row).
+ */
+function legacyClarifyOpenRequests(
+  pending: SessionResumeResult['pending_clarify']
+): NonNullable<SessionResumeResult['open_requests']> {
+  if (!pending || typeof pending.request_id !== 'string' || !pending.request_id) {
+    return []
+  }
+
+  return [{ id: pending.request_id, method: 'clarify', params: pending }]
+}
+
 export function restorePendingClarifyFromSnapshot(
-  response: Pick<SessionResumeResult, 'open_requests'>,
+  response: Pick<SessionResumeResult, 'open_requests' | 'pending_clarify'>,
   sessionId: string,
   resumeStartedAt: number,
   requestIdAtStart?: string
 ): PendingClarifyResumeState {
-  const pending = (response.open_requests ?? []).find(entry => entry.method === 'clarify')
+  const openRequests = response.open_requests ?? legacyClarifyOpenRequests(response.pending_clarify)
+  const pending = openRequests.find(entry => entry.method === 'clarify')
 
   if (!pending) {
     const current = $clarifyRequests.get()[sessionId]

@@ -1211,8 +1211,8 @@ status. Antes de uma nova mudança, reexecute o CI atual. A lição permanente �
 **não corrija esses testes enfraquecendo o assert; corrija a interpretação
 host-independent do path**.
 
-Na base atual `origin/main@80d4ffce3cfba3ed03474a5b8ebcede4a7fc1770` mais o
-working tree desta auditoria, a mesma suíte passou **247/247**. A correção está
+Na base atual `main@220a684f465b063411626028b3bdd7444083e3f2`, com
+`origin/main` sincronizado e working tree limpo, a mesma suíte passou **247/247**. A correção está
 em `workstation.path_utils`, compartilhada por ReleaseQualification e
 ScopedPolicyEngine, com containment incompatível tratado de forma fail-closed.
 
@@ -1567,3 +1567,112 @@ O benchmark não mede qualidade de provider, não grava bancos privados e não
 usa wall-clock como critério de aprovação. Ele detecta regressão estrutural:
 payload novamente inline, perda de refs após restart/ACK, compaction sem handles,
 policy que deixa atravessar um path sensível ou retorno ao polling mecânico.
+
+---
+
+## 27. Revisão de coerência e provas adicionais — 2026-09-15
+
+Esta rodada posterior auditou o `main` já consolidado em
+`220a684f465b063411626028b3bdd7444083e3f2`, depois de verificar o código, os
+testes e o histórico recente. O checkout final ficou em `main`, sem alterações
+não commitadas, e `origin/main` apontou para o mesmo commit. As correções abaixo
+são pequenas extensões dos owners existentes; não houve criação de um segundo
+controller, store, DB, lifecycle ou stack realtime.
+
+### 27.1. Resolução implícita de controle humano deve seguir a aba visível
+
+O Browser Hub chama `takeControl()` sem `taskId` porque a intenção humana é
+assumir o conteúdo atualmente visível. O runtime ainda mantém
+`preferredTaskId` para que o attach de um painel de Chat selecione a task
+correspondente, mas essa preferência é contexto de navegação, não autoridade
+de controle.
+
+A ordem segura de resolução passou a ser:
+
+```text
+taskId explícito
+    > ownerTaskId da aba ativa
+    > preferredTaskId do último attach
+    > lease não vinculado à aba
+```
+
+Antes da correção, a ordem `preferredTaskId > aba ativa` permitia que o usuário
+visualizasse a task B, clicasse em Take Control e adquirisse silenciosamente a
+lease da task A que havia sido o último contexto de Chat. Nesse intervalo, o
+agente de B continuaria autorizado enquanto a UI indicava controle humano. Isso
+violava diretamente o isolamento por `BrowserTask`.
+
+O teste Electron de regressão cria duas tasks, anexa o host com A como
+preferência, ativa a aba de B, chama `takeControl()` sem argumento e prova que
+A continua executável e B retorna o erro estruturado de controle humano. A
+regra para novos callers é simples: se não houver `taskId` explícito, derive a
+identidade da página efetivamente visível, nunca de uma preferência histórica.
+
+Há uma segunda sutileza no mesmo boundary: `hasActiveHumanControl()` expira a
+lease e persiste a remoção. A projeção de `state()` precisa executar essa
+expiração antes de capturar `listTasks()`, caso contrário uma única resposta
+poderia conter `controlOwner: agent` junto de um snapshot de task ainda exibindo
+a lease vencida.
+
+### 27.2. Progressão de Agent Task usa o event boundary canônico do Kanban
+
+O WebSocket `/api/plugins/kanban/events` continua sendo o único canal de
+atualização. Ele mantém a conexão SQLite no seu
+`ThreadPoolExecutor(max_workers=1)` para respeitar afinidade de thread, lê
+`task_events` em lotes limitados e, para cada `task_id` alterado, chama
+`hybrid_kanban.sync_delegations_for_agent_task()` na mesma conexão. Essa função
+localiza somente os `human_card_id` vinculados e executa a projeção canônica em
+transação.
+
+Quando uma transição não terminal muda `queued`, `running` ou `waiting`, o
+domínio grava `delegation_progressed` em `hybrid_activity`, incluindo
+`previous_state`, `state`, `agent_task_id` e `attempt`. Transições terminais
+continuam usando `delegation_completed`, `delegation_failed` ou
+`delegation_cancelled`, com `result_ref`/`evidence_refs` compactos. O frame
+retorna o evento da task e o evento do card; o renderer invalida somente as
+queries Hybrid afetadas. O polling de 4/8 segundos permanece como fallback de
+reconciliação, não como fonte primária de progresso.
+
+Esse desenho evita dois erros comuns: esperar que o GET eventual do card seja
+o mecanismo de realtime, ou criar um WebSocket específico para o board humano.
+Também evita fanout global: uma task sem delegação não produz atividade Hybrid,
+e uma task vinculada atualiza apenas seus cards. A activity continua durável,
+portanto um cliente que reconecta pode recuperar o evento pelo cursor
+`hybrid_since`.
+
+### 27.3. Contratos de teste executados nesta revisão
+
+As provas focadas que fecharam essa rodada foram:
+
+```text
+npm exec --workspace apps/desktop -- vitest run --project electron electron/workstation-browser-runtime-task.test.ts
+  1 file, 22 tests passed
+
+python -m pytest -q -p no:cacheprovider \
+  tests/hermes_cli/test_hybrid_kanban.py \
+  tests/plugins/test_kanban_dashboard_plugin.py
+  50 passed, 1 warning externo do TestClient/httpx
+
+python -m pytest -q -p no:cacheprovider workstation/tests
+  247 passed
+
+npm run --workspace apps/desktop typecheck
+  tsc renderer, Electron e E2E concluídos sem erros
+```
+
+`git diff --check` também passou. O warning do TestClient/httpx não altera o
+contrato funcional testado e não foi mascarado por `skip`, `xfail` ou asserts
+relaxados. Uma tentativa inicial de Pytest dentro do sandbox falhou antes da
+coleta por `WinError 5` no diretório temporário global do Windows; a execução
+aprovada fora dessa limitação confirmou os resultados acima.
+
+### 27.4. Ledger final desta revisão
+
+| Item | Classificação | Evidência | Decisão |
+| --- | --- | --- | --- |
+| Lease sem `taskId` podia apontar para preferência de Chat stale | `PROVEN_GAP` | teste com A/B, attach em A e aba visível B | corrigida precedência para a aba ativa; teste Electron adicionado |
+| Progresso da Agent Task podia depender do polling para aparecer no Human Card | `PARTIAL_HARDENING` | `task_events` já existia, mas a projeção só ocorria no GET do card | reutilizado o WebSocket/cursor existente com projeção seletiva e `delegation_progressed` |
+| Paths host-independent, delegação, LKG de extensões, compaction operacional, workers duráveis e benchmark | `ALREADY_IMPLEMENTED` | suites Workstation, Hybrid, extension, compaction e benchmark verdes | preservados os owners e contratos existentes |
+| KI-007 / `session: null` | `NOT_REPRODUCED` | teste determinístico de restart/reconnect/export e concorrência | não reescrever SessionDB; manter observabilidade/regression coverage |
+| Marketplace semântico e UI dedicada de extensões | `DELIBERATELY_DEFERRED` | roadmap e seção de extensões | não ampliar escopo |
+| Proteção obrigatória de branch e checks críticos | `REPO_CONFIGURATION` | estado do repositório não é configurado por código | recomendação permanece para administradores do GitHub |

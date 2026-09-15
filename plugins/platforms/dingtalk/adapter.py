@@ -47,6 +47,7 @@ except Exception:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator, compile_mention_patterns
+from gateway.platforms.inbound_mention import InboundMentionFacts, resolve_inbound_mention_decision
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.platforms._shared import (
@@ -295,11 +296,15 @@ class DingTalkAdapter(BasePlatformAdapter):
         allowed = self._dingtalk_allowed_chats()
         if allowed and chat_id and chat_id not in allowed:
             return False
-        return (
-            bool(chat_id and chat_id in self._csv_setting("free_response_chats", "DINGTALK_FREE_RESPONSE_CHATS"))
-            or not self._dingtalk_require_mention()
-            or bool(getattr(message, "is_in_at_list", False))
-            or self._message_matches_mention_patterns(text)
+        return resolve_inbound_mention_decision(
+            InboundMentionFacts(
+                is_mentioned=bool(getattr(message, "is_in_at_list", False)),
+                matches_custom_pattern=self._message_matches_mention_patterns(text),
+                is_free_response_scope=bool(
+                    chat_id and chat_id in self._csv_setting("free_response_chats", "DINGTALK_FREE_RESPONSE_CHATS")
+                ),
+            ),
+            require_mention=self._dingtalk_require_mention(),
         )
 
     def _spawn_bg(self, coro) -> None:

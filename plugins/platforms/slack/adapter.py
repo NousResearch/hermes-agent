@@ -49,6 +49,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes_async, cache_video_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.inbound_mention import InboundMentionFacts, resolve_inbound_mention_decision
 
 try:  # sibling module; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
@@ -4017,7 +4018,14 @@ class SlackAdapter(BasePlatformAdapter):
                 "(thread_require_mention=true): channel=%s thread_ts=%s", channel_id,
                 event_thread_ts)
             return False
-        if free_channel:
+        if resolve_inbound_mention_decision(
+            InboundMentionFacts(
+                is_dm=is_dm,
+                is_mentioned=is_mentioned,
+                is_free_response_scope=free_channel,
+            ),
+            require_mention=self._slack_require_mention(),
+        ):
             return True
         if not is_mentioned:
             return await self._should_wake_on_unmentioned_message(

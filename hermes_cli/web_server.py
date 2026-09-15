@@ -315,10 +315,26 @@ _SSH_RUNTIME_PURELIB: Optional[Tuple[str, int, int]] = None
 _SSH_RUNTIME_MARKER: Optional[str] = None
 
 
+def _session_token() -> str:
+    """Live dashboard/WS token. SSH isolated must HMAC the same value HTML injects."""
+    try:
+        tok = getattr(app.state, "session_token", None)
+        if tok:
+            return tok
+    except Exception:
+        pass
+    return _SESSION_TOKEN
+
+
 def _apply_ssh_session_token(token: str) -> None:
     global _SESSION_TOKEN
     if token:
         _SESSION_TOKEN = token
+        os.environ["HERMES_DASHBOARD_SESSION_TOKEN"] = token
+        try:
+            app.state.session_token = token
+        except Exception:
+            pass
 
 
 def _apply_ssh_owner_nonce(nonce: Optional[str]) -> None:
@@ -396,11 +412,12 @@ def _has_valid_session_token(request: Request) -> bool:
     ``Authorization`` (Caddy ``basic_auth``); the legacy Bearer path stays for
     older dashboard bundles.
     """
+    live = _session_token()
     session_header = request.headers.get(_SESSION_HEADER_NAME, "")
-    if session_header and hmac.compare_digest(session_header.encode(), _SESSION_TOKEN.encode()):
+    if session_header and hmac.compare_digest(session_header.encode(), live.encode()):
         return True
     auth = request.headers.get("authorization", "")
-    return hmac.compare_digest(auth.encode(), f"Bearer {_SESSION_TOKEN}".encode())
+    return hmac.compare_digest(auth.encode(), f"Bearer {live}".encode())
 
 
 # Routes that may also authenticate via ``?token=`` (download links opened by
@@ -412,7 +429,7 @@ def _has_valid_query_token(request: Request, path: str) -> bool:
     if path not in _QUERY_TOKEN_API_PATHS:
         return False
     token = request.query_params.get("token", "")
-    return bool(token) and hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode())
+    return bool(token) and hmac.compare_digest(token.encode(), _session_token().encode())
 
 
 def _require_token(request: Request) -> None:
@@ -1386,6 +1403,10 @@ def start_server(
     """
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
+    try:
+        app.state.session_token = _SESSION_TOKEN
+    except Exception:
+        pass
 
     # Dashboard-mode starts don't route through main.py's `serve` path, which
     # applies the same RLIMIT_NOFILE floor (policy in resource_limits, #81547).

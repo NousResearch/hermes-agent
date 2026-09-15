@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Optional
 
 from tools.environments.base import BaseEnvironment, get_sandbox_dir
+from tools.environments.path_utils import sanitize_task_id_for_path
 from tools.environments.base_output import _popen_bash
 
 logger = logging.getLogger(__name__)
@@ -370,7 +371,7 @@ class AppleContainerEnvironment(BaseEnvironment):
 
         # Persistent workspace via bind mount, or ephemeral tmpfs
         if self._persistent:
-            sandbox = get_sandbox_dir() / "apple_container" / self._task_id
+            sandbox = get_sandbox_dir() / "apple_container" / sanitize_task_id_for_path(self._task_id)
             self._workspace_dir = str(sandbox / "workspace")
             os.makedirs(self._workspace_dir, exist_ok=True)
             root_dir = str(sandbox / "root")
@@ -526,7 +527,7 @@ class AppleContainerEnvironment(BaseEnvironment):
             grouped.setdefault(target_parent, []).append((source_path, target_name))
 
         staging_parent = (
-            get_sandbox_dir() / "apple_container" / self._task_id / "credential-mounts"
+            get_sandbox_dir() / "apple_container" / sanitize_task_id_for_path(self._task_id) / "credential-mounts"
         )
         # mkdir(parents=True, mode=...) applies mode to the LEAF only; create
         # the ancestors explicitly so no umask-default 0755 dir sits above the

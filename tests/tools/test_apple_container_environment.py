@@ -10,6 +10,7 @@ import pytest
 
 import tools.credential_files as credential_files
 import tools.environments.apple_container as apple
+from tools.environments.path_utils import sanitize_task_id_for_path
 from tools.environments.base import BaseEnvironment
 
 
@@ -121,7 +122,7 @@ def test_automatic_mounts_are_readonly_and_persistent_workspace_is_writable(
     assert not any(call[1:3] == ["exec", env._container_name] for call in recorder.calls)
     _assert_mount(argv, skill, "/root/.hermes/skills one", readonly=True)
     _assert_mount(argv, cache, "/root/.hermes/cache one", readonly=True)
-    sandbox = tmp_path / "sandboxes" / "apple_container" / "task one"
+    sandbox = tmp_path / "sandboxes" / "apple_container" / sanitize_task_id_for_path("task one")
     _assert_mount(argv, sandbox / "workspace", "/workspace", readonly=False)
     _assert_mount(argv, sandbox / "root", "/root", readonly=False)
     env.cleanup()
@@ -361,3 +362,37 @@ def test_constructor_rejects_macos_25_arm64_before_cli_probe(monkeypatch):
 def test_availability_check_never_starts_system(recorder):
     apple._ensure_container_available()
     assert not any(call[1:3] == ["system", "start"] for call in recorder.calls)
+
+@pytest.mark.parametrize('task_id', ['../escape', '../../escape', '/absolute', 'session:a/b', 'shared:../x', 'profile:alice', '.', '..', 'safe-task'])
+@pytest.mark.parametrize('persistent', [True, False])
+def test_task_storage_and_credentials_stay_in_sandbox(recorder, monkeypatch, tmp_path, task_id, persistent):
+    credential = tmp_path / 'fixture-token'
+    credential.write_text('fixture-only')
+    monkeypatch.setattr(credential_files, 'get_credential_file_mounts', lambda: [
+        {'host_path': str(credential), 'container_path': '/root/.hermes/token'}
+    ])
+    # Absolute input is inside the test temp dir even before the fix.
+    if task_id == '/absolute':
+        task_id = str(tmp_path / 'absolute')
+    env = apple.AppleContainerEnvironment(task_id=task_id, persistent_filesystem=persistent)
+    try:
+        root = tmp_path / 'sandboxes' / 'apple_container' / sanitize_task_id_for_path(task_id)
+        argv = _run_args(recorder)
+        stage = _mount_source_for_target(argv, '/root/.hermes')
+        assert stage.is_relative_to(root / 'credential-mounts')
+        assert (stage / 'token').read_text() == 'fixture-only'
+        if persistent:
+            assert _mount_source_for_target(argv, '/workspace') == root / 'workspace'
+            assert _mount_source_for_target(argv, '/root') == root / 'root'
+    finally:
+        env.cleanup()
+    assert not stage.exists()
+
+def test_rewritten_task_ids_do_not_share_persistent_storage(recorder):
+    environments = [apple.AppleContainerEnvironment(task_id=value, persistent_filesystem=True)
+                    for value in ['session:a/b', 'session_a_b', 'session:a_b']]
+    try:
+        assert len({env._workspace_dir for env in environments}) == len(environments)
+    finally:
+        for env in environments:
+            env.cleanup()

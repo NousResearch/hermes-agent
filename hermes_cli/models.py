@@ -1414,7 +1414,10 @@ def _bedrock_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]
 def _opencode_free_catalog(normalized: str, force_refresh: bool) -> list[str]:
     # Live keyless catalog filtered to the anonymous-servable `*-free` tier ourselves (models.dev's
     # cost.input==0 lags reality); the curated floor applies only when the live fetch fails/is empty.
-    return _fetch_opencode_free_models(force_refresh=force_refresh) or list(_PROVIDER_MODELS.get(normalized, []))
+    live = _fetch_opencode_free_models(force_refresh=force_refresh)
+    if isinstance(live, _AuthoritativeEmptyOpenCodeFreeCatalog):
+        return []
+    return live or list(_PROVIDER_MODELS.get(normalized, []))
 
 
 # Per-provider catalog sources tried before the generic profile fetch. A fetcher returning None
@@ -2150,6 +2153,14 @@ _OPENCODE_FREE_KEYED_SUFFIX_MODELS = frozenset({"ox-alpha-free"})
 # memoized too so an unreachable relay doesn't stall every call for `timeout` seconds.
 _opencode_free_live_memo: Optional[tuple[float, Optional[list[str]]]] = None
 _OPENCODE_FREE_LIVE_MEMO_TTL = 300.0  # 5 min; SWR disk cache handles the rest
+_OPENCODE_FREE_UNAVAILABLE_STATUSES = frozenset({
+    "rate_limited", "rate-limited", "unavailable", "disabled", "decommissioned",
+})
+_OPENCODE_FREE_AVAILABILITY_INVENTORY_LIMIT = 128
+
+
+class _AuthoritativeEmptyOpenCodeFreeCatalog(list[str]):
+    """A successful inventory that explicitly marks every listed free model unavailable."""
 
 
 def opencode_zen_free_headers() -> dict:
@@ -2167,6 +2178,30 @@ def opencode_zen_free_headers() -> dict:
         "User-Agent": f"HermesAgent/{_v}"}
 
 
+def _opencode_free_unavailable_inventory(items: list[Any]) -> set[str]:
+    """Return bounded, explicit negative availability signals from Zen metadata.
+
+    A model's presence in ``/models`` is only a catalog signal, not proof that
+    the free relay can serve it.  Conversely, absent or malformed status data
+    is ambiguous and must retain the existing fail-open catalog behavior.
+    """
+    unavailable: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        model_id = item.get("id")
+        status = item.get("status")
+        if (
+            isinstance(model_id, str)
+            and isinstance(status, str)
+            and status.strip().lower() in _OPENCODE_FREE_UNAVAILABLE_STATUSES
+        ):
+            unavailable.add(model_id.lower())
+            if len(unavailable) >= _OPENCODE_FREE_AVAILABILITY_INVENTORY_LIMIT:
+                break
+    return unavailable
+
+
 def _fetch_opencode_free_models(
     timeout: float = 8.0, *, force_refresh: bool = False) -> Optional[list[str]]:
     """Live keyless OpenCode Free catalog from the Zen relay, filtered to the anonymous-servable
@@ -2177,6 +2212,8 @@ def _fetch_opencode_free_models(
     now = time.time()
     memo = _opencode_free_live_memo
     if not force_refresh and memo is not None and now - memo[0] < _OPENCODE_FREE_LIVE_MEMO_TTL:
+        if isinstance(memo[1], _AuthoritativeEmptyOpenCodeFreeCatalog):
+            return _AuthoritativeEmptyOpenCodeFreeCatalog()
         return list(memo[1]) if memo[1] else None
 
     req = urllib.request.Request(f"{_OPENCODE_ZEN_FREE_BASE_URL.rstrip('/')}/models")
@@ -2187,23 +2224,41 @@ def _fetch_opencode_free_models(
     try:
         with open_credentialed_url(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode())
-        items = data if isinstance(data, list) else data.get("data", [])
+        if isinstance(data, list):
+            items = data
+        elif isinstance(data, dict) and isinstance(data.get("data"), list):
+            items = data["data"]
+        else:
+            _set_opencode_free_live_memo(None)
+            return None
     except Exception:
         _set_opencode_free_live_memo(None)
         return None
-    live_free = [
+    unavailable = _opencode_free_unavailable_inventory(items)
+    listed_free = [
         m["id"] for m in items
         if isinstance(m, dict) and isinstance(m.get("id"), str)
-        and m["id"].lower().endswith("-free") and m["id"].lower() not in _OPENCODE_FREE_KEYED_SUFFIX_MODELS
+        and m["id"].lower().endswith("-free")
+        and m["id"].lower() not in _OPENCODE_FREE_KEYED_SUFFIX_MODELS
     ]
-    result = live_free or None
+    live_free = [
+        model_id for model_id in listed_free if model_id.lower() not in unavailable
+    ]
+    result: Optional[list[str]] = live_free or (
+        _AuthoritativeEmptyOpenCodeFreeCatalog()
+        if listed_free and all(model_id.lower() in unavailable for model_id in listed_free)
+        else None
+    )
     _set_opencode_free_live_memo(result)
     return result
 
 
 def _set_opencode_free_live_memo(ids: Optional[list[str]]) -> None:
     global _opencode_free_live_memo
-    _opencode_free_live_memo = (time.time(), list(ids) if ids else None)
+    cached = _AuthoritativeEmptyOpenCodeFreeCatalog() if isinstance(
+        ids, _AuthoritativeEmptyOpenCodeFreeCatalog
+    ) else (list(ids) if ids else None)
+    _opencode_free_live_memo = (time.time(), cached)
 
 
 def _opencode_free_known_model_slugs() -> set[str]:

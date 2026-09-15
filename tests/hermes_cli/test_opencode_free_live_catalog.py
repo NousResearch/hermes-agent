@@ -221,3 +221,67 @@ class TestOpencodeFreeFollowUps:
         assert "x-preview-f-free" not in _PROVIDER_MODELS["opencode-free"]
         assert "hy3-free" not in _PROVIDER_MODELS["opencode-free"]
         assert "laguna-s-2.1-free" not in _PROVIDER_MODELS["opencode-free"]
+
+
+class TestOpencodeFreeAvailabilityInventory:
+    """Explicit relay availability is stronger than a bare ``/models`` listing."""
+
+    def _fetch(self, mod, payload):
+        import io
+        import json
+
+        class _Resp(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        mod._opencode_free_live_memo = None
+        with patch(
+            "hermes_cli.urllib_security.open_credentialed_url",
+            return_value=_Resp(json.dumps(payload).encode()),
+        ):
+            return mod._fetch_opencode_free_models()
+
+    def test_excludes_explicitly_rate_limited_live_model(self):
+        import hermes_cli.models as mod
+
+        result = self._fetch(mod, {"data": [
+            {"id": "mimo-v2.5-free", "status": "rate_limited"},
+            {"id": "nemotron-3-ultra-free", "status": "available"},
+        ]})
+
+        assert result == ["nemotron-3-ultra-free"]
+
+    def test_keeps_explicitly_available_and_ambiguous_models(self):
+        import hermes_cli.models as mod
+
+        result = self._fetch(mod, {"data": [
+            {"id": "nemotron-3-ultra-free", "status": "available"},
+            {"id": "mimo-v2.5-free"},
+        ]})
+
+        # A plain listing has no serviceability proof, so it retains today's
+        # fail-open behavior instead of hiding a potentially healthy model.
+        assert result == ["nemotron-3-ultra-free", "mimo-v2.5-free"]
+
+    def test_all_explicitly_unavailable_models_do_not_resurrect_static_floor(self):
+        import hermes_cli.models as mod
+
+        self._fetch(mod, {"data": [
+            {"id": "mimo-v2.5-free", "status": "rate_limited"},
+        ]})
+
+        # A complete, explicit negative inventory is authoritative.  Only an
+        # unavailable or ambiguous inventory should fall back to the floor.
+        assert mod._opencode_free_catalog("opencode-free", False) == []
+
+    def test_malformed_availability_signal_fails_open(self):
+        import hermes_cli.models as mod
+
+        result = self._fetch(mod, {"data": [
+            {"id": "mimo-v2.5-free", "status": {"state": "limited"}},
+        ]})
+
+        assert result == ["mimo-v2.5-free"]

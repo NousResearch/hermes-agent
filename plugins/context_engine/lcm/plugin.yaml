@@ -1,0 +1,6 @@
+name: lcm
+version: 0.1.0
+description: "Opt-in DAG-based context engine (Lossless Context Management). Compacts conversation ranges into lineage-bearing summary nodes and keeps the raw messages recoverable through bounded pages. Select with context.engine: lcm; disabling it returns Hermes to the built-in compressor."
+author: "NousResearch (Protean B04)"
+license: MIT
+entry: register

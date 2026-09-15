@@ -50,6 +50,24 @@ describe('paragraphPlainText', () => {
     ).toBe('::followup{p1="open www.example.com"}')
   })
 
+  // A scheme is case-insensitive per RFC 3986, so an autolink is still derivable
+  // from its text when the renderer emits `MAILTO:`/`HTTP://`.
+  it('folds autolinks whose href scheme is uppercased', () => {
+    expect(
+      paragraphPlainText([
+        '::followup{p1="ask ',
+        <a href="MAILTO:a@b.com" key="m">
+          a@b.com
+        </a>,
+        ' or ',
+        <a href="HTTP://www.example.com" key="u">
+          www.example.com
+        </a>,
+        '"}'
+      ])
+    ).toBe('::followup{p1="ask a@b.com or www.example.com"}')
+  })
+
   it('still disqualifies an authored link whose label differs from its href', () => {
     expect(
       paragraphPlainText([

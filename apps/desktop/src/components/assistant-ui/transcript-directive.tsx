@@ -34,8 +34,13 @@ const onboardingEnabled = isOnboardingEnabled()
  *  form too rather than only the literal concatenation. */
 function isAutolinkLiteral(href: string, text: string): boolean {
   const candidates = [text, `mailto:${text}`, `http://${text}`, `https://${text}`]
+  // A URI scheme is case-insensitive (RFC 3986 §3.1), so `MAILTO:a@b.com` is
+  // still derivable from the text it was linkified from.
+  const lowered = href.toLowerCase()
 
-  return candidates.some(candidate => href === candidate || href === `${candidate}/`)
+  return candidates.some(
+    candidate => lowered === candidate.toLowerCase() || lowered === `${candidate.toLowerCase()}/`
+  )
 }
 
 /** True for a child React elements only ever produced by GFM autolinking:

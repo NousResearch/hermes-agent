@@ -152,6 +152,21 @@ def _anchor(text: str, base, container_paths: bool) -> Path | PurePosixPath:
         if not ntpath.isabs(text):
             text = ntpath.join(str(base()), text)
         return Path(ntpath.normpath(text))
+    # Structural check: if a relative path reproduces the base directory's
+    # tail as its own prefix, the model likely intended an absolute path but
+    # dropped the leading "/". Without this, joining such a path with the base
+    # dir produces a doubled path like /home/u/dev/home/u/dev/notes/x.md
+    # (issue #67185). Purely structural — no hard-coded root allowlist — so it
+    # works for any base directory and never fires on legitimate relative
+    # paths that don't reproduce the base dir.
+    if not text.startswith("/"):
+        base_str = str(Path(base()))
+        base_parts = PurePosixPath(base_str.replace(os.sep, "/")).parts[1:]
+        file_parts = text.replace(os.sep, "/").split("/")
+        for n in range(min(len(base_parts), len(file_parts) - 1), 0, -1):
+            if list(base_parts[-n:]) == file_parts[:n]:
+                text = "/" + text
+                break
     p = Path(text)
     if not p.is_absolute():
         p = Path(base()) / p

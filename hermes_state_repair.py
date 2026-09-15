@@ -22,8 +22,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
 from hermes_startup_watchdog import report_startup_progress
+from hermes_state_holders import read_only_db_uri
 from hermes_state_common import (
-    read_only_db_uri,
     _acquire_db_flock, _clear_lock_holder_record, _describe_lock_holder, _read_lock_holder_record,
     is_advisory_lock_contention,
 )

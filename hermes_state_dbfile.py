@@ -24,9 +24,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from hermes_state_holders import canonical_sqlite_path
+from hermes_state_holders import canonical_sqlite_path, read_only_db_uri
 from hermes_state_common import (
-    read_only_db_uri,
     FTS_REBUILD_DEFERRAL_KEY, stat_db_file_identity as _stat_db_file_identity
 )
 

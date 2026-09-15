@@ -8,18 +8,11 @@ import logging
 import os
 import sys
 import time
-from pathlib import Path
 from typing import Any
 
 from agent.skill_commands import SKILL_EXCERPT_JOINT, SKILL_SCAFFOLD_SQL_LIKE, describe_skill_invocation
 from agent.context_compressor import (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER,
     _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER)
-
-def read_only_db_uri(db_path) -> str:
-    """``file:`` URI for a ``mode=ro`` open. ``as_uri()`` percent-encodes ``?``/``#`` in the home
-    path; a raw ``f"file:{path}?mode=ro"`` truncates there and opens the wrong (empty) database."""
-    return Path(db_path).resolve().as_uri() + "?mode=ro"
-
 
 
 # Session preview = head of the first user message (shown when a session has no title).  A /skill invocation

@@ -981,8 +981,8 @@ def cmd_sessions(args, sessions_parser=None):
     if pre is not None:
         return pre(args)
     observational = action in _OBSERVATIONAL_DB_ACTIONS
+    from hermes_state import SessionDB, _default_db_path
     try:
-        from hermes_state import SessionDB, _default_db_path
         db = SessionDB(read_only=observational)
     except Exception as e:
         # mode=ro cannot create the store; a reader on a fresh profile reports empty rather than failing.
@@ -998,7 +998,9 @@ def cmd_sessions(args, sessions_parser=None):
         try:
             return handler(db, args)
         except sqlite3.OperationalError as e:
-            if not observational or not str(e).lower().startswith("no such "):
+            from hermes_state_repair import _schema_not_built
+
+            if not observational or not _schema_not_built(e):
                 raise
             # A read-only opener skips schema migration, so a store from an older release can lack a column.
             print(f"Error: session database needs migration — run any writing hermes command first ({e})")

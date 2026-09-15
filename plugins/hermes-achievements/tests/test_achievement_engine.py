@@ -1,6 +1,8 @@
 import importlib.util
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "dashboard" / "plugin_api.py"
 spec = importlib.util.spec_from_file_location("plugin_api", MODULE_PATH)
@@ -57,6 +59,23 @@ class AchievementEngineTests(unittest.TestCase):
         self.assertEqual(result["state"], "discovered")
         self.assertEqual(result["progress"], 12)
         self.assertEqual(result["next_threshold"], 50)
+
+    def test_finished_rescan_keeps_persisted_unlock_when_live_metric_shrinks(self):
+        definition = {
+            "id": "durable_unlock",
+            "name": "Durable Unlock",
+            "threshold_metric": "total_terminal_calls",
+            "tiers": [{"name": "Copper", "threshold": 40}],
+        }
+        with TemporaryDirectory() as data_dir, patch.object(plugin_api, "ACHIEVEMENTS", [definition]), patch.object(plugin_api, "_data_dir", return_value=Path(data_dir)):
+            unlocked = plugin_api._compute_from_scan({"aggregate": {"total_terminal_calls": 40}, "sessions": []})
+            rescanned = plugin_api._compute_from_scan({"aggregate": {"total_terminal_calls": 39}, "sessions": []})
+            partial = plugin_api._compute_from_scan({"aggregate": {"total_terminal_calls": 39}, "sessions": []}, is_partial=True)
+
+        self.assertTrue(unlocked["achievements"][0]["unlocked"])
+        self.assertTrue(rescanned["achievements"][0]["unlocked"])
+        self.assertEqual(rescanned["achievements"][0]["state"], "unlocked")
+        self.assertFalse(partial["achievements"][0]["unlocked"])
 
     def test_secret_achievement_stays_hidden_without_progress(self):
         definition = {

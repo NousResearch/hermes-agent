@@ -712,7 +712,18 @@ def _compute_from_scan(scan: Dict[str, Any], *, is_partial: bool = False) -> Dic
     for definition in ACHIEVEMENTS:
         result = evaluate_definition(definition, aggregate)
         unlock_id = definition["id"]
-        if not is_partial and result["unlocked"] and unlock_id not in unlocks:
+        persisted_unlock = unlocks.get(unlock_id)
+        if not is_partial and isinstance(persisted_unlock, dict):
+            # Finished rescans may see a shorter active session window than the
+            # scan that first unlocked this badge. Once recorded, an unlock is
+            # durable; only in-progress snapshots reflect their live window.
+            result.update(
+                unlocked=True,
+                state="unlocked",
+                tier=result.get("tier") or persisted_unlock.get("first_tier"),
+                progress_pct=100,
+            )
+        elif not is_partial and result["unlocked"]:
             unlocks[unlock_id] = {"unlocked_at": now, "first_tier": result.get("tier"), "evidence": evidence_for(definition, scan.get("sessions", []))}
         item = {**definition, **result}
         if result["unlocked"]:

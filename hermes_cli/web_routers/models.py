@@ -26,6 +26,7 @@ router = APIRouter()
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
+_own_profile_scope = late("_own_profile_scope", "hermes_cli.web_server_profiles")
 load_config = late("load_config", "hermes_cli.config")
 save_config = late("save_config", "hermes_cli.config")
 
@@ -145,29 +146,35 @@ def get_recommended_default_model(provider: str = ""):
     aggregator lists lead with the priciest Anthropic flagship, which must never be
     the model a user lands on without explicitly picking it.
     Response: {"provider", "model", "free_tier": bool | None} — free_tier only for
-    Nous; ``model`` may be empty (caller degrades gracefully)."""
+    Nous; ``model`` may be empty (caller degrades gracefully).
+
+    Own-profile scoped: ``load_picker_context`` reads this profile's provider credentials
+    (VERTEX_CREDENTIALS_PATH & co.). Unscoped on a fail-closed multiplexed dashboard the raise is
+    swallowed below and onboarding silently loses its recommended default.
+    """
     slug = (provider or "").strip().lower()
 
-    if slug == "nous":
+    with _own_profile_scope():
+        if slug == "nous":
+            try:
+                return _nous_recommended_default()
+            except Exception:
+                _log.exception("GET /api/model/recommended-default (nous) failed")
+                return {"provider": "nous", "model": "", "free_tier": None}
+
         try:
-            return _nous_recommended_default()
+            from hermes_cli.inventory import build_models_payload, load_picker_context
+            from hermes_cli.models import pick_silent_default_model
+
+            payload = build_models_payload(load_picker_context())
+            for row in payload.get("providers", []):
+                if str(row.get("slug", "")).lower() == slug:
+                    models = [str(m) for m in (row.get("models") or [])]
+                    return {"provider": slug, "model": pick_silent_default_model(models, provider=slug), "free_tier": None}
+            return {"provider": slug, "model": "", "free_tier": None}
         except Exception:
-            _log.exception("GET /api/model/recommended-default (nous) failed")
-            return {"provider": "nous", "model": "", "free_tier": None}
-
-    try:
-        from hermes_cli.inventory import build_models_payload, load_picker_context
-        from hermes_cli.models import pick_silent_default_model
-
-        payload = build_models_payload(load_picker_context())
-        for row in payload.get("providers", []):
-            if str(row.get("slug", "")).lower() == slug:
-                models = [str(m) for m in (row.get("models") or [])]
-                return {"provider": slug, "model": pick_silent_default_model(models, provider=slug), "free_tier": None}
-        return {"provider": slug, "model": "", "free_tier": None}
-    except Exception:
-        _log.exception("GET /api/model/recommended-default failed")
-        return {"provider": slug, "model": "", "free_tier": None}
+            _log.exception("GET /api/model/recommended-default failed")
+            return {"provider": slug, "model": "", "free_tier": None}
 
 
 @router.get("/api/model/auxiliary")

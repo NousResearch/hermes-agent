@@ -37,6 +37,7 @@ logs_router = APIRouter()
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _collect_profile_gateway_topology_cached = late("_collect_profile_gateway_topology_cached", "hermes_cli.web_server_gateway")
 _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
+_own_profile_scope = late("_own_profile_scope", "hermes_cli.web_server_profiles")
 _dashboard_local_update_managed_externally = late("_dashboard_local_update_managed_externally", "hermes_cli.web_server_files")
 _load_configured_gateway_platforms = late("_load_configured_gateway_platforms", "hermes_cli.web_server_gateway")
 _probe_gateway_health = late("_probe_gateway_health", "hermes_cli.web_server_gateway")
@@ -406,8 +407,12 @@ async def get_status(profile: Optional[str] = None):
     profile_dir: Optional[Path] = None
     if requested_profile and requested_profile.lower() != "current":
         profile_dir = _resolve_profile_dir(requested_profile)
-        status_scope = _config_profile_scope(requested_profile)
-        status_scope.__enter__()
+    # Bound for the dashboard's OWN profile too (no ``?profile=``/``current``): the platform
+    # rollup, the component health probes and the advisory pressure below read that profile's
+    # config and credentials, which raise UnscopedSecretError once a ``?profile=<other>`` request
+    # has flipped this process to fail-closed multi-profile hosting (see _config_profile_scope).
+    status_scope = _config_profile_scope(requested_profile or None)
+    status_scope.__enter__()
 
     try:
         current_ver, latest_ver = check_config_version()
@@ -637,8 +642,12 @@ async def update_learning_node(body: LearningNodeEdit):
 @router.get("/api/portal")
 async def get_portal_status():
     # load_config() + auth/subscription snapshots are disk reads on a polled endpoint —
-    # keep them off the event loop.
-    return await asyncio.to_thread(_get_portal_status_sync)
+    # keep them off the event loop. The own-profile scope is entered HERE so the worker thread
+    # (context-copying ``asyncio.to_thread``) inherits it: the subscription features read
+    # FIRECRAWL_*/provider env, and the handler is fail-soft, so an unscoped read does not 500 —
+    # it silently returns a Portal panel with no features.
+    with _own_profile_scope():
+        return await asyncio.to_thread(_get_portal_status_sync)
 
 
 def _feature_state(feat) -> str:

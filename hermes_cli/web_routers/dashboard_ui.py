@@ -28,6 +28,7 @@ router = APIRouter()
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _get_dashboard_plugins = late("_get_dashboard_plugins")
 _require_token = late("_require_token")
+_own_profile_scope = late("_own_profile_scope", "hermes_cli.web_server_profiles")
 load_config = late("load_config", "hermes_cli.config")
 save_config = late("save_config", "hermes_cli.config")
 _CONFIG_MUTATION_LOCK = LateState("_CONFIG_MUTATION_LOCK")
@@ -153,7 +154,11 @@ async def get_plugins_hub(request: Request):
     """Unified agent plugins + dashboard extension metadata (session protected)."""
     _require_token(request)
     try:
-        return _merged_plugins_hub()
+        # Own-profile scope: the hub folds in the memory-provider schemas and plugin/service
+        # status, which read each provider's env (MEM0_MODE, SUPERMEMORY_BASE_URL, ...) and raise
+        # unscoped once this process is fail-closed for multi-profile hosting.
+        with _own_profile_scope():
+            return _merged_plugins_hub()
     except Exception as exc:
         _log.warning("plugins/hub failed: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to build plugins hub.") from exc

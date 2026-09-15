@@ -34,6 +34,7 @@ load_config = late("load_config", "hermes_cli.config")
 _cron_profile_dicts = late("_cron_profile_dicts", "hermes_cli.web_server_cron")
 _cron_profile_home = late("_cron_profile_home", "hermes_cli.web_server_cron")
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
+_own_profile_scope = late("_own_profile_scope", "hermes_cli.web_server_profiles")
 
 def _job_not_found() -> HTTPException:
     return HTTPException(status_code=404, detail="Job not found")
@@ -232,15 +233,21 @@ async def create_cron_job(body: CronJobCreate, profile: Optional[str] = None):
 async def get_cron_delivery_targets():
     """Delivery targets for the cron dropdown: implicit ``local`` plus the
     configured gateway platforms (a platform without a cron home channel is
-    still listed with ``home_target_set: false`` so the UI can say so)."""
-    targets = [{"id": "local", "name": "Local (save only)", "home_target_set": True, "home_env_var": None}]
-    try:
-        from cron.scheduler_delivery import cron_delivery_targets
+    still listed with ``home_target_set: false`` so the UI can say so).
 
-        targets.extend(cron_delivery_targets())
-    except Exception:
-        _log.exception("GET /api/cron/delivery-targets failed")
-    return {"targets": targets}
+    Own-profile scoped: the platform list is credential-derived (each platform's ``is_connected``
+    probe reads its bot token), and this handler is fail-soft — unscoped it silently returns
+    ``local`` only, so a scheduled job could not be pointed at Telegram/Discord at all.
+    """
+    with _own_profile_scope():
+        targets = [{"id": "local", "name": "Local (save only)", "home_target_set": True, "home_env_var": None}]
+        try:
+            from cron.scheduler_delivery import cron_delivery_targets
+
+            targets.extend(cron_delivery_targets())
+        except Exception:
+            _log.exception("GET /api/cron/delivery-targets failed")
+        return {"targets": targets}
 
 
 @router.put("/api/cron/jobs/{job_id}")
@@ -362,28 +369,31 @@ async def cron_fire_webhook(request: Request):
 @router.get("/api/cron/blueprints")
 async def list_cron_blueprints():
     """Blueprint catalog as form schemas; the ``deliver`` slot's options are
-    rewritten from the actually configured gateway platforms."""
+    rewritten from the actually configured gateway platforms (own-profile scoped: the platform
+    list is credential-derived, and unscoped the deliver slot silently falls back to the static
+    options with every platform missing)."""
     try:
-        from cron.blueprint_catalog import CATALOG, blueprint_catalog_entry
+        with _own_profile_scope():
+            from cron.blueprint_catalog import CATALOG, blueprint_catalog_entry
 
-        deliver_options = None
-        try:
-            from cron.scheduler_delivery import cron_delivery_targets
+            deliver_options = None
+            try:
+                from cron.scheduler_delivery import cron_delivery_targets
 
-            platforms = [t["id"] for t in cron_delivery_targets() if t.get("id")]
-            deliver_options = ["origin", "local", *platforms]
-        except Exception:
-            _log.debug("cron_delivery_targets unavailable; using static deliver options", exc_info=True)
+                platforms = [t["id"] for t in cron_delivery_targets() if t.get("id")]
+                deliver_options = ["origin", "local", *platforms]
+            except Exception:
+                _log.debug("cron_delivery_targets unavailable; using static deliver options", exc_info=True)
 
-        entries = []
-        for r in CATALOG:
-            entry = blueprint_catalog_entry(r)
-            if deliver_options:
-                for f in entry.get("fields", []):
-                    if f.get("name") == "deliver":
-                        f["options"] = deliver_options
-            entries.append(entry)
-        return {"blueprints": entries}
+            entries = []
+            for r in CATALOG:
+                entry = blueprint_catalog_entry(r)
+                if deliver_options:
+                    for f in entry.get("fields", []):
+                        if f.get("name") == "deliver":
+                            f["options"] = deliver_options
+                entries.append(entry)
+            return {"blueprints": entries}
     except Exception as e:
         _log.exception("GET /api/cron/blueprints failed")
         raise HTTPException(status_code=500, detail=str(e))

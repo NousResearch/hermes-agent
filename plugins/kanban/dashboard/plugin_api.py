@@ -1101,12 +1101,29 @@ def get_config():
 # Each gateway platform has at most one "home" (chat_id, thread_id, name); a toggle-on writes
 # exactly the notify_subs row ``/kanban create`` would, so the gateway notifier needs no plumbing.
 
+def _own_profile_scope():
+    """The dashboard's serving-profile config + secret scope — thin re-export of
+    ``hermes_cli.web_server_profiles._own_profile_scope``, imported lazily so the plugin does not
+    pull the web server in at import time.
+
+    Kanban reads the live GatewayConfig (home channels) and the model inventory (provider
+    credentials) for the SERVING profile. Both raise ``UnscopedSecretError`` once any
+    ``?profile=<other>`` request has flipped this dashboard process to fail-closed multi-profile
+    hosting, and both call sites are fail-soft: the picker silently loses every home channel and
+    the whole model catalog.
+    """
+    from hermes_cli.web_server_profiles import _own_profile_scope as scope
+
+    return scope()
+
+
 def _configured_home_channels() -> list[dict]:
     """Every platform with a home_channel, from the live GatewayConfig (so env overlays
     like ``TELEGRAM_HOME_CHANNEL`` are honored), sorted by platform."""
     try:
-        from gateway.config import load_gateway_config
-        gw_cfg = load_gateway_config()
+        with _own_profile_scope():
+            from gateway.config import load_gateway_config
+            gw_cfg = load_gateway_config()
     except Exception:
         return []
     result = [
@@ -1223,16 +1240,17 @@ def model_options():
     (same substrate as the Models page) so it can't offer a pair Hermes rejects. Skips pricing
     and custom-provider probes: a slow/offline local endpoint must not hang the drawer."""
     try:
-        from hermes_cli.inventory import build_models_payload, load_picker_context
+        with _own_profile_scope():
+            from hermes_cli.inventory import build_models_payload, load_picker_context
 
-        payload = build_models_payload(
-            load_picker_context(), explicit_only=True, canonical_order=True, probe_custom_providers=False)
-        return {
-            "providers": [
-                {"slug": row.get("slug", ""), "label": row.get("label") or row.get("slug", ""),
-                 "models": list(row.get("models") or [])}
-                for row in payload.get("providers", [])
-                if row.get("models")]}
+            payload = build_models_payload(
+                load_picker_context(), explicit_only=True, canonical_order=True, probe_custom_providers=False)
+            return {
+                "providers": [
+                    {"slug": row.get("slug", ""), "label": row.get("label") or row.get("slug", ""),
+                     "models": list(row.get("models") or [])}
+                    for row in payload.get("providers", [])
+                    if row.get("models")]}
     except Exception:
         log.exception("kanban model-options failed")
         return {"providers": []}  # empty catalog → the UI falls back to a free-text input

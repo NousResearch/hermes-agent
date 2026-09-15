@@ -238,11 +238,26 @@ def record_obligation(*, obligation_id: str, session_key: str, platform: str, ch
     now, (pid, started) = time.time(), _owner_stamp()
     with _DB_LOCK, _transaction() as conn:
         conn.execute(
-            """INSERT OR REPLACE INTO delivery_obligations
+            """INSERT INTO delivery_obligations
                (obligation_id, session_key, platform, chat_id, thread_id,
                 content, state, attempts, created_at, updated_at,
                 owner_pid, owner_started_at, adapter_profile)
-               VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)
+               ON CONFLICT(obligation_id) DO UPDATE SET
+                   session_key=excluded.session_key,
+                   platform=excluded.platform,
+                   chat_id=excluded.chat_id,
+                   thread_id=excluded.thread_id,
+                   content=excluded.content,
+                   state='pending',
+                   attempts=0,
+                   created_at=excluded.created_at,
+                   updated_at=excluded.updated_at,
+                   owner_pid=excluded.owner_pid,
+                   owner_started_at=excluded.owner_started_at,
+                   adapter_profile=excluded.adapter_profile,
+                   last_error=NULL
+               WHERE delivery_obligations.state <> 'attempting'""",
             (obligation_id, session_key, platform, str(chat_id), str(thread_id) if thread_id else None,
              content, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default"))
     _prune()

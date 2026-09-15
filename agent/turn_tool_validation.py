@@ -73,8 +73,8 @@ def validate_tool_calls(
     """Validate ``assistant_message.tool_calls`` in place (ids uniquified, names
     repaired, dict/empty args normalized to JSON strings). Strikes for invalid names
     advance only when a turn has NO valid call, so a degenerate model still halts at
-    3; args cut off mid-stream (routers rewrite ``length`` → ``tool_calls``) are refused
-    outright rather than retried."""
+    3; args cut off mid-stream use the same bounded JSON retry before a partial exit.
+    No call in the rejected batch has been dispatched."""
     from agent.conversation_loop import _invalid_tool_name_error_content
 
     tool_calls = assistant_message.tool_calls
@@ -159,6 +159,7 @@ def validate_tool_calls(
                 invalid_json_args.append((tc.function.name, str(e)))
 
     if invalid_json_args:
+        agent._invalid_json_retries += 1
         invalid_names = {n for n, _ in invalid_json_args}
         # Routers may rewrite finish_reason "length" → "tool_calls", hiding
         # truncation; args not ending in } or ] (stripped) were cut off
@@ -167,7 +168,7 @@ def validate_tool_calls(
             not (tc.function.arguments or "").rstrip().endswith(("}", "]"))
             for tc in tool_calls if tc.function.name in invalid_names
         )
-        if _truncated:
+        if _truncated and agent._invalid_json_retries >= 3:
             agent._vprint(
                 f"{agent.log_prefix}⚠️  Truncated tool call arguments detected "
                 f"(finish_reason={finish_reason!r}) — refusing to execute.",
@@ -177,10 +178,10 @@ def validate_tool_calls(
             agent._cleanup_task_resources(effective_task_id)
             return _verdict("return", _partial_exit(
                 agent, messages, conversation_history, api_call_count,
-                "Response truncated due to output length limit",
+                "Model returned truncated tool arguments after 3 attempts; "
+                "no tools in that response were executed",
             ))
 
-        agent._invalid_json_retries += 1
         tool_name, error_msg = invalid_json_args[0]
         agent._buffer_vprint(f"⚠️  Invalid JSON in tool call arguments for '{tool_name}': {error_msg}")
 

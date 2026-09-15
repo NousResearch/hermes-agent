@@ -4687,7 +4687,7 @@ class TestRunConversation:
         bad_resp = _mock_response(
             content="", finish_reason="tool_calls", tool_calls=[bad_tc],
         )
-        agent.client.chat.completions.create.side_effect = [good_resp, bad_resp]
+        agent.client.chat.completions.create.side_effect = [good_resp, bad_resp, bad_resp, bad_resp]
 
         with (
             patch("model_tools.handle_function_call", return_value='{"success":true}'),

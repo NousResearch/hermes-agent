@@ -1100,6 +1100,47 @@ def test_sqlite_connect_closes_tracked_conn_on_setup_failure(tmp_path, monkeypat
     assert after == before
 
 
+def test_link_tasks_emits_dependency_wait_when_demoting_ready_child(kanban_home):
+    """Linking an unfinished parent under a ready child must not be silent.
+
+    The demotion to todo is correct (the ready -> running claim re-checks
+    parents), but it used to leave no event: the board showed the card flip
+    to todo with no explanation until someone mined claim_rejected events.
+    """
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="blocked parent")
+        child = kb.create_task(conn, title="support card")
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (child,))
+        conn.commit()
+
+        gated = kb.link_tasks(conn, parent, child)
+
+        assert gated is True, "link_tasks must report the demotion it caused"
+        assert kb.get_task(conn, child).status == "todo"
+        events = kb.list_events(conn, child)
+        wait = [e for e in events if e.kind == "dependency_wait"]
+        assert wait, "the demotion must be recorded as a dependency_wait event"
+        payload = wait[-1].payload
+        assert payload["reason"] == "parent_not_done"
+        assert payload["demoted"] is True
+        assert payload["parent"] == parent
+
+
+def test_link_tasks_no_dependency_wait_when_parent_done(kanban_home):
+    """A done parent demotes nothing and reports no gate."""
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="done parent")
+        kb.complete_task(conn, parent)
+        child = kb.create_task(conn, title="follower")
+
+        gated = kb.link_tasks(conn, parent, child)
+
+        assert gated is False
+        assert kb.get_task(conn, child).status == "ready"
+        kinds = [e.kind for e in kb.list_events(conn, child)]
+        assert "dependency_wait" not in kinds
+
+
 def test_unlink_tasks_triggers_recompute_ready(kanban_home):
     """Regression test for issue #22459.
 

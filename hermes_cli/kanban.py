@@ -698,8 +698,16 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
 
 def _cmd_link(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
-        kb.link_tasks(conn, args.parent_id, args.child_id)
+        gated = kb.link_tasks(conn, args.parent_id, args.child_id)
     print(f"Linked {args.parent_id} -> {args.child_id}")
+    if gated:
+        print(
+            f"Note: {args.child_id} was ready and is now todo — parent "
+            f"{args.parent_id} is not done yet. The ready -> running claim "
+            f"re-checks parents, so the child only runs after the parent "
+            f"completes; use `hermes kanban unlink {args.parent_id} {args.child_id}` "
+            f"to run it now."
+        )
     return 0
 
 

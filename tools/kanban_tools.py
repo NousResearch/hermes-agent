@@ -996,8 +996,9 @@ def _handle_link(args: dict, **kw) -> str:
     child_id = args.get("child_id")
     _check(parent_id and child_id, "both parent_id and child_id are required")
     with _board(args.get("board")) as (kb, conn):
-        kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)
-        return _ok(parent_id=parent_id, child_id=child_id)
+        gated = kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)
+        return _ok(parent_id=parent_id, child_id=child_id, gated=gated,
+                   **({"gated_by": parent_id} if gated else {}))
 
 
 # --- Registration (order preserved: it is the order tools appear in the schema) ---

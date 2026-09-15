@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Terminal tool: run shell commands in the configured backend.
 
-Backends (``TERMINAL_ENV``): local (default), docker, singularity, modal
+Backends (``TERMINAL_ENV``): local (default), nsjail, docker, singularity, modal
 (direct or managed gateway), daytona, vercel_sandbox, ssh, plus
 plugin-registered backends. Handles background processes, sandbox lifecycle
 (per-task cache, idle reaper, atexit teardown) and sudo password plumbing.
@@ -585,7 +585,7 @@ def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
     path is remapped to /workspace and tracked as host_cwd; otherwise host paths
     are discarded in favor of the backend default.
     """
-    default_cwd = _safe_getcwd() if env_type == "local" else _DEFAULT_CWD_BY_BACKEND.get(env_type, "/root")
+    default_cwd = _safe_getcwd() if env_type in ("local", "nsjail") else _DEFAULT_CWD_BY_BACKEND.get(env_type, "/root")
     cwd = _tenv("TERMINAL_CWD", default_cwd)
     from hermes_cli.config import _is_ssh_remote_tilde_cwd
     if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
@@ -599,7 +599,7 @@ def _resolve_config_cwd(env_type: str, mount_docker_cwd: bool) -> tuple:
         ):
             host_cwd = candidate
             cwd = "/workspace"
-    elif _is_container_backend(env_type) and cwd and _is_unusable_container_cwd(cwd) and cwd != default_cwd:
+    elif env_type != "nsjail" and _is_container_backend(env_type) and cwd and _is_unusable_container_cwd(cwd) and cwd != default_cwd:
         logger.info("Ignoring TERMINAL_CWD=%r for %s backend "
                     "(host/relative path won't work in sandbox). Using %r instead.",
                     cwd, env_type, default_cwd)
@@ -630,8 +630,15 @@ def _get_env_config() -> Dict[str, Any]:
         docker_env = _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON")
         docker_extra_args = _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON")
         docker_shm_size = _tenv("TERMINAL_DOCKER_SHM_SIZE", "1g")
+        nsjail_config, nsjail_allow_net, nsjail_forward_env = "", False, []
+    elif env_type == "nsjail":
+        docker_forward_env, docker_volumes, docker_env, docker_extra_args, docker_shm_size = [], [], {}, [], "1g"
+        nsjail_config = _tenv("TERMINAL_NSJAIL_CONFIG", "")
+        nsjail_allow_net = _tenv_bool("TERMINAL_NSJAIL_ALLOW_NET", "false")
+        nsjail_forward_env = _parse_env_var("TERMINAL_NSJAIL_FORWARD_ENV", "[]", json.loads, "valid JSON")
     else:
         docker_forward_env, docker_volumes, docker_env, docker_extra_args, docker_shm_size = [], [], {}, [], "1g"
+        nsjail_config, nsjail_allow_net, nsjail_forward_env = "", False, []
 
     cwd, host_cwd = _resolve_config_cwd(env_type, mount_docker_cwd)
 
@@ -677,6 +684,9 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_persist_across_processes": _tenv_bool("TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES", "true"),
         "docker_shared_container_key": _tenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "").strip(),
         "docker_orphan_reaper": _tenv_bool("TERMINAL_DOCKER_ORPHAN_REAPER", "true"),
+        "nsjail_config": nsjail_config,
+        "nsjail_allow_net": nsjail_allow_net,
+        "nsjail_forward_env": nsjail_forward_env,
     }
 
 

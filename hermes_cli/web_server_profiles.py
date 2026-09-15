@@ -258,6 +258,7 @@ def _config_profile_scope(profile: Optional[str]):
 _TERMINAL_BACKENDS: List[Dict[str, str]] = [
     dict(zip(("name", "label", "description"), row)) for row in (
         ("local", "Local", "Run commands directly on this machine. No isolation."),
+        ("nsjail", "Nsjail", "Run commands in a lightweight Linux namespace sandbox without a daemon."),
         ("docker", "Docker",
          "Run commands in an isolated Docker container with a persistent workspace."),
         ("singularity", "Singularity / Apptainer",

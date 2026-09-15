@@ -1,8 +1,32 @@
 """Lightweight i18n for Hermes' static user-facing strings (approval prompts, a few gateway replies).
 
-Catalogs are ``locales/<lang>.yaml`` flattened to dotted keys. Missing keys
-fall back to English, then to the key itself, so a broken catalog never crashes.
-Language resolution: explicit ``lang=`` > ``HERMES_LANGUAGE`` > ``display.language`` > ``en``.
+Scope (thin slice, by design): only the highest-impact static strings shown
+to the user by Hermes itself -- approval prompts, a handful of gateway slash
+command replies, restart-drain notices.  Agent-generated output, log lines,
+error tracebacks, tool outputs, and slash-command descriptions all stay in
+English.
+
+Catalog files live under ``locales/<lang>.yaml`` at the repo root.  Each
+catalog is a flat dict keyed by dotted paths (e.g. ``approval.choose`` or
+``gateway.approval_expired``).  Missing keys fall back to English; if English
+is missing too, the key path itself is returned so a broken catalog never
+crashes the agent.
+
+Usage::
+
+    from agent.i18n import t
+    print(t("approval.choose_long"))                       # current lang
+    print(t("gateway.draining", count=3))                  # {count} formatted
+    print(t("approval.choose_long", lang="zh"))            # explicit override
+
+Language resolution order:
+    1. Explicit ``lang=`` argument passed to :func:`t`
+    2. ``HERMES_LANGUAGE`` environment variable (for tests / quick override)
+    3. ``display.language`` from config.yaml
+    4. ``"en"`` (baseline)
+
+Supported languages: en, zh, zh-hant, ja, de, es, fr, tr, uk, af, ko, it, ga,
+pt, ru, hu, ar, id.  Unknown values fall back to en.
 """
 
 from __future__ import annotations
@@ -18,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_LANGUAGES: tuple[str, ...] = (
     "en", "zh", "zh-hant", "ja", "de", "es", "fr", "tr", "uk",
-    "af", "ko", "it", "ga", "pt", "ru", "hu", "ar",
+    "af", "ko", "it", "ga", "pt", "ru", "hu", "ar", "id",
 )
 DEFAULT_LANGUAGE = "en"
 
@@ -47,6 +71,8 @@ _LANGUAGE_ALIASES: dict[str, str] = {
     "hungarian": "hu", "magyar": "hu", "hu-hu": "hu",
     "arabic": "ar", "العربية": "ar",
     "ar-sa": "ar", "ar-eg": "ar", "ar-ae": "ar", "ar-ma": "ar", "ar-dz": "ar",
+    # Indonesian
+    "indonesian": "id", "bahasa": "id", "bahasa-indonesia": "id", "id-id": "id",
 }
 
 _catalog_cache: dict[str, dict[str, str]] = {}

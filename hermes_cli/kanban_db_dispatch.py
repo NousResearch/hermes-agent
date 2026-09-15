@@ -1204,13 +1204,30 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    Exception, mirroring the one directly above for ``recent_success``:
+    #    an explicit re-queue AFTER the PR-URL comment (status change, promote,
+    #    unblock, reclaim) is a deliberate "run it again" — honor it instead of
+    #    deferring. Without this, a release/fix worker that posted a PR URL in
+    #    an occurrence or checkpoint and then hit a dependency_wait is re-
+    #    promoted and then held by this guard for the full PR window (24h),
+    #    even though its work is unfinished and it must re-spawn to continue.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        "SELECT body, created_at FROM task_comments WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
         if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+            comment_at = int(c["created_at"] or 0)
+            pr_requeued_after = conn.execute(
+                "SELECT 1 FROM task_events "
+                "WHERE task_id = ? AND created_at >= ? "
+                "AND kind IN ('status', 'promoted', 'promoted_manual', "
+                "'unblocked', 'reclaimed') "
+                "LIMIT 1",
+                (task_id, comment_at),
+            ).fetchone()
+            if not pr_requeued_after:
+                return "active_pr"
 
     return None
 

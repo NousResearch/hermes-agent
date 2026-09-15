@@ -1362,3 +1362,76 @@ def test_default_db_path_never_names_the_master_session_store(tmp_path, monkeypa
     assert from_profile == from_root, "one coordination file per install"
     assert from_root.parent == root
     assert from_root.name != "state.db"
+
+
+def test_upgrade_keeps_rooms_from_before_the_shared_state_db_split(tmp_path):
+    """Rooms an install already had stay reachable after the move to ``shared-state.db``.
+
+    ``0e422e0ece`` repointed the store at ``shared-state.db`` but left the hosted_room* rows in
+    the root ``state.db``, so every pre-existing room resolved to "hosted room not found" (#109775).
+    This is that upgrade: rooms and their events already in ``state.db``, nothing in the new file.
+    """
+    legacy = tmp_path / "state.db"
+    _create(legacy)
+    _append(
+        legacy,
+        room_id="room-1",
+        event_id="event-1",
+        kind="message.user",
+        actor=USER,
+        payload={"text": "before the upgrade"},
+        now=11,
+    )
+
+    store = tmp_path / "shared-state.db"
+
+    assert [room["room_id"] for room in rooms.list_rooms(store)] == ["room-1"]
+    assert rooms.room_state(store, room_id="room-1")["latest_seq"] == 1
+    assert [
+        event["event_id"] for event in rooms.read_events(store, room_id="room-1")["events"]
+    ] == ["event-1"]
+
+
+def test_legacy_import_is_a_one_shot_and_skips_driver_liveness_state(tmp_path):
+    """The copy runs once, never overwrites, and leaves the driver's lease behind (#109775)."""
+    legacy = tmp_path / "state.db"
+    _create(legacy)
+
+    def now() -> float:
+        return 100.0
+
+    driver.admit_task(
+        legacy,
+        driver.TaskIdentity(room_id="room-1", task_id="task-1", thread_id="thread-1", turn_id="turn-1"),
+        payload={"target_profile": "ops", "prompt": "ping", "source_event_seq": 1},
+        clock=now,
+    )
+    driver.acquire_lease(
+        legacy,
+        room_id="room-1",
+        gateway_id="gateway-a",
+        authority_epoch=1,
+        process_generation="process-a",
+        ttl_seconds=30,
+        clock=now,
+    )
+
+    store = tmp_path / "shared-state.db"
+    assert [room["room_id"] for room in rooms.list_rooms(store)] == ["room-1"]
+    with sqlite3.connect(store) as conn:
+        # Durable work follows the room across; the lease is liveness state and stays behind.
+        assert conn.execute("SELECT COUNT(*) FROM hosted_room_driver_tasks").fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='hosted_room_driver_leases'"
+        ).fetchone()[0] == 0
+
+    # Forcing a second import (marker cleared) must not replace what this store already owns.
+    rooms.rename_room(store, room_id="room-1", event_id="rename-1", name="Renamed", now=12)
+    with sqlite3.connect(store) as conn:
+        conn.execute("DELETE FROM hosted_room_legacy_imports")
+    assert rooms.room_state(store, room_id="room-1")["name"] == "Renamed"
+
+    # And the record of the import is what keeps a purge from being undone by a later open.
+    with sqlite3.connect(store) as conn:
+        conn.execute("DELETE FROM hosted_rooms")
+    assert rooms.list_rooms(store) == []

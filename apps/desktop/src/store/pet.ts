@@ -2,7 +2,8 @@ import { atom, computed } from 'nanostores'
 
 import { persistBoolean, storedBoolean } from '@/lib/storage'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { $busy } from '@/store/session'
+import { $activeSessionId, $busy } from '@/store/session'
+import { $sessionStates } from '@/store/session-states'
 
 /**
  * Petdex mascot state for the desktop floating pet.
@@ -94,7 +95,13 @@ export interface PetActivity {
   error?: boolean
   justCompleted?: boolean
   celebrate?: boolean
+  /** Date.now() stamps for the recency guard in deriveLivePetState (#84434/#84438). */
+  toolRunningAt?: number
+  reasoningAt?: number
 }
+
+/** How long a steady flag counts without a $busy confirmation. */
+export const STEADY_ACTIVITY_TTL_MS = 30_000
 
 /**
  * Resolve the animation state from coarse activity signals.
@@ -165,7 +172,24 @@ export const markPetUnread = () => $petUnread.set(true)
 export const clearPetUnread = () => $petUnread.set(false)
 
 /** Steady activity flags (toolRunning / reasoning) set + cleared by the stream. */
-export const setPetActivity = (next: Partial<PetActivity>) => $petActivity.set({ ...$petActivity.get(), ...next })
+export const setPetActivity = (next: Partial<PetActivity>) => {
+  const now = Date.now()
+  const stamped: PetActivity = { ...next }
+
+  if (next.toolRunning === true) {
+    stamped.toolRunningAt = now
+  } else if (next.toolRunning === false) {
+    stamped.toolRunningAt = undefined
+  }
+
+  if (next.reasoning === true) {
+    stamped.reasoningAt = now
+  } else if (next.reasoning === false) {
+    stamped.reasoningAt = undefined
+  }
+
+  $petActivity.set({ ...$petActivity.get(), ...stamped })
+}
 
 let flashTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -193,21 +217,39 @@ export const setPetInfo = (info: PetInfo) => $petInfo.set(info)
  * mirrored to the pop-out overlay through the same atom, so both surfaces agree
  * without the overlay needing the session list.
  */
-function deriveLivePetState(activity: PetActivity, busy: boolean): PetState {
-  const live = activity.busy ?? busy
+function deriveLivePetState(activity: PetActivity, busy: boolean, activeSessionBusy?: boolean): PetState {
+  // The per-runtime cache is the authoritative turn state. `$busy` is only a
+  // legacy foreground mirror and can miss the first turn of a draft or a turn
+  // resumed after backend reclaim (#84434/#84438). Keep it as the fallback for
+  // boot/unbound states where the active runtime has not reached the cache yet.
+  const live = activity.busy ?? activeSessionBusy ?? busy
+
+  // The global $busy can read false for a session that IS working: a
+  // reclaimed session reopened after idle timeout (#84434) or a desktop-
+  // minted draft (#84438) doesn't always flip the busy mirror on its turn,
+  // so the pet froze idle while tools ran. Honor a steady flag while it is
+  // RECENT (stream-refreshed) even when busy is stuck false — the stamp is
+  // re-set on every tool.start / message.start — and let it decay back to
+  // idle when the stream goes silent, which preserves the original intent
+  // of ignoring stale flags from interrupted turns.
+  const now = Date.now()
+  const recentTool = (activity.toolRunningAt ?? 0) > now - STEADY_ACTIVITY_TTL_MS
+  const recentReasoning = (activity.reasoningAt ?? 0) > now - STEADY_ACTIVITY_TTL_MS
 
   return derivePetState({
     busy: live,
     awaitingInput: activity.awaitingInput,
-    // Steady flags only count mid-turn — ignore stale ones once at rest so an
-    // interrupted turn can't pin the pet on `run`/`review`.
-    toolRunning: live && activity.toolRunning,
-    reasoning: live && activity.reasoning,
+    toolRunning: (live || recentTool) && activity.toolRunning,
+    reasoning: (live || recentReasoning) && activity.reasoning,
     error: activity.error,
     justCompleted: activity.justCompleted,
     celebrate: activity.celebrate
   })
 }
+
+const $activeSessionBusy = computed([$activeSessionId, $sessionStates], (runtimeId, states) =>
+  runtimeId ? states[runtimeId]?.busy : undefined
+)
 
 /**
  * Opt-in: let the floating mascot wander around the window on its own while
@@ -243,8 +285,8 @@ export const $petRoamDir = atom<-1 | 0 | 1>(0)
  * `$petMotion`-driven pose and stall the wander.
  */
 export const $petAtRest = computed(
-  [$petActivity, $busy],
-  (activity, busy): boolean => deriveLivePetState(activity, busy) === 'idle'
+  [$petActivity, $busy, $activeSessionBusy],
+  (activity, busy, activeSessionBusy): boolean => deriveLivePetState(activity, busy, activeSessionBusy) === 'idle'
 )
 
 /**
@@ -252,8 +294,11 @@ export const $petAtRest = computed(
  * a roam pose (walking → `run`, hopping → `jump`) show through, so the wander
  * reads as deliberate movement.
  */
-export const $petState = computed([$petActivity, $busy, $petMotion], (activity, busy, motion): PetState => {
-  const base = deriveLivePetState(activity, busy)
+export const $petState = computed(
+  [$petActivity, $busy, $activeSessionBusy, $petMotion],
+  (activity, busy, activeSessionBusy, motion): PetState => {
+    const base = deriveLivePetState(activity, busy, activeSessionBusy)
 
-  return base === 'idle' && motion ? motion : base
-})
+    return base === 'idle' && motion ? motion : base
+  }
+)

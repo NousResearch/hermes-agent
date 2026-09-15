@@ -587,23 +587,15 @@ export function stageGetWindows(
   const destRoot = resolve(projectRoot, 'dist/node_modules/get-windows')
 
   if (!srcRoot) {
-    // npm may omit an optional dependency whose install script fails. That is
-    // expected on Linux and win32-arm64 because get-windows 9.3.0 publishes no
-    // native prebuilt for either target. The runtime import already fails soft,
-    // so disable only window enumeration instead of failing the Desktop build.
-    // Other Windows architectures and macOS have supported native payloads and
-    // remain fail-closed so a broken package cannot ship silently.
-    const canDegrade = platform === 'linux' || (platform === 'win32' && arch === 'arm64')
-    if (canDegrade) {
-      console.warn(
-        `[stage-native-deps] get-windows not installed (optional dep skipped for ${platform}-${arch}); ` +
-          'read_window_below will be unavailable in this build'
-      )
-      return undefined
-    }
-    throw new Error(
-      `[stage-native-deps] get-windows is not installed; cannot stage its ${platform}-${arch} native payload`
+    // npm may omit an optional dependency whose install script fails, or an in-place
+    // update may fail to extract it due to file locks (#90829). The runtime import
+    // already fails soft, so we disable only window enumeration instead of failing
+    // the entire Desktop build (which would strand users on an old version).
+    console.warn(
+      `[stage-native-deps] get-windows not installed (optional dep skipped for ${platform}-${arch}); ` +
+        'read_window_below will be unavailable in this build'
     )
+    return undefined
   }
 
   // Only a win32 host can produce the win32 binding, so a cross-platform pack

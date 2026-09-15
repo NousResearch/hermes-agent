@@ -2,6 +2,7 @@ import { isSessionNotOwnedError } from '@/app/session/hooks/use-prompt-actions/u
 import { translateNow, TRANSLATIONS } from '@/i18n'
 import { getRuntimeI18nLocale } from '@/i18n/runtime'
 import { textPart } from '@/lib/chat-messages'
+import { MEMORY_RECALL_MESSAGE_ID_PREFIX } from '@/lib/chat-messages/recall'
 import { coerceGatewayText } from '@/lib/chat-runtime'
 import type { ErrorSurface } from '@/lib/error-surface'
 import { errorCardText } from '@/lib/error-surface-copy'
@@ -20,6 +21,10 @@ import { setTurnStartedAt } from '@/store/session'
 import { clearActiveSessionTodos } from '@/store/todos'
 
 import type { GatewayEventContext } from './types'
+
+// Older runtimes send MemoryManager.describe_recall() as lifecycle text. Keep
+// that narrow compatibility path; new runtimes identify recall by kind instead.
+const LEGACY_MEMORY_RECALL_RE = /^.+ — recalled (?:[1-9]\d* memor(?:y|ies)|relevant memory)$/u
 
 /** status.update / review.summary / notification.show / notification.clear /
  *  error — the status-and-notice tail of the dispatcher. */
@@ -60,6 +65,29 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       void refreshBackgroundProcesses(sessionId)
     } else if (sessionId && payload?.kind === 'goal') {
       applyGoalStatusText(sessionId, coerceGatewayText(payload?.text))
+    } else if (sessionId) {
+      const text = typeof payload?.text === 'string' ? payload.text.trim() : ''
+
+      const isRecall =
+        payload?.kind === 'memory_recall' || (payload?.kind === 'lifecycle' && LEGACY_MEMORY_RECALL_RE.test(text))
+
+      if (text && isRecall) {
+        // Recall is not model prose or a transient spinner. Keep the provider's
+        // summary in this session's live transcript, including background chats.
+        flushQueuedDeltas(sessionId)
+        updateSessionState(sessionId, state => ({
+          ...state,
+          messages: [
+            ...state.messages,
+            {
+              id: `${MEMORY_RECALL_MESSAGE_ID_PREFIX}${crypto.randomUUID()}`,
+              role: 'system',
+              parts: [textPart(text, occurredAt)],
+              timestamp: occurredAt
+            }
+          ]
+        }))
+      }
     }
 
     return true

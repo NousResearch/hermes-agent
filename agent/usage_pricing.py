@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata
-from utils import base_url_host_matches, base_url_hostname
+from utils import base_url_host_matches, base_url_hostname, is_vertex_ai_host
 
 logger = logging.getLogger(__name__)
 
@@ -351,7 +351,7 @@ def resolve_billing_route(
     if snapshot_provider is None:
         if (
             provider_name in _GOOGLE_PROVIDER_NAMES
-            or host("aiplatform.googleapis.com") or host("generativelanguage.googleapis.com")
+            or is_vertex_ai_host(url) or host("generativelanguage.googleapis.com")
         ):
             snapshot_provider = "google"
         elif provider_name == "fireworks" or host("api.fireworks.ai"):

@@ -16,7 +16,7 @@ from typing import Any, List, Optional
 
 from agent.lazy_forward import forward_static as _forward_static
 from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
-from utils import base_url_host_matches, base_url_hostname
+from utils import base_url_host_matches, base_url_hostname, is_vertex_ai_host
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
@@ -317,8 +317,9 @@ class VisionMessagePrepMixin:
             or base_url_host_matches(base, "bigmodel.cn")
             or base_url_host_matches(base, "xiaomimimo.com")
             # Vertex AI OpenAI-compat endpoint — Gemini model ids keep dots
-            # (e.g. google/gemini-3.5-flash); the hyphenated form is wrong.
-            or base_url_host_matches(base, "aiplatform.googleapis.com")
+            # (e.g. google/gemini-3.5-flash); the hyphenated form is wrong. Regional and
+            # multi-region hosts included (``base`` is rarely the global endpoint).
+            or is_vertex_ai_host(base)
             # AWS Bedrock runtime endpoints — defense-in-depth when
             # ``provider`` is unset but ``base_url`` still names Bedrock.
             or host.startswith("bedrock-runtime.")

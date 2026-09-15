@@ -9,6 +9,14 @@ import type * as HermesApi from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import type * as HubActions from '@/store/hub-actions'
 
+// Static on purpose: this import pulls the whole SkillsView module graph
+// (CodeEditor & co.). When it lived inside renderSkills(), the FIRST test in
+// the file paid that load inside its own 15s timeout window — enough to time
+// out on a cold/loaded CI host (see the testTimeout note in vitest.config.ts,
+// and the "found multiple elements" cascade that follows any such timeout).
+// At file scope the cost lands in the file-import phase, not in a test window.
+import { SkillsView } from './index'
+
 const getSkills = vi.fn()
 const getToolsets = vi.fn()
 const setSkillEnabled = vi.fn()

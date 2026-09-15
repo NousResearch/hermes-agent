@@ -37,6 +37,64 @@ _GC_INTERVAL_SECONDS = 3600.0
 _HEALTH_WINDOW = 6
 
 
+# Only capacity/backoff declines suppress health warnings. Respawn guards
+# need reason-level classification: an auth denial is never benign.
+_BENIGN_DECLINE_FIELDS = (
+    "skipped_per_profile_capped",
+    "rate_limited",
+    "skipped_locked",
+)
+# Genuine-fault buckets: the dispatcher TRIED to spawn and the attempt failed.
+# ``spawn_failed`` is populated on EVERY spawn failure this tick (workspace
+# resolution or worker launch), so an early, pre-circuit-breaker failure on one
+# board is a fault immediately — it can't be masked by a benign decline on a
+# different board and silently reset the streak. ``auto_blocked`` is the subset
+# that additionally tripped the circuit breaker (broken venv / PATH / credential
+# loss -> repeated spawn_failed). Either forces the tick to count.
+_FAULT_FIELDS = (
+    "spawn_failed",
+    "auto_blocked",
+)
+
+
+def _stall_streak_is_bad(ready_pending, any_spawned, results) -> bool:
+    """Decide whether a dispatcher tick counts toward the "stuck" streak.
+
+    A tick is "bad" (stall-suspect) only when there is spawnable work,
+    nothing was spawned, AND the zero-spawn is not explained by a benign,
+    self-clearing decline (concurrency cap saturated / provider rate-limit /
+    board lock held / respawn guard). A genuine hard fault (a spawn attempt
+    that was made and failed, or a circuit-breaker ``auto_blocked``) always
+    counts, even when a benign decline co-occurs on another board.
+
+    This is the fix for the false "check profile health (venv, PATH,
+    credentials)" warning that fires while the dispatcher is healthy but
+    throttled -- e.g. for the whole duration of a provider 429 window.
+    """
+    if not ready_pending or any_spawned:
+        return False
+    declined_benign = False
+    fault_seen = False
+    for _slug, res in (results or []):
+        if res is None:
+            continue
+        for name in _FAULT_FIELDS:
+            if getattr(res, name, None):
+                fault_seen = True
+        for name in _BENIGN_DECLINE_FIELDS:
+            if getattr(res, name, None):
+                declined_benign = True
+        for _task_id, reason in getattr(res, "respawn_guarded", ()):
+            if reason == "rate_limit_cooldown":
+                declined_benign = True
+            else:
+                # blocker_auth (including Discord auth denial) is a hard
+                # blocker. Success/PR guards and unknown reasons are not
+                # capacity or backoff either; never let them mask a stall.
+                fault_seen = True
+    return fault_seen or not declined_benign
+
+
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
 
@@ -301,7 +359,7 @@ class GatewayKanbanWatchersMixin:
                     results = await _to_thread_process_service(dispatcher.tick_once)
                     any_spawned = _log_spawn_results(results)
                     ready_pending = await _to_thread_process_service(dispatcher.ready_nonempty)
-                    bad_ticks = bad_ticks + 1 if ready_pending and not any_spawned else 0
+                    bad_ticks = bad_ticks + 1 if _stall_streak_is_bad(ready_pending, any_spawned, results) else 0
                 now = int(time.time())
                 if bad_ticks >= _HEALTH_WINDOW and now - last_warn_at >= 300:
                     logger.warning(

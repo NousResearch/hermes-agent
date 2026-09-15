@@ -906,6 +906,16 @@ def _current_session_steer_authority(session_id: str) -> tuple[Transport | None,
         return transport, session
 
 
+def _handler_error(req: dict, exc: Exception) -> dict:
+    """One error frame for a handler crash, inline or pooled. The model boundary raises ``TypeError`` on a
+    contract slip (a handler returning a dict, an emit handing a dict to a typed event); on stdio the
+    entry loop writes whatever ``dispatch`` returns and has no catch of its own, so an unwound inline
+    handler would end ``hermes --tui``. ``handle_request`` itself still raises: the pool worker and the
+    tests want the exception, not a frame."""
+    logger.exception("RPC handler crashed method=%r id=%r", req.get("method"), req.get("id"), exc_info=exc)
+    return _err(req.get("id"), -32000, f"handler error: {exc}")
+
+
 def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
     """Route inbound RPCs — long handlers to the pool (returns None; the worker writes its own
     response via the bound transport), everything else inline (returns the response dict).
@@ -924,7 +934,10 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
         if isinstance(normalized, dict):
             return normalized
         if normalized[1] not in _LONG_HANDLERS:
-            return handle_request(req)
+            try:
+                return handle_request(req)
+            except Exception as exc:
+                return _handler_error(req, exc)
         ctx = contextvars.copy_context()  # the pool worker must see the bound transport
         if normalized[1] in _CONNECTOR_RPC_METHODS:
             ctx.run(_capture_connector_rpc_owner, normalized[2])
@@ -933,7 +946,7 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
             try:
                 resp = handle_request(req)
             except Exception as exc:
-                resp = _err(req.get("id"), -32000, f"handler error: {exc}")
+                resp = _handler_error(req, exc)
             if resp is not None:
                 t.write(resp)
         _pool.submit(lambda: ctx.run(run))

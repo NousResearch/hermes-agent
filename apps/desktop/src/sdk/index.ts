@@ -23,7 +23,7 @@ import type { ReactNode } from 'react'
 
 import { capabilityScoped } from '@/api/client'
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
-import { openSession, type OpenSessionIntent } from '@/app/open-session'
+import { openSession, type OpenSessionDock, type OpenSessionIntent } from '@/app/open-session'
 import type { ClientSessionState } from '@/app/types'
 import {
   $narrowViewport,
@@ -336,6 +336,13 @@ let openSessionGeneration = 0
 
 export interface PluginOpenSessionOptions {
   awaitHydration?: boolean
+  /** In-window native split (mirrors `openWorkspace` dock). Edge `pos`
+   *  (`left`/`right`/`top`/`bottom`) opens via `openSessionTile` without
+   *  replacing main or popping an OS window. `pos: 'center'`, omitted, or
+   *  unrecognized `dock` keep the existing intent path. Ignored when
+   *  `intent` is `'window'`. Re-opening the same id relocates/focuses the
+   *  existing tile. */
+  dock?: OpenSessionDock
   expectHistory?: boolean
   /** Always request a sequenced session.resume after the open, even when the
    *  surface already looks healthy. The healthy check trusts any non-empty
@@ -845,7 +852,9 @@ export const host = {
    *  Sessions REST stay on the previous (usually launch) backend while the
    *  bot backend is dialed in the background. The bot forever-chat is hidden
    *  and would otherwise look like every session disappeared. Pass false to
-   *  also scope chrome onto that profile and collapse the sidebar. */
+   *  also scope chrome onto that profile and collapse the sidebar.
+   *  `dock: { pane, pos }` (same shape as `openWorkspace`) opens a native
+   *  in-window split; omitted/`center`/invalid keep the intent path. */
   openSession: async (storedSessionId: string, options: PluginOpenSessionOptions = {}): Promise<void> => {
     const generation = ++openSessionGeneration
 
@@ -1002,14 +1011,23 @@ export const host = {
           }
 
           const intent = options.intent ?? 'in-place'
+          const dock = options.dock
 
           if (options.workspaceMode === 'bots') {
-            openSession(storedSessionId, navigate, intent, {
+            const scope = {
               ownerRoute: ownerRoute ?? undefined,
-              workspaceMode: 'bots',
+              workspaceMode: 'bots' as const,
               workspaceOwnerKey: options.workspaceOwnerKey,
               ...(options.tabTitle ? { workspaceTabTitle: options.tabTitle } : {})
-            })
+            }
+
+            if (dock) {
+              openSession(storedSessionId, navigate, intent, scope, dock)
+            } else {
+              openSession(storedSessionId, navigate, intent, scope)
+            }
+          } else if (dock) {
+            openSession(storedSessionId, navigate, intent, undefined, dock)
           } else {
             openSession(storedSessionId, navigate, intent)
           }

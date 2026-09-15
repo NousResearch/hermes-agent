@@ -158,7 +158,7 @@ Each provider has a documented per-request input-character cap. Hermes splits lo
 | xAI | 15000 |
 | MiniMax | 10000 |
 | Mistral | 4000 |
-| Google Gemini | 32000 |
+| Google Gemini | 2000 (see [Gemini request sizing](#gemini-request-sizing)) |
 | ElevenLabs | Model-aware (see below) |
 | NeuTTS | 2000 |
 | KittenTTS | 2000 |
@@ -183,6 +183,22 @@ tts:
 ```
 
 Only positive integers are honored. Zero, negative, non-numeric, or boolean values fall through to the provider default, so a broken config can't accidentally bypass the provider request limit.
+
+### Gemini request sizing
+
+Gemini's cap is set by what one request can carry back, not by its context window. Its
+`:generateContent` TTS endpoint is not streaming: it returns the whole clip in a single response,
+as base64 24 kHz 16-bit mono PCM — about 64 kB per second of audio. Hermes reads that body with a
+16 MiB limit, which is roughly 262 seconds of speech, so replies longer than about 2000 characters
+are split into several requests rather than sent as one that would be rejected after the audio was
+already generated. Gemini also synthesizes at roughly half realtime, so smaller requests each
+return sooner.
+
+The persona prompt and the audio-tag rewrite are **not** charged against `max_text_length`. That
+cap applies to the transcript the splitter produces; the composed request additionally carries the
+persona direction, the preamble and whatever the tag rewrite adds. Only a composed prompt over
+Gemini's 32000-character request ceiling is an error, so lowering `tts.gemini.max_text_length`
+always splits text into smaller requests instead of raising.
 
 ### Telegram Voice Bubbles & ffmpeg
 

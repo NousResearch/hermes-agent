@@ -317,14 +317,14 @@ def test_server_request_round_trip_uses_response_frame(capture):
     from tui_gateway import server_requests
     server, buf = capture
     box = {}
-    from tui_gateway.contracts.server_requests import EmptyRequestParams
+    from tui_gateway.contracts.server_requests import SudoRequestParams
     thread = threading.Thread(
-        target=lambda: box.__setitem__("r", server._ask("sudo", "s1", EmptyRequestParams(session_id="s1"), timeout=5)),
+        target=lambda: box.__setitem__("r", server._ask("sudo", "s1", SudoRequestParams(session_id="s1", command="sudo ls"), timeout=5)),
         daemon=True)
     thread.start()
     req = _wait_open(server_requests, buf)
     frame = _frames(buf)[-1]
-    assert frame == {"jsonrpc": "2.0", "id": req.id, "method": "sudo", "params": {"session_id": "s1"}}
+    assert frame == {"jsonrpc": "2.0", "id": req.id, "method": "sudo", "params": {"session_id": "s1", "command": "sudo ls"}}
     assert req.id.startswith("srq-")
 
     assert server.dispatch({"jsonrpc": "2.0", "id": req.id, "result": {"value": "hunter2"}}) is None
@@ -338,7 +338,7 @@ def _request_params(method, sid):
     from tui_gateway.contracts import server_requests as sr
     return {
         "secret": lambda: sr.SecretRequestParams(session_id=sid, env_var="TOKEN", prompt="Token?", metadata=None),
-        "sudo": lambda: sr.EmptyRequestParams(session_id=sid),
+        "sudo": lambda: sr.SudoRequestParams(session_id=sid, command="sudo ls"),
         "terminal.read": lambda: sr.ReadRangeRequestParams(session_id=sid, start=None, count=None),
         "tour": lambda: sr.TourRequestParams(session_id=sid, action="stop"),
     }[method]()
@@ -428,12 +428,12 @@ def test_clarify_batch_cancel_all_is_a_response_without_answers(capture):
 def test_clear_pending_cancels_only_that_session(capture):
     from tui_gateway import server_requests
     server, buf = capture
-    from tui_gateway.contracts.server_requests import EmptyRequestParams
+    from tui_gateway.contracts.server_requests import SudoRequestParams
     a = threading.Thread(
-        target=lambda: server_requests.send("sudo", "sid-a", EmptyRequestParams(session_id="sid-a"), timeout=None),
+        target=lambda: server_requests.send("sudo", "sid-a", SudoRequestParams(session_id="sid-a"), timeout=None),
         daemon=True)
     b = threading.Thread(
-        target=lambda: server_requests.send("sudo", "sid-b", EmptyRequestParams(session_id="sid-b"), timeout=None),
+        target=lambda: server_requests.send("sudo", "sid-b", SudoRequestParams(session_id="sid-b"), timeout=None),
         daemon=True)
     a.start(); b.start()
     deadline = time.monotonic() + 2

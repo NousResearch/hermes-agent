@@ -87,7 +87,7 @@ On `main` plus the current Workstation V3 hardening working tree:
     with controller loss represented as degraded state and control permissions
     failing closed.
 - **Chat / Browser UX Hardening & WhatsApp Web Compatibility**:
-  - Standard desktop Chrome 133 User-Agent (`getStandardChromeUserAgent()`) in `apps/desktop/electron/workstation-browser-runtime.ts` across `browserSession.setUserAgent()`, `webRequest.onBeforeSendHeaders`, and `WebContentsView` instances, completely eliminating WhatsApp Web's "atualize o Google Chrome 100+" roadblock.
+  - Runtime-derived Chromium User-Agent (`getStandardChromeUserAgent(process.versions.chrome)`) in `apps/desktop/electron/workstation-browser-runtime.ts` across `browserSession.setUserAgent()`, `webRequest.onBeforeSendHeaders`, and `WebContentsView` instances; it preserves the platform token without exposing `Electron` or `Hermes` and cannot age behind a hardcoded Chrome version.
   - Session-scoped preview/browser pinning via `$sessionPreviewTabs` in `apps/desktop/src/store/preview.ts`: creating a new chat session presents a clean workspace with no lingering lateral panels from prior sessions, and switching back seamlessly restores that session's browser panels.
   - Browser Hub lateral rail suppression: `isBrowserHubRoute()` in `preview.ts`, layout effect in `apps/desktop/src/app/browser/index.tsx`, and event filtering in `use-preview-routing.ts` eliminate dual-rail collision when visiting `/browser`.
   - Friendly automatic task names in Browser Hub: `TaskRail` resolves chat conversation titles (`s.id === task.sessionHost || s.parent_session_id === task.sessionHost`) and page tab titles/domains, replacing raw task IDs with meaningful human context.
@@ -99,6 +99,11 @@ On `main` plus the current Workstation V3 hardening working tree:
   canonical Agentic task in the same Kanban database, persists the
   `human_card_id` ↔ `agent_task_id` link, projects compact status/result/evidence
   metadata, and keeps both lifecycles independent across restart and retry.
+- **Hybrid Card checklists**: multiple checklists and ordered items live in
+  additive `hybrid_*` tables in the canonical Kanban database. Completion,
+  reorder and deletion enforce optimistic revisions, emit provenance through
+  `hybrid_activity`, survive restart and are exposed in the existing Desktop
+  card drawer.
 - **Scoped human browser control**: `BrowserHumanControlLease` is owned by the
   bound `BrowserTask` and carries task/session/tab/page/profile scope, timestamps,
   renewal and expiry; stale leases are cleared during restore and never block an

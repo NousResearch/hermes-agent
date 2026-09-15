@@ -249,11 +249,14 @@ Implemented vertical slice:
 - archive/restore and explicit hard-delete semantics, persisted activity,
   horizontal column reorder, revision checks, and precise invalidation over the
   existing plugin `/events` boundary are implemented and covered.
+- multiple per-card checklists, revision-safe item completion/reorder/delete,
+  restart persistence, activity provenance, canonical plugin RPC and Desktop
+  card-drawer controls are implemented and covered.
 
 Hardening remaining:
 
 - multi-user authorization beyond the existing authenticated Dashboard session
-  boundary, comments/attachments/checklists and external-board connectors.
+  boundary, Hybrid-card comments/attachments and external-board connectors.
 
 ## V2.5 — Agent Runtime + System Capability Control Plane — Completed
 

@@ -718,6 +718,10 @@ class Task:
     # the same None-vs-[] convention as ``skills``.
     ears_sentence: Optional[str] = None
     scope_paths: Optional[list] = None
+    # Rule 2: heuristic verification-rigor mode ('autocomplete'|'chat'|'agent')
+    # set by the decomposer at creation time; NULL if unset. Schema-population
+    # only — see kanban_task_mode.py.
+    task_mode: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -751,7 +755,7 @@ _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
-    "ears_sentence",
+    "ears_sentence", "task_mode",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -962,7 +966,14 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- declared to touch, populated by the atomic-task-gate skill (or
     -- manually). NULL = no declared scope (not the same as an empty list);
     -- matches the skills column's None-vs-[] semantics.
-    scope_paths           TEXT
+    scope_paths           TEXT,
+    -- Rule 2: verification-rigor classification ('autocomplete'|'chat'|
+    -- 'agent') assigned by the decomposer's heuristic classifier at
+    -- creation time (hermes_cli/kanban_task_mode.py). NULL for tasks
+    -- created outside the decomposer (CLI, dashboard) or on legacy rows.
+    -- Schema-population only today: no dispatch/gate/enforcement logic
+    -- reads this column.
+    task_mode            TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -3577,6 +3588,7 @@ def specify_triage_task(
     conn: sqlite3.Connection, task_id: str, *, title: Optional[str] = None,
     body: Optional[str] = None, assignee: Optional[str] = None, author: Optional[str] = None,
     ears_sentence: Optional[str] = None,
+    task_mode: Optional[str] = None,
 ) -> bool:
     """Update title/body/assignee (when given) and move ``triage -> todo`` in one
     txn; False when not in triage. Lands in ``todo`` (not ``ready``) so parent
@@ -3584,6 +3596,9 @@ def specify_triage_task(
     ``ears_sentence``: Rule 6 EARS-restated requirement, stored verbatim when
     given (already mechanically validated by the caller — see
     ``kanban_decompose._resolve_ears_sentence``; never validated here).
+
+    ``task_mode``: Rule 2 schema-population field (see kanban_task_mode.py).
+    Unset (``None``) leaves the column untouched.
     """
     if title is not None and not title.strip():
         raise ValueError("title cannot be blank")
@@ -3613,6 +3628,9 @@ def specify_triage_task(
         if ears_sentence is not None:
             sets.append("ears_sentence = ?")
             params.append(ears_sentence)
+        if task_mode is not None:
+            sets.append("task_mode = ?")
+            params.append(task_mode)
         params.append(task_id)
         cur = conn.execute(
             f"UPDATE tasks SET {', '.join(sets)} "

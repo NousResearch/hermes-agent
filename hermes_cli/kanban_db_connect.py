@@ -820,6 +820,9 @@ _LATER_TASK_COLUMNS = (
     # lazily and never forces population.
     ("ears_sentence", "ears_sentence TEXT"),
     ("scope_paths", "scope_paths TEXT"),
+    # Rule 2: heuristic verification-rigor mode set by the decomposer at
+    # creation time; additive nullable column, see SCHEMA_SQL for semantics.
+    ("task_mode", "task_mode TEXT"),
 )
 
 _NOTIFY_SUB_COLUMNS = (

@@ -61,6 +61,7 @@ from hermes_cli.kanban_specify import (
 )
 from hermes_cli.kanban_specify import _profile_author as _specify_author
 from hermes_cli.plugin_bridges import decision_hud as _dh_bridge
+from hermes_cli.kanban_task_mode import classify_task_mode
 
 logger = logging.getLogger(__name__)
 
@@ -359,15 +360,20 @@ def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -
     if title_val is None and body_val is None:
         return DecomposeOutcome(task.id, False, "decomposer returned fanout=false with no title/body")
     mode_title = title_val if title_val is not None else task.title
+    mode_body = body_val if body_val is not None else task.body
     # Rule 6: resolve the EARS restatement (validate/refuse+report; never
     # invent) — see module docstring for the fail-open owner choice.
     ears_sentence_val, pending_report = _resolve_ears_sentence(
         parsed, task_id=task.id, child_title=mode_title,
     )
+    # Rule 2: classify verification-rigor mode from the (possibly tightened)
+    # title/body before promotion — heuristic, non-blocking (kanban_task_mode.py).
+    task_mode_val = classify_task_mode(mode_title, mode_body)
     with kbc.connect_closing() as conn:
         ok = kb.specify_triage_task(
             conn, task.id, title=title_val, body=body_val, assignee=assignee_val, author=author,
             ears_sentence=ears_sentence_val,
+            task_mode=task_mode_val,
         )
     if not ok:
         return DecomposeOutcome(task.id, False, "task moved out of triage before promotion")
@@ -417,11 +423,15 @@ def _clean_children(
         )
         if pending_report is not None:
             pending_reports.append(pending_report)
+        body_clean = body.strip() if isinstance(body, str) else ""
         children.append({
             "title": title_clean,
-            "body": body.strip() if isinstance(body, str) else "",
+            "body": body_clean,
             "assignee": chosen,
             "ears_sentence": ears_sentence_val,
+            # Rule 2: classify each child's verification-rigor mode at
+            # creation time (heuristic, non-blocking — kanban_task_mode.py).
+            "task_mode": classify_task_mode(title_clean, body_clean),
             # Drop non-int, out-of-range and self parent indices.
             "parents": [p for p in parents if isinstance(p, int) and 0 <= p < len(raw_tasks) and p != idx],
         })

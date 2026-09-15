@@ -1065,6 +1065,14 @@ skills:
 # Agent Behavior
 # =============================================================================
 agent:
+  # Optional human briefs for native Bot Chat; configure only on the receiving profile.
+  # See website/docs/user-guide/bot-mode.md for validation, trust and delivery limits.
+  # bot_mode_observer:
+  #   enabled: false                  # requires explicit true + valid target/sources
+  #   target: "discord:#observer-fixture"  # replace with an existing destination
+  #   sources: [researcher, helper]    # exact sender handles, no leading @
+  #   language: en                    # optional language tag
+
   # Maximum tool-calling iterations per conversation (default: 500)
   # Higher = more room for complex tasks, but costs more tokens
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration

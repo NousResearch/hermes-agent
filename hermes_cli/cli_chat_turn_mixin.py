@@ -525,10 +525,7 @@ class CLIChatTurnMixin:
                         all_parts.append(extra)
                 except queue.Empty:
                     break
-            # Payloads may be (text, images) tuples when the message carried image
-            # attachments (bundled at cli_tui_mixin._tui_on_enter); unpack them here —
-            # "\n".join(all_parts) raises TypeError on a tuple and the outer
-            # handler swallows it, silently dropping the interrupt (#110737).
+            # Image-carrying payloads are (text, images) tuples — unpack before join or the interrupt is silently dropped (#110737).
             text_parts: list[str] = []
             image_parts: list = []
             for part in all_parts:

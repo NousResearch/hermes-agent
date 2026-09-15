@@ -763,9 +763,7 @@ describe('the roster loop forgets a machine that left', () => {
     hostMock.profileRoutes = vi.fn(async () => [route('c')])
     await vi.advanceTimersByTimeAsync(60_000)
 
-    expect(calls.filter(call => call.method === 'bot_relay.roster.sync').map(call => call.connectionId)).toEqual([
-      'c'
-    ])
+    expect(calls.filter(call => call.method === 'bot_relay.roster.sync').map(call => call.connectionId)).toEqual(['c'])
 
     stopBotRelay()
   })

@@ -150,9 +150,11 @@ test('afterStop holds inFlight until extra teardown finishes (process-less SSH)'
   const pool = new Map<string, PoolStopEntry>()
   const events: string[] = []
   let releaseAfter: (() => void) | undefined
+
   const afterGate = new Promise<void>(resolve => {
     releaseAfter = resolve
   })
+
   const stopper = createPoolStopper({
     pool,
     stopChild: () => {
@@ -177,6 +179,7 @@ test('afterStop holds inFlight until extra teardown finishes (process-less SSH)'
   assert.deepEqual(events, ['stop', 'exit', 'after-start'])
 
   let spawned = false
+
   const respawn = (async () => {
     const dying = stopper.inFlight('ssh')
 

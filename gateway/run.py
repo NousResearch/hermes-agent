@@ -3569,6 +3569,12 @@ class GatewayRunner(
         if self._session_db is not None:
             try:
                 from hermes_cli.config import load_config as _load_full_config
+                from hermes_startup_watchdog import report_startup_progress as _report_startup_progress
+                # Startup-watchdog lease (#111092): construction-time maintenance is I/O-bound
+                # with near-zero CPU, which the watchdog misreads as a parked deadlock. The
+                # maintenance functions renew per long step; this covers the block as a whole.
+                # No-op when the watchdog is not armed; never raises.
+                _report_startup_progress(900.0, phase="gateway_startup_state_maintenance")
                 _sess_cfg = (_load_full_config().get("sessions") or {})
                 if _sess_cfg.get("auto_archive", False):
                     self._session_db._db.maybe_auto_archive(

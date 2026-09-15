@@ -893,7 +893,13 @@ def _transcribe_wav_in_chunks(wav_path: str, *, model: Optional[str], max_file_s
             transcript = result.get("transcript", "").strip()
             if transcript and not is_whisper_hallucination(transcript):
                 transcripts.append(transcript)
-        return {"success": True, "transcript": " ".join(transcripts).strip(),
+        joined = transcripts[0] if transcripts else ""
+        for prev, nxt in zip(transcripts, transcripts[1:]):
+            # Don't inject spaces between CJK segments: a hard space corrupts Chinese/Japanese
+            # text split mid-sentence by the WAV chunker.
+            sep = "" if (_ends_cjk(prev) or _starts_cjk(nxt)) else " "
+            joined += sep + nxt
+        return {"success": True, "transcript": joined.strip(),
                 "provider": result.get("provider"), "chunks": len(chunk_paths)}
     except Exception as e:
         logger.error("Chunked transcription failed for %s: %s", wav_path, e, exc_info=True)
@@ -901,6 +907,20 @@ def _transcribe_wav_in_chunks(wav_path: str, *, model: Optional[str], max_file_s
     finally:
         for chunk_path in chunk_paths:
             _unlink_quietly(chunk_path)
+
+
+def _is_cjk(ch: str) -> bool:
+    """CJK unified ideographs, kana, or Hangul syllables."""
+    o = ord(ch)
+    return (0x2E80 <= o <= 0x9FFF) or (0xAC00 <= o <= 0xD7A3)
+
+
+def _ends_cjk(s: str) -> bool:
+    return bool(s) and _is_cjk(s[-1])
+
+
+def _starts_cjk(s: str) -> bool:
+    return bool(s) and _is_cjk(s[0])
 
 
 def _split_wav_for_transcription(wav_path: str, *, max_file_size: int) -> List[str]:

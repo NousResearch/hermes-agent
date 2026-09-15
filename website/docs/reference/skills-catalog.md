@@ -106,7 +106,8 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`xurl`](/docs/user-guide/skills/bundled/social-media/social-media-xurl) | X/Twitter via xurl CLI: raw post search, posting, DM, media. | `social-media\xurl` |
+| [`xurl`](/docs/user-guide/skills/bundled/social-media/social-media-xurl) | X/Twitter via xurl CLI: post, search, DM, media, v2 API. | `social-media/xurl` |
+| [`read-x-articles`](/docs/user-guide/skills/bundled/social-media/social-media-read-x-articles) | Read X (Twitter) long-form Articles end-to-end from a shared link, no API key. | `social-media/read-x-articles` |
 
 ## software-development
 

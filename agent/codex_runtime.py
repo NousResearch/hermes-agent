@@ -908,6 +908,11 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 watchdog_state.last_event_ts = now
                 if has_progress:
                     watchdog_state.last_progress_ts = now
+        # Export first-chunk timing for the post_api_request hook (mirroring the Chat
+        # Completions path at chat_completion_helpers.py:3316). The fence ensures a
+        # retired request never overwrites the current attempt's stamp.
+        if getattr(agent, "_last_api_first_chunk_at", None) is None and _request_is_current():
+            agent._last_api_first_chunk_at = now
         agent._touch_activity("receiving stream response")
 
     def _interrupt_or_superseded() -> bool:

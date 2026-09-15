@@ -104,16 +104,41 @@ class TestWriteToSandbox:
         "stdin_mode, probed, ok",
         [
             ("pipe", 512, False),      # short write: bytes lost
-            ("pipe", 101, False),      # pipe backends must be exact
-            ("heredoc", 101, True),    # heredoc appends exactly one newline
+            ("pipe", 171, False),      # pipe backends must be exact
+            ("heredoc", 171, True),    # heredoc appends exactly one newline
+            ("host", 3, False),        # host spillover: os.stat says only 3 bytes landed
+            ("host", None, True),      # host spillover: real write, real stat
         ],
     )
     def test_size_probe_decides_lossless(self, stdin_mode, probed, ok):
-        """A sandbox archive that is not byte-exact (modulo the heredoc newline) is
-        discarded — never referenced to the model (port of lobehub/lobehub#18258)."""
+        """An archive that is not byte-exact (modulo the heredoc newline) is discarded — never
+        referenced to the model (port of lobehub/lobehub#18258). Multibyte content pins the
+        comparison to UTF-8 bytes (170 here, 130 chars), on both the sandbox and host paths."""
+        import os
+
+        from tools.tool_result_storage import _write_to_spillover
+
+        content = "héllo wörld ✓" * 10
+        assert len(content.encode("utf-8")) == 170 != len(content)
+        if stdin_mode == "host":
+            filename = "tc_verify_host.txt"
+            real_stat = os.stat
+
+            def fake_stat(p, *a, **kw):
+                if probed is not None and str(p).endswith(filename):
+                    return type("S", (), {"st_size": probed})()
+                return real_stat(p, *a, **kw)
+
+            with patch("tools.tool_result_storage.os.stat", side_effect=fake_stat):
+                path = _write_to_spillover(content, filename)
+            assert (path is not None) is ok
+            assert (get_spillover_dir() / filename).exists() is ok
+            if path is not None:
+                with open(path, encoding="utf-8") as fh:
+                    assert fh.read() == content
+            return
         env = MagicMock()
         env._stdin_mode = stdin_mode
-        content = "y" * 100
         env.execute.side_effect = [
             {"output": "", "returncode": 0},          # write
             {"output": f"{probed}\n", "returncode": 0},  # wc -c
@@ -468,8 +493,8 @@ class TestSpillover:
         spill_dir.mkdir(parents=True, exist_ok=True)
         old = spill_dir / "old.txt"
         new = spill_dir / "new.txt"
-        old.write_text("old")
-        new.write_text("new")
+        old.write_text("old", encoding="utf-8")
+        new.write_text("new", encoding="utf-8")
         stale = _time.time() - (48 * 3600)
         os.utime(old, (stale, stale))
 
@@ -490,7 +515,7 @@ class TestSpillover:
         spill_dir = get_spillover_dir()
         spill_dir.mkdir(parents=True, exist_ok=True)
         old = spill_dir / "ancient.txt"
-        old.write_text("ancient")
+        old.write_text("ancient", encoding="utf-8")
         stale = _time.time() - (48 * 3600)
         os.utime(old, (stale, stale))
 
@@ -523,40 +548,3 @@ class TestRecoveryHint:
         assert msg.startswith(PERSISTED_OUTPUT_TAG)
         assert msg.endswith(PERSISTED_OUTPUT_CLOSING_TAG)
         assert "read_file" in msg
-
-
-# ── host-side spillover round-trip verification ───────────────────────
-# Port of lobehub/lobehub#18258: verify the persisted archive before
-# telling the model the full result is available; fail closed otherwise.
-
-class TestSpilloverWriteVerification:
-    def test_short_write_is_discarded(self):
-        """A partially-flushed archive must not be referenced to the model."""
-        from unittest.mock import patch as _patch
-
-        from tools.tool_result_storage import _write_to_spillover
-
-        real_stat = __import__("os").stat
-
-        class _ShortStat:
-            st_size = 3  # pretend only 3 bytes landed
-
-        def fake_stat(p, *a, **kw):
-            if str(p).endswith("tc_verify_short.txt"):
-                return _ShortStat()
-            return real_stat(p, *a, **kw)
-
-        with _patch("tools.tool_result_storage.os.stat", side_effect=fake_stat):
-            path = _write_to_spillover("this is much longer than 3 bytes", "tc_verify_short.txt")
-        assert path is None
-        assert not (get_spillover_dir() / "tc_verify_short.txt").exists()
-
-    def test_multibyte_content_verified_by_byte_count(self):
-        """Verification compares UTF-8 bytes, not characters."""
-        from tools.tool_result_storage import _write_to_spillover
-
-        content = "héllo wörld ✓" * 10
-        path = _write_to_spillover(content, "tc_verify_mb.txt")
-        assert path is not None
-        with open(path, encoding="utf-8") as fh:
-            assert fh.read() == content

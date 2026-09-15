@@ -202,6 +202,8 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     persisted_size = int(raw[-1])
     if persisted_size == expected:
         return True
+    # Only heredoc mode may be +1; the payload backend (managed_modal) delivers stdin verbatim, so
+    # it is expected byte-exact and any drift there is a real loss.
     if persisted_size == expected + 1 and getattr(env, "_stdin_mode", None) == "heredoc":
         return True
     logger.warning("Sandbox spill for %s is not lossless (%d bytes in sandbox, expected %d) — discarding archive",

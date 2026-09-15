@@ -1,0 +1,324 @@
+"""Tests for the MCP elicitation handler in tools.mcp_tool_sampling.
+
+These tests exercise ElicitationHandler in isolation -- the underlying
+approval system and the MCP transport layer are mocked, so no real MCP
+server or user input is required.
+
+Tests skip cleanly if the optional `mcp` SDK is not installed (it is an
+optional dependency under the `[mcp]` extra).
+"""
+
+import asyncio
+from unittest.mock import patch
+
+import pytest
+
+
+pytest.importorskip("mcp.types")
+
+from mcp.types import ElicitResult  # noqa: E402  -- after importorskip
+
+from tools.mcp_tool_sampling import ElicitationHandler, _format_elicitation_schema_summary  # noqa: E402
+
+
+def _form_params(message="please confirm", schema=None):
+    """Build a stand-in for ElicitRequestFormParams.
+
+    We use a plain object (not the SDK type directly) so the test doesn't
+    couple to optional Pydantic validation -- the handler reads fields via
+    getattr() and tolerates duck-typed inputs.
+    """
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        mode="form",
+        message=message,
+        requested_schema=schema or {},
+    )
+
+
+def _url_params(message="open this url", url="https://example.com/auth", elicitation_id="e1"):
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        mode="url",
+        message=message,
+        url=url,
+        elicitation_id=elicitation_id,
+    )
+
+
+class TestSchemaSummary:
+    def test_empty_schema_falls_back_to_generic_message(self):
+        out = _format_elicitation_schema_summary({}, "pay")
+        assert "pay" in out
+        assert "Approval requested" in out
+
+    def test_properties_render_with_type_and_description(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "amount": {"type": "string", "description": "USD amount"},
+                "recipient": {"type": "string"},
+            },
+        }
+        out = _format_elicitation_schema_summary(schema, "pay")
+        assert "amount (string): USD amount" in out
+        assert "recipient (string)" in out
+
+
+class TestElicitationHandlerFormMode:
+    def test_user_accepts_once_returns_accept(self):
+        handler = ElicitationHandler("pay", {"timeout": 5})
+        params = _form_params(
+            "authorize a payment of $0.50",
+            {"properties": {"approved": {"type": "boolean"}}},
+        )
+
+        with patch("tools.approval_prompt.request_elicitation_consent", return_value="accept"):
+            result = asyncio.run(handler(context=None, params=params))
+
+        assert isinstance(result, ElicitResult)
+        assert result.action == "accept"
+        assert result.content == {}
+        assert handler.metrics["accepted"] == 1
+        assert handler.metrics["declined"] == 0
+
+
+    def test_schema_read_from_real_sdk_params_reaches_the_summary(self):
+        """The requested schema must be read off the *real* SDK model.
+
+        Every other test here builds a duck-typed ``SimpleNamespace``, which
+        cannot catch a field rename in the SDK — and 2.0 renamed this field
+        (``requestedSchema`` -> ``requested_schema``). Pinning one case to the
+        actual model is what proves the elicitation path still reads the
+        schema after the migration, rather than silently summarising an empty
+        one.
+        """
+        from mcp.types import ElicitRequestFormParams
+
+        params = ElicitRequestFormParams(
+            message="authorize a payment of $0.50",
+            requested_schema={
+                "type": "object",
+                "properties": {"card_number": {"type": "string"}},
+            },
+        )
+        handler = ElicitationHandler("pay", {"timeout": 5})
+        captured: dict = {}
+
+        def _capture(*args, **kwargs):
+            captured["description"] = kwargs.get("description") or (
+                args[1] if len(args) > 1 else ""
+            )
+            return "decline"
+
+        with patch("tools.approval_prompt.request_elicitation_consent", _capture):
+            asyncio.run(handler(context=None, params=params))
+
+        assert "card_number" in (captured.get("description") or ""), captured
+
+    def test_cancel_propagates_through(self):
+        """request_elicitation_consent returns 'cancel' when the gateway
+        wait times out (resolved=False). The handler should propagate
+        that as ElicitResult(action='cancel') so the server can
+        distinguish 'no answer' from 'no'."""
+        handler = ElicitationHandler("pay", {"timeout": 5})
+        params = _form_params()
+
+        with patch("tools.approval_prompt.request_elicitation_consent", return_value="cancel"):
+            result = asyncio.run(handler(context=None, params=params))
+
+        assert result.action == "cancel"
+        assert handler.metrics["errors"] == 1
+
+
+class TestElicitationHandlerFailureModes:
+    def test_url_mode_is_declined_without_prompting(self):
+        handler = ElicitationHandler("pay", {"timeout": 5})
+        params = _url_params()
+
+        # If the handler tried to prompt, this would raise AssertionError
+        # because the side_effect treats the call as a test failure.
+        with patch(
+            "tools.approval_prompt.request_elicitation_consent",
+            side_effect=AssertionError("URL mode must not prompt"),
+        ):
+            result = asyncio.run(handler(context=None, params=params))
+
+        assert result.action == "decline"
+        assert handler.metrics["declined"] == 1
+
+    def test_exception_in_approval_fails_closed_to_decline(self):
+        handler = ElicitationHandler("pay", {"timeout": 5})
+        params = _form_params()
+
+        with patch(
+            "tools.approval_prompt.request_elicitation_consent",
+            side_effect=RuntimeError("approval system blew up"),
+        ):
+            result = asyncio.run(handler(context=None, params=params))
+
+        assert result.action == "decline"
+        assert handler.metrics["errors"] == 1
+
+    def test_timeout_returns_cancel(self, monkeypatch):
+        # Shrink the outer grace window so the test budget is just the
+        # handler timeout. Default grace is 5s, which makes stall durations
+        # tight and the test flaky.
+        monkeypatch.setattr(
+            ElicitationHandler, "_OUTER_TIMEOUT_GRACE_SECONDS", 0
+        )
+        # _safe_numeric clamps `timeout` to a minimum of 1s, so the
+        # effective wait_for budget is 1s here. Stall longer than that
+        # so the wait_for reliably fires TimeoutError.
+        handler = ElicitationHandler("pay", {"timeout": 0.05})
+        params = _form_params()
+
+        def stall(*_args, **_kwargs):
+            import time as _t
+            _t.sleep(2)
+            return "accept"
+
+        with patch("tools.approval_prompt.request_elicitation_consent", side_effect=stall):
+            result = asyncio.run(handler(context=None, params=params))
+
+        assert result.action == "cancel"
+        assert handler.metrics["errors"] == 1
+
+
+class TestElicitationHandlerWiring:
+    def test_session_kwargs_returns_callback(self):
+        handler = ElicitationHandler("pay", {})
+        kwargs = handler.session_kwargs()
+        assert kwargs == {"elicitation_callback": handler}
+
+
+    def test_disabled_config_does_not_construct_handler(self):
+        """The server task initializer checks ``elicitation.enabled`` --
+        an explicit ``False`` should suppress handler creation. The unit
+        of that decision lives in MCPServerTask, but the handler itself
+        must remain harmless to instantiate with arbitrary config."""
+        handler = ElicitationHandler("pay", {"enabled": False, "timeout": 10})
+        # Just confirm it instantiates and reads timeout; the gate lives
+        # at the higher layer.
+        assert handler.timeout == 10
+
+
+class TestElicitationHandlerContextBridge:
+    """The MCP recv-loop task that fires elicitation callbacks does NOT
+    inherit the agent's contextvars (HERMES_SESSION_PLATFORM etc.). The
+    handler reads the ``call_context`` thunk's snapshot -- a snapshot captured
+    by the MCP tool wrapper around ``session.call_tool`` -- and replays
+    it before invoking the approval router so gateway-session detection
+    survives the task hop. Regression tests for that bridge."""
+
+    def test_captured_context_is_replayed_in_consent_call(self):
+        """The captured context's contextvar values must be observable
+        when ``request_elicitation_consent`` runs -- otherwise the
+        gateway-platform detection in approval.py sees an empty platform
+        string and falls back to the CLI path (the bug this fixes)."""
+        import contextvars
+
+        probe: contextvars.ContextVar[str] = contextvars.ContextVar(
+            "elicitation_test_probe", default=""
+        )
+        seen: list[str] = []
+
+        def fake_consent(*_args, **_kwargs):
+            seen.append(probe.get())
+            return "accept"
+
+        token = probe.set("gateway:telegram")
+        try:
+            captured = contextvars.copy_context()
+        finally:
+            probe.reset(token)
+        assert probe.get() == "", (
+            "Sanity check: the probe must be empty outside the captured "
+            "context, otherwise the test would pass even without replay."
+        )
+
+        handler = ElicitationHandler("pay", {"timeout": 5}, call_context=lambda: captured)
+        params = _form_params()
+
+        with patch("tools.approval_prompt.request_elicitation_consent", side_effect=fake_consent):
+            result = asyncio.run(handler(context=None, params=params))
+
+        assert result.action == "accept"
+        assert seen == ["gateway:telegram"], (
+            f"Expected the captured contextvar to be visible inside the "
+            f"consent call; got {seen!r}"
+        )
+
+    def test_missing_captured_context_falls_back_to_direct_call(self):
+        """With the default call_context (or one whose task has not entered a tool
+        call) the handler must still invoke the consent router -- just
+        without the contextvar replay. Otherwise CLI/TUI sessions, which
+        don't set HERMES_SESSION_PLATFORM, would break."""
+        handler = ElicitationHandler("pay", {"timeout": 5})
+        params = _form_params()
+
+        with patch("tools.approval_prompt.request_elicitation_consent", return_value="accept") as m:
+            result = asyncio.run(handler(context=None, params=params))
+
+        assert result.action == "accept"
+        assert m.call_count == 1
+
+
+    def test_pending_call_context_none_does_not_crash(self):
+        """The ``call_context`` thunk returns None between tool
+        calls. An elicitation arriving in that window must not crash."""
+        handler = ElicitationHandler("pay", {"timeout": 5}, call_context=lambda: None)
+        params = _form_params()
+
+        with patch("tools.approval_prompt.request_elicitation_consent", return_value="decline"):
+            result = asyncio.run(handler(context=None, params=params))
+
+        assert result.action == "decline"
+
+
+class TestRequestedSchemaFieldName:
+    """The requested schema must be read off the *real* SDK model.
+
+    Every other test in this file builds a duck-typed ``SimpleNamespace``
+    stand-in for the params object. That keeps them cheap, but it means none
+    of them can catch the handler reading a field name the SDK model does not
+    actually have -- the stand-in simply has whatever name the test wrote.
+
+    The SDK spells this field ``requestedSchema`` on mcp 1.x and
+    ``requested_schema`` on 2.0 (which renamed model fields to snake_case and
+    kept camelCase only as a serialization alias, which pydantic does not
+    expose to attribute access). Constructing with the camelCase spelling
+    works on both -- 2.0 accepts it as the alias -- so this test pins the
+    behaviour to the real model on whichever SDK is installed.
+    """
+
+    def test_real_sdk_params_schema_reaches_the_consent_description(self):
+        from mcp.types import ElicitRequestFormParams
+
+        params = ElicitRequestFormParams(
+            message="authorize a payment of $0.50",
+            requestedSchema={
+                "type": "object",
+                "properties": {
+                    "card_number": {
+                        "type": "string",
+                        "description": "card to charge",
+                    },
+                },
+            },
+        )
+        handler = ElicitationHandler("pay", {"timeout": 5})
+        captured: dict = {}
+
+        def _capture(*args, **kwargs):
+            captured["description"] = kwargs.get("description") or (
+                args[1] if len(args) > 1 else ""
+            )
+            return "decline"
+
+        with patch("tools.approval_prompt.request_elicitation_consent", _capture):
+            asyncio.run(handler(context=None, params=params))
+
+        # An empty schema renders the generic "Approval requested by ..."
+        # fallback, so the field name is what proves the schema was read.
+        assert "card_number" in (captured.get("description") or ""), captured

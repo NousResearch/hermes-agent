@@ -1,0 +1,162 @@
+name: "🐛 Bug Report"
+description: Report a bug — something that's broken, crashes, or behaves incorrectly.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please fill out the sections below so we can reproduce and fix it quickly.
+
+        **Before submitting**, please:
+        - [ ] Search [existing issues](https://github.com/NousResearch/hermes-agent/issues) to avoid duplicates
+        - [ ] Update to the latest version (`hermes update`) and confirm the bug still exists
+        - [ ] Run `hermes debug share` and paste the links below (see Debug Report section)
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear description of what's broken. Include error messages, tracebacks, or screenshots if relevant.
+      placeholder: |
+        What happened? What did you expect to happen instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Minimal steps to trigger the bug. The more specific, the faster we can fix it.
+      placeholder: |
+        1. Run `hermes chat`
+        2. Send the message "..."
+        3. Agent calls tool X
+        4. Error appears: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What should have happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened? Include full error output if available.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected Component
+      description: Which part of Hermes is affected?
+      multiple: true
+      options:
+        - CLI (interactive chat)
+        - Gateway (Telegram/Discord/Slack/WhatsApp)
+        - Setup / Installation
+        - Tools (terminal, file ops, web, code execution, etc.)
+        - Skills (skill loading, skill hub, skill guard)
+        - Agent Core (conversation loop, context compression, memory)
+        - Configuration (config.yaml, .env, hermes setup)
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Messaging Platform (if gateway-related)
+      description: Which platform adapter is affected?
+      multiple: true
+      options:
+        - N/A (CLI only)
+        - Telegram
+        - Discord
+        - Slack
+        - WhatsApp
+
+  - type: textarea
+    id: debug-report
+    attributes:
+      label: Debug Report
+      description: |
+        Run `hermes debug share` from your terminal and paste the links it prints here.
+        This uploads your system info, config, and recent logs to a paste service automatically.
+
+        If you're in an interactive chat session, you can also use the `/debug` slash command — it does the same thing.
+
+        If the upload fails, run `hermes debug share --local` and paste the output directly.
+      placeholder: |
+        Report   https://paste.rs/abc123
+        agent.log   https://paste.rs/def456
+        gateway.log   https://paste.rs/ghi789
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating System
+      description: e.g. Ubuntu 24.04, macOS 15.2, Windows 11
+      placeholder: Ubuntu 24.04
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python Version
+      description: Output of `python --version`
+      placeholder: "3.11.9"
+
+  - type: input
+    id: hermes-version
+    attributes:
+      label: Hermes Version
+      description: Output of `hermes version`
+      placeholder: "2.1.0"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Additional Logs / Traceback (optional)
+      description: |
+        The debug report above covers most logs. Use this field for any extra error output, 
+        tracebacks, or screenshots not captured by `hermes debug share`.
+      render: shell
+
+  - type: textarea
+    id: root-cause
+    attributes:
+      label: Root Cause Analysis (optional)
+      description: |
+        If you've dug into the code and identified the root cause, share it here.
+        Include file paths, line numbers, and code snippets if possible. This massively speeds up fixes.
+      placeholder: |
+        The bug is in `gateway/run.py` line 949. `len(history)` counts session_meta entries
+        but `agent_messages` was built from filtered history...
+
+  - type: textarea
+    id: proposed-fix
+    attributes:
+      label: Proposed Fix (optional)
+      description: If you have a fix in mind (or a PR ready), describe it here.
+      placeholder: |
+        Replace `.get()` with `.pop()` on line 289 of `gateway/platforms/base.py`
+        to actually clear the pending message after retrieval.
+
+  - type: checkboxes
+    id: pr-ready
+    attributes:
+      label: Are you willing to submit a PR for this?
+      options:
+        - label: I'd like to fix this myself and submit a PR

@@ -116,8 +116,13 @@ def build_prune_filters(args: Any) -> Dict[str, Any]:
     return {"older_than_days": None, **bounds, **{key: getattr(args, attr, None) for key, attr, _ in _ARG_FILTERS}}
 
 
-def describe_filters(filters: Dict[str, Any]) -> str:
-    """Human-readable summary of active filters for confirmation prompts."""
+def describe_filters(filters: Dict[str, Any], *,
+                     fallback: str = "no filters (all ended sessions)") -> str:
+    """Human-readable summary of active filters for confirmation prompts.
+
+    ``fallback`` is the no-filter text. Callers whose candidate set is NOT ended-only (unarchive)
+    must override it, or a bare command's preview misdescribes what it would touch.
+    """
     parts = [
         template.format(v=format_epoch(filters[key])) for key, _, _, template in _TIME_BOUNDS
         if filters.get(key) is not None
@@ -125,4 +130,4 @@ def describe_filters(filters: Dict[str, Any]) -> str:
         template.format(v=filters[key]) for key, _, template in _ARG_FILTERS
         if ((filters.get(key) is not None) if key.startswith(("min_", "max_")) else bool(filters.get(key)))
     ]
-    return ", ".join(parts) if parts else "no filters (all ended sessions)"
+    return ", ".join(parts) if parts else fallback

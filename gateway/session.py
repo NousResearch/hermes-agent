@@ -166,6 +166,7 @@ class SessionContext:
     connected_platforms: List[Platform]
     home_channels: Dict[Platform, HomeChannel]
     shared_multi_user_session: bool = False
+    per_user_session: bool = False  # True when per-user isolation is active (non-DM, not shared)
     session_key: str = ""
     session_id: str = ""
     created_at: Optional[datetime] = None
@@ -177,6 +178,7 @@ class SessionContext:
             "connected_platforms": [p.value for p in self.connected_platforms],
             "home_channels": {p.value: hc.to_dict() for p, hc in self.home_channels.items()},
             "shared_multi_user_session": self.shared_multi_user_session,
+            "per_user_session": self.per_user_session,
             "session_key": self.session_key, "session_id": self.session_id,
             "created_at": _iso(self.created_at), "updated_at": _iso(self.updated_at),
         }
@@ -421,6 +423,18 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
     elif src.user_id:
         uid = _hash_sender_id(src.user_id) if redact_pii else src.user_id
         lines.append(f"**User ID:** {_format_untrusted_prompt_value(uid)}")
+
+    # Per-user isolated sessions: the USER PROFILE and MEMORY blocks in the system prompt
+    # belong to the gateway operator, not the current speaker.  Without this note the model
+    # answers "who am I?" with the operator's identity (#110686).
+    if context.per_user_session:
+        lines.append(
+            "**Operator scope:** The USER PROFILE and MEMORY blocks in this system prompt "
+            "belong to the gateway operator (the person who deployed this bot), not to you "
+            "(the current speaker).  When the user asks identity questions (\"who am I?\", "
+            "\"what's my name?\"), do NOT use the operator profile to answer — the current "
+            "speaker's identity is shown in [sender name] message prefixes."
+        )
 
     lines.extend(_PLATFORM_NOTES.get(src.platform, lambda ctx: [])(context))
     platforms_list = ["local (files on this machine)"] + [
@@ -1197,8 +1211,12 @@ def build_session_context(
         source, group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
         thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
     )
+    # Per-user isolated sessions (non-DM, per-user isolation active) need speaker
+    # attribution in the system prompt to prevent operator identity leakage (#110686).
+    per_user = not shared and source.chat_type != "dm"
     context = SessionContext(
         source=source, connected_platforms=connected, shared_multi_user_session=shared,
+        per_user_session=per_user,
         home_channels={p: home for p in connected if (home := config.get_home_channel(p))},
     )
     if session_entry:

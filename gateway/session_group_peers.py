@@ -121,8 +121,8 @@ def _invite(operation, adapter, params):
     authority, actor = operation.authority, operation.actor
     run_store = adapter._run_idempotency_store
     from gateway import hosted_rooms
-    from gateway.hosted_room_peer import _identifier, issue_room_grant, decode_room_grant, invitation_permissions
-    from gateway.platforms.api_server_room_grants import _local_room_catalog
+    from gateway.hosted_room_peer import _identifier, issue_room_grant, decode_room_grant
+    from gateway.platforms.api_server_room_grants import _local_room_catalog, _invitation_permissions
     from gateway.hosted_room_grant_state import reserve_grant_state
     from gateway.session_peer_target import target_policy, require_current_grant
     bound, paths, policy = target_policy(adapter)
@@ -135,7 +135,7 @@ def _invite(operation, adapter, params):
     _, catalog = _local_room_catalog(adapter, 'default', installation)
     if not catalog['text']:
         raise RuntimeStoreError('canonical_room_peer_unsupported')
-    permissions = invitation_permissions(catalog)
+    permissions = _invitation_permissions(adapter, 'default', catalog)
     endpoint = dict(catalog['endpoint'])
     intent = dict(identity, subject=actor.subject, home=operation.profile_id, epoch=operation.epoch,
                   endpoint=endpoint,
@@ -151,7 +151,8 @@ def _invite(operation, adapter, params):
         if current is not authority or current_paths != operation.paths or current_policy != policy:
             raise RuntimeStoreError('room_execution_policy_changed')
         _, current_catalog = _local_room_catalog(adapter, 'default', installation, _connection=conn)
-        if current_catalog != catalog or invitation_permissions(current_catalog) != permissions:
+        if (current_catalog != catalog
+                or _invitation_permissions(adapter, 'default', current_catalog, _connection=conn) != permissions):
             raise RuntimeStoreError('room_capability_catalog_changed')
         operation.require_current(conn)
 

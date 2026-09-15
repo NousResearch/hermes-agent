@@ -406,8 +406,8 @@ _GRANT_SCOPE = (
 _GRANT_FIELDS = frozenset({
     "version", *_GRANT_SCOPE, "execution_policy_digest", "permissions", "issued_at", "expires_at"})
 _GRANT_REFRESH_FIELDS = _GRANT_FIELDS | {"status_expires_at"}
-_GRANT_PERMISSIONS = {"approve", "attachment.stage", "dispatch", "status", "stop"}
-RoomGrantPermission = Literal["approve", "attachment.stage", "dispatch", "status", "stop"]
+_GRANT_PERMISSIONS = {"approve", "attachment.stage", "artifact.ack", "artifact.read", "dispatch", "status", "stop"}
+RoomGrantPermission = Literal["approve", "attachment.stage", "artifact.ack", "artifact.read", "dispatch", "status", "stop"]
 
 
 def invitation_permissions(catalog: Mapping[str, Any]) -> tuple[RoomGrantPermission, ...]:
@@ -445,9 +445,14 @@ def issue_room_grant(
         or not math.isfinite(bounded_status_expiry) or bounded_status_expiry < now + float(ttl_seconds)
         or bounded_status_expiry > now + MAX_STATUS_GRANT_TTL_SECONDS):
         raise HostedRoomGrantError("room grant lifetime is invalid")
-    allowed = tuple(sorted(set(permissions)))
-    if not allowed or not set(allowed) <= _GRANT_PERMISSIONS:
+    try:
+        selected = tuple(permissions)
+    except TypeError as exc:
+        raise HostedRoomGrantError("room grant permissions are invalid") from exc
+    if (not selected or any(type(right) is not str or right not in _GRANT_PERMISSIONS for right in selected)
+            or len(set(selected)) != len(selected)):
         raise HostedRoomGrantError("room grant permissions are invalid")
+    allowed = tuple(sorted(selected))
     scope = locals()
     payload = {
         "version": PROTOCOL_VERSION,
@@ -533,7 +538,11 @@ def decode_room_grant(
     ):
         raise HostedRoomGrantError("room grant is expired or not active")
     permissions = payload.get("permissions")
-    if not isinstance(permissions, list) or permission not in permissions:
+    if (not isinstance(permissions, list) or not permissions
+            or any(type(right) is not str or right not in _GRANT_PERMISSIONS for right in permissions)
+            or len(set(permissions)) != len(permissions)):
+        raise HostedRoomGrantError("room grant permissions are invalid")
+    if type(permission) is not str or permission not in permissions:
         raise HostedRoomGrantError("room grant does not allow this operation")
     # Hash the complete signed bearer in canonical base64 form so padding or
     # equivalent base64 spellings cannot bypass exact revocation.

@@ -48,7 +48,9 @@ async def test_real_native_and_http_text_rights_and_no_caller_selection(target):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('rights', [TEXT_RIGHTS, ['dispatch'], ['status'],
-    ['attachment.stage', 'dispatch', 'status']])
+    ['attachment.stage', 'dispatch', 'status'],
+    ['artifact.ack', 'artifact.read', 'dispatch', 'status'],
+    ['artifact.read', 'status']])
 async def test_refresh_preserves_existing_explicit_rights_and_hard_horizon(target, rights):
     from gateway.hosted_room_grant_state import grant_state_db_paths, reserve_grant_state
     issued = await invite(target)
@@ -70,9 +72,10 @@ async def test_refresh_preserves_existing_explicit_rights_and_hard_horizon(targe
     assert refreshed['permissions'] == rights
     assert refreshed['status_expires_at'] == claims['status_expires_at']
     assert refreshed['expires_at'] == claims['status_expires_at']
-    if 'attachment.stage' not in rights:
-        with pytest.raises(peer.HostedRoomGrantError, match='allow'):
-            peer.decode_room_grant(target.adapter._room_grant_secret(), json.loads(response.text)['grant'], permission='attachment.stage')
+    for right in ('attachment.stage', 'artifact.read', 'artifact.ack'):
+        if right not in rights:
+            with pytest.raises(peer.HostedRoomGrantError, match='allow'):
+                peer.decode_room_grant(target.adapter._room_grant_secret(), json.loads(response.text)['grant'], permission=right)
 
 
 @pytest.mark.asyncio

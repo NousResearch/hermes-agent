@@ -107,6 +107,39 @@ def _local_room_catalog(self, profile: str, installation_id: str, *, _connection
         execution_policy=execution_policy)
     return execution_policy, catalog
 
+def _invitation_permissions(self, profile: str, catalog: dict, *, _connection=None) -> tuple[str, ...]:
+    """Join input metadata with the Output owner's private readiness selection.
+
+    Output installs one callable on the actual adapter instance as
+    ``_room_output_invitation_permissions(*, profile, catalog, connection)``.
+    It returns a tuple of unique existing artifact.read/artifact.ack rights (or
+    () when unavailable), never a boolean. No provider means no export rights.
+    This is not a client field, catalog field, or proof of Output readiness.
+
+    The provider owns initialized outbox, root/process owner, policy and actual
+    read/ACK route checks. It must use the supplied owner SQL connection when
+    present, without acquiring another writer or either grant store. None is
+    the initial read-only selection; issuance rechecks on the held owner writer.
+    The provider must be synchronous, read-only and safe to call repeatedly.
+    """
+    from gateway.hosted_room_peer import HostedRoomGrantError, invitation_permissions
+    permissions = invitation_permissions(catalog)
+    provider = getattr(self, '_room_output_invitation_permissions', None)
+    if provider is None:
+        return permissions
+    if not callable(provider):
+        raise HostedRoomGrantError('room output permission provider is invalid')
+    # No legacy/standalone output issuance can bypass the canonical confirmation.
+    from gateway.session_peer_target import root_target
+    root_target(self, profile, connection=_connection)
+    extra = provider(profile=profile, catalog=catalog, connection=_connection)
+    if (type(extra) is not tuple or len(extra) > 2
+            or any(type(right) is not str or right not in {'artifact.read', 'artifact.ack'} for right in extra)
+            or len(set(extra)) != len(extra)):
+        raise HostedRoomGrantError('room output permissions are invalid')
+    return tuple(sorted((*permissions, *extra)))
+
+
 def _http_routes(self) -> list[tuple[str, str, Any]]:
     async def revoke_exact(request):
         from gateway.platforms import api_server
@@ -209,7 +242,7 @@ async def _handle_room_member_invitation(
         )
     try:
         from gateway import hosted_rooms
-        from gateway.hosted_room_peer import decode_room_grant, issue_room_grant, invitation_permissions
+        from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
         from gateway.session_group_peers import invitation_preflight
 
         profile = _effective_room_profile(_api_request_profile)
@@ -221,7 +254,15 @@ async def _handle_room_member_invitation(
         execution_policy, catalog = _local_room_catalog(self, profile, target_install_id)
         if not catalog['text'] or execution_policy['approval_mode'] == 'off':
             raise ValueError('remote room execution requires an enabled approval policy')
-        permissions = invitation_permissions(catalog)
+        # Freeze the canonical binding before signing/reservation can block. A
+        # detached adapter must not switch to the unconfirmed standalone path.
+        binding = None
+        if _canonical_room_peer(self, profile):
+            from gateway.session_peer_target import root_target
+            owner, paths = root_target(self, profile)
+            binding = (owner, owner.epoch, owner.instance_id, owner.db, self.gateway_runner,
+                       self.gateway_runner.session_authorities, self._run_idempotency_store, paths)
+        permissions = _invitation_permissions(self, profile, catalog)
         token = issue_room_grant(
             self._room_grant_secret(),
             grant_id=str(body.get("grant_id") or f"grant-{uuid.uuid4().hex}"),
@@ -247,16 +288,21 @@ async def _handle_room_member_invitation(
             claims=claims,
             expires_at=float(claims.get("status_expires_at", claims["expires_at"])),
         )
-        if _canonical_room_peer(self, profile):
+        if binding is not None:
             from gateway.session_peer_target import grant_fence, target_policy, require_current_grant
             with grant_fence(self, profile) as (authority, shared):
                 def confirm(conn):
-                    _, _, current_policy = target_policy(self, profile, connection=conn)
+                    owner, paths, current_policy = target_policy(self, profile, connection=conn)
+                    current_binding = (owner, owner.epoch, owner.instance_id, owner.db, self.gateway_runner,
+                                       self.gateway_runner.session_authorities, self._run_idempotency_store, paths)
+                    if owner is not authority or current_binding != binding:
+                        raise ValueError('room target binding changed')
                     if current_policy != execution_policy:
                         raise ValueError('room execution policy changed')
                     _, current_catalog = _local_room_catalog(
                         self, profile, target_install_id, _connection=conn)
-                    if current_catalog != catalog or invitation_permissions(current_catalog) != permissions:
+                    if (current_catalog != catalog
+                            or _invitation_permissions(self, profile, current_catalog, _connection=conn) != permissions):
                         raise ValueError('room capability catalog changed')
                     require_current_grant(shared, claims)
                     require_current_grant(conn, claims)

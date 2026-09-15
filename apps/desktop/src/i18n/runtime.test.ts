@@ -19,6 +19,7 @@ describe('desktop i18n runtime translator', () => {
     setRuntimeI18nLocale('zh')
 
     expect(translateNow('boot.ready')).toBe('Hermes 桌面版已就绪')
+    expect(translateNow('sidebar.sessions')).toBe('会话')
     expect(translateNow('notifications.voice.noSpeechDetected')).toBe('没有检测到语音')
     expect(translateNow('composer.lookupNoMatches')).toBe('没有匹配项。')
     expect(translateNow('assistant.tool.statusRecovered')).toBe('已恢复')

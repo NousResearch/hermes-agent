@@ -367,6 +367,8 @@ export default {
       id: 'pane',
       area: 'panes',
       title: 'Bots',
+      data: {
+        tabTitle: () => ctx.i18n.t('paneTitle'),
       // dock: explicit adoption gesture — CENTER-STACK into the sessions zone
       // so the sidebar grows a SESSIONS | BOTS tab strip instead of splitting
       // two cramped panes down the column. Center is safe now: insertAtGroup
@@ -389,7 +391,6 @@ export default {
       // sessions pane collapses alone without this flag. The zone then keeps
       // a stranded BOTS tab on screen. The narrow edge overlay mirrors the
       // zone's tab strip, so the pane stays reachable while collapsed.
-      data: {
         placement: 'left',
         width: '260px',
         collapsible: true,

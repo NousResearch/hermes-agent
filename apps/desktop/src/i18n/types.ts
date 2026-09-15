@@ -2423,6 +2423,10 @@ export interface Translations {
     markAllRead: string
   }
 
+  intro: {
+    body: string
+  }
+
   composer: {
     message: string
     wakingProfile: (profile: string) => string

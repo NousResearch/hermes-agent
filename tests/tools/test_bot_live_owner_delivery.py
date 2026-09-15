@@ -49,6 +49,45 @@ def test_delivery_is_idempotent_fenced_and_permanent(tmp_path, terminal_status):
             assert path.stat().st_mode & 0o077 == 0
 
 
+def test_corrupt_receipt_does_not_block_other_pending_delivery(tmp_path):
+    from tools import bot_live_delivery as mailbox
+
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
+                 lease_id="lease", live_session_id="live")
+    queued = mailbox.deliver_to_live_owner(tmp_path, owner, "healthy")
+    root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+    damaged = {
+        root / ("d" * 32 + ".json"): "{truncated",
+        root / ("e" * 32 + ".json"): "[]",
+        root / ("f" * 32 + ".json"): "{}",
+        root / ("a" * 32 + ".json"): json.dumps(dict(
+            delivery_id="a" * 32, id="a" * 32, status="queued", created_at=1,
+            sequence=1, owner=None, message="damaged-owner")),
+        root / ("b" * 32 + ".json"): json.dumps(dict(
+            delivery_id="b" * 32, id="b" * 32, status="queued", created_at=2,
+            sequence="old", owner=owner, message="damaged-sequence", **owner)),
+        root / ("c" * 32 + ".json"): json.dumps(dict(
+            delivery_id="../wrong", id="../wrong", status="queued", created_at=3,
+            sequence=3, owner=owner, message="damaged-id", **owner)),
+        root / ("1" * 32 + ".json"): json.dumps(dict(
+            delivery_id="1" * 32, id="1" * 32, status=[], created_at=4,
+            sequence=4, owner=owner, message="damaged-array-status", **owner)),
+        root / ("2" * 32 + ".json"): json.dumps(dict(
+            delivery_id="2" * 32, id="2" * 32, status={}, created_at=5,
+            sequence=5, owner=owner, message="damaged-object-status", **owner)),
+    }
+    for path, contents in damaged.items():
+        path.write_text(contents, encoding="utf-8")
+
+    admitted = mailbox.deliver_to_live_owner(tmp_path, owner, "also healthy")
+    claimed = mailbox.claim_pending_delivery(tmp_path, owner)
+
+    assert admitted["sequence"] == queued["sequence"] + 1
+    assert claimed is not None
+    assert claimed["delivery_id"] == queued["delivery_id"]
+    assert {path: path.read_text(encoding="utf-8") for path in damaged} == damaged
+
+
 def test_fifo_survives_clock_rollback(tmp_path, monkeypatch):
     from tools import bot_live_delivery as mailbox
 

@@ -1408,22 +1408,14 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
             # collect_fleet_versions() swallows every failure, so zero rows with
             # expected runtimes is indistinguishable from health — fail (partial, exit 1).
             if _fleet_restart_verified_by_marker_sha():
-                # The probe is degraded but the restart is provably complete: the
-                # marker's expected SHA matches the code_sha every live gateway
-                # stamped into gateway_state.json. Don't fail closed on a
-                # verification channel that already answered. (#111272)
+                # Probe degraded but the marker SHA matches every live gateway's code_sha — the channel already answered, don't fail closed (#111272).
                 print(
                     "\n✓ Fleet version probe returned no rows, but the live"
                     " gateway(s) report this update's code SHA — restart verified."
                 )
             else:
                 print(
-                    # Fleet probe returned zero rows even though at least one gateway runtime was (or may have
-                    # been) live pre-update — POSIX restart bookkeeping, the pre-restart PID snapshot, the
-                    # pre-update plan inventory, or the Windows pause/resume token all count as that signal.
-                    # Every failure path inside collect_fleet_versions() is swallowed via logger.debug(), so an
-                    # empty list is indistinguishable from a healthy fleet in the current output. Treat it as
-                    # verification failure so the receipt records "partial" and the exit code is 1 (#93406).
+                    # Zero probe rows with runtimes expected pre-update is indistinguishable from health — record partial, exit 1 (#93406).
                     "\n⚠ Fleet version check returned no rows even though"
                     " gateway runtimes were expected — verification incomplete."
                 )

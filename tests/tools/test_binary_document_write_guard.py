@@ -74,6 +74,18 @@ class TestCheckBinaryDocumentWrite:
 
 
 class TestWriteFileToolGuard:
+    def test_write_file_rejects_text_symlink_to_docx(self, tmp_path: Path):
+        docx = tmp_path / "report.docx"
+        docx.write_bytes(b"Quarterly numbers look good.\n")
+        original = docx.read_bytes()
+        alias = tmp_path / "report.txt"
+        alias.symlink_to(docx.name)
+
+        result = json.loads(write_file_tool(str(alias), "edited text"))
+
+        assert "binary document" in (result.get("error") or "").lower()
+        assert docx.read_bytes() == original, "document bytes must be untouched"
+
     def test_write_file_rejects_existing_docx(self, tmp_path: Path):
         docx = tmp_path / "report.docx"
         _make_minimal_docx(docx)
@@ -128,6 +140,46 @@ class TestWriteFileToolGuard:
 
 
 class TestPatchToolGuard:
+    def test_patch_modes_reject_text_symlink_to_docx(self, tmp_path: Path):
+        results = []
+        for mode in ("replace", "patch"):
+            docx = tmp_path / f"{mode}.docx"
+            docx.write_bytes(b"Quarterly numbers look good.\n")
+            original = docx.read_bytes()
+            alias = tmp_path / f"{mode}.txt"
+            alias.symlink_to(docx.name)
+
+            if mode == "replace":
+                result = json.loads(
+                    patch_tool(
+                        mode="replace",
+                        path=str(alias),
+                        old_string="good",
+                        new_string="great",
+                    )
+                )
+            else:
+                v4a = (
+                    "*** Begin Patch\n"
+                    f"*** Update File: {alias}\n"
+                    "@@\n"
+                    "-Quarterly numbers look good.\n"
+                    "+Quarterly numbers look great.\n"
+                    "*** End Patch"
+                )
+                result = json.loads(patch_tool(mode="patch", patch=v4a))
+
+            results.append(
+                (
+                    mode,
+                    result.get("error") or "",
+                    docx.read_bytes() == original,
+                )
+            )
+
+        assert all("binary document" in error.lower() for _, error, _ in results), results
+        assert all(unchanged for _, _, unchanged in results), results
+
     def test_patch_replace_rejects_docx(self, tmp_path: Path):
         docx = tmp_path / "report.docx"
         _make_minimal_docx(docx)

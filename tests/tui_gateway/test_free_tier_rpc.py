@@ -26,6 +26,21 @@ def _call(method: str, params: dict | None = None) -> dict:
     return srv._methods[method](1, params or {})["result"]
 
 
+@pytest.fixture(autouse=True)
+def _fresh_process_memos():
+    """``free_tier.provision`` routes through the boot record when one exists; a record another
+    test file left behind (has_identity) would make it skip the mint. Per-process state, per test,
+    both ways so this file leaves nothing behind either."""
+    from hermes_cli import free_tier_bootstrap
+
+    def _reset():
+        free_tier_bootstrap.reset_for_tests()
+        anon_auth.reset_mint_memo_for_tests()
+    _reset()
+    yield
+    _reset()
+
+
 @pytest.fixture
 def guest(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))

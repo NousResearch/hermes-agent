@@ -320,8 +320,10 @@ Safety rules:
 - **Credentials inside mined commands are masked** (`ghp_…`, `bot<id>:<token>`
   URLs, `KEY=value` assignments, bearer tokens) in both the printed `e.g.`
   examples and the `--json` payload, using the same redactor as terminal
-  output. Note this masks the *display* only — the session database itself
-  still holds the command as it was executed.
+  output. Masked text is never used as an allowlist pattern: a command whose
+  glob would embed a credential (`TOKEN=… git …`) is proposed under its
+  dangerous-class key instead. The session database itself still holds the
+  command as it was executed.
 
 Useful flags: `--days N` (history window, default 90), `--min-count N`
 (minimum approvals to qualify, default 2), `--limit N`, and `--db PATH`.

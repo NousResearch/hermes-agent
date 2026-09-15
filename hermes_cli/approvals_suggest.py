@@ -231,11 +231,17 @@ def build_proposals(
         if is_unsafe_class(description):
             continue
         # Commands mined from past tool calls can embed credentials (URL userinfo,
-        # env assignments, bearer tokens). Patterns and examples are echoed to the
-        # operator and can be persisted to config.yaml, so mask them like every
-        # other display boundary — classification above still sees the raw command.
-        normalized = redact_sensitive_text(normalize_command(command), force=True)
-        glob = derive_glob(normalized)
+        # env assignments, bearer tokens). Examples are echoed to the operator, so
+        # mask them like every other display boundary — classification above
+        # still sees the raw command. The glob is derived from the raw command:
+        # a redacted `***` inside a persisted pattern would be three fnmatch
+        # wildcards, so when redaction touches the tokens the glob embeds, the
+        # command is proposed under its class key instead.
+        raw = normalize_command(command)
+        normalized = redact_sensitive_text(raw, force=True)
+        glob = derive_glob(raw)
+        if glob is not None and derive_glob(normalized) != glob:
+            glob = None
         pattern, kind = (glob, "glob") if glob is not None else (description, "class")
         if pattern in existing:
             continue

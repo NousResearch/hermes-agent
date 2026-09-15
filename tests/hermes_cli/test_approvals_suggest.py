@@ -237,6 +237,20 @@ class TestProposalRedaction:
             assert pat not in p["pattern"]
             assert all(pat not in ex for ex in p["examples"])
 
+    def test_credential_in_glob_tokens_falls_back_to_class_key(self, isolated_allowlist):
+        """Redaction must never reach a persisted glob: `KEY=*** git *` would be three
+        fnmatch wildcards pre-approving any `KEY=… git …` command."""
+        from tools.approval_floors import _command_matches_permanent_allowlist
+
+        cmd = "GITHUB_TOKEN=ghp_16C7e42F292c6912E7710c838347Ae178B4a git push --force origin main"
+        proposals = build_proposals([(cmd, "git push --force")] * 3, min_count=1)
+        assert [(p.pattern, p.kind) for p in proposals] == [("git push --force", "class")]
+        assert "ghp_" not in proposals[0].examples[0]
+        added = apply_proposals(proposals, [0])
+        assert "*" not in "".join(added)
+        approval_module.load_permanent(set(approval_module.load_permanent_allowlist()))
+        assert not _command_matches_permanent_allowlist("GITHUB_TOKEN=x sudo git push --force origin main")
+
 
 # ---------------------------------------------------------------------------
 # --apply / dry-run

@@ -812,6 +812,38 @@ display:
 
 Defaults to `false`. Only platforms whose adapter implements `delete_message` honor the setting (currently Telegram and Discord). Failed runs **skip** cleanup so the bubbles remain as breadcrumbs.
 
+### Mirroring local turns to the platform (opt-in)
+
+When you open a messaging session (say, your Telegram DM) in the **Desktop app**, the TUI, or the
+dashboard and continue it there, that surface is the only one that sees the exchange — the
+platform's own chat never receives it, so the record on your phone is missing that stretch of
+the conversation.
+
+With `mirror_local_turns` on for a platform, Hermes forwards each completed local turn back to
+the session's own platform chat: your message as a quote block, then the assistant's reply.
+
+```yaml
+display:
+  platforms:
+    telegram:
+      mirror_local_turns: true          # off by default
+      mirror_local_turns_silent: true   # send with disable_notification (default)
+      mirror_local_turns_4096_split: false
+                                        # false: keep one message where possible; past the
+                                        #   platform cap the remainder paginates
+                                        # true: split into standalone ≤4096 messages
+      mirror_local_turns_label: "📲"    # first-line marker; "" hides it
+```
+
+Notes:
+
+- Only complete exchanges are mirrored — synthetic activity (compaction notices, auto-continue,
+  background-process notes) and silent responses are skipped.
+- Delivery goes through the same standalone sender as `hermes send`, so no live gateway
+  connection is required; failures are logged without affecting the turn.
+- Mirrored sends are silent by default, so a phone that already followed along on the desktop
+  is not pinged twice.
+
 ## Next Steps
 
 - [Telegram Setup](telegram.md)

@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import inspect
 import logging
 import os
 import re
@@ -20,6 +21,9 @@ _TELEGRAM_SEND_AUDIO_EXTS = {".mp3", ".m4a"}  # sendAudio accepts only these; ot
 _CAPTIONABLE_EXTS = _IMAGE_EXTS | _VIDEO_EXTS | {".pdf", ".doc", ".docx", ".txt", ".md", ".csv", ".xlsx", ".zip"}
 # Native caption limits (chars): Telegram caps photo/video at 1024; one conservative shared ceiling elsewhere.
 _TELEGRAM_CAPTION_LIMIT = 1024
+# Trailing page marker ``truncate_message`` appends (" (2/3)"); dropped when the caller asked for
+# standalone split messages rather than pagination.
+_PAGE_INDICATOR_RE = re.compile(r" \(\d+/\d+\)$")
 _DEFAULT_CAPTION_LIMIT = 4096
 
 
@@ -236,8 +240,13 @@ def _telegram_format(message):
         return message, ParseMode.MARKDOWN_V2, False  # formatting unavailable: send as-is
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
-    """One-shot Telegram Bot API send; parse failures fall back to plain text."""
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False,
+                         silent=False, chunk_indicators=True):
+    """One-shot Telegram Bot API send; parse failures fall back to plain text.
+
+    ``silent`` adds ``disable_notification`` to every send; ``chunk_indicators=False`` strips the
+    ``(i/n)`` page markers ``truncate_message`` appends so split parts read as standalone messages.
+    """
     try:
         formatted, send_parse_mode, _has_html = _telegram_format(message)
         bot = _telegram_bot(token)
@@ -249,7 +258,11 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         media_files = media_files or []
         thread_kwargs = _telegram_thread_kwargs(thread_id)
         # disable_web_page_preview is only valid for send_message, not media sends.
-        text_kwargs = {**thread_kwargs, **({"disable_web_page_preview": True} if disable_link_previews else {})}
+        text_kwargs = {
+            **thread_kwargs,
+            **({"disable_web_page_preview": True} if disable_link_previews else {}),
+            **({"disable_notification": True} if silent else {}),
+        }
         last_msg, warnings, _tg_caption = None, [], None
         # MEDIA caption rides on the bubble as its *formatted* caption; formatting can inflate a
         # raw <1024 string past Telegram's cap, so re-check in UTF-16 units.
@@ -257,7 +270,11 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         if _cap is not None and utf16_len(formatted) <= _TELEGRAM_CAPTION_LIMIT:
             _tg_caption, formatted = formatted, ""  # suppress the separate text send below
         # Chunk *after* formatting, in UTF-16 units: escaping can push a raw-<4096 message over.
-        for chunk in BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len) if formatted.strip() else ():
+        chunks = BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len) if formatted.strip() else []
+        if not chunk_indicators:
+            # "Several standalone messages" mode: drop truncate_message's ``(i/n)`` page markers.
+            chunks = [_PAGE_INDICATOR_RE.sub("", chunk) for chunk in chunks]
+        for chunk in chunks:
             last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)
         for media_path, is_voice in media_files:
             if not os.path.exists(media_path):
@@ -331,10 +348,26 @@ def _plugin_standalone_sender(platform_name, *, label=None, discover=True):
     return entry.standalone_sender_fn, None
 
 
-async def _registry_standalone_send(platform_name, pconfig, chat_id, message, thread_id=None):
-    """One-shot text send through a plugin's ``standalone_sender_fn``."""
+async def _registry_standalone_send(platform_name, pconfig, chat_id, message, thread_id=None,
+                                    silent=False, chunk_indicators=True):
+    """One-shot text send through a plugin's ``standalone_sender_fn``.
+
+    ``silent`` / ``chunk_indicators`` are forwarded only to senders that declare them (Telegram
+    does); other platforms keep their existing call shape rather than erroring on unknown kwargs.
+    """
     sender, err = _plugin_standalone_sender(platform_name)
-    return err or await sender(pconfig, chat_id, message, thread_id=thread_id)
+    if err or sender is None:
+        return err or {"error": f"{platform_name} plugin not registered or missing standalone_sender_fn"}
+    kwargs = {"thread_id": thread_id}
+    try:
+        accepted = inspect.signature(sender).parameters
+    except (TypeError, ValueError):
+        accepted = {}
+    if silent and "silent" in accepted:
+        kwargs["silent"] = True
+    if not chunk_indicators and "chunk_indicators" in accepted:
+        kwargs["chunk_indicators"] = False
+    return await sender(pconfig, chat_id, message, **kwargs)
 
 
 async def _resolve_slack_user_target(token, chat_id):

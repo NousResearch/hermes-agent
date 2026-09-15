@@ -19,6 +19,7 @@ import sys
 import tempfile
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -196,12 +197,32 @@ def _uv_version(uv_bin: str) -> str:
     ).stdout.strip()
 
 
+def _record_runtime_repair(repair: RuntimeRepairResult) -> None:
+    """Put the repair outcome into the update receipt (no-op outside ``hermes update``).
+
+    Receipts are built only from explicit ``record_step``/``record_skip`` calls, so without this
+    a failed repair left ``outcome: partial`` with no step naming the reason or the SQLite
+    versions. A deferred or not-applicable repair is a skip WITH its reason, not a failed step:
+    every pip/non-venv install would otherwise carry a red step in every receipt.
+    """
+    from hermes_cli.update_receipt import record_skip, record_step
+
+    detail = (
+        f"{repair.status}: {repair.detail}" if repair.detail else repair.status
+    ) + f" (sqlite {repair.sqlite_before or 'unknown'} → {repair.sqlite_after or 'unknown'})"
+    if repair.status in {"skipped", "not-applicable"}:
+        record_skip("sqlite_runtime_repair", detail)
+    else:
+        record_step("sqlite_runtime_repair", repair.status in {"safe", "repaired"}, detail)
+
+
 def _run_runtime_repair(
     uv_bin: str, repair_observer: Callable[[RuntimeRepairResult], None] | None,
     *, print_skip: bool = False) -> None:
     """Run the vulnerable-runtime repair hook; never raises (repair is non-fatal)."""
     try:
         repair = repair_vulnerable_runtime(uv_bin)
+        _record_runtime_repair(repair)
         if repair_observer is not None:
             repair_observer(repair)
         if repair.status == "failed":
@@ -562,8 +583,59 @@ def _smoke_candidate_venv(venv_dir: Path) -> tuple[bool, str, SQLiteRuntimeInfo 
     return True, "", info
 
 
+# A failed ``uv sync`` prints its diagnosis last, so the tail is the actionable part. Kept
+# short: the reason travels into a one-line log entry, the failure report and the receipt step.
+_SYNC_TAIL_LINES = 6
+_SYNC_REASON_CHARS = 600
+
+
+def _sync_reason(tail: deque[str]) -> str:
+    """The actionable part of a failed sync: uv's ``error:`` line and whatever follows it.
+
+    uv prints progress ("Resolving…", "Resolved 259 packages") before the diagnosis, so the raw
+    tail leads with noise; the ``error:``/``hint:`` pair is the part a user can act on.
+    """
+    parts = [line for line in tail if line.strip()]
+    for index, line in enumerate(parts):
+        if line.lower().startswith(("error:", "error ")):
+            parts = parts[index:]
+            break
+    else:
+        parts = parts[-2:]
+    return " | ".join(parts).strip()[:_SYNC_REASON_CHARS]
+
+
+def _stream_sync(argv: list[str], *, cwd: Path, env: dict[str, str]) -> tuple[int, str]:
+    """Run the candidate's locked sync, forwarding output live; return ``(rc, reason)``.
+
+    Streaming is load-bearing, not cosmetic: older desktop update hand-offs drain only the
+    child's stdout while it runs, so a full stderr pipe blocks uv forever — stderr is merged
+    into stdout and forwarded line by line instead of being captured and reprinted at the end.
+
+    The tail is kept anyway: with inherited stdout the child's diagnosis survived in console
+    scrollback only, and the rejection carried a bare exit code — "hermes update says the SQLite
+    repair failed and never says why".
+    """
+    proc = subprocess.Popen(
+        list(argv), cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", bufsize=1)
+    tail: deque[str] = deque(maxlen=_SYNC_TAIL_LINES)
+    stream = proc.stdout
+    if stream is not None:
+        for line in stream:
+            tail.append(line.rstrip())
+            sys.stdout.write(line)
+            sys.stdout.flush()
+    status = proc.wait()
+    return status, _sync_reason(tail)
+
+
+class _CandidateStageError(Exception):
+    """A rejected candidate, already cleaned up, with its diagnostic reason."""
+
+
 def _stage_candidate_venv(
-    uv_bin: str, *, project_root: Path, generation: Path, python: Path) -> Path | None:
+    uv_bin: str, *, project_root: Path, generation: Path, python: Path) -> Path:
     runtime_root = project_root / _RUNTIME_DIR_NAME
     candidate = runtime_root / f"venv-candidate-{_token()}"
     env = managed_python_env(project_root, install_dir=generation)
@@ -571,7 +643,9 @@ def _stage_candidate_venv(
         "UV_PROJECT_ENVIRONMENT": str(candidate), "UV_PYTHON": str(python),
         "UV_PYTHON_DOWNLOADS": "never", "VIRTUAL_ENV": str(candidate)})
 
-    reject = partial(_reject, candidate, runtime_root)
+    def reject(message: str, *args) -> None:
+        _reject(candidate, runtime_root, message, *args)
+        raise _CandidateStageError(message % args if args else message)
     print("  → Building a relocatable replacement environment...")
     created = subprocess.run(
         [
@@ -597,11 +671,13 @@ def _stage_candidate_venv(
     # reset, so even an update running from an old base executes THIS
     # copy — unlike the heartbeat helper (main_install_repair.py), which
     # is imported at startup and only protects bases that ship its twin.
-    synced = subprocess.run(
+    status, reason = _stream_sync(
         [uv_bin, "sync", "--extra", "all", "--locked", "--python", str(_venv_python(candidate))],
-        cwd=project_root, env=sync_env, stderr=subprocess.STDOUT, check=False)
-    if synced.returncode != 0:
-        return reject("candidate dependency sync failed (rc=%d)", synced.returncode)
+        cwd=project_root, env=sync_env)
+    if status != 0:
+        # The reason travels with the rejection into RuntimeRepairResult.detail, which the
+        # failure report prints and the update receipt records.
+        return reject("candidate dependency sync failed (rc=%d): %s", status, reason)
     healthy, detail, _ = _smoke_candidate_venv(candidate)
     if not healthy:
         return reject("candidate venv smoke failed: %s", detail)
@@ -910,13 +986,13 @@ def _repair_under_lock(
         return _result("failed", current, "could not provision a fixed private Python runtime")
     generation, python, candidate_info = provisioned
 
-    candidate = _stage_candidate_venv(
-        uv_bin, project_root=root, generation=generation, python=python)
-    if candidate is None:
+    try:
+        candidate = _stage_candidate_venv(
+            uv_bin, project_root=root, generation=generation, python=python)
+    except _CandidateStageError as exc:
         _remove_tree(generation, boundary=managed_python_install_dir(root))
         return _result(
-            "failed", current,
-            "replacement environment did not pass dependency and import smoke tests",
+            "failed", current, str(exc),
             sqlite_after=candidate_info.sqlite_version_string)
 
     cut_over, backup, final_info, cutover_detail = _cut_over_candidate(

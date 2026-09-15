@@ -11,6 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from hermes_cli.managed_uv import _CandidateStageError
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -509,7 +511,7 @@ class TestRuntimeRepair:
              ), \
              patch(
                  "hermes_cli.managed_uv._stage_candidate_venv",
-                 return_value=None,
+                 side_effect=_CandidateStageError("replacement environment rejected"),
              ):
             result = repair_vulnerable_runtime("uv", project_root=root)
 
@@ -599,6 +601,26 @@ class TestRuntimeRepair:
         assert leftovers == [], f"no stale markers may remain: {leftovers}"
 
 
+def _make_candidate_layout(tmp_path):
+    """The minimal checkout + pinned generation python `_stage_candidate_venv` needs."""
+    root = tmp_path / "checkout"
+    root.mkdir()
+    (root / "uv.lock").write_text("# lock\n", encoding="utf-8")
+    generation = root / ".hermes-runtime" / "python" / "gen"
+    python = generation / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("py", encoding="utf-8")
+    return root, generation, python
+
+
+def _fake_sync_proc(lines, returncode=0):
+    """``subprocess.Popen`` stand-in for the candidate sync: text lines on stdout."""
+    proc = MagicMock()
+    proc.stdout = iter(lines)
+    proc.wait.return_value = returncode
+    return proc
+
+
 class TestStageCandidateVenvCrossPlatform:
     """Candidate sync preserves project config and streams progress on every host."""
 
@@ -607,21 +629,20 @@ class TestStageCandidateVenvCrossPlatform:
 
         from hermes_cli.managed_uv import _stage_candidate_venv
 
-        root = tmp_path / "checkout"
-        root.mkdir()
-        (root / "uv.lock").write_text("# lock\n", encoding="utf-8")
-        generation = root / ".hermes-runtime" / "python" / "gen"
-        python = generation / "bin" / "python"
-        python.parent.mkdir(parents=True)
-        python.write_text("py", encoding="utf-8")
-
-        calls = []
+        root, generation, python = _make_candidate_layout(tmp_path)
+        created = []
+        synced = []
 
         def fake_run(argv, **kwargs):
-            calls.append((list(argv), kwargs))
+            created.append((list(argv), kwargs))
             return MagicMock(returncode=0)
 
+        def fake_popen(argv, **kwargs):
+            synced.append((list(argv), kwargs))
+            return _fake_sync_proc([])
+
         with patch("hermes_cli.managed_uv.subprocess.run", side_effect=fake_run), \
+             patch("hermes_cli.managed_uv.subprocess.Popen", side_effect=fake_popen), \
              patch(
                  "hermes_cli.managed_uv._smoke_candidate_venv",
                  return_value=(True, "", None),
@@ -634,17 +655,63 @@ class TestStageCandidateVenvCrossPlatform:
             )
 
         assert candidate is not None
-        assert len(calls) == 2
-        venv_argv, venv_kwargs = calls[0]
-        sync_argv, sync_kwargs = calls[1]
+        assert len(created) == 1
+        venv_argv, venv_kwargs = created[0]
         assert venv_argv[:2] == ["uv", "venv"]
         assert "--no-config" in venv_argv
         assert venv_kwargs["env"].get("UV_NO_CONFIG") == "1"
+        sync_argv, sync_kwargs = synced[0]
         assert sync_argv[:2] == ["uv", "sync"]
         assert "--locked" in sync_argv
         assert "--no-config" not in sync_argv
         assert "UV_NO_CONFIG" not in sync_kwargs["env"]
         assert sync_kwargs["stderr"] == subprocess.STDOUT
+
+    def test_sync_failure_reports_the_child_reason(self, tmp_path, caplog):
+        """A rejected candidate must say WHY — the child's own diagnosis, not a bare rc.
+
+        The reason rides the rejection into ``RuntimeRepairResult.detail`` (#111417, #111497).
+        """
+        import logging
+
+        from hermes_cli.managed_uv import _stage_candidate_venv
+
+        root, generation, python = _make_candidate_layout(tmp_path)
+        lock_error = [
+            "Resolving despite existing lockfile due to addition of exclude newer exclusion\n",
+            "error: The lockfile at `uv.lock` needs to be updated, but `--locked` was provided.\n",
+            "\n",
+            "hint: To update the lockfile, run `uv lock`.\n",
+        ]
+
+        with caplog.at_level(logging.WARNING), \
+             patch("hermes_cli.managed_uv.subprocess.run", return_value=MagicMock(returncode=0)), \
+             patch(
+                 "hermes_cli.managed_uv.subprocess.Popen",
+                 return_value=_fake_sync_proc(lock_error, returncode=1),
+             ), \
+             patch(
+                 "hermes_cli.managed_uv._smoke_candidate_venv",
+                 return_value=(True, "", None),
+             ), \
+             pytest.raises(_CandidateStageError) as rejected:
+            _stage_candidate_venv(
+                "uv",
+                project_root=root,
+                generation=generation,
+                python=python,
+            )
+
+        # The reason is the child's own diagnosis: the error + hint, without the progress noise
+        # that precedes them. It reaches the rejection the repair returns AND the log.
+        reason = str(rejected.value)
+        assert reason.startswith("candidate dependency sync failed (rc=1): ")
+        assert "error: The lockfile at `uv.lock` needs to be updated" in reason
+        assert "hint: To update the lockfile, run `uv lock`." in reason
+        assert "Resolving despite existing lockfile" not in reason
+        assert "candidate dependency sync failed (rc=1)" in caplog.text
+        assert "needs to be updated" in caplog.text
+        assert not list((root / ".hermes-runtime").glob("venv-candidate-*"))
 
 
 class TestRuntimeCutover:
@@ -1227,7 +1294,7 @@ class TestRepairRetriesAfterUvRefresh:
              ) as mock_refresh, \
              patch(
                  "hermes_cli.managed_uv._stage_candidate_venv",
-                 return_value=None,
+                 side_effect=_CandidateStageError("candidate dependency sync failed (rc=1)"),
              ):
             result = repair_vulnerable_runtime("uv", project_root=root)
         return result, attempts, mock_refresh, sentinel
@@ -1270,10 +1337,10 @@ class TestRepairRetriesAfterUvRefresh:
             refresh_result=True,
             second_attempt=second_attempt,
         )
-        # Provisioning succeeded on retry; staging (mocked to None) is what
-        # failed — proving the retry result flows into the normal pipeline.
+        # Provisioning succeeded on retry; staging rejects the candidate,
+        # proving the retry result flows into the normal pipeline.
         assert result.status == "failed"
-        assert "replacement environment" in result.detail
+        assert result.detail == "candidate dependency sync failed (rc=1)"
         assert len(attempts) == 2
         assert sentinel.read_text(encoding="utf-8") == "live"
 

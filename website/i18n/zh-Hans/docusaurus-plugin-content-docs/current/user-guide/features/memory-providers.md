@@ -519,7 +519,7 @@ Base URL 优先级为 `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https:/
 **主要特性：**
 - 自动上下文隔离——从捕获的轮次中剥离已召回的记忆，防止递归记忆污染
 - 逐轮捕获——每轮完成后立即写入，每个会话每 4 小时一个文档
-- 失败的轮次写入会重试（至少一次语义）：下一轮、会话结束或关闭时
+- 失败的轮次写入会重试（至少一次语义）：下一轮、会话结束、`/reset` 或关闭时
 - 端到端自托管路由——SDK 和探测请求使用同一配置端点
 - 在第一轮及可配置间隔注入 profile 事实
 - **Profile 范围容器**——在 `container_tag` 中使用 `{identity}`（例如 `hermes-{identity}` → `hermes-coder`），按 Hermes profile 隔离记忆

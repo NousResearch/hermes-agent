@@ -626,7 +626,7 @@ Base URL precedence is `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https:
 **Key features:**
 - Automatic context fencing — strips recalled memories from captured turns to prevent recursive memory pollution
 - Per-turn capture — each completed turn is written as it happens, one document per session per 4-hour window
-- Failed turn writes are retried (at-least-once) on the next turn, session end, or shutdown
+- Failed turn writes are retried (at-least-once) on the next turn, session end, `/reset`, or shutdown
 - End-to-end self-hosted routing — SDK and probe requests use the same configured endpoint
 - Profile facts injected on first turn and at configurable intervals
 - **Profile-scoped containers** — use `{identity}` in `container_tag` (e.g. `hermes-{identity}` → `hermes-coder`) to isolate memories per Hermes profile

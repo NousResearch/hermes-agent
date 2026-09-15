@@ -639,6 +639,19 @@ class CheckpointManager:
 
         ledger = _load_ledger(p.store, p.dir_hash)
         if not ledger:
+            # record_agent_write keys the ledger by the marker-walk result
+            # (get_working_dir_for_path), which can diverge from the dir this
+            # restore names — e.g. a markerless project dir under an ancestor
+            # that carries a generic project marker, or a restore of a repo
+            # subdir while the write was recorded at the repo root.  Fall back
+            # to the walked key so safe restore never silently degrades to a
+            # full restore (which overwrites user edits) just because the
+            # ledger landed under a sibling key.
+            walked = self.get_working_dir_for_path(working_dir)
+            walk_key = _project_hash(walked)
+            if walk_key != p.dir_hash:
+                ledger = _load_ledger(p.store, walk_key)
+        if not ledger:
             return {"success": True, "restore": [], "skipped": [], "ledger_empty": True}
         out: Dict[str, List[str]] = {"restore": [], "skipped": []}
         for rel in filter(None, names_out.split("\x00")):

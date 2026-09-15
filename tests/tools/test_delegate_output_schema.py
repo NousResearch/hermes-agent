@@ -21,6 +21,7 @@ from tools.delegate_tool import (
     _run_single_child,
     delegate_task,
 )
+from tools.delegate_tool_child_run import _ChildRun
 from tools.delegation_output_schema import (
     append_output_contract,
     build_retry_message,
@@ -279,6 +280,22 @@ class TestRunSingleChildSchemaValidation:
         _validate_child_output_schema(child, {"final_response": "not json", "api_calls": 1}, 0, "child-0", None)
         assert seen == [True]
         assert is_delegated_child_context() is False
+
+    def test_completion_event_keeps_truncated_for_schema_less_child(self):
+        """Core completion metadata remains present without schema verdicts."""
+        child = _StubChild(['{"city": "Berlin"}'])
+        events = []
+        run = _ChildRun(
+            child, _StubParent(), 0, "produce the address", None,
+            lambda *args, **kwargs: events.append((args, kwargs)),
+        )
+        entry = _run(child)
+        run.emit_complete({"final_response": entry["summary"], "messages": []}, entry, 1.25)
+
+        assert events and events[0][0] == ("subagent.complete",)
+        assert events[0][1]["truncated"] is False
+        assert "schema_valid" not in events[0][1]
+        assert "schema_retries" not in events[0][1]
 
 
 # ---------------------------------------------------------------------------

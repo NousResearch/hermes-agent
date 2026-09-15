@@ -1017,6 +1017,30 @@ class TestSkillsEndpoint:
                 for entry in data["data"]:
                     assert set(entry.keys()) >= {"name", "description", "category"}
 
+    @pytest.mark.asyncio
+    async def test_skills_enumerates_real_catalog(self, adapter):
+        """Do not mock _find_all_skills. The kwargs-blind MagicMock above hid a
+        TypeError from a leftover include_editorial kwarg and made GET /v1/skills
+        a permanent 500."""
+        from hermes_constants import get_hermes_home
+
+        skill_dir = get_hermes_home() / "skills" / "api-skills-probe"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: api-skills-probe\ndescription: Probe skill for GET /v1/skills\n---\n\nBody.\n",
+            encoding="utf-8",
+        )
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/skills")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["object"] == "list"
+            names = [entry["name"] for entry in data["data"]]
+            assert "api-skills-probe" in names
+            for entry in data["data"]:
+                assert set(entry.keys()) >= {"name", "description", "category"}
+
 
 class TestToolsetsEndpoint:
     @pytest.mark.asyncio

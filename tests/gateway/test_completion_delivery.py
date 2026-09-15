@@ -895,6 +895,58 @@ def test_sibling_claimed_by_other_consumer_is_not_double_delivered(
     assert row["delivery_state"] == "pending"
 
 
+@pytest.mark.parametrize('route', ['missing', 'persisted', 'cached', 'relay'])
+@pytest.mark.parametrize('batch_size', [1, 2])
+def test_durable_attempts_require_route_ownership(route, batch_size, isolated_registry):
+    """Real SQLite claims follow route proof, including opaque persisted origins."""
+    from gateway.config import GatewayConfig
+    from tools.async_delegation import get_durable_delegation
+
+    events = [_async_event(f'ownership_{i}') for i in range(batch_size)]
+    for event in events:
+        event['session_key'] = 'opaque-legacy-session'
+        _persist_pending_completion(event)
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
+    runner = _runner(adapter)
+    runner.config = GatewayConfig()
+    source = SessionSource(platform=Platform.SLACK if route == 'relay' else Platform.TELEGRAM,
+                           chat_id='12345', chat_type='dm')
+    if route in {'persisted', 'relay'}:
+        runner.session_store._entries[events[0]['session_key']] = SimpleNamespace(origin=source)
+    elif route == 'cached':
+        runner._session_sources = {events[0]['session_key']: source}
+    if route == 'relay':
+        adapter.fronts_platform = lambda platform: platform == Platform.SLACK
+        runner.adapters = {Platform.RELAY: adapter}
+    result = asyncio.run(runner._deliver_async_delegation_group(events))
+    owned = route != 'missing'
+    assert result is (True if owned else False)
+    assert adapter.handle_message.await_count == int(owned)
+    for event in events:
+        row = get_durable_delegation(event['delegation_id'])
+        assert row['delivery_state'] == ('delivered' if owned else 'pending')
+        assert row['delivery_attempts'] == int(owned)
+    assert isolated_registry.completion_queue.empty()
+
+
+def test_competing_primary_claim_leaves_batch_siblings_untouched(isolated_registry):
+    from tools.async_delegation import claim_event_delivery, get_durable_delegation
+
+    events = [_async_event(f'competing_{i}') for i in range(2)]
+    for event in events:
+        _persist_pending_completion(event)
+    owner = claim_event_delivery(events[0], 'other-consumer')
+    assert owner is not None
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
+    runner = _runner(adapter)
+    assert asyncio.run(runner._deliver_async_delegation_group(events)) is None
+    adapter.handle_message.assert_not_awaited()
+    sibling = get_durable_delegation(events[1]['delegation_id'])
+    assert sibling['delivery_state'] == 'pending'
+    assert sibling['delivery_attempts'] == 0
+    assert isolated_registry.completion_queue.empty()
+
+
 @pytest.mark.parametrize("unavailable", ["raw_adapter", "transport", "owner_db", "api_db"])
 @pytest.mark.parametrize("batch_size", [1, 2])
 def test_unavailable_delivery_preserves_budget_across_restarts(tmp_path, unavailable, batch_size):
@@ -990,3 +1042,47 @@ def test_watch_drain_retries_transport_failure(monkeypatch, isolated_registry):
     asyncio.run(runner._async_delegation_watcher(interval=0))
     assert adapter.handle_message.await_count == 2
     assert isolated_registry.completion_queue.empty()
+
+
+@pytest.mark.parametrize("failure", ["sibling_claim", "target_validation"])
+def test_batch_claims_are_released_when_handoff_fails(monkeypatch, isolated_registry, failure):
+    """A partial batch or cancelled preflight must leave no orphaned SQLite claims."""
+    from tools import async_delegation
+
+    events = [_async_event(f"handoff_{i}") for i in range(3)]
+    for event in events:
+        event["parent_session_id"] = "parent-session"
+        _persist_pending_completion(event)
+    adapter = SimpleNamespace(handle_message=AdmittingHandler())
+    runner = _runner(adapter)
+    parent_lookups = 0
+
+    async def get_parent(_session_id):
+        nonlocal parent_lookups
+        parent_lookups += 1
+        if failure == "target_validation" and parent_lookups > len(events):
+            raise asyncio.CancelledError()
+        return {"ended_at": None}
+
+    runner._session_db = SimpleNamespace(get_session=get_parent)
+    real_claim = async_delegation.claim_event_delivery
+
+    def claim_event(event, consumer):
+        if failure == "sibling_claim" and event is events[-1]:
+            raise RuntimeError("claim unavailable")
+        return real_claim(event, consumer)
+
+    monkeypatch.setattr(async_delegation, "claim_event_delivery", claim_event)
+    error = RuntimeError if failure == "sibling_claim" else asyncio.CancelledError
+    with pytest.raises(error):
+        asyncio.run(runner._deliver_async_delegation_group(events))
+    for event in events:
+        row = async_delegation.get_durable_delegation(event["delegation_id"])
+        assert row["delivery_state"] == "pending"
+        # Prove release through the public claim API rather than private DB columns.
+        reclaimed = real_claim(event, "handoff-recovery-probe")
+        assert reclaimed is not None
+        async_delegation.release_event_delivery(event, reclaimed)
+    adapter.handle_message.assert_not_awaited()
+    assert not runner._completion_deliveries_inflight
+    assert not runner._completion_deliveries_delivered

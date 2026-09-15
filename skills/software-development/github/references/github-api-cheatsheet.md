@@ -158,5 +158,6 @@ curl -s -X DELETE \
   https://api.github.com/repos/$GH_OWNER/$GH_REPO/issues/42/labels/bug
 
 # Parse JSON response with python3
-curl -s ... | python3 -c "import sys,json; data=json.load(sys.stdin); print(data['field'])"
+curl -s ... -o response.json
+python3 -c "import json; data=json.load(open('response.json')); print(data['field'])"
 ```

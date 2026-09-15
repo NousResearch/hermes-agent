@@ -863,3 +863,518 @@ de colunas (`moveHybridColumn`), drawer de atividade com proveniência `human`/
 `agent` e exclusão em cascata de board, coluna e cartão. O domínio aplica
 `expected_revision`, locking/transação e reindexação densa; posição visual não
 altera `tasks.status` nem conclui automaticamente uma tarefa agêntica.
+
+---
+
+## 16. Resultados grandes, spillover e referências operacionais
+
+A análise de workload desta sessão confirmou que **resultado de ferramenta é
+um boundary de armazenamento**, não apenas texto transitório do prompt. O owner
+canônico continua em `tools/tool_result_storage.py`; Workstation não deve criar
+um segundo ArtifactStore para resolver o mesmo problema.
+
+A defesa contra estouro de contexto possui três camadas complementares:
+
+1. **Cap por tool:** cada ferramenta pode reduzir seu próprio retorno antes de
+   entregá-lo ao loop do agente.
+2. **Persistência por resultado:** `maybe_persist_tool_result()` retira outputs
+   acima do limite do contexto e grava o conteúdo completo em
+   `$HERMES_HOME/cache/spillover`.
+3. **Budget agregado por turno:** `enforce_turn_budget()` calcula o total de
+   resultados do turno e externaliza primeiro os maiores resultados ainda
+   inline até ficar abaixo do orçamento agregado.
+
+### 16.1. Content addressing é escopado, não um cache global de execução
+
+Quando há `result_scope`, o nome durável deriva de dois hashes:
+
+```text
+scope_hash   = sha256(result_scope)[:16]
+content_hash = sha256(content)
+result_ref   = result://<scope_hash>/<content_hash>
+```
+
+O bloco de substituição entregue ao modelo carrega, quando disponível:
+
+```text
+status
+result_ref
+artifact_ref
+content_hash
+bytes
+cache_status
+inline_truncated
+```
+
+Conteúdo idêntico **no mesmo escopo** reutiliza o blob imutável e retorna
+`cache_status: hit`/`status: unchanged`; o mesmo conteúdo em outro escopo recebe
+outra referência. Essa separação é deliberada para impedir que uma referência
+se torne reutilizável por acidente através de fronteiras de task/sessão/tenant.
+
+Este mecanismo é um **cache de representação/persistência**, não um cache de
+execução. Nunca transforme `(tool_name, args)` em chave global que possa pular
+uma ação real, nem reutilize resultado através de escopos só porque os argumentos
+parecem iguais. Side effects e dados externos mutáveis continuam exigindo a
+execução e a policy próprias.
+
+### 16.2. Host, sandbox e limpeza
+
+O home canônico do spillover é host-side, ao lado dos demais caches Hermes. Em
+backends remotos o caminho é traduzido/sincronizado e **testado quanto à
+legibilidade** antes de ser devolvido; containers antigos sem o mount correto
+caem para escrita no temp da sandbox. A escrita remota grande usa stdin em vez
+de embutir o conteúdo no argv/heredoc do comando local, evitando o limite
+Linux `MAX_ARG_STRLEN` (~128 KiB por argumento) exatamente no cenário em que a
+persistência mais importa.
+
+O Gateway limpa spillover no housekeeping periódico e processos CLI puros fazem
+um prune best-effort no primeiro spill. A política operacional é: se o resultado
+já foi persistido, **leia o artifact por offset/limit em vez de repetir a mesma
+consulta remota**.
+
+### 16.3. Invariantes e anti-patterns
+
+- Um preview truncado nunca substitui o artifact como fonte do resultado
+  completo.
+- `result_ref` precisa sobreviver a journal, worker handoff, compaction e UI sem
+  que o payload gigante volte a ser copiado inline.
+- Persistência de resultado não deve depender de uma sandbox já ter sido criada;
+  sessões MCP/Gateway sem terminal também precisam do spillover.
+- Não introduza um segundo cache, uma segunda store ou um novo banco apenas para
+  “otimizar” resultados que o owner atual já externaliza.
+- Métricas de regressão devem observar bytes inline, bytes externalizados,
+  `cache_status`, refs criadas e refs reutilizadas; wall-clock sozinho não prova
+  economia estrutural.
+
+---
+
+## 17. Persistent Workers: claim durável, resultado até ACK e limites de exactly-once
+
+`workstation/workers.py` diferencia claramente **mensagem a executar** de
+**resultado entregue**. Essa distinção nasceu da evidência de workload em que
+workers long-lived precisavam sobreviver a restart e retomada sem inventar
+“completed” depois de uma queda.
+
+### 17.1. Identidades e envelopes
+
+`WorkerMessage` possui `message_id` e um `work_item_id` estável. O último é a
+chave que um executor com side effects pode usar para idempotência através de
+reconstruções. O registry **não promete exactly-once para um executor externo
+arbitrário**.
+
+`WorkerResultEnvelope` preserva pelo menos:
+
+```text
+worker_id
+parent_task_id
+session_id
+sequence
+status / semantic_status
+result_id
+work_item_id
+deliverables
+model / provider
+usage / cost_usd
+evidence
+error
+created_at / duration_seconds
+```
+
+O record persistente mantém `pending_messages`, `pending_results` e
+`in_flight_message` no owner já existente; não existe necessidade de criar um
+segundo task/result database.
+
+### 17.2. Ordem de durabilidade
+
+O protocolo correto é:
+
+```text
+claim da mensagem
+    ↓
+persistir in_flight_message
+    ↓
+executar executor arbitrário
+    ↓
+construir WorkerResultEnvelope
+    ↓
+persistir pending_results + limpar in-flight
+    ↓
+publicar Journal/EventBus
+    ↓
+consumidor incorpora/persiste o resultado
+    ↓
+ACK explícito remove pending_result
+```
+
+A publicação de `worker.result` ou de um evento de conclusão acontece **somente
+depois** de o envelope durável existir. Se a persistência falhar depois do
+executor, o código reverte a falsa conclusão, restaura o item em
+`in_flight_message` e deixa o worker em estado de falha/reconciliação. Não há
+“completed” otimista sem prova durável.
+
+`wait()` é deliberadamente não destrutivo. O resultado continua acessível após
+reconstrução até `acknowledge_result(result_id)`. Se o próprio ACK falhar ao
+persistir, a remoção em memória é revertida.
+
+### 17.3. Recovery não é replay automático
+
+`recovery_work_item()` expõe um item interrompido, mas não o executa de novo
+silenciosamente. Um processo pode morrer **depois** de um efeito externo e
+**antes** do resultado durável; replay cego poderia duplicar uma compra, envio,
+commit ou outra mutação. O responsável pela retomada deve reconciliar o efeito
+ou refazer a operação usando `work_item_id` como chave de idempotência quando o
+sistema externo permitir.
+
+Invariante crítico:
+
+> durabilidade do Hermes pode garantir que o trabalho interrompido permaneça
+> visível; não pode fabricar exactly-once de um sistema externo que não oferece
+> idempotência/reconciliação.
+
+O arquivo atual de registry permanece sob o home do Hermes
+(`$HERMES_HOME/workstation/workers.json`) e usa temp + replace atômico, com
+retry curto para sharing locks transitórios no Windows. Não crie outro worker
+store para resolver o mesmo lifecycle.
+
+---
+
+## 18. Browser dogfooding: sinais operacionais promovidos a contrato
+
+As trajetórias reais analisadas nesta sessão mostraram que autonomia de browser
+falha com frequência não por falta de “mais visão”, mas por quatro classes de
+fricção: semântica ambígua de input, páginas SPA/canvas ainda hidratando,
+auth walls que exigem humano e loops de extração item-a-item. O `main` atual já
+incorpora hardening específico para essas classes.
+
+### 18.1. Digitação: clear e append são semânticas explícitas
+
+`browser_type` calcula `clear` de forma compatível com `append`: quando `clear`
+não é fornecido, `append=true` impede a limpeza prévia. Não reintroduza um
+handler que sempre limpe o campo ou que tente inferir a intenção pelo texto.
+Essa diferença é especialmente importante em editores ricos, filtros e inputs
+que recebem composição incremental.
+
+### 18.2. SPA/canvas: settlement adaptativo antes de concluir “página vazia”
+
+Quando o snapshot retorna dois ou menos elementos, o runtime verifica sinais de
+canvas/WebGL/Maps/feed e pode repetir o inventário em até quatro janelas de
+aproximadamente 300 ms. Se o DOM continuar esparso em uma página canvas, o
+snapshot anota que a cena é renderizada fora do DOM e sugere percepção/texto ou
+`browser_extract_items`.
+
+Isso é um **settlement bounded**, não licença para sleeps longos. Prefira sinais
+observáveis e retries curtos condicionados; não volte a `sleep(10/30/60)` como
+estratégia genérica para páginas dinâmicas.
+
+### 18.3. Extração estruturada em lote
+
+`browser_extract_items` existe para reduzir o padrão caro
+`snapshot → click/read → voltar → repetir` quando a página contém uma coleção
+estruturável. Use batch extraction quando a pergunta é “quais itens estão aqui?”
+e preserve browser actions individuais para mutações, navegação ou inspeções
+pontuais que realmente dependam de estado por item.
+
+### 18.4. Auth wall e handoff humano
+
+`snapshotForEntry()` executa `detectAuthWall(url, title, text)`. Quando detecta
+login/verificação/challenge, retorna `wall_detected`/`wall_reason`, atualiza
+`lastError` para um handoff humano e deixa a mesma task/perfil disponíveis para
+Take Control. A resposta correta não é abrir um browser diferente nem reiniciar
+a sessão; é manter a identidade e permitir intervenção humana na mesma página.
+
+### 18.5. Erros de recovery devem ser classificáveis
+
+O hardening do controller preserva a string de erro compatível, mas também
+passou a distinguir classes de recuperação como referência stale, falta de tab
+vinculada, controle humano, timeout, argumentos inválidos e controller
+indisponível. Consumidores novos devem tomar decisões pela classificação/
+metadata estável quando disponível, e não por comparação frágil de texto
+humano. Para `stale_or_unknown_ref`, a ação correta continua sendo novo snapshot
++ nova ref, nunca retry cego do identificador antigo.
+
+---
+
+## 19. Controle humano: estado real, escopo atual e direção de hardening
+
+É importante não documentar um isolamento que o código ainda não possui. No
+runtime atual, `controlOwner` é projetado no estado global do
+`WorkstationBrowserRuntime`; `assertAgentControl()` bloqueia ações do agente
+quando esse valor é `human`. Portanto **Take Control hoje é mais amplo do que
+um lease task-scoped formal**.
+
+Consequências práticas:
+
+- preservar a mesma tab/perfil durante handoff está implementado;
+- impedir colisão humano/agente está implementado;
+- não há prova de que duas BrowserTasks independentes possam manter owners de
+  controle diferentes simultaneamente no mesmo runtime;
+- não se deve afirmar que existe lease persistente por `taskId`/`tabId`/
+  `sessionId` com TTL enquanto esse contrato não estiver implementado e testado.
+
+Se o controle humano evoluir para lease escopado, reutilize `BrowserTask`,
+`sessionHost`, recovery state e os owners existentes. Um contrato robusto deve
+representar, no mínimo, owner, scope, aquisição, renovação, expiração/release e
+recovery após crash. Um lease stale não pode bloquear o sistema para sempre e o
+agente nunca pode mutar uma página coberta por lease humano válido.
+
+Anti-pattern: criar um `browser_locks.db` ou outro control plane somente para
+leases. A identidade da task e o lifecycle já existem; a evolução deve encaixar
+nessa fronteira.
+
+---
+
+## 20. Hybrid Kanban e AgentTask são domínios relacionados, não a mesma entidade
+
+H-053 prova que o Hybrid Kanban é Trello-like e humano-first dentro do mesmo
+`hermes_cli.kanban_db`, com revisions, activity, realtime e reordenação, mas
+**mover um Human Card não altera `tasks.status`**. Essa separação é intencional.
+
+A direção de produto “Entregar isto ao Hermes” deve ser lida como uma **ponte de
+delegação**, não como unificação dos ciclos de vida:
+
+```text
+Human Card
+   │ delegação explícita
+   ▼
+Agent Task canônica
+   │ execução / BrowserTask / workers / approvals
+   ▼
+result_ref + evidência + status projetado
+   │
+   └──────────────► Human Card original
+```
+
+Na revisão de `main` realizada em 2026-09-15, não foi localizada implementação
+canônica de `source_card_id`/`agent_task_id` ou da ação “Entregar isto ao
+Hermes”; portanto essa ponte deve permanecer marcada como **seam/gap de
+integração**, não como feature já concluída.
+
+Quando for implementada, os invariantes são:
+
+- Human Card continua com colunas, descrição, archive/activity e lifecycle
+  humano;
+- Agent Task continua usando o task store/lifecycle agêntico existente;
+- o vínculo é explícito, persistente, restart-safe e idempotente;
+- double-click/retry não cria tarefas duplicadas sem intenção;
+- resultado grande volta por `result_ref`/evidência, não por cópia integral;
+- concluir/mover uma entidade não conclui/move a outra por efeito colateral;
+- retry do mesmo attempt e nova delegação são eventos diferentes;
+- não criar segundo AgentTaskStore, segundo Kanban DB ou uma store do Electron
+  para mediar a ponte.
+
+Essa fronteira permite que o board humano permaneça simples como Trello e, ao
+mesmo tempo, seja uma superfície real de delegação para o Hermes.
+
+---
+
+## 21. Paths cross-platform: a gramática pertence ao dado, não ao runner
+
+A sessão de 2026-09-15 expôs uma classe de bug diferente dos antigos EPERMs de
+Windows: código rodando em Linux pode receber **paths Windows válidos** como
+dados de evidência/policy. Nesse caso, usar `Path(...)` ou `os.path.abspath()`
+do host antes de identificar a gramática destrói a semântica original.
+
+Exemplos concretos:
+
+```text
+C:/clean
+C:\Windows\System32\calc.exe
+/etc/passwd
+\\server\share\path
+```
+
+`C:/clean` é absoluto segundo gramática Windows mesmo num runner Ubuntu.
+`C:\Windows\System32\calc.exe` continua sendo um alvo crítico/protegido mesmo
+se a policy estiver sendo testada em POSIX. Reciprocamente, `/etc/...` não deve
+ser reinterpretado como Windows só porque o produto principal roda em Windows.
+
+Regra durável:
+
+1. classifique a sintaxe/origem do path;
+2. use semântica independente do host (`PureWindowsPath`/`ntpath`,
+   `PurePosixPath` ou equivalente explícito);
+3. só então faça absolute/containment/sensitive-path checks;
+4. comparação de containment entre gramáticas incompatíveis deve falhar de
+   forma segura, não ser “normalizada” pelo SO do CI.
+
+### 21.1. Evidência de regressão observada
+
+Em `main@b6ac2d273a43e287122db377bcfa702af6e7553c`, o Workstation CI executou
+194 testes Python e terminou com **191 pass / 3 failures**. Duas falhas de
+`ReleaseQualificationRunner._check_clean_install()` rejeitaram `C:/clean` como
+relativo no Ubuntu; a terceira deixou uma tentativa de remover
+`C:\Windows\System32\calc.exe` cair em `REQUIRE_APPROVAL` em vez de
+`DENY/CRITICAL`.
+
+Isso é evidência histórica do bug naquele SHA, não autorização para eternizar o
+status. Antes de uma nova mudança, reexecute o CI atual. A lição permanente é:
+**não corrija esses testes enfraquecendo o assert; corrija a interpretação
+host-independent do path**.
+
+---
+
+## 22. Context compaction, SessionDB e a diferença entre contexto e estado
+
+As trajetórias analisadas mostraram compactions extensas e resumos recursivos.
+Isso reforça uma fronteira fundamental: **o contexto do LLM pode ser resumido;
+o estado operacional não pode depender exclusivamente do resumo**.
+
+A fonte de verdade operacional deve permanecer nos owners apropriados:
+
+- SessionDB → sessão/histórico de chat;
+- Kanban DB → cards/tasks/revisions;
+- BrowserSessionState/BrowserTask → estrutura e ownership de browser;
+- WorkerRegistry → mensagens, in-flight e resultados pendentes;
+- spillover/artifacts → outputs grandes referenciados;
+- ExecutionJournal → história/evidência operacional.
+
+Uma compaction pode reduzir prosa, explicações e histórico repetido, mas a
+continuação precisa preservar ou poder recuperar identificadores como:
+
+```text
+task_id
+session_id
+worker_id / work_item_id / result_id
+BrowserTask id
+kanban_card_id / run_id
+result_ref / artifact_ref
+approval/recovery state
+```
+
+Anti-patterns:
+
+- serializar snapshots completos anteriores dentro de todo novo resumo;
+- usar compaction como “banco informal” de tasks;
+- copiar artifacts gigantes de volta para o resumo;
+- perder IDs/refs e compensar consultando novamente APIs remotas;
+- inferir que SessionDB está corrompido apenas porque um export histórico
+  mostrou estado ausente.
+
+### 22.1. KI-007 / `session:null`: disciplina forense
+
+O caso histórico “Session not found” / export com `session: null` permanece
+**observado, mas com causalidade não provada**. O caminho correto é reproduzir
+no `main` atual uma sequência determinística de criação → execução → persistência
+→ restart/reconnect → export e localizar endpoint, caller, session id e a linha
+ou race responsável.
+
+Até essa prova existir:
+
+- não reescreva SessionDB;
+- não altere Gateway por hipótese;
+- não trate compaction/rotation como causa confirmada;
+- mantenha observabilidade e regression coverage capazes de provar ou refutar o
+  problema.
+
+Esse padrão vale para qualquer issue persistente: um artefato histórico é uma
+pista, não uma licença para alterar o owner canônico sem reprodução atual.
+
+---
+
+## 23. Evidência de workload real e benchmark de regressão
+
+Os oito SQLite anexados à sessão de 2026-09-15 são logs de trajetórias do
+trabalho de engenharia, não stores de produto do Hermes. Juntos preservam
+**3.285 steps** e concentram operações sobre browser/workstation, sessão,
+Kanban, workers, artifacts, retries, leases, compaction, Gateway e IPC. Eles
+servem como evidência de **pressão operacional real**, mas não devem ser
+commitados no repositório nem promovidos a fonte canônica de estado.
+
+Uma análise de corpus preservada nessas trajetórias examinou 50 conversas e
+registrou aproximadamente:
+
+- 21.037 mensagens;
+- 10.463 resultados de ferramentas;
+- ~39% de payloads de tool result exatamente repetidos;
+- 340 mensagens de context compaction, somando cerca de 3,92 milhões de
+  caracteres;
+- 578 sleeps explícitos, totalizando pelo menos 19.930 segundos (~5,54 h);
+- sequências determinísticas longas de terminal→terminal,
+  `browser_console`→`browser_console` e `read_file`→`read_file`.
+
+Esses números explicam por que result refs, batch extraction, workers duráveis,
+event-driven waits e compaction disciplinada têm alto valor. Eles **não provam
+que cada repetição era removível** nem que cada sleep era bug.
+
+### 23.1. Como transformar o corpus em teste útil
+
+O benchmark de regressão deve usar fixtures sintéticas/provider-free que
+reproduzam a forma do workload sem incluir bancos privados. Prefira métricas
+estruturais determinísticas:
+
+- quantidade de tool calls;
+- bytes de tool results mantidos inline;
+- bytes substituídos por refs;
+- `cache_status` hit/miss dentro do escopo;
+- refs/artifacts criados;
+- resultado de worker antes/depois de restart e ACK;
+- work item in-flight após crash;
+- footprint de compaction;
+- classificações de erro/recovery;
+- número de polls/sleeps necessários para uma condição simulada;
+- capacidade de continuar uma tarefa usando apenas IDs/refs preservados.
+
+Evite thresholds frágeis de wall-clock no CI quando counters/ratios/budgets
+provam melhor a regressão. O objetivo do benchmark é impedir que refactors
+reintroduzam payloads gigantes, polling mecânico ou estado implícito, não criar
+mais um runtime paralelo.
+
+---
+
+## 24. Extensões do browser: capability governada e atualização last-known-good
+
+O vertical slice agêntico de extensões está implementado como capacidade de
+sessão Desktop, não como core tool universal. O fluxo qualificado cobre
+instalação/listagem/remoção/options, inspeção de manifesto/permissões,
+classificação de risco, policy/approval, load no Electron, verificação e
+restauração verificada no startup. Paths inseguros de CRX/ZIP são rejeitados e
+uma instalação que não chega a estado carregado/verificado não deve ser tratada
+como sucesso.
+
+Permanecem deliberadamente distintos desse slice:
+
+- busca semântica/catálogo de marketplace;
+- UI humana dedicada de gerenciamento de extensões;
+- hardening de update in-place entre duas versões.
+
+Para update `v1 → v2`, o invariante desejado é **last-known-good**: falha de
+staging, replace, load, verification ou crash intermediário não pode destruir a
+última versão funcional. Só declare essa transição atômica/rollback-safe quando
+testes cobrirem os pontos de falha e restart. Reutilize `ChromeExtensionManager`,
+policy, controller e Journal existentes; não crie outro extension registry para
+resolver atualização.
+
+---
+
+## 25. Hierarquia de evidência e regra de adjudicação
+
+Este arquivo guarda conhecimento **duradouro**, mas não substitui a evidência do
+checkout atual. Quando fontes divergem, use esta ordem:
+
+1. código + testes executáveis do `main` atual;
+2. contratos arquiteturais/decisões canônicas vigentes;
+3. este arquivo de inteligência para conhecimento já consolidado;
+4. `CURRENT_STATE.md` como snapshot datado;
+5. `KNOWN_ISSUES.md` para sintomas/reproduções ainda abertas;
+6. engineering journal para chronology, experimentos e evidência temporal;
+7. `ROADMAP.md` para intenção futura, não implementação presente;
+8. corpora/DBs/logs de sessões como evidência histórica de workload.
+
+Consequências:
+
+- uma entrada antiga dizendo `Planned` não vence código + testes que já provam a
+  feature;
+- uma entrada `Done` não vence um regression test atual reproduzível;
+- uma hipótese do corpus não autoriza criar infraestrutura;
+- um item de roadmap não deve ser descrito como implementado só porque seu
+  design está detalhado;
+- antes de criar `*_store`, `*_manager`, `*_runner`, `*_db` ou
+  `*_controller`, procure o owner existente e estenda-o;
+- resultados de CI sempre devem ser associados a SHA, runner/OS e comando; uma
+  contagem histórica nunca é um assert permanente.
+
+A regra de manutenção consolidada após a auditoria desta sessão é:
+
+> **prove o gap antes de implementar; preserve o owner existente; prove a
+> correção depois; e promova ao intelligence apenas o que sobrevive à mudança de
+> sessão como contrato arquitetural, invariant ou lição de engenharia.**

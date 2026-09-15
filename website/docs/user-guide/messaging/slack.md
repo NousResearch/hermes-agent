@@ -498,7 +498,7 @@ platforms:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `platforms.slack.typing_status_text` | `"is thinking..."` | Text of the working-state status line shown while the agent processes a message. Requires the `assistant:write` scope — without it the status call fails silently and Slack renders its own generic placeholder, whatever this is set to. Set `typing_indicator: false` to disable the status line entirely. |
+| `platforms.slack.typing_status_text` | `"is thinking..."` | Text of the working-state status line shown while the agent processes a message. Requires the `assistant:write` scope — without it the status call fails silently and Slack renders its own generic placeholder, whatever this is set to. **On slack-sdk 3.44+** Slack's Agent Sessions API replaces the free-text call with a lifecycle enum (`active`/`processing`/`suspended`/`closed`) that cannot carry custom text at all — Slack always shows its own generic placeholder there, scope or no scope. Set `typing_indicator: false` to disable the status line entirely. |
 
 :::note Where the status renders
 The custom status appears in the **footer beneath the reply composer** ("*BotName* is thinking…"), not inline in the message list. The inline "Generating response…" / "Finding answers…" lines Slack shows in the message area while an AI app works are **Slack's own rotating indicators** — the status API (`agents.sessions.setStatus` / `assistant.threads.setStatus`) does not control those, and both can appear at the same time.

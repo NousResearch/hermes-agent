@@ -6030,6 +6030,30 @@ class TestAgentSessionsApiRouting:
         )
 
     @pytest.mark.asyncio
+    async def test_typing_uses_legacy_format_when_instance_lacks_agent_sessions_method(self):
+        """The SDK class can support Agent Sessions while a specific bound client instance
+        does not (older cached client, a test double) — _session_status_method_with_kind
+        must fall back per-instance, and the enum rewrite must follow that same fallback
+        instead of trusting the class-level probe alone (#111820 review finding)."""
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = self._adapter()
+        del a._app.client.agents_sessions_setStatus
+        a._app.client.assistant_threads_setStatus = AsyncMock()
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        a._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="is thinking...",
+        )
+        a._app.client.assistant_threads_setStatus.reset_mock()
+        await a.stop_typing("C123", metadata={"thread_id": "parent_ts"})
+        a._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="",
+        )
+
+    @pytest.mark.asyncio
     async def test_stop_typing_clears_via_agent_sessions(self):
         """Clearing on the new API maps to the "active" enum (ready-for-next-prompt),
         not an empty string — Slack rejects "" the same as any other free text (#111820)."""

@@ -279,13 +279,19 @@ def _sdk_supports_agent_sessions() -> bool:
     return _AGENT_SESSIONS_SUPPORTED
 
 
-def _session_status_method(client: Any):
-    """Return the status setter: Agent Sessions API when available, else legacy."""
+def _session_status_method_with_kind(client: Any):
+    """``(method, is_agent_sessions)`` — the client instance decides, not just the SDK class.
+
+    ``_sdk_supports_agent_sessions()`` is a class-level probe; a specific client instance can
+    still lack the attribute (older bound client, a test double). Callers that must format the
+    ``status`` argument differently for the two APIs (free text vs. lifecycle enum) need to know
+    which one is actually about to be awaited, not just what the SDK class advertises.
+    """
     if _sdk_supports_agent_sessions():
         method = getattr(client, "agents_sessions_setStatus", None)
         if method is not None:
-            return method
-    return client.assistant_threads_setStatus
+            return method, True
+    return client.assistant_threads_setStatus, False
 
 
 def _session_title_method(client: Any):
@@ -2577,12 +2583,13 @@ class SlackAdapter(BasePlatformAdapter):
         """
         try:
             client = self._get_client(chat_id, team_id=team_id)
-            _set_status = _session_status_method(client)
-            if _sdk_supports_agent_sessions():
+            _set_status, using_agent_sessions = _session_status_method_with_kind(client)
+            if using_agent_sessions:
                 status = "active" if status == "" else "processing"
             await _set_status(channel_id=chat_id, thread_ts=thread_ts, status=status)
         except Exception as e:
-            logger.debug("[Slack] assistant.threads.setStatus %s: %s", fail_label, e)
+            logger.debug("[Slack] assistant.threads.setStatus/agents.sessions.setStatus "
+                         "%s: %s", fail_label, e)
 
     @staticmethod
     def _default_status_text(started: Optional[float]) -> str:

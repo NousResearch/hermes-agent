@@ -691,6 +691,10 @@ def _broadcast_global_event(event: str, payload: Payload | None = None) -> None:
 def _approval_request_payload(data: dict | None) -> dict:
     """Build the client-safe representation of a pending approval."""
     payload = dict(data or {})
+    # Producers (tools/approval.py, file_tools_write_guards.py, approval_prompt.py) each send a different subset
+    # of the scope flags; the closed ApprovalRequestParams wants every key present (null when unknown).
+    for key in ("pattern_key", "pattern_keys", "allow_permanent", "allow_session", "smart_denied"):
+        payload.setdefault(key, None)
     if "choices" not in payload:
         choices = ["once"]
         if not payload.get("smart_denied") and payload.get("allow_session") is not False:

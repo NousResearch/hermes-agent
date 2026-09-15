@@ -284,6 +284,8 @@ _SPECS = [
         _arg("--metadata",
              help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                   '"tests_run": 12}\'). Stored on the closing run.'),
+        _arg("--override-git-facts", metavar="REASON",
+             help="Operator override for a failed worktree fact check. The non-empty reason is audited."),
     ], help="Mark one or more tasks done"),
     _cmd("edit", [
         _TASK_ID,

@@ -102,7 +102,13 @@ KANBAN_COMPLETE_SCHEMA = _schema(
         "in ``artifacts`` — the gateway notifier will upload them as "
         "native attachments to the human who subscribed to the task, "
         "so the deliverable lands in their chat alongside the summary "
-        "instead of being a path they have to fetch by hand."
+        "instead of being a path they have to fetch by hand. Dispatcher-owned "
+        "worktree runs are checked against their starting git HEAD: dirty "
+        "worktrees and zero-commit implementation claims are rejected. Push "
+        "claims require metadata.git_refs_pushed objects containing remote, "
+        "refs/heads/<branch>, and the exact 40-hex sha. A failed fact check "
+        "keeps the task in flight; fix it and retry, or use kanban_block when "
+        "genuinely blocked."
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),

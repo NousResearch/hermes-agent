@@ -82,6 +82,28 @@ guard, not OS isolation against arbitrary direct database writes. GitHub Enterpr
 is not covered. Related publication/lifecycle work: #91230, #84254, #52311; local
 verification and publication alone are not remote acceptance.
 
+## Worktree completion facts
+
+Dispatcher-owned `worktree` runs snapshot their starting HEAD immediately before
+the worker starts. At `kanban_complete`, the shared lifecycle boundary records a
+`completion_facts` receipt containing the baseline and current SHA, commits ahead,
+dirty-file count, and any claimed remote refs. This applies independently of PR
+completion contracts.
+
+Completion stays in flight when the worktree is dirty, an implementation claim has
+zero commits over the run baseline, or a push/publication claim lacks exact remote
+evidence. Push claims must include `metadata.git_refs_pushed`, with one object per
+ref: `{"remote":"origin","ref":"refs/heads/feature","sha":"<40-hex>"}`.
+Hermes verifies each SHA with `git ls-remote`; a local branch or a prose URL is not
+proof that a push happened.
+
+Workers should fix the repository state and retry, or call `kanban_block` when work
+is unfinished or infrastructure prevents verification. An operator may accept an
+intentional no-op or exceptional dirty state with `hermes kanban complete <id>
+--override-git-facts "<reason>"`; the non-empty reason is stored in the receipt.
+The model-facing completion tool has no override parameter, so a worker cannot
+waive its own failed fact check.
+
 ## Kanban vs. `delegate_task`
 
 They look similar; they are not the same primitive.

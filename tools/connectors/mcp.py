@@ -24,6 +24,15 @@ _OUTCOME_STATES = {
     "error": TargetState.failed, "failed": TargetState.failed,
 }
 
+# The intermediate `initiated` hop's actor depends on which state a target is leaving: a fresh
+# report (still pending) is driven by the renderer flow itself, a retry after a failure is the
+# user's explicit "Try again" click — the contract requires the matching actor for each (mirrors
+# ``managed.mint``'s ``failed`` handling, which steps through the same hop on reinitiate).
+_INITIATE_FROM = {
+    TargetState.pending: Actor.renderer_flow,
+    TargetState.failed: Actor.user,
+}
+
 UNAVAILABLE_HINT = "hermes mcp install {name} / hermes mcp login {name}"
 
 NOTE = (
@@ -87,8 +96,9 @@ def apply_answer(operation: ConnectionOperation, raw: str) -> None:
             continue
         actor = Actor.user if state == TargetState.skipped else Actor.renderer_flow
         extra = {k: v for k, v in entry.items() if k in ("tools",)}
-        if target.state == TargetState.pending and state != TargetState.skipped:
-            operation.transition(name, TargetState.initiated, Actor.renderer_flow)
+        initiate_actor = _INITIATE_FROM.get(target.state)
+        if initiate_actor is not None and state != TargetState.skipped:
+            operation.transition(name, TargetState.initiated, initiate_actor)
         operation.transition(name, state, actor, detail=str(entry.get("detail") or ""), **extra)
     if answer.get("settled_by") == SettleReason.continue_.value and not operation.all_resolved:
         operation.settle(SettleReason.continue_)

@@ -1,0 +1,94 @@
+name: CI zero-job watch
+
+# GitHub intermittently dispatches a CI run with 0 jobs that records
+# conclusion=failure (#103026). The same head sha then goes green with
+# the full matrix minutes later, and the 0-job run rejects
+# `gh run rerun` ("its workflow file may be broken") though no file is
+# broken. The red X looks like the PR's fault when nothing ever ran.
+#
+# This watchdog fires when a CI run completes and reads the run's job
+# list through the API. Only on the exact 0-job signature
+# (completed + failure + jobs_total == 0) it posts one PR comment per
+# sha marking the run as a dispatch failure — not a code failure —
+# with the recovery that works (close/reopen the PR).
+#
+# Deliberately comment-only: there is nothing to rerun (0 jobs), and
+# `gh run rerun` is rejected for these runs, so a rerun step would only
+# add a second red X. Commenting cannot loop: workflow_run triggers on
+# CI completions only, and the per-sha marker makes reposts idempotent.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  actions: read
+  pull-requests: write
+
+concurrency:
+  group: ci-zero-job-watch-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  mark-empty-dispatch:
+    name: Mark empty dispatch
+    # Same-repo only (copied from ci-review-comment.yml): fork runs have
+    # no commentable PR from this token.
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Comment on 0-job dispatch failures
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          CI_RUN_ID: ${{ github.event.workflow_run.id }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -uo pipefail
+
+          CONCLUSION=$(gh api "repos/$REPO/actions/runs/$CI_RUN_ID" --jq .conclusion)
+          if [ "$CONCLUSION" != "failure" ]; then
+            echo "CI run $CI_RUN_ID concluded $CONCLUSION — not a failure report, nothing to do."
+            exit 0
+          fi
+
+          TOTAL=$(gh api "repos/$REPO/actions/runs/$CI_RUN_ID/jobs?per_page=1" --jq .total_count)
+          if [ "$TOTAL" != "0" ]; then
+            echo "CI run $CI_RUN_ID dispatched $TOTAL job(s) — a real result, not a 0-job dispatch."
+            exit 0
+          fi
+
+          # workflow_run.pull_requests is empty for these runs (and often in
+          # general), so resolve the open PR from the head sha instead.
+          PR_NUMBER=$(gh api "repos/$REPO/commits/$HEAD_SHA/pulls" \
+            --jq '[.[] | select(.state == "open")][0].number // empty')
+          if [ -z "$PR_NUMBER" ]; then
+            echo "No open PR for $HEAD_SHA — nothing to comment on."
+            exit 0
+          fi
+
+          # Idempotence: one marker comment per sha, so repeated 0-job runs
+          # (or a redelivery) never stack duplicates.
+          SHORT=${HEAD_SHA:0:7}
+          MARKER="hermes-ci-zero-job-watch $SHORT"
+          if gh api "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" \
+              --jq '.[].body' 2>/dev/null | grep -qF "$MARKER"; then
+            echo "PR #$PR_NUMBER already marked for $SHORT — skipping."
+            exit 0
+          fi
+
+          echo "CI run $CI_RUN_ID: 0-job failure on $SHORT — posting marker comment to #$PR_NUMBER."
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "\
+          <!-- $MARKER -->
+
+          ## ⚠️ CI failed to dispatch (0 jobs ran)
+
+          This [run]($RUN_URL) completed with \`conclusion=failure\` but dispatched **0 jobs** — nothing executed, so this red X says nothing about the code. It is the intermittent GitHub dispatch failure tracked in #103026: the same sha goes green with the full matrix on a fresh dispatch.
+
+          **Recovery:** close and reopen this PR (no code change needed). \`gh run rerun\` is rejected for these runs. If a fresh dispatch 0-jobs again on a sha that edits \`.github/workflows/\`, check the workflow syntax instead.
+          "

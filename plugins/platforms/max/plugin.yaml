@@ -1,0 +1,53 @@
+name: max-platform
+label: MAX (Russian Messenger)
+kind: platform
+version: 0.22.0
+description: >
+  MAX messenger gateway adapter for Hermes Agent (Russia).
+  Connects to MAX via Long Polling (GET /updates) and sends replies via
+  POST /messages. Uses the official MAX API (platform-api2.max.ru) with
+  Russian Trusted Root CA certificates. Requires a verified business
+  profile on MAX for Partners to create a bot.
+author: Hermes Agent + Артур
+requires_env:
+  - name: MAX_BOT_TOKEN
+    description: "MAX bot token from business.max.ru (Чат-боты → Расширенные настройки → Настроить)"
+    prompt: "MAX bot token"
+    password: true
+optional_env:
+  - name: MAX_ALLOWED_USERS
+    description: "Comma-separated MAX user IDs allowed to talk to the bot"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: MAX_ALLOW_ALL_USERS
+    description: "Allow any MAX user to trigger the bot (dev only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: MAX_HOME_CHANNEL
+    description: "Default chat ID for cron / notification delivery"
+    prompt: "Home channel ID"
+    password: false
+  - name: MAX_CA_CERT_PATH
+    description: "Path to Russian Trusted Root CA cert (PEM) for MAX API TLS"
+    prompt: "Path to Russian Trusted Root CA cert"
+    password: false
+  - name: MAX_GROUP_ALLOWED_CHATS
+    description: "Comma-separated MAX chat IDs (groups) the bot is allowed to serve. Empty = any group"
+    prompt: "Allowed group chat IDs (comma-separated)"
+    password: false
+  - name: MAX_GROUP_SESSIONS_PER_USER
+    description: "true = separate session per group member (default), false = one shared session for the whole group (recommended for party bots)"
+    prompt: "Group sessions per user? (true/false)"
+    password: false
+  - name: MAX_OWNER_USER_ID
+    description: "Your MAX user ID — the bot owner with full access (terminal, files). Commands /approve and /deny work only for this user"
+    prompt: "Your MAX user ID (owner)"
+    password: false
+  - name: MAX_APPROVED_CHATS
+    description: "Comma-separated chat IDs (groups) pre-approved for the bot. Empty = bot asks the owner for approval when added to a new group"
+    prompt: "Pre-approved group chat IDs (comma-separated)"
+    password: false
+  - name: MAX_SHOW_REASONING
+    description: "true = show the reasoning/thinking block in bot replies (hidden by default)"
+    prompt: "Show reasoning block? (true/false)"
+    password: false

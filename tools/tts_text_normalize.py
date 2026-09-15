@@ -186,6 +186,23 @@ def strip_nonspoken_blocks(text: str) -> str:
     return text
 
 
+# Visible leading section labels (gateway TTS, #107044): a reply may start with
+# ``Reasoning:`` / ``thinking：`` / ``分析：`` etc. Strip only at the very start
+# of the text — never mid-prose, never non-allowlisted headers.
+_LEADING_REASONING_LABEL_RE = re.compile(
+    r"^\s*(?:reasoning|thinking|analysis|\u63a8\u7406|\u601d\u8003|\u5206\u6790)"
+    r"[ \t]*(?:[:\uff1a]|\r?\n)",
+    flags=re.IGNORECASE,
+)
+
+
+def strip_leading_reasoning_labels(text: str) -> str:
+    """Strip an allowlisted leading section label so TTS does not speak it."""
+    if not text:
+        return ""
+    return _LEADING_REASONING_LABEL_RE.sub("", text, count=1)
+
+
 def flatten_newlines_for_payload(text: str) -> str:
     """Collapse newlines into sentence breaks for single-line TTS payloads: some OpenAI-compatible
     backends (e.g. Kokoro) truncate at the first newline; smoothing already ends each line with
@@ -203,11 +220,12 @@ def flatten_newlines_for_payload(text: str) -> str:
 
 def prepare_spoken_text(text: str, max_chars: int | None = 4000) -> str:
     """Return a TTS-friendly script from assistant text (deterministic cleanup, not a rewrite).
-    Pipeline: non-spoken blocks > Markdown > symbols/units > line formatting into sentence
-    pauses > single line (for newline-sensitive providers), then ``max_chars``."""
+    Pipeline: non-spoken blocks > leading reasoning labels > Markdown > symbols/units >
+    line formatting into sentence pauses > single line (for newline-sensitive providers),
+    then ``max_chars``."""
     spoken = text
-    for step in (strip_nonspoken_blocks, strip_markdown_for_tts, normalize_symbols_for_tts,
-                 smooth_whitespace_for_tts, flatten_newlines_for_payload):
+    for step in (strip_nonspoken_blocks, strip_leading_reasoning_labels, strip_markdown_for_tts,
+                 normalize_symbols_for_tts, smooth_whitespace_for_tts, flatten_newlines_for_payload):
         spoken = step(spoken)
     if max_chars is not None and max_chars > 0 and len(spoken) > max_chars:
         spoken = spoken[:max_chars].rstrip()

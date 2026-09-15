@@ -11,6 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from hermes_cli.managed_uv import _CandidateStageError
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -509,7 +511,7 @@ class TestRuntimeRepair:
              ), \
              patch(
                  "hermes_cli.managed_uv._stage_candidate_venv",
-                 return_value=None,
+                 side_effect=_CandidateStageError("replacement environment rejected"),
              ):
             result = repair_vulnerable_runtime("uv", project_root=root)
 
@@ -1227,7 +1229,7 @@ class TestRepairRetriesAfterUvRefresh:
              ) as mock_refresh, \
              patch(
                  "hermes_cli.managed_uv._stage_candidate_venv",
-                 return_value=None,
+                 side_effect=_CandidateStageError("candidate dependency sync failed (rc=1)"),
              ):
             result = repair_vulnerable_runtime("uv", project_root=root)
         return result, attempts, mock_refresh, sentinel
@@ -1270,10 +1272,10 @@ class TestRepairRetriesAfterUvRefresh:
             refresh_result=True,
             second_attempt=second_attempt,
         )
-        # Provisioning succeeded on retry; staging (mocked to None) is what
-        # failed — proving the retry result flows into the normal pipeline.
+        # Provisioning succeeded on retry; staging rejects the candidate,
+        # proving the retry result flows into the normal pipeline.
         assert result.status == "failed"
-        assert "replacement environment" in result.detail
+        assert result.detail == "candidate dependency sync failed (rc=1)"
         assert len(attempts) == 2
         assert sentinel.read_text(encoding="utf-8") == "live"
 

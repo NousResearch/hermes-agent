@@ -239,6 +239,41 @@ class TestModelStateIncludesNamedProviders:
         )
         assert "AWS Bedrock Mantle" in (named.description or "")
 
+    @pytest.mark.asyncio
+    async def test_configured_provider_inventory_row_uses_custom_choice_id(self):
+        """A ``providers:`` row must not expose its raw config key to ACP."""
+        from hermes_cli.models import parse_model_input
+
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(model="model-a", provider="relay")
+        )
+        acp_agent = HermesACPAgent(session_manager=manager)
+        cfg = {
+            "providers": {
+                "relay": {
+                    "name": "Relay",
+                    "base_url": "https://relay.example/v1",
+                }
+            }
+        }
+        inventory = {
+            "providers": [{"slug": "relay", "name": "Relay", "models": ["model-a"]}]
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=cfg), patch(
+            "hermes_cli.inventory.build_models_payload", return_value=inventory
+        ), patch(
+            "acp_adapter.model_catalog._named_custom_provider_catalogs",
+            return_value=[("custom:relay", "Relay", [("model-a", "")])],
+        ):
+            resp = await acp_agent.new_session(cwd="/tmp")
+            choice_ids = [item.model_id for item in resp.models.available_models]
+            provider, model = parse_model_input(resp.models.current_model_id, "relay")
+
+        assert choice_ids == ["custom:relay:model-a"]
+        assert provider == "custom:relay"
+        assert model == "model-a"
+
     def test_selector_choice_id_round_trips_through_parse_model_input(self):
         """The encoded choice id must resolve back to the named provider."""
         from hermes_cli.models import parse_model_input

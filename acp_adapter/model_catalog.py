@@ -221,7 +221,7 @@ class _ModelCatalog:
                     f"Provider: {provider_name}" + (" • current" if is_current else ""),
                 )
 
-    def add_named_catalogs(self, catalogs: list, normalized_provider: str) -> None:
+    def add_named_catalogs(self, catalogs: list, current_choice_provider: str) -> None:
         """Named user-defined endpoints (providers: / custom_providers:) are invisible
         to canonical enumeration — append them like the TUI /model picker. An empty
         catalog marks that slug authoritative-empty."""
@@ -230,7 +230,7 @@ class _ModelCatalog:
                 self.empty_authoritative.add(str(named_slug).strip().lower())
                 continue
             for named_model, named_desc in named_catalog:
-                is_current = named_slug == normalized_provider and named_model == self.current_model
+                is_current = named_slug.lower() == current_choice_provider and named_model == self.current_model
                 parts = [f"Provider: {named_label}", str(named_desc or "").strip(), "current" if is_current else ""]
                 self.add(named_slug, named_model, named_model, " • ".join(part for part in parts if part))
 
@@ -251,13 +251,26 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
         probe_custom_providers=False, probe_current_custom_provider=False, max_models=ACP_MAX_MODELS_PER_PROVIDER,
     )
 
+    named_catalogs = _named_custom_provider_catalogs()
+    named_slugs = {str(slug).strip().lower() for slug, _label, _models in named_catalogs}
+    current_choice_provider = str(provider or "").strip().lower()
+    # ``build_models_payload`` represents configured ``providers:`` entries by their raw
+    # config key. ACP ids must instead use the durable ``custom:<key>`` identity so the
+    # picker value round-trips through ``parse_model_input``.
+    if f"custom:{current_choice_provider}" in named_slugs:
+        current_choice_provider = f"custom:{current_choice_provider}"
+    inventory_rows = [
+        row for row in (payload.get("providers") or [])
+        if f"custom:{str(row.get('slug') or '').strip().lower()}" not in named_slugs
+    ]
+
     cat = _ModelCatalog(
         normalize_provider=normalize_provider, current_model=model,
-        current_choice_provider=str(provider or "").strip().lower(),
+        current_choice_provider=current_choice_provider,
         current_base_url=base_url.strip().rstrip("/").lower(),
     )
-    cat.add_inventory_rows(payload.get("providers") or [], provider_label)
-    cat.add_named_catalogs(_named_custom_provider_catalogs(), normalized_provider)
+    cat.add_inventory_rows(inventory_rows, provider_label)
+    cat.add_named_catalogs(named_catalogs, current_choice_provider)
     available_models = cat.models
 
     def empty_applies(provider_id: str) -> bool:

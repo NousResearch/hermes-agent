@@ -17,6 +17,7 @@ import { DIRECTIVE_ACTIONS, type DirectiveAction } from '@/components/assistant-
 import { composerFloatingPill } from '@/components/chat/composer-dock'
 import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
+import { wantsNativeBrowser } from '@/lib/external-link'
 import { cn } from '@/lib/utils'
 
 /** Moving between the chip and the pill crosses a gap where neither is hovered.
@@ -139,8 +140,11 @@ export function ComposerDirectiveActions({ editorRef }: { editorRef: RefObject<H
     >
       <button
         className={cn(composerFloatingPill, 'shadow-nous')}
-        onClick={() => {
-          anchor.action.run(anchor.value)
+        // The pill is the composer's stand-in for clicking the link, so it
+        // honours the same convention: ⌘/Ctrl-click escapes to the system
+        // browser instead of the in-app pane.
+        onClick={event => {
+          anchor.action.run(anchor.value, { native: wantsNativeBrowser(event.nativeEvent) })
           setAnchor(null)
         }}
         // Never let the press reach the editor: mousedown inside a

@@ -101,10 +101,19 @@ class TestCursesBrowse:
     def _run_with_keys(self, sessions, key_sequence):
         """Simulate running the curses picker with a given key sequence."""
 
-        # Build a mock stdscr that returns keys from the sequence
+        # Build a mock stdscr that returns keys from the sequence.
+        # The browser now reads via get_wch(): printable/CJK/Enter/Esc/Backspace
+        # arrive as str, function keys as int.
         mock_stdscr = MagicMock()
         mock_stdscr.getmaxyx.return_value = (30, 120)
-        mock_stdscr.getch.side_effect = key_sequence
+        key_sequence = list(key_sequence)
+
+        def _next_key():
+            if not key_sequence:
+                raise StopIteration
+            return key_sequence.pop(0)
+
+        mock_stdscr.get_wch.side_effect = _next_key
 
         # Capture what curses.wrapper receives and call it with our mock
         with patch("curses.wrapper") as mock_wrapper:
@@ -124,7 +133,7 @@ class TestCursesBrowse:
 
     def test_escape_cancels(self):
         sessions = _make_sessions(3)
-        result = self._run_with_keys(sessions, [27])  # Esc
+        result = self._run_with_keys(sessions, ["\x1b"])  # Esc (get_wch returns str)
         assert result is None
 
 
@@ -135,8 +144,8 @@ class TestCursesBrowse:
             {"id": "s2", "source": "cli", "title": "Beta project", "preview": "", "last_active": time.time()},
             {"id": "s3", "source": "cli", "title": "Gamma project", "preview": "", "last_active": time.time()},
         ]
-        # Type "Beta" then Enter — should select s2
-        keys = [ord(c) for c in "Beta"] + [10]
+        # Type "Beta" then Enter — should select s2 (get_wch returns str for both)
+        keys = list("Beta") + ["\n"]
         result = self._run_with_keys(sessions, keys)
         assert result == "s2"
 

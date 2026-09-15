@@ -257,7 +257,7 @@ class TestModelStateIncludesNamedProviders:
             }
         }
         inventory = {
-            "providers": [{"slug": "relay", "name": "Relay", "models": ["model-a"]}]
+            "providers": [{"slug": "relay", "name": "Relay", "is_user_defined": True, "models": ["model-a"]}]
         }
 
         with patch("hermes_cli.config.load_config", return_value=cfg), patch(
@@ -310,3 +310,28 @@ class TestModelStateIncludesNamedProviders:
             )
         assert provider == "custom:local-127.0.0.1:11434"
         assert model == "qwen3:1.7b"
+
+    @pytest.mark.asyncio
+    async def test_named_entry_shadowing_a_canonical_provider_keeps_the_canonical_session(self):
+        """``providers.openrouter:`` (a proxy) must not swallow the canonical OpenRouter rows nor
+        relabel a session running on openrouter.ai as ``custom:openrouter`` (that id resolves to
+        the proxy base_url)."""
+        manager = SessionManager(
+            agent_factory=lambda: SimpleNamespace(
+                model="model-c", provider="openrouter", base_url="https://openrouter.ai/api/v1")
+        )
+        acp_agent = HermesACPAgent(session_manager=manager)
+        inventory = {"providers": [
+            {"slug": "openrouter", "name": "OpenRouter", "is_user_defined": False, "models": ["model-c"]},
+            {"slug": "custom:openrouter", "name": "openrouter", "is_user_defined": True,
+             "api_url": "https://or.example/api/v1", "models": ["model-a"]},
+        ]}
+
+        with patch("hermes_cli.inventory.build_models_payload", return_value=inventory), patch(
+            "acp_adapter.model_catalog._named_custom_provider_catalogs",
+            return_value=[("custom:openrouter", "openrouter", [("model-a", "")])],
+        ):
+            resp = await acp_agent.new_session(cwd="/tmp")
+
+        assert resp.models.current_model_id == "openrouter:model-c"
+        assert [m.model_id for m in resp.models.available_models] == ["openrouter:model-c", "custom:openrouter:model-a"]

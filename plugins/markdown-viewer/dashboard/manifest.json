@@ -1,0 +1,10 @@
+{
+  "name": "markdown-viewer",
+  "label": "Markdown Viewer",
+  "description": "Project-aware Markdown file listing and preview backend for Hermes Desktop.",
+  "version": "1.0.0",
+  "tab": {
+    "hidden": true
+  },
+  "api": "plugin_api.py"
+}

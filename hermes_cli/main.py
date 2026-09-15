@@ -2439,11 +2439,13 @@ def _dashboard_lifecycle_flags(args, token_file) -> None:
             print("No hermes dashboard processes running.")
             sys.exit(0)
         # Reuse the same SIGTERM-grace-SIGKILL path used after `hermes update`;
-        # it prints outcomes itself. Exit 1 only if every pid was unkillable.
+        # it prints outcomes itself. Exit 1 only if a pid was unkillable — judged
+        # from the kill result, not a re-scan: a launchd KeepAlive job respawns
+        # its backend on a fresh PID, which is not a failed stop.
         from hermes_cli.dashboard_procs import _kill_stale_dashboard_processes
 
-        _kill_stale_dashboard_processes(reason="requested via --stop")
-        sys.exit(1 if _find_stale_dashboard_pids() else 0)
+        result = _kill_stale_dashboard_processes(reason="requested via --stop")
+        sys.exit(1 if result["failed"] else 0)
 
 
 def _dashboard_validate_serve_args(args, headless_backend, token_file):

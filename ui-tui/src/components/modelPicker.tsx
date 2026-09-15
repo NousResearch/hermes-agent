@@ -775,7 +775,7 @@ export function ModelPicker({
   if (stage === 'hop') {
     const labels = filteredHopRows.map(row => row.selector)
     const { items, offset } = windowItems(labels, modelIdx, VISIBLE)
-    const noMatches = __omp_shell("!filter.trim() && labels.length === 0")
+    const noMatches = !!filter.trim() && labels.length === 0
 
     return (
       <Box flexDirection="column" width={width}>

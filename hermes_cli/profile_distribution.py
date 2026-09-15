@@ -422,7 +422,9 @@ def _dest_dirs(src: Path, rel_parts: Tuple[str, ...]):
 
 
 def _refuse_symlinked_targets(target: Path, entries) -> None:
-    """Refuse before the first write. The per-entry check in ``_real_dir`` fires mid-loop,
+    """Refuse before the first write. Destination symlinks anywhere on a shipped path —
+    containers (``skills/``, ``skills/coding/``) and skill roots alike — are refused,
+    never followed or replaced. The per-entry check in ``_real_dir`` fires mid-loop,
     after earlier entries were already replaced and before the manifest is rewritten,
     leaving a half-updated profile that fails identically on every retry."""
     for src, rel_parts in entries:

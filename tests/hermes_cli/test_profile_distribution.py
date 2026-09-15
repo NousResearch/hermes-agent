@@ -476,6 +476,35 @@ class TestUpdate:
         assert after == before
         assert {p: p.read_bytes() for p in plan.target_dir.rglob("*") if p.is_file()} == untouched
 
+    def test_update_refuses_symlinked_nested_category_dir(self, profile_env):
+        # SOUL.md is declared before skills so, if the pre-flight missed the nested link,
+        # the mid-loop refusal would fire only after SOUL.md was already rewritten.
+        manifest = DistributionManifest(name="src", version="0.1.0", distribution_owned=["SOUL.md", "skills"])
+        staged = _make_staging_dir(profile_env, "src", manifest=manifest)
+        plan = install_distribution(str(staged), name="nested_link")
+
+        shared = profile_env / "shared-coding-skills"
+        (shared / "mine").mkdir(parents=True)
+        (shared / "mine" / "SKILL.md").write_text("shared skill\n")
+        before = sorted((p.relative_to(shared), p.read_bytes()) for p in shared.rglob("*") if p.is_file())
+
+        # Upstream now ships a category dir the user already points at a shared location.
+        (staged / "skills" / "coding" / "tool").mkdir(parents=True)
+        (staged / "skills" / "coding" / "tool" / "SKILL.md").write_text("tool\n")
+        coding = plan.target_dir / "skills" / "coding"
+        _symlink_file_or_skip(coding, shared)
+        (staged / "skills" / "demo" / "SKILL.md").write_text("updated demo\n")
+        (staged / "SOUL.md").write_text("updated soul\n")
+        untouched = {p: p.read_bytes() for p in plan.target_dir.rglob("*") if p.is_file()}
+
+        with pytest.raises(DistributionError, match="symlink"):
+            update_distribution("nested_link")
+
+        assert coding.is_symlink() and coding.resolve() == shared.resolve()
+        assert sorted((p.relative_to(shared), p.read_bytes()) for p in shared.rglob("*") if p.is_file()) == before
+        assert (plan.target_dir / "skills" / "demo" / "SKILL.md").read_text() != "updated demo\n"
+        assert {p: p.read_bytes() for p in plan.target_dir.rglob("*") if p.is_file()} == untouched
+
     def test_update_preserves_user_data(self, profile_env):
         # 1. Build staging dir, install
         staged = _make_staging_dir(profile_env, "src")

@@ -48,6 +48,32 @@ GetFilesFn = Callable[[], list[tuple[str, str]]]  # () -> [(host_path, remote_pa
 _SYNC_BACK_MAX_RETRIES = 3
 _SYNC_BACK_BACKOFF = (2, 4, 8)  # seconds between retries
 _SYNC_BACK_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB — refuse to extract larger tars
+_SYNC_BACK_TEMP_TAR_PREFIX = "hermes-sync-back-"
+_SYNC_BACK_STALE_TAR_SECONDS = 24 * 60 * 60
+
+
+def _cleanup_stale_sync_back_tars(temp_dir: Path | None = None) -> None:
+    """Remove old sync-back archives left behind when a process is hard-killed.
+
+    Only archives created with this module's dedicated prefix are considered. A
+    cleanup race or permission error must not prevent the current sync-back.
+    """
+    directory = temp_dir or Path(tempfile.gettempdir())
+    cutoff = time.time() - _SYNC_BACK_STALE_TAR_SECONDS
+    try:
+        candidates = directory.glob(f"{_SYNC_BACK_TEMP_TAR_PREFIX}*.tar")
+        for candidate in candidates:
+            try:
+                if candidate.is_symlink() or not candidate.is_file():
+                    continue
+                if candidate.stat().st_mtime >= cutoff:
+                    continue
+                candidate.unlink()
+                logger.debug("sync_back: removed stale temporary archive %s", candidate)
+            except OSError:
+                logger.debug("sync_back: could not remove stale temporary archive %s", candidate)
+    except OSError:
+        logger.debug("sync_back: could not scan temporary directory %s", directory)
 
 
 def iter_sync_files(container_base: str = "/root/.hermes") -> list[tuple[str, str]]:
@@ -311,9 +337,13 @@ class FileSyncManager:
         except Exception:
             file_mapping = []
 
+        # A hard kill bypasses the finally below. Reclaim only old archives using
+        # our dedicated prefix before allocating another full-tree download.
+        _cleanup_stale_sync_back_tars()
+
         # mkstemp + close: NamedTemporaryFile keeps an exclusive handle on Windows, so the
         # backend's open(dest, "wb") / write_bytes on the same path raised PermissionError.
-        fd, tar_path = tempfile.mkstemp(suffix=".tar")
+        fd, tar_path = tempfile.mkstemp(prefix=_SYNC_BACK_TEMP_TAR_PREFIX, suffix=".tar")
         os.close(fd)
         try:
             self._bulk_download_fn(Path(tar_path))

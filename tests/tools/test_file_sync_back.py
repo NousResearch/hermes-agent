@@ -14,9 +14,11 @@ fcntl = pytest.importorskip("fcntl")
 
 from tools.environments.file_sync import (
     FileSyncManager,
+    _cleanup_stale_sync_back_tars,
     _sha256_file,
     _SYNC_BACK_BACKOFF,
     _SYNC_BACK_MAX_RETRIES,
+    _SYNC_BACK_STALE_TAR_SECONDS,
 )
 
 
@@ -87,6 +89,49 @@ def _make_manager(
         if not mgr._pushed_hashes:
             mgr._pushed_hashes["/_sentinel"] = "0" * 64
     return mgr
+
+
+class TestStaleSyncBackTarCleanup:
+    """Hard-killed sync-back archives are cleaned up conservatively."""
+
+    def test_removes_only_stale_hermes_sync_back_tars(self, tmp_path, monkeypatch):
+        stale = tmp_path / "hermes-sync-back-stale.tar"
+        recent = tmp_path / "hermes-sync-back-recent.tar"
+        unrelated = tmp_path / "other-process.tar"
+        for path in (stale, recent, unrelated):
+            path.write_bytes(b"tar")
+        now = 10_000.0
+        os.utime(stale, (now - _SYNC_BACK_STALE_TAR_SECONDS - 1,) * 2)
+        os.utime(recent, (now - _SYNC_BACK_STALE_TAR_SECONDS + 1,) * 2)
+        monkeypatch.setattr("tools.environments.file_sync.time.time", lambda: now)
+
+        _cleanup_stale_sync_back_tars(tmp_path)
+
+        assert not stale.exists()
+        assert recent.exists()
+        assert unrelated.exists()
+
+    def test_preserves_active_tar_when_stat_or_unlink_fails(self, tmp_path, monkeypatch):
+        active = tmp_path / "hermes-sync-back-active.tar"
+        stale = tmp_path / "hermes-sync-back-stale.tar"
+        active.write_bytes(b"tar")
+        stale.write_bytes(b"tar")
+        now = 10_000.0
+        os.utime(stale, (now - _SYNC_BACK_STALE_TAR_SECONDS - 1,) * 2)
+        monkeypatch.setattr("tools.environments.file_sync.time.time", lambda: now)
+        original_unlink = Path.unlink
+
+        def fail_for_stale(path, *args, **kwargs):
+            if path == stale:
+                raise OSError("busy")
+            return original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", fail_for_stale)
+
+        _cleanup_stale_sync_back_tars(tmp_path)
+
+        assert active.exists()
+        assert stale.exists()
 
 
 # ---------------------------------------------------------------------------

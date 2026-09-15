@@ -8,6 +8,7 @@ import json
 import logging
 import re
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any, MutableMapping, Optional
 from gateway.platforms.event import MessageEvent
@@ -70,6 +71,25 @@ async def cancel_task(task: Optional[asyncio.Task]) -> None:
     if task is not asyncio.current_task():
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await task
+
+
+def display_width(text: str) -> int:
+    """Terminal-style display columns: East-Asian wide/full-width characters count as two.
+    Chat clients clip button labels by rendered width, not by codepoints, so a 25-character
+    Korean label is as wide as 50 Latin ones."""
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
+
+
+def numbered_clarify_choices(choices, *, max_label_cols: int, escape=None) -> Optional[str]:
+    """``"1. <choice>\n2. <choice>"`` when any choice is wider than ``max_label_cols`` display
+    columns, else ``None``. Button-capable adapters put this in the message body and switch to
+    positional (``1``, ``2``, …) button labels: a clipped label with no tooltip is unanswerable
+    (#78115), and the body is the only place a long option renders in full."""
+    texts = [str(c).strip() for c in choices]
+    if all(display_width(t) <= max_label_cols for t in texts):
+        return None
+    esc = escape or (lambda s: s)
+    return "\n".join(f"{i}. {esc(t)}" for i, t in enumerate(texts, start=1))
 
 
 def bounded_put(store: MutableMapping[str, Any], key: str, value: Any, cap: int) -> None:

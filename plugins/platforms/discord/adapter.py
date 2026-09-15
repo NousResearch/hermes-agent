@@ -259,6 +259,7 @@ from gateway.config import Platform, PlatformConfig
 
 from gateway.platforms.helpers import (
     MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets,
+    numbered_clarify_choices,
 )
 from gateway.platforms.helpers import cancel_task
 from utils import atomic_json_write, env_float
@@ -5394,6 +5395,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             clean_choices = [s for s in (_flatten_choice(c) for c in (choices or [])) if s][:24]
             if clean_choices:
                 hint = "Pick one below, or click ✏️ Other to type a custom answer."
+                # Button labels clip past ~40 columns on mobile with no tooltip (#78115): when
+                # any option is that long, the numbered full text goes in the body too.
+                numbered = numbered_clarify_choices(clean_choices, max_label_cols=40)
+                if numbered:
+                    hint = f"{numbered[:1000]}\n\n{hint}"
                 embed.add_field(name="Choices", value=hint, inline=False)
                 view = ClarifyChoiceView(
                     choices=clean_choices, clarify_id=clarify_id,

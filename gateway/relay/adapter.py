@@ -25,6 +25,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.helpers import numbered_clarify_choices
 from gateway.relay.descriptor import CapabilityDescriptor
 from gateway.relay.egress import (
     EGRESS_DECLINE_CODE,
@@ -2045,7 +2046,17 @@ class RelayAdapter(BasePlatformAdapter):
         the 64-byte callback budget. Open-ended clarifies and unavailable lanes fall
         back to base."""
         if choices and self.descriptor.supports_op("prompt"):
-            options = [{"id": f"c{i}", "label": str(choice)[:75]} for i, choice in enumerate(choices)]
+            # Long options are unreadable as clipped button labels (#78115): list them in
+            # full in the prompt text and label the buttons positionally instead.
+            numbered = numbered_clarify_choices(choices, max_label_cols=48)
+            text = f"❓ {question}\n\n{numbered}" if numbered else f"❓ {question}"
+            limit = self.max_message_length_for_chat(chat_id)
+            if len(text) > limit:
+                text = text[: max(0, limit - 1)] + "…"
+            options = [
+                {"id": f"c{i}", "label": str(i + 1) if numbered else str(choice)[:75]}
+                for i, choice in enumerate(choices)
+            ]
             options.append({"id": "other", "label": "✏️ Other (type your answer)"})
             result = await self._mint_and_send_prompt(
                 "clarify",
@@ -2056,7 +2067,7 @@ class RelayAdapter(BasePlatformAdapter):
                 },
                 chat_id,
                 prompt_kind="clarify",
-                text=f"❓ {question}",
+                text=text,
                 options=options,
                 metadata=metadata,
             )

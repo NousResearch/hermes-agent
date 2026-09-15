@@ -124,7 +124,7 @@ from gateway.config import Platform, PlatformConfig
 # Register the dynamic enum member at import time so ``Platform.GOOGLE_CHAT``
 # resolves before any adapter instance exists.
 Platform("google_chat")
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, numbered_clarify_choices
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, SendResult,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
@@ -1090,15 +1090,19 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
         def _button(text: str, choice: str) -> Dict[str, Any]:
             return {"text": text, "action": "hermes_clarify", "parameters": {"clarify_id": clarify_id, "choice": choice}}
-        buttons: List[Dict[str, Any]] = []
-        for choice in choices:
-            choice_text = str(choice).strip()
-            if choice_text:
-                buttons.append(_button(choice_text if len(choice_text) <= 80 else choice_text[:77] + "...", choice_text))
+        clean = [t for t in (str(c).strip() for c in choices) if t]
+        # Card buttons clip long labels with no tooltip (#78115): list the full options in the
+        # text widget and label the buttons positionally when any option is that wide.
+        numbered = numbered_clarify_choices(clean, max_label_cols=48)
+        body = f"❓ {question}\n\n{numbered}" if numbered else f"❓ {question}"
+        buttons: List[Dict[str, Any]] = [
+            _button(str(i) if numbered else choice_text, choice_text)
+            for i, choice_text in enumerate(clean, start=1)
+        ]
         buttons.append(_button("Other / type answer", "__other__"))
         card = card_spec_to_cards_v2({
             "card_id": f"clarify-{clarify_id}", "header": {"title": "Question"},
-            "sections": [{"widgets": [{"type": "text", "text": f"❓ {question}"}, {"type": "buttons", "buttons": buttons}]}],
+            "sections": [{"widgets": [{"type": "text", "text": body}, {"type": "buttons", "buttons": buttons}]}],
         })
         result = await self.send_card(chat_id, card, metadata=metadata)
         if result.success:

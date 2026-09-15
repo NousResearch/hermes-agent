@@ -86,6 +86,8 @@ def test_single_query_main_skips_clear_on_exit_summary(monkeypatch):
 
         def chat(self, query, images=None):
             calls.append(("chat", query, images))
+            # Production chat() retains the turn result: the one-shot route exits with it.
+            self._last_turn_result = {"completed": True, "failed": False}
             return "done"
 
         def _print_exit_summary(self, clear_screen=True):
@@ -101,8 +103,10 @@ def test_single_query_main_skips_clear_on_exit_summary(monkeypatch):
         lambda fake_cli: calls.append(("finalize", fake_cli.session_id)),
     )
 
-    cli_mod.main(query="hello", quiet=False, toolsets="terminal")
+    with pytest.raises(SystemExit) as exc_info:
+        cli_mod.main(query="hello", quiet=False, toolsets="terminal")
 
+    assert exc_info.value.code == 0  # success still exits 0 on the one-shot route
     assert calls == [
         ("claim", "cli", False),
         "query-label",

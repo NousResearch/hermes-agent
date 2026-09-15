@@ -87,6 +87,9 @@ class CLIChatTurnMixin:
             agent_thread.start()
             interrupt_msg = self._chat_monitor_agent_thread(turn, agent_thread)
             self._chat_settle_turn(turn)
+            # Retained for one-shot callers: the turn result drives the process exit
+            # code (a failed turn must never exit 0). ``chat()`` itself returns text only.
+            self._last_turn_result = turn.result
             return self._chat_render_turn(turn, agent_thread, interrupt_msg)
         except Exception as e:
             print(f"Error: {e}")

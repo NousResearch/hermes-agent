@@ -924,7 +924,12 @@ class AIAgent(
         _quietly(self.shutdown_memory_provider, session_messages if isinstance(session_messages, list) else None)
         self._close_task_resources(getattr(self, "session_id", None) or "")
         self._close_active_children(soft=False)
-        _quietly(self._drop_shared_client, lambda c: self._close_openai_client(c, reason="agent_close", shared=True))
+        # Retire (don't hard-close) the shared client, same as release_clients(): teardown can run on
+        # a cron-cleanup / stranger thread while an auxiliary stream (compression) is still in flight
+        # on it — an inline close() released the FDs under the live stream, which then went silent for
+        # its whole inactivity budget (#107475). Retirement shuts pooled sockets down (FD-safe) and
+        # lets GC release the FDs once no thread holds them (#70773).
+        _quietly(self._drop_shared_client, lambda c: self._retire_shared_openai_client(c, reason="agent_close"))
         self._close_request_clients("agent_close")
         _quietly(self._close_codex_session)
         # Free conversation history proactively: callers may still hold the closed agent. The DB-flush

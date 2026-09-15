@@ -228,7 +228,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro", "gemini-3-flash",
         "grok-4.6", "grok-4.5", "grok-build-0.1", "muse-spark-1.2", "minimax-m3", "minimax-m2.7", "minimax-m2.5",
         "glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5", "kimi-k2.7-code", "deepseek-v4-pro",
-        "deepseek-v4-flash", "deepseek-v4-flash-free", "qwen3.6-plus", "qwen3.5-plus", "big-pickle", "mimo-v2.5-free",
+        "deepseek-v4-flash", "qwen3.6-plus", "qwen3.5-plus", "big-pickle", "mimo-v2.5-free",
         "nemotron-3-ultra-free", "nemotron-3.5-lightning-free",
         "muse-spark-1.2-contributor-free", "muse-spark-1.3-contributor-free",
     ],
@@ -236,10 +236,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # revalidates live against GET /zen/v1/models and filters to the anonymous tier, so this list
     # may lag the relay (intentional). Known-delisted models are REMOVED (the offline fallback must
     # not offer a model that 401s; x-preview-f-free delisted 2026-08-26, hy3-free and
-    # laguna-s-2.1-free delisted 2026-09-09 — both dropped from live /zen/v1/models and 401
-    # "Model … is not supported" anonymously).
+    # laguna-s-2.1-free delisted 2026-09-09, and deepseek-v4-flash-free delisted
+    # 2026-09-15 — all removed from this offline floor after their relay delisting).
     "opencode-free": [
-        "deepseek-v4-flash-free", "mimo-v2.5-free",
+        "mimo-v2.5-free",
         "nemotron-3-ultra-free", "nemotron-3.5-lightning-free", "muse-spark-1.2-contributor-free",
         "muse-spark-1.3-contributor-free",
     ],

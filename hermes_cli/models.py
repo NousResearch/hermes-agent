@@ -2138,12 +2138,15 @@ def normalize_opencode_model_id(provider_id: Optional[str], model_id: Optional[s
 OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER = "opencode-zen-free-keyless"
 _OPENCODE_ZEN_FREE_BASE_URL = "https://opencode.ai/zen/v1"
 
-# ``-free``-suffixed slugs that are KEYED (Go-subscription) models, NOT anonymous-servable —
-# excluded from the keyless catalog despite the suffix (ox-alpha-free is Ox Alpha's Go twin).
-# The Go relay delisted ox-alpha-free (2026-09-09; GET /zen/go/v1/models omits it, POST → 401),
-# so it is gone from the opencode-go curated floor too — the exclusion stays so a stale live
-# list can never route it into the keyless catalog.
-_OPENCODE_FREE_KEYED_SUFFIX_MODELS = frozenset({"ox-alpha-free"})
+# ``-free``-suffixed slugs the live list may carry that the keyless catalog must NOT offer:
+# - KEYED (Go-subscription) twins, not anonymous-servable despite the suffix (ox-alpha-free is
+#   Ox Alpha's Go twin; the Go relay delisted it 2026-09-09 — the exclusion stays so a stale live
+#   list can never route it into the keyless catalog).
+# - Delisted ids the relay still LISTS but no longer serves: deepseek-v4-flash-free (promo ended;
+#   gone from opencode.ai/docs/zen by 2026-09-15 yet still in GET /zen/v1/models, and every POST
+#   400s "Model is unavailable"). Offering it lets a first-turn 400 drive a fallback switch that
+#   strands the whole session (#111749).
+_OPENCODE_FREE_EXCLUDED_MODELS = frozenset({"ox-alpha-free", "deepseek-v4-flash-free"})
 
 # In-process memo for _fetch_opencode_free_models(): (fetched_at, ids-or-None). Validation and
 # healing call provider_model_ids("opencode-free") several times per resolution; failures are
@@ -2170,8 +2173,8 @@ def opencode_zen_free_headers() -> dict:
 def _fetch_opencode_free_models(
     timeout: float = 8.0, *, force_refresh: bool = False) -> Optional[list[str]]:
     """Live keyless OpenCode Free catalog from the Zen relay, filtered to the anonymous-servable
-    ``*-free`` tier minus known keyed twins (Go ``ox-alpha-free`` is KEYED despite the suffix) — the
-    same membership criterion ``opencode_zen_free_runtime`` routes on."""
+    ``*-free`` tier minus ``_OPENCODE_FREE_EXCLUDED_MODELS`` (keyed twins and listed-but-dead ids) —
+    the same membership criterion ``opencode_zen_free_runtime`` routes on."""
     from hermes_cli.urllib_security import open_credentialed_url
 
     now = time.time()
@@ -2194,7 +2197,7 @@ def _fetch_opencode_free_models(
     live_free = [
         m["id"] for m in items
         if isinstance(m, dict) and isinstance(m.get("id"), str)
-        and m["id"].lower().endswith("-free") and m["id"].lower() not in _OPENCODE_FREE_KEYED_SUFFIX_MODELS
+        and m["id"].lower().endswith("-free") and m["id"].lower() not in _OPENCODE_FREE_EXCLUDED_MODELS
     ]
     result = live_free or None
     _set_opencode_free_live_memo(result)

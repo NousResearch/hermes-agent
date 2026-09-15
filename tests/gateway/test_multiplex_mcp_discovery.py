@@ -103,6 +103,51 @@ async def test_reload_mcp_only_touches_requesting_profile(
 
 
 @pytest.mark.asyncio
+async def test_control_reload_visits_every_served_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An operator reload must refresh each multiplexed MCP scope, not just the default one."""
+    from gateway.run import GatewayRunner
+    from tools import mcp_tool_discovery as _mcp_discovery
+    from tools import mcp_tool_lifecycle as _mcp_lifecycle
+
+    homes = [("default", tmp_path / "default"), ("worker", tmp_path / "worker")]
+    for _name, home in homes:
+        home.mkdir()
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=True)
+    runner._agent_cache = {}
+    runner._agent_cache_lock = None
+    refreshes: list[tuple[bool, str | None]] = []
+    runner._mcp_reload_refresh_cached_agents = lambda multiplex, profile: refreshes.append((multiplex, profile))
+    seen: list[tuple[str, Path]] = []
+
+    monkeypatch.setattr("gateway.run._multiplex_profile_homes", lambda _config: homes)
+    monkeypatch.setattr(
+        _mcp_lifecycle,
+        "shutdown_mcp_servers",
+        lambda **_kwargs: seen.append(("shutdown", get_hermes_home())),
+    )
+    monkeypatch.setattr(
+        _mcp_discovery,
+        "discover_mcp_tools",
+        lambda: seen.append(("discover", get_hermes_home())) or [],
+    )
+
+    result = await runner._execute_mcp_reload_from_control()
+
+    assert list(result["profiles"]) == ["default", "worker"]
+    assert result["failed_profiles"] == []
+    assert seen == [
+        ("shutdown", homes[0][1]),
+        ("discover", homes[0][1]),
+        ("shutdown", homes[1][1]),
+        ("discover", homes[1][1]),
+    ]
+    assert refreshes == [(True, "default"), (True, "worker")]
+
+
+@pytest.mark.asyncio
 async def test_reload_mcp_formats_scoped_connection_keys_before_refreshing_cached_agents(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

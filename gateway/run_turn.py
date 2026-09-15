@@ -2365,17 +2365,52 @@ class GatewayTurnMixin:
         except Exception as _exc:
             logger.debug("Failed to update cached agent tools after MCP reload: %s", _exc)
 
-    async def _execute_mcp_reload(self, event: MessageEvent) -> str:
+    async def _execute_mcp_reload_from_control(self) -> dict[str, Any]:
+        """Reload MCP for an operator request without creating a fake chat event.
+
+        A multiplexed gateway has one MCP scope per served profile, so an out-of-band
+        reload has to visit each profile explicitly. The lock keeps two watchdog or
+        cron calls from tearing down the same connections at the same time.
+        """
+        lock = self.__dict__.get("_mcp_control_reload_lock")
+        if lock is None:
+            lock = asyncio.Lock()
+            self.__dict__["_mcp_control_reload_lock"] = lock
+
+        async with lock:
+            multiplex = bool(getattr(self.config, "multiplex_profiles", False))
+            if not multiplex:
+                return {"default": await self._execute_mcp_reload()}
+
+            from gateway.run import _multiplex_profile_homes, _profile_runtime_scope
+
+            results: dict[str, str] = {}
+            failed_profiles: list[str] = []
+            served_homes = getattr(self, "_served_profile_homes", None)
+            profile_homes = list(served_homes.items()) if served_homes else _multiplex_profile_homes(self.config)
+            for profile, profile_home in profile_homes:
+                try:
+                    with _profile_runtime_scope(Path(profile_home)):
+                        results[profile] = await self._execute_mcp_reload(profile=profile)
+                except Exception as exc:  # noqa: BLE001 - one broken profile should not block the rest
+                    failed_profiles.append(profile)
+                    logger.warning("Control-socket MCP reload failed for profile %s: %s", profile, exc)
+            return {"profiles": results, "failed_profiles": failed_profiles}
+
+    async def _execute_mcp_reload(
+        self, event: Optional[MessageEvent] = None, *, profile: Optional[str] = None,
+    ) -> str:
         """Disconnect, reconnect, and notify MCP tool changes (shared by button / text / no-confirm paths).
 
         Under multiplex the reload runs inside the requesting profile's runtime scope (entered here
-        when the caller did not) and only that profile's servers are torn down and rediscovered.
+        when the caller did not) and only that profile's servers are torn down and rediscovered. An
+        eventless call is reserved for the local control socket and never writes a chat transcript.
 
         See #95518.
         """
         from gateway.run import _profile_runtime_scope
         multiplex = bool(getattr(self.config, "multiplex_profiles", False))
-        if multiplex and not get_hermes_home_override():
+        if multiplex and event is not None and not get_hermes_home_override():
             profile_home = self._resolve_profile_home_for_source(event.source)
             with _profile_runtime_scope(Path(profile_home)):
                 return await self._execute_mcp_reload(event)
@@ -2425,7 +2460,8 @@ class GatewayTurnMixin:
             else:
                 lines.append(t("gateway.reload_mcp.tools_available", tools=len(new_tools), servers=len(connected_servers)))
 
-            self._mcp_reload_refresh_cached_agents(multiplex, event.source.profile)
+            refresh_profile = event.source.profile if event is not None else profile
+            self._mcp_reload_refresh_cached_agents(multiplex, refresh_profile)
 
             # Append a note at the END of the history (preserves the prompt-cache prefix).
             change_parts = [
@@ -2438,9 +2474,10 @@ class GatewayTurnMixin:
                 "role": "user",
                 "content": f"[IMPORTANT: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
             }
-            with suppress(Exception):  # Best-effort; don't fail the reload over a transcript write
-                session_entry = await self.async_session_store.get_or_create_session(event.source)
-                await self.async_session_store.append_to_transcript(session_entry.session_id, reload_msg)
+            if event is not None:
+                with suppress(Exception):  # Best-effort; don't fail the reload over a transcript write
+                    session_entry = await self.async_session_store.get_or_create_session(event.source)
+                    await self.async_session_store.append_to_transcript(session_entry.session_id, reload_msg)
 
             return "\n".join(lines)
 

@@ -94,6 +94,9 @@ def build_gateway_parser(
     _add_system_flag(gateway_status)
     _add_compat_platform_flag(gateway_status)
 
+    gateway_subparsers.add_parser(
+        "reload-mcp", help="Reload MCP servers in the running gateway without a chat message")
+
     gateway_install = gateway_subparsers.add_parser(
         "install", help="Install gateway as a systemd/launchd background service")
     _flag(gateway_install, "--force",

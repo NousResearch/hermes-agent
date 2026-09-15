@@ -22,6 +22,7 @@ import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $panesFlipped, dismissAutoProject } from '@/store/layout'
+import { $profileScope, ALL_PROFILES } from '@/store/profile'
 import {
   copyPath,
   deleteProject,
@@ -54,6 +55,8 @@ function useProjectActions({
 }) {
   const { t } = useI18n()
   const p = t.sidebar.projects
+  const profileScope = useStore($profileScope)
+  const canManage = profileScope !== ALL_PROFILES
   const target = { id: project.id, name: project.label }
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
 
@@ -76,7 +79,7 @@ function useProjectActions({
   // Rename / add folder / set active — explicit projects only (auto ones lack a
   // materialized record). Appearance is handled per-surface (popover vs submenu)
   // by the caller since its picker chrome differs.
-  const identityItems: ActionItemSpec[] = project.isAuto
+  const identityItems: ActionItemSpec[] = project.isAuto || !canManage
     ? []
     : [
         { icon: 'edit', key: 'rename', label: p.menuRename, onSelect: () => openProjectRename(target) },
@@ -114,13 +117,15 @@ function useProjectActions({
 
   const dangerItem: ActionItemSpec = project.isAuto
     ? { icon: 'trash', key: 'remove', label: p.removeFromSidebar, onSelect: removeAuto, variant: 'destructive' }
-    : {
-        icon: 'trash',
-        key: 'delete',
-        label: `${p.menuDelete}…`,
-        onSelect: () => setConfirmDeleteOpen(true),
-        variant: 'destructive'
-      }
+    : !canManage
+      ? { disabled: true, icon: 'account', key: 'select-profile', label: t.profiles.selectPrompt, onSelect: () => {} }
+      : {
+          icon: 'trash',
+          key: 'delete',
+          label: `${p.menuDelete}…`,
+          onSelect: () => setConfirmDeleteOpen(true),
+          variant: 'destructive'
+        }
 
   const confirmDialog = (
     <ConfirmDialog
@@ -134,7 +139,7 @@ function useProjectActions({
     />
   )
 
-  return { confirmDialog, dangerItem, identityItems, pathItems }
+  return { canManage, confirmDialog, dangerItem, identityItems, pathItems }
 }
 
 // Per-project actions. The kebab keeps its row-anchored Appearance popover; the
@@ -166,7 +171,7 @@ export function ProjectMenu({
   // when the panes are flipped (sidebar on the right).
   const panesFlipped = useStore($panesFlipped)
 
-  const { confirmDialog, dangerItem, identityItems, pathItems } = useProjectActions({
+  const { canManage, confirmDialog, dangerItem, identityItems, pathItems } = useProjectActions({
     isActive,
     onExitScope,
     project,
@@ -234,20 +239,21 @@ export function ProjectMenu({
             // Inherited (auto) repos can still be themed — the change adopts the
             // repo as a real project. Rename / add-folder / set-active stay out
             // until then (they need the materialized record).
+            canManage &&
             project.path && (
               <>
                 {appearanceItem}
                 <DropdownMenuSeparator />
               </>
             )
-          ) : (
+          ) : canManage ? (
             <>
               {identityItems.slice(0, 1).map(item => renderActionItem(DROPDOWN_KIT, item))}
               {appearanceItem}
               {identityItems.slice(1).map(item => renderActionItem(DROPDOWN_KIT, item))}
               <DropdownMenuSeparator />
             </>
-          )}
+          ) : null}
           {pathItems.map(item => renderActionItem(DROPDOWN_KIT, item))}
           <DropdownMenuSeparator />
           {renderActionItem(DROPDOWN_KIT, dangerItem)}
@@ -294,14 +300,14 @@ export function ProjectContextMenu({
   const { t } = useI18n()
   const p = t.sidebar.projects
 
-  const { confirmDialog, dangerItem, identityItems, pathItems } = useProjectActions({
+  const { canManage, confirmDialog, dangerItem, identityItems, pathItems } = useProjectActions({
     isActive,
     onExitScope,
     project,
     scoped
   })
 
-  const canTheme = !project.isAuto || Boolean(project.path)
+  const canTheme = canManage && (!project.isAuto || Boolean(project.path))
 
   const applyAppearance = (patch: { color?: null | string; icon?: null | string }) => {
     void setProjectAppearance(project, patch)

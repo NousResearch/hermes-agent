@@ -813,7 +813,7 @@ class GatewayNotificationsMixin:
         # Close the loop on the "updating" notice sent before we exited, so the
         # pair reads as one planned event rather than two unexplained ones.
         message = (
-            "⬆️ Update complete — Hermes is back on the new version and ready."
+            "✅ Update complete — Hermes is back on the new version and ready."
             if _planned_update_marker() is not None
             else "♻️ Gateway online — Hermes is back and ready."
         )

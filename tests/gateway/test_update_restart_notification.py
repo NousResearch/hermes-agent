@@ -19,7 +19,7 @@ from gateway.session import build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
 _PLANNED_RESTART = "⬆️ Hermes is updating"
-_PLANNED_ONLINE = "⬆️ Update complete — Hermes is back on the new version and ready."
+_PLANNED_ONLINE = "✅ Update complete — Hermes is back on the new version and ready."
 _GENERIC_RESTART = "⚠️ Hermes is restarting — your current task will be interrupted. "
 _GENERIC_ONLINE = "♻️ Gateway online — Hermes is back and ready."
 

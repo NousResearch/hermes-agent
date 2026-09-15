@@ -9,6 +9,7 @@ silently dropped.
 from __future__ import annotations
 
 
+from agent.credits_tracker import AgentNotice
 from run_agent import AIAgent
 
 
@@ -129,7 +130,8 @@ def test_pending_fallback_notice_emitted_once_on_success():
     though the noisy retry buffer is dropped."""
     agent = _make_bare_agent()
     emitted = []
-    agent._emit_status = lambda msg: emitted.append(msg)
+    agent.notice_callback = lambda _notice: None
+    agent._emit_notice = emitted.append
 
     # Simulate try_activate_fallback: buffer the noisy switch line AND record
     # the durable one-shot notice.
@@ -140,44 +142,69 @@ def test_pending_fallback_notice_emitted_once_on_success():
     agent._emit_pending_fallback_notice()
     agent._clear_status_buffer()
 
-    # The durable notice was shown exactly once; the buffered retry noise was
-    # silently dropped.
-    assert emitted == ["🔄 Switched to fallback model: m1 via p1 → m2 via p2"]
+    # The durable switch is a structured driver notice, so gateway clients
+    # receive notification.show and can render it even though retry-status
+    # text is not a visible Desktop surface.
+    assert emitted == [
+        AgentNotice(
+            text="🔄 Switched to fallback model: m1 via p1 → m2 via p2",
+            level="warn",
+            kind="ttl",
+            ttl_ms=15_000,
+        )
+    ]
     assert agent._retry_status_buffer == []
     # Notice is cleared so it cannot re-emit on a later turn.
     assert agent._pending_fallback_notice is None
 
     # A second success path with no new fallback emits nothing.
     agent._emit_pending_fallback_notice()
-    assert emitted == ["🔄 Switched to fallback model: m1 via p1 → m2 via p2"]
+    assert len(emitted) == 1
 
 
 def test_pending_fallback_notice_emits_all_switches_in_order():
     agent = _make_bare_agent()
     emitted = []
-    agent._emit_status = emitted.append
+    agent.notice_callback = lambda _notice: None
+    agent._emit_notice = emitted.append
     agent._pending_fallback_notice = ["primary → fallback-1", "fallback-1 → fallback-2"]
 
     agent._emit_pending_fallback_notice()
 
-    assert emitted == ["primary → fallback-1", "fallback-1 → fallback-2"]
+    assert emitted == [
+        AgentNotice(text="primary → fallback-1", level="warn", kind="ttl", ttl_ms=15_000),
+        AgentNotice(text="fallback-1 → fallback-2", level="warn", kind="ttl", ttl_ms=15_000),
+    ]
     assert agent._pending_fallback_notice is None
 
 
 def test_pending_fallback_notice_continues_after_callback_error():
     agent = _make_bare_agent()
     attempted = []
+    agent.notice_callback = lambda _notice: None
     agent._pending_fallback_notice = ["first", "second"]
 
-    def emit(message):
-        attempted.append(message)
-        if message == "first":
+    def emit(notice):
+        attempted.append(notice.text)
+        if notice.text == "first":
             raise RuntimeError("surface unavailable")
 
-    agent._emit_status = emit
+    agent._emit_notice = emit
     agent._emit_pending_fallback_notice()
 
     assert attempted == ["first", "second"]
+    assert agent._pending_fallback_notice is None
+
+
+def test_pending_fallback_notice_keeps_status_fallback_without_notice_callback():
+    agent = _make_bare_agent()
+    emitted = []
+    agent._emit_status = emitted.append
+    agent._pending_fallback_notice = "fallback route changed"
+
+    agent._emit_pending_fallback_notice()
+
+    assert emitted == ["fallback route changed"]
     assert agent._pending_fallback_notice is None
 
 

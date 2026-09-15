@@ -4359,7 +4359,7 @@ export const zh = defineLocale({
       },
       'local-setup': {
         title: '这台电脑可以本地运行模型',
-        text: '你的硬件可以运行本地模型。对话不离开你的电脑，而且完全免费。',
+        text: '你的硬件可以运行本地模型。该模型处于活动状态时，对话会留在你的电脑上；如果切换到备用提供商，Hermes 会通知你。',
         action: '立即设置'
       },
       'right-pane': {

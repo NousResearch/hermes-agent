@@ -159,9 +159,12 @@ class StatusOutputMixin:
             buf.clear()
 
     def _emit_pending_fallback_notice(self) -> None:
-        """Surface the one-shot fallback-switch notice on successful recovery: a provider switch is durable
-        state operators must see, unlike the retry chatter ``_clear_status_buffer`` drops. Emitted once, then
-        cleared; on terminal failure the buffered switch line is flushed instead (``_flush_status_buffer``)."""
+        """Surface successful fallback switches through the driver notice spine.
+
+        A provider switch is durable state operators must see, unlike retry chatter
+        ``_clear_status_buffer`` drops.  Notices become ``notification.show`` gateway
+        events, which Desktop renders as warning toasts.  Terminal failures keep the
+        existing buffered status path (``_flush_status_buffer``)."""
         notice = getattr(self, "_pending_fallback_notice", None)
         if not notice:
             return
@@ -169,7 +172,16 @@ class StatusOutputMixin:
         self._pending_fallback_notice = None
         for item in notice if isinstance(notice, list) else [notice]:
             try:
-                self._emit_status(str(item))
+                if getattr(self, "notice_callback", None):
+                    from agent.credits_tracker import AgentNotice
+
+                    self._emit_notice(AgentNotice(
+                        text=str(item), level="warn", kind="ttl", ttl_ms=15_000,
+                    ))
+                else:
+                    # Legacy/headless drivers without the notice channel keep
+                    # the prior visible status behavior.
+                    self._emit_status(str(item))
             except Exception:
                 # One surface failure must not hide later switches from the same chain.
                 continue

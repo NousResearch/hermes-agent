@@ -4459,7 +4459,7 @@ export const en: Translations = {
       },
       'local-setup': {
         title: 'This machine can run models locally',
-        text: 'Your hardware can serve a local model. Chats stay on your computer and cost nothing.',
+        text: 'Your hardware can serve a local model. Chats stay on your computer while it is active; Hermes will notify you if it switches to a fallback provider.',
         action: 'Set it up'
       },
       'right-pane': {

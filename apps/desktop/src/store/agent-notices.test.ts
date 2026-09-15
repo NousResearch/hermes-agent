@@ -174,6 +174,23 @@ test('showAgentNotice renders a toast; empty text is a no-op', () => {
   expect($notifications.get()).toHaveLength(1)
 })
 
+test('renders a fallback-provider gateway notice as a visible warning toast', () => {
+  showAgentNotice({
+    kind: 'ttl',
+    level: 'warn',
+    text: '⚠ Model fallback: local-model unavailable; using remote-model via openrouter.',
+    ttl_ms: 15_000
+  })
+
+  expect($notifications.get()).toEqual([
+    expect.objectContaining({
+      durationMs: 15_000,
+      kind: 'warning',
+      message: 'Model fallback: local-model unavailable; using remote-model via openrouter.'
+    })
+  ])
+})
+
 test('re-emitting the same key replaces the toast instead of stacking (50→75→90)', () => {
   showAgentNotice(usage({ level: 'info', text: "• You've used $10.00 of your $20.00 cap" }))
   showAgentNotice(usage({ level: 'warn', text: "⚠ You've used $15.00 of your $20.00 cap" }))

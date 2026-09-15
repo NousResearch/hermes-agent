@@ -226,6 +226,8 @@ def _discover_payload(db, query: str, detail: str, results: list, **extra) -> st
         f"The search index is rebuilding in the background ({status['percent']}% done, "
         f"{status['indexed']:,} of {status['total']:,} messages). Results from older messages "
         f"may be incomplete until it finishes.")}}
+    if extra.get("message") is None:
+        extra.pop("message", None)
     return _ok(mode="discover", query=query, detail=detail, results=results, count=len(results), **extra, **rebuild)
 
 
@@ -269,11 +271,29 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
         fields=_DISCOVER_SEARCH_FIELDS), "FTS5 search failed: %s", "Search failed")
     if err:
         return err
+    # Recall fallback (see #19434): with the default role filter (user/assistant), a
+    # query whose only matches live in tool-role output — e.g. cron pipeline ingest
+    # totals — returns zero and the agent believes the knowledge doesn't exist. Retry
+    # once with tool output included; only the zero-result path gains behavior.
+    fallback_used = False
+    if not raw_results and not title_result and role_filter is None:
+        retry_results, retry_err = _loud(lambda: db.search_messages(
+            query=query, role_filter=["user", "assistant", "tool"],
+            exclude_sources=list(_HIDDEN_SESSION_SOURCES), limit=_DISCOVER_SCAN_LIMIT, offset=0, sort=sort,
+            fields=_DISCOVER_SEARCH_FIELDS), "FTS5 search failed: %s", "Search failed")
+        if retry_err:
+            return retry_err
+        if retry_results:
+            raw_results = retry_results
+            fallback_used = True
     # Demote cron rows below interactive ones BEFORE dedup so a high-volume cron corpus
     # can't starve the user's own sessions out of the top `limit`; stable sort keeps BM25
     # order within each class.
     raw_results = sorted(raw_results, key=lambda r: (r.get("source") or "") in _DEMOTED_SESSION_SOURCES)
     # See #19434.
+    fallback_note = ("Note: no user/assistant matches were found, so tool-output "
+                     "matches (e.g. cron job results) were included via an automatic "
+                     "fallback role search.") if fallback_used else None
     if not raw_results and not title_result:
         return _discover_payload(db, query, detail, [], message=(
             "No matching sessions found. FTS5 ANDs all terms by default — "
@@ -318,7 +338,8 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
             results.append(entry)
     for entry in results:
         entry["link"] = _session_link(entry["session_id"], link_profile)
-    return _discover_payload(db, query, detail, results, sessions_searched=len(seen_sessions), link_hint=(
+    return _discover_payload(db, query, detail, results, sessions_searched=len(seen_sessions),
+                             message=fallback_note, link_hint=(
         "When referring the user to a session, write its `link` value "
         "verbatim inline mid-sentence (it renders as a titled link) — never "
         "as markdown, in backticks, on its own line, or next to the "

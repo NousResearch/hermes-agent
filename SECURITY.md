@@ -191,6 +191,8 @@ authorization model, but the rules below apply uniformly.
   process.
 - **The TUI gateway (`tui_gateway/`).** JSON-RPC backend for the
   Ink terminal UI, reached over local IPC.
+- **Local dashboard / desktop HTTP.** The desktop app starts
+  `hermes serve` / `hermes dashboard` as a loopback HTTP backend.
 
 **Uniform rules:**
 
@@ -202,6 +204,14 @@ authorization model, but the rules below apply uniformly.
    authorization means relying on OS-level access control (file
    permissions, loopback-only binds) and not exposing the surface
    beyond the local user without an explicit network auth layer.
+   The dashboard / desktop loopback HTTP backend uses the same
+   OS user-account boundary when it is not gated: an ephemeral
+   session token is delivered via unauthenticated document /
+   bootstrap HTML to the same-user browser or Electron
+   (`window.__HERMES_SESSION_TOKEN__`), so any local process
+   running as that user can read it. That is a consequence of
+   the chosen isolation posture (§3.2), not a vulnerability
+   under §3.1.
 2. **An allowlist is required for every enabled network-exposed
    adapter.** Adapters must refuse to dispatch agent work, resolve
    approvals, or relay output until an allowlist is set. Code paths

@@ -245,10 +245,14 @@ def build_prompt_cache_plan(
     cache_ttl: str = "5m", native_anthropic: bool = False, static_system_prefix: str | None = None,
     direct_native_tool_cache: bool = False, tool_part_markers: bool = True,
 ) -> PromptCachePlan:
-    """Build isolated cache sections for one resolved request destination
+    """Build copy-on-write cache sections for one resolved request destination
     (``tool_part_markers=False`` keeps markers off role:tool parts on LiteLLM-style routes)."""
-    messages = copy.deepcopy(api_messages or [])
-    strip_anthropic_cache_control(messages)
+    messages = list(api_messages or [])
+    for i, msg in enumerate(messages):
+        if isinstance(msg, dict) and (
+            "cache_control" in msg or isinstance(msg.get("content"), list)
+        ):
+            messages[i] = strip_anthropic_cache_control([dict(msg)])[0]
     planned_tools = strip_anthropic_tool_cache_control(tools)
 
     if not direct_native_tool_cache or not planned_tools:
@@ -261,10 +265,12 @@ def build_prompt_cache_plan(
     if messages and isinstance(messages[0], dict) and messages[0].get("role") == "system":
         # Tool-cache layout: only the static prefix carries a system-side marker; the
         # volatile suffix's budget is spent on the tools array.
+        messages[0] = copy.deepcopy(messages[0])
         _apply_system_cache_markers(messages[0], marker, static_system_prefix,
                                     native_anthropic=True, mark_suffix=False, fallback_to_whole=False)
     planned_tools[-1]["cache_control"] = dict(marker)
     for endpoint in _completed_transaction_endpoint_indexes(messages, native_anthropic=True)[-2:]:
+        messages[endpoint] = copy.deepcopy(messages[endpoint])
         _apply_cache_marker(messages[endpoint], marker, native_anthropic=True)
 
     return PromptCachePlan(messages=messages, tools=planned_tools)

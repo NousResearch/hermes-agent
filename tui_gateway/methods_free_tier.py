@@ -57,25 +57,20 @@ def _(rid, params: dict) -> dict:
         from hermes_cli import anon_auth
         from hermes_cli import free_tier_bootstrap
         enabled = anon_auth.guest_enabled()
-        failure = None
         if enabled and not anon_auth.has_guest():
             if free_tier_bootstrap.current_record() is not None and not params.get("profile"):
                 # The launch profile: refresh the boot record too, so ``setup.status`` and the
                 # ``setup.ready`` listeners move with the outcome.
-                failure = free_tier_bootstrap.retry_bootstrap_mint(force=True).failure_fields()
+                free_tier_bootstrap.retry_bootstrap_mint(force=True)
             else:
                 try:
                     anon_auth.ensure_portal_identity(explicit=True, force=True)
-                except Exception as exc:
+                except Exception as exc:   # memoised by the primitive before it re-raised
                     logger.info("free tier provisioning failed: %s", exc)
-                    err = anon_auth._classify_mint_exception(exc)
-                    failure = {"error": str(err), "error_code": str(err.code or ""),
-                               "retryable": err.code not in anon_auth.ANON_TERMINAL_CODES,
-                               "retry_after": int(err.retry_after or 0)}
         has_guest = anon_auth.has_guest()
         payload = {"has_guest": has_guest, "enabled": enabled}
         if enabled and not has_guest:
-            payload.update(anon_auth.last_mint_failure() or failure or {})
+            payload.update(anon_auth.last_mint_failure() or {})
         return _ok(rid, payload)
     except Exception as e:
         return _err(rid, 5092, str(e))

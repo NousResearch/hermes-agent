@@ -68,10 +68,9 @@ class AnonCredentialDead(AuthError):
     """
 
 
-def _anon_err(
-    message: str, code: str, *, retry_after: Optional[float] = None, retryable: bool = True,
-) -> AuthError:
-    return AuthError(message, code=code, retry_after=retry_after, retryable=retryable)
+def _anon_err(message: str, code: str, *, retry_after: Optional[float] = None) -> AuthError:
+    """An ``AuthError`` for a free-tier failure *code*; terminal-ness is the code's (``ANON_TERMINAL_CODES``)."""
+    return AuthError(message, code=code, retry_after=retry_after, retryable=code not in ANON_TERMINAL_CODES)
 
 
 # --- Free-tier failure codes ------------------------------------------------------------------------
@@ -250,6 +249,22 @@ def _anon_headers() -> Dict[str, str]:
     return headers
 
 
+# (status, NAS ``error``) -> (exception class, code). ``None`` matches any error string for that
+# status; an exact pair wins over the wildcard. Anything unlisted is a server error.
+_NAS_REFUSALS: Dict[tuple, tuple] = {
+    (404, "unknown_token"): (AnonCredentialDead, ANON_CREDENTIAL_DEAD),
+    (404, None): (AuthError, ANON_GATE_CLOSED),        # uniform with a nonexistent route, on purpose
+    (401, "invalid_shared_secret"): (AuthError, ANON_GATE_CLOSED),   # pre-launch NAS builds only
+    (401, None): (AnonCredentialDead, ANON_CREDENTIAL_DEAD),
+    (403, "account_locked"): (AnonCredentialDead, ANON_ACCOUNT_LOCKED),
+    (403, "anonymous_accounts_disabled"): (AuthError, ANON_GATE_PAUSED),   # pre-launch names
+    (403, "circuit_open"): (AuthError, ANON_GATE_PAUSED),
+    (428, None): (AuthError, ANON_POW_REQUIRED),
+    (429, None): (AuthError, ANON_RATE_LIMITED),
+    (503, "temporarily_disabled"): (AuthError, ANON_GATE_PAUSED),
+}
+
+
 def _raise_for_anon_status(response: httpx.Response, *, action: str) -> Dict[str, Any]:
     try:
         payload = response.json()
@@ -261,31 +276,15 @@ def _raise_for_anon_status(response: httpx.Response, *, action: str) -> Dict[str
     status = response.status_code
     if status in (200, 201):
         return payload
-    if status == 404 and error == "unknown_token":
-        raise AnonCredentialDead(ANON_FAILURE_COPY[ANON_CREDENTIAL_DEAD], code=ANON_CREDENTIAL_DEAD, retryable=False)
-    if status == 404:
-        # The gate's "surface not enabled" answer is uniform with a nonexistent route on purpose.
-        raise _anon_err(ANON_FAILURE_COPY[ANON_GATE_CLOSED], ANON_GATE_CLOSED, retryable=False)
-    if status == 401 and error == "invalid_shared_secret":   # pre-launch NAS builds only
-        raise _anon_err(ANON_FAILURE_COPY[ANON_GATE_CLOSED], ANON_GATE_CLOSED, retryable=False)
-    if status == 401:
-        raise AnonCredentialDead(ANON_FAILURE_COPY[ANON_CREDENTIAL_DEAD], code=ANON_CREDENTIAL_DEAD, retryable=False)
-    if status == 403 and error == "account_locked":
-        raise AnonCredentialDead(ANON_FAILURE_COPY[ANON_ACCOUNT_LOCKED], code=ANON_ACCOUNT_LOCKED, retryable=False)
-    if status == 403 and error in {"anonymous_accounts_disabled", "circuit_open"}:   # pre-launch names
-        raise _anon_err(ANON_FAILURE_COPY[ANON_GATE_PAUSED], ANON_GATE_PAUSED)
-    if status == 429:
-        retry_after = parse_retry_after_seconds(response.headers)
-        raise _anon_err(anon_failure_copy(ANON_RATE_LIMITED, retry_after=retry_after), ANON_RATE_LIMITED,
-                        retry_after=retry_after)
-    if status == 428 or error.startswith("pow_"):
-        raise _anon_err(ANON_FAILURE_COPY[ANON_POW_REQUIRED], ANON_POW_REQUIRED, retryable=False)
-    if status == 503 and error == "temporarily_disabled":
-        raise _anon_err(ANON_FAILURE_COPY[ANON_GATE_PAUSED], ANON_GATE_PAUSED,
-                        retry_after=parse_retry_after_seconds(response.headers))
-    logger.info("Nous free tier %s failed (%s%s)", action, status, f": {error}" if error else "")
-    raise _anon_err(ANON_FAILURE_COPY[ANON_SERVER_ERROR], ANON_SERVER_ERROR,
-                    retry_after=parse_retry_after_seconds(response.headers))
+    if error.startswith("pow_"):
+        error = "pow_"  # pow_required / pow_invalid / pow_replayed are one verdict
+    cls, code = (_NAS_REFUSALS.get((status, error)) or _NAS_REFUSALS.get((status, None))
+                 or ((AuthError, ANON_POW_REQUIRED) if error == "pow_" else (AuthError, ANON_SERVER_ERROR)))
+    if code == ANON_SERVER_ERROR:
+        logger.info("Nous free tier %s failed (%s%s)", action, status, f": {error}" if error else "")
+    retry_after = parse_retry_after_seconds(response.headers)
+    raise cls(anon_failure_copy(code, retry_after=retry_after), code=code, retry_after=retry_after,
+              retryable=code not in ANON_TERMINAL_CODES)
 
 
 def mint_guest(client: httpx.Client, portal_base_url: str) -> Dict[str, Any]:
@@ -443,12 +442,11 @@ def last_mint_failure() -> Optional[Dict[str, Any]]:
     return failure.as_payload() if failure else None
 
 
-def _classify_mint_exception(exc: BaseException) -> AuthError:
+def classify_mint_exception(exc: BaseException) -> AuthError:
     """Every mint failure as one ``AuthError`` with a code: the portal's own refusals already are;
-    the wire's (timeout, DNS, refused connection) and anything else get a code here."""
-    if isinstance(exc, AuthError):
-        if exc.code is None:
-            exc.code = ANON_SERVER_ERROR
+    the wire's (timeout, DNS, refused connection) and anything else get a code here. Pure: *exc* is
+    never mutated (an uncoded ``AuthError`` is re-raised as a server-error twin)."""
+    if isinstance(exc, AuthError) and exc.code:
         return exc
     transport = (TimeoutError, ConnectionError, OSError)
     try:
@@ -465,7 +463,7 @@ def _note_mint_failure(err: AuthError) -> MintFailure:
     code = str(err.code or ANON_SERVER_ERROR)
     previous = _mint_failure_for_profile()
     attempts = previous.attempts + 1 if previous and previous.code == code else 1
-    retryable = code not in ANON_TERMINAL_CODES and err.retryable is not False
+    retryable = code not in ANON_TERMINAL_CODES
     if not retryable:
         wait, not_before = 0.0, float("inf")
     else:
@@ -555,7 +553,7 @@ def ensure_portal_identity(
         state = _reconcile_and_provision(
             timeout_seconds=timeout_seconds, carries_inference=carries_inference)
     except Exception as exc:
-        err = _classify_mint_exception(exc)
+        err = classify_mint_exception(exc)
         noted = _note_mint_failure(err)
         logger.info("Nous free tier not set up (%s, attempt %d%s)", noted.code, noted.attempts,
                     f", next try in {noted.retry_after:.0f}s" if noted.retryable else ", not retried")
@@ -576,7 +574,7 @@ def refresh_guest_state(state: Dict[str, Any], client: httpx.Client) -> None:
     """
     anon_token = state.get("anon_token")
     if not isinstance(anon_token, str) or not anon_token:
-        raise AnonCredentialDead(ANON_FAILURE_COPY[ANON_CREDENTIAL_DEAD], code=ANON_CREDENTIAL_DEAD, retryable=False)
+        raise AnonCredentialDead(ANON_FAILURE_COPY[ANON_CREDENTIAL_DEAD], code=ANON_CREDENTIAL_DEAD)
     from hermes_cli.auth import _nous_portal_base_url
     apply_exchange_to_state(state, exchange_anon_jwt(client, _nous_portal_base_url(state), anon_token))
 
@@ -690,7 +688,7 @@ def welcome_refusal_copy(refusal: Dict[str, Any], *, model: str = "", in_chat: b
     if reason == "model_not_free":
         what = f"{model} isn't" if model else "That model isn't"
         return (f"{what} available without signing in, so Hermes uses {serves} for now. "
-                f"Sign in for more models. {signin}")
+                f"Sign in for more models. {signin}").rstrip()
     if reason == "feature_not_free":
         return f"That isn't available without signing in. Sign in to use it, it's free. {signin}".rstrip()
     if reason == "at_capacity":

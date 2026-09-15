@@ -51,7 +51,7 @@ LOGIN_NOT_ALLOWED = "Only an operator of this Hermes can sign it in."
 FREE_TIER_RATE_LIMIT_CARD = (
     "You've used up the allowance for chatting without signing in. It refreshes in {reset}. "
     "Sign in for a bigger allowance, it's free.")
-FREE_TIER_RATE_LIMIT_CHAT = FREE_TIER_RATE_LIMIT_CARD[:-1] + ": /login."
+FREE_TIER_RATE_LIMIT_CHAT = FREE_TIER_RATE_LIMIT_CARD + " To sign in: /login."
 
 
 def format_wait_line(expires_in: int) -> str:
@@ -255,7 +255,7 @@ def _failed_from_exception(exc: BaseException) -> Failed:
     an ``AuthError`` carries, or the wire's shape for a transport error. The raw detail never
     reaches a chat; ``copy_terminal`` may show it when nothing better is known."""
     from hermes_cli import anon_auth as _core
-    err = _core._classify_mint_exception(exc)
+    err = _core.classify_mint_exception(exc)
     reason = str(err.code or "")
     if reason == _core.ANON_SERVER_ERROR and not isinstance(exc, _core.AuthError):
         # An unnamed local failure (a bad CA bundle, a lock timeout): keep today's generic copy

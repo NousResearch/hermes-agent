@@ -38,24 +38,17 @@ class SetupRecord:
     has_identity: bool             # a Nous identity (free tier or account) is on disk
     other_providers: bool          # the inventory found something usable BESIDES the free tier
     error: str = ""                # why the mint did not happen, when it did not; "" otherwise
-    # The structured form of ``error`` (``anon_auth.ANON_*`` codes): what a renderer keys its copy
-    # and its doors on. ``retryable`` says whether a later attempt can succeed; ``retry_after`` is
-    # the seconds still to wait before one may (0 when none is owed, or the code is terminal).
-    error_code: str = ""
-    retryable: bool = False
-    retry_after: int = 0
+    # The mint memo's verdict, verbatim (``anon_auth.MintFailure.as_payload``):
+    # ``{error, error_code, retryable, retry_after}`` when the mint did not happen, else ``{}``.
+    # One wire shape: every status RPC spreads it as is.
+    failure: Dict[str, Any] = field(default_factory=dict)
     finished_at: float = field(default_factory=time.time)
 
     def as_payload(self) -> Dict[str, Any]:
         return asdict(self)
 
     def failure_fields(self) -> Dict[str, Any]:
-        """The additive ``{error, error_code, retryable, retry_after}`` block every status RPC
-        carries when the mint did not happen; ``{}`` otherwise."""
-        if not self.error_code:
-            return {}
-        return {"error": self.error, "error_code": self.error_code, "retryable": self.retryable,
-                "retry_after": self.retry_after}
+        return dict(self.failure)
 
 
 _lock = threading.Lock()
@@ -138,9 +131,7 @@ def _build_record(*, other: bool, force: bool) -> SetupRecord:
         has_identity=bool(state),
         other_providers=other,
         error=error,
-        error_code=str(failure.get("error_code") or ""),
-        retryable=bool(failure.get("retryable", False)),
-        retry_after=int(failure.get("retry_after") or 0),
+        failure=failure,
     )
 
 
@@ -194,6 +185,10 @@ def retry_bootstrap_mint(*, force: bool = False, announce: bool = True) -> Setup
     # boot-time answer is stale by now.
     record = _build_record(other=_inventory_other_providers(), force=force)
     with _lock:
+        # Two retries can race (the background loop and the user's click): a build that found no
+        # identity must not overwrite one that did.
+        if _record is not None and _record.has_identity and not record.has_identity:
+            return _record
         _record = record
     if announce:
         _broadcast(record)
@@ -205,9 +200,9 @@ def _retry_until_settled() -> None:
     again, up to ``BOOTSTRAP_RETRY_ATTEMPTS``, while the record says a later attempt can succeed."""
     for _ in range(BOOTSTRAP_RETRY_ATTEMPTS):
         record = _record
-        if record is None or record.has_identity or not record.error_code or not record.retryable:
+        if record is None or record.has_identity or not record.failure.get("retryable"):
             return
-        _sleep(max(1, int(record.retry_after or 0)))
+        _sleep(max(1, int(record.failure.get("retry_after") or 0)))
         record = retry_bootstrap_mint(force=False)
         if record.has_identity:
             logger.info("Nous free tier set up after a boot-time retry")

@@ -93,6 +93,7 @@ def test_provision_sets_the_free_tier_up_through_the_lifecycle_primitive(tmp_pat
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))
     monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
     calls = []
+    real_ensure = anon_auth.ensure_portal_identity
 
     def fake_provision(**kw):
         calls.append(kw)
@@ -114,9 +115,13 @@ def test_provision_sets_the_free_tier_up_through_the_lifecycle_primitive(tmp_pat
 
     with _auth_store_lock():
         store = _load_auth_store(); store["providers"].pop("nous"); _save_auth_store(store)
-    monkeypatch.setattr(anon_auth, "ensure_portal_identity", refused)
+    # The real primitive memoises the refusal; the RPC reports that memo.
+    monkeypatch.setattr(anon_auth, "ensure_portal_identity", real_ensure)
+    monkeypatch.setattr(anon_auth, "_reconcile_and_provision", refused)
+    anon_auth.reset_mint_memo_for_tests()
     result = _call("free_tier.provision")
     assert result["has_guest"] is False and "not open" in result["error"]
+    assert result["error_code"] == "anon_gate_closed" and result["retryable"] is False
 
     _set_guest_off(monkeypatch)
     monkeypatch.setattr(anon_auth, "ensure_portal_identity", lambda **kw: (_ for _ in ()).throw(AssertionError("must not run")))

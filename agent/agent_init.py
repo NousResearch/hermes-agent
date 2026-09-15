@@ -1073,11 +1073,15 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     # signal — orchestrator profiles (``kanban`` in the toolsets config) also
     # carry kanban_show without a task id, and the worker protocol there makes
     # every cron run call ``kanban_show()`` first and log "task_id is required"
-    # (issue #68592). Resolve once (init + each context compression).
+    # (issue #68592). The env var alone is not enough either: a cron job run
+    # inside a worker inherits it but is marked non-dispatcher-owned, and
+    # kanban_show() refuses the inherited task id there too. Resolved once
+    # at init; a later prompt rebuild reuses this value.
+    from agent.delegation_context import is_dispatcher_owned_worker_context
     from agent.prompt_builder import KANBAN_GUIDANCE, KANBAN_ORCHESTRATOR_GUIDANCE
     if "kanban_show" not in agent.valid_tool_names:
         agent._kanban_worker_guidance = ""
-    elif os.environ.get("HERMES_KANBAN_TASK"):
+    elif os.environ.get("HERMES_KANBAN_TASK") and is_dispatcher_owned_worker_context():
         agent._kanban_worker_guidance = KANBAN_GUIDANCE
     else:
         # Kanban toolset without a dispatched task: board-routing guidance

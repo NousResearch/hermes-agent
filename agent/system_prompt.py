@@ -295,9 +295,10 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
         # Fallback for code paths that bypass agent_init (rare) — same
         # three-way split as agent_init: worker protocol only for
         # dispatcher-spawned processes, board-routing guidance otherwise.
+        from agent.delegation_context import is_dispatcher_owned_worker_context
         _kanban_guidance = (
             KANBAN_GUIDANCE
-            if os.environ.get("HERMES_KANBAN_TASK")
+            if os.environ.get("HERMES_KANBAN_TASK") and is_dispatcher_owned_worker_context()
             else KANBAN_ORCHESTRATOR_GUIDANCE
         )
     tool_guidance = [

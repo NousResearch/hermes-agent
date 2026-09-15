@@ -738,7 +738,7 @@ class GatewayBusySessionMixin:
         if now - (_busy_state.turn.busy_ack_ts if _busy_state else 0) < 30:
             return True  # interrupt sent (if not queue), ack already delivered recently
 
-        if is_steer_mode and not self._busy_steer_ack_enabled(event, session_key):
+        if (is_steer_mode or is_redirect_mode) and not self._busy_steer_ack_enabled(event, session_key):
             return True
 
         self._session_state(session_key).turn.busy_ack_ts = now

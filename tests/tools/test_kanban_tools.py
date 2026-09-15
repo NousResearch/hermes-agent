@@ -135,6 +135,62 @@ def test_complete_happy_path(worker_env):
         conn.close()
 
 
+def test_complete_rt1_blank_handoff_rejects_whitespace_only_summary(worker_env):
+    """A whitespace-only summary (with no result) must not complete the task.
+    Regression for RT1: _handle_complete only checked truthiness, and a
+    whitespace-only string is truthy in Python, so `summary="   "` slipped
+    past the `summary or result` guard and completed the task with an
+    effectively empty handoff."""
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({"summary": "   "})
+    d = json.loads(out)
+    assert "error" in d
+    assert "provide at least one of" in d["error"]
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, worker_env).status != "done"
+    finally:
+        conn.close()
+
+
+def test_complete_rt1_blank_handoff_rejects_whitespace_only_result(worker_env):
+    """Same as above but for `result` (with no summary) — the field-level
+    twin of the whitespace-only summary regression."""
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({"result": "\t\n  "})
+    d = json.loads(out)
+    assert "error" in d
+    assert "provide at least one of" in d["error"]
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, worker_env).status != "done"
+    finally:
+        conn.close()
+
+
+def test_complete_rt1_blank_handoff_nonblank_control_still_succeeds(worker_env):
+    """Control: a normal nonblank summary must still complete the task —
+    guards against an overzealous strip-aware fix rejecting valid handoffs."""
+    from tools import kanban_tools as kt
+    out = kt._handle_complete({"summary": "  got the thing done  "})
+    d = json.loads(out)
+    assert d["ok"] is True
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, worker_env).status == "done"
+    finally:
+        conn.close()
+
+
 def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
     """After a phantom rejection, retrying kanban_complete with
     created_cards=[] (the documented escape hatch) must complete the

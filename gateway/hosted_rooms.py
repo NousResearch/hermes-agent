@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import sqlite3
 from contextlib import closing
@@ -19,6 +20,8 @@ from typing import Any, Mapping
 from gateway.hosted_rooms_common import (
     DbPath, bounded_int, canonical_json, clock as _now, compact_json, connect, fenced_update as _fenced_update,
     identifier, open_sqlite, table_columns, table_exists, transaction, utf8_len)
+
+logger = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = 2
 MAX_ROOM_ID_CHARS = 128
@@ -422,15 +425,129 @@ def local_authority_gateway_id() -> str:
     return _actor_id(f"install:{install_id}", "authority_gateway_id")
 
 
-_connect = partial(
+_open_store = partial(
     connect, db_label="shared-state.db (hosted_rooms)", ready=_schema_is_current,
     initialize=lambda conn: _initialize_schema(conn), lock_retries=_JOURNAL_MODE_LOCK_RETRIES)
+
+#: Liveness, not history. `hosted_room_driver_leases` names a live process generation and is
+#: refreshed every few seconds, so carrying one across the split would import an owner no
+#: process will ever release; the driver claims a fresh lease on its own.
+_LEGACY_MIGRATION_SKIPPED = frozenset({"hosted_room_driver_leases"})
+#: One probe per store per process: the migration is a no-op after the first room exists, and
+#: this keeps every later open from re-opening the legacy file to find that out again.
+_LEGACY_MIGRATION_ATTEMPTED: set[str] = set()
+
+
+def _quoted(name: str) -> str:
+    """Quote an identifier that comes from this module's own schema or from PRAGMA output."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _schema_has_table(conn: sqlite3.Connection, schema: str, table: str) -> bool:
+    return conn.execute(
+        f"SELECT 1 FROM {_quoted(schema)}.sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone() is not None
+
+
+def _schema_columns(conn: sqlite3.Connection, schema: str, table: str) -> list[str]:
+    """Column names in declaration order, so a copy selects by NAME rather than position."""
+    return [str(row[1]) for row in conn.execute(f"PRAGMA {_quoted(schema)}.table_info({_quoted(table)})")]
+
+
+def _legacy_db_path(path: Path) -> Path:
+    """The pre-split store. Hosted-room tables lived in the root ``state.db`` beside this file."""
+    return path.with_name("state.db")
+
+
+def _migrate_from_legacy_store(conn: sqlite3.Connection, path: Path) -> int:
+    """Copy hosted-room rows out of the pre-split ``state.db`` once. Returns the rooms copied.
+
+    `default_db_path` was repointed from the root ``state.db`` to a dedicated
+    ``shared-state.db``, which fixed a real multi-writer problem but left every existing room
+    behind: the new file is created lazily EMPTY, nothing reads the old rows, and the upgrade
+    is silent. A reopened room answers "hosted room not found" while its rows sit in the
+    other file.
+
+    Runs only into an empty store, so it cannot overwrite anything this install has created,
+    and it is a no-op once any room exists. Copies by column NAME rather than ``SELECT *``, so
+    a legacy table whose column order differs is not silently shifted, and takes only the
+    tables both schemas share — a legacy file predating a table simply has nothing to give.
+    """
+    if conn.execute("SELECT 1 FROM hosted_rooms LIMIT 1").fetchone() is not None:
+        return 0
+    legacy = _legacy_db_path(path)
+    if not legacy.is_file():
+        return 0
+    conn.execute("ATTACH DATABASE ? AS legacy_store", (str(legacy),))
+    try:
+        if not _schema_has_table(conn, "legacy_store", "hosted_rooms"):
+            return 0
+        copied = 0
+        # DEFERRED, not IMMEDIATE: `BEGIN IMMEDIATE` takes a write lock on every attached
+        # database, and SQLite will not hold write locks on two WAL files at once. The legacy
+        # store is only read here, so a deferred transaction takes its write lock on `main`
+        # alone, at the first INSERT.
+        conn.execute("BEGIN")
+        try:
+            for table in ("hosted_rooms", "hosted_room_retired_ids", *_DEPENDENT_TABLES):
+                if table in _LEGACY_MIGRATION_SKIPPED or not _schema_has_table(conn, "legacy_store", table):
+                    continue
+                source = _schema_columns(conn, "legacy_store", table)
+                shared = [column for column in _schema_columns(conn, "main", table) if column in source]
+                if not shared:
+                    continue
+                columns = ", ".join(_quoted(column) for column in shared)
+                cursor = conn.execute(
+                    f"INSERT OR IGNORE INTO main.{_quoted(table)} ({columns})"
+                    f" SELECT {columns} FROM legacy_store.{_quoted(table)}")
+                if table == "hosted_rooms":
+                    copied = cursor.rowcount or 0
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        return copied
+    finally:
+        conn.execute("DETACH DATABASE legacy_store")
+
+
+def _migrate_legacy_once(conn: sqlite3.Connection, path: Path) -> None:
+    """Attempt the one-shot legacy copy, at most once per store per process.
+
+    Runs on the caller's freshly opened connection, before that caller begins a transaction of
+    its own — a separate connection would only queue behind it. Best-effort: a legacy file this
+    process cannot read is not a reason to refuse rooms created since the split.
+    """
+    key = str(path)
+    if key in _LEGACY_MIGRATION_ATTEMPTED:
+        return
+    _LEGACY_MIGRATION_ATTEMPTED.add(key)
+    try:
+        copied = _migrate_from_legacy_store(conn, path)
+    except Exception:
+        logger.warning("hosted rooms: legacy migration from %s failed", _legacy_db_path(path), exc_info=True)
+        return
+    if copied:
+        logger.info("hosted rooms: migrated %d room(s) from the pre-split %s", copied, _legacy_db_path(path))
+
+
+def _connect(db_path: DbPath) -> sqlite3.Connection:
+    """Open the room store for writing, migrating the pre-split store on first use."""
+    path = Path(db_path)
+    conn = _open_store(path)
+    _migrate_legacy_once(conn, path)
+    return conn
 
 
 def _read_connection(db_path: DbPath) -> sqlite3.Connection:
     """Open the room store without steady-state journal or migration writes."""
     path = Path(db_path)
     if not path.is_file():
+        _connect(path).close()
+    elif str(path) not in _LEGACY_MIGRATION_ATTEMPTED and _legacy_db_path(path).is_file():
+        # An install that already created an empty store under the shipped build has a CURRENT
+        # schema and no rooms, so schema readiness alone would never reach the copy. Guarded on
+        # the legacy file existing, so the ordinary read path opens nothing extra.
         _connect(path).close()
     conn = open_sqlite(path)
     if not _schema_is_current(conn):

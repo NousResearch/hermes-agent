@@ -1362,3 +1362,121 @@ def test_default_db_path_never_names_the_master_session_store(tmp_path, monkeypa
     assert from_profile == from_root, "one coordination file per install"
     assert from_root.parent == root
     assert from_root.name != "state.db"
+
+
+class TestLegacyStoreMigration:
+    """Rooms created before the shared-state.db split stay reachable after it (#109775).
+
+    `default_db_path` was repointed from the root `state.db` to a dedicated `shared-state.db`,
+    which fixed a real multi-writer problem but left every existing room behind: the new file
+    is created lazily EMPTY and nothing reads the old rows, so a reopened room answers
+    "hosted room not found" while its rows sit in the other file.
+    """
+
+    @staticmethod
+    def _stores(tmp_path):
+        rooms._LEGACY_MIGRATION_ATTEMPTED.clear()  # process-global one-shot guard
+        return str(tmp_path / "state.db"), str(tmp_path / "shared-state.db")
+
+    def test_a_room_created_before_the_split_is_reachable_after_it(self, tmp_path):
+        legacy, current = self._stores(tmp_path)
+        _create(legacy)
+        _append(legacy, room_id="room-1", event_id="e-1", kind="message.user", actor=USER, payload={"text": "hi"})
+
+        listed = rooms.list_rooms(current)
+
+        assert [room["room_id"] for room in listed] == ["room-1"]
+        assert rooms.room_state(current, room_id="room-1")["latest_seq"] == 1
+
+    def test_the_copy_does_not_run_twice(self, tmp_path):
+        legacy, current = self._stores(tmp_path)
+        _create(legacy)
+
+        assert len(rooms.list_rooms(current)) == 1
+        rooms._LEGACY_MIGRATION_ATTEMPTED.clear()  # a later process opening the same store
+        assert len(rooms.list_rooms(current)) == 1
+
+    def test_a_store_that_already_has_rooms_is_left_alone(self, tmp_path):
+        legacy, current = self._stores(tmp_path)
+        _create(legacy, room_id="legacy-room")
+        # Suppress the one-shot for this open, so the new store genuinely holds a room BEFORE
+        # any migration is attempted against it — that is the state the emptiness guard is for.
+        rooms._LEGACY_MIGRATION_ATTEMPTED.add(current)
+        _create(current, room_id="new-room")
+        rooms._LEGACY_MIGRATION_ATTEMPTED.clear()  # a later process opens the same store
+
+        # Not empty, so there is nothing to restore and nothing to merge: the legacy room stays
+        # where it is rather than appearing beside rooms this install created.
+        assert [room["room_id"] for room in rooms.list_rooms(current)] == ["new-room"]
+
+    def test_a_store_already_created_empty_migrates_on_the_next_open(self, tmp_path):
+        # The affected fleet: the shipped build already created shared-state.db, so its schema
+        # is CURRENT and it holds no rooms. Schema readiness alone would never reach the copy.
+        legacy, current = self._stores(tmp_path)
+        _create(legacy)
+        rooms._LEGACY_MIGRATION_ATTEMPTED.add(current)
+        assert rooms.list_rooms(current) == []  # creates the empty store, migration suppressed
+        rooms._LEGACY_MIGRATION_ATTEMPTED.clear()  # the upgraded build opens it
+
+        assert [room["room_id"] for room in rooms.list_rooms(current)] == ["room-1"]
+
+    def test_the_driver_lease_is_not_carried_across(self, tmp_path):
+        # Liveness, not history: a lease names a live process generation and is refreshed every
+        # few seconds, so a copied one is an owner no process will ever release.
+        legacy, current = self._stores(tmp_path)
+        _create(legacy)
+        # The lease table belongs to the driver, not to this module's schema, so the fixture
+        # creates it in BOTH stores the way a pre-split install had it. It has to exist in the
+        # target too, or the copy would skip it for the wrong reason — a table the destination
+        # does not have is skipped whatever the exclusion says.
+        _make_lease_table(legacy, with_row=True)
+        rooms._LEGACY_MIGRATION_ATTEMPTED.add(current)
+        assert rooms.list_rooms(current) == []  # create the empty store, migration suppressed
+        _make_lease_table(current, with_row=False)
+        rooms._LEGACY_MIGRATION_ATTEMPTED.clear()
+
+        assert len(rooms.list_rooms(current)) == 1
+        conn = sqlite3.connect(current)
+        try:
+            rows = conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='hosted_room_driver_leases'"
+            ).fetchone()[0]
+            copied = conn.execute("SELECT COUNT(*) FROM hosted_room_driver_leases").fetchone()[0] if rows else 0
+        finally:
+            conn.close()
+        assert copied == 0
+
+    def test_no_legacy_store_is_not_an_error(self, tmp_path):
+        _, current = self._stores(tmp_path)
+
+        assert rooms.list_rooms(current) == []
+
+    def test_an_unreadable_legacy_store_still_serves_new_rooms(self, tmp_path):
+        # Best-effort by construction: a legacy file this process cannot read is not a reason to
+        # refuse rooms created since the split.
+        legacy, current = self._stores(tmp_path)
+        with open(legacy, "wb") as handle:
+            handle.write(b"not a database")
+
+        _create(current, room_id="new-room")
+
+        assert [room["room_id"] for room in rooms.list_rooms(current)] == ["new-room"]
+
+
+def _make_lease_table(db_path, *, with_row: bool) -> None:
+    """The driver's lease table, as a pre-split install had it in the root store."""
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS hosted_room_driver_leases (
+                room_id TEXT PRIMARY KEY,
+                owner_id TEXT NOT NULL,
+                process_generation INTEGER NOT NULL,
+                expires_at REAL NOT NULL)""")
+        if with_row:
+            conn.execute(
+                "INSERT INTO hosted_room_driver_leases VALUES (?, ?, ?, ?)",
+                ("room-1", "dead-process", 1, 10.0))
+        conn.commit()
+    finally:
+        conn.close()  # `with sqlite3.connect(...)` commits but does not close, and the lock holds

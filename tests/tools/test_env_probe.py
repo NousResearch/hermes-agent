@@ -317,3 +317,42 @@ class TestRunBoundedByTimeout:
         assert elapsed < 3.0, f"_run blocked on grandchild for {elapsed:.1f}s"
         assert rc == 0, f"expected clean exit, got rc={rc} err={err!r}"
         assert out == "ok"
+
+
+class TestWindowsMsysShimResolution:
+    """On Windows the probe reported ``python3=missing`` while the terminal tool
+    (git-bash) ran ``python3`` fine: ``~/.local/bin/python3`` is an extensionless MSYS
+    bash script, invisible to ``shutil.which`` (PATHEXT has no entry for it) and not
+    exec'able by ``CreateProcess``. The probe claims to describe the environment the
+    model gets in the terminal, so it must resolve the way that terminal does — bash.
+    """
+
+    def test_extensionless_shim_resolves_through_bash(self, monkeypatch):
+        """A ``python3`` the native lookup can't see, but bash can, must not read as
+        missing."""
+        git_bash = r"C:\Program Files\Git\usr\bin\bash.EXE"
+        monkeypatch.setattr(
+            env_probe.shutil, "which", lambda name: git_bash if name == "bash" else None)
+
+        cmd = env_probe._posix_shim_command("python3", ("-c", "import sys"), is_windows=True)
+        assert cmd is not None, "git-bash resolves the shim — the probe must ask it"
+        # The RESOLVED path, never a bare "bash": CreateProcess searches the system
+        # directory before PATH, so a bare name finds C:\Windows\System32\bash.exe (the
+        # WSL launcher) — a different shell that fails with execvpe(/bin/bash).
+        assert cmd[0] == git_bash
+        assert cmd[1] == "-lc"
+        assert "python3" in cmd[2]
+
+        # No bash to ask, or a POSIX host, keeps the direct-subprocess behaviour.
+        monkeypatch.setattr(env_probe.shutil, "which", lambda name: None)
+        assert env_probe._posix_shim_command("python3", (), is_windows=True) is None
+        assert env_probe._posix_shim_command("python3", (), is_windows=False) is None
+
+    def test_version_lookup_uses_the_shim_command(self, monkeypatch):
+        """The version lookup consumes the bash result instead of giving up as None."""
+        monkeypatch.setattr(env_probe.shutil, "which", lambda name: None)
+        monkeypatch.setattr(env_probe, "_posix_shim_command",
+                            lambda binary, args: ["bash", "-lc", f"exec {binary}"])
+        monkeypatch.setattr(env_probe, "_run", lambda cmd, timeout=3.0: (0, "3.13.7", ""))
+
+        assert env_probe._python_version_of("python3") == "3.13.7"

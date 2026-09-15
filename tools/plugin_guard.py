@@ -10,6 +10,8 @@ needs confirmation, ``dangerous`` is blocked and ``--force`` does NOT override.
 
 from __future__ import annotations
 
+import ast
+
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, List, Optional, Tuple
@@ -45,6 +47,52 @@ COMMENT_PREFIXES_BY_EXTENSION = {
 
 # One severity step down from the pattern's default.
 _COMMENT_SEVERITY_CAP = {"critical": "high", "high": "medium"}
+
+# A root-level `if __name__ == "__main__":` block is the module's own self-test harness:
+# the loader imports plugins and never runs them as scripts, so sample credentials quoted
+# there are fixtures, not shipped secrets — the same reasoning as the tests/ cap, applied
+# where the file has no test tree to hold them. Narrower than the test-tree cap: the block
+# is still directly executable code, so only the sample-token family is demoted (#112139).
+MAIN_BLOCK_DEMOTIONS = {"hardcoded_secret": "high"}
+
+
+def _main_block_line_ranges(source: str) -> List[Tuple[int, int]]:
+    """1-based inclusive line ranges of `if __name__ == "__main__":` blocks. Only the
+    guarded body (and statements nested inside it) is covered: the guard's own
+    elif/else arms run when the module is *imported*, so they stay runtime code.
+    Files that do not parse get no cap: a broken file is runtime code."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return []
+    ranges: List[Tuple[int, int]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If) and _is_main_guard_test(node.test):
+            ranges.extend(_body_stmt_ranges(node.body))
+    return ranges
+
+
+def _body_stmt_ranges(stmts: List[ast.stmt]) -> Iterator[Tuple[int, int]]:
+    """Line ranges of statements nested under the self-test guard, else-arms of
+    *nested* conditionals included (none of it runs on import)."""
+    for stmt in stmts:
+        yield stmt.lineno, stmt.end_lineno or stmt.lineno
+        for field in ("body", "orelse", "finalbody"):
+            yield from _body_stmt_ranges(getattr(stmt, field, []))
+
+
+def _is_main_guard_test(test: ast.expr) -> bool:
+    """`__name__ == "..."` in either operand order; the string may be built from parts."""
+    if not isinstance(test, ast.Compare) or len(test.ops) != 1 or not isinstance(test.ops[0], ast.Eq):
+        return False
+    name_node = string_node = None
+    for left, right in ((test.left, test.comparators[0]), (test.comparators[0], test.left)):
+        if isinstance(left, ast.Name) and left.id == "__name__":
+            name_node, string_node = left, right
+            break
+    if name_node is None or not isinstance(string_node, ast.Constant) or not isinstance(string_node.value, str):
+        return False
+    return "__main__" in string_node.value
 
 # History, not an agent-facing instruction surface: a hardening entry mentioning the threat
 # it fixed ("A symlink could point at /etc/passwd, so ...") is documentation, not the attack.
@@ -108,12 +156,17 @@ def _finding(pattern_id: str, severity: str, category: str, file: str, match: st
     return Finding(pattern_id, severity, category, file, 0, match, description)
 
 
-def _filter_findings(findings: List[Finding], rel_path: str) -> List[Finding]:
+def _filter_findings(
+    findings: List[Finding],
+    rel_path: str,
+    main_block_ranges: Optional[List[Tuple[int, int]]] = None,
+) -> List[Finding]:
     """Apply plugin-specific exemptions and severity remaps to raw findings."""
     is_code = Path(rel_path).suffix.lower() in CODE_FILE_EXTENSIONS
     in_test_tree = Path(rel_path).parts[0] in TEST_TREE_DIRS
     is_js = Path(rel_path).suffix.lower() in {".js", ".ts"}
     is_doc_prose = Path(rel_path).suffix.lower() in DOC_PROSE_EXTENSIONS
+    main_block_ranges = main_block_ranges or []
     out: List[Finding] = []
     for f in findings:
         if is_code and f.pattern_id in CODE_EXEMPT_PATTERN_IDS:
@@ -131,6 +184,13 @@ def _filter_findings(findings: List[Finding], rel_path: str) -> List[Finding]:
             and f.severity in _COMMENT_SEVERITY_CAP
         ):
             f.severity = _COMMENT_SEVERITY_CAP[f.severity]
+        if (
+            main_block_ranges
+            and f.pattern_id in MAIN_BLOCK_DEMOTIONS
+            and f.severity == "critical"
+            and any(start <= f.line <= end for start, end in main_block_ranges)
+        ):
+            f.severity = MAIN_BLOCK_DEMOTIONS[f.pattern_id]
         out.append(f)
     return out
 
@@ -212,7 +272,15 @@ def scan_plugin(plugin_dir: Path, source: str = "") -> ScanResult:
         all_findings.extend(_check_plugin_structure(plugin_dir))
         for f, rel in sorted(_walk(plugin_dir)):
             if f.is_file() and not f.is_symlink():
-                all_findings.extend(_filter_findings(scan_file(f, rel_path=rel), rel))
+                main_blocks: List[Tuple[int, int]] = []
+                if f.suffix.lower() == ".py":
+                    try:
+                        source = f.read_text(encoding="utf-8")
+                        main_blocks = _main_block_line_ranges(source)
+                    except (UnicodeDecodeError, OSError):
+                        main_blocks = []
+                findings = scan_file(f, rel_path=rel)
+                all_findings.extend(_filter_findings(findings, rel, main_blocks))
     verdict = _determine_verdict(all_findings)
     if all_findings:
         categories = sorted({f.category for f in all_findings})

@@ -132,15 +132,19 @@ def test_persist_model_switch_writes_model_and_both_route_shapes():
     written = {}
 
     class _DB:
-        def update_session_model(self, sid, model):
-            written["model"] = (sid, model)
+        def update_session_model(self, sid, model, provider=None):
+            written["model"] = (sid, model, provider)
 
         def patch_session_model_config(self, sid, patch):
             written["patch"] = (sid, patch)
 
     stub = _make_stub(_session_db=_DB(), session_id="s1")
     stub._persist_model_switch_to_session(_Result())
-    assert written["model"] == ("s1", "deepseek-v4-flash-free")
+    # The provider goes to the row too, not only into model_config: the row's
+    # requested_provider audit column must name the route being requested here.
+    assert written["model"] == (
+        "s1", "deepseek-v4-flash-free", "custom:opencode-zen",
+    )
     sid, patch = written["patch"]
     # Nested shape for the CLI reader...
     assert patch["gateway_runtime"]["provider"] == "custom:opencode-zen"
@@ -206,7 +210,7 @@ def test_persist_model_switch_noop_without_db_or_session():
 
 def test_persist_model_switch_swallows_db_errors():
     class _DB:
-        def update_session_model(self, *a):
+        def update_session_model(self, *a, **k):
             raise RuntimeError("disk full")
 
     stub = _make_stub(_session_db=_DB(), session_id="s1")
@@ -218,8 +222,9 @@ def test_persist_model_switch_heals_bare_custom(monkeypatch):
     written = {}
 
     class _DB:
-        def update_session_model(self, sid, model):
+        def update_session_model(self, sid, model, provider=None):
             written["model"] = model
+            written["row_provider"] = provider
 
         def patch_session_model_config(self, sid, patch):
             written["patch"] = patch
@@ -236,6 +241,9 @@ def test_persist_model_switch_heals_bare_custom(monkeypatch):
     stub = _make_stub(_session_db=_DB(), session_id="s1")
     stub._persist_model_switch_to_session(_BareResult())
     assert written["patch"]["provider"] == "custom:myendpoint"
+    # The row audit gets the HEALED identity, never bare "custom" — the same
+    # value written into model_config, so the two can never disagree.
+    assert written["row_provider"] == "custom:myendpoint"
 
     # Healing fails -> provider dropped (explicit None deletes any stale
     # persisted provider), never persisted bare.
@@ -245,6 +253,7 @@ def test_persist_model_switch_heals_bare_custom(monkeypatch):
     stub._persist_model_switch_to_session(_BareResult())
     assert written["patch"]["provider"] is None
     assert written["patch"]["gateway_runtime"]["provider"] is None
+    assert written["row_provider"] is None
 
 
 def test_restore_session_model_heals_bare_custom_stored_rows(monkeypatch):
@@ -278,6 +287,37 @@ def test_round_trip_persist_then_restore(tmp_path, monkeypatch):
     assert restored.model == "deepseek-v4-flash-free"
     assert restored.provider == "custom:opencode-zen"
     assert restored.base_url == "https://oz/v1"
+
+
+def test_persist_model_switch_records_the_requested_route(tmp_path, monkeypatch):
+    """The /model switch is the request, so it owns the request audit.
+
+    The CLI already resolves the provider it is about to route to (and heals
+    bare "custom" into a routable identity) before writing it into
+    model_config. Passing that same value to update_session_model keeps the
+    row's audit pair describing ONE route: without it the row kept the
+    PREVIOUS request's provider next to the newly requested model, i.e. a
+    route nobody had ever asked for.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(
+        session_id="audit1", source="cli", model="glm-5.3",
+        requested_model="glm-5.3", requested_provider="zai",
+    )
+    db.record_session_fallback("audit1")
+
+    stub = _make_stub(_session_db=db, session_id="audit1")
+    stub._persist_model_switch_to_session(_Result())
+
+    meta = db.get_session("audit1")
+    assert meta["requested_model"] == "deepseek-v4-flash-free"
+    assert meta["requested_provider"] == "custom:opencode-zen"
+    assert meta["fallback_activated"] == 0
+    # And the audit agrees with the route persisted for resume.
+    assert SessionDB.session_gateway_runtime(meta)["provider"] == (
+        meta["requested_provider"]
+    )
 
 
 # ── update_session_model provider persistence (#79536) ──────────────

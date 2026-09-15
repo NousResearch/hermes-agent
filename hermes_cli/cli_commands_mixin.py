@@ -1912,7 +1912,8 @@ class CLICommandsMixin:
         from agent.learn_prompt import build_learn_prompt
         user_request = _command_arg(cmd)
         print("\n" + _t("learn.from_description" if user_request else "learn.from_conversation"))
-        self._queue_prompt_turn(build_learn_prompt(user_request), "/learn")
+        session_id = getattr(getattr(self, "agent", None), "session_id", None)
+        self._queue_prompt_turn(build_learn_prompt(user_request, session_id=session_id), "/learn")
 
     def _handle_plan_command(self, cmd: str):
         """Handle /plan — write a markdown implementation plan, no execution. The live agent

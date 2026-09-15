@@ -411,8 +411,19 @@ def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:
     )
 
 
+# Unit boundary between OpenRouter-style per-token pricing and providers that
+# quote USD per 1M tokens directly. Legitimate per-token prices sit near
+# 1e-7..1e-4 ($0.10-$200 per million); nothing real costs more than $0.01 for a
+# single token (that would be $10,000+/1M, two orders of magnitude above the
+# priciest known models). A raw /models price above this from a custom provider
+# is almost certainly already quoted per-million, so multiplying it by 1M again
+# would inflate the estimate ~1,000,000x. See #112018.
+_MAX_PER_TOKEN_USD = Decimal("0.01")
+
+
 def _pricing_entry_from_metadata(
-    metadata: Dict[str, Dict[str, Any]], model_id: str, *, source_url: str, pricing_version: str
+    metadata: Dict[str, Dict[str, Any]], model_id: str, *, source_url: str,
+    pricing_version: str, assume_per_token: bool = True,
 ) -> Optional[PricingEntry]:
     if model_id not in metadata:
         return None
@@ -423,7 +434,18 @@ def _pricing_entry_from_metadata(
         for alias in aliases:  # alias chain is truthiness-based (``a or b or c``)
             raw = raw or pricing.get(alias)
         value = _to_decimal(raw)
-        return None if value is None else value * _ONE_MILLION
+        if value is None:
+            return None
+        if not assume_per_token and value > _MAX_PER_TOKEN_USD:
+            # Custom OpenAI-compatible providers (e.g. Neosantara) sometimes quote
+            # pricing already in USD per 1M tokens; multiplying again would inflate
+            # the estimate ~1,000,000x. Take the value as already per-million.
+            logger.warning(
+                "usage_pricing: %s /models quotes %s=%s (already per-million?) — "
+                "skipping the per-token x1M conversion", model_id, key, value,
+            )
+            return value
+        return value * _ONE_MILLION
 
     prompt = per_million("prompt")
     completion = per_million("completion")
@@ -457,6 +479,9 @@ def get_pricing_entry(
             fetch_endpoint_model_metadata(route.base_url, api_key=api_key or ""), route.model,
             source_url=f"{route.base_url.rstrip('/')}/models",
             pricing_version="openai-compatible-models-api",
+            # Custom providers may quote either per-token (OpenRouter-style) or
+            # already per-million; OpenRouter's own path always assumes per-token.
+            assume_per_token=False,
         )
         if entry:
             return entry

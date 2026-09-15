@@ -76,5 +76,6 @@ it('adds effort without losing the model name or Fast indicator', () => {
       base + ' · ' + reasoningEffortLabel(effort)
     )
   }
+
   expect(formatModelPillLabel('example-model', { effort: '' })).toBe(formatModelPillLabel('example-model'))
 })

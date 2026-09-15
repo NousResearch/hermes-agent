@@ -110,11 +110,9 @@ export function displayModelName(model: string): string {
 }
 
 /** Composer label, optionally including effort when it has no separate pill. */
-export function formatModelPillLabel(
-  model: string,
-  options?: { fastMode?: boolean; effort?: string }
-): string {
+export function formatModelPillLabel(model: string, options?: { fastMode?: boolean; effort?: string }): string {
   const name = displayModelName(model)
   const fast = model.trim() && (options?.fastMode || /-fast$/i.test(modelBaseId(model)))
+
   return [name, fast ? 'Fast' : '', reasoningEffortLabel(options?.effort ?? '')].filter(Boolean).join(' · ')
 }

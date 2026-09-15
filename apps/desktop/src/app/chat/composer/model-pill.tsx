@@ -16,7 +16,7 @@ import { ChevronDown } from '@/lib/icons'
 import { formatModelPillLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import { $pickerStyle, pickerBehavior } from '@/store/picker-style'
-import { $defaultReasoningEffort, $currentModelSource, setModelPickerOpen } from '@/store/session'
+import { $currentModelSource, $defaultReasoningEffort, setModelPickerOpen } from '@/store/session'
 
 import { onComposerModelMenuRequest } from './focus'
 import { RICH_INPUT_SLOT } from './rich-editor'
@@ -59,14 +59,15 @@ export function ModelPill({
   const currentModel = model.model || viewModel
   const currentProvider = model.provider || viewProvider
 
-
   const behavior = pickerBehavior(useStore($pickerStyle))
   const reasoningEffort = useStore(view.$reasoningEffort)
   const defaultEffort = useStore($defaultReasoningEffort)
+
   const effort =
     behavior.effortInModelLabel && model.supportsReasoning !== false
       ? reasoningEffort || defaultEffort || DEFAULT_REASONING_EFFORT
       : undefined
+
   const fastMode = useStore(view.$fast)
   const modelSource = useStore($currentModelSource)
   const runtimeId = useStore(view.$runtimeId)

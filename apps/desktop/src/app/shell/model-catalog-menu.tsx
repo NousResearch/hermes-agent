@@ -565,11 +565,11 @@ export function ModelCatalogMenu({
                         ) : null}
                       </>
                     )
+
                     if (modelSubmenu === 'hidden') {
                       return (
                         <DropdownMenuItem
                           key={group.provider.slug + ':' + family.id}
-                          disabled={controller.busy}
                           onSelect={event => {
                             event.preventDefault()
                             activate()
@@ -580,6 +580,7 @@ export function ModelCatalogMenu({
                         </DropdownMenuItem>
                       )
                     }
+
                     return (
                       <DropdownMenuSub key={`${group.provider.slug}:${family.id}`}>
                         <DropdownMenuSubTrigger
@@ -605,34 +606,39 @@ export function ModelCatalogMenu({
                           onSetOptions={async patch => {
                             const row = {
                               model: activeId ?? family.id,
-                              presetModel: family.id,
                               provider: group.provider.slug
                             }
+
                             if (modelSubmenu !== 'select-and-apply' || isCurrent) {
                               controller.setOptions(patch, { ...row, isActive: isCurrent })
+
                               return
                             }
-                            if (controller.busy) return
-                            // Carry the displayed preset and edited option in one selection.
+
+                            // Apply the edited preset only after the model switch succeeds.
                             const variantFast = fastControl.kind === 'variant'
                             const fast = patch.fast ?? effFast
                             row.model = variantFast && fast ? family.fastId! : family.id
+
                             const options = {
                               effort: patch.effort ?? effEffort,
                               fast: variantFast ? false : fast
                             }
-                            if (controller.selectChoice && !variantFast) {
-                              if ((await controller.selectChoice(options, row)) === false) return
-                            } else {
-                              const apply = () => {
-                                controller.applyPreset(options, row)
-                                if (variantFast) controller.setOptions({ fast }, { ...row, isActive: false })
-                                if (closeOnSelect) closeMenu()
-                              }
-                              if ((await controller.select(row.model, row.provider, apply)) === false) return
-                              apply()
+
+                            if ((await controller.select(row.model, row.provider)) === false) {
+                              return
                             }
-                            if (closeOnSelect) closeMenu()
+
+                            controller.applyPreset(options, row)
+
+                            if (variantFast) {
+                              controller.setOptions(
+                                { fast },
+                                { model: family.id, provider: row.provider, isActive: false }
+                              )
+                            }
+
+                            closeMenu()
                           }}
                           provider={group.provider.slug}
                           reasoning={caps?.reasoning ?? true}

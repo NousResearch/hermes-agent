@@ -19,10 +19,10 @@ import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $introSplash, setIntroSplash } from '@/store/intro-splash'
 import { notifyError } from '@/store/notifications'
+import { $pickerStyle, type PickerStyle, setPickerStyle } from '@/store/picker-style'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
-import { $pickerStyle, setPickerStyle, type PickerStyle } from '@/store/picker-style'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
 import { $spentTipCount, $tipsEnabled, resetTips, setTipsEnabled } from '@/store/tips'
@@ -491,6 +491,7 @@ export function AppearanceSettings() {
     { id: 'unified', label: a.pickerStyleUnified },
     { id: 'separated', label: a.pickerStyleSeparated }
   ]
+
   const sessionDensityOptions = [
     { id: 'compact', label: a.sessionDensityCompact },
     { id: 'comfortable', label: a.sessionDensityComfortable },

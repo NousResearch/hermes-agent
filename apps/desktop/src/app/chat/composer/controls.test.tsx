@@ -3,8 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatBarState } from '@/app/chat/composer/types'
 import { I18nProvider } from '@/i18n'
-import { $pickerStyle, DEFAULT_PICKER_STYLE, PICKER_STYLES } from '@/store/picker-style'
 import { $hudMode } from '@/store/hud'
+import { $pickerStyle, DEFAULT_PICKER_STYLE, PICKER_STYLES } from '@/store/picker-style'
 import { applyWakeStartResult, applyWakeStatus, resetWakeWordState } from '@/store/wake-word'
 
 import { ComposerControls } from './controls'

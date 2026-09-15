@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
+
 import { PICKER_STYLES, pickerBehavior } from './picker-style'
 
 afterEach(() => {
@@ -18,6 +19,7 @@ it('round trips preferences and falls back safely for an unknown stored style', 
     const store = await import('./picker-style')
     expect(store.$pickerStyle.get()).toBe(style)
   }
+
   vi.resetModules()
   localStorage.setItem('hermes.desktop.pickerStyle', 'future-style')
   const store = await import('./picker-style')

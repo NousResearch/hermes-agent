@@ -84,3 +84,37 @@ def test_non_custom_tag_is_stored_unchanged(monkeypatch):
         },
     )
     assert provider_snapshot == "openrouter"
+
+
+PROVIDERS_KEY = "tokenrhythm"
+PROVIDERS_BASE_URL = "https://api.tokenrhythm.invalid/v1"
+PROVIDERS_CANONICAL = f"custom:{PROVIDERS_KEY}"
+
+
+@pytest.fixture
+def providers_only_config(monkeypatch):
+    config = {
+        "model": {"default": "hermes-smart-stack", "provider": PROVIDERS_CANONICAL},
+        "providers": {
+            PROVIDERS_KEY: {
+                "name": "TokenRhythm",
+                "api": PROVIDERS_BASE_URL,
+                "key_env": "TOKENRHYTHM_API_KEY",
+                "model": "hermes-smart-stack",
+            },
+        },
+    }
+    monkeypatch.setattr(rp, "load_config", lambda *a, **k: config)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: config["model"])
+    return config
+
+
+def test_providers_only_named_entry_heals(providers_only_config, monkeypatch):
+    """A keyed ``providers:`` entry with no ``custom_providers`` at all (review ask on this PR):
+    ``_find_custom_identity`` scans ``providers:`` first, so the snapshot still heals."""
+    provider_snapshot, _ = _snapshot(
+        monkeypatch,
+        {"provider": "custom", "base_url": PROVIDERS_BASE_URL, "requested_provider": "custom"},
+    )
+    assert provider_snapshot == PROVIDERS_CANONICAL

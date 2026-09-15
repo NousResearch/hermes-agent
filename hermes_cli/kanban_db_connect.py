@@ -799,6 +799,8 @@ _LATER_TASK_COLUMNS = (
     ("current_step_key", "current_step_key TEXT"),
     # JSON array of skill names the dispatcher force-loads via --skills.
     ("skills", "skills TEXT"),
+    # JSON array that may only narrow the assignee profile's CLI toolsets.
+    ("toolsets_override", "toolsets_override TEXT"),
     # Per-task override for the consecutive-failure circuit breaker; NULL =
     # ``kanban.failure_limit`` config, then ``DEFAULT_FAILURE_LIMIT``.
     ("max_retries", "max_retries INTEGER"),

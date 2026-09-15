@@ -27,6 +27,7 @@ from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli.kanban import run_slash
+from hermes_cli.kanban_output import _task_to_dict
 
 
 # ---------------------------------------------------------------------------
@@ -757,17 +758,15 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
 
 
 
-def test_legacy_db_without_skills_column_migrates(tmp_path):
-    """_migrate_add_optional_columns is idempotent and adds skills
+def test_legacy_db_without_task_option_columns_migrates(tmp_path):
+    """_migrate_add_optional_columns is idempotent and adds task option columns
     when absent. Run it twice on a pared-down schema to confirm."""
     import sqlite3
     db_path = tmp_path / "legacy.db"
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     # Build a pared-down legacy tasks table that lacks all the
-    # optional columns _migrate_add_optional_columns knows how to
-    # add. We deliberately omit `skills` so we can observe its
-    # introduction.
+    # optional columns _migrate_add_optional_columns knows how to add.
     conn.execute("""
         CREATE TABLE tasks (
             id TEXT PRIMARY KEY,
@@ -794,11 +793,13 @@ def test_legacy_db_without_skills_column_migrates(tmp_path):
 
     before = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
     assert "skills" not in before
+    assert "toolsets_override" not in before
 
     # Run the migrator directly — the same function connect() calls.
     kbc._migrate_add_optional_columns(conn)
     after = {r[1] for r in conn.execute("PRAGMA table_info(tasks)")}
     assert "skills" in after, f"migration did not add skills column: {after}"
+    assert "toolsets_override" in after, f"migration did not add toolsets_override column: {after}"
 
     # Idempotent: running again must not raise.
     kbc._migrate_add_optional_columns(conn)
@@ -810,7 +811,91 @@ def test_legacy_db_without_skills_column_migrates(tmp_path):
     keys = set(row.keys())
     assert "skills" in keys
     assert row["skills"] is None
+    assert row["toolsets_override"] is None
     conn.close()
+
+
+def test_task_toolsets_override_round_trips_to_json_output(kanban_home):
+    conn = kbc.connect()
+    try:
+        task_id = kb.create_task(
+            conn, title="scoped worker", assignee="worker",
+            toolsets_override=["terminal", "web", "terminal"],
+        )
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.toolsets_override == ["terminal", "web"]
+        assert _task_to_dict(task)["toolsets_override"] == ["terminal", "web"]
+    finally:
+        conn.close()
+
+
+def test_task_toolsets_override_accepts_configured_mcp_server_name(kanban_home, monkeypatch):
+    """A name configured under ``mcp_servers`` is a valid toolset override.
+
+    Regression guard: ``_normalize_task_toolsets`` used to reject any name
+    absent from the static/plugin toolset registry, even when it was a
+    legitimately configured MCP server name (these only resolve as toolsets
+    after ``discover_mcp_tools`` runs, which this validation-time path never
+    does). CodeRabbit flagged this independently twice reviewing an
+    unrelated respawn-guard fix.
+
+    The name must be configured under the ASSIGNEE's own profile (profiles
+    are isolated islands, each with its own ``mcp_servers``) — not whatever
+    profile happens to be creating the task.
+    """
+    profile_dir = kanban_home / "profiles" / "worker"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "config.yaml").write_text(
+        "mcp_servers:\n  my_custom_server:\n    command: my-server\n",
+        encoding="utf-8",
+    )
+
+    conn = kbc.connect()
+    try:
+        task_id = kb.create_task(
+            conn, title="mcp-scoped worker", assignee="worker",
+            toolsets_override=["terminal", "my_custom_server"],
+        )
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.toolsets_override == ["terminal", "my_custom_server"]
+    finally:
+        conn.close()
+
+
+def test_task_toolsets_override_still_rejects_unknown_name(kanban_home):
+    """Names that are neither a static toolset nor a configured MCP server
+    are still rejected — the MCP-server allowance must not turn into an
+    accept-anything path."""
+    conn = kbc.connect()
+    try:
+        with pytest.raises(ValueError, match="unknown toolset"):
+            kb.create_task(
+                conn, title="bad toolset worker", assignee="worker",
+                toolsets_override=["totally-not-a-real-toolset"],
+            )
+    finally:
+        conn.close()
+
+
+def test_kanban_create_parser_collects_repeatable_toolsets():
+    from hermes_cli.kanban_parser import build_parser
+
+    parser = argparse.ArgumentParser()
+    build_parser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args([
+        "kanban", "create", "scoped task", "--toolsets", "terminal", "--toolsets", "web",
+    ])
+    assert args.toolsets_override == ["terminal", "web"]
+
+
+def test_kanban_swarm_worker_parser_collects_toolsets_segment():
+    from hermes_cli.kanban_swarm import parse_worker_arg
+
+    worker = parse_worker_arg("researcher:Find sources:research:web,file")
+    assert worker.skills == ["research"]
+    assert worker.toolsets == ["web", "file"]
 
 
 def test_legacy_spawn_failure_columns_are_copied_not_renamed(tmp_path):
@@ -1414,5 +1499,3 @@ def test_notify_sub_starts_caught_up_on_active_task(kanban_home):
         assert events == [], "historical events must not replay to a new sub"
     finally:
         conn.close()
-
-

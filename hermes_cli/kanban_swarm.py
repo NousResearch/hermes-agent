@@ -34,6 +34,7 @@ class SwarmWorkerSpec:
     title: str
     body: str
     skills: list[str] = field(default_factory=list)
+    toolsets: list[str] = field(default_factory=list)
     priority: int = 0
     max_runtime_seconds: Optional[int] = None
 
@@ -218,6 +219,7 @@ def _create_swarm_uncommitted(
             parents=[root],
             priority=spec.priority or priority,
             skills=spec.skills or None,
+            toolsets_override=spec.toolsets or None,
             max_runtime_seconds=spec.max_runtime_seconds,
             **common,
         )
@@ -292,9 +294,10 @@ def latest_blackboard(conn: sqlite3.Connection, root_id: str) -> dict[str, Any]:
 
 
 def parse_worker_arg(raw: str) -> SwarmWorkerSpec:
-    """Parse CLI ``--worker profile:title[:skill,skill]`` values."""
-    parts = [p.strip() for p in raw.split(":", 2)]
+    """Parse CLI ``--worker profile:title[:skill,skill[:toolset,toolset]]`` values."""
+    parts = [p.strip() for p in raw.split(":", 3)]
     if len(parts) < 2:
-        raise ValueError("worker must be profile:title or profile:title:skill,skill")
-    skills = [s.strip() for s in parts[2].split(",") if s.strip()] if len(parts) == 3 and parts[2] else []
-    return SwarmWorkerSpec(profile=parts[0], title=parts[1], body=parts[1], skills=skills)
+        raise ValueError("worker must be profile:title[:skill,skill[:toolset,toolset]]")
+    skills = [s.strip() for s in parts[2].split(",") if s.strip()] if len(parts) >= 3 and parts[2] else []
+    toolsets = [s.strip() for s in parts[3].split(",") if s.strip()] if len(parts) == 4 and parts[3] else []
+    return SwarmWorkerSpec(profile=parts[0], title=parts[1], body=parts[1], skills=skills, toolsets=toolsets)

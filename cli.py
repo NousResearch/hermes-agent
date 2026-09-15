@@ -4314,12 +4314,18 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
     toolsets_list = None
     if isinstance(toolsets, str) and toolsets:
         toolsets_list = [t.strip() for t in toolsets.split(",")]
-    elif isinstance(toolsets, (list, tuple)) and toolsets:
+    elif toolsets == "":
+        # A caller may deliberately pass an empty --toolsets selection (for
+        # example, a Kanban worker narrowed to no profile toolsets). Do not
+        # fall back to the platform defaults; task-scoped tools are resolved
+        # separately by model_tools.
+        toolsets_list = []
+    elif isinstance(toolsets, (list, tuple)):
         # Fire may pass multiple --toolsets as a tuple
         toolsets_list = []
         for t in toolsets:
             toolsets_list.extend([x.strip() for x in t.split(",")] if isinstance(t, str) else [str(t)])
-    elif not toolsets:
+    elif toolsets is None:
         # Coding posture inside a code workspace, else the shared platform resolver.
         try:
             from agent.coding_context import coding_selection

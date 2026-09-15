@@ -2183,7 +2183,13 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
 
 
 def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> list[str]:
-    """Build the ``hermes -p <profile> --cli ... chat -q ...`` worker command."""
+    """Build the ``hermes -p <profile> --cli ... chat -q ...`` worker command.
+
+    ``task.toolsets_override`` is narrowing-only: it is intersected with the
+    assignee profile's configured CLI toolsets and can never grant a toolset the
+    profile does not already have. Task lifecycle tools remain independently
+    available through ``HERMES_KANBAN_TASK``.
+    """
     cmd = [
         *_resolve_hermes_argv(),
         "-p", profile_arg,
@@ -2211,7 +2217,17 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
     if task.reasoning_effort:
         cmd.extend(["--reasoning", task.reasoning_effort])
     worker_toolsets = _resolve_worker_cli_toolsets(hermes_home)
-    if worker_toolsets:
+    if task.toolsets_override is not None:
+        # Never widen a profile: this task-level field can only scope its
+        # configured toolsets down, never add an independently requested one.
+        worker_toolsets = (
+            sorted(set(worker_toolsets or []) & set(task.toolsets_override))
+            if task.toolsets_override else []
+        )
+    # An explicit empty argument is distinct from no argument: the latter
+    # reloads the profile defaults, while the former preserves an empty
+    # intersection and leaves only task-scoped lifecycle tools.
+    if worker_toolsets is not None:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
     cmd.extend(["chat", "-q", f"work kanban task {task.id}"])
     if task.goal_mode:

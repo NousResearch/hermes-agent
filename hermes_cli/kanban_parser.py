@@ -173,7 +173,10 @@ _SPECS = [
         _arg("--skill", action="append", default=[], dest="skills",
              help="Skill to force-load into the worker (repeatable). The kanban "
                   "lifecycle is already injected automatically. Example: --skill "
-                  "translation --skill github-code-review"),
+                   "translation --skill github-code-review"),
+        _arg("--toolsets", action="append", dest="toolsets_override", metavar="TOOLSET",
+             help="Narrow this worker to a configured toolset (repeatable). Can only narrow, never widen, "
+                  "the assignee profile's configured toolsets."),
         _arg("--max-retries", type=int, metavar="N",
              help="Per-task override for the consecutive-failure "
                   f"circuit breaker. Trip on the Nth failure — e.g. --max-retries 1 blocks on the "
@@ -205,7 +208,9 @@ _SPECS = [
     ], help="Create a new task"),
     _cmd("swarm", [
         _arg("goal", help="Swarm goal / final outcome"),
-        _arg("--worker", action="append", default=[], metavar="PROFILE:TITLE[:SKILL,SKILL]",
+        # A fourth segment preserves one self-contained worker declaration: toolsets
+        # follow optional skills rather than introducing a positional mapping flag.
+        _arg("--worker", action="append", default=[], metavar="PROFILE:TITLE[:SKILL,SKILL[:TOOLSET,TOOLSET]]",
              help="Parallel worker card (repeatable)"),
         _arg("--verifier", required=True, help="Verifier profile"),
         _arg("--synthesizer", required=True, help="Synthesizer/writer profile"),
@@ -241,6 +246,12 @@ _SPECS = [
              help="Provider the model belongs to (worker is spawned with "
                   "--provider <name>). Cleared together with the model."),
     ], help="Set or clear a task's model/provider override (takes effect on the next dispatch)"),
+    _cmd("set-toolsets", [
+        _TASK_ID,
+        _arg("toolsets", nargs="*", metavar="TOOLSET",
+             help="Configured toolsets to allow on the next worker dispatch. This can only narrow, never "
+                  "widen, the assignee profile's toolsets; omit TOOLSET for none."),
+    ], help="Narrow a task worker to configured toolsets (takes effect on the next dispatch)"),
     _cmd("reclaim", [_TASK_ID, _RECLAIM_REASON], help="Release an active worker claim on a running task"),
     _cmd("reassign", [
         _TASK_ID,

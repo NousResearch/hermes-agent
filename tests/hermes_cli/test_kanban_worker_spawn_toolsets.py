@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 
 
-def _make_task(kb, *, assignee: str):
+def _make_task(kb, *, assignee: str, toolsets_override=None):
     return kb.Task(
         id="t_spawn_tools",
         title="spawn tools",
@@ -21,6 +21,7 @@ def _make_task(kb, *, assignee: str):
         claim_expires=None,
         tenant=None,
         current_run_id=7,
+        toolsets_override=toolsets_override,
     )
 
 
@@ -88,6 +89,87 @@ agent:
     pinned = captured["cmd"][captured["cmd"].index("--toolsets") + 1].split(",")
     for required in ("terminal", "web", "file", "skills", "code_execution", "delegation"):
         assert required in pinned
+
+
+def test_default_spawn_toolsets_override_only_narrows_profile_toolsets(monkeypatch, tmp_path):
+    root = tmp_path / ".hermes"
+    profile = root / "profiles" / "elias"
+    profile.mkdir(parents=True)
+    profile.joinpath("config.yaml").write_text(
+        "platform_toolsets:\n  cli:\n    - terminal\n    - web\n    - file\n    - skills\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
+    captured = {}
+
+    class FakeProc:
+        pid = 4243
+
+    monkeypatch.setattr(
+        subprocess, "Popen", lambda cmd, *args, **kwargs: captured.setdefault("cmd", list(cmd)) and FakeProc(),
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    kbd._default_spawn(
+        _make_task(kb, assignee="elias", toolsets_override=["terminal", "web", "browser"]),
+        str(workspace),
+    )
+
+    pinned = captured["cmd"][captured["cmd"].index("--toolsets") + 1].split(",")
+    assert pinned == ["terminal", "web"]
+    assert "browser" not in pinned
+
+
+def test_default_spawn_empty_toolsets_override_does_not_fall_back_to_profile(monkeypatch, tmp_path):
+    root = tmp_path / ".hermes"
+    profile = root / "profiles" / "elias"
+    profile.mkdir(parents=True)
+    profile.joinpath("config.yaml").write_text(
+        "platform_toolsets:\n  cli:\n    - terminal\n    - web\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
+    captured = {}
+
+    class FakeProc:
+        pid = 4245
+
+    monkeypatch.setattr(
+        subprocess, "Popen", lambda cmd, *args, **kwargs: captured.setdefault("cmd", list(cmd)) and FakeProc(),
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    kbd._default_spawn(_make_task(kb, assignee="elias", toolsets_override=[]), str(workspace))
+
+    toolsets_index = captured["cmd"].index("--toolsets")
+    assert captured["cmd"][toolsets_index + 1] == ""
+
+
+def test_explicit_empty_cli_toolsets_does_not_resolve_profile_defaults(monkeypatch):
+    import cli
+
+    captured = {}
+
+    class FakeCli:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(cli, "HermesCLI", FakeCli)
+    cli._build_cli_from_args(
+        None, "", None, None, None, None, None, None, False, False, None, None, None, False, None,
+    )
+
+    assert captured["toolsets"] == []
 
 
 def test_default_spawn_model_override_survives_real_cli_parse(monkeypatch, tmp_path):

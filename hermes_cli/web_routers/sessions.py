@@ -13,6 +13,8 @@ import sqlite3
 import time
 from typing import Callable, List, Optional
 
+from agent.compaction_display import project_compaction_message_for_display
+from agent.context_compressor import is_compaction_summary_message
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
@@ -502,9 +504,6 @@ async def get_session_latest_descendant(session_id: str, profile: Optional[str] 
 
 def _project_for_display(messages: list) -> list:
     """Replace compaction summaries with their display-only projection."""
-    from agent.compaction_display import project_compaction_message_for_display
-    from agent.context_compressor import is_compaction_summary_message
-
     projected_messages = []
     for message in messages:
         if not is_compaction_summary_message(message):

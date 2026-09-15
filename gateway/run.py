@@ -1739,26 +1739,32 @@ def _profile_runtime_scope(
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from agent.secret_scope import set_secret_scope, reset_secret_scope
 
-    home_token = set_hermes_home_override(str(profile_home))
-    if prepared_secret_scope is not None:
-        secrets = prepared_secret_scope
-    elif hydrate_secrets:
-        secrets = _load_profile_secret_scope(Path(profile_home))
-    else:
-        from agent.secret_scope import build_profile_secret_scope  # caller already hydrated off-loop
-        secrets = build_profile_secret_scope(Path(profile_home))
-    secret_token = set_secret_scope(secrets)
-    # Install the routed profile's COMPLETE terminal policy, never ambient TERMINAL_* a prior turn set.
-    # Without it terminal_tool reads the process-global TERMINAL_* vars a previous profile's turn may have
-    # pinned (first-writer-wins backend leak; #68559).
+    # Every token is unwound in ONE finally, including when a LATER setup step raises. Secret
+    # hydration and the terminal-policy install both touch the filesystem and can fail, and the
+    # home token is already installed by then — leaving it set stranded the calling thread with the
+    # failed profile as its get_hermes_home() (#110405 review).
     from tools.terminal_scope import install_and_reset_profile_terminal_scope
 
-    with install_and_reset_profile_terminal_scope(Path(profile_home)):
-        try:
+    home_token = set_hermes_home_override(str(profile_home))
+    secret_token = None
+    try:
+        if prepared_secret_scope is not None:
+            secrets = prepared_secret_scope
+        elif hydrate_secrets:
+            secrets = _load_profile_secret_scope(Path(profile_home))
+        else:
+            from agent.secret_scope import build_profile_secret_scope  # caller already hydrated off-loop
+            secrets = build_profile_secret_scope(Path(profile_home))
+        secret_token = set_secret_scope(secrets)
+        # Install the routed profile's COMPLETE terminal policy, never ambient TERMINAL_* a prior turn set.
+        # Without it terminal_tool reads the process-global TERMINAL_* vars a previous profile's turn may
+        # have pinned (first-writer-wins backend leak; #68559).
+        with install_and_reset_profile_terminal_scope(Path(profile_home)):
             yield
-        finally:
+    finally:
+        if secret_token is not None:
             reset_secret_scope(secret_token)
-            reset_hermes_home_override(home_token)
+        reset_hermes_home_override(home_token)
 
 
 @_asynccontextmanager
@@ -4538,18 +4544,21 @@ def _housekeeping_auto_archive(runner=None) -> None:
     except OSError:
         launch_home = get_hermes_home()
     for _name, _home in homes.items():
+        # Path construction and resolution are INSIDE the boundary: a cyclic profile symlink makes
+        # Path.resolve() raise RuntimeError (not OSError) on 3.11, which would escape the tick and
+        # strand every following healthy satellite (#110405 review).
         try:
-            home = _Path(_home).resolve()
-        except OSError:
-            home = _Path(_home)
-        if home == launch_home:
-            continue  # already swept above as this process's own store
-        try:
+            try:
+                home = _Path(_home).resolve()
+            except (OSError, RuntimeError, ValueError):
+                home = _Path(_home)
+            if home == launch_home:
+                continue  # already swept above as this process's own store
+            # Scope construction itself (secret hydration, terminal policy) can fail.
             with _profile_runtime_scope(home):
                 _sweep(f"profile {_name}", home / "state.db")
         except Exception as exc:
-            # Scope construction itself (secret hydration, terminal policy) can fail.
-            logger.debug("Auto-archive tick could not scope profile %s: %s", _name, exc)
+            logger.debug("Auto-archive tick skipped profile %s: %s", _name, exc)
 
 
 def _housekeeping_deferred_fts_retry() -> None:

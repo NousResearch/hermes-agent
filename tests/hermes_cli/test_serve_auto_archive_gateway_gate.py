@@ -28,6 +28,16 @@ def _forbid_open(monkeypatch, wss):
         lambda profile, *, read_only: pytest.fail("auto-archive opened a SessionDB"))
 
 
+def _only_default_gateway_is_live(monkeypatch, default_root):
+    """Live gateway.pid for the DEFAULT root only; satellites have none of their own."""
+    import gateway.status as status
+
+    default_pid = Path(default_root) / "gateway.pid"
+    monkeypatch.setattr(
+        status, "get_running_pid",
+        lambda path=None, *a, **k: 999 if path is not None and Path(path) == default_pid else None)
+
+
 class _DB:
     def __init__(self, calls):
         self._calls = calls
@@ -92,14 +102,15 @@ def test_sweeps_when_no_gateway_is_running(serve_home, monkeypatch):
 
 
 def test_named_satellite_profile_defers_to_the_multiplexer(serve_home, monkeypatch):
-    import hermes_cli.profiles as profiles_mod
+    import hermes_cli.gateway_multiplex_served as served
     import hermes_cli.web_server_cron as wsc
     import hermes_cli.web_server_sessions as wss
 
     other = serve_home / "profiles" / "work"
     other.mkdir(parents=True)
     monkeypatch.setattr(wsc, "_cron_profile_home", lambda profile: ("work", other))
-    monkeypatch.setattr(profiles_mod, "_served_by_running_multiplexer", lambda name: True)
+    _only_default_gateway_is_live(monkeypatch, serve_home)
+    monkeypatch.setattr(served, "recorded_served_profiles", lambda *a, **k: ["work"])
     _forbid_open(monkeypatch, wss)
 
     wss._maybe_auto_archive_for_profile("work")
@@ -117,3 +128,70 @@ def test_unresolvable_profile_fails_closed(serve_home, monkeypatch):
 
     assert wss._auto_archive_owned_by_gateway("work") is True
     wss._maybe_auto_archive_for_profile("work")
+
+
+class TestSatelliteMultiplexerOwnership:
+    """``_served_by_running_multiplexer`` turns every probe failure into False, so a malformed
+    PID/runtime record under a LIVE default gateway reads as 'nobody serves this profile' and the
+    dashboard opens a second writer into a store the multiplexer holds. Review P2 on #110405."""
+
+    @staticmethod
+    def _satellite(monkeypatch, serve_home):
+        import hermes_cli.web_server_cron as wsc
+
+        sat = serve_home / "profiles" / "work"
+        sat.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(wsc, "_cron_profile_home", lambda profile: ("work", sat))
+        return sat
+
+    def test_unreadable_served_record_under_a_live_multiplexer_stands_down(
+            self, serve_home, monkeypatch):
+        import hermes_cli.gateway_multiplex_served as served
+        import hermes_cli.web_server_sessions as wss
+
+        self._satellite(monkeypatch, serve_home)
+        # Default multiplexer is live, satellite has no gateway.pid of its own...
+        _only_default_gateway_is_live(monkeypatch, serve_home)
+        # ...but its served record is unreadable/malformed.
+        monkeypatch.setattr(served, "recorded_served_profiles", lambda *a, **k: None)
+        _forbid_open(monkeypatch, wss)
+
+        assert wss._auto_archive_owned_by_gateway("work") is True
+        wss._maybe_auto_archive_for_profile("work")
+
+    def test_raising_probe_stands_down(self, serve_home, monkeypatch):
+        import hermes_cli.gateway_multiplex_served as served
+        import hermes_cli.web_server_sessions as wss
+
+        self._satellite(monkeypatch, serve_home)
+        _only_default_gateway_is_live(monkeypatch, serve_home)
+
+        def _boom(*a, **k):
+            raise OSError("gateway_state.json is malformed")
+
+        monkeypatch.setattr(served, "recorded_served_profiles", _boom)
+        _forbid_open(monkeypatch, wss)
+
+        assert wss._auto_archive_owned_by_gateway("work") is True
+
+    def test_live_multiplexer_that_does_not_serve_it_is_not_owner(self, serve_home, monkeypatch):
+        """Fail-closed must not become fail-always: an authoritative list that omits the profile
+        is a definite 'not served', and that store still needs its dashboard sweep."""
+        import hermes_cli.gateway_multiplex_served as served
+        import hermes_cli.web_server_sessions as wss
+
+        self._satellite(monkeypatch, serve_home)
+        _only_default_gateway_is_live(monkeypatch, serve_home)
+        monkeypatch.setattr(served, "recorded_served_profiles", lambda *a, **k: ["other"])
+
+        assert wss._auto_archive_owned_by_gateway("work") is False
+
+    def test_served_profile_is_owned(self, serve_home, monkeypatch):
+        import hermes_cli.gateway_multiplex_served as served
+        import hermes_cli.web_server_sessions as wss
+
+        self._satellite(monkeypatch, serve_home)
+        _only_default_gateway_is_live(monkeypatch, serve_home)
+        monkeypatch.setattr(served, "recorded_served_profiles", lambda *a, **k: ["work"])
+
+        assert wss._auto_archive_owned_by_gateway("work") is True

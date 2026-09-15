@@ -226,6 +226,34 @@ def _gateway_owns_home(home: Path) -> bool:
     return bool(liveness.running or liveness.probe_error)
 
 
+def _satellite_owned_by_multiplexer(name: str) -> bool:
+    """True when the default multiplexer owns satellite ``name``'s store, OR we can't tell.
+
+    ``_served_by_running_multiplexer`` / ``named_profile_served_by_running_multiplexer``
+    convert every probe failure into ``False``, so an unreadable or malformed
+    ``gateway.pid`` / ``gateway_state.json`` under a live default gateway reads as
+    "nobody serves this profile" and the dashboard opens a second writer into a store the
+    multiplexer is holding (#110405 review). This is the tri-state version: it only returns
+    False when the default multiplexer is *positively* known not to own the store.
+
+    Raises rather than swallowing — the caller treats an exception as owned.
+    """
+    from hermes_cli.gateway_multiplex_served import recorded_served_profiles
+    from hermes_cli.profiles import normalize_profile_name
+    from hermes_constants import get_default_hermes_root
+
+    default_root = Path(get_default_hermes_root())
+    if not _gateway_owns_home(default_root):
+        return False  # the default multiplexer is definitively down: nothing holds that writer
+    # It is up, or its liveness is unknown. An authoritative served list settles it; None means
+    # "no record" (stopped, pre-multiplex writer, or an unreadable/malformed record), which under a
+    # live-or-unknown multiplexer is exactly the ambiguity that must fail closed.
+    recorded = recorded_served_profiles(default_root)
+    if recorded is None:
+        return True
+    return normalize_profile_name(name) in {normalize_profile_name(p) for p in recorded}
+
+
 def _auto_archive_owned_by_gateway(profile: Optional[str]) -> bool:
     """True when a live gateway already owns ``profile``'s session store.
 
@@ -245,7 +273,6 @@ def _auto_archive_owned_by_gateway(profile: Optional[str]) -> bool:
 
             return _gateway_owns_home(get_hermes_home())
 
-        from hermes_cli.profiles import _served_by_running_multiplexer
         from hermes_cli.web_server_cron import _cron_profile_home
 
         name, home = _cron_profile_home(profile)
@@ -253,7 +280,7 @@ def _auto_archive_owned_by_gateway(profile: Optional[str]) -> bool:
             return True
         # A served satellite writes no gateway.pid of its own; the live default
         # multiplexer holds its writer and (since this change) sweeps it too.
-        return bool(name != "default" and _served_by_running_multiplexer(name))
+        return bool(name != "default" and _satellite_owned_by_multiplexer(name))
     except Exception:
         return True
 

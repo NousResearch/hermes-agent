@@ -176,3 +176,52 @@ def test_satellite_env_var_resolves_against_its_own_secret_scope(tmp_path, monke
     assert by_path.get(sat / "state.db") == 9.0, (
         "satellite must resolve ${ARCHIVE_DAYS} from its OWN .env (9), not the launch "
         f"environment (3); swept={swept}")
+
+
+def test_cyclic_profile_symlink_does_not_strand_later_satellites(homes, monkeypatch, tmp_path):
+    """Path.resolve() raises RuntimeError (not OSError) on a symlink loop in 3.11. Outside the
+    per-profile boundary that escapes the tick and strands every following healthy satellite.
+    Review P2 on #110405."""
+    launch, sat = homes
+    loop = tmp_path / "profiles" / "loop"
+    loop.parent.mkdir(parents=True, exist_ok=True)
+    loop.symlink_to(loop)  # cyclic
+
+    with pytest.raises((RuntimeError, OSError)):
+        loop.resolve(strict=True)
+
+    swept = []
+    _patch_registry(monkeypatch, swept)
+
+    from gateway.run import _housekeeping_auto_archive
+
+    # dict order puts the cyclic profile before the healthy one
+    _housekeeping_auto_archive(_Runner({"default": launch, "loop": loop, "work": sat}))
+
+    assert sat / "state.db" in {p for p, _ in swept}, "a cyclic symlink must not strand later satellites"
+
+
+def test_scope_construction_failure_restores_the_launch_home(homes, monkeypatch):
+    """_profile_runtime_scope installs the home token before secret hydration. If hydration or the
+    terminal-policy install raises, the token must still unwind — otherwise the housekeeping thread
+    is left with the broken satellite as get_hermes_home(). Review P2 on #110405."""
+    launch, sat = homes
+
+    import gateway.run as run_mod
+
+    from hermes_constants import get_hermes_home
+
+    before = get_hermes_home()
+
+    def _boom(*a, **k):
+        raise OSError("secret hydration failed")
+
+    monkeypatch.setattr(run_mod, "_load_profile_secret_scope", _boom)
+
+    swept = []
+    _patch_registry(monkeypatch, swept)
+
+    run_mod._housekeeping_auto_archive(_Runner({"default": launch, "work": sat}))
+
+    assert get_hermes_home() == before, (
+        f"scope must unwind on construction failure; thread left scoped to {get_hermes_home()}")

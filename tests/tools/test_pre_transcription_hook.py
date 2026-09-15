@@ -38,6 +38,11 @@ from tools import transcription_tools
 PROMPT = "Hermes, Teknium, Nous Research, kanban"
 
 
+@pytest.fixture(autouse=True)
+def _no_host_audio_binaries(monkeypatch):
+    monkeypatch.setattr("tools.transcription_audio._find_ffmpeg_binary", lambda: None)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -630,3 +635,67 @@ def test_real_fixture_plugins_thread_prompt_in_registration_order(
     _, kwargs = mock_model.transcribe.call_args
     assert kwargs["initial_prompt"] == PROMPT  # last writer won
     assert kwargs["language"] == "en"  # earlier hook's field preserved
+
+@pytest.mark.parametrize("results,expected", [
+    ([{"prompt": ""}, {"model": "gpt-transcribe"}], ""),
+    ([{"model": "gpt-transcribe"}, {"prompt": ""}], ""),
+    ([{"prompt": ""}, {"prompt": None}, {"language": "fr"}], ""),
+    ([{"prompt": ""}, {"prompt": "last"}], "last"),
+    ([{"model": "gpt-transcribe"}], None),
+])
+def test_real_hook_merger_preserves_prompt_presence(monkeypatch, results, expected):
+    from tools.transcription_command import _apply_pre_transcription_hook
+    manager = plugins_mod.PluginManager()
+    context = plugins_mod.PluginContext(plugins_mod.PluginManifest(name="context-test"), manager)
+    for result in results:
+        context.register_hook("pre_transcription", lambda result=result, **kw: result)
+    monkeypatch.setattr(plugins_mod, "_delivery_manager", lambda: manager)
+    fields = {}
+    model, language, prompt = _apply_pre_transcription_hook(
+        file_path="voice.wav", provider="openai", model=None, language=None,
+        prompt="generic", source="gateway", field_overrides=fields,
+    )
+    assert ("prompt" in fields) == (expected is not None)
+    if expected is not None:
+        assert fields["prompt"] == expected
+        assert prompt == (expected or None)
+    else:
+        assert prompt == "generic"
+    # Existing consumers can still call without metadata and unpack three values.
+    legacy = _apply_pre_transcription_hook(
+        file_path="voice.wav", provider="openai", model=None, language=None,
+        prompt="generic", source="gateway",
+    )
+    assert legacy == (model, language, prompt)
+
+
+@pytest.mark.parametrize("hook_prompt", ["hook vocabulary", ""])
+def test_override_preserves_native_hooks_and_source(monkeypatch, tmp_path, hook_prompt):
+    from copy import deepcopy
+
+    audio = _make_audio(tmp_path)
+    config = {"provider": "local", "prompt": "configured vocabulary",
+              "fallback_providers": ["groq"], "cloud_trim_silence": False,
+              "openai": {"api_key": "test-key"}}
+    original = deepcopy(config)
+    captured = _fake_hooks(monkeypatch, [{
+        "prompt": hook_prompt, "language": "fr", "file_path": "/forbidden.wav",
+    }])
+    client = MagicMock()
+    client.audio.transcriptions.create.return_value = "Bonjour"
+    with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+         patch("tools.transcription_tools._HAS_OPENAI", True), \
+         patch("openai.OpenAI", return_value=client):
+        result = transcription_tools._transcribe_audio_with_provider(
+            audio, "whisper-1", source="discord", provider="openai",
+        )
+    assert result["success"] is True
+    assert captured["hook_name"] == "pre_transcription"
+    assert captured["kwargs"]["provider"] == "openai"
+    assert captured["kwargs"]["source"] == "discord"
+    assert captured["kwargs"]["prompt"] == "configured vocabulary"
+    kwargs = client.audio.transcriptions.create.call_args.kwargs
+    assert kwargs["file"].name == audio
+    assert kwargs["language"] == "fr"
+    assert kwargs.get("prompt", "") == hook_prompt
+    assert config == original

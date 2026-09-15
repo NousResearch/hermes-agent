@@ -512,7 +512,10 @@ class _Resume:
     def claim(self, sid: str, record: dict) -> dict | None:
         """Register ``record`` live under the resume lock, or reuse a concurrent winner's session."""
         live = _claim_or_reuse_live(sid, self.target, record, None)
-        return None if live is None else _resume_reuse_live(self, *live)
+        if live is not None:
+            return _resume_reuse_live(self, *live)
+        _ensure_notification_poller(sid, record)
+        return None
 
     def restore(self):
         """``(sanitized model history, display history, raw history)`` for a cold/eager resume."""

@@ -5,11 +5,11 @@ import hashlib
 import zlib
 from pathlib import Path
 
-EXPECTED_SHA256 = "a3077c6231341de680a99762e55a3621d756af9d6dbd7bf64ea4d5eb4e9e8c4b"
+EXPECTED_SHA256 = "902320c5bbd28da034fd26971594d1c6c855a3302ed88e1bdd3f9d697aa27f64"
 
 root = Path(__file__).resolve().parent / "redteam_payload"
 parts = sorted(root.glob("*.b64"))
-expected_names = [f"{i:02d}.b64" for i in range(10)]
+expected_names = [f"{i:02d}.b64" for i in range(11)]
 actual_names = [p.name for p in parts]
 if actual_names != expected_names:
     raise RuntimeError(f"redteam payload incomplete: expected {expected_names!r}, got {actual_names!r}")

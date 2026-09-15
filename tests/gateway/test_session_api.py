@@ -972,3 +972,52 @@ async def test_patch_session_still_rejects_unknown_fields(adapter, session_db):
         resp = await cli.patch(f"/api/sessions/{session_id}", json={"nonsense": 1})
         assert resp.status == 400, await resp.text()
         assert (await resp.json())["error"]["code"] == "unsupported_session_field"
+
+
+async def test_session_chat_stream_tool_completed_carries_capped_result_preview(adapter, session_db):
+    """``tool.completed`` / ``tool.failed`` on the session stream carry a capped preview of the
+    tool result. The executor hands the result in kwargs (``result=function_result``); the hook
+    used to forward only ``preview`` (always None for completion events), so every client saw
+    ``preview: null`` and had to re-read the transcript to show what a tool returned.
+    """
+    import json as _json
+
+    session_id = session_db.create_session("preview-session", "api_server")
+    long_result = "x" * 5000
+
+    async def fake_run(**kwargs):
+        cb = kwargs["tool_progress_callback"]
+        cb("tool.started", "web_search", None, {"query": "short"})
+        cb("tool.completed", "web_search", None, None, duration=0.1, is_error=False, result="ten results")
+        cb("tool.started", "read_file", None, {"path": "big.txt"})
+        cb("tool.completed", "read_file", None, None, duration=0.2, is_error=False, result=long_result)
+        cb("tool.started", "terminal", None, {"command": "ls"})
+        cb("tool.failed", "terminal", None, None, duration=0.1, is_error=True, result={"error": "boom"})
+        cb("tool.started", "no_result", None, {})
+        cb("tool.completed", "no_result", None, None)
+        kwargs["stream_delta_callback"]("done.")
+        return {"final_response": "done.", "session_id": session_id, "messages": []}, {"total_tokens": 2}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(f"/api/sessions/{session_id}/chat/stream", json={"message": "go"})
+            assert resp.status == 200
+            body = await resp.text()
+
+    completed = {}
+    for block in body.split("\n\n"):
+        if "event: tool.completed" in block or "event: tool.failed" in block:
+            for line in block.splitlines():
+                if line.startswith("data: "):
+                    payload = _json.loads(line[len("data: "):])
+                    completed[payload["tool_name"]] = payload
+
+    assert completed["web_search"]["preview"] == "ten results"
+    assert completed["web_search"]["preview_truncated"] is False
+    assert completed["read_file"]["preview"] == "x" * 2000 + "…"
+    assert completed["read_file"]["preview_truncated"] is True
+    assert completed["terminal"]["preview"] == _json.dumps({"error": "boom"})
+    # no result kwarg → the wire is unchanged (preview stays None, no truncation flag)
+    assert completed["no_result"]["preview"] is None
+    assert "preview_truncated" not in completed["no_result"]

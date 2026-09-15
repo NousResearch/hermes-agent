@@ -5,7 +5,7 @@ import {
   DOUBLE_ENTER_MIN_MS,
   HOLD_DEFAULT_MS,
   SEND_GRACE_DEFAULT_MS,
-  SEND_GRACE_DEFAULT_SCOPE,
+  SEND_GRACE_DEFAULT_REASONS,
   TYPING_IDLE_DEFAULT_MS
 } from '@hermes/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -19,7 +19,8 @@ const DEFAULTS = {
   doubleEnterMs: DOUBLE_ENTER_DEFAULT_MS,
   holdMs: HOLD_DEFAULT_MS,
   typingIdleMs: TYPING_IDLE_DEFAULT_MS,
-  sendGrace: SEND_GRACE_DEFAULT_SCOPE,
+  sendOnHold: false,
+  sendGraceFor: SEND_GRACE_DEFAULT_REASONS,
   sendGraceMs: SEND_GRACE_DEFAULT_MS
 }
 

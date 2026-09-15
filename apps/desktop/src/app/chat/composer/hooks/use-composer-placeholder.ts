@@ -42,7 +42,6 @@ export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: Us
           doubleTap: t.composer.placeholderSendDoubleTap,
           enterSends: t.composer.placeholderSendEnterSends,
           newline: t.composer.placeholderSendNewline,
-          hold: t.composer.placeholderSendHold,
           pause: t.composer.placeholderSendPause
         })
 

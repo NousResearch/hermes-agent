@@ -11,6 +11,8 @@ from pathlib import Path
 import pytest
 
 from hermes_cli.active_sessions import (
+    ActiveSessionRegistryError,
+    SESSION_COORDINATION_UNAVAILABLE,
     active_session_liveness_guard,
     active_session_registry_snapshot,
     try_acquire_active_session,
@@ -200,6 +202,26 @@ def test_desktop_claim_fails_closed_when_registry_setup_fails(
     # double-writer hole.
     assert tui_lease is None
     assert tui_message == server._SESSION_OWNERSHIP_UNAVAILABLE
+
+
+def test_claim_maps_registry_error_to_coordination_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "hermes_cli.active_sessions.try_acquire_active_session",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            ActiveSessionRegistryError("active session owner liveness is unknown")
+        ),
+    )
+
+    lease, message = server._claim_active_session_slot(
+        "desktop-session",
+        live_session_id="desktop-runtime",
+        surface="desktop",
+    )
+
+    assert lease is None
+    assert getattr(message, "reason", None) == SESSION_COORDINATION_UNAVAILABLE
 
 
 def test_server_release_retries_liveness_lease_before_dropping_reference(

@@ -818,6 +818,8 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
                     pricing[target] = normalized[alias]
                     break
         if pricing:
+            if "unit" in normalized:
+                pricing["unit"] = normalized["unit"]
             return pricing
     return {}
 

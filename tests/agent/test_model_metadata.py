@@ -20,6 +20,7 @@ from agent.model_metadata import (
     CONTEXT_PROBE_TIERS,
     DEFAULT_CONTEXT_LENGTHS,
     DEFAULT_FALLBACK_CONTEXT,
+    _extract_pricing,
     _strip_provider_prefix,
     estimate_tokens_rough,
     estimate_messages_tokens_rough,
@@ -1990,3 +1991,15 @@ class TestOpenRouterRoutingVariantContextLength:
         assert variant_ctx == base_ctx == 2_000_000
         assert variant_ctx != DEFAULT_CONTEXT_LENGTHS.get("grok")
         assert get_model_context_length("thinkingmachines/inkling:free", provider="openrouter") == 64_000
+
+
+def test_extract_pricing_preserves_per_1m_tokens_unit():
+    """Generic /models pricing must keep ``unit`` and leave prompt/completion
+    as advertised — do not pre-divide per-million values (#107989)."""
+    pricing = _extract_pricing({
+        "id": "x",
+        "pricing": {"prompt": "2.90", "completion": "10.00", "unit": "per_1m_tokens"},
+    })
+    assert pricing["unit"] == "per_1m_tokens"
+    assert pricing["prompt"] == "2.90"
+    assert pricing["completion"] == "10.00"

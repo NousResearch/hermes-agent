@@ -447,6 +447,18 @@ DEFAULT_CONFIG = {
         # browser_cdp / browser_evaluate capabilities.
         "extension_control": {"enabled": False, "developer_mode": False},
     },
+    # Clarify tool behavior. (Users may also set a legacy `timeout` here — seconds, read by
+    # resolve_clarify_timeout before agent.clarify_timeout — but it is not shipped in defaults.)
+    "clarify": {
+        # When no human answers (headless -q/-z turns, timeouts, undeliverable prompts), the
+        # harness tells the agent to pick an option itself. false (default) = that auto-decide
+        # must never select an authorization-semantic option ("authorize me...", "allow me...",
+        # "consent..."): silence cannot grant consent, so such options are excluded from what
+        # the agent may pick (and when ALL options are consent-semantic, the agent is told to
+        # proceed WITHOUT the authorization). true restores the legacy pick-from-all behavior.
+        # See #107068.
+        "auto_decide_allow_consent": False,
+    },
     # Filesystem checkpoints: snapshot the working directory once per turn (on the first
     # write_file/patch call); restore with /rollback. Opt-in via `hermes chat --checkpoints` or
     # enabled=True (most users never use /rollback). Single shared shadow store with real pruning.

@@ -47,6 +47,9 @@ class ToolSearchConfig:
     listing_max_tokens: int = 4000  # budget = min(this, threshold_pct% of context)
     # None = curated default; an explicit list replaces it wholesale ([] = defer no core tools).
     defer_tools: Optional[frozenset] = None
+    # Tools that never defer (``tools.tool_search.eager``), e.g. a small MCP read tool used
+    # daily (Notion fetch), so the model skips a tool_describe round trip.
+    eager_tools: frozenset = frozenset()
 
     @property
     def effective_defer_tools(self) -> frozenset:
@@ -60,6 +63,7 @@ class ToolSearchConfig:
             raw = {"enabled": "off" if raw is False else "auto"}
         max_search_limit = _clamped_int(raw.get("max_search_limit"), 25, 1, 50)
         defer_raw = raw.get("defer")
+        eager_raw = raw.get("eager")
         return cls(
             enabled=_tri_state(raw.get("enabled", "auto")),
             threshold_pct=max(0.0, min(100.0, _safe_float(raw.get("threshold_pct"), 5.0))),
@@ -69,7 +73,9 @@ class ToolSearchConfig:
             listing=_tri_state(raw.get("listing", "auto")),
             listing_max_tokens=_clamped_int(raw.get("listing_max_tokens"), 4000, 200, 60000),
             defer_tools=(frozenset(str(n).strip() for n in defer_raw if str(n).strip())
-                         if isinstance(defer_raw, (list, tuple, set)) else None))
+                         if isinstance(defer_raw, (list, tuple, set)) else None),
+            eager_tools=(frozenset(str(n).strip() for n in eager_raw if str(n).strip())
+                         if isinstance(eager_raw, (list, tuple, set)) else frozenset()))
 
 
 _TRI_STATE_ALIASES = {"true": "on", "1": "on", "yes": "on", "false": "off", "0": "off", "no": "off"}
@@ -113,6 +119,13 @@ load_config = functools.partial(_config_from_loader, "load_config")
 load_config_readonly = functools.partial(_config_from_loader, "load_config_readonly")  # no copy
 
 
+def _eager_tool_names() -> frozenset:
+    try:
+        return load_config_readonly().eager_tools
+    except Exception:
+        return frozenset()
+
+
 def _core_tool_names() -> frozenset[str]:
     """Names that never defer by default (lazy: ``toolsets`` imports ``tools.registry``)."""
     try:
@@ -144,6 +157,8 @@ def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None) 
     user override), OR an MCP tool, OR neither core nor a session-gated GUI surface (i.e. a
     plugin tool). Bridge names never defer."""
     if name in BRIDGE_TOOL_NAMES:
+        return False
+    if name in _eager_tool_names():
         return False
     if defer_tools is not None and name in defer_tools:
         return True

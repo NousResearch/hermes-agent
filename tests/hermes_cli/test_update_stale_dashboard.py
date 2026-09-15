@@ -929,3 +929,150 @@ class TestPostUpdateStaleModuleReload:
 
         assert "hermes_cli._subprocess_compat" in reloaded
         assert "hermes_cli.dashboard_procs" in reloaded
+
+
+class TestLaunchdSupervisedBackends:
+    """macOS: a backend supervised by a launchd job must come back through launchd. Respawning
+    its argv detached leaves a copy holding the job's port, so every KeepAlive restart of the job
+    fails with "port already in use" and the backend that IS running is no longer supervised."""
+
+    ARGV = [
+        "/opt/hermes/venv/bin/python", "-m", "hermes_cli.main",
+        "dashboard", "--host", "0.0.0.0", "--port", "9119", "--no-open", "--skip-build",
+    ]
+
+    def _live(self):
+        return main_dashboard
+
+    @staticmethod
+    def _fake_kill(pid, sig):
+        if sig == 0:
+            raise ProcessLookupError
+
+    def _run(self, pid, jobs, *, kickstart_ok=True):
+        live = self._live()
+        with patch.object(main_dashboard, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[pid]), \
+             patch.object(main_dashboard, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(main_dashboard, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(main_dashboard, "_dashboard_cmdline_for_pid", return_value=list(self.ARGV)), \
+             patch.object(main_dashboard, "_loaded_launchd_backend_jobs", return_value=jobs), \
+             patch.object(main_dashboard, "_try_kickstart_launchd_job", return_value=kickstart_ok) as kickstart, \
+             patch("hermes_cli.dashboard_procs._hermes_home_for_pid", return_value=None), \
+             patch.object(live, "_respawn_dashboard_processes", return_value=[]) as respawn, \
+             patch("os.kill", side_effect=self._fake_kill), \
+             patch("time.sleep"):
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+        return result, kickstart, respawn
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
+    def test_launchd_owned_pid_is_kickstarted_not_respawned(self, capsys):
+        """launchd reports the PID as the job's live process → kickstart the job, never respawn."""
+        result, kickstart, respawn = self._run(9101, [("system", "ai.hermes.dashboard", list(self.ARGV), 9101)])
+
+        respawn.assert_not_called()
+        kickstart.assert_called_once_with("system", "ai.hermes.dashboard")
+        assert result["killed"] == [9101]
+        assert result["unrecovered"] == []
+        out = capsys.readouterr().out
+        assert "✓ restarted launchd job system/ai.hermes.dashboard" in out
+        assert "when you're ready" not in out
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
+    def test_detached_copy_of_a_launchd_job_is_not_respawned(self, capsys):
+        """The state an earlier respawn leaves behind: the job is loaded but has no live process
+        (it fails on the port), and a detached copy runs its exact ProgramArguments. Killing the
+        copy hands the port back to the job; respawning it would recreate the conflict."""
+        result, kickstart, respawn = self._run(9102, [("system", "ai.hermes.dashboard", list(self.ARGV), None)])
+
+        respawn.assert_not_called()
+        kickstart.assert_called_once_with("system", "ai.hermes.dashboard")
+        assert result["unrecovered"] == []
+        assert "✓ restarted launchd job system/ai.hermes.dashboard" in capsys.readouterr().out
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
+    def test_launchd_kickstart_failure_reports_the_manual_command(self, capsys):
+        result, kickstart, respawn = self._run(
+            9103, [("gui/501", "ai.hermes.dashboard", list(self.ARGV), 9103)], kickstart_ok=False)
+
+        respawn.assert_not_called()
+        kickstart.assert_called_once_with("gui/501", "ai.hermes.dashboard")
+        assert result["unrecovered"] == [9103]
+        out = capsys.readouterr().out
+        assert "launchctl kickstart -k gui/501/ai.hermes.dashboard" in out
+        assert "Restart anything not auto-restarted" in out
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
+    def test_unrelated_launchd_job_does_not_claim_a_manual_backend(self, capsys):
+        """A loaded job with a different PID and different argv leaves the manual respawn intact."""
+        other_argv = ["hermes", "dashboard", "--port", "8300"]
+        result, kickstart, respawn = self._run(9104, [("gui/501", "ai.hermes.dashboard", other_argv, 777)])
+
+        kickstart.assert_not_called()
+        respawn.assert_called_once_with([list(self.ARGV)])
+        assert result["unrecovered"] == []
+
+    def test_owning_job_matches_by_live_pid_or_exact_argv(self):
+        jobs = [
+            ("gui/501", "ai.hermes.dashboard", ["hermes", "dashboard", "--port", "8300"], 4242),
+            ("system", "ai.hermes.serve", ["hermes", "serve", "--port", "8301"], None),
+        ]
+        owning = main_dashboard._launchd_job_owning_backend
+        assert owning(4242, ["something", "else"], jobs) == ("gui/501", "ai.hermes.dashboard")
+        assert owning(9999, ["hermes", "serve", "--port", "8301"], jobs) == ("system", "ai.hermes.serve")
+        assert owning(9999, ["hermes", "serve", "--port", "8302"], jobs) is None
+        assert owning(9999, None, jobs) is None
+        assert owning(4242, None, []) is None
+
+    @pytest.mark.macos_only
+    def test_loaded_backend_jobs_scans_plists_and_probes_only_backend_labels(self, tmp_path):
+        """Only LOADED jobs whose ProgramArguments are a dashboard/serve backend are returned:
+        gateway jobs are never probed, unloaded backends are dropped, unreadable plists skipped,
+        and LaunchDaemons resolve to the system domain."""
+        import plistlib
+
+        agents = tmp_path / "LaunchAgents"
+        daemons = tmp_path / "LaunchDaemons"
+        agents.mkdir()
+        daemons.mkdir()
+        backend_argv = ["/opt/hermes/venv/bin/python", "-m", "hermes_cli.main", "dashboard", "--port", "9119"]
+        serve_argv = ["/opt/hermes/venv/bin/python", "-m", "hermes_cli.main", "serve", "--port", "8642"]
+        gateway_argv = ["/opt/hermes/venv/bin/python", "-m", "hermes_cli.main", "gateway", "run"]
+        for path, label, argv in (
+            (agents / "ai.hermes.dashboard.plist", "ai.hermes.dashboard", backend_argv),
+            (agents / "ai.hermes.gateway.plist", "ai.hermes.gateway", gateway_argv),
+            (agents / "ai.hermes.serve-old.plist", "ai.hermes.serve-old", serve_argv),
+            (daemons / "ai.hermes.serve.plist", "ai.hermes.serve", serve_argv),
+        ):
+            with open(path, "wb") as f:
+                plistlib.dump({"Label": label, "ProgramArguments": argv}, f)
+        (agents / "broken.plist").write_bytes(b"not a plist")
+
+        uid = os.getuid()
+        probed: list[tuple[str, str]] = []
+
+        def fake_print(domain, label):
+            probed.append((domain, label))
+            if (domain, label) == (f"user/{uid}", "ai.hermes.dashboard"):
+                return (True, 4242)
+            if (domain, label) == ("system", "ai.hermes.serve"):
+                return (True, None)
+            return (False, None)
+
+        with patch("hermes_cli.gateway._launchd_print_service_pid", side_effect=fake_print):
+            jobs = main_dashboard._loaded_launchd_backend_jobs([("agent", agents), ("daemon", daemons)])
+
+        assert jobs == [
+            (f"user/{uid}", "ai.hermes.dashboard", backend_argv, 4242),
+            ("system", "ai.hermes.serve", serve_argv, None),
+        ]
+        assert ("gui/501", "ai.hermes.gateway") not in probed
+        assert not any(label == "ai.hermes.gateway" for _domain, label in probed)
+        # An agent label is probed gui first, then user; a daemon only in system.
+        assert probed[:2] == [(f"gui/{uid}", "ai.hermes.dashboard"), (f"user/{uid}", "ai.hermes.dashboard")]
+        assert ("system", "ai.hermes.serve") in probed
+        assert not any(domain == "system" and label != "ai.hermes.serve" for domain, label in probed)
+
+    @pytest.mark.linux_only
+    def test_loaded_backend_jobs_is_empty_off_macos(self, tmp_path):
+        assert main_dashboard._loaded_launchd_backend_jobs([("agent", tmp_path)]) == []

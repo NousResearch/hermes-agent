@@ -210,6 +210,87 @@ def _try_restart_systemd_service(svc_name: str, cgroup_path: str | None = None) 
     return False
 
 
+# launchd plist directories that can supervise a ``hermes dashboard`` / ``hermes serve`` backend on
+# macOS, with the launchctl domain their jobs load into (LaunchAgents: ``gui/<uid>`` or ``user/<uid>``,
+# probed per label like the gateway helpers; LaunchDaemons: ``system``). Both LaunchAgents dirs are
+# per-user domains, so they share the ``agent`` kind.
+def _launchd_plist_dirs() -> list[tuple[str, Path]]:
+    return [
+        ("agent", Path.home() / "Library" / "LaunchAgents"),
+        ("agent", Path("/Library/LaunchAgents")),
+        ("daemon", Path("/Library/LaunchDaemons")),
+    ]
+
+
+def _loaded_launchd_backend_jobs(
+    plist_dirs: list[tuple[str, Path]] | None = None,
+) -> list[tuple[str, str, list[str], int | None]]:
+    """``(domain, label, program_arguments, live_pid)`` for every LOADED launchd job whose
+    ``ProgramArguments`` is a ``hermes dashboard`` / ``hermes serve`` backend. macOS only (empty
+    elsewhere). Reads the plists (unreadable/malformed ones are skipped) and asks ``launchctl print``
+    per candidate label — a job that is not loaded in any domain is not returned, so an operator's
+    stale plist never claims a process."""
+    if sys.platform != "darwin":
+        return []
+    import plistlib
+    from hermes_cli.gateway import _launchd_print_service_pid
+    uid = os.getuid()  # windows-footgun: ok — darwin-only branch
+    jobs: list[tuple[str, str, list[str], int | None]] = []
+    for kind, plist_dir in (plist_dirs if plist_dirs is not None else _launchd_plist_dirs()):
+        try:
+            plists = sorted(plist_dir.glob("*.plist"))
+        except OSError:
+            continue
+        for plist_path in plists:
+            try:
+                with open(plist_path, "rb") as f:
+                    data = plistlib.load(f)
+            except (OSError, ValueError, plistlib.InvalidFileException):
+                continue
+            if not isinstance(data, dict):
+                continue
+            label = str(data.get("Label") or "").strip()
+            args = data.get("ProgramArguments")
+            if not label or not isinstance(args, list) or not args:
+                continue
+            argv = [str(a) for a in args]
+            if _parse_dashboard_runtime(shlex.join(argv)) is None:
+                continue
+            domains = ("system",) if kind == "daemon" else (f"gui/{uid}", f"user/{uid}")
+            for domain in domains:
+                try:
+                    loaded, live_pid = _launchd_print_service_pid(domain, label)
+                except _SYSTEMCTL_ERRORS:
+                    loaded, live_pid = False, None
+                if loaded:
+                    jobs.append((domain, label, argv, live_pid))
+                    break
+    return jobs
+
+
+def _launchd_job_owning_backend(
+    pid: int, cmdline: list[str] | None, jobs: list[tuple[str, str, list[str], int | None]],
+) -> tuple[str, str] | None:
+    """``(domain, label)`` of the loaded launchd job that owns *pid*: launchd reports *pid* as the
+    job's live process, OR the process runs the job's exact ``ProgramArguments`` — a detached copy of
+    a supervised backend (an earlier respawn) holds the port the job needs, and respawning it again
+    would only re-create that conflict. None when no loaded job claims the process."""
+    for domain, label, argv, live_pid in jobs:
+        if live_pid == pid or (cmdline is not None and list(cmdline) == argv):
+            return (domain, label)
+    return None
+
+
+def _try_kickstart_launchd_job(domain: str, label: str) -> bool:
+    """``launchctl kickstart <domain>/<label>`` (no ``-k``: the process was already stopped, and a
+    KeepAlive job may have respawned it — a kill would take that fresh process down). True on
+    success; False on a non-zero exit or when launchctl is unavailable / wedged."""
+    try:
+        return _run_probe(["launchctl", "kickstart", f"{domain}/{label}"], timeout=30).returncode == 0
+    except _SYSTEMCTL_ERRORS:
+        return False
+
+
 def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
     """Exact argv of a running process: ``/proc/<pid>/cmdline`` (Linux), ``ps -o command=`` + shlex
     (macOS), None on Windows (no graceful taskkill window; Desktop manages its backend)."""

@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -756,7 +757,18 @@ def _mcp_server_line(srv: dict, *, dim: str, text: str) -> str:
               "configured": f"[dim {dim}]— configured[/]"}.get(status)
     if suffix is not None:
         return f"[dim {dim}]{name}[/] [dim]({transport})[/] {suffix}"
-    return f"[red]{name}[/] [dim]({transport})[/] [red]— failed[/]"
+    return _mcp_failed_line(name, transport, srv.get("error"))
+
+
+def _mcp_failed_line(name: str, transport: str, error: Optional[str]) -> str:
+    """Failed MCP connect: the short reason (already humanised by ``_format_connect_error``) and the
+    exact next command, so 'failed' is never the whole story."""
+    from rich.markup import escape
+    reason = escape(" ".join(str(error or "").split())[:120]) or "no details recorded"
+    next_cmd = (f"hermes mcp login {name}" if re.search(r"\b401\b|unauthori[sz]ed", reason, re.I)
+                else f"hermes mcp test {name}")
+    return (f"[red]{name}[/] [dim]({transport})[/] [red]— could not connect:[/] {reason} "
+            f"[dim]— run `{next_cmd}`[/]")
 
 
 def _truncate_tool_names(tool_names: List[str]) -> List[Optional[str]]:

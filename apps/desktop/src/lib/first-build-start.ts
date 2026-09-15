@@ -1,12 +1,12 @@
 import type { ChatMessagePart } from '@/lib/chat-messages'
 import { connectorAuthorizationUrl, connectorTitle, recordOf } from '@/lib/connector-tools'
-import type { ConnectorFlowRow } from '@/store/connector-flow'
+import type { FirstBuildConnectorRow } from '@/store/first-build-connectors'
 
 function naturalJoin(names: string[]): string {
   return names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`
 }
 
-export function buildConnectionStartMessage(rows: readonly ConnectorFlowRow[]): string {
+export function buildConnectionStartMessage(rows: readonly FirstBuildConnectorRow[]): string {
   const connected = rows.filter(row => row.phase === 'connected').map(row => connectorTitle(row.connector))
   const skipped = rows.filter(row => row.phase !== 'connected').map(row => connectorTitle(row.connector))
 

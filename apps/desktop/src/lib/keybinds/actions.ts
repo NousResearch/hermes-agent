@@ -128,6 +128,8 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // way back has to already exist. (⌥+letter emits a symbol on macOS; the
   // binding resolves through KeyT via comboFromEvent's `event.code` fallback.)
   { id: 'view.toggleTabStrip', category: 'view', defaults: ['mod+alt+t'] },
+  // Unbound: the rail is a one-time preference, not something to flip mid-chat.
+  { id: 'view.toggleProfileRail', category: 'view', defaults: [] },
   // ⌘G — "g" for git; the review pane is the source-control view.
   { id: 'view.toggleReview', category: 'view', defaults: ['mod+g'] },
   { id: 'view.showFiles', category: 'view', defaults: [] },

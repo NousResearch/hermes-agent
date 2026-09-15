@@ -6,9 +6,16 @@ import { Codicon } from '@/components/ui/codicon'
 import { AnimatedInt } from '@/components/ui/diff-count'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { sessionApprovalRequest } from '@/store/prompts'
-import { $threadJumpButtonVisible, $threadMessagesBelow, requestScrollToBottom } from '@/store/thread-scroll'
+import {
+  $threadJumpButtonVisibleBySession,
+  $threadMessagesBelowBySession,
+  requestScrollToBottom
+} from '@/store/thread-scroll'
+
+import { useComposerSurfaceId } from './composer/scope'
 
 /**
  * Floating "jump to bottom" control. Sits centered just above the composer,
@@ -33,8 +40,17 @@ import { $threadJumpButtonVisible, $threadMessagesBelow, requestScrollToBottom }
  */
 export function ScrollToBottomButton({ sessionId }: { sessionId: string | null }) {
   const { t } = useI18n()
-  const visible = useStore($threadJumpButtonVisible)
-  const count = useStore($threadMessagesBelow)
+  const surfaceId = useComposerSurfaceId()
+  const scrollSessionId = sessionId ?? surfaceId
+
+  const visible = useStoreSelector($threadJumpButtonVisibleBySession, map =>
+    Boolean(scrollSessionId && map[scrollSessionId])
+  )
+
+  const count = useStoreSelector($threadMessagesBelowBySession, map =>
+    scrollSessionId ? (map[scrollSessionId] ?? 0) : 0
+  )
+
   const reducedMotion = useReducedMotion()
   const request = useStore(useMemo(() => sessionApprovalRequest(sessionId), [sessionId]))
   // Scrolled away while an approval is pending → the inline Run/Reject bar is
@@ -71,7 +87,7 @@ export function ScrollToBottomButton({ sessionId }: { sessionId: string | null }
       data-state={state}
       onClick={() => {
         triggerHaptic('selection')
-        requestScrollToBottom(sessionId)
+        requestScrollToBottom(scrollSessionId)
       }}
       style={{
         bottom: 'calc(var(--composer-measured-height) + 1rem)'

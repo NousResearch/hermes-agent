@@ -642,6 +642,11 @@ export class GatewayClient extends EventEmitter {
     this.logs.push(truncateLine(line))
   }
 
+  /** Record a client-side diagnostic line in the /logs tail (raw wire text the UI replaced with plain copy). */
+  recordLog(line: string) {
+    this.pushLog(line)
+  }
+
   // Death-explaining breadcrumbs (spawn / exit / kill / replace) — kept in the
   // in-memory tail for /logs AND persisted to the gateway crash log so the
   // reason survives a parent exit and lands next to the child's SIGTERM panic.

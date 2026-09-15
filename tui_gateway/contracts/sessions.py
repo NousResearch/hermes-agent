@@ -10,6 +10,7 @@ from pydantic import Field
 from .base import JsonValue, Params, Result, WireEnum
 from .common import (OpenModel, PendingApproval, ProfileParams, SessionLiveInfo, SessionParams, TranscriptMessage,
                      Usage)
+from .connectors_operation import ConnectionRequestPayload
 from .registry import method
 
 
@@ -88,6 +89,9 @@ class LiveSessionSnapshot(Result):
     queued: QueuedPrompt | None = None
     pending_approval: PendingApproval | None = None
     open_requests: list[OpenRequestEntry] | None = None
+    # The open connection operation (``tools/connectors/live.current``) as its ``connection.request``
+    # payload: the card restores with the server's deadline after a reconnect or restart.
+    pending_connection: ConnectionRequestPayload | None = None
     todo_state: TodoState | None = None
     auto_continue: AutoContinue | None = None
 
@@ -428,8 +432,20 @@ class ContextCategory(Result):
     tokens: int
 
 
+class ContextFileSource(Result):
+    """One row of ``agent.context_file_sources.list_context_file_sources``."""
+
+    label: str
+    path: str
+    chars: int
+    est_tokens: int
+    loaded: bool
+    status: str
+
+
 class SessionContextBreakdownResult(Result):
-    """``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds)."""
+    """``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds)
+    plus the per-file context manifest (empty until the agent exists)."""
 
     categories: list[ContextCategory]
     context_max: int
@@ -439,6 +455,7 @@ class SessionContextBreakdownResult(Result):
     context_estimated: bool
     context_source: str
     model: str
+    context_files: list[ContextFileSource] = []
 
 
 method("session.context_breakdown", params=SessionContextBreakdownParams, result=SessionContextBreakdownResult,

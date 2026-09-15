@@ -521,6 +521,75 @@ class TestStreamingAccumulator:
 # ── Test: Streaming Callbacks ────────────────────────────────────────────
 
 
+    @pytest.mark.parametrize(
+        "chunks, expect_content, expect_finish, expect_refusal",
+        [
+            pytest.param(
+                [(None, "I can't"), (None, " help with that."), (None, None)],
+                "I can't help with that.", "content_filter", "I can't help with that.",
+                id="refusal-only",
+            ),
+            pytest.param(
+                [("Partial answer.", None), (None, "But I won't do the rest."), (None, None)],
+                "Partial answer.", "stop", "But I won't do the rest.",
+                id="refusal-alongside-content",
+            ),
+        ],
+    )
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_streamed_refusal_accumulated(
+        self, mock_close, mock_create, chunks, expect_content, expect_finish, expect_refusal
+    ):
+        """delta.refusal streams assemble onto message.refusal.
+
+        A refusal-only stream must not raise EmptyStreamError; the transport's
+        normalize_response promotes a sole-payload refusal to content +
+        content_filter, while a refusal next to real content stays a normal
+        usable turn with the note in provider_data.
+        """
+        from run_agent import AIAgent
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        def _chunk(content, refusal, finish_reason=None):
+            delta = SimpleNamespace(
+                content=content,
+                tool_calls=None,
+                reasoning_content=None,
+                reasoning=None,
+                refusal=refusal,
+            )
+            choice = SimpleNamespace(index=0, delta=delta, finish_reason=finish_reason)
+            return SimpleNamespace(choices=[choice], model="test-model", usage=None)
+
+        *body, last = chunks
+        stream = [_chunk(*c) for c in body] + [_chunk(*last, finish_reason="stop")]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(stream)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+        assert response.choices[0].message.refusal == expect_refusal
+
+        normalized = ChatCompletionsTransport().normalize_response(response)
+        assert normalized.content == expect_content
+        assert normalized.finish_reason == expect_finish
+        if expect_finish == "stop":
+            assert normalized.provider_data["refusal"] == expect_refusal
+
+
 class TestStreamingCallbacks:
     """Verify that delta callbacks fire correctly."""
 

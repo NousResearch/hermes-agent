@@ -1050,6 +1050,57 @@ class TestPruneCheckpointsOrphanAllowlist:
         assert second_repo.exists()
 
 
+class TestGcOnlyAfterStoreMutation:
+    """``git gc`` rewrites the whole pack (tens of seconds on a GB store). A checkpoint never runs
+    it — it rewrites refs and marks the store gc-pending — and the periodic prune runs it only when
+    a ref actually moved. A store over the cap with every ref at its one-snapshot floor used to gc on
+    every checkpoint AND on every daily prune, stalling tool calls and gateway startup."""
+
+    def test_checkpoint_never_gcs_and_hands_the_reclaim_to_prune(self, checkpoint_base, tmp_path, monkeypatch):
+        import tools.checkpoint_manager as cm
+        monkeypatch.setattr(cm, "CHECKPOINT_BASE", checkpoint_base)
+        gc_calls = []
+        real_gc = cm._gc_store
+        monkeypatch.setattr(cm, "_gc_store", lambda store, wd: gc_calls.append(store) or real_gc(store, wd))
+        work = tmp_path / "big"
+        work.mkdir()
+        (work / "blob.bin").write_bytes(os.urandom(2 * 1024 * 1024))  # incompressible → store > 1 MB cap
+        m = CheckpointManager(enabled=True, max_snapshots=50, max_total_size_mb=1)
+        store = checkpoint_base / "store"
+
+        assert m.ensure_checkpoint(str(work), "first") is True
+        assert gc_calls == [] and not (store / ".gc-pending").exists()  # at the floor: nothing to drop
+
+        (work / "blob.bin").write_bytes(os.urandom(2 * 1024 * 1024))
+        m.new_turn()
+        assert m.ensure_checkpoint(str(work), "second") is True
+        assert gc_calls == []  # the oldest snapshot was dropped, but the repack is not the tool call's
+        assert (store / ".gc-pending").exists()
+
+        prune_checkpoints(retention_days=30, delete_orphans=False, checkpoint_base=checkpoint_base)
+        assert len(gc_calls) == 1 and not (store / ".gc-pending").exists()
+
+    def test_prune_gcs_only_when_a_project_was_deleted(self, checkpoint_base, tmp_path, monkeypatch):
+        import tools.checkpoint_manager as cm
+        monkeypatch.setattr(cm, "CHECKPOINT_BASE", checkpoint_base)
+        gc_calls = []
+        monkeypatch.setattr(cm, "_gc_store", lambda store, working_dir: gc_calls.append(store))
+        work = tmp_path / "proj"
+        work.mkdir()
+        (work / "f").write_text("f")
+        CheckpointManager(enabled=True).ensure_checkpoint(str(work), "seed")
+
+        assert prune_checkpoints(retention_days=30, delete_orphans=False, checkpoint_base=checkpoint_base)["deleted_stale"] == 0
+        assert gc_calls == []
+
+        meta_path = checkpoint_base / "store" / "projects" / f"{_project_hash(str(work))}.json"
+        meta = json.loads(meta_path.read_text())
+        meta["last_touch"] = time.time() - 60 * 86400
+        meta_path.write_text(json.dumps(meta))
+        assert prune_checkpoints(retention_days=30, delete_orphans=False, checkpoint_base=checkpoint_base)["deleted_stale"] == 1
+        assert len(gc_calls) == 1
+
+
 class TestMaybeAutoPruneCheckpoints:
     def test_prunes_once_then_skips_within_interval(self, tmp_path):
         base = tmp_path / "checkpoints"

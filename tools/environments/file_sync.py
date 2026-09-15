@@ -48,6 +48,41 @@ GetFilesFn = Callable[[], list[tuple[str, str]]]  # () -> [(host_path, remote_pa
 _SYNC_BACK_MAX_RETRIES = 3
 _SYNC_BACK_BACKOFF = (2, 4, 8)  # seconds between retries
 _SYNC_BACK_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB — refuse to extract larger tars
+_SYNC_BACK_TEMP_PREFIX = "hermes-sync-back-"
+# A sync-back temp entry (the downloaded tar or the extraction staging dir) is only leaked by
+# a hard kill (SIGKILL/OOM/power loss — the ``finally`` never runs), so anything older than
+# this is safe to reclaim; a live transfer is hours younger than the cutoff.
+_SYNC_BACK_STALE_SECONDS = 6 * 60 * 60
+
+
+def _cleanup_stale_sync_back_temp(temp_dir: Path | None = None) -> int:
+    """Remove sync-back tars and staging dirs left behind by a hard-killed process.
+
+    Only entries carrying this module's prefix and older than ``_SYNC_BACK_STALE_SECONDS``
+    are touched. Returns the number of entries removed; a permission error or a race with
+    another sync-back must not prevent the current one.
+    """
+    directory = temp_dir or Path(tempfile.gettempdir())
+    cutoff = time.time() - _SYNC_BACK_STALE_SECONDS
+    removed = 0
+    try:
+        candidates = list(directory.glob(f"{_SYNC_BACK_TEMP_PREFIX}*"))
+    except OSError:
+        logger.debug("sync_back: could not scan temporary directory %s", directory)
+        return 0
+    for candidate in candidates:
+        try:
+            if candidate.is_symlink() or candidate.lstat().st_mtime >= cutoff:
+                continue
+            if candidate.is_dir():
+                shutil.rmtree(candidate)
+            else:
+                candidate.unlink()
+            removed += 1
+            logger.debug("sync_back: removed stale temporary entry %s", candidate)
+        except OSError:
+            logger.debug("sync_back: could not remove stale temporary entry %s", candidate)
+    return removed
 
 
 def iter_sync_files(container_base: str = "/root/.hermes") -> list[tuple[str, str]]:
@@ -311,9 +346,13 @@ class FileSyncManager:
         except Exception:
             file_mapping = []
 
+        # A hard kill bypasses the finally below. Reclaim only old entries carrying our
+        # prefix before allocating another full-tree download.
+        _cleanup_stale_sync_back_temp()
+
         # mkstemp + close: NamedTemporaryFile keeps an exclusive handle on Windows, so the
         # backend's open(dest, "wb") / write_bytes on the same path raised PermissionError.
-        fd, tar_path = tempfile.mkstemp(suffix=".tar")
+        fd, tar_path = tempfile.mkstemp(prefix=_SYNC_BACK_TEMP_PREFIX, suffix=".tar")
         os.close(fd)
         try:
             self._bulk_download_fn(Path(tar_path))
@@ -329,7 +368,7 @@ class FileSyncManager:
                     tar_size, _SYNC_BACK_MAX_BYTES)
                 return
 
-            with tempfile.TemporaryDirectory(prefix="hermes-sync-back-") as staging:
+            with tempfile.TemporaryDirectory(prefix=_SYNC_BACK_TEMP_PREFIX) as staging:
                 with tarfile.open(tar_path) as tar:
                     tar.extractall(staging, filter="data")
 

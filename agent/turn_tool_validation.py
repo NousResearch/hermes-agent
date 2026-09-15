@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from agent.message_metadata import append_message
@@ -28,11 +28,23 @@ class ToolValidationVerdict:
     error results / retry state were recorded) or ``"return"`` (terminal partial
     result in ``result``). ``mixed_invalid_batch`` is True when the batch contains BOTH
     valid and unknown tool names: only the invalid calls get error results, the valid
-    ones run."""
+    ones run. ``invalid_json_by_id`` maps tool_call_id → decode error for calls whose
+    arguments are not valid JSON in a batch that still has an executable sibling: those
+    get error results, the siblings run (#84698)."""
 
     action: str
     result: Optional[Dict[str, Any]]
     mixed_invalid_batch: bool
+    invalid_json_by_id: Dict[str, str] = field(default_factory=dict)
+
+
+def invalid_json_error_content(error_msg: str) -> str:
+    """Tool-result text for a call whose arguments were not valid JSON."""
+    return (
+        f"Error: Invalid JSON arguments. {error_msg}. "
+        f"For tools with no required parameters, use an empty object: {{}}. "
+        f"Please retry with valid JSON."
+    )
 
 
 def _preview_name(name: str) -> str:
@@ -139,7 +151,13 @@ def validate_tool_calls(
 
     # Validate tool call arguments are valid JSON; empty strings become empty
     # objects (common model quirk).
-    invalid_json_args = []
+    #
+    # Key invalid calls by tool_call_id, never by tool name (#84698): two
+    # parallel calls to the SAME tool (one valid JSON, one invalid) must not
+    # collide — name-keying made the valid sibling inherit the Invalid-JSON
+    # error and never execute. Ids are unique here: _uniquify_tool_call_ids
+    # ran above.
+    invalid_json_by_id: Dict[str, str] = {}
     for tc in tool_calls:
         args = tc.function.arguments
         if isinstance(args, (dict, list)):
@@ -156,16 +174,16 @@ def validate_tool_calls(
             # A mixed-batch invalid-name call never executes (error result later);
             # don't let its broken args trigger the whole-turn JSON retry.
             if not (_mixed_invalid_batch and tc.function.name not in valid_names):
-                invalid_json_args.append((tc.function.name, str(e)))
+                invalid_json_by_id[coalesce_tool_call_id(tc)] = str(e)
 
-    if invalid_json_args:
-        invalid_names = {n for n, _ in invalid_json_args}
+    if invalid_json_by_id:
         # Routers may rewrite finish_reason "length" → "tool_calls", hiding
         # truncation; args not ending in } or ] (stripped) were cut off
-        # mid-stream.
+        # mid-stream. Keyed by id so a complete same-name sibling is not
+        # false-positived into the truncated set.
         _truncated = any(
             not (tc.function.arguments or "").rstrip().endswith(("}", "]"))
-            for tc in tool_calls if tc.function.name in invalid_names
+            for tc in tool_calls if coalesce_tool_call_id(tc) in invalid_json_by_id
         )
         if _truncated:
             agent._vprint(
@@ -180,9 +198,39 @@ def validate_tool_calls(
                 "Response truncated due to output length limit",
             ))
 
+        # Mixed JSON batch: at least one valid-name call parsed cleanly.
+        # Mirror the invalid-name mixed-batch path — error-result ONLY the
+        # broken calls and run the valid siblings; a whole-turn retry would
+        # discard real work (#84698). The retry counter only advances when
+        # NO call in the turn is executable, so an all-broken batch still
+        # gets the retry-then-recovery-inject treatment below.
+        _valid_json_sibling = any(
+            tc.function.name in valid_names and coalesce_tool_call_id(tc) not in invalid_json_by_id
+            for tc in tool_calls
+        )
+        if _valid_json_sibling:
+            agent._invalid_json_retries = 0
+            _first_bad = next(iter(invalid_json_by_id))
+            _n_valid = sum(
+                1 for tc in tool_calls
+                if tc.function.name in valid_names and coalesce_tool_call_id(tc) not in invalid_json_by_id
+            )
+            agent._buffer_vprint(
+                f"⚠️  Invalid JSON in tool call arguments ({_first_bad}) — erroring that call, "
+                f"executing {_n_valid} valid call(s)"
+            )
+            return ToolValidationVerdict(
+                action="ok", result=None, mixed_invalid_batch=_mixed_invalid_batch,
+                invalid_json_by_id=dict(invalid_json_by_id),
+            )
+
         agent._invalid_json_retries += 1
-        tool_name, error_msg = invalid_json_args[0]
-        agent._buffer_vprint(f"⚠️  Invalid JSON in tool call arguments for '{tool_name}': {error_msg}")
+        _first_bad = next(iter(invalid_json_by_id))
+        _first_tc = next(tc for tc in tool_calls if coalesce_tool_call_id(tc) == _first_bad)
+        agent._buffer_vprint(
+            f"⚠️  Invalid JSON in tool call arguments for '{_first_tc.function.name}': "
+            f"{invalid_json_by_id[_first_bad]}"
+        )
 
         if agent._invalid_json_retries < 3:
             agent._buffer_vprint(f"🔄 Retrying API call ({agent._invalid_json_retries}/3)...")
@@ -197,14 +245,10 @@ def validate_tool_calls(
         append_message(messages, agent._build_assistant_message(assistant_message, finish_reason))
 
         def _json_error_result(tc) -> str:
-            if tc.function.name not in invalid_names:
+            err = invalid_json_by_id.get(coalesce_tool_call_id(tc))
+            if err is None:
                 return "Skipped: other tool call in this response had invalid JSON."
-            err = next(e for n, e in invalid_json_args if n == tc.function.name)
-            return (
-                f"Error: Invalid JSON arguments. {err}. "
-                f"For tools with no required parameters, use an empty object: {{}}. "
-                f"Please retry with valid JSON."
-            )
+            return invalid_json_error_content(err)
 
         _append_tool_error_results(messages, tool_calls, _json_error_result)
         return _verdict("continue")

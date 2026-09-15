@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   type CommandCatalogMeta,
   type CommandsCatalogLike,
+  DESKTOP_COMMAND_SPECS,
   desktopSkinSlashCompletions,
   type DesktopSlashArgumentMode,
   desktopSlashCommandArgumentMode,
@@ -16,6 +17,7 @@ import {
   rankSkillCommands,
   rememberDesktopCommandsCatalog,
   resolveDesktopCommand,
+  slashCommandCodicon,
   slashCompletionGroup,
   TS_ONLY_NO_DESKTOP_SURFACE
 } from './desktop-slash-commands'
@@ -503,4 +505,50 @@ describe('registry-derived block-list (contract with hermes_cli/commands.py)', (
       }
     }
   })
+})
+
+describe('slashCommandCodicon', () => {
+  beforeEach(() => rememberDesktopCommandsCatalog(undefined))
+
+  afterEach(() => rememberDesktopCommandsCatalog(undefined))
+
+  it('resolves canonical commands, aliases, casing, and args to one glyph', () => {
+    expect(slashCommandCodicon('/branch')).toBe('git-branch')
+    expect(slashCommandCodicon('/fork')).toBe('git-branch')
+    expect(slashCommandCodicon('/Resume abc123')).toBe('comment-discussion')
+    expect(slashCommandCodicon('BRANCH')).toBe('git-branch')
+    expect(slashCommandCodicon('/new')).toBe('add')
+  })
+
+  it('resolves backend aliases through the live catalog canon map', () => {
+    rememberDesktopCommandsCatalog(registryCatalog({ '/agents': null }, { '/tasks': '/agents' }))
+
+    expect(slashCommandCodicon('/tasks')).toBe('hubot')
+  })
+
+  it('falls back to undefined for skills and unknown commands', () => {
+    expect(slashCommandCodicon('/my-future-skill')).toBeUndefined()
+    expect(slashCommandCodicon('/woof')).toBeUndefined()
+  })
+
+  it('covers every locally authored command and alias', () => {
+    for (const spec of DESKTOP_COMMAND_SPECS) {
+      for (const name of [spec.name, ...(spec.aliases ?? [])]) {
+        expect(slashCommandCodicon(name), `${name} has no popover glyph`).toBeDefined()
+      }
+    }
+  })
+
+  it('resolves representative backend commands (not just local specs)', () => {
+    expect(slashCommandCodicon('/retry')).toBe('refresh')
+    expect(slashCommandCodicon('/undo')).toBe('discard')
+    expect(slashCommandCodicon('/worktree')).toBe('worktree')
+    expect(slashCommandCodicon('/review')).toBe('git-pull-request')
+    expect(slashCommandCodicon('/queue')).toBe('list-ordered')
+  })
+
+  // No orphan check against the registry dump: it only carries commands with
+  // explicit desktop= disposition, so most exec commands (e.g. /retry) are
+  // absent by design. Coverage above pins the locally authored set; backend
+  // rows degrade to the group-kind glyph when unmapped.
 })

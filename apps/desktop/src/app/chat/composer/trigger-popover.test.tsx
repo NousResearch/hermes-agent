@@ -89,6 +89,66 @@ describe('ComposerTriggerPopover i18n', () => {
   })
 })
 
+describe('ComposerTriggerPopover slash row glyphs', () => {
+  function glyphPopover() {
+    const items = [
+      slashItem('/branch'),
+      {
+        ...slashItem('/woof'),
+        metadata: { command: '/woof', display: '/woof', group: 'Commands', meta: '', rawText: '/woof' }
+      },
+      {
+        ...slashItem('/resume abc123'),
+        metadata: {
+          command: '/resume abc123',
+          display: 'My session',
+          group: 'Sessions',
+          meta: '',
+          rawText: '/resume abc123'
+        }
+      }
+    ]
+
+    return (
+      <I18nProvider configClient={null} initialLocale="en">
+        <ComposerTriggerPopover
+          activeIndex={0}
+          items={items}
+          kind="/"
+          loading={false}
+          onHover={vi.fn()}
+          onPick={vi.fn()}
+        />
+      </I18nProvider>
+    )
+  }
+
+  function rowGlyph(command: string): string {
+    const row = screen.getByText(command).closest('button')
+    const icon = row?.querySelector('i')
+
+    return [...(icon?.classList ?? [])].find(name => name.startsWith('codicon-') && name !== 'codicon') ?? ''
+  }
+
+  it('renders the per-command glyph for known commands', () => {
+    render(glyphPopover())
+
+    expect(rowGlyph('/branch')).toBe('codicon-git-branch')
+  })
+
+  it('falls back to the group-kind glyph for unknown commands', () => {
+    render(glyphPopover())
+
+    expect(rowGlyph('/woof')).toBe('codicon-terminal')
+  })
+
+  it('resolves session rows by command token, not row label', () => {
+    render(glyphPopover())
+
+    expect(rowGlyph('My session')).toBe('codicon-comment-discussion')
+  })
+})
+
 describe('ComposerTriggerPopover keyboard scrolling', () => {
   const items = [slashItem('/first'), slashItem('/second'), slashItem('/third')]
 

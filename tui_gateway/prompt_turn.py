@@ -136,8 +136,23 @@ def _admit_prompt_turn(
         if not isinstance(inflight, dict) or inflight.get("status") == "error":
             _start_inflight_turn(session, text)
         agent = session["agent"]
-        with contextlib.suppress(Exception):
-            agent.clear_interrupt()
+        if agent is None:
+            session["running"] = False
+        else:
+            with contextlib.suppress(Exception):
+                agent.clear_interrupt()
+    if agent is None:
+        # A deferred build can finish without attaching an agent (its record was replaced or closed
+        # mid-build: ``agent_ready`` set, ``agent`` None, see ``_start_agent_build``).  Every turn source
+        # crosses this gate, so refuse here with a retryable frame: the turn body used to dereference the
+        # missing agent twice (in ``_invoke_agent`` and again in its ``finally``), which killed the turn
+        # thread with ``running`` still True — the prompt vanished and the session stayed "busy" (#111531).
+        reason = session.get("agent_error") or AGENT_MISSING_FOR_TURN
+        logger.info("Refusing turn for session %s: no agent attached (%s)", session.get("session_key") or sid, reason)
+        _emit_terminal_turn_error(
+            sid, session, reason,
+            error_surface={"layer": "runtime", "code": "agent_init_failed", "retryable": True})
+        return None
     return images, agent
 
 

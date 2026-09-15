@@ -63,12 +63,17 @@ def load_on_disk_store() -> "MemoryStore":
 
 def _gate_or_stage(summary: str, detail: str, payload: Dict[str, Any]) -> Optional[str]:
     """JSON tool-result string when the write must NOT proceed (blocked or staged
-    for approval), None to proceed. Fails open if the gate module can't load."""
+    for approval), None to proceed. Fails closed if the gate module can't load
+    or evaluate — a broken gate must not silently grant an unattended write."""
     try:
         from tools import write_approval as wa
+        decision = wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail)
     except Exception:
-        return None
-    decision = wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail)
+        logger.exception("memory write approval gate unavailable")
+        return tool_error(
+            "Memory write blocked: approval gate is unavailable.",
+            success=False,
+        )
     if decision.allow:
         return None
     if decision.blocked:

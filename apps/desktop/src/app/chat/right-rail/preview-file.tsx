@@ -25,16 +25,19 @@ import {
   desktopFileDiff,
   desktopFsCacheKey,
   desktopGitRoot,
+  isDesktopFsRemoteMode,
+  localPathFromFileHref,
   readDesktopFileDataUrl,
   readDesktopFileText,
   writeDesktopFileText
 } from '@/lib/desktop-fs'
-import { Check, Pencil, X } from '@/lib/icons'
+import { Check, ExternalLink, Pencil, X } from '@/lib/icons'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { isComposerChord } from '@/lib/keybinds/chords'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
 import { normalizeFilePreviewMath } from '@/lib/markdown-preprocess'
 import { cn } from '@/lib/utils'
+import { openFileWithDefaultApp } from '@/store/file-actions'
 import type { PreviewTarget } from '@/store/preview'
 import { setPreviewDirty } from '@/store/preview-edit'
 import { $connection, $currentCwd } from '@/store/session'
@@ -180,13 +183,46 @@ function filePathForTarget(target: PreviewTarget) {
     return target.path
   }
 
-  try {
-    const url = new URL(target.url)
+  // file:// hrefs go through localPathFromFileHref, which keeps a non-localhost
+  // hostname (a UNC share like file://server/docs/x.pdf) as a //server/... path
+  // — dropping it would retarget a same-named local path on open.
+  return localPathFromFileHref(target.url)
+}
 
-    return url.protocol === 'file:' ? decodeURIComponent(url.pathname) : target.url
-  } catch {
-    return target.url
+// Small header affordance that hands the previewed file to its OS default
+// application (Excel/WPS for xlsx, Preview for pdf). Only real local files
+// qualify: artifact targets have no on-disk path, remote-gateway paths don't
+// exist on this machine, and transient (pasted) bytes are not reliably on disk.
+function canOpenWithDefaultApp(target: PreviewTarget): boolean {
+  return (
+    target.kind === 'file' &&
+    !target.transient &&
+    !isDesktopFsRemoteMode() &&
+    Boolean(window.hermesDesktop?.openExternal)
+  )
+}
+
+function OpenWithDefaultAppButton({ target }: { target: PreviewTarget }) {
+  const { t } = useI18n()
+
+  if (!canOpenWithDefaultApp(target)) {
+    return null
   }
+
+  const filePath = filePathForTarget(target)
+
+  return (
+    <Tip label={t.fileMenu.openWithApp}>
+      <button
+        className="flex items-center gap-1 text-[0.625rem] font-bold text-muted-foreground underline-offset-4 transition-colors hover:text-foreground"
+        onClick={() => void openFileWithDefaultApp(filePath)}
+        type="button"
+      >
+        <ExternalLink className="size-3" />
+        {t.fileMenu.openWithApp}
+      </button>
+    </Tip>
+  )
 }
 
 function formatBytes(bytes: number | undefined) {
@@ -1034,11 +1070,17 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   ) {
     const binary = target.binary || state.binary
     const size = target.byteSize || state.byteSize
+    const canOpenApp = canOpenWithDefaultApp(target)
 
     return (
       <PreviewEmptyState
         body={binary ? t.preview.binaryBody(target.label) : t.preview.largeBody(target.label, formatBytes(size))}
         primaryAction={{ label: t.preview.previewAnyway, onClick: () => setForcePreview(true) }}
+        secondaryAction={
+          canOpenApp
+            ? { label: t.fileMenu.openWithApp, onClick: () => void openFileWithDefaultApp(filePath) }
+            : undefined
+        }
         title={binary ? t.preview.binaryTitle : t.preview.largeTitle}
         tone="warning"
       />
@@ -1060,13 +1102,21 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
 
   if (isPdf && state.dataUrl && pdfUrl) {
     return (
-      <div className="h-full w-full overflow-hidden bg-transparent">
-        <iframe
-          aria-label={target.label}
-          className="h-full w-full border-0 bg-white"
-          src={pdfUrl}
-          title={target.label}
+      <div className="flex h-full w-full flex-col overflow-hidden bg-transparent">
+        <PreviewModeSwitcher
+          active="source"
+          modes={[]}
+          onSelect={() => {}}
+          trailing={<OpenWithDefaultAppButton target={target} />}
         />
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <iframe
+            aria-label={target.label}
+            className="h-full w-full border-0 bg-white"
+            src={pdfUrl}
+            title={target.label}
+          />
+        </div>
       </div>
     )
   }

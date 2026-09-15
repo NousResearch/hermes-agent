@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -189,14 +189,12 @@ describe('Show all sessions', () => {
   it('keeps the five-session page by default and renders every loaded workspace session when enabled', () => {
     workspaceOpen.value = true
 
-    const { rerender } = render(
-      <SidebarWorkspaceGroup group={group({ sessions })} renderRows={renderRows} showAllSessions={false} />
-    )
+    render(<SidebarWorkspaceGroup group={group({ sessions })} renderRows={renderRows} />)
 
     expect(screen.getByText('session-5')).toBeTruthy()
     expect(screen.queryByText('session-6')).toBeNull()
 
-    rerender(<SidebarWorkspaceGroup group={group({ sessions })} renderRows={renderRows} showAllSessions />)
+    act(() => $sidebarShowAllSessions.set(true))
 
     expect(screen.getByText('session-6')).toBeTruthy()
     expect(screen.queryByRole('button', { name: /Show .* more in feature/ })).toBeNull()

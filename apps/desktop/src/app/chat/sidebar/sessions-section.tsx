@@ -492,7 +492,6 @@ export function SidebarSessionsSection({
             removedSessionIds={removedSessionIds}
             renderRows={renderRowsDated}
             repoWorktrees={projectRepoWorktrees}
-            showAllSessions={showAllSessions}
           />
         ) : (
           emptyState

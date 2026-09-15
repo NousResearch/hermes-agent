@@ -9,7 +9,7 @@ import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
 import { useStoreSelector } from '@/lib/use-session-slice'
-import { setWorkspaceNodeOpen } from '@/store/layout'
+import { $sidebarShowAllSessions, setWorkspaceNodeOpen } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { newSessionInProfile, pinNewChatProfile, selectProfile } from '@/store/profile'
 import { switchBranchInRepo } from '@/store/projects'
@@ -37,8 +37,6 @@ interface SidebarWorkspaceGroupProps {
   // When set (linked worktree rows), shows a remove affordance that runs a real
   // `git worktree remove`.
   onRemove?: () => void
-  /** Render all loaded workspace sessions instead of the ordinary page. */
-  showAllSessions?: boolean
 }
 
 export function SidebarWorkspaceGroup({
@@ -46,8 +44,7 @@ export function SidebarWorkspaceGroup({
   renderRows,
   onNewSession,
   onNewSessionSplit,
-  onRemove,
-  showAllSessions = false
+  onRemove
 }: SidebarWorkspaceGroupProps) {
   const { t } = useI18n()
   const s = t.sidebar
@@ -56,6 +53,10 @@ export function SidebarWorkspaceGroup({
   // that leaves this profile's spend unchanged doesn't repaint its header.
   const usage = useStoreSelector($sessionProfilesUsage, all => all[group.id])
   const rankIds = useStore($sidebarSessionRankIds)
+  // The sidebar's "Show all sessions" preference lifts the lane's page too —
+  // the same switch that widens the project overview, read at the leaf like
+  // overview-row does.
+  const showAllSessions = useStore($sidebarShowAllSessions)
   // Empty worktree/branch lanes start collapsed — they only show a "No sessions
   // yet" placeholder, so defaulting them open just adds noise. Profile lanes and
   // lanes that already hold sessions default open.
@@ -67,11 +68,10 @@ export function SidebarWorkspaceGroup({
   // rows it hides are the ones the sort ranked last.
   const sessions = rankSessions(group.sessions, rankIds)
   // A profile previews the same handful a project does, and clicking its label
-  // is how you see the rest. Workspace groups page within what's loaded.
-  const visibleSessions = sessions.slice(
-    0,
-    isProfileGroup ? PROJECT_PREVIEW_COUNT : showAllSessions ? undefined : visibleCount
-  )
+  // is how you see the rest. Workspace groups page within what's loaded unless
+  // the user asked for everything.
+  const laneCap = showAllSessions ? sessions.length : visibleCount
+  const visibleSessions = sessions.slice(0, isProfileGroup ? PROJECT_PREVIEW_COUNT : laneCap)
   const hiddenCount = isProfileGroup ? 0 : sessions.length - visibleSessions.length
   const nextCount = Math.min(SIDEBAR_GROUP_PAGE, hiddenCount)
 

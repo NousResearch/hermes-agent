@@ -1,6 +1,6 @@
 import DOMPurify from 'dompurify'
 
-import { isDesktopFsRemoteMode, readDesktopFileDataUrl, readDesktopFileText } from '@/lib/desktop-fs'
+import { isDesktopFsRemoteMode, pathToFileUrl, readDesktopFileDataUrl, readDesktopFileText } from '@/lib/desktop-fs'
 import type { PreviewTarget } from '@/store/preview'
 
 const HTML_EXTENSIONS = new Set(['.htm', '.html'])
@@ -62,22 +62,6 @@ function joinPath(base: string, rel: string) {
   }
 
   return `${base.replace(/\/+$/, '')}/${rel.replace(/^\.?\//, '')}`
-}
-
-function pathToFileUrl(path: string) {
-  const isWindowsUnc = path.startsWith('\\\\')
-  const normalized = isWindowsUnc || /^[a-z]:[\\/]/i.test(path) ? path.replace(/\\/g, '/') : path
-
-  const encoded = normalized
-    .split('/')
-    .map(part => encodeURIComponent(part))
-    .join('/')
-
-  if (isWindowsUnc) {
-    return `file://${encoded.slice(2)}`
-  }
-
-  return `file://${encoded.startsWith('/') ? encoded : `/${encoded}`}`
 }
 
 export function validatedRemoteHtmlDataUrl(value: string): string | null {

@@ -34,7 +34,7 @@ def _clamp_or_default(value: Any) -> int:
     """``_clamp_char_limit(value)``; ``None`` or non-numeric input falls back to the default."""
     try:
         return DEFAULT_EXTRACT_CHAR_LIMIT if value is None else _clamp_char_limit(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return DEFAULT_EXTRACT_CHAR_LIMIT
 
 

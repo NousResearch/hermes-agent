@@ -546,7 +546,7 @@ def _append_unique_pid(pids: list[int], pid: int | None, exclude_pids: set[int])
         pids.append(pid)
 
 
-def _iter_proc_cmdlines(exclude_pids: set[int]):
+def _iter_proc_cmdlines(exclude_pids: set[int], *, strict: bool = False):
     """Yield ``(pid, cmdline)`` from ``/proc`` (Docker without procps); raises if /proc is unusable."""
     my_pid = os.getpid()
     for entry in os.listdir("/proc"):
@@ -558,13 +558,18 @@ def _iter_proc_cmdlines(exclude_pids: set[int]):
         try:
             with open(f"/proc/{pid}/cmdline", "rb") as _f:
                 cmdline = _f.read().decode("utf-8", errors="replace")
-        except (OSError, PermissionError):
+        except FileNotFoundError:
+            continue
+        except OSError:
+            if strict:
+                raise
             continue
         yield pid, cmdline.replace("\x00", " ")
 
 
 def _scan_gateway_pids(
-    exclude_pids: set[int], all_profiles: bool = False, include_restart_managers: bool = False
+    exclude_pids: set[int], all_profiles: bool = False, include_restart_managers: bool = False,
+    *, strict: bool = False,
 ) -> list[int]:
     """Best-effort process-table scan for gateway PIDs (backs up a stale/missing PID file; ``--all`` sweeps)."""
     # Exclude the entire ancestor chain so the CLI process that invoked this scan (e.g. ``hermes gateway
@@ -611,6 +616,8 @@ def _scan_gateway_pids(
         if is_windows():
             listing = _windows_process_listing()
             if listing is None:
+                if strict:
+                    raise RuntimeError("Windows process listing unavailable")
                 return []
             for pid, command in _iter_windows_list_processes(listing):
                 _consider(pid, command)
@@ -619,22 +626,27 @@ def _scan_gateway_pids(
             _found_via_proc = False
             if os.path.isdir("/proc"):
                 try:
-                    for pid, command in _iter_proc_cmdlines(exclude_pids):
+                    for pid, command in _iter_proc_cmdlines(exclude_pids, strict=strict):
                         _consider(pid, command)
                     _found_via_proc = True
                 except Exception:
-                    pass
+                    if strict:
+                        raise
 
             if not _found_via_proc:
                 # ``-Aww`` not ``-A eww``: BSD/macOS ps rejects ``e``; ``-ww`` = unlimited width.
                 result = subprocess.run(["ps", "-Aww", "-o", "pid=,command="], timeout=10, **_CAPTURE_TEXT)
                 if result.returncode != 0:
+                    if strict:
+                        raise RuntimeError(f"process listing exited {result.returncode}")
                     return []
                 for line in result.stdout.split("\n"):
                     parsed = _parse_ps_line(line)
                     if parsed is not None:
                         _consider(*parsed)
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        if strict:
+            raise RuntimeError("process-table gateway scan failed") from exc
         return []
 
     # Windows: a venv ``pythonw.exe`` is a launcher stub that spawns the base Python with the same
@@ -728,7 +740,9 @@ def _filter_venv_launcher_stubs(pids: list[int]) -> list[int]:
     return [p for p in pids if p not in drop]
 
 
-def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = False) -> list:
+def find_gateway_pids(
+    exclude_pids: set | None = None, all_profiles: bool = False, *, strict: bool = False
+) -> list:
     """Find running gateway PIDs for the current profile, or every profile with ``all_profiles`` (``hermes update``)."""
     _exclude = set(exclude_pids or set())
     pids: list[int] = []
@@ -743,9 +757,17 @@ def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = Fals
     try:
         include_restart_managers = not supports_systemd_services()
     except Exception:
+        if strict:
+            raise
         include_restart_managers = False
-    for pid in _scan_gateway_pids(_exclude, all_profiles=all_profiles, include_restart_managers=include_restart_managers):
+    for pid in _scan_gateway_pids(
+        _exclude, all_profiles=all_profiles,
+        include_restart_managers=include_restart_managers, strict=strict,
+    ):
         _append_unique_pid(pids, pid, _exclude)
+    if strict:
+        for proc in find_profile_gateway_processes(exclude_pids=_exclude, strict=True):
+            _append_unique_pid(pids, proc.pid, _exclude)
     return pids
 
 

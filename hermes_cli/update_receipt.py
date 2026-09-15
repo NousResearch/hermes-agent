@@ -11,6 +11,7 @@ import logging
 import os
 import sys
 import time
+import uuid
 from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,7 +58,7 @@ class UpdateReceipt:
     def __init__(self) -> None:
         self.data: dict[str, Any] = {
             "schema": 1, "started_at": _utc_now_iso(), "finished_at": None,
-            "argv": list(sys.argv), "pid": os.getpid(),
+            "argv": list(sys.argv), "pid": os.getpid(), "update_id": uuid.uuid4().hex,
             "outcome": "running",  # running | success | partial | failed
             "pre_update": _code_identity(), "post_update": {},
             "steps": [], "skips": [], "gateway_restart": {}, "fleet": [],
@@ -130,6 +131,35 @@ def begin_update_receipt() -> None:
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("Could not start update receipt: %s", exc)
         _current = None
+
+
+def current_update_id() -> str | None:
+    """Identity of the in-progress update, or ``None`` when receipt setup failed."""
+    if _current is None:
+        return None
+    update_id = _current.data.get("update_id")
+    return str(update_id) if update_id else None
+
+
+def checkpoint_update_receipt(expected_sha: str) -> bool:
+    """Durably bind the active receipt and plan to the post-pull SHA before marker creation."""
+    if _current is None or not expected_sha:
+        return False
+    try:
+        directory = _receipt_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        payload = {**_current.data, "post_update": {"sha": expected_sha}}
+        body = json.dumps(payload, indent=2, default=str)
+        update_id = str(payload["update_id"])
+        path = directory / f"update_{update_id}.json"
+        for target in (path, directory / "latest.json"):
+            tmp = target.with_suffix(target.suffix + f".tmp{os.getpid()}")
+            tmp.write_text(body, encoding="utf-8")
+            os.replace(tmp, target)
+        return True
+    except Exception as exc:
+        logger.debug("Could not checkpoint update receipt: %s", exc)
+        return False
 
 
 def _record(method: str, what: str, *args: Any, **kwargs: Any) -> None:

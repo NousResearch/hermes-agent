@@ -112,6 +112,22 @@ class TestReceiptLifecycle:
         assert latest is not None
         assert latest["outcome"] == "partial"
 
+    def test_post_pull_checkpoint_is_durable_before_finalization(self, receipt_home):
+        ur.begin_update_receipt()
+        assert ur._current is not None
+        ur._current.data["plan"] = {"inventory_complete": True, "runtimes": []}
+        update_id = ur.current_update_id()
+
+        assert ur.checkpoint_update_receipt("a" * 40) is True
+
+        checkpoint = receipt_home / "logs" / "update_receipts" / f"update_{update_id}.json"
+        payload = json.loads(checkpoint.read_text(encoding="utf-8"))
+        assert payload["update_id"] == update_id
+        assert payload["post_update"]["sha"] == "a" * 40
+        assert payload["plan"]["inventory_complete"] is True
+        assert payload["outcome"] == "running"
+        assert ur._current is not None
+
     def test_phase_error_shape(self, receipt_home):
         ur.begin_update_receipt()
         ur.record_gateway_restart(

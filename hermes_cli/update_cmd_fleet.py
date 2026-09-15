@@ -5,12 +5,16 @@ Split out of ``hermes_cli/update_cmd.py``; every name is re-imported there so
 imported lazily inside each function (no import cycle; test patches stay effective).
 """
 
+import hashlib
+import json
 import logging
+import math
 from contextlib import suppress
 import os
 import subprocess
 import sys
 import time as _time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -25,6 +29,7 @@ logger = logging.getLogger("hermes_cli.update_cmd")
 # The existing ``.update-incomplete`` / ``.lazy-refresh-incomplete`` markers gate dependency/venv repair;
 # this one is the fleet-restart obligation after a git pull that advanced HEAD (#95294).
 _FLEET_RESTART_PENDING_NAME = "fleet_restart_pending"
+_FLEET_RESTART_COMPLETED_NAME = "fleet_restart_completed.json"
 
 _FRESH_RESTART_SUPERVISORS = frozenset({"systemd", "launchd", "service", "s6"})
 
@@ -53,7 +58,12 @@ def _write_fleet_restart_pending_marker(*, expected_sha: str = "") -> None:
         logger.debug("Skipping fleet-restart-pending marker under pytest (live checkout)")
         return
     try:
+        from hermes_cli.update_receipt import checkpoint_update_receipt, current_update_id
+
         lines = [f"started={_time.time()}", f"pid={os.getpid()}"]
+        update_id = current_update_id()
+        if update_id and checkpoint_update_receipt(expected_sha):
+            lines.append(f"update_id={update_id}")
         if expected_sha:
             lines.append(f"expected_sha={expected_sha}")
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -65,6 +75,247 @@ def _clear_fleet_restart_pending_marker() -> None:
     """Remove the pull→restart obligation breadcrumb. Never raises."""
     from hermes_cli.update_cmd import _m
     _m()._clear_marker_file(_fleet_restart_pending_marker_path(), label="fleet-restart-pending")
+
+
+def _parse_fleet_restart_marker(body: bytes) -> dict | None:
+    """Validated restart obligation fields, or ``None`` for a legacy/malformed marker."""
+    try:
+        fields = dict(line.split("=", 1) for line in body.decode("utf-8").splitlines() if "=" in line)
+        started = float(fields["started"])
+        pid = int(fields["pid"])
+        expected_sha = fields["expected_sha"].strip()
+        update_id = fields.get("update_id", "").strip() or None
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError):
+        return None
+    if update_id is not None:
+        try:
+            if uuid.UUID(update_id).hex != update_id:
+                return None
+        except (ValueError, AttributeError):
+            return None
+    if not math.isfinite(started) or started <= 0 or pid <= 0 or not expected_sha:
+        return None
+    return {"started": started, "pid": pid, "expected_sha": expected_sha, "update_id": update_id}
+
+
+def _fleet_restart_completion_path() -> Path:
+    from hermes_cli.update_receipt import _receipt_dir
+
+    return _receipt_dir() / _FLEET_RESTART_COMPLETED_NAME
+
+
+def _marker_completion_matches(marker_body: bytes) -> bool:
+    try:
+        completed = json.loads(_fleet_restart_completion_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return False
+    if not isinstance(completed, dict):
+        return False
+    return completed.get("marker_sha256") == hashlib.sha256(marker_body).hexdigest()
+
+
+def _matching_marker_receipt(marker: dict) -> tuple[dict, Path] | None:
+    """Newest receipt from the updater process that reached the marker's target SHA."""
+    from hermes_cli.update_receipt import _receipt_dir
+
+    if marker["update_id"] is None:
+        return None
+    directory = _receipt_dir()
+    try:
+        paths = sorted(directory.glob("update_*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+        latest = directory / "latest.json"
+        if latest.is_file():
+            paths.insert(0, latest)
+    except OSError:
+        return None
+    for path in paths:
+        try:
+            receipt = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(receipt, dict):
+                continue
+            post_update = receipt.get("post_update")
+            if not isinstance(post_update, dict):
+                continue
+            if (
+                int(receipt.get("pid", 0)) == marker["pid"]
+                and receipt.get("update_id") == marker["update_id"]
+                and post_update.get("sha") == marker["expected_sha"]
+            ):
+                return receipt, path
+        except (OSError, TypeError, ValueError):
+            continue
+    return None
+
+
+def _sha_includes(loaded_sha: object, expected_sha: str) -> bool:
+    loaded = str(loaded_sha or "")
+    if not loaded:
+        return False
+    if loaded == expected_sha:
+        return True
+    from hermes_cli.update_cmd import _m
+
+    try:
+        return subprocess.run(
+            ["git", "merge-base", "--is-ancestor", expected_sha, loaded],
+            cwd=_m().PROJECT_ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        ).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _recorded_incarnation_is_gone(runtime: dict) -> bool:
+    """Whether a recorded serve/dashboard process generation provably no longer exists."""
+    try:
+        import psutil
+
+        pid = int(runtime["pid"])
+        started = float((runtime.get("detail") or {})["create_time"])
+        return abs(psutil.Process(pid).create_time() - started) >= 2.0
+    except psutil.NoSuchProcess:
+        return True
+    except Exception:
+        return False
+
+
+def _marker_obligation_is_fulfilled(marker: dict, receipt: dict) -> bool:
+    """Prove every recorded runtime was replaced and no live runtime escaped the plan."""
+    from hermes_cli.update_receipt import _profile_homes, _socket_identity
+
+    plan = receipt.get("plan")
+    if not isinstance(plan, dict):
+        return False
+    runtimes = plan.get("runtimes")
+    if not isinstance(runtimes, list):
+        return False
+    if plan.get("inventory_complete") is not True:
+        return False
+    owed: dict[str, int] = {}
+    for runtime in runtimes:
+        if not isinstance(runtime, dict):
+            return False
+        if runtime.get("kind") in {"serve", "dashboard"}:
+            if not _recorded_incarnation_is_gone(runtime):
+                return False
+            continue
+        if runtime.get("kind") != "gateway":
+            return False
+        profile = runtime.get("profile")
+        try:
+            old_pid = int(runtime.get("pid"))
+        except (TypeError, ValueError):
+            return False
+        if (
+            not isinstance(profile, str)
+            or not profile
+            or profile == "unknown"
+            or old_pid <= 0
+            or profile in owed
+        ):
+            return False
+        owed[profile] = old_pid
+
+    try:
+        homes = dict(_profile_homes())
+        live_sockets: dict[str, tuple[int, dict]] = {}
+        for profile, home in homes.items():
+            socket = _socket_identity(home)
+            if socket is None:
+                continue
+            successor_pid, identity = socket
+            if (
+                successor_pid <= 0
+                or identity.get("profile") != profile
+                or not _sha_includes(identity.get("code_sha"), marker["expected_sha"])
+            ):
+                return False
+            live_sockets[profile] = socket
+
+        # Control sockets prove loaded code identity, while the canonical process scan catches
+        # gateways that appeared after the pre-pull plan but never exposed a socket. Such an
+        # unidentified process cannot safely be treated as current.
+        from hermes_cli.gateway import find_gateway_pids
+
+        scanned_pids = {int(pid) for pid in find_gateway_pids(all_profiles=True, strict=True)}
+        if not scanned_pids <= {pid for pid, _identity in live_sockets.values()}:
+            return False
+
+        # Serve/dashboard runtimes have no loaded-code identity or catch-up path. A new ledger
+        # runtime that was absent from the pre-pull plan therefore keeps the obligation pending.
+        from hermes_cli.process_identity import ledger_entries
+
+        live_serve_pids: set[int] = set()
+        for entry in ledger_entries(strict=True):
+            if entry.get("purpose") not in {"serve", "dashboard"}:
+                continue
+            pid = int(entry.get("pid", 0))
+            started = float(entry.get("create_time", 0))
+            if pid <= 0 or started <= marker["started"]:
+                return False
+            live_serve_pids.add(pid)
+        from hermes_cli.dashboard_procs import _scan_dashboard_processes
+
+        if any(pid not in live_serve_pids for pid, _cmd in _scan_dashboard_processes(strict=True)):
+            return False
+    except Exception:
+        return False
+
+    for profile, old_pid in owed.items():
+        socket = live_sockets.get(profile)
+        if socket is None:
+            return False
+        successor_pid, identity = socket
+        if (
+            successor_pid == old_pid
+            or identity.get("profile") != profile
+            or not _sha_includes(identity.get("code_sha"), marker["expected_sha"])
+        ):
+            return False
+        try:
+            import psutil
+
+            successor_started = psutil.Process(successor_pid).create_time()
+        except psutil.NoSuchProcess:
+            return False
+        except Exception:
+            return False
+        if successor_started <= marker["started"]:
+            return False
+        try:
+            psutil.Process(old_pid)
+        except psutil.NoSuchProcess:
+            continue
+        except Exception:
+            return False
+        return False
+    return True
+
+
+def _record_fleet_restart_completion(marker_body: bytes, marker: dict, receipt_path: Path | None) -> bool:
+    """Persist proof for this exact marker generation without consuming the marker."""
+    marker_path = _fleet_restart_pending_marker_path()
+    completion_path = _fleet_restart_completion_path()
+    try:
+        if marker_path.read_bytes() != marker_body:
+            return False
+        completion_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "marker_sha256": hashlib.sha256(marker_body).hexdigest(),
+            "expected_sha": marker["expected_sha"],
+            "updater_pid": marker["pid"],
+            "update_id": marker["update_id"],
+            "source_receipt": receipt_path.name if receipt_path is not None else None,
+            "completed_at": _time.time(),
+        }
+        tmp = completion_path.with_suffix(completion_path.suffix + f".tmp{os.getpid()}")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        os.replace(tmp, completion_path)
+        return marker_path.read_bytes() == marker_body
+    except OSError:
+        return False
 
 
 def _current_checkout_sha() -> str | None:
@@ -146,7 +397,9 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
     """Require current successors for every recorded runtime, not just any live row.
 
     A PID changes on restart; the stable identity is (runtime kind, profile).
-    The gateway matrix cannot vouch for serve/dashboard or unidentified runtimes.
+    The gateway matrix cannot vouch for a live serve/dashboard incarnation or
+    unidentified runtimes; a recorded serve/dashboard is settled only after its
+    exact pre-update incarnation is provably gone.
     Keep the historical receipt intact: a manual restart is not a successful update.
     """
     if not expected_sha:
@@ -165,6 +418,10 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
             if not isinstance(entry, dict):
                 return False
             kind = entry.get("kind", default_kind)
+            if kind in {"serve", "dashboard"}:
+                if not _recorded_incarnation_is_gone(entry):
+                    return False
+                continue
             profile = entry.get("profile")
             if kind != "gateway" or not profile or profile == "unknown":
                 return False
@@ -177,6 +434,11 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
             for row in fleet
         ):
             return False
+        from hermes_cli.gateway import find_gateway_pids
+
+        scanned_pids = {int(pid) for pid in find_gateway_pids(all_profiles=True, strict=True)}
+        if not scanned_pids <= {int(row.get("pid", 0)) for row in fleet}:
+            return False
         return owed <= {("gateway", row.get("profile")) for row in fleet}
     except Exception as exc:
         logger.debug("Could not reconcile pending fleet identities: %s", exc)
@@ -187,11 +449,34 @@ def _pending_fleet_restart_needed() -> bool:
     """Reconcile old restart obligations against current, identity-matched gateways."""
     from hermes_cli.update_cmd import _current_checkout_sha
 
-    # The marker has no runtime inventory and may belong to a newer, killed update
-    # than latest.json. An older receipt cannot discharge that unknown obligation.
-    with suppress(OSError):
-        if _fleet_restart_pending_marker_path().is_file():
+    marker_path = _fleet_restart_pending_marker_path()
+    try:
+        marker_body = marker_path.read_bytes()
+    except FileNotFoundError:
+        marker_body = None
+    except OSError:
+        return True
+    if marker_body is not None:
+        marker = _parse_fleet_restart_marker(marker_body)
+        if marker is None:
             return True
+        if _marker_completion_matches(marker_body):
+            try:
+                return marker_path.read_bytes() != marker_body
+            except OSError:
+                return True
+        matched = _matching_marker_receipt(marker)
+        if matched is None:
+            if marker["update_id"] is not None:
+                return True
+            legacy = {"plan": {"inventory_complete": True, "runtimes": []}}
+            if not _marker_obligation_is_fulfilled(marker, legacy):
+                return True
+            return not _record_fleet_restart_completion(marker_body, marker, None)
+        receipt, receipt_path = matched
+        if not _marker_obligation_is_fulfilled(marker, receipt):
+            return True
+        return not _record_fleet_restart_completion(marker_body, marker, receipt_path)
     if not _receipt_reports_stale_runtime():
         return False
     return not _live_fleet_covers_receipt(_current_checkout_sha())
@@ -200,7 +485,7 @@ def _pending_fleet_restart_needed() -> bool:
 def _warn_pending_fleet_restart(*, startup: bool = False) -> None:
     """Print the specific interrupted-update fleet-restart warning."""
     stream = sys.stderr if startup else sys.stdout
-    print("⚠ A previous `hermes update` pulled new code but did not restart running gateways.", file=stream)
+    print("⚠ A previous `hermes update` left an unverified fleet-restart obligation.", file=stream)
     print("  Gateways may still be serving pre-update modules (mixed sys.modules).", file=stream)
     if startup:
         print("  Run `hermes update` or `hermes gateway restart`.", file=stream)
@@ -265,7 +550,7 @@ def _restart_systemd_gateway_units_best_effort(failed: list, listings) -> None:
     failed.extend(f"systemd-{scope} (listing unavailable)" for scope, _ in _SYSTEMD_SCOPES if scope not in answered)
 
 
-def _run_pending_fleet_restart() -> bool:
+def _run_pending_fleet_restart(*, receipt: dict | None = None) -> bool:
     """Catch-up restart for gateways left on pre-update code. Never raises.
 
     True when all discovered targets recovered (or none exist); False if incomplete.
@@ -296,6 +581,24 @@ def _run_pending_fleet_restart() -> bool:
         pids = None
 
     failed: list = []
+    if receipt is not None:
+        plan = receipt.get("plan") if isinstance(receipt, dict) else None
+        runtimes = plan.get("runtimes") if isinstance(plan, dict) else None
+        if not isinstance(runtimes, list):
+            failed.append("recorded fleet worklist (invalid)")
+        else:
+            for runtime in runtimes:
+                if not isinstance(runtime, dict):
+                    failed.append("recorded fleet runtime (invalid)")
+                    continue
+                if runtime.get("kind") in {"serve", "dashboard"}:
+                    if _recorded_incarnation_is_gone(runtime) or runtime.get("supervisor") == "systemd":
+                        continue
+                if runtime.get("kind") != "gateway":
+                    failed.append(
+                        f"{runtime.get('kind') or 'unknown'}:{runtime.get('profile') or 'unknown'}"
+                        " (no verified catch-up path)"
+                    )
     try:
         # Snapshot before stopping: Restart=no units can disappear from list-units on a clean exit.
         systemd_listings = list(_systemd_gateway_unit_listings()) if supports_systemd_services() else None
@@ -306,9 +609,18 @@ def _run_pending_fleet_restart() -> bool:
             except Exception:
                 leftover = list(pids or [])
             if leftover:
-                with _best_effort('Pending fleet restart: PID stop failed: %s'):
+                try:
                     kill_gateway_processes(all_profiles=True)
-                    _wait_for_gateway_exit(timeout=5.0, force_after=None)
+                except Exception as exc:
+                    logger.debug("Pending fleet restart: PID stop failed: %s", exc)
+                    failed.append("gateway processes (stop failed)")
+                else:
+                    try:
+                        if not _wait_for_gateway_exit(timeout=5.0, force_after=None):
+                            failed.append("gateway processes (still running)")
+                    except Exception as exc:
+                        logger.debug("Pending fleet restart: PID wait failed: %s", exc)
+                        failed.append("gateway processes (wait failed)")
         # --- Systemd services (Linux) --- Discover all hermes-gateway* units (default + profiles) plus
         # hermes-serve* units (the Desktop app's backend, #83438).
         if systemd_listings is not None:
@@ -356,10 +668,27 @@ def _apply_pending_fleet_restart_catchup() -> None:
     print()
     _warn_pending_fleet_restart()
     print("→ Running the pending fleet restart...")
-    if _run_pending_fleet_restart():
-        _clear_fleet_restart_pending_marker()
+    receipt = None
+    marker_path = _fleet_restart_pending_marker_path()
+    try:
+        marker = _parse_fleet_restart_marker(marker_path.read_bytes())
+        matched = _matching_marker_receipt(marker) if marker is not None else None
+        receipt = matched[0] if matched is not None else None
+    except OSError:
+        pass
+    restart_ok = (
+        _run_pending_fleet_restart(receipt=receipt)
+        if receipt is not None
+        else _run_pending_fleet_restart()
+    )
+    if restart_ok and not _pending_fleet_restart_needed():
+        # A verified marker is retained with digest-bound completion evidence. Clearing it in a
+        # separate step could delete a newer generation written after the check above.
         return
     print("  ⚠ Fleet restart incomplete. Recover with: hermes gateway restart")
+    if marker_path.is_file():
+        print("  After manually restarting every Hermes runtime, remove the unresolved marker:")
+        print(f"    {marker_path}")
     sys.exit(1)
 
 
@@ -1306,11 +1635,15 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
     probe, fleet version matrix, plan-vs-execution reconciliation, receipt finalize.
 
     Exits 1 (leaving ``fleet_restart_pending`` for the next catch-up) when any gateway
-    may still be stale; otherwise clears the marker.
+    may still be stale; otherwise records completion for the exact observed marker.
     """
     from hermes_cli.update_cmd import (
         _finish_dashboard_update_cleanup, _m, _surviving_pre_update_serve_runtimes, _warn_stale_serve_runtimes,
     )
+    try:
+        successful_marker_body = _fleet_restart_pending_marker_path().read_bytes()
+    except OSError:
+        successful_marker_body = None
     with _best_effort('Legacy unit check during update failed: %s'):
         _print_legacy_units_warning()
 
@@ -1404,6 +1737,34 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                 if _ur._current is not None:
                     _ur._current.data["runtime_outcomes"] = _runtime_outcomes
 
+    if _pre_update_plan is None or getattr(_pre_update_plan, "inventory_errors", None):
+        print("\n⚠ Pre-update runtime inventory was incomplete — verification incomplete.")
+        restart.incomplete = True
+
+    # Persist completion before finalizing the receipt. Finalization clears the active receipt,
+    # so a later completion-write failure could otherwise leave a durable "success" receipt and
+    # no marker-backed obligation for the command boundary to correct.
+    active_receipt = None
+    with suppress(Exception):
+        import hermes_cli.update_receipt as _ur
+
+        if _ur._current is not None:
+            active_receipt = _ur._current.data
+    if not restart.incomplete:
+        marker = (
+            _parse_fleet_restart_marker(successful_marker_body)
+            if successful_marker_body is not None
+            else None
+        )
+        if (
+            marker is None
+            or active_receipt is None
+            or not _marker_obligation_is_fulfilled(marker, active_receipt)
+            or not _record_fleet_restart_completion(successful_marker_body, marker, None)
+        ):
+            restart.incomplete = True
+
+    _receipt_path = None
     with _best_effort('Update receipt finalize failed: %s'):
         from hermes_cli.update_receipt import finalize_update_receipt
         _receipt_path = finalize_update_receipt(
@@ -1417,7 +1778,6 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         # Code updated but a gateway may still run stale modules: fail so automation
         # doesn't treat the fleet as healthy; leave the pending marker for catch-up.
         sys.exit(1)
-    _clear_fleet_restart_pending_marker()
     # Fleet is healthy on the new code: fold per-profile gateways into one multiplexer when nothing
     # blocks it (deterministic; never prompts), else print the blockers and the one-liner to run later.
     with _best_effort('Multiplex auto-migration after update failed: %s'):

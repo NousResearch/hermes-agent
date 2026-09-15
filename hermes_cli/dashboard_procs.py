@@ -30,8 +30,8 @@ def _append_row(rows: list[tuple[int, str]], pid_text: str, command: str) -> Non
         pass
 
 
-def _iter_process_table() -> list[tuple[int, str]]:
-    """``(pid, cmdline)`` for every process, via wmic (Windows) or ps. Raises on scan failure."""
+def _iter_process_table(*, strict: bool = False) -> list[tuple[int, str]]:
+    """``(pid, cmdline)`` for every process, via wmic (Windows) or ps. Raises on strict scan failure."""
     rows: list[tuple[int, str]] = []
     if sys.platform == "win32":
         # errors="ignore": wmic may emit the system code page. bounded_probe_run, not run():
@@ -44,13 +44,15 @@ def _iter_process_table() -> list[tuple[int, str]]:
         # keeps a slow scan from wedging the caller forever: run()'s post-timeout cleanup joins the pipe
         # reader threads unbounded, and a conhost.exe descendant holding duplicated pipe handles blocks that
         # join indefinitely (#87134). It also passes CREATE_NO_WINDOW: this scan can run from the windowless
-        # pythonw.exe desktop/gateway backend during an update, where a bare wmic spawn would pop a console
+        # pythonw.exe desktop/gateway backend, where a bare wmic spawn would pop a console
         # window.
         from hermes_cli._subprocess_compat import bounded_probe_run
         result = bounded_probe_run(
             ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
             timeout=10, errors="ignore")
         if result is None or result.returncode != 0 or result.stdout is None:
+            if strict:
+                raise RuntimeError("Windows process listing unavailable")
             return rows
         current_cmd = ""
         for line in result.stdout.split("\n"):
@@ -62,47 +64,53 @@ def _iter_process_table() -> list[tuple[int, str]]:
         return rows
     # ps, not `pgrep -f "hermes.*dashboard"` (greedy regex; consistent with gateway pid scan).
     result = subprocess.run(["ps", "-A", "-o", "pid=,command="], timeout=10, **_PS_RUN_KWARGS)
-    if result.returncode == 0:
-        for line in getattr(result, "stdout", "").split("\n"):
-            parts = line.strip().split(None, 1)
-            if len(parts) == 2 and "grep" not in line:
-                _append_row(rows, parts[0], parts[1])
+    if result.returncode != 0:
+        if strict:
+            raise RuntimeError(f"process listing exited {result.returncode}")
+        return rows
+    for line in getattr(result, "stdout", "").split("\n"):
+        parts = line.strip().split(None, 1)
+        if len(parts) == 2 and "grep" not in line:
+            _append_row(rows, parts[0], parts[1])
     return rows
 
 
-def _scan_dashboard_processes(*, exclude_pids: set[int] | None = None) -> list[tuple[int, str]]:
-    """``(pid, cmdline)`` of running ``dashboard``/``serve`` processes; empty on any scan error.
-
-    A forgotten dashboard keeps the old Python backend against the new JS bundle after
-    ``hermes update`` (every API call 401s). *exclude_pids* (Desktop's HERMES_DESKTOP_CHILD_PID
-    backends) are never returned.
-
-    *exclude_pids* is an optional set of PIDs that must never be returned. This is used by the Hermes
-    Desktop Electron app to protect its own backend child process: when the desktop spawns ``hermes serve``
-    as a backend and triggers an auto-update, the update must not kill the backend that the desktop itself
-    manages. The desktop sets the environment variable ``HERMES_DESKTOP_CHILD_PID`` on the spawned backend
-    process; ``_kill_stale_dashboard_processes`` reads it and passes it here. (#37532)
-    """
+def _scan_dashboard_processes(
+    *, exclude_pids: set[int] | None = None, strict: bool = False
+) -> list[tuple[int, str]]:
+    """``(pid, cmdline)`` of running ``dashboard``/``serve`` processes."""
     skip = {os.getpid(), *(exclude_pids or ())}
     try:
-        found = [(pid, cmd) for pid, cmd in _iter_process_table()
-                 if pid not in skip and any(p in cmd for p in _DASHBOARD_PATTERNS)]
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+
+        process_rows = _iter_process_table(strict=True) if strict else _iter_process_table()
+        found = [
+            (pid, cmd)
+            for pid, cmd in process_rows
+            if pid not in skip
+            and (
+                any(pattern in cmd for pattern in _DASHBOARD_PATTERNS)
+                or _hermes_holder_subcommand(cmd) in {"serve", "dashboard"}
+            )
+        ]
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError, RuntimeError):
+        if strict:
+            raise
         return []
     # Spawn-ledger augmentation: substring patterns miss profiled launches (`hermes --profile p
-    # serve`); the ledger holds live-verified pids. Unavailable ledger → scan-only.
-    with contextlib.suppress(Exception):
-        # Every serve/ dashboard registers itself in the machine spawn ledger at startup with live-verified
-        # (pid, create_time), so ledger rows are positive identity, not argv guessing. Add any live ledger
-        # serve/dashboard the scan missed; prefer the ledger's recorded argv (full launch args) over the
-        # scan's truncated view. See #81564.
+    # serve`); the ledger holds live-verified pids. Unavailable ledger → scan-only unless strict.
+    try:
         from hermes_cli.process_identity import ledger_entries
         seen = {pid for pid, _ in found} | skip
-        for entry in ledger_entries():
+        entries = ledger_entries(strict=True) if strict else ledger_entries()
+        for entry in entries:
             pid = entry.get("pid")
             if (entry.get("purpose") in ("serve", "dashboard") and isinstance(pid, int)
                     and pid not in seen):
                 found.append((pid, str(entry.get("argv") or "")))
+    except Exception:
+        if strict:
+            raise
     return found
 
 

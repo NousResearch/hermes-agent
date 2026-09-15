@@ -41,6 +41,7 @@ class UpdatePlan:
     expected_version: Optional[str] = None
     profiles: list = field(default_factory=list)
     runtimes: list = field(default_factory=list)  # list[RuntimeRecord]
+    inventory_errors: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)  # recursive: RuntimeRecord entries become dicts
@@ -115,16 +116,18 @@ def _runtime(
 
 
 @contextmanager
-def _probe(label: str):
+def _probe(label: str, plan: UpdatePlan | None = None):
     """Run one inventory collector; a failure is logged at debug and yields fewer rows, never an exception."""
     try:
         yield
     except Exception as exc:
         logger.debug("%s failed: %s", label, exc)
+        if plan is not None:
+            plan.inventory_errors.append(label)
 
 
 def _collect_install_shape(plan: UpdatePlan) -> None:
-    with _probe("Install-method probe"):
+    with _probe("Install-method probe", plan):
         from hermes_cli.config import detect_install_method, get_managed_system, recommended_update_command_for_method
 
         method = detect_install_method()
@@ -134,7 +137,7 @@ def _collect_install_shape(plan: UpdatePlan) -> None:
         # Baked image provenance is authoritative when present: a bind-mounted checkout inside a
         # container can look like `git` while the running filesystem is an immutable image.
         # Fail-closed: an invalid marker still flips the plan to not-updatable.
-        with _probe("Image provenance probe"):
+        with _probe("Image provenance probe", plan):
             # See #91277.
             from hermes_cli.image_provenance import read_image_provenance
 
@@ -146,10 +149,10 @@ def _collect_install_shape(plan: UpdatePlan) -> None:
         plan.update_mechanism = recommended_update_command_for_method(method)
 
 
-def _supervisor_classifier() -> Callable[[int], str]:
+def _supervisor_classifier(plan: UpdatePlan | None = None) -> Callable[[int], str]:
     """``pid -> supervisor`` over the service-PID sets; each probe degrades to an empty set."""
     service_pids: set = set()
-    with _probe("Service-PID probe"):
+    with _probe("Service-PID probe", plan):
         from hermes_cli.gateway import _get_service_pids
 
         service_pids = _get_service_pids(all_profiles=True) or set()
@@ -159,7 +162,7 @@ def _supervisor_classifier() -> Callable[[int], str]:
     # find_windows_gateway_services() maps validated gateway PIDs through process ancestry to running SCM
     # service PIDs (no-op off Windows). See #91277.
     windows_service_pids: set = set()
-    with _probe("Windows SCM service-ownership probe"):
+    with _probe("Windows SCM service-ownership probe", plan):
         from hermes_cli.gateway import find_windows_gateway_services
 
         windows_service_pids = {int(service.gateway_pid) for service in find_windows_gateway_services()}
@@ -170,8 +173,8 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
     """Per-profile gateways: control-socket identity first (declared by the process itself, including
     supervisor provenance — no argv/PID inference), ``gateway_state.json`` fallback, then PID-file
     mapped gateways no status record covers."""
-    supervisor = _supervisor_classifier()
-    with _probe("Gateway-state inventory"):
+    supervisor = _supervisor_classifier(plan)
+    with _probe("Gateway-state inventory", plan):
         from gateway.status import live_gateway_pid_for_home, read_runtime_status
         from hermes_cli.update_receipt import _socket_identity
 
@@ -195,10 +198,10 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
                 seen.add(pid)
                 sup = supervisor(pid)
             plan.runtimes.append(_runtime("gateway", profile, pid, sup, record.get("code_sha"), record.get("code_version")))
-    with _probe("PID-file gateway inventory"):
+    with _probe("PID-file gateway inventory", plan):
         from hermes_cli.gateway import find_profile_gateway_processes
 
-        for proc in find_profile_gateway_processes():
+        for proc in find_profile_gateway_processes(strict=True):
             if proc.pid not in seen:
                 seen.add(proc.pid)
                 plan.runtimes.append(_runtime("gateway", proc.profile, proc.pid, supervisor(proc.pid)))
@@ -209,10 +212,10 @@ def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
     (a manual `hermes serve --host <ip>` for a remote Desktop, a long-lived `hermes dashboard`).
     ledger_entries() live-verifies (pid, create_time) so PID reuse never fabricates a row. Desktop-
     supervised backends (spawner still alive) restart via the Desktop's own respawn, not ours."""
-    with _probe("Serve/dashboard ledger inventory"):
+    with _probe("Serve/dashboard ledger inventory", plan):
         from hermes_cli.process_identity import ledger_entries, spawner_is_dead
 
-        for entry in ledger_entries():
+        for entry in ledger_entries(strict=True):
             purpose, pid = entry.get("purpose"), entry.get("pid")
             if purpose not in _SERVE_KINDS or not isinstance(pid, int) or pid in seen:
                 continue
@@ -236,14 +239,14 @@ def collect_runtime_inventory() -> UpdatePlan:
     """
     plan = UpdatePlan()
     _collect_install_shape(plan)
-    with _probe("Code-identity probe"):
+    with _probe("Code-identity probe", plan):
         from hermes_cli.build_info import get_code_identity
 
         identity = get_code_identity(refresh=True)
         plan.expected_sha = identity.get("sha")
         plan.expected_version = identity.get("version")
     profile_homes: list = []
-    with _probe("Profile enumeration"):
+    with _probe("Profile enumeration", plan):
         from hermes_cli.update_receipt import _profile_homes
 
         profile_homes = _profile_homes()
@@ -398,7 +401,9 @@ def record_plan_in_receipt(plan: UpdatePlan) -> None:
         import hermes_cli.update_receipt as ur
 
         if ur._current is not None:
-            ur._current.data["plan"] = plan.to_dict()
+            persisted = plan.to_dict()
+            persisted["inventory_complete"] = not plan.inventory_errors
+            ur._current.data["plan"] = persisted
     except Exception as exc:
         logger.debug("Could not record plan in receipt: %s", exc)
 

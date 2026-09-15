@@ -11,6 +11,7 @@ import hmac
 import http.server
 import importlib.util
 import json
+import os
 import threading
 import time
 import urllib.error
@@ -19,6 +20,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_PATH = REPO_ROOT / "contrib" / "den-plugins" / "kanban-wake" / "__init__.py"
@@ -292,3 +294,79 @@ def test_failed_send_is_fail_open_and_immediately_retryable(plugin, monkeypatch)
     plugin._on_blocked(task_id="T-8", title="t", reason="r")
     assert len(ok_calls) == 1
     assert plugin._last["blocked:T-8"] <= time.time()
+
+
+# ---------------------------------------------------------------------------
+# Packaging guards for the shipped plugin directory.
+#
+# These do not exercise plugin behaviour; they assert that the directory we
+# actually ship stays loadable and that its manifest is not lying about what
+# register() wires up.
+# ---------------------------------------------------------------------------
+
+PKG_DIR = PLUGIN_PATH.parent
+MANIFEST_PATH = PKG_DIR / "plugin.yaml"
+
+
+def test_plugin_package_has_no_self_referential_symlink():
+    """No entry in the package may point at, or above, its own package root.
+
+    A link back to the package dir makes any follow-links walk (packaging,
+    copy, discovery, pip sdist) recurse forever. Derived from the real tree —
+    any future entry that reintroduces the shape fails here.
+    """
+    pkg_root = PKG_DIR.resolve()
+    offenders = []
+
+    for dirpath, dirnames, filenames in os.walk(PKG_DIR, followlinks=False):
+        for entry in list(dirnames) + list(filenames):
+            candidate = Path(dirpath) / entry
+            if not candidate.is_symlink():
+                continue
+            target = candidate.resolve()
+            # Self-reference, or a link to an ancestor of the package root:
+            # both make the package contain itself.
+            if target == pkg_root or target in pkg_root.parents:
+                offenders.append(f"{candidate} -> {target}")
+
+    assert not offenders, (
+        "self-referential / recursive symlink(s) inside the plugin package: "
+        + ", ".join(offenders)
+    )
+
+
+def test_manifest_hook_declarations_match_registered_hooks():
+    """provides_hooks must equal exactly what register() wires up.
+
+    Both sides are derived: the manifest from plugin.yaml, the truth from a
+    real register() call against a recording ctx. Fails in both directions —
+    an undeclared hook and a declared-but-never-registered hook.
+    """
+    manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+
+    assert "hooks" not in manifest, (
+        "plugin.yaml uses the stale key 'hooks'; the loader reads "
+        "'provides_hooks' (hermes_cli/plugins.py:4547), so a 'hooks:' block "
+        "is silently ignored"
+    )
+
+    declared = manifest.get("provides_hooks") or []
+    assert declared, "plugin.yaml declares no provides_hooks"
+
+    registered: list[str] = []
+
+    class _RecordingCtx:
+        def register_hook(self, name, fn):
+            assert callable(fn), f"hook {name!r} registered with a non-callable"
+            registered.append(name)
+
+        def __getattr__(self, _name):  # tolerate any other ctx surface
+            return lambda *a, **kw: None
+
+    _load_plugin().register(_RecordingCtx())
+
+    assert set(declared) == set(registered), (
+        "plugin.yaml provides_hooks and register() disagree: "
+        f"declared-but-not-registered={sorted(set(declared) - set(registered))}, "
+        f"registered-but-not-declared={sorted(set(registered) - set(declared))}"
+    )

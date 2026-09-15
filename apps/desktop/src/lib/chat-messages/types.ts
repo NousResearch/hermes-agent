@@ -106,11 +106,13 @@ export type GatewayEventPayload = {
   // answers (qid → locked answer) rides along on reconnect replay only.
   questions?: unknown
   answers?: Record<string, unknown>
-  // mcp.setup.request (setup_mcp tool — inline MCP consent card)
-  server?: string
+  // connection request (manage_connections MCP targets — inline approval card)
+  op_id?: string
+  deadline_at?: number
+  targets?: unknown
   action?: string
   reason?: string
-  // approval.request (dangerous command / execute_code) — session-keyed
+  // approval server request (dangerous command / execute_code) — session-keyed
   command?: string
   description?: string
   // False when a tirith content-security warning forbids a permanent allow.

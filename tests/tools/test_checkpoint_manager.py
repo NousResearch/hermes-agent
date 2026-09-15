@@ -1136,6 +1136,50 @@ class TestClearFunctions:
         # Store preserved
         assert (base / "store" / "HEAD").exists()
 
+    def test_clear_legacy_reports_partial_deletion_failures(self, tmp_path, monkeypatch):
+        base = tmp_path / "checkpoints"
+        failed = base / "legacy-failed"
+        deleted = base / "legacy-deleted"
+        for archive in (failed, deleted):
+            archive.mkdir(parents=True)
+            (archive / "data").write_bytes(b"x")
+
+        real_rmtree = shutil.rmtree
+
+        def fail_one(path, *args, **kwargs):
+            if Path(path) == failed:
+                raise OSError("read-only file")
+            return real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr("tools.checkpoint_manager.shutil.rmtree", fail_one)
+
+        result = clear_legacy(base)
+
+        assert result["deleted"] == 1
+        assert result["errors"] == 1
+        assert not deleted.exists()
+        assert failed.exists()
+
+    def test_clear_legacy_reports_all_deletion_failures(self, tmp_path, monkeypatch):
+        base = tmp_path / "checkpoints"
+        archives = [base / "legacy-first", base / "legacy-second"]
+        for archive in archives:
+            archive.mkdir(parents=True)
+
+        def always_fail(*args, **kwargs):
+            raise OSError("read-only file")
+
+        monkeypatch.setattr(
+            "tools.checkpoint_manager.shutil.rmtree",
+            always_fail,
+        )
+
+        result = clear_legacy(base)
+
+        assert result["deleted"] == 0
+        assert result["errors"] == 2
+        assert all(archive.exists() for archive in archives)
+
 
 # =========================================================================
 # Orphan pruning must not act on an unreachable volume

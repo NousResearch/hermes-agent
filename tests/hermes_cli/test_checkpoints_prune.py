@@ -26,6 +26,27 @@ def _prune_result(**kwargs) -> dict:
     return result
 
 
+def test_clear_legacy_returns_error_when_an_archive_cannot_be_deleted(monkeypatch, capsys):
+    import hermes_cli.checkpoints as checkpoints_cli
+    import tools.checkpoint_manager as ckpt_mgr
+
+    monkeypatch.setattr(
+        ckpt_mgr,
+        "store_status",
+        lambda: {"legacy_archives": [{"name": "legacy-read-only", "size_bytes": 1}]},
+    )
+    monkeypatch.setattr(
+        ckpt_mgr,
+        "clear_legacy",
+        lambda: {"deleted": 0, "errors": 1, "bytes_freed": 0},
+    )
+
+    rc = checkpoints_cli.cmd_clear_legacy(_ns(force=True))
+
+    assert rc == 2
+    assert "Failed to delete 1 archive(s)." in capsys.readouterr().out
+
+
 _V2_ORPHAN_ONLY_STATUS = {
     "projects": [],
     "pre_v2_projects": [],
@@ -119,7 +140,6 @@ def test_empty_preview_binds_empty_allowlist(monkeypatch, capsys):
     assert rc == 0
     assert len(prune_calls) == 1
     assert prune_calls[0]["orphan_allowlist"] == set()
-
 
 
 

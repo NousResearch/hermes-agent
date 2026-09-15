@@ -191,6 +191,35 @@ async def _lifespan(app: "FastAPI"):
     )
     hosted_room_start_thread.start()
 
+    # Register declarative shell hooks from cli-config.yaml so Web UI chat
+    # sessions invoke the same configured lifecycle hooks as CLI, TUI and
+    # messaging sessions. The Web server has no TTY, so consent comes from
+    # the same opt-in channels gateway uses (--accept-hooks on launch,
+    # HERMES_ACCEPT_HOOKS env var, or hooks_auto_accept in config.yaml);
+    # pass accept_hooks=False and let register_from_config resolve the
+    # effective value. Failures are logged but must never block startup.
+    try:
+        from hermes_cli.config import load_config
+        from agent.shell_hooks import register_from_config
+
+        _web_hooks_cfg = load_config()
+        register_from_config(_web_hooks_cfg, accept_hooks=False)
+
+        from agent.outbound_webhooks import (
+            register_from_config as register_outbound_webhooks,
+        )
+
+        register_outbound_webhooks(_web_hooks_cfg)
+    except Exception:
+        # A configured hook that silently vanishes is the exact failure this
+        # PR exists to fix (Web UI sessions previously skipped configured
+        # hooks entirely). Log at WARNING so a misconfigured hook is visible
+        # in agent.log, not swallowed at debug; startup still never blocks.
+        _log.warning(
+            "shell-hook registration failed at web startup",
+            exc_info=True,
+        )
+
     # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
     # since the app has no gateway running the scheduler. Server `hermes
     # dashboard` is unaffected — it relies on its own gateway.

@@ -313,6 +313,42 @@ class TestLegitimateFreshBuild:
         assert agent._cached_system_prompt == "BUILT_PROMPT"
 
 
+class TestApiServerResponseRenderingMigration:
+    @staticmethod
+    def _stored(rendering_line: str = "") -> str:
+        suffix = f"\nResponse rendering: {rendering_line}" if rendering_line else ""
+        return (
+            "SYSTEM PROMPT BODY\n\nConversation started: Monday, January 05, 2026\n"
+            "Model: test-model\nProvider: openrouter\nPlatform: api_server"
+            f"{suffix}"
+        )
+
+    def test_existing_plain_session_rebuilds_once_for_markdown(self):
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": self._stored()}
+        agent = _make_agent(session_db=db, prebuilt_prompt=self._stored("markdown"))
+        agent.platform = "api_server"
+        agent._response_rendering = "markdown"
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt == self._stored("markdown")
+        agent._build_system_prompt.assert_called_once_with(None)
+        db.update_system_prompt.assert_called_once_with(agent.session_id, agent._cached_system_prompt)
+
+    def test_markdown_session_rebuilds_if_client_returns_to_default(self):
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": self._stored("markdown")}
+        agent = _make_agent(session_db=db, prebuilt_prompt=self._stored("plain_text"))
+        agent.platform = "api_server"
+        agent._response_rendering = "plain_text"
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt == self._stored("plain_text")
+        agent._build_system_prompt.assert_called_once_with(None)
+
+
 # ---------------------------------------------------------------------------
 # Silent-failure recovery — these are the new A/B logging paths
 # ---------------------------------------------------------------------------

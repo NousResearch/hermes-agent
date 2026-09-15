@@ -8,7 +8,7 @@ platforms). See HA Core ticket: configurable per-platform prompt hints.
 
 import types
 
-from agent.system_prompt import _resolve_platform_hint
+from agent.system_prompt import _resolve_platform_hint, platform_hint
 
 
 def _agent(overrides):
@@ -48,6 +48,36 @@ class TestResolvePlatformHint:
         a = _agent({"whatsapp": {"append": EXTRA}})
         tg_default = "You are on Telegram. Markdown works."
         assert _resolve_platform_hint(a, "telegram", tg_default) == tg_default
+
+
+class TestApiServerResponseRendering:
+    def test_plain_text_remains_the_default(self):
+        agent = types.SimpleNamespace(platform="api_server", _platform_hint_overrides={})
+        hint = platform_hint(agent)
+        assert "assume plain text" in hint
+        assert "No markdown formatting" in hint
+
+    def test_markdown_capability_replaces_the_plain_text_ban(self):
+        agent = types.SimpleNamespace(
+            platform="api_server",
+            _platform_hint_overrides={},
+            _response_rendering="markdown",
+        )
+        hint = platform_hint(agent)
+        assert "GitHub-Flavored Markdown" in hint
+        assert "No markdown formatting" not in hint
+        assert "assume plain text" not in hint
+        assert "MEDIA:" in hint
+        assert "runs endpoint" in hint
+
+    def test_admin_replace_override_remains_final_policy(self):
+        admin_hint = "Return compact JSON prose only."
+        agent = types.SimpleNamespace(
+            platform="api_server",
+            _platform_hint_overrides={"api_server": {"replace": admin_hint}},
+            _response_rendering="markdown",
+        )
+        assert platform_hint(agent) == admin_hint
 
 
     # --- defensive / malformed input: never break prompt assembly ---

@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
-    HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE,
+    API_SERVER_MARKDOWN_HINT, HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, drain_truncation_warnings,
@@ -386,6 +386,8 @@ def platform_hint(agent: Any) -> str:
     override + desktop TUI clarifier."""
     platform_key = (agent.platform or "").lower().strip()
     _default_hint = PLATFORM_HINTS.get(platform_key, "")
+    if platform_key == "api_server" and getattr(agent, "_response_rendering", "plain_text") == "markdown":
+        _default_hint = API_SERVER_MARKDOWN_HINT
     if not _default_hint and platform_key:
         try:
             from gateway.platform_registry import platform_registry
@@ -452,8 +454,10 @@ def _timestamp_line(agent: Any) -> str:
                            "— trust this over the start date for what day it is now; query tools for exact time.")
     if getattr(agent, "_bot_chat_timeless_prompt", False):
         timestamp_line = f"Timezone: {', '.join(_bits)}" if _bits else ""
-    trailer = (("Session ID", agent.session_id if agent.pass_session_id else None), ("Model", agent.model),
-               ("Provider", agent.provider), ("Platform", agent.platform))
+    trailer = [("Session ID", agent.session_id if agent.pass_session_id else None), ("Model", agent.model),
+               ("Provider", agent.provider), ("Platform", agent.platform)]
+    if (agent.platform or "").lower().strip() == "api_server":
+        trailer.append(("Response rendering", getattr(agent, "_response_rendering", "plain_text")))
     return timestamp_line + "".join(f"\n{label}: {value}" for label, value in trailer if value)
 
 

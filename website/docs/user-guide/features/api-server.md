@@ -378,6 +378,32 @@ If a request sends a `provider` that conflicts with a configured `model_routes`
 alias, Hermes rejects the request with `400` instead of silently remixing route
 credentials with another provider.
 
+### Per-turn model scope on session chat
+
+A session row can carry a persisted model, which is a standing selection that
+outranks the request's `model` on every later turn. Clients that let the user
+pick a model per message can opt out of that tier for one request:
+
+```json
+{
+  "message": "Summarize the repo status.",
+  "model": "MiniMax-M3",
+  "provider": "minimax",
+  "model_scope": "turn"
+}
+```
+
+- `model_scope: "session"` (the default) keeps the persisted model as the
+  standing selection.
+- `model_scope: "turn"` applies this request's `model` / `provider` /
+  `model_options` to this turn only. Nothing is written back to the session row,
+  and the next request without `model_scope` is back on the persisted model. A
+  session `/model` override still wins, since that is an explicit user command.
+- `model_scope` is accepted on `POST /api/sessions/{session_id}/chat` and
+  `POST /api/sessions/{session_id}/chat/stream`. Combining `"turn"` with
+  `require_model_lock` — or any unrecognized value — is rejected with `400` and
+  code `invalid_model_scope` rather than silently ignored.
+
 **Bare `model` values on the OpenAI-compatible endpoints are opt-in.** Generic
 OpenAI clients routinely hardcode model names (`gpt-4o`, ...), and existing
 deployments rely on those falling back to the gateway default. On

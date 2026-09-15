@@ -164,7 +164,13 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
         if not name:
             return [], f"tool_call calls[{position}] requires a 'name'"
         if name in BRIDGE_TOOL_NAMES:
-            return [], f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
+            logger.debug(
+                "tool_call rejected calls[%d]: self-invocation of bridge tool '%s'; raw=%r",
+                position, name, raw)
+            return [], (
+                f"tool_call cannot invoke '{name}' (it is itself a bridge tool). "
+                f"'{name}' is already a top-level tool — call it directly, do not wrap it "
+                "in tool_call.")
         raw_args = raw.get("arguments")
         if raw_args is None:
             raw_args = {}

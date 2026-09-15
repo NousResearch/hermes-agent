@@ -705,7 +705,8 @@ def _provider_has_credentials(pid: str) -> bool:
         if pid == "custom":
             return bool((_get_custom_base_url() or "").strip())
         if pid == "openrouter":
-            return has_usable_secret(os.getenv("OPENROUTER_API_KEY", ""))
+            from hermes_cli.model_switch import _scoped_key_env
+            return has_usable_secret(_scoped_key_env("OPENROUTER_API_KEY"))
         status = get_auth_status(pid)
         return bool(status.get("logged_in") or status.get("configured"))
     except Exception:

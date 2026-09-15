@@ -48,16 +48,17 @@ def _profile_scoped_rpc(
                     return err
                 args = (rid, params, session)
             scope = contextlib.nullcontext()
-            if profile := _str_arg(params, "profile") if scoped else "":
+            if scoped:
+                # _profile_home is the ONE resolver: it registers the served home (flipping this
+                # process to fail-closed multi-profile hosting) and answers None for the launch
+                # profile, which then binds its own scope once multiplexing is active.
+                profile = _str_arg(params, "profile")
                 try:
                     try:
-                        profile_dir = _tools_mod("hermes_cli.profiles").get_profile_dir(profile)
-                    except ValueError:  # traversal-shaped name: same answer as a missing dir
-                        profile_dir = None
-                    if not profile_dir or not profile_dir.is_dir():
+                        home = _profile_home(profile)
+                    except ProfileUnavailableError:
                         return _err(rid, 4064, f"profile '{profile}' not found")
-                    _tools_mod("hermes_cli.env_loader").hydrate_profile_secret_sources(profile_dir)
-                    scope = _session_profile_runtime_scope({"profile_home": str(profile_dir)})
+                    scope = _session_profile_runtime_scope({"profile_home": str(home) if home else None})
                 except Exception as e:
                     if not catch_resolve:
                         raise
@@ -1035,12 +1036,11 @@ def _(rid, params: dict) -> dict:
             return err
     # The client sends session_id, not profile; the live session is authoritative.
     home = (session or {}).get("profile_home")
-    scopes = _bind_build_profile_scopes(home) if home else None
+    scopes = _bind_build_profile_scopes(home)
     try:
         return _configure_session_tools(rid, params, sid, session)
     finally:
-        if scopes is not None:
-            _release_build_profile_scopes(scopes)
+        _release_build_profile_scopes(scopes)
 
 
 def _configure_session_tools(rid, params: dict, sid: str, session) -> dict:

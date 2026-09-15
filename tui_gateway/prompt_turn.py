@@ -444,24 +444,14 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     scopes = st.scopes
     scopes.approval = set_current_session_key(session["session_key"])
     scopes.session_tokens = _set_session_context(session["session_key"], ui_session_id=sid)
-    profile_home = session.get("profile_home")
-    if profile_home:
-        scopes.home = set_hermes_home_override(profile_home)
-        scopes.secret = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
-        from tools.terminal_scope import install_profile_terminal_scope
-        scopes.terminal = install_profile_terminal_scope(Path(profile_home))
-    elif _served_profile_homes:
-        # Multiplex residual of #68559 / #107422: the launch profile used to run
-        # unscoped and fall back to ambient os.environ. Once any secondary home
-        # has been served, bind the launch home's own terminal policy so a
-        # poisoned ambient bridge can never become the launch turn's authority.
-        # The launch process's env-only policy (TERMINAL_ENV=ssh from systemd /
-        # a launcher) has no file to rebuild it from: overlay the TERMINAL_*
-        # snapshot frozen at multiplex activation, never live os.environ.
-        from tools.terminal_scope import install_profile_terminal_scope
-        from tui_gateway.launch_terminal_policy import launch_terminal_env
-        scopes.terminal = install_profile_terminal_scope(
-            Path(_hermes_home), env_overlay=launch_terminal_env())
+    # Profile turn: that profile's home + secrets + terminal policy. Launch-profile turn: unscoped in a
+    # single-profile process; once multiplexing is active (#68559 / #107422 residual) its OWN scope,
+    # built from the env frozen at activation — get_secret() fails closed then, so an unscoped default
+    # member's hosted-room turn otherwise died with UnscopedSecretError, and ambient TERMINAL_* a
+    # secondary context poisoned must never become the launch turn's authority.
+    bound = _profile_runtime_scope_tokens(session.get("profile_home"))
+    if bound is not None:
+        scopes.home, scopes.secret, scopes.terminal = bound.home, bound.secret, bound.terminal
     # The sudo password callback is thread-local: without re-wiring here, sudo prompts
     # fall through to /dev/tty and hang the headless gateway (re-run is a no-op).
     _wire_callbacks(sid)

@@ -82,7 +82,7 @@ _PROMPT_RESOLVED_SQL = "COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_r
 
 
 def _export_timings(messages: List[Dict[str, Any]], session_id: Optional[str] = None) -> Dict[str, Any]:
-    """Text-free timing evidence for a session export (port of nearai/ironclaw#7735).
+    """Text-free timing evidence for a session export.
 
     Exports get attached to bug reports; a reader should not have to infer from raw
     timestamps whether a slow turn was one long model gap or many small tool
@@ -297,7 +297,7 @@ class SessionPortabilityMixin:
         return {
             **segments[-1], "segments": segments,
             "lineage_session_ids": [seg["id"] for seg in segments], "message_count": len(messages),
-            "messages": messages,
+            "messages": messages, "timings": _export_timings(messages, session_id),
         }
 
     def export_all(self, source: str = None) -> List[Dict[str, Any]]:
@@ -494,7 +494,10 @@ class SessionPortabilityMixin:
         if any(not isinstance(msg, dict) for msg in messages):
             raise ValueError("messages must contain only objects")
         try:
-            session_bytes = len(json.dumps(raw, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+            # `timings` is derived from the messages at export time and rebuilt on the next export;
+            # it must not eat into the size budget of the content it merely describes.
+            measured = {k: v for k, v in raw.items() if k != "timings"}
+            session_bytes = len(json.dumps(measured, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
         except (TypeError, ValueError):
             raise ValueError("session must be JSON serializable") from None
         if session_bytes > self._IMPORT_MAX_SESSION_BYTES:

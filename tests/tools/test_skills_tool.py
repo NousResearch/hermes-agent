@@ -295,6 +295,32 @@ class TestSkillsList:
         assert result["categories"] == ["linked"]
         assert result["skills"][0]["name"] == "knowledge-brain"
 
+    def test_category_miss_still_names_every_category(self, tmp_path):
+        """A filter that matched nothing must not read as "no such skill".
+
+        Measured 2026-08-07: a model asked for category "audio" while the skill
+        lived in "media", got {skills: [], categories: []} back, concluded the
+        skill was missing and wrote its own script instead of using it.
+        """
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "transcribe-roles", category="media")
+            missed = json.loads(skills_list(category="audio"))
+
+        assert missed["success"] is True
+        assert missed["count"] == 0
+        assert missed["categories"] == ["media"]
+        assert "does not mean the skill" in missed["message"]
+
+    def test_category_hit_carries_no_warning(self, tmp_path):
+        """The warning is for empty results only — a hit must stay clean."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "transcribe-roles", category="media")
+            hit = json.loads(skills_list(category="media"))
+
+        assert hit["count"] == 1
+        assert hit["skills"][0]["name"] == "transcribe-roles"
+        assert "message" not in hit
+
 
 # ---------------------------------------------------------------------------
 # skill_view

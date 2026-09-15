@@ -323,8 +323,8 @@ class HermesIndexSource(SkillSource):
         index order as tiebreaker — a raw break-at-limit slice buried the most relevant skills.
         Provider filters narrow the catalog before ranking and limiting."""
         skills = self._skills()
-        if provider_filter:
-            want = provider_filter.strip().lower()
+        want = provider_filter.strip().lower()
+        if want:
             skills = [s for s in skills if _entry_provider(s) == want]
         if not skills:
             return []

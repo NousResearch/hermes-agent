@@ -419,17 +419,15 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     page_size = max(1, min(page_size, 100))
     c = console or _console
     all_results, source_counts, timed_out = _fetch_browse_results(c, source)
+    from tools.skills_hub_github import _provider_filter_of
     if not all_results:
-        c.print("[dim]No skills found in the Skills Hub.[/]\n")
-        return
-    # Provider filter (nvidia/openai/...) narrows GitHub-tap skills by their per-tap
-    # ``extra.provider`` label (the runtime index stores them all under source="github").
-    from tools.skills_hub_github import _filter_results_by_provider, _provider_filter_of
-    if _provider_filter_of(source):
-        all_results = _filter_results_by_provider(all_results, source)
-        if not all_results:
+        # Provider narrowing happens inside parallel_search_sources; keep the
+        # provider-specific empty message.
+        if _provider_filter_of(source):
             c.print(f"[dim]No skills found for provider '{source}'.[/]\n")
-            return
+        else:
+            c.print("[dim]No skills found in the Skills Hub.[/]\n")
+        return
     deduped, page_items, page, total_pages, start = _rank_and_page(all_results, page, page_size)
     _render_browse_page(c, deduped, page_items, page, total_pages, start, source,
                         source_counts, timed_out)
@@ -437,7 +435,6 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
 
 def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> dict:
     """Paginated hub browse for programmatic callers (e.g. TUI gateway)."""
-    from tools.skills_hub_github import _filter_results_by_provider, _provider_filter_of
     from tools.skills_hub_search import parallel_search_sources
     page_size = max(1, min(page_size, 100))
     # The shared parallel walker carries the index-aware source-skip logic — querying
@@ -445,10 +442,6 @@ def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> di
     all_results, _counts, _timed_out = parallel_search_sources(
         _sources(), query="", per_source_limits=_BROWSE_API_LIMITS,
         source_filter=source, overall_timeout=30)
-    # Same provider rule as do_browse: sources that cannot filter per-tap (official,
-    # url, ...) are only cut on the merged set.
-    if _provider_filter_of(source):
-        all_results = _filter_results_by_provider(all_results, source)
     if not all_results:
         return {"items": [], "page": 1, "total_pages": 1, "total": 0}
     deduped, page_items, page, total_pages, _start = _rank_and_page(all_results, page, page_size)

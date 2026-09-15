@@ -7,8 +7,8 @@ import pytest
 
 from hermes_cli import skills_hub as cli_hub
 from hermes_cli.subcommands.skills import build_skills_parser
-from tools.skills_hub_github import GitHubAuth, GitHubSource, _tap_cache_key
-from tools.skills_hub_models import SkillMeta, _cache_metas
+from tools.skills_hub_github import GitHubAuth, GitHubSource, _tap_cache_key, github_provider_for
+from tools.skills_hub_models import SkillMeta, _cache_metas, _skill_meta_to_dict
 from tools.skills_hub_official import HermesIndexSource
 from tools.skills_hub_search import _hermes_index_cache_file, parallel_search_sources
 
@@ -30,17 +30,14 @@ def catalog(request, monkeypatch):
     if request.param == "index":
         path = _hermes_index_cache_file()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"skills": [vars(m) for m in others + wanted]}), encoding="utf-8")
+        path.write_text(json.dumps({"skills": [_skill_meta_to_dict(m) for m in others + wanted]}), encoding="utf-8")
         source = HermesIndexSource(auth)
     else:
         source = GitHubSource(auth)
         for tap in source.taps:
             key = _tap_cache_key(tap["repo"], tap.get("path", ""), tap.get("bucket"))
-            entries = []
-            if tap["repo"] == "openai/skills":
-                entries = others
-            elif tap["repo"] == "NVIDIA/skills":
-                entries = wanted
+            label = github_provider_for(tap["repo"])
+            entries = others if label == "OpenAI" else wanted if label == "NVIDIA" else []
             _cache_metas(key, entries)
     monkeypatch.setattr(cli_hub, "_sources", lambda: [source])
     return source, others, wanted

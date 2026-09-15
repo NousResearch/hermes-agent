@@ -122,9 +122,9 @@ def _select_active_sources(sources: List[SkillSource], source_filter: str) -> Li
 
     A provider filter (nvidia/openai/...) is not a source id — the data lives
     in the index/github source under ``extra.provider`` — so it selects like
-    "all". Mixed-provider sources filter before limiting; the merged results
-    are filtered again. "official" is always queried alongside an explicit
-    source filter.
+    "all". Mixed-provider sources narrow before their top-N cut; the walker
+    cuts every source's results. "official" is always queried alongside an
+    explicit source filter.
     """
     effective = "all" if _provider_filter_of(source_filter) else source_filter
     index_available = effective == "all" and any(
@@ -148,7 +148,9 @@ def parallel_search_sources(
     """Search all sources in parallel with an overall timeout.
 
     Returns ``(all_results, source_counts, timed_out_ids)``. *on_source_done*
-    is an optional ``(source_id, count) -> None`` progress callback.
+    is an optional ``(source_id, count) -> None`` progress callback. Under a
+    provider filter every source's results are narrowed before they are
+    counted and merged, so callers need no provider logic of their own.
     """
     from concurrent.futures import as_completed
 
@@ -176,6 +178,11 @@ def parallel_search_sources(
         for fut in as_completed(futures, timeout=overall_timeout):
             try:
                 sid, results = fut.result(timeout=0)
+                if provider_filter:
+                    # One owner for the merged provider cut: sources that cannot
+                    # filter per-tap (official, url, ...) are narrowed here, so
+                    # every caller (CLI, TUI gateway, dashboard) sees one rule.
+                    results = _filter_results_by_provider(results, provider_filter)
                 source_counts[sid] = len(results)
                 all_results.extend(results)
                 if on_source_done:
@@ -195,9 +202,6 @@ def unified_search(query: str, sources: List[SkillSource],
                    source_filter: str = "all", limit: int = 10) -> List[SkillMeta]:
     """Search all sources (in parallel) and merge results."""
     all_results, _, _ = parallel_search_sources(sources, query=query, source_filter=source_filter, overall_timeout=30)
-    # Provider filters target ``extra.provider`` on the merged set, not a source id.
-    if _provider_filter_of(source_filter):
-        all_results = _filter_results_by_provider(all_results, source_filter)
     deduped = _dedupe_by_trust(all_results)
     # Stable-sort by trust before truncating so the limit cut never drops a
     # builtin/official entry because a high-volume community source finished

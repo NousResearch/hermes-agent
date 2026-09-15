@@ -8,8 +8,9 @@ existing skills (bundled, hub, user) are modified in place. Layout:
 """
 
 import contextvars as _ctxvars
+import hashlib
 import json
-from contextlib import suppress
+from contextlib import ExitStack, contextmanager, suppress
 import logging
 import re
 import shutil
@@ -35,6 +36,23 @@ from tools.skill_manager_batch import _skill_manage_batch
 from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
 
 logger = logging.getLogger(__name__)
+
+
+# Advisory locks serialize the complete skill mutation transaction across
+# processes.  ``fcntl`` is unavailable on Windows, where ``msvcrt`` provides
+# the equivalent byte-range lock instead.
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback
+    fcntl = None
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - POSIX
+    msvcrt = None
+
+
+_held_skill_mutation_locks: "_ctxvars.ContextVar[frozenset[str]]" = _ctxvars.ContextVar(
+    "held_skill_mutation_locks", default=frozenset())
 
 
 def _guard_agent_created_enabled() -> bool:
@@ -78,6 +96,75 @@ def _skills_dir() -> Path:
     """
     configured = Path(SKILLS_DIR)
     return configured if configured != _SKILLS_DIR_AT_IMPORT else get_hermes_home() / "skills"
+
+
+def _skill_mutation_lock_path(name: str) -> Path:
+    """Return a stable per-skill lock path without placing it in the skill.
+
+    The lock must survive a delete/recreate cycle: a lock file inside the
+    skill directory could be unlinked while another writer still holds it.
+    Lock files stay under the active Hermes home rather than a category
+    directory, so deleting the last categorized skill still removes that now
+    empty category.
+    """
+    existing = _find_skill(name)
+    skill_dir = Path(existing["path"]) if existing else _resolve_skill_dir(name)
+    try:
+        identity = str(skill_dir.resolve())
+    except OSError:
+        identity = str(skill_dir.absolute())
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    return _skills_dir() / ".skill_manage_locks" / f"{digest}.lock"
+
+
+@contextmanager
+def _skill_mutation_lock(name: str):
+    """Serialize one skill's read-transform-validate-write window.
+
+    Locking is intentionally advisory and fail-open only where neither
+    platform primitive exists, preserving the tool's existing portability on
+    unsupported platforms.  The Windows lock file contains one byte because
+    ``msvcrt.locking`` cannot lock an empty range.
+    """
+    lock_path = _skill_mutation_lock_path(name)
+    lock_key = str(lock_path)
+    held = _held_skill_mutation_locks.get()
+    if lock_key in held:
+        yield
+        return
+    if fcntl is None and msvcrt is None:  # pragma: no cover - unsupported platform
+        yield
+        return
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    if msvcrt is not None and (not lock_path.exists() or lock_path.stat().st_size == 0):
+        lock_path.write_text(" ", encoding="utf-8")
+    with open(lock_path, "r+" if msvcrt is not None else "a+", encoding="utf-8") as handle:
+        if fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        else:  # pragma: no cover - Windows fallback
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        token = _held_skill_mutation_locks.set(held | {lock_key})
+        try:
+            yield
+        finally:
+            _held_skill_mutation_locks.reset(token)
+            with suppress(OSError, IOError):
+                if fcntl is not None:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                else:  # pragma: no cover - Windows fallback
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+@contextmanager
+def _skill_mutation_locks(names):
+    """Acquire several skill locks in path order for an atomic batch."""
+    lock_names = sorted(dict.fromkeys(names), key=lambda name: str(_skill_mutation_lock_path(name)))
+    with ExitStack() as stack:
+        for name in lock_names:
+            stack.enter_context(_skill_mutation_lock(name))
+        yield
 
 
 MAX_NAME_LENGTH = 64
@@ -758,29 +845,33 @@ def skill_manage(
                 absorbed_into=absorbed_into)
     if (gate_result := _apply_skill_write_gate(action, name, **args)) is not None:
         return gate_result
-    # Ledger pre-capture: telemetry, not a gate — failures must NEVER block the mutation. delete
-    # destroys the whole package (consolidation may have re-homed support files first), so
-    # complete it from the newest curator backup or a restore is hollow.
-    # Audit ledger (tracker #79686 P3): capture the pre-mutation state of the skill directory so every
-    # mutation — any actor — lands in the append-only JSONL ledger with before/after blobs.
-    _ledger_before = None
-    with suppress(Exception):
-        from tools import skill_ledger as _ledger
-        _pre = _find_skill(name)
-        _ledger_before = _ledger.capture_before(
-            _pre["path"] if _pre else None, complete_package=(action == "delete"), skill=name)
     for arg, missing, message in _REQUIRED_ARGS.get(action, ()):
         if missing(args[arg]):
             return tool_error(message, success=False)
-    handler = _ACTION_HANDLERS.get(action, lambda a: _err(
-        f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"))
-    result = handler({"name": name, **args})
-    if isinstance(result, str):
-        return result  # tool_error JSON for argument-shape problems (patch)
-    if result.get("success"):
-        _record_success(
-            action, name, result, file_path=file_path, absorbed_into=absorbed_into,
-            task_id=task_id, session_id=session_id, ledger_before=_ledger_before)
+    # A mutation is read-modify-write even when its action eventually delegates
+    # to a helper: guards, ledger capture, patch matching, validation, rollback,
+    # and the atomic replacement all belong to the same ownership window.
+    with _skill_mutation_lock(name):
+        # Ledger pre-capture: telemetry, not a gate — failures must NEVER block the mutation. delete
+        # destroys the whole package (consolidation may have re-homed support files first), so
+        # complete it from the newest curator backup or a restore is hollow.
+        # Audit ledger (tracker #79686 P3): capture the pre-mutation state of the skill directory so every
+        # mutation — any actor — lands in the append-only JSONL ledger with before/after blobs.
+        _ledger_before = None
+        with suppress(Exception):
+            from tools import skill_ledger as _ledger
+            _pre = _find_skill(name)
+            _ledger_before = _ledger.capture_before(
+                _pre["path"] if _pre else None, complete_package=(action == "delete"), skill=name)
+        handler = _ACTION_HANDLERS.get(action, lambda a: _err(
+            f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"))
+        result = handler({"name": name, **args})
+        if isinstance(result, str):
+            return result  # tool_error JSON for argument-shape problems (patch)
+        if result.get("success"):
+            _record_success(
+                action, name, result, file_path=file_path, absorbed_into=absorbed_into,
+                task_id=task_id, session_id=session_id, ledger_before=_ledger_before)
     return json.dumps(result, ensure_ascii=False)
 
 

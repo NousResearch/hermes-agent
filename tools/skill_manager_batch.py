@@ -144,10 +144,21 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
         staged = _smt._run_write_gate(_staging)
         if staged is not None:
             return staged
-    snap_root = Path(tempfile.mkdtemp(prefix="skill_batch_"))
+    # Hold every target's lock from the snapshot through either commit or
+    # rollback.  Individual operations re-enter these locks through
+    # skill_manage(), but the outer fence is what keeps a concurrent writer
+    # from landing between this batch's snapshot and its final operation.
+    mutation_locks = _smt._skill_mutation_locks(names)
+    mutation_locks.__enter__()
+    try:
+        snap_root = Path(tempfile.mkdtemp(prefix="skill_batch_"))
+    except BaseException as exc:
+        mutation_locks.__exit__(type(exc), exc, exc.__traceback__)
+        raise
     snapshots, snap_err = _snapshot_skills(names, snap_root, _smt._find_skill)
     if snap_err is not None:
         shutil.rmtree(snap_root, ignore_errors=True)
+        mutation_locks.__exit__(None, None, None)
         return tool_error(snap_err, success=False)
     # Single-op path with the gate bypassed (the batch already cleared/staged it).
     results = []
@@ -183,6 +194,7 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
             logger.warning("skill_manage batch rollback failed, snapshots kept at %s", snap_root)
         else:
             shutil.rmtree(snap_root, ignore_errors=True)
+        mutation_locks.__exit__(None, None, None)
     # utf-8-sig + errors="replace": SKILL.md files are user-authored and sometimes carry a Notepad BOM or
     # stray non-UTF-8 bytes. Pinning UTF-8 with replacement keeps skill_view deterministic across platforms
     # — falling back to the machine locale (cp1252/GBK) would make the same skill render differently per

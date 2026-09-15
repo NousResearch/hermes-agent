@@ -98,16 +98,27 @@ def resolve_gateway_clarify(clarify_id: str, response: str) -> bool:
         return True
 
 
+def _get_pending_for_session_locked(
+    session_key: str, *, include_choice_prompts: bool = False
+) -> Optional[_ClarifyEntry]:
+    """Oldest unresolved matching entry; caller holds ``_lock``."""
+    for cid in _session_index.get(session_key) or []:
+        entry = _entries.get(cid)
+        if entry is not None and not entry.event.is_set() and (
+            include_choice_prompts or entry.awaiting_text
+        ):
+            return entry
+    return None
+
+
 def get_pending_for_session(session_key: str, *, include_choice_prompts: bool = False) -> Optional[_ClarifyEntry]:
     """Oldest pending entry awaiting free text (open-ended, or after "Other");
     ``include_choice_prompts=True`` returns the oldest unresolved entry of any kind (user
     typed at an active choice prompt: resolve it rather than queue a follow-up turn)."""
     with _lock:
-        for cid in _session_index.get(session_key) or []:
-            entry = _entries.get(cid)
-            if entry is not None and (include_choice_prompts or entry.awaiting_text):
-                return entry
-        return None
+        return _get_pending_for_session_locked(
+            session_key, include_choice_prompts=include_choice_prompts
+        )
 
 
 def _match_label(text: str, choices: List[str]) -> Optional[str]:
@@ -124,7 +135,7 @@ def _match_label(text: str, choices: List[str]) -> Optional[str]:
 def _split_tokens(text: str) -> Optional[List[str]]:
     """Comma-separated tokens, or space-separated all-numeric tokens ("1 3"); else None."""
     if "," in text:
-        return [t.strip() for t in text.split(",") if t.strip()]
+        return [t.strip() for t in text.split(",")]
     parts = text.split()
     return parts if len(parts) > 1 and all(p.isdigit() for p in parts) else None
 
@@ -137,21 +148,30 @@ def _is_int(text: str) -> bool:
         return False
 
 
+def _looks_int(text: str) -> bool:
+    """True for parseable integers and digit-like inputs that ``int`` rejects."""
+    stripped = text[1:] if text.startswith("-") else text
+    return bool(stripped) and (stripped.isdigit() or _is_int(text))
+
+
 def _selection_attempt_tokens(text: str, choices: Optional[List[str]] = None) -> Optional[List[str]]:
-    """Tokens when ``text`` looks like a typed selection (bare int, comma list,
-    all-numeric space list); None for free prose so the gateway can release the
-    clarify. Comma-list labels may span up to the longest choice's word count."""
+    """Selection tokens when numeric or exact-label evidence exists; else None."""
     stripped = str(text).strip()
     if not stripped:
         return None
     tokens = _split_tokens(stripped)
     if tokens is None:
-        digits = stripped[1:] if stripped.startswith("-") else stripped
-        return [stripped] if digits.isdigit() or _is_int(stripped) else None
-    if "," not in stripped or not tokens:
+        return [stripped] if _looks_int(stripped) else None
+    if "," not in stripped:
         return tokens or None
-    max_words = max(1, max((len(str(c).split()) for c in choices or []), default=1))
-    return tokens if all(t.isdigit() or len(t.split()) <= max_words for t in tokens) else None
+    nonempty = [token for token in tokens if token]
+    if not nonempty:
+        return None
+    evidence = any(
+        _looks_int(token) or _match_label(token, choices or []) is not None
+        for token in nonempty
+    )
+    return tokens if evidence else None
 
 
 def _coerce_text_response(entry: _ClarifyEntry, response: str) -> Optional[str]:
@@ -173,9 +193,11 @@ def _coerce_text_response_detailed(entry: _ClarifyEntry, response: str) -> tuple
         coerced = _coerce_multi_select_text(entry, text)
         selection_shaped = _selection_attempt_tokens(text, entry.choices) is not None
     else:
-        # Out-of-range / non-canonical integer is a failed selection, not prose.
-        selection_shaped = _is_int(text)
-        idx = int(text) - 1 if selection_shaped else -1
+        selection_shaped = _looks_int(text)
+        try:
+            idx = int(text) - 1
+        except ValueError:
+            idx = -1
         coerced = entry.choices[idx] if 0 <= idx < len(entry.choices) else _match_label(text, entry.choices)
     if coerced is not None:
         return coerced, None
@@ -190,10 +212,18 @@ def _coerce_multi_select_text(entry: _ClarifyEntry, text: str) -> Optional[str]:
     choices, selected = entry.choices or [], []
     if not text:
         return None
+    whole_label = _match_label(text, choices)
+    if whole_label is not None:
+        return json.dumps([whole_label], ensure_ascii=False)
     tokens = _split_tokens(text)
     for token in [text] if tokens is None else tokens:
-        if token.isdigit():
-            idx = int(token) - 1
+        if not token:
+            return None
+        if _looks_int(token):
+            try:
+                idx = int(token) - 1
+            except ValueError:
+                return None
             label = str(choices[idx]).strip() if 0 <= idx < len(choices) else None
         else:
             label = _match_label(token, choices)
@@ -205,16 +235,22 @@ def _coerce_multi_select_text(entry: _ClarifyEntry, text: str) -> Optional[str]:
 
 
 def attempt_text_response_for_session(session_key: str, response: str) -> str:
-    """Try to resolve the oldest pending clarify from typed text; returns a TEXT_* outcome."""
-    entry = get_pending_for_session(session_key, include_choice_prompts=True)
-    if entry is None:
-        return TEXT_NO_PENDING
-    coerced, reason = _coerce_text_response_detailed(entry, response)
-    if coerced is None:
-        return TEXT_REJECTED_SELECTION if reason == "invalid_selection" else TEXT_REJECTED_PROSE
-    if resolve_gateway_clarify(entry.clarify_id, coerced):
-        return TEXT_RESOLVED
-    return TEXT_NO_PENDING  # lost a race with a button/callback resolution — no work left
+    """Atomically classify and resolve the oldest pending clarify from typed text."""
+    with _lock:
+        entry = _get_pending_for_session_locked(session_key, include_choice_prompts=True)
+        if entry is None:
+            return TEXT_NO_PENDING
+        coerced, reason = _coerce_text_response_detailed(entry, response)
+        if coerced is None:
+            if reason == "invalid_selection":
+                return TEXT_REJECTED_SELECTION
+            resolve_gateway_clarify(entry.clarify_id, "")
+            return TEXT_REJECTED_PROSE
+        return (
+            TEXT_RESOLVED
+            if resolve_gateway_clarify(entry.clarify_id, coerced)
+            else TEXT_NO_PENDING
+        )
 
 
 def resolve_text_response_for_session(session_key: str, response: str) -> bool:
@@ -232,9 +268,13 @@ def mark_awaiting_text(clarify_id: str) -> bool:
 
 
 def has_pending(session_key: str) -> bool:
-    """True when this session has at least one pending clarify entry."""
+    """True when this session has at least one unresolved clarify entry."""
     with _lock:
-        return any(_entries.get(cid) is not None for cid in _session_index.get(session_key) or [])
+        return any(
+            entry is not None and not entry.event.is_set()
+            for cid in _session_index.get(session_key) or []
+            if (entry := _entries.get(cid)) is not None
+        )
 
 
 def clear_session(session_key: str) -> int:

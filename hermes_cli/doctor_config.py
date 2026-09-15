@@ -267,6 +267,27 @@ def _check_config_file(should_fix: bool, f: Finding) -> None:
     config_path = HERMES_HOME / 'config.yaml'
     if config_path.exists():
         check_ok(f"{_DHH}/config.yaml exists")
+        # #102945: a config.yaml that fails YAML parsing silently falls back to
+        # DEFAULT_CONFIG — every user override (providers, fallback chain,
+        # model settings) is ignored while chat keeps working on defaults, and
+        # the loader's one-line stderr warning is gone by the time anyone
+        # looks. `hermes doctor` is the persistent health signal for it.
+        try:
+            import yaml
+
+            with open(config_path, encoding="utf-8") as _fh:
+                yaml.safe_load(_fh)
+        except Exception as parse_err:
+            check_fail(
+                "config.yaml failed to parse — running on DEFAULTS "
+                "(all user overrides are being ignored)",
+                str(parse_err),
+            )
+            f.issues.append(
+                "Fix the YAML in config.yaml and restart "
+                "(a .corrupt.*.bak copy of the broken file may exist alongside it)"
+            )
+            return  # model/provider validation over defaults is noise
         with warn_on_error("Could not validate model/provider config"):
             _validate_model_config(config_path, f.issues)
     elif (PROJECT_ROOT / 'cli-config.yaml').exists():

@@ -89,6 +89,7 @@ class SessionLiveInfo(OpenModel):
     profile_name: str | None = None
     mcp_servers: list[McpServerStatus] = Field(default_factory=list)
     system_prompt: str | None = None
+    config_warning: str | None = None
     credential_warning: str | None = None
     lazy: bool | None = None
 

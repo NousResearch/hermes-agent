@@ -947,16 +947,24 @@ export function useMainApp(gw: GatewayClient) {
 
     const exitHandler = () => {
       turnController.reset()
+      const state = getUiState()
+      const storedSid = state.info?.stored_session_id || null
 
-      // A still-owned child dying while the TUI is alive is an *unexpected*
-      // death — a user /quit exits Node before this fires, and a replaced child
-      // is identity-skipped in GatewayClient. Rather than stranding a long
-      // session (the user's complaint), respawn the gateway and resume the
-      // persisted session via the next gateway.ready, so a single crash / OOM /
-      // signal doesn't lose their work. planGatewayRecovery bounds the attempts
-      // so a gateway that crash-loops on startup can't spawn-storm, and falls
-      // back to recoverSidRef when sid was already cleared by a prior exit.
-      const plan = planGatewayRecovery(getUiState().sid, recoverSidRef.current, recoveryAtRef.current, Date.now())
+      if (gw.attached) {
+        recoverSidRef.current = storedSid ?? recoverSidRef.current
+        patchUiState({ busy: false, compacting: false, sid: null, status: 'reconnecting…' })
+
+        if (state.sid) {
+          turnController.pushActivity('connection lost · reconnecting…', 'warn')
+          sys('connection lost — reconnecting to your session…')
+        }
+
+        // GatewayClient owns the backoff. The server keeps the live turn for resume.
+        return
+      }
+
+      // A child-process death needs a bounded respawn and a persisted-session resume.
+      const plan = planGatewayRecovery(storedSid, recoverSidRef.current, recoveryAtRef.current, Date.now())
 
       // Clear sid immediately: while the gateway is down, sid-guarded effects
       // (session.active_list poll, queue drain) would otherwise fire RPCs at a
@@ -968,7 +976,7 @@ export function useMainApp(gw: GatewayClient) {
       if (plan.recover && plan.sid) {
         recoverSidRef.current = plan.sid
         turnController.pushActivity('gateway exited · recovering session…', 'warn')
-        sys('gateway exited — recovering your session (any in-flight reply was lost)')
+        sys('gateway exited — recovering your session…')
         gw.start()
 
         return

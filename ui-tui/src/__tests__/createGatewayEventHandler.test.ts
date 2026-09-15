@@ -1070,12 +1070,17 @@ describe('createGatewayEventHandler', () => {
     const appended: Msg[] = []
     const newSession = vi.fn()
     const resumeById = vi.fn()
+    const resumed = Promise.withResolvers<void>()
     const ctx = buildCtx(appended)
 
     ctx.session.newSession = newSession
     // Mimic resumeById's synchronous status write so the test proves the
     // "recovering session…" label is applied *after* (and survives) it.
-    ctx.session.resumeById = resumeById.mockImplementation(() => patchUiState({ status: 'resuming…' }))
+    ctx.session.resumeById = resumeById.mockImplementation(() => {
+      patchUiState({ status: 'resuming…' })
+
+      return resumed.promise.then(() => patchUiState({ sid: 'sess-recovered', status: 'ready' }))
+    })
     ctx.session.STARTUP_RESUME_ID = ''
     ctx.session.recoverSidRef = ref<null | string>('sess-crashed')
 
@@ -1085,10 +1090,12 @@ describe('createGatewayEventHandler', () => {
 
     await vi.waitFor(() => expect(resumeById).toHaveBeenCalledWith('sess-crashed'))
     expect(newSession).not.toHaveBeenCalled()
-    // One-shot: the ref is consumed so a later ordinary restart forges/resumes
-    // per config instead of re-resuming the recovered session.
-    expect(ctx.session.recoverSidRef.current).toBeNull()
+    expect(ctx.session.recoverSidRef.current).toBe('sess-crashed')
     expect(getUiState().status).toBe('recovering session…')
+
+    resumed.resolve()
+    await vi.waitFor(() => expect(ctx.session.recoverSidRef.current).toBeNull())
+    expect(getUiState().sid).toBe('sess-recovered')
   })
 
   it('on gateway.ready with auto_resume on and a recent session, resumes it', async () => {

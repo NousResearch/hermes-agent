@@ -2937,6 +2937,7 @@ export interface Translations extends NoticeTranslations {
     placeholderSendChord: (chord: string) => string
     placeholderSendEnterSends: string
     placeholderSendPause: string
+    sendHold: string
     newSessionPlaceholders: readonly string[]
     followUpPlaceholders: readonly string[]
     startVoice: string

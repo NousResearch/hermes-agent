@@ -18,6 +18,7 @@ import os
 import sys
 import threading
 import time
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
@@ -31,6 +32,7 @@ logger = logging.getLogger(__name__)
 # Extra leash beyond ``agent.restart_drain_timeout`` so a slow-but-progressing drain survives.
 # Matches the issue #66892 suggested hardening.
 DEFAULT_SHUTDOWN_WATCHDOG_GRACE_S = 60.0
+DEFAULT_PROCESS_EXIT_BACKSTOP_S = 5.0
 DEFAULT_HEARTBEAT_INTERVAL_S = 30.0
 DEFAULT_LOOP_FLOOR_TIMER_INTERVAL_S = 5.0
 DEFAULT_LOOP_WATCHDOG_INTERVAL_S = 30.0
@@ -43,6 +45,8 @@ DEFAULT_LOOP_WATCHDOG_TIMEOUT_S = 10.0
 DEFAULT_LOOP_WATCHDOG_MAX_STRIKES = 3
 _HEARTBEAT_RELATIVE = ("state", "gateway.heartbeat")
 _WATCHDOG_DUMP_RELATIVE = ("logs", "gateway-shutdown-watchdog.log")
+_process_exit_backstop_lock = threading.Lock()
+_process_exit_backstop_done: Optional[threading.Event] = None
 
 
 def _coerce_float(value: Any, default: float, floor: float = 0.0) -> float:
@@ -214,8 +218,29 @@ def resolve_shutdown_watchdog_delay(
     return _coerce_float(drain_timeout, 0.0) + grace
 
 
-def _write_watchdog_dump(dump_path: Path, *, delay_s: float,
-                         snapshot: Optional[Dict[str, Any]]) -> None:
+def _write_asyncio_task_dump(fh, loop: asyncio.AbstractEventLoop) -> None:
+    """Append best-effort task stacks; a foreign/closed loop must not block thread diagnostics."""
+    fh.write("--- asyncio task diagnostics ---\n")
+    try:
+        tasks = asyncio.all_tasks(loop)
+    except Exception as exc:
+        fh.write(f"(asyncio task diagnostics unavailable: {exc!r})\n")
+        return
+    if not tasks:
+        fh.write("(no asyncio tasks)\n")
+        return
+    for task in sorted(tasks, key=id):
+        with contextlib.suppress(Exception):
+            fh.write(f"Task {task!r}\n")
+            for frame in task.get_stack(limit=32):
+                traceback.print_stack(frame, file=fh)
+    fh.write("--- end asyncio task diagnostics ---\n")
+
+
+def _write_watchdog_dump(
+    dump_path: Path, *, delay_s: float, snapshot: Optional[Dict[str, Any]],
+    loop: Optional[asyncio.AbstractEventLoop] = None,
+) -> None:
     """Best-effort faulthandler + metadata dump before hard-exit."""
     try:
         dump_path.parent.mkdir(parents=True, exist_ok=True)
@@ -231,6 +256,8 @@ def _write_watchdog_dump(dump_path: Path, *, delay_s: float,
         except Exception:
             fh.write("(faulthandler.dump_traceback failed)\n")
         fh.write("--- end dump ---\n")
+        if loop is not None:
+            _write_asyncio_task_dump(fh, loop)
         fh.flush()
     with contextlib.suppress(Exception):  # stderr too: journald/launchd get it if disk is wedged
         sys.stderr.write(f"Gateway shutdown watchdog fired after {delay_s:.0f}s "
@@ -242,7 +269,10 @@ def _write_watchdog_dump(dump_path: Path, *, delay_s: float,
 def arm_shutdown_watchdog(
     delay_s: float, *, done_event: Optional[threading.Event] = None,
     snapshot_fn: Optional[Callable[[], Dict[str, Any]]] = None, exit_code: int = 1,
-    dump_path: Optional[Path] = None, name: str = "gateway-shutdown-watchdog") -> threading.Event:
+    dump_path: Optional[Path] = None, name: str = "gateway-shutdown-watchdog",
+    loop: Optional[asyncio.AbstractEventLoop] = None,
+    reason: str = "shutdown_watchdog",
+) -> threading.Event:
     """Arm a daemon-thread hard-exit backstop for a wedged shutdown path: exits quietly if
     ``done_event`` is set within ``delay_s``, else dumps diagnostics and ``os._exit(exit_code)``.
     Never raises; returns ``done_event`` for disarming."""
@@ -263,32 +293,73 @@ def arm_shutdown_watchdog(
         except Exception as exc:
             snapshot = {"snapshot_error": repr(exc)}
         target = dump_path if dump_path is not None else get_shutdown_watchdog_dump_path()
-        _write_watchdog_dump(target, delay_s=delay, snapshot=snapshot)
+        _write_watchdog_dump(target, delay_s=delay, snapshot=snapshot, loop=loop)
         with contextlib.suppress(Exception):
-            logger.critical("Shutdown watchdog fired after %.0fs — forcing process exit "
-                            "(asyncio drain path appears wedged; see %s)", delay, target)
+            if reason == "post_teardown_exit_backstop":
+                logger.critical(
+                    "Gateway remained alive %.0fs after successful teardown — forcing process exit "
+                    "(asyncio.run cleanup appears wedged; see %s)", delay, target,
+                )
+            else:
+                logger.critical("Shutdown watchdog fired after %.0fs — forcing process exit "
+                                "(asyncio drain path appears wedged; see %s)", delay, target)
         for stream in (sys.stdout, sys.stderr):
             with contextlib.suppress(Exception):
                 stream.flush()
-        # Mirror _exit_after_graceful_shutdown: release PID file + runtime lock BEFORE the log drain
-        # (never strand locks), then drain the log queue so logger.critical lands before os._exit.
-        with contextlib.suppress(Exception):
-            # Mirror _exit_after_graceful_shutdown: release PID file + runtime lock BEFORE the log drain
-            # (locks must never be stranded), then drain the async log queue so the logger.critical above
-            # actually reaches the file before os._exit bypasses atexit. (#66892)
-            from gateway.status import remove_pid_file, release_gateway_runtime_lock
-            remove_pid_file()
-            release_gateway_runtime_lock()
         with contextlib.suppress(Exception):
             from hermes_logging import drain_log_queue
             drain_log_queue(timeout=1.0)
-        _mark_exited_quietly(exit_code, "shutdown_watchdog")
+        if done.is_set():  # a clean exit that won during diagnostics must not be pre-empted
+            return
+        # Release identity before ledger I/O: a stuck mark must not strand the pid/lock.
+        with contextlib.suppress(Exception):
+            from gateway.status import remove_pid_file, release_gateway_runtime_lock
+            remove_pid_file()
+            release_gateway_runtime_lock()
+        _mark_exited_quietly(exit_code, reason)
         os._exit(exit_code)
     try:
         threading.Thread(target=_watchdog, daemon=True, name=name).start()
     except Exception:
         logger.debug("Failed to arm shutdown watchdog", exc_info=True)
     return done
+
+
+def arm_process_exit_backstop(
+    *, delay_s: float = DEFAULT_PROCESS_EXIT_BACKSTOP_S,
+    loop: Optional[asyncio.AbstractEventLoop] = None,
+    snapshot_fn: Optional[Callable[[], Dict[str, Any]]] = None,
+    exit_code: int = 1,
+    dump_path: Optional[Path] = None,
+) -> threading.Event:
+    """Arm the short process-exit leash that survives successful async teardown."""
+    global _process_exit_backstop_done
+    done = threading.Event()
+    with _process_exit_backstop_lock:
+        previous = _process_exit_backstop_done
+        _process_exit_backstop_done = done
+    if previous is not None:
+        previous.set()
+    return arm_shutdown_watchdog(
+        delay_s,
+        done_event=done,
+        snapshot_fn=snapshot_fn,
+        exit_code=exit_code,
+        dump_path=dump_path,
+        name="gateway-process-exit-backstop",
+        loop=loop,
+        reason="post_teardown_exit_backstop",
+    )
+
+
+def disarm_process_exit_backstop() -> None:
+    """Disarm the current post-teardown leash immediately before the clean hard exit."""
+    global _process_exit_backstop_done
+    with _process_exit_backstop_lock:
+        done = _process_exit_backstop_done
+        _process_exit_backstop_done = None
+    if done is not None:
+        done.set()
 
 
 async def _tick_socket_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:

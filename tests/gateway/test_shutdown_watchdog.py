@@ -24,7 +24,9 @@ import pytest
 
 from gateway.shutdown_watchdog import (
     DEFAULT_SHUTDOWN_WATCHDOG_GRACE_S,
+    arm_process_exit_backstop,
     arm_shutdown_watchdog,
+    disarm_process_exit_backstop,
     get_loop_heartbeat_path,
     get_shutdown_watchdog_dump_path,
     loop_heartbeat_forever,
@@ -71,6 +73,61 @@ def test_arm_shutdown_watchdog_fires_with_dump_and_exit(tmp_path):
     assert "shutdown_watchdog_fired" in text
     assert "faulthandler dump" in text
     assert get_shutdown_watchdog_dump_path(tmp_path).name == "gateway-shutdown-watchdog.log"
+
+
+def test_process_exit_backstop_releases_identity_before_lifecycle_mark(
+    tmp_path, monkeypatch
+):
+    from gateway import status as gateway_status
+
+    fired = threading.Event()
+    order = []
+    dump = tmp_path / "logs" / "post-teardown.log"
+
+    monkeypatch.setattr(
+        shutdown_watchdog_module.asyncio,
+        "all_tasks",
+        lambda _loop: (_ for _ in ()).throw(RuntimeError("loop unavailable")),
+    )
+    monkeypatch.setattr(
+        "hermes_logging.drain_log_queue", lambda **_kwargs: order.append("drain_logs")
+    )
+    monkeypatch.setattr(
+        shutdown_watchdog_module,
+        "_mark_exited_quietly",
+        lambda *_args: order.append("mark_exited"),
+    )
+    monkeypatch.setattr(
+        gateway_status, "remove_pid_file", lambda: order.append("remove_pid")
+    )
+    monkeypatch.setattr(
+        gateway_status,
+        "release_gateway_runtime_lock",
+        lambda: order.append("release_lock"),
+    )
+
+    def fake_exit(_code):
+        order.append("exit")
+        fired.set()
+
+    monkeypatch.setattr(shutdown_watchdog_module.os, "_exit", fake_exit)
+    try:
+        arm_process_exit_backstop(
+            delay_s=0.05,
+            loop=object(),
+            dump_path=dump,
+            exit_code=9,
+        )
+        assert fired.wait(timeout=5.0), "process-exit backstop did not fire"
+    finally:
+        disarm_process_exit_backstop()
+
+    text = dump.read_text(encoding="utf-8")
+    assert "faulthandler dump (all threads)" in text
+    assert "asyncio task diagnostics unavailable" in text
+    assert order.index("remove_pid") < order.index("mark_exited")
+    assert order.index("release_lock") < order.index("mark_exited")
+    assert order[-1] == "exit"
 
 
 

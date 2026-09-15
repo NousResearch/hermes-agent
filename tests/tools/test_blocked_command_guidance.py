@@ -82,3 +82,32 @@ class TestBackgroundGuidanceRecipes:
 
     def test_quoted_ampersand_not_flagged(self):
         assert _foreground_background_guidance('git commit -m "a & b"') is None
+
+
+class TestPackageManagerInstallExemption:
+    def test_package_manager_installs_not_flagged(self):
+        # Installing a dependency merely names the same binary — nothing is
+        # launched, so the long-lived-server guidance must stay silent.
+        for cmd in (
+            "npm install nodemon",
+            "pip install uvicorn",
+            "pip3 install gunicorn",
+            "npm add nodemon --save-dev",
+            "python3 -m pip install uvicorn",
+            "apt install gunicorn",
+        ):
+            assert _foreground_background_guidance(cmd) is None, cmd
+
+    def test_install_then_launch_still_warns(self):
+        # The exemption is per chained segment: an install earlier in the line
+        # must not suppress the warning for a real launch later in it.
+        for cmd in (
+            "npm install nodemon && npm start",
+            "pip install uvicorn; uvicorn app:app",
+            "npm install nodemon || nodemon app.js",
+        ):
+            assert _foreground_background_guidance(cmd) is not None, cmd
+
+    def test_bare_launches_still_warn(self):
+        for cmd in ("npm start", "uvicorn app:app", "nodemon app.js", "yarn dev"):
+            assert _foreground_background_guidance(cmd) is not None, cmd

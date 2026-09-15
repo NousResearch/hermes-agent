@@ -1,13 +1,12 @@
 """Tests for kanban worker in-place turn recovery (provider-failure class).
 
 Covers the decision policy (bounded in-place retry of a failed worker turn),
-the backoff schedule, the continuation nudge contract, and the two call-site
-wirings in cli.py / cli_chat_turn_mixin.py.
+the backoff schedule, the continuation nudge contract, the worker predicate,
+and the exit-code behaviour of both one-shot paths (driven through
+``cli.main`` with a FakeCLI — no source reading, no real board).
 """
 
 from __future__ import annotations
-
-from pathlib import Path
 
 import pytest
 
@@ -15,14 +14,13 @@ from agent.kanban_turn_recovery import (
     DEFAULT_MAX_RECOVERY_ATTEMPTS,
     RECOVERY_DELAYS_SECONDS,
     build_recovery_nudge,
+    kanban_task_id,
     kanban_turn_recovery_enabled,
     max_recovery_attempts,
     recover_failed_kanban_turns,
     recovery_delay_seconds,
     should_recover_turn,
 )
-
-ROOT = Path(__file__).parents[2]
 
 
 @pytest.fixture
@@ -198,19 +196,16 @@ def test_nudge_terminal_contract(clear_kanban_env):
     assert "peer closed connection" in nudge
 
 
-# ── call-site wiring (structural pins) ───────────────────────────────
+# ── worker predicate (single source of truth, D2) ────────────────────
 
 
-def test_call_sites_wired_in_cli_and_mixin():
-    cli_src = (ROOT / "cli.py").read_text()
-    assert "from agent.kanban_turn_recovery import recover_failed_kanban_turns" in cli_src
-    assert "from agent.kanban_turn_recovery import recover_failed_kanban_turns as _recover_turns" in cli_src
-    # Non-quiet one-shot path: recovery + honest exit for a still-failed worker turn.
-    assert "_recover_turns(" in cli_src
-    assert 'os.environ.get("HERMES_KANBAN_TASK") and isinstance(_final_result, dict)' in cli_src
-
-    mixin_src = (ROOT / "hermes_cli/cli_chat_turn_mixin.py").read_text()
-    assert mixin_src.count("_last_turn_result") >= 2  # reset + set after settle
+def test_kanban_task_id_strips_and_rejects_blank(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "   ")
+    assert kanban_task_id() is None  # whitespace-only is NOT a worker, anywhere
+    assert kanban_turn_recovery_enabled() is False
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "  t_probe  ")
+    assert kanban_task_id() == "t_probe"
+    assert kanban_turn_recovery_enabled() is True
 
 
 # ── call-site behaviour (drive cli.main with a FakeCLI) ──────────────
@@ -365,3 +360,99 @@ def test_quiet_single_query_kanban_recovers(monkeypatch):
     assert exc_info.value.code == 0
     assert len(runs) == 2
     assert "Do NOT start over" in runs[1]
+
+
+# ── D1: a turn that settles NOTHING must not masquerade as a clean exit ──
+
+
+def test_single_query_kanban_exits_nonzero_when_no_settled_outcome(monkeypatch):
+    """D1: chat() can return without settling (credentials/init failure, a raising
+    settle, a blocked reference). rc=0 there is the silent protocol-violation class —
+    a kanban worker must exit non-zero instead."""
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_probe")
+    monkeypatch.setenv("HERMES_KANBAN_TURN_RECOVERY", "2")
+    calls: list = []
+    cli_mod = _install_fake_cli(monkeypatch, [None], calls)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_mod.main(query="hello", quiet=False, oneshot=True, toolsets="terminal")
+
+    assert exc_info.value.code == 1
+    chats = [c for c in calls if isinstance(c, tuple) and c[0] == "chat"]
+    assert len(chats) == 1  # nothing settled -> nothing to retry in place
+
+
+def test_single_query_non_kanban_no_settled_outcome_stays_clean(monkeypatch):
+    """D1 control: outside kanban the historical exit behaviour is untouched."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    calls: list = []
+    cli_mod = _install_fake_cli(monkeypatch, [None], calls)
+
+    cli_mod.main(query="hello", quiet=False, oneshot=True, toolsets="terminal")
+
+    assert "summary" in calls  # normal exit path, no SystemExit
+
+
+def test_whitespace_task_id_is_not_a_worker_anywhere(monkeypatch):
+    """D2: a blank task id must read as "not a worker" to BOTH the recovery gate and
+    the exit-code guard — never recovery-off-but-exit-1."""
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "   ")
+    calls: list = []
+    cli_mod = _install_fake_cli(monkeypatch, [None], calls)
+
+    cli_mod.main(query="hello", quiet=False, oneshot=True, toolsets="terminal")
+
+    chats = [c for c in calls if isinstance(c, tuple) and c[0] == "chat"]
+    assert len(chats) == 1  # no recovery attempt
+    assert "summary" in calls  # and no forced non-zero exit
+
+
+def test_quiet_kanban_exits_nonzero_when_no_settled_outcome(monkeypatch):
+    """D1 on the quiet (-Q) path: no settled outcome in kanban context -> exit 1."""
+    import cli as cli_mod
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_probe")
+    monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
+
+    runs: list = []
+
+    def run_conversation(*, user_message, conversation_history):
+        runs.append(user_message)
+        return None
+
+    class FakeCLI:
+        def __init__(self, **_kwargs):
+            self.provider = "test-provider"
+            self.model = "test-model"
+            self.session_id = "quiet-session"
+            self.conversation_history = []
+            self._active_agent_route_signature = "same-route"
+            self.agent = SimpleNamespace(
+                session_id="quiet-session", platform="cli", quiet_mode=False,
+                suppress_status_output=False, stream_delta_callback=object(),
+                tool_gen_callback=object(), run_conversation=run_conversation,
+            )
+
+        def _claim_active_session(self, surface, *, stderr=False):
+            return True
+
+        def _ensure_runtime_credentials(self):
+            return True
+
+        def _resolve_turn_agent_config(self, effective_query):
+            return {"signature": "same-route", "model": None, "runtime": None, "request_overrides": None}
+
+        def _init_agent(self, **kwargs):
+            return True
+
+    monkeypatch.setattr(cli_mod, "HermesCLI", FakeCLI)
+    monkeypatch.setattr(cli_mod.atexit, "register", lambda *a, **k: None)
+    monkeypatch.setattr(cli_mod, "_finalize_single_query", lambda fake_cli: None)
+    monkeypatch.setattr(cli_mod, "_collect_kanban_task_images", lambda imgs: [])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_mod.main(query="hello", quiet=True, toolsets="terminal")
+
+    assert exc_info.value.code == 1
+    assert len(runs) == 1  # None result -> no in-place retry, honest exit instead

@@ -39,9 +39,21 @@ _NON_RECOVERABLE_REASONS = frozenset({"rate_limit", "billing"})
 _OFF_VALUES = frozenset({"0", "false", "no", "off"})
 
 
+def kanban_task_id() -> str | None:
+    """The dispatcher-set kanban task id, or ``None`` when this is not a worker run.
+
+    Single source of truth for every kanban-worker predicate. The env value is
+    stripped exactly once, here, so a whitespace-only value can never read as
+    "worker" to one caller and "not a worker" to another (exit-code guards must
+    agree with the recovery gate).
+    """
+    task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    return task_id or None
+
+
 def kanban_turn_recovery_enabled() -> bool:
     """On when ``HERMES_KANBAN_TASK`` is set and the attempt budget is non-zero."""
-    if not (os.environ.get("HERMES_KANBAN_TASK") or "").strip():
+    if kanban_task_id() is None:
         return False
     return max_recovery_attempts() > 0
 

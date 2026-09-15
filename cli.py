@@ -4138,6 +4138,7 @@ def _run_quiet_single_query(cli, effective_query):
         # Kanban worker: same in-place turn recovery as the non-quiet path (see
         # agent/kanban_turn_recovery.py) — a failed API call must not silently end the run.
         from agent.kanban_turn_recovery import recover_failed_kanban_turns as _recover_turns
+        from agent.kanban_turn_recovery import kanban_task_id
 
         def _quiet_recover_turn(nudge):
             nonlocal result
@@ -4181,12 +4182,17 @@ def _run_quiet_single_query(cli, effective_query):
     _exit_code = 0
     if isinstance(result, dict) and result.get("failed"):
         _exit_code = 1
-        if os.environ.get("HERMES_KANBAN_TASK") and result.get("failure_reason") in ("rate_limit", "billing"):
+        if kanban_task_id() and result.get("failure_reason") in ("rate_limit", "billing"):
             try:
                 from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE
                 _exit_code = _RL_CODE
             except Exception:
                 _exit_code = 1
+    elif kanban_task_id() and not isinstance(result, dict):
+        # Kanban worker with NO settled outcome at all (credentials/init failure, a
+        # raising settle, a blocked context reference): rc=0 here is the silent
+        # protocol-violation class the recovery exists to kill — book it honestly.
+        _exit_code = 1
     sys.exit(_exit_code)
 
 
@@ -4511,6 +4517,7 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
         # conversation history); when the budget is exhausted exit non-zero so the run is
         # booked honestly instead of masquerading as a clean exit.
         from agent.kanban_turn_recovery import recover_failed_kanban_turns
+        from agent.kanban_turn_recovery import kanban_task_id
         recover_failed_kanban_turns(
             lambda nudge: cli.chat(nudge),
             lambda: getattr(cli, "_last_turn_result", None),
@@ -4518,7 +4525,12 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot):
         )
         cli._print_exit_summary(clear_screen=False)
         _final_result = getattr(cli, "_last_turn_result", None)
-        if os.environ.get("HERMES_KANBAN_TASK") and isinstance(_final_result, dict) and _final_result.get("failed"):
+        # A turn that settled NO outcome (None / non-dict: credentials or init failure,
+        # a raising settle, a blocked context reference) is as unfinished as a failed
+        # one — and rc=0 there is exactly the silent protocol-violation class this
+        # recovery exists to kill. Only a settled, non-failed dict exits clean.
+        _settled_ok = isinstance(_final_result, dict) and not _final_result.get("failed")
+        if kanban_task_id() and not _settled_ok:
             sys.exit(1)
     finally:
         _finalize_single_query(cli)

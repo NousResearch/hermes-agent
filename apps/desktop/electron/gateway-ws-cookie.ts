@@ -138,6 +138,9 @@ export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDep
   const signOuts = new Map<string, number>()
   const partitionScope = (partition: string) => `partition\n${partition}`
   const baseUrlScope = (baseUrl: string) => `baseUrl\n${baseUrl}`
+  // Every registration also belongs to this scope, so a sign-out with no base
+  // url -- which clears the WHOLE jar -- can revoke and fence all of them.
+  const EVERY_SCOPE = 'every'
   const now = () => (dependencies.now ? dependencies.now() : Date.now())
   const ttlMs = dependencies.ttlMs ?? DEFAULT_TTL_MS
 
@@ -181,7 +184,9 @@ export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDep
     const owner = `${baseUrl}\n${consumer ?? ''}`
     const partition = dependencies.resolvePartition(baseUrl)
     const generation = ++sequence
-    const scopes = [partitionScope(partition), baseUrlScope(baseUrl)]
+    // EVERY_SCOPE last: a sign-out with no base url clears the whole jar, so
+    // every registration must be fenced against it too.
+    const scopes = [partitionScope(partition), baseUrlScope(baseUrl), EVERY_SCOPE]
     const scopedEpochs = scopes.map(scope => [scope, epochs.get(scope) ?? 0] as const)
 
     // Re-inserted so the map stays in least-recently-registered order.
@@ -247,8 +252,39 @@ export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDep
   // then the partition stays closed to new authority, because a registration
   // racing the cleanup would read cookies that are already being deleted.
   const forget = (baseUrl: string) => {
+    // No base url means the caller is clearing the ENTIRE jar --
+    // clearOauthSession passes its filter straight through -- so nothing may
+    // outlive it. Returning a no-op left the widest clear as the only
+    // unfenced one.
     if (!baseUrl) {
-      return () => undefined
+      const revokeEverything = () => {
+        epochs.set(EVERY_SCOPE, (epochs.get(EVERY_SCOPE) ?? 0) + 1)
+        entries.clear()
+      }
+
+      revokeEverything()
+      signOuts.set(EVERY_SCOPE, (signOuts.get(EVERY_SCOPE) ?? 0) + 1)
+
+      let allClosed = false
+
+      return () => {
+        if (allClosed) {
+          return
+        }
+
+        allClosed = true
+
+        const remaining = (signOuts.get(EVERY_SCOPE) ?? 1) - 1
+
+        if (remaining > 0) {
+          signOuts.set(EVERY_SCOPE, remaining)
+
+          return
+        }
+
+        signOuts.delete(EVERY_SCOPE)
+        revokeEverything()
+      }
     }
 
     const partition = dependencies.resolvePartition(baseUrl)

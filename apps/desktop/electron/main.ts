@@ -7663,6 +7663,17 @@ async function hasLiveOauthSession(baseUrl) {
   return readLive()
 }
 
+// The bare hostname of a gateway, for a cookie `domain` filter. Cookies are
+// not port-scoped, so hostLabelFromBaseUrl's `host:port` label cannot be used
+// here; an unparseable url yields null and the caller clears the whole jar.
+function cookieHostFromBaseUrl(baseUrl) {
+  try {
+    return new URL(String(baseUrl || '')).hostname || null
+  } catch {
+    return null
+  }
+}
+
 async function clearOauthSession(baseUrl) {
   const sess = getOauthSessionForUrl(baseUrl)
 
@@ -7680,7 +7691,15 @@ async function clearOauthSession(baseUrl) {
   }
 
   try {
-    const cookies = await sess.cookies.get(baseUrl ? { url: baseUrl } : {})
+    // Enumerate by DOMAIN, not by url. A url filter applies path matching, so
+    // the forward-auth cookie this feature forwards -- scoped to `Path=/api/`
+    // or to a reverse-proxy prefix -- is absent from a base-url read and would
+    // survive the sign-out that is supposed to remove it, ready to be
+    // forwarded again on the next upgrade. The host keeps other gateways in a
+    // shared jar untouched; an unknown host falls back to the whole jar, as
+    // before.
+    const signedOutHost = cookieHostFromBaseUrl(baseUrl)
+    const cookies = await sess.cookies.get(signedOutHost ? { domain: signedOutHost } : {})
     await Promise.all(
       cookies.map(c => {
         const scheme = c.secure ? 'https' : 'http'
@@ -8337,11 +8356,13 @@ async function freshGatewayWsUrl(profile, consumerTag?: string) {
   // silently lands back on the primary (default) backend and writes sessions to
   // the wrong profile's DB. A null/empty profile resolves to the primary, so
   // legacy callers and single-profile users are unchanged.
-  const connection = await ensureBackend(profile)
   // One consumer per profile: a shared remote keeps a live socket for each.
-  // Keyed exactly as ensureBackend() keys the profile, so a re-mint of the
-  // same socket always retires its own stale ticket url.
+  // Keyed exactly as ensureBackend() keys the profile, and pinned BEFORE the
+  // await that selects the backend: reading the active profile afterwards let
+  // a profile switch during resolution key this mint differently from the one
+  // before it, so the earlier url was never retired.
   const consumer = `ws-url:${String(profile ?? '').trim() || primaryProfileKey()}:${consumerTag || 'default'}`
+  const connection = await ensureBackend(profile)
 
   if (connection.authMode === 'oauth') {
     const ticket = await mintGatewayWsTicket(connection.baseUrl, connection.headers)

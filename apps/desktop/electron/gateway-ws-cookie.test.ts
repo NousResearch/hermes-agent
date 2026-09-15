@@ -331,6 +331,58 @@ describe('gateway WebSocket cookie forwarding', () => {
     expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
   })
 
+  // clearOauthSession passes its filter straight through, so an empty base url
+  // clears the WHOLE jar. Nothing may outlive that -- it was the widest clear
+  // and the only one the store used to ignore.
+  it('revokes every gateway when the whole jar is cleared', async () => {
+    const other = 'https://other.example'
+    const otherWs = 'wss://other.example/api/ws?ticket=other'
+    const { store } = createStore(
+      { [GATEWAY]: proxyJar, [other]: [{ name: 'session', value: 'other' }] },
+      { partitions: { [other]: 'persist:hermes-oauth-two' } }
+    )
+
+    await store.register(WS_URL, GATEWAY)
+    await store.register(otherWs, other)
+
+    store.forget('')
+
+    expect(cookieOn(store, WS_URL)).toBeUndefined()
+    expect(cookieOn(store, otherWs)).toBeUndefined()
+  })
+
+  it('fences a read in flight across a whole-jar clear', async () => {
+    const jar = deferred<GatewayCookie[]>()
+    const store = createGatewayWsCookieStore({
+      readCookies: () => jar.promise,
+      resolvePartition: () => LEGACY
+    })
+
+    const pending = store.register(WS_URL, GATEWAY)
+    const done = store.forget('')
+
+    done()
+    jar.resolve(proxyJar)
+    await pending
+
+    expect(cookieOn(store, WS_URL)).toBeUndefined()
+  })
+
+  it('refuses a read taken while the whole jar is being cleared', async () => {
+    const { store } = createStore()
+
+    const done = store.forget('')
+
+    await store.register(WS_URL, GATEWAY)
+
+    expect(cookieOn(store, WS_URL)).toBeUndefined()
+
+    done()
+    await store.register(WS_URL, GATEWAY)
+
+    expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
+  })
+
   it('keeps two gateways on separate partitions independent', async () => {
     const one = 'https://one.example'
     const two = 'https://two.example'
@@ -657,6 +709,9 @@ describe('gateway WebSocket cookie forwarding', () => {
     expect(onError).toHaveBeenCalledWith('partition unavailable')
   })
 
+  // A registration missing either half cannot name a socket, so it reads
+  // nothing and disturbs nothing. (A sign-out missing its base url is the
+  // opposite case -- it clears the whole jar -- and is covered above.)
   it('ignores a missing url or baseUrl instead of touching live authority', async () => {
     const { readCookies, store } = createStore()
 
@@ -665,7 +720,6 @@ describe('gateway WebSocket cookie forwarding', () => {
 
     await store.register('', GATEWAY)
     await store.register(WS_URL, '')
-    store.forget('')
 
     expect(readCookies).not.toHaveBeenCalled()
     expect(cookieOn(store, WS_URL)).toBe(EXPECTED)

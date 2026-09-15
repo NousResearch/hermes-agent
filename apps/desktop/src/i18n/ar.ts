@@ -95,6 +95,7 @@ export const ar = defineLocale({
     off: 'معطل'
   },
   fileMenu: {
+    openWithApp: 'فتح بالتطبيق الافتراضي',
     revealFinder: 'إظهار في Finder',
     revealExplorer: 'إظهار في File Explorer',
     revealFileManager: 'فتح المجلد الحاوي',

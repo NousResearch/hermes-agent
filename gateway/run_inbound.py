@@ -1328,15 +1328,21 @@ class GatewayInboundMixin:
             source, group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
         )
-        if _is_shared_multi_user and source.user_name:
+        _feishu_sender_id = source.user_id if source.platform == Platform.FEISHU else None
+        if _is_shared_multi_user and (source.user_name or _feishu_sender_id):
             # Display names are attacker-influenceable: neutralize newlines/control chars or a
             # hostile name masquerades as a fake markdown section (mirrors build_session_context_prompt).
-            _safe_user_name = neutralize_untrusted_inline_text(source.user_name)
+            _safe_user_name = neutralize_untrusted_inline_text(source.user_name or "Feishu user")
             # Slack: expose the CURRENT speaker's verifiable `<@U...>` id so "mention me again" has a
             # trusted target (display names are ambiguous). user_id comes from the envelope, not user-editable.
             # See #17916.
             if source.platform == Platform.SLACK and source.user_id:
                 _safe_user_name = f"{_safe_user_name} | Slack user <@{source.user_id}>"
+            elif _feishu_sender_id:
+                # External Feishu members may have no resolvable contact name. Attribute every
+                # shared-session turn by its envelope ID, including when display names collide.
+                _safe_sender_id = neutralize_untrusted_inline_text(_feishu_sender_id)
+                _safe_user_name = f"{_safe_user_name} | Feishu sender_id={_safe_sender_id}"
             message_text = f"[{_safe_user_name}] {message_text}"
         # After the sender-prefix so the prefix applies only to the trigger message, not the backfill.
         if getattr(event, "channel_context", None):

@@ -89,7 +89,8 @@ def _status_model_route(
     Order: live/cached agent route -> active session override -> persisted recent route ->
     SessionDB row -> gateway config (only loaded when something is still missing). ``route`` carries
     the ``provider`` / ``base_url`` / ``api_key`` of the winning source only, so a later context-window
-    lookup queries the endpoint that serves the displayed model (never a losing route's endpoint).
+    lookup queries the endpoint that serves the displayed model (never a losing route's endpoint);
+    a winner without a ``base_url`` leaves the lookup on the default runtime route.
     """
     from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model
     context_used = context_total = 0

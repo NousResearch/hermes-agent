@@ -315,6 +315,47 @@ async def test_status_command_keeps_occupancy_only_for_unknown_model_window():
 
 
 @pytest.mark.asyncio
+async def test_status_command_default_route_keeps_runtime_endpoint_and_context_pin():
+    """No /model switch and no resident agent (first /status after a restart): the winner is the
+    persisted route or the SessionDB row, which carry no endpoint of their own. The window must then
+    be resolved against the default runtime route (custom base_url + key, ``model.context_length``
+    pin intact) exactly as /context does, not against an empty endpoint that drops the pin."""
+    config = {"model": {"default": "my-local-model", "provider": "custom",
+                        "base_url": "http://127.0.0.1:1/v1", "context_length": 32_768}}
+    runtime = {"model": "my-local-model", "provider": "custom",
+               "base_url": "http://127.0.0.1:1/v1", "api_key": "local-key"}
+    route = {"model": "my-local-model", "billing_provider": "custom"}
+    for persisted_route, session_row in ((route, None), ({}, dict(route))):
+        session_entry = SessionEntry(
+            session_key=build_session_key(_make_source()),
+            session_id="sess-1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+        )
+        session_entry.last_prompt_tokens = 9_000
+        runner = _make_runner(session_entry)
+        runner._session_db._db.get_session.return_value = session_row
+        runner._session_db._db.get_recent_session_model_route.return_value = persisted_route
+
+        with patch("gateway.run._load_gateway_config", return_value=config), patch(
+            "gateway.run._resolve_runtime_agent_kwargs", return_value=runtime
+        ) as default_runtime, patch(
+            "agent.model_metadata.get_model_context_length",
+            side_effect=lambda _model, **kw: kw["config_context_length"] or 8_192,
+        ) as lookup:
+            result = await runner._handle_message(_make_event("/status"))
+
+        assert "**Model:** `my-local-model` (custom)" in result
+        assert "**Context:** 9,000 / 32,768 (27%)" in result
+        default_runtime.assert_called_once()
+        kwargs = lookup.call_args.kwargs
+        assert (kwargs["base_url"], kwargs["api_key"], kwargs["config_context_length"]) == (
+            runtime["base_url"], runtime["api_key"], 32_768)
+
+
+@pytest.mark.asyncio
 async def test_agents_command_reports_active_agents_and_processes(monkeypatch):
     session_key = build_session_key(_make_source())
     session_entry = SessionEntry(

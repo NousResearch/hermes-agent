@@ -376,6 +376,16 @@ _INFLIGHT_TASK_REPLAY_HEADER = (
     "start over.]"
 )
 
+# Replaces the protected-head copy of a task once the restatement below the
+# handoff exists (#106864). The stub keeps the row — role, position and
+# alternation/user-leading contracts — while the restatement becomes the only
+# full copy, so a large request cannot occupy the head AND the tail of the
+# compacted transcript.
+_INFLIGHT_TASK_DISPLACED_STUB = (
+    "[The original request above was moved below the context summary and is "
+    "restated there; act on that copy.]"
+)
+
 _SALVAGE_SUMMARY_MAX_CHARS = 8_000
 _SALVAGE_KEEP_RECENT_TOOLS = 2
 
@@ -4088,6 +4098,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         self,
         compressed: List[Dict[str, Any]],
         inflight: Optional[Dict[str, Any]],
+        inflight_in_head: bool = False,
     ) -> List[Dict[str, Any]]:
         """Restate an unfinished user task after the compaction handoff.
 
@@ -4183,10 +4194,52 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
             carrier[_INFLIGHT_REPLAY_MERGED_KEY] = True
             drop_stale_api_content(carrier)
+            self._displace_superseded_head_task(compressed, carrier_idx, inflight, inflight_in_head)
             return compressed
 
         compressed.append(replay)
+        self._displace_superseded_head_task(compressed, carrier_idx, inflight, inflight_in_head)
         return compressed
+
+    def _displace_superseded_head_task(
+        self,
+        compressed: List[Dict[str, Any]],
+        carrier_idx: int,
+        inflight: Dict[str, Any],
+        inflight_in_head: bool = False,
+    ) -> None:
+        """Stub out the head copy of a task that was just re-stated after the handoff.
+
+        The protected head keeps the original turn verbatim while the
+        restatement below the summary repeats it — two full copies of a large
+        request defeat the compression that was supposed to reclaim space
+        (#106864). Replacing the payload with a short stub keeps the row (and
+        with it the alternation and user-leading layout) while the restatement
+        becomes the only full copy.
+
+        Only the row derived from the ACTIVE in-flight turn is rewritten. When
+        that turn was summarized away instead of protected, every same-text
+        row left in the head belongs to an earlier completed turn and keeps
+        its payload. When the turn does sit in the head, it is the newest
+        actionable user row there, so the LAST text-matching row before the
+        carrier is its copy; an earlier row with identical text is history
+        (a re-sent request) and must survive verbatim.
+        """
+        if not inflight_in_head:
+            return
+        original_text = _content_text_for_contains(inflight.get("content")).strip()
+        if not original_text:
+            return
+        for msg in reversed(compressed[:carrier_idx]):
+            if (
+                isinstance(msg, dict)
+                and self._is_actionable_user_turn(msg)
+                and not self._is_synthetic_compression_user_turn(msg)
+                and _content_text_for_contains(msg.get("content")).strip() == original_text
+            ):
+                msg["content"] = _INFLIGHT_TASK_DISPLACED_STUB
+                drop_stale_api_content(msg)
+                return
 
     def _ensure_last_n_user_messages_in_tail(
         self, messages: List[Dict[str, Any]], cut_idx: int, head_end: int, n: int,
@@ -4568,6 +4621,7 @@ Write only the summary body. Do not include any preamble or prefix."""
 
     def _finalize_compressed(
         self, compressed: List[Dict[str, Any]], messages: List[Dict[str, Any]], n_messages: int,
+        compress_start: int = 0,
     ) -> List[Dict[str, Any]]:
         """Post-assembly cleanup: orphan pairs, media, savings, markers, replay prune, mem trim."""
         # Single-prompt cron shape: the only live instruction sits in the protected head, BEFORE the
@@ -4575,7 +4629,13 @@ Write only the summary body. Do not include any preamble or prefix."""
         # (#100818). Sanitize FIRST: the trailing-in-flight exemption (#79278) walks back from the list
         # end, and a replay user row there would strip a genuinely pending assistant(tool_calls).
         compressed = self._sanitize_tool_pairs(compressed)
-        compressed = self._reappend_inflight_user_task(compressed, self._find_inflight_user_task(messages))
+        inflight = self._find_inflight_user_task(messages)
+        # Displacement targets the head copy of the in-flight turn itself: identity in the
+        # pre-compression transcript decides whether that row survived in the protected head.
+        inflight_in_head = inflight is not None and any(
+            msg is inflight for msg in messages[:compress_start]
+        )
+        compressed = self._reappend_inflight_user_task(compressed, inflight, inflight_in_head)
         self.compression_count += 1
         # Replace historical image payloads with placeholders; multi-MB base64 blobs otherwise
         # exceed body limits.
@@ -4711,7 +4771,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
         # Phase 4: Assemble compressed message list
         compressed = self._assemble_compressed(messages, compress_start, compress_end, scan, summary)
-        return self._finalize_compressed(compressed, messages, n_messages)
+        return self._finalize_compressed(compressed, messages, n_messages, compress_start)
 
     def _assemble_compressed(
         self, messages: List[Dict[str, Any]], compress_start: int, compress_end: int, scan: "_HandoffScan", summary: str,

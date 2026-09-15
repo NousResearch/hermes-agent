@@ -787,7 +787,8 @@ class GatewaySlashCommandsMixin(
     async def _handle_btw_command(self, event: MessageEvent) -> str:
         """Handle /btw <question> — one-shot auxiliary LLM call on a transcript snapshot; live history
         is never touched (alternation + prompt cache intact, current turn keeps running). Unlike /bg,
-        which spawns a fresh contextless session."""
+        which spawns a fresh contextless session. Attached images are vision-enriched in the
+        background before either side-answer path runs."""
         question = event.get_command_args().strip()
         if not question:
             return t("gateway.btw.usage")
@@ -797,7 +798,12 @@ class GatewaySlashCommandsMixin(
             history = await self.async_session_store.load_transcript(session_entry.session_id)
         except TranscriptReadError:
             return HISTORY_UNREADABLE
-        if not history:
+        # Slash commands bypass normal inbound media enrichment. Snapshot only images;
+        # per-attachment MIME must win over a mixed message's PHOTO classification.
+        from gateway.run import _event_media_is_image
+        image_paths = [path for i, path in enumerate(event.media_urls or [])
+                       if _event_media_is_image(event, i)]
+        if not history and not image_paths:
             return t("gateway.btw.no_history")
         try:
             model, rt = self._resolve_session_agent_runtime(source=source)
@@ -821,8 +827,16 @@ class GatewaySlashCommandsMixin(
         async def _run_side_question() -> None:
             from agent.side_question import answer_side_question
             try:
+                side_question = question
+                if image_paths:
+                    # /btw cannot call tools, and may use a text-only digest fallback.
+                    # Reuse vision preprocessing without staging native images on the
+                    # live session or modifying its transcript/cache prefix.
+                    from agent.auxiliary_client import scoped_runtime_main
+                    with scoped_runtime_main(main_runtime):
+                        side_question = await self._enrich_message_with_vision(question, image_paths)
                 answer = await asyncio.to_thread(
-                    answer_side_question, question, history_snapshot,
+                    answer_side_question, side_question, history_snapshot,
                     parent_agent=parent_agent, main_runtime=main_runtime)
                 reply = t("gateway.btw.answer", preview=preview, answer=answer or "")
             except Exception as e:

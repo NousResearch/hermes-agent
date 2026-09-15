@@ -297,3 +297,124 @@ class TestHandleBtwCommand:
         event = _make_event(text="/btw what?")
         result = await runner._handle_btw_command(event)
         assert "❌" in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_history", [True, False])
+@pytest.mark.parametrize("with_parent", [True, False])
+async def test_btw_attached_images_reach_side_answer(tmp_path, with_history, with_parent):
+    """Real handler + enrichment + side-question engine; only provider boundaries are fake."""
+    import base64
+    import copy
+    import io
+    from types import SimpleNamespace
+    from PIL import Image
+    from agent.auxiliary_client import _runtime_main_value
+    from gateway.platforms.event import MessageType
+
+    runner = _make_runner()
+    history = ([{"role": "user", "content": "Main task"},
+                {"role": "assistant", "content": "Working"}] if with_history else [])
+    original = copy.deepcopy(history)
+    store = AsyncMock()
+    store.get_or_create_session.return_value = MagicMock(session_id="s1")
+    store.load_transcript.return_value = history
+    store._store = runner.session_store
+    runner._async_session_store = store
+    runner._resolve_session_agent_runtime = MagicMock(return_value=(
+        "session-model", {"api_key": "test-only", "provider": "session-provider"}))
+    parent = MagicMock() if with_parent else None
+    runner._cached_agent_for = MagicMock(return_value=parent)
+    runner._reply_metadata = MagicMock(return_value={"thread_id": "thread-1"})
+    adapter = AsyncMock()
+    runner._adapter_for_source = MagicMock(return_value=adapter)
+    runner._enrich_inbound_images = AsyncMock(side_effect=AssertionError("must not stage native images"))
+
+    paths = [str(tmp_path / "one.png"), str(tmp_path / "notes.pdf"), str(tmp_path / "two.png")]
+    Image.new("RGB", (4, 4), (255, 0, 0)).save(paths[0])
+    Image.new("RGB", (4, 4), (0, 0, 255)).save(paths[2])
+    event = _make_event(text="/btw what do the signs say?", platform=Platform.WHATSAPP)
+    event.message_type = MessageType.PHOTO
+    event.media_urls = paths[:]
+    event.media_types = ["image/png", "application/pdf", "image/png"]
+    seen = []
+
+    async def vision(**kwargs):
+        assert _runtime_main_value("model") == "session-model"
+        block = next(b for b in kwargs["messages"][0]["content"] if b["type"] == "image_url")
+        data = base64.b64decode(block["image_url"]["url"].split(",", 1)[1])
+        with Image.open(io.BytesIO(data)) as image:
+            seen.append(image.convert("RGB").getpixel((0, 0)))
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+            content=f"Sign: {len(seen)}"))], usage=None)
+
+    def answer(**kwargs):
+        content = kwargs.get("user_message", kwargs.get("user_input"))
+        assert isinstance(content, str)
+        assert "Sign: 1" in content and "Sign: 2" in content
+        assert "what do the signs say?" in content
+        assert paths[1] not in content
+        return {"final_response": "Two signs."} if with_parent else "Two signs."
+
+    fork = MagicMock()
+    fork.run_conversation.side_effect = answer
+    with patch("tools.vision_tools.async_call_llm", side_effect=vision), \
+         patch("agent.background_review.build_cache_parity_fork", return_value=(fork, {}, False)), \
+         patch("agent.oneshot.run_oneshot", side_effect=answer):
+        ack = await runner._handle_btw_command(event)
+        assert "what do the signs say?" in ack
+        assert seen == []  # enrichment stays off the ack path
+        event.media_urls.clear()  # the background task owns a snapshot
+        for task in list(runner._background_tasks):
+            await task
+
+    assert seen == [(255, 0, 0), (0, 0, 255)]
+    assert history == original
+    assert event.text == "/btw what do the signs say?"
+    runner._enrich_inbound_images.assert_not_called()
+    adapter.send.assert_awaited_once()
+    assert "Two signs." in adapter.send.call_args.args[1]
+    assert adapter.send.call_args.kwargs["metadata"] == {"thread_id": "thread-1"}
+    if with_parent:
+        assert fork.run_conversation.call_args.kwargs["conversation_history"] == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type, mime, expected", [
+    ("photo", [], True),
+    ("document", ["image/jpeg"], True),
+    ("photo", ["application/pdf"], False),
+    ("text", [], False),
+])
+async def test_btw_image_classification_and_failure_notice(media_type, mime, expected):
+    from gateway.platforms.event import MessageType
+
+    runner = _make_runner()
+    store = AsyncMock()
+    store.get_or_create_session.return_value = MagicMock(session_id="s1")
+    history = [{"role": "user", "content": "Main"}, {"role": "assistant", "content": "OK"}]
+    store.load_transcript.return_value = history
+    store._store = runner.session_store
+    runner._async_session_store = store
+    runner._resolve_session_agent_runtime = MagicMock(return_value=("model", {"api_key": "test-only"}))
+    runner._cached_agent_for = MagicMock(return_value=None)
+    runner._reply_metadata = MagicMock(return_value=None)
+    adapter = AsyncMock()
+    runner._adapter_for_source = MagicMock(return_value=adapter)
+    event = _make_event(text="/btw inspect this")
+    event.message_type = MessageType(media_type)
+    event.media_urls = ["/test/attachment"]
+    event.media_types = mime
+
+    with patch("tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock,
+               side_effect=RuntimeError("vision unavailable")) as vision, \
+         patch("agent.side_question.answer_side_question", return_value="Image unavailable") as answer:
+        await runner._handle_btw_command(event)
+        for task in list(runner._background_tasks):
+            await task
+    assert vision.await_count == int(expected)
+    question = answer.call_args.args[0]
+    if expected:
+        assert "something went wrong" in question
+    else:
+        assert question == "inspect this"

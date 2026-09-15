@@ -1026,7 +1026,10 @@ def _cmd_promote(args: argparse.Namespace) -> int:
     results: list[dict[str, object]] = []
     with kbc.connect_closing() as conn:
         for tid in ids:
-            ok, err = kb.promote_task(conn, tid, actor=author, reason=reason, dry_run=dry_run)
+            ok, err = kb.promote_task(
+                conn, tid, actor=author, reason=reason,
+                force=bool(getattr(args, "force", False)), dry_run=dry_run,
+            )
             results.append({"task_id": tid, "promoted": ok, "dry_run": dry_run,
                             "reason": reason, "error": err})
 

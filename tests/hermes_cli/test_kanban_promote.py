@@ -64,22 +64,53 @@ def test_promote_stuck_todo_succeeds(conn):
     assert kb.get_task(conn, child).status == "ready"
 
 
-def test_promote_refuses_undone_parent_and_names_the_real_remedy(conn):
-    # #106195: promotion must never report a 'ready' that the first claim reverts.
+def test_force_promote_runs_child_of_blocked_parent_through_lifecycle(conn):
+    """An explicit override lets a support card unblock its blocked parent."""
+    parent = kb.create_task(conn, title="blocked parent", assignee="setup")
+    assert kb.block_task(conn, parent, reason="needs support")
+    child = kb.create_task(conn, title="support child", parents=[parent], assignee="setup")
+
+    ok, err = kb.promote_task(conn, child, actor="tester", force=True)
+    assert ok and err is None
+    assert kb.claim_task(conn, child, claimer="tester") is not None
+
+    assert kb.block_task(conn, child, reason="pause support")
+    assert kb.unblock_task(conn, child)
+    assert kb.get_task(conn, child).status == "ready"
+
+    assert kb.request_review(conn, child, summary="support is ready")
+    assert kb.reopen_review_task(conn, child)
+    assert kb.get_task(conn, child).status == "ready"
+    assert kb.complete_task(conn, child)
+
+
+def test_force_promote_remains_gated_by_ordinary_undone_parent(conn):
+    # A force override is only for a parent that is itself blocked.
     child, (parent,) = _stuck_todo(conn, parents_done=False)
-    ok, err = kb.promote_task(conn, child, actor="tester", reason="recovery")
+    ok, err = kb.promote_task(conn, child, actor="tester", reason="recovery", force=True)
     assert not ok
-    assert parent in err and "--force" not in err and f"unlink <parent_id> {child}" in err
+    assert parent in err and f"unlink <parent_id> {child}" in err
     assert kb.get_task(conn, child).status == "todo"
     assert kb.claim_task(conn, child) is None  # still gated; nothing pretended
 
 
-def test_cli_promote_has_no_force_flag(kanban_home):
+def test_cli_promote_accepts_force_flag(kanban_home):
     from hermes_cli import kanban_parser
     parser = argparse.ArgumentParser(prog="hermes", add_help=False)
     kanban_parser.build_parser(parser.add_subparsers(dest="command"))
-    with pytest.raises(SystemExit):
-        parser.parse_args(["kanban", "promote", "t_x", "--force"])
+    args = parser.parse_args(["kanban", "promote", "t_x", "--force"])
+    assert args.force is True
+
+
+def test_recompute_ready_honors_forced_blocked_parent_override(conn):
+    parent = kb.create_task(conn, title="blocked parent")
+    assert kb.block_task(conn, parent, reason="needs support")
+    child = kb.create_task(conn, title="support child", parents=[parent])
+    assert kb.promote_task(conn, child, actor="tester", force=True)[0]
+    conn.execute("UPDATE tasks SET status = 'todo' WHERE id = ?", (child,))
+
+    assert kb.recompute_ready(conn) == 1
+    assert kb.get_task(conn, child).status == "ready"
 
 
 # ---------------------------------------------------------------------------
@@ -116,5 +147,4 @@ def test_cli_promote_bulk_ids_promotes_all(kanban_home, capsys):
     with kbc.connect() as conn:
         for c in children:
             assert kb.get_task(conn, c).status == "ready"
-
 

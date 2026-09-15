@@ -329,6 +329,8 @@ _SPECS = [
         _TASK_ID,
         _arg("reason", nargs="*", help="Audit-trail reason (recorded on the task_events row)"),
         _bulk_ids("promote"),
+        _arg("--force", action="store_true",
+             help="Allow a child of a blocked parent to run as an explicit support task"),
         _arg("--dry-run", action="store_true", help="Validate the promotion without mutating state"),
         _arg("--json", dest="json", action="store_true", help="Emit machine-readable JSON result"),
     ], help="Manually move one or more todo/blocked tasks to ready (recovery path)"),

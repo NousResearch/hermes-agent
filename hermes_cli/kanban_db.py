@@ -2083,12 +2083,7 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Explicit human-intervention block; only ``unblock_task`` may exit it.
                 continue
-            parents = conn.execute(
-                "SELECT t.status FROM tasks t "
-                "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?", (task_id,),
-            ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            if _parents_satisfied(conn, task_id):
                 resume_status = _resume_status_from_events(conn, task_id)
                 if cur_status == "blocked":
                     # At the breaker limit, no auto-recovery (else block ->
@@ -2122,15 +2117,29 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
 # --- Claim / complete / block ---
 
 def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Return whether every direct parent is terminal for dependency gating."""
-    return conn.execute(
-        # Check if this task has children that still need the workspace. If any child is not yet
-        # done/archived, defer cleanup so the child can read handoff artifacts from the workspace (#33774).
-        "SELECT 1 FROM task_links l "
-        "JOIN tasks p ON p.id = l.parent_id "
-        "WHERE l.child_id = ? "
-        "AND p.status NOT IN ('done', 'archived') LIMIT 1", (task_id,),
-    ).fetchone() is None
+    """Return whether direct parents permit this task to proceed.
+
+    Terminal parents always permit progress. An explicitly forced promotion can
+    additionally permit the exact parents that were ``blocked`` at promotion
+    time, so a support card may unblock its parent without weakening ordinary
+    unfinished-parent dependency gating.
+    """
+    parents = conn.execute(
+        "SELECT p.id, p.status FROM task_links l "
+        "JOIN tasks p ON p.id = l.parent_id WHERE l.child_id = ?", (task_id,),
+    ).fetchall()
+    unfinished = [p for p in parents if p["status"] not in ("done", "archived")]
+    if not unfinished:
+        return True
+    if any(p["status"] != "blocked" for p in unfinished):
+        return False
+    forced = _json_dict(_row_get(_latest_event(conn, task_id, "promoted_manual"), "payload"))
+    forced_parent_ids = forced.get("force_parent_ids")
+    return (
+        forced.get("force_dependencies") is True
+        and isinstance(forced_parent_ids, list)
+        and {p["id"] for p in unfinished}.issubset(set(forced_parent_ids))
+    )
 
 
 def _claim_and_open_run(
@@ -3296,10 +3305,10 @@ def request_changes(
 
 def promote_task(
     conn: sqlite3.Connection, task_id: str, *, actor: str, reason: Optional[str] = None,
-    dry_run: bool = False,
+    force: bool = False, dry_run: bool = False,
 ) -> tuple[bool, Optional[str]]:
     """Operator promotion ``todo``/``blocked`` -> ``ready`` with an audit event.
-    Refused while a parent is unfinished; ``dry_run`` only validates.
+    ``force`` permits only parents that are themselves blocked; ``dry_run`` only validates.
     Returns ``(ok, reason)``."""
     cur_status = _task_status(conn, task_id)
     if cur_status is None:
@@ -3311,20 +3320,17 @@ def promote_task(
             f"'todo' or 'blocked'"
         )
 
-    # No override: claim_task demotes ready -> todo on an undone parent whichever
-    # writer set 'ready', so a forced promotion would only report a success the
-    # first claim silently reverts (#106195). The dependency itself is the knob.
     parents = conn.execute(
         "SELECT t.id, t.status FROM tasks t "
         "JOIN task_links l ON l.parent_id = t.id "
         "WHERE l.child_id = ?", (task_id,),
     ).fetchall()
     unsatisfied = [p["id"] for p in parents if p["status"] not in ("done", "archived")]
-    if unsatisfied:
+    non_blocked = [p["id"] for p in parents if p["status"] not in ("done", "archived", "blocked")]
+    if unsatisfied and (not force or non_blocked):
         return False, (
             f"unsatisfied parent dependencies: {', '.join(unsatisfied)} "
-            f"(the ready -> running claim re-checks parents, so promotion cannot "
-            f"bypass them; complete the parents or drop the link with "
+            f"(complete the parents or drop the link with "
             f"`hermes kanban unlink <parent_id> {task_id}`)"
         )
 
@@ -3338,7 +3344,15 @@ def promote_task(
         )
         if upd.rowcount != 1:
             return False, f"task {task_id} status changed during promotion"
-        _append_event(conn, task_id, "promoted_manual", {"actor": actor, "reason": reason})
+        _append_event(
+            conn, task_id, "promoted_manual",
+            {
+                "actor": actor,
+                "reason": reason,
+                "force_dependencies": bool(force and unsatisfied),
+                "force_parent_ids": unsatisfied if force and unsatisfied else [],
+            },
+        )
 
     return True, None
 

@@ -361,6 +361,26 @@ def test_failed_reader_wait_does_not_publish_false_completion(registry, monkeypa
     assert moved == []
 
 
+def test_failed_reader_wait_still_records_known_exit_status(registry, monkeypatch):
+    """A PTY child reaped by isalive() has its status; a raising wait must not lose it."""
+    session = _make_session(sid="proc_pty_wait_failed")
+    moved = []
+    monkeypatch.setattr(registry, "_move_to_finished", lambda _s: moved.append(_s.id))
+
+    registry._finish_reader(
+        session,
+        MagicMock(decode=MagicMock(return_value="")),
+        lambda _text: None,
+        "PTY",
+        MagicMock(side_effect=OSError("waitpid ECHILD")),
+        lambda: 9,
+    )
+
+    assert session.exited is True
+    assert session.exit_code == 9
+    assert moved == [session.id]
+
+
 # =========================================================================
 # Incremental UTF-8 decoding across chunk boundaries
 # (ported from openclaw/openclaw#112325)

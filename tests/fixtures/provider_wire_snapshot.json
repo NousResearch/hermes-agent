@@ -12198,7 +12198,8 @@
     "thinking": {
      "clear_thinking": false,
      "type": "enabled"
-    }
+    },
+    "tool_stream": true
    },
    "messages": [
     {
@@ -12262,7 +12263,8 @@
    "extra_body": {
     "thinking": {
      "type": "disabled"
-    }
+    },
+    "tool_stream": true
    },
    "messages": [
     {
@@ -12321,6 +12323,9 @@
    ]
   },
   "unset": {
+   "extra_body": {
+    "tool_stream": true
+   },
    "messages": [
     {
      "content": "You are a test agent.",

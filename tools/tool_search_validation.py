@@ -14,6 +14,7 @@ from tools.tool_search_catalog import BRIDGE_TOOL_NAMES
 logger = logging.getLogger("tools.tool_search")
 
 _SCHEMA_LITERAL_KEYS = frozenset({"const", "default", "enum", "example", "examples"})
+_MISSING_ARGUMENTS = object()
 
 
 def _schema_for_local_validation(node: Any) -> Any:
@@ -141,9 +142,10 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
 
     Accepts the advertised batch shape ``{"calls": [{"name", "arguments"}, ...]}``
     and, tolerantly, the legacy single shape ``{"name": ..., "arguments": ...}``
-    (a single call is a batch of one). Each entry's ``arguments`` is coerced to
-    a dict (JSON strings parsed, ``None`` → ``{}``). Returns ``(entries, None)``
-    or ``([], error_message)``.
+    (a single call is a batch of one). Each entry must carry an explicit
+    ``arguments`` object or JSON-object string; missing, misnamed, null, and
+    scalar arguments are rejected rather than silently becoming ``{}``.
+    Returns ``(entries, None)`` or ``([], error_message)``.
     """
     raw_calls = args.get("calls")
     if raw_calls is None:
@@ -165,9 +167,12 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
             return [], f"tool_call calls[{position}] requires a 'name'"
         if name in BRIDGE_TOOL_NAMES:
             return [], f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
-        raw_args = raw.get("arguments")
-        if raw_args is None:
-            raw_args = {}
+        raw_args = raw.get("arguments", _MISSING_ARGUMENTS)
+        if raw_args is _MISSING_ARGUMENTS or raw_args is None:
+            return [], (
+                f"tool_call calls[{position}] requires an 'arguments' object, "
+                "not 'parameters'; use 'arguments': {} for a no-argument tool"
+            )
         if isinstance(raw_args, str):
             try:
                 raw_args = json.loads(raw_args)

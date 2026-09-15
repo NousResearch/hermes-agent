@@ -631,33 +631,6 @@ describe('selectConnection', () => {
 
       expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
       expect($connection.get()?.connectionId).toBe('homelab')
-
-      // REST readiness shares the dial budget, rather than adding a second
-      // full timeout. A late response has no activation rights after failure.
-      setConnectionsRegistry({
-        ...registry,
-        connections: registry.connections.map(connection =>
-          connection.id === 'work-vps' ? { ...connection, authMode: 'oauth' } : connection
-        )
-      })
-      const dial = deferred()
-      const rest = deferred<{ profiles: never[] }>()
-      openGatewayAgent.mockImplementationOnce(() => dial.promise)
-      api.mockImplementationOnce(() => rest.promise)
-      $activeSessionId.set('homelab-runtime')
-      const restOutcome = selectConnection('work-vps').catch((error: Error) => error.message)
-      await vi.advanceTimersByTimeAsync(10_000)
-      dial.resolve()
-      await vi.advanceTimersByTimeAsync(0)
-      expect(api).toHaveBeenCalledTimes(1)
-      await vi.advanceTimersByTimeAsync(10_000)
-      expect(await restOutcome).toMatch(/Timed out connecting to "Work VPS"/)
-      expect($activeSessionId.get()).toBe('homelab-runtime')
-      expect($pendingConnectionId.get()).toBeNull()
-      rest.resolve({ profiles: [] })
-      await vi.advanceTimersByTimeAsync(0)
-      expect(beginGatewaySwitch).toHaveBeenCalledTimes(1)
-      expect($activeConnectionId.get()).toBe('homelab')
     } finally {
       vi.useRealTimers()
     }

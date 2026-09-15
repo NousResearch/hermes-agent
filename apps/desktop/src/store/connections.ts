@@ -335,7 +335,6 @@ export async function selectConnection(connectionId: string, options: SelectConn
   let token = null as GatewaySwitchToken | null
 
   try {
-    const preflightDeadline = Date.now() + SWITCH_DIAL_TIMEOUT_MS
     // Phase 1 — open the target's socket; the active route is untouched.
     // Always use the explicit registry route. `local` must mean This device,
     // and a registry primary can differ from a legacy per-profile override.
@@ -357,12 +356,11 @@ export async function selectConnection(connectionId: string, options: SelectConn
       (targetConnection.kind === 'remote' || targetConnection.kind === 'cloud')
     ) {
       // Retained sockets can outlive cookie/native OAuth REST auth. Prove a
-      // protected read on the destination before wiping; a socket alone is
-      // enough for the unchanged local/long-lived-token path. Keep the exact
+      // protected read on the destination before wiping. Keep the exact
       // failure for caller UX (network failures must not become sign-in errors).
       await withTimeout(
         getProfiles({ connectionId, profile: targetProfile }),
-        Math.max(0, preflightDeadline - Date.now()),
+        SWITCH_DIAL_TIMEOUT_MS,
         `Timed out connecting to "${targetConnection.label}".`
       )
 

@@ -122,6 +122,11 @@ DEFAULT_CONFIG = {
         # otherwise wedge the turn until the idle watchdog discards the already-billed response
         # (#103864). 0 skips the drain. Well-behaved endpoints close immediately and never wait this long.
         "stream_drain_timeout": 2.0,
+        # Mid-stream reconnect attempts when a stream drops on a transient error. Applies to both
+        # streaming paths: chat-completions and the Responses/Codex transport. 0 = no reconnect
+        # after the first attempt. The HERMES_STREAM_RETRIES env var is still honoured when this
+        # key is absent, so existing setups keep their behaviour.
+        "max_stream_retries": 2,
         # Empty-response retry guard. Empty retries re-send the full input at full price; this stops
         # re-billing deterministic empties (unsignaled refusals, zero output tokens) while failing
         # open on ambiguous evidence (missing usage, any tokens, model/provider change).

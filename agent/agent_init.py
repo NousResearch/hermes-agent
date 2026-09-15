@@ -42,7 +42,7 @@ from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
 from hermes_state_ids import new_session_id
-from utils import base_url_host_matches, is_truthy_value
+from utils import base_url_host_matches, env_int, is_truthy_value
 
 # Same logger name as run_agent so caplog/patches on "run_agent" see our records.
 logger = logging.getLogger("run_agent")
@@ -1400,6 +1400,19 @@ def _apply_agent_section(agent, _agent_cfg):
         agent._auto_recovery_cycles = max(int(_agent_section.get("auto_recovery_cycles", 5)), 0)
     except (TypeError, ValueError):
         agent._auto_recovery_cycles = 5
+
+    # Mid-stream reconnect attempts on a transient stream failure, shared by the chat-completions
+    # and Codex Responses streaming paths. 0 = no reconnect after the first attempt. Config wins;
+    # HERMES_STREAM_RETRIES stays supported as a fallback so existing setups keep working. Before
+    # this, the chat path read the env var and the Responses path was hardcoded to 1.
+    _stream_retries_raw = _agent_section.get("max_stream_retries")
+    if _stream_retries_raw is None:
+        _stream_retries_raw = env_int("HERMES_STREAM_RETRIES", 2)
+    try:
+        _stream_retries = max(int(_stream_retries_raw), 0)
+    except (TypeError, ValueError):
+        _stream_retries = 2
+    agent._max_stream_retries = _stream_retries
 
 
 def _positive_int(raw: Any, *, reject: tuple = ()) -> Optional[int]:

@@ -7,6 +7,7 @@ resolve_qwen_runtime_credentials, get_qwen_auth_status.
 
 import json
 import stat
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -111,6 +112,62 @@ def test_qwen_cli_auth_path_returns_expected_location():
 # ---------------------------------------------------------------------------
 
 
+class _RotatingQwenEndpoint:
+    """Fake ``httpx.post`` for the Qwen OAuth token endpoint: rotates ``old-rt`` once and rejects
+    any replay of a consumed refresh token, holding briefly so a concurrent refresher must wait on
+    the file lock rather than overlap (mirrors auth_codex's ``_RotatingEndpoint``)."""
+
+    def __init__(self, hold_seconds):
+        self.hold_seconds = hold_seconds
+        self.seen = []
+        self._guard = threading.Lock()
+
+    def __call__(self, url, *, headers=None, data=None, timeout=None):
+        with self._guard:
+            replay = data["refresh_token"] in self.seen
+            self.seen.append(data["refresh_token"])
+        time.sleep(self.hold_seconds)
+        resp = MagicMock()
+        if replay:
+            resp.status_code = 400
+            resp.text = "invalid_grant"
+            return resp
+        resp.status_code = 200
+        resp.json.return_value = {"access_token": "new-at", "refresh_token": "new-rt", "expires_in": 3600}
+        return resp
+
+
+def test_concurrent_refreshes_of_the_shared_qwen_token_file_submit_old_token_once(qwen_env, monkeypatch):
+    """The qwen-cli token file is not profile-scoped and not exclusive to Hermes: two refreshers
+    holding the same stale pre-read pair (two Hermes profiles, or Hermes racing the external
+    `qwen` CLI) must not both submit the same single-use refresh_token. The second re-reads the
+    file under its lock, sees the peer's rotated pair, and adopts it instead of replaying the
+    consumed token."""
+    stale = _make_qwen_tokens(access_token="old-at", refresh_token="old-rt",
+                               expiry_date=int((time.time() - 3600) * 1000))
+    _write_qwen_creds(qwen_env, stale)
+    endpoint = _RotatingQwenEndpoint(hold_seconds=1.5)
+    monkeypatch.setattr("httpx.post", endpoint)
+    monkeypatch.setattr("hermes_cli.auth.AUTH_LOCK_TIMEOUT_SECONDS", 1.0)
+
+    results, errors = {}, {}
+
+    def _refresh(name):
+        try:
+            results[name] = _refresh_qwen_cli_tokens(dict(stale), timeout_seconds=1.0)
+        except Exception as exc:  # pragma: no cover - surfaced via the assertion below
+            errors[name] = exc
+
+    workers = [threading.Thread(target=_refresh, args=(n,)) for n in ("a", "b")]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join(timeout=10)
+
+    assert errors == {}
+    assert endpoint.seen == ["old-rt"]
+    assert results["a"]["access_token"] == "new-at"
+    assert results["b"]["access_token"] == "new-at"
 
 
 

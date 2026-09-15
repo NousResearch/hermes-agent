@@ -225,8 +225,15 @@ def _minimax_oauth_login(*, region: str = "global", open_browser: bool = True, t
 
 
 def _refresh_minimax_oauth_state(state: Dict[str, Any], *, timeout_seconds: float = 15.0, force: bool = False) -> Dict[str, Any]:
-    """Refresh MiniMax OAuth access token if close to expiry (or forced)."""
-    from hermes_cli.auth import _minimax_save_auth_state
+    """Refresh MiniMax OAuth access token if close to expiry (or forced).
+
+    The whole re-read -> endpoint POST -> write-back runs inside the provider's state transaction:
+    two profiles borrowing the same root grant otherwise both submit the same single-use
+    refresh_token (each holds only its own profile lock) and MiniMax revokes the family. A waiter
+    that finds the stored pair already rotated by its peer adopts it instead of replaying the
+    consumed token (mirrors auth_codex.py's `_refresh_codex_auth_tokens`).
+    """
+    from hermes_cli.auth import AUTH_LOCK_TIMEOUT_SECONDS, _minimax_save_auth_state, _provider_state_transaction
     if not state.get("refresh_token"):
         raise _minimax_err("MiniMax OAuth state has no refresh_token; please re-login.", "no_refresh_token", relogin=True)
     try:
@@ -236,32 +243,47 @@ def _refresh_minimax_oauth_state(state: Dict[str, Any], *, timeout_seconds: floa
     if not force and (expires_at - time.time()) > MINIMAX_OAUTH_REFRESH_SKEW_SECONDS:
         return state
 
-    with httpx.Client(timeout=httpx.Timeout(timeout_seconds), follow_redirects=True) as client:
-        response = _minimax_post_form(
-            client,
-            f"{state['portal_base_url']}/oauth/token",
-            data={"grant_type": "refresh_token", "client_id": state["client_id"], "refresh_token": state["refresh_token"]},
-            headers=_FORM_JSON_HEADERS,
-        )
-        # Non-200 reads a STREAMED body, so it must run inside the client context (iter_bytes()
-        # after close raises StreamClosed); the 200 body was already read by _minimax_post_form.
-        if response.status_code != 200:
-            body = _minimax_response_error_text(response)
-            body_lower = body.lower()
-            relogin = any(m in body_lower for m in ("invalid_grant", "refresh_token_reused", "invalid_refresh_token"))
-            raise _minimax_err(
-                f"MiniMax OAuth refresh failed: {body or response.reason_phrase}", "refresh_failed", relogin=relogin,
+    lock_timeout = max(float(AUTH_LOCK_TIMEOUT_SECONDS), float(timeout_seconds) + 5.0)
+    with _provider_state_transaction("minimax-oauth", lock_timeout) as (_store, stored, _source):
+        stored = stored or {}
+        if stored.get("access_token") and stored.get("refresh_token") and stored.get("refresh_token") != state.get("refresh_token"):
+            try:
+                stored_expires_at = datetime.fromisoformat(stored.get("expires_at", "")).timestamp()
+            except Exception:
+                stored_expires_at = 0.0
+            if force or (stored_expires_at - time.time()) > MINIMAX_OAUTH_REFRESH_SKEW_SECONDS:
+                logger.info("MiniMax OAuth refresh token already rotated by a peer — adopting the stored state.")
+                return {**state, **stored}
+
+        refresh_token = stored.get("refresh_token") or state["refresh_token"]
+
+        with httpx.Client(timeout=httpx.Timeout(timeout_seconds), follow_redirects=True) as client:
+            response = _minimax_post_form(
+                client,
+                f"{state['portal_base_url']}/oauth/token",
+                data={"grant_type": "refresh_token", "client_id": state["client_id"], "refresh_token": refresh_token},
+                headers=_FORM_JSON_HEADERS,
             )
-    payload = response.json()
-    if payload.get("status") != "success":
-        raise _minimax_err("MiniMax OAuth refresh did not return success.", "refresh_failed", relogin=True)
-    new_state = {
-        **state,
-        "access_token": payload["access_token"],
-        "refresh_token": payload.get("refresh_token", state["refresh_token"]),
-        **_minimax_expiry_fields(payload["expired_in"]),
-    }
-    _minimax_save_auth_state(new_state)
+            # Non-200 reads a STREAMED body, so it must run inside the client context (iter_bytes()
+            # after close raises StreamClosed); the 200 body was already read by _minimax_post_form.
+            if response.status_code != 200:
+                body = _minimax_response_error_text(response)
+                body_lower = body.lower()
+                relogin = any(m in body_lower for m in ("invalid_grant", "refresh_token_reused", "invalid_refresh_token"))
+                raise _minimax_err(
+                    f"MiniMax OAuth refresh failed: {body or response.reason_phrase}", "refresh_failed", relogin=relogin,
+                )
+        payload = response.json()
+        if payload.get("status") != "success":
+            raise _minimax_err("MiniMax OAuth refresh did not return success.", "refresh_failed", relogin=True)
+        new_state = {
+            **state,
+            "access_token": payload["access_token"],
+            "refresh_token": payload.get("refresh_token", refresh_token),
+            **_minimax_expiry_fields(payload["expired_in"]),
+        }
+        # Nested transaction: the per-path lock is reentrant, and it re-reads under the held lock.
+        _minimax_save_auth_state(new_state)
     return new_state
 
 

@@ -13,8 +13,10 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -201,6 +203,85 @@ def test_refresh_skip_when_not_expired():
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def minimax_auth_env(tmp_path, monkeypatch):
+    """Isolated profile auth.json for _provider_state_transaction (real on-disk lock file). A
+    profile subdirectory, not bare tmp_path/.hermes, so the real-store seat belt in
+    _auth_file_path() (which compares against Path.home()/.hermes/auth.json, also patched to
+    tmp_path here) does not mistake this tmp path for the real one."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))  # Windows resolves the native root from here
+    profile = tmp_path / ".hermes" / "profiles" / "work"
+    profile.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    return profile / "auth.json"
+
+
+class _RotatingMinimaxClient:
+    """Fake httpx.Client for the MiniMax OAuth token endpoint: rotates ``old-rt`` once and rejects
+    any replay of a consumed refresh token, holding briefly so a concurrent refresher must wait on
+    the provider-state lock rather than overlap (mirrors auth_codex's ``_RotatingEndpoint``)."""
+
+    def __init__(self, hold_seconds):
+        self.hold_seconds = hold_seconds
+        self.seen = []
+        self._guard = threading.Lock()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def build_request(self, method, url, *, data=None, headers=None):
+        return {"data": data}
+
+    def send(self, request, *, stream=False):
+        data = request["data"]
+        with self._guard:
+            replay = data["refresh_token"] in self.seen
+            self.seen.append(data["refresh_token"])
+        time.sleep(self.hold_seconds)
+        if replay:
+            return _make_httpx_response(400, text=json.dumps({"base_resp": {"status_msg": "refresh_token_reused"}}))
+        return _make_httpx_response(
+            200, {"status": "success", "access_token": "new-at", "refresh_token": "new-rt", "expired_in": 3600})
+
+
+def test_concurrent_refreshes_of_shared_minimax_grant_submit_old_token_once(minimax_auth_env, monkeypatch):
+    """Two profiles borrowing the same MiniMax OAuth grant (or two turns racing) holding the same
+    stale pre-read pair: the second must re-read the provider state under its lock, see the peer's
+    rotated pair, and adopt it instead of replaying the single-use refresh token."""
+    state = {
+        "access_token": "old-access",
+        "refresh_token": "old-rt",
+        "portal_base_url": MINIMAX_OAUTH_GLOBAL_BASE,
+        "client_id": MINIMAX_OAUTH_CLIENT_ID,
+        "inference_base_url": MINIMAX_OAUTH_GLOBAL_INFERENCE,
+        "expires_at": _past_iso(3600),
+    }
+    endpoint = _RotatingMinimaxClient(hold_seconds=1.5)  # longer than the lock floor
+    monkeypatch.setattr("hermes_cli.auth_minimax.httpx.Client", lambda **kw: endpoint)
+    monkeypatch.setattr("hermes_cli.auth.AUTH_LOCK_TIMEOUT_SECONDS", 1.0)
+
+    results, errors = {}, {}
+
+    def _refresh(name):
+        try:
+            results[name] = _refresh_minimax_oauth_state(dict(state), timeout_seconds=1.0)
+        except Exception as exc:  # pragma: no cover - surfaced via the assertion below
+            errors[name] = exc
+
+    workers = [threading.Thread(target=_refresh, args=(n,)) for n in ("a", "b")]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join(timeout=10)
+
+    assert errors == {}
+    assert endpoint.seen == ["old-rt"]
+    assert results["a"]["access_token"] == "new-at"
+    assert results["b"]["access_token"] == "new-at"
 
 
 
